@@ -209,6 +209,9 @@ impl BindingStorage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindingInitialization {
     Explicit,
+    /// The binder establishes Value(Reg(i)) or one Cell(Reg(i)) per invocation.
+    /// Only the internal default-prefix path reuses the caller's parameter cell;
+    /// ordinary calls, including calls to a default FunctionDef, bind fresh values.
     Parameter(u32),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,7 +221,8 @@ pub struct BindingDef {
     pub mutable: bool,
     pub storage: BindingStorage,
     /// Explicit bindings start uninitialized; BindInit publishes exactly once.
-    /// Parameter bindings are initialized by the binder before body execution.
+    /// Parameter bindings are initialized sequentially before later defaults and
+    /// body execution. Owner/default prefixes must share name/type/mutable/storage.
     pub initialization: BindingInitialization,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
