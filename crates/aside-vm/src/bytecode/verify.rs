@@ -567,7 +567,10 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
                 for (prev, input) in s.parameters[..i].iter().zip(&ds.parameters) {
                     b.work(1)?;
                     check(
-                        prev.name == input.name && prev.ty == input.ty && input.default.is_none(),
+                        prev.name == input.name
+                            && prev.ty == input.ty
+                            && prev.mutable == input.mutable
+                            && input.default.is_none(),
                         ErrorKind::Signature,
                         "default may only receive preceding parameters",
                     )?;
@@ -710,10 +713,11 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
             "source text bytes",
         )?;
     }
+    let parameter_layouts = ParameterLayouts::build(p, &mut b)?;
     let mut instruction_bytes = 0usize;
     let mut registers = 0u64;
     for (fi, f) in p.functions.iter().enumerate() {
-        validate_function(p, fi, f, &mut b).map_err(|mut e| {
+        validate_function(p, fi, f, &parameter_layouts, &mut b).map_err(|mut e| {
             e.function = Some(FunctionId(fi as u32));
             e
         })?;
@@ -722,6 +726,7 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
             .ok_or_else(|| Error::new(ErrorKind::Limit, "instruction byte count"))?;
         registers += f.register_count as u64;
     }
+    parameter_layouts.release(&mut b);
     Ok(PackageStats {
         encoded_bytes: encoded,
         owned_capacity_bytes: owned,
@@ -731,6 +736,135 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
         validation_work: b.work,
         validation_scratch_peak: b.peak,
     })
+}
+
+/// Sparse declarations only: missing Parameter records retain ordinary Value
+/// slots. Shared signatures never allocate function_count * parameter_count maps.
+struct ParameterLayouts {
+    offsets: Vec<usize>,
+    declarations: Vec<(u32, u32, bool)>,
+}
+impl ParameterLayouts {
+    fn build(p: &BytecodePackage, b: &mut Budget) -> Result<Self, Error> {
+        b.work(p.functions.len() as u64)?;
+        let mut count = 0usize;
+        let mut bindings = 0u64;
+        for (fi, f) in p.functions.iter().enumerate() {
+            let result = (|| {
+                get(&p.modules, f.module.0, "function module")?;
+                symbol(p, f.name)?;
+                let s = get(&p.signatures, f.signature.0, "function signature")?;
+                check(
+                    f.register_count <= b.limits.max_registers
+                        && f.register_count as usize
+                            >= s.parameters.len() + usize::from(s.rest.is_some()),
+                    ErrorKind::Signature,
+                    "parameter register slots",
+                )?;
+                b.work(f.bindings.len() as u64)?;
+                bindings += f.bindings.len() as u64;
+                for binding in &f.bindings {
+                    symbol(p, binding.name)?;
+                    ty(p, binding.ty)?;
+                    reg(f, binding.storage.reg())?;
+                    if let BindingInitialization::Parameter(i) = binding.initialization {
+                        let param = if (i as usize) < s.parameters.len() {
+                            &s.parameters[i as usize]
+                        } else {
+                            s.rest
+                                .as_ref()
+                                .filter(|_| i as usize == s.parameters.len())
+                                .ok_or_else(|| {
+                                    Error::new(ErrorKind::Signature, "parameter binding index")
+                                })?
+                        };
+                        check(
+                            binding.name == param.name,
+                            ErrorKind::Signature,
+                            "parameter binding name",
+                        )?;
+                        check(
+                            binding.mutable == param.mutable && binding.ty == param.ty,
+                            ErrorKind::Signature,
+                            "parameter binding mutability/type",
+                        )?;
+                        check(
+                            binding.storage.reg() == Reg(i),
+                            ErrorKind::Signature,
+                            "parameter binding register",
+                        )?;
+                        count += 1;
+                    }
+                }
+                Ok(())
+            })();
+            result.map_err(|mut e: Error| {
+                e.function = Some(FunctionId(fi as u32));
+                e
+            })?;
+        }
+        let mut declarations = b.vec(count)?;
+        b.work(bindings + p.functions.len() as u64)?;
+        for (fi, f) in p.functions.iter().enumerate() {
+            for binding in &f.bindings {
+                if let BindingInitialization::Parameter(i) = binding.initialization {
+                    declarations.push((
+                        fi as u32,
+                        i,
+                        matches!(binding.storage, BindingStorage::Cell(_)),
+                    ));
+                }
+            }
+        }
+        // Rust 1.96's Floyd rebuild has <=2*n comparisons; subsequent in-place
+        // heapsort has <=2 comparisons per level. Tuple comparisons cost <=3.
+        b.work(6 * declarations.len() as u64)?;
+        let heap = BinaryHeap::from(declarations);
+        let height = heap.len().checked_ilog2().unwrap_or(0) as u64;
+        b.work(heap.len() as u64 * (2 * height + 1) * 3)?;
+        let declarations = heap.into_sorted_vec();
+        b.work(declarations.len() as u64)?;
+        for pair in declarations.windows(2) {
+            check(
+                (pair[0].0, pair[0].1) != (pair[1].0, pair[1].1),
+                ErrorKind::Signature,
+                "duplicate parameter binding",
+            )
+            .map_err(|mut e| {
+                e.function = Some(FunctionId(pair[0].0));
+                e
+            })?;
+        }
+        let mut offsets = b.vec(p.functions.len() + 1)?;
+        b.work(declarations.len() as u64)?;
+        let mut next = 0;
+        for fi in 0..p.functions.len() {
+            offsets.push(next);
+            while next < declarations.len() && declarations[next].0 as usize == fi {
+                next += 1;
+            }
+        }
+        offsets.push(next);
+        Ok(Self {
+            offsets,
+            declarations,
+        })
+    }
+    fn cell(&self, function: usize, parameter: u32, b: &mut Budget) -> Result<bool, Error> {
+        let declarations = &self.declarations[self.offsets[function]..self.offsets[function + 1]];
+        // std's binary search halves with rounding up, then compares the final
+        // element: ceil(log2(len)) + 1 comparisons, not floor(log2(len)) + 1.
+        let levels = usize::BITS - declarations.len().saturating_sub(1).leading_zeros();
+        b.work(levels as u64 + 1)?;
+        Ok(declarations
+            .binary_search_by_key(&parameter, |d| d.1)
+            .ok()
+            .is_some_and(|i| declarations[i].2))
+    }
+    fn release(self, b: &mut Budget) {
+        b.release(self.declarations);
+        b.release(self.offsets);
+    }
 }
 
 fn check_type_cycles(p: &BytecodePackage, b: &mut Budget) -> Result<(), Error> {
@@ -791,21 +925,37 @@ fn validate_function(
     p: &BytecodePackage,
     fi: usize,
     f: &FunctionDef,
+    parameter_layouts: &ParameterLayouts,
     b: &mut Budget,
 ) -> Result<(), Error> {
     get(&p.modules, f.module.0, "function module")?;
     symbol(p, f.name)?;
     let s = get(&p.signatures, f.signature.0, "function signature")?;
     b.work(s.parameters.len() as u64)?;
-    for param in &s.parameters {
-        if let Some(default) = param.default {
-            let default = &p.functions[default.index()];
+    for (i, param) in s.parameters.iter().enumerate() {
+        if let Some(default_id) = param.default {
+            let default = &p.functions[default_id.index()];
             b.work(default.captures.len() as u64)?;
             check(
                 default.captures == f.captures && default.module == f.module,
                 ErrorKind::Capture,
                 "default shares the callee lexical capture layout/module",
             )?;
+            b.work(i as u64)?;
+            for (index, prefix) in s.parameters[..i].iter().enumerate() {
+                let owner_cell = parameter_layouts.cell(fi, index as u32, b)?;
+                let default_cell = parameter_layouts.cell(default_id.index(), index as u32, b)?;
+                check(
+                    owner_cell == default_cell,
+                    ErrorKind::Signature,
+                    "default prefix parameter storage layout",
+                )?;
+                check(
+                    !prefix.mutable || owner_cell,
+                    ErrorKind::Signature,
+                    "mutable default prefix requires a shared parameter cell",
+                )?;
+            }
         }
     }
     check(
@@ -815,36 +965,6 @@ fn validate_function(
         "parameter register slots",
     )?;
     check(!f.code.is_empty(), ErrorKind::ControlFlow, "empty function")?;
-    for binding in &f.bindings {
-        symbol(p, binding.name)?;
-        ty(p, binding.ty)?;
-        reg(f, binding.storage.reg())?;
-        if let BindingInitialization::Parameter(i) = binding.initialization {
-            let param = if (i as usize) < s.parameters.len() {
-                &s.parameters[i as usize]
-            } else {
-                s.rest
-                    .as_ref()
-                    .filter(|_| i as usize == s.parameters.len())
-                    .ok_or_else(|| Error::new(ErrorKind::Signature, "parameter binding index"))?
-            };
-            check(
-                binding.name == param.name,
-                ErrorKind::Signature,
-                "parameter binding name",
-            )?;
-            check(
-                binding.mutable == param.mutable && binding.ty == param.ty,
-                ErrorKind::Signature,
-                "parameter binding mutability/type",
-            )?;
-            check(
-                binding.storage == BindingStorage::Value(Reg(i)),
-                ErrorKind::Signature,
-                "parameter binding register",
-            )?;
-        }
-    }
     for descriptor in &f.descriptors {
         validate_descriptor(p, f, descriptor, b)?;
     }
@@ -1682,6 +1802,13 @@ pub fn disassemble(program: &VerifiedProgram, out: &mut impl Write) -> std::fmt:
         for (d, desc) in f.descriptors.iter().enumerate() {
             writeln!(out, "  descriptor d{d} {desc:?}")?;
         }
+        for (binding, definition) in f.bindings.iter().enumerate() {
+            writeln!(
+                out,
+                "  binding b{binding} {} {definition:?}",
+                p.symbols[definition.name.index()]
+            )?;
+        }
         for (r, region) in f.regions.iter().enumerate() {
             writeln!(out, "  region e{r} {region:?}")?;
         }
@@ -1791,5 +1918,85 @@ mod bounded_index_tests {
             ErrorKind::Limit
         );
         assert_eq!(b.peak, index_bytes);
+    }
+
+    #[test]
+    fn parameter_index_capacity_matches_allocator_and_fails_before_reservation() {
+        let p = fixtures::parameter_cell_default();
+        let limits = Limits::default();
+        let (_, owned, _) = super::super::codec::measure(&p, limits).unwrap();
+        let mut b = Budget::new(limits, owned);
+        let allocation = allocation_counter::measure(|| {
+            let layouts = ParameterLayouts::build(&p, &mut b).unwrap();
+            assert!(layouts.cell(1, 0, &mut b).unwrap());
+            assert!(layouts.cell(2, 0, &mut b).unwrap());
+            assert!(!layouts.cell(1, 1, &mut b).unwrap());
+            layouts.release(&mut b);
+        });
+        let declarations = 3 * std::mem::size_of::<(u32, u32, bool)>();
+        let expected = declarations + (p.functions.len() + 1) * std::mem::size_of::<usize>();
+        assert_eq!(b.peak, expected);
+        assert_eq!(allocation.bytes_max as usize, expected);
+        assert_eq!(allocation.bytes_current, 0);
+        assert_eq!(b.scratch, 0);
+        let mut b = Budget::new(
+            Limits {
+                max_allocation_bytes: owned + expected - 1,
+                ..limits
+            },
+            owned,
+        );
+        assert_eq!(
+            ParameterLayouts::build(&p, &mut b).err().unwrap().kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(b.peak, declarations);
+        let mut b = Budget::new(
+            Limits {
+                max_work: 6,
+                ..limits
+            },
+            owned,
+        );
+        assert_eq!(
+            ParameterLayouts::build(&p, &mut b).err().unwrap().kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(b.peak, 0);
+    }
+
+    #[test]
+    fn non_power_of_two_parameter_search_prepays_the_last_comparison() {
+        let mut p = fixtures::parameter_cell_default();
+        p.signatures[1].parameters.push(Parameter {
+            name: SymbolId(12),
+            ty: TypeId(0),
+            mutable: false,
+            default: None,
+        });
+        p.functions[1].bindings.push(BindingDef {
+            name: SymbolId(12),
+            ty: TypeId(0),
+            mutable: false,
+            storage: BindingStorage::Value(Reg(2)),
+            initialization: BindingInitialization::Parameter(2),
+        });
+        let limits = Limits::default();
+        let (_, owned, _) = super::super::codec::measure(&p, limits).unwrap();
+        let mut b = Budget::new(limits, owned);
+        let layouts = ParameterLayouts::build(&p, &mut b).unwrap();
+        let mut small = Budget::new(
+            Limits {
+                max_work: 2,
+                ..limits
+            },
+            owned,
+        );
+        assert_eq!(
+            layouts.cell(1, 2, &mut small).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(small.work, 3);
+        layouts.release(&mut b);
     }
 }
