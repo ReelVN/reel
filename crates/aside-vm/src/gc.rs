@@ -292,11 +292,11 @@ impl Heap {
             .get_mut(key)
             .expect("release record owns a dying slot");
         let bytes = match &mut obj.payload {
-            Payload::Cell(value) if value.is_some() => {
+            Payload::Cell(value) if value.value.is_some() => {
                 if p.release_edges == budget.release_edges {
                     return false;
                 }
-                *value = None;
+                value.value = None;
                 p.release_edges += 1;
                 p.units += 1;
                 return true;

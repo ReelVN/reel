@@ -137,7 +137,7 @@ impl Bytes {
 }
 
 pub(crate) enum Payload {
-    Cell(Option<Value>),
+    Cell(crate::cell::CellState),
     Values(Values),
     Bytes(Bytes),
     Empty,
@@ -145,14 +145,14 @@ pub(crate) enum Payload {
 impl Payload {
     pub fn edge(&self, cursor: u32) -> Option<Value> {
         match self {
-            Self::Cell(v) if cursor == 0 => *v,
+            Self::Cell(v) if cursor == 0 => v.value,
             Self::Values(v) => v.get(cursor),
             _ => None,
         }
     }
     pub fn len(&self) -> u32 {
         match self {
-            Self::Cell(v) => u32::from(v.is_some()),
+            Self::Cell(v) => u32::from(v.value.is_some()),
             Self::Values(v) => v.len,
             Self::Bytes(b) => b.len,
             Self::Empty => 0,

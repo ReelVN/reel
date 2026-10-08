@@ -139,6 +139,10 @@ pub enum HeapError {
         actual: u32,
     },
     UninitializedSlot,
+    UninitializedCell,
+    AlreadyInitialized,
+    ReadOnly,
+    TypeMismatch,
     InvalidRangeCursor,
     AllocationFailure,
     HeapUnavailable,
@@ -432,7 +436,7 @@ impl Heap {
         }
         Ok(())
     }
-    fn allocate(
+    pub(crate) fn allocate(
         &mut self,
         kind: ObjectKind,
         payload: Payload,
@@ -475,7 +479,7 @@ impl Heap {
         }
         if kind == ObjectKind::Cell {
             self.shade(input[0]);
-            return Ok(self.allocate(kind, Payload::Cell(Some(input[0])), None, 0));
+            return Ok(self.allocate(kind, Payload::Cell(crate::cell::CellState { value: Some(input[0]), contract: crate::CellContract::untyped_mutable() }), None, 0));
         }
         let chunks = (input.len() as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64);
         self.ensure_bytes(chunks * VALUE_CHUNK_BYTES)?;
@@ -544,6 +548,10 @@ impl Heap {
         if !obj.kind.values() {
             return Err(HeapError::WrongKind);
         }
+        if let Payload::Cell(cell) = &obj.payload {
+            if position != 0 { return Err(HeapError::OutOfBounds); }
+            return cell.value.ok_or(HeapError::UninitializedCell);
+        }
         obj.payload.edge(position).ok_or(HeapError::OutOfBounds)
     }
     fn editable_values(&self, key: HeapKey) -> Result<&Object, HeapError> {
@@ -561,6 +569,10 @@ impl Heap {
         value: Value,
     ) -> Result<(), HeapError> {
         let key = self.key(target)?;
+        if self.object(key)?.kind == ObjectKind::Cell {
+            if position != 0 { return Err(HeapError::OutOfBounds); }
+            return self.cell_write(target, value);
+        }
         let obj = self.editable_values(key)?;
         if position >= obj.payload.len() {
             return Err(HeapError::OutOfBounds);
@@ -569,7 +581,7 @@ impl Heap {
         let obj = self.objects.get_mut(key).unwrap();
         match &mut obj.payload {
             Payload::Values(values) => values.set(position, value),
-            Payload::Cell(slot) => *slot = Some(value),
+            Payload::Cell(_) => unreachable!(),
             _ => unreachable!(),
         }
         obj.content_version = obj.content_version.wrapping_add(1);

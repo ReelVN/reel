@@ -1,6 +1,8 @@
 //! Aside's storage milestone. No parser, execution scheduler or native callbacks.
 #![forbid(unsafe_code)]
 pub mod bytecode;
+mod cell;
+pub mod executor;
 mod frame_slots;
 mod gc;
 mod heap;
@@ -9,6 +11,7 @@ mod root_ranges;
 mod slots;
 mod value;
 
+pub use cell::{CellContract, CellInfo};
 pub use frame_slots::{
     FrameSlots, FrameSlotsLimits, FrameSlotsStats, RangePosition, RangeReleaseCursor,
     RangeReleaseProgress, RelocationCost, RootRanges,
