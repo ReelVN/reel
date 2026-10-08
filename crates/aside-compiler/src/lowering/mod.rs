@@ -2,8 +2,8 @@
 mod budget;
 mod build;
 mod emit;
-mod registers;
 pub mod ir;
+mod registers;
 
 use crate::{TextRange, hir};
 use aside_vm::bytecode as bc;
@@ -74,9 +74,11 @@ pub enum ExternalTarget {
     Node(hir::NodeId),
 }
 #[derive(Debug, Clone, Copy)]
-pub struct NativeLink {
+pub struct NativeLink<'a> {
     pub target: ExternalTarget,
     pub native: bc::NativeId,
+    /// Canonical registration identity supplied independently by the trusted linker.
+    pub reference: &'a crate::semantic::SymbolReference,
 }
 /// The embedder supplies a trusted package with real native signatures,
 /// capabilities, ABI and default function implementations. B01 verification
@@ -85,7 +87,7 @@ pub struct NativeLink {
 #[derive(Debug, Default)]
 pub struct Linkage<'a> {
     pub package: Option<&'a bc::VerifiedProgram>,
-    pub natives: &'a [NativeLink],
+    pub natives: &'a [NativeLink<'a>],
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -116,11 +118,14 @@ pub struct Compilation {
     pub program: bc::VerifiedProgram,
     pub stats: Stats,
     pub metadata: Metadata,
+    pub entry: bc::FunctionId,
 }
 /// Exact source/resolver identities retained beside the numeric wire version.
 /// Arc descriptors retain their original analysis/link identity.
 #[derive(Debug)]
 pub struct Metadata {
+    pub entry_context: crate::semantic::AnalysisContext,
+    pub declared_contexts: Vec<hir::DeclaredContext>,
     pub canonical_path: String,
     pub source_version: String,
     pub imports: Vec<hir::Import>,

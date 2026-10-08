@@ -10,13 +10,25 @@ pub(crate) struct Budget {
 }
 impl Budget {
     pub fn new(limits: Limits) -> Self {
-        Self { limits, stats: Stats::default(), span: TextRange::empty(TextSize::from(0)) }
+        Self {
+            limits,
+            stats: Stats::default(),
+            span: TextRange::empty(TextSize::from(0)),
+        }
     }
     pub fn error(&self, kind: ErrorKind, detail: impl Into<String>) -> Error {
-        Error { kind, span: self.span, detail: detail.into(), stats: self.stats }
+        Error {
+            kind,
+            span: self.span,
+            detail: detail.into(),
+            stats: self.stats,
+        }
     }
     pub fn work(&mut self, n: u64) -> Result<(), Error> {
-        let next = self.stats.work_units.checked_add(n)
+        let next = self
+            .stats
+            .work_units
+            .checked_add(n)
             .filter(|&n| n <= self.limits.max_work)
             .ok_or_else(|| self.error(ErrorKind::Limit, "lowering work budget exceeded"))?;
         self.stats.work_units = next;
@@ -30,7 +42,10 @@ impl Budget {
         self.work(1)
     }
     pub fn capacity(&mut self, bytes: usize) -> Result<(), Error> {
-        let next = self.stats.capacity_bytes.checked_add(bytes)
+        let next = self
+            .stats
+            .capacity_bytes
+            .checked_add(bytes)
             .filter(|&n| n <= self.limits.max_capacity_bytes)
             .ok_or_else(|| self.error(ErrorKind::Limit, "lowering capacity budget exceeded"))?;
         self.stats.capacity_bytes = next;
@@ -43,11 +58,16 @@ impl Budget {
     /// Charge the complete replacement allocation while the old allocation still
     /// exists. try_reserve_exact may realloc in place; the peak is conservative.
     pub fn reserve<T>(&mut self, v: &mut Vec<T>, additional: usize) -> Result<(), Error> {
-        let needed = v.len().checked_add(additional)
+        let needed = v
+            .len()
+            .checked_add(additional)
             .ok_or_else(|| self.error(ErrorKind::Limit, "vector length overflow"))?;
-        if needed <= v.capacity() { return Ok(()); }
+        if needed <= v.capacity() {
+            return Ok(());
+        }
         let desired = needed.checked_next_power_of_two().unwrap_or(needed);
-        let new_bytes = desired.checked_mul(size_of::<T>())
+        let new_bytes = desired
+            .checked_mul(size_of::<T>())
             .ok_or_else(|| self.error(ErrorKind::Limit, "vector capacity overflow"))?;
         self.work(desired as u64)?;
         self.capacity(new_bytes)?;
@@ -55,8 +75,11 @@ impl Budget {
         v.try_reserve_exact(desired - v.len())
             .map_err(|_| self.error(ErrorKind::Allocation, "lowering vector reservation failed"))?;
         let actual = v.capacity() * size_of::<T>();
-        if actual > new_bytes { self.capacity(actual - new_bytes)?; }
-        else { self.release_bytes(new_bytes - actual); }
+        if actual > new_bytes {
+            self.capacity(actual - new_bytes)?;
+        } else {
+            self.release_bytes(new_bytes - actual);
+        }
         self.release_bytes(old);
         Ok(())
     }

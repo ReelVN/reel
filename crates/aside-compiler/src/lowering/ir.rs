@@ -15,8 +15,16 @@ pub struct Operation {
 pub enum Terminator {
     Jump(BlockId),
     Leave(BlockId),
-    BranchBool { value: bc::Reg, yes: BlockId, no: BlockId },
-    BranchNull { value: bc::Reg, null: BlockId, value_block: BlockId },
+    BranchBool {
+        value: bc::Reg,
+        yes: BlockId,
+        no: BlockId,
+    },
+    BranchNull {
+        value: bc::Reg,
+        null: BlockId,
+        value_block: BlockId,
+    },
     Return(bc::Reg),
     Throw(bc::Reg),
     Rethrow,
@@ -39,7 +47,10 @@ pub struct Region {
 pub enum Origin {
     Module,
     Function(hir::FunctionId),
-    Default { function: hir::FunctionId, parameter: u32 },
+    Default {
+        function: hir::FunctionId,
+        parameter: u32,
+    },
 }
 #[derive(Debug)]
 pub struct Function {
@@ -57,14 +68,23 @@ pub struct IrModule {
     pub(crate) functions: Vec<Function>,
     pub source: bc::SourceId,
     pub module: bc::ModuleId,
+    pub entry: bc::FunctionId,
     pub(crate) stats: Stats,
     pub(crate) metadata: Metadata,
     pub(crate) options: Options,
     pub(crate) budget: Budget,
 }
 impl IrModule {
-    pub fn tables(&self) -> &bc::BytecodePackage { &self.package }
-    pub fn functions(&self) -> &[Function] { &self.functions }
-    pub fn stats(&self) -> Stats { self.stats }
-    pub fn metadata(&self) -> &Metadata { &self.metadata }
+    pub fn tables(&self) -> &bc::BytecodePackage {
+        &self.package
+    }
+    pub fn functions(&self) -> &[Function] {
+        &self.functions
+    }
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
 }
