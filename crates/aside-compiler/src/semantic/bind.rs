@@ -34,6 +34,43 @@ struct Context {
     derived: bool,
     init: bool,
 }
+impl super::patterns::PatternTypes for Binder<'_> {
+    type Ty = TypeId;
+    fn hir(&self) -> &Hir {
+        &self.out.hir
+    }
+    fn unknown(&self) -> TypeId {
+        ANY
+    }
+    fn shape(&self, ty: &TypeId) -> super::patterns::Shape<TypeId> {
+        use super::patterns::Shape;
+        match &self.out.types[ty.0 as usize] {
+            Type::Any | Type::Union(_) | Type::Named(_) | Type::Instance(_) => Shape::Unknown,
+            Type::Tuple(elements) => Shape::Tuple(elements.clone()),
+            Type::Array => Shape::Array,
+            Type::Table => Shape::Table,
+            _ => Shape::Other,
+        }
+    }
+    fn tuple(&mut self, elements: Vec<TypeId>) -> TypeId {
+        self.intern_type(Type::Tuple(elements))
+    }
+    fn array(&self) -> TypeId {
+        ARRAY
+    }
+    fn table(&self) -> TypeId {
+        TABLE
+    }
+    fn annotation(&mut self, node: NodeId) -> TypeId {
+        self.ty(node)
+    }
+    fn compatible(&self, actual: &TypeId, expected: &TypeId) -> bool {
+        self.compatible(*actual, *expected)
+    }
+    fn charge(&mut self, node: NodeId) -> bool {
+        self.budget(node)
+    }
+}
 #[derive(Clone)]
 struct CallSite {
     node: NodeId,
@@ -49,6 +86,13 @@ struct PatternName {
     name: NameId,
     span: TextRange,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PatternUse {
+    Existing,
+    Declaration,
+    Branch,
+    Assignment,
+}
 struct Declaration {
     name: NameId,
     span: TextRange,
@@ -57,6 +101,29 @@ struct Declaration {
     ty: TypeId,
     owner: Option<FunctionId>,
     iteration: bool,
+}
+struct PendingRequirement {
+    node: NodeId,
+    actual: TypeId,
+    expected: TypeId,
+    label: String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SignatureKey {
+    Function(FunctionId, bool),
+    External(usize),
+}
+struct CheckedParameter {
+    name: NameId,
+    ty: TypeId,
+    required: bool,
+    rest: bool,
+}
+struct CheckedSignature {
+    parameters: Vec<CheckedParameter>,
+    named: HashMap<NameId, usize>,
+    rest: Option<usize>,
+    required: Vec<usize>,
 }
 struct Binder<'a> {
     out: AnalyzedModule,
@@ -78,6 +145,10 @@ struct Binder<'a> {
     calls: Vec<CallSite>,
     forbidden_parameters: HashSet<NameId>,
     analyzed_functions: HashSet<FunctionId>,
+    signature_ready: HashSet<FunctionId>,
+    pending_requirements: Vec<PendingRequirement>,
+    signatures: HashMap<SignatureKey, Arc<CheckedSignature>>,
+    empty_signature: Option<Arc<CheckedSignature>>,
     class: Option<(NodeId, bool)>,
     class_members: HashMap<NodeId, HashMap<(NameId, bool), NodeId>>,
     class_bases: HashMap<NodeId, NodeId>,
@@ -161,6 +232,10 @@ pub(super) fn analyze(
         calls: Vec::new(),
         forbidden_parameters: HashSet::new(),
         analyzed_functions: HashSet::new(),
+        signature_ready: HashSet::new(),
+        pending_requirements: Vec::new(),
+        signatures: HashMap::new(),
+        empty_signature: None,
         class: None,
         class_members: HashMap::new(),
         class_bases: HashMap::new(),
@@ -225,6 +300,14 @@ pub(super) fn analyze(
         }
     }
     b.block(NodeId(0), &ctx, false);
+    for requirement in std::mem::take(&mut b.pending_requirements) {
+        b.require(
+            requirement.node,
+            requirement.actual,
+            requirement.expected,
+            &requirement.label,
+        );
+    }
     b.effects();
     b.account();
     let stats = b.out.stats.clone();
@@ -275,10 +358,13 @@ impl Binder<'_> {
         }
     }
     fn budget(&mut self, n: NodeId) -> bool {
+        self.charge_work(n, 1)
+    }
+    fn charge_work(&mut self, n: NodeId, units: usize) -> bool {
         if self.exhausted {
             return false;
         }
-        self.work += 1;
+        self.work = self.work.saturating_add(units);
         if self.work > self.options.limits.max_work {
             self.exhausted = true;
             self.error(
@@ -311,6 +397,7 @@ impl Binder<'_> {
     fn hint(&mut self, t: &TypeHint) -> TypeId {
         match t {
             TypeHint::Any => ANY,
+            TypeHint::Closure => self.intern_type(Type::Closure),
             TypeHint::Null => NULL,
             TypeHint::Bool => BOOL,
             TypeHint::Int => INT,
@@ -558,17 +645,16 @@ impl Binder<'_> {
             return id;
         }
         let id = FunctionId(self.out.functions.len() as u32);
-        let body = self
-            .children(n)
-            .into_iter()
-            .find(|&c| self.kind(c) == HirKind::Block)
-            .unwrap_or_else(|| self.children(n).last().copied().unwrap_or(n));
-        let kind = if self.token(n, K::Async).is_some() {
-            FunctionKind::Async
-        } else if self.token(n, K::Gen).is_some() {
-            FunctionKind::Generator
-        } else {
-            FunctionKind::Plain
+        let (body, kind) = match self.out.hir.node(n).form {
+            Form::Function { body, kind, .. } => (body, kind),
+            Form::Binding {
+                initializer: Some(body),
+                ..
+            } => (body, FunctionKind::Plain),
+            // A source fragment has an embedding-supplied function owner;
+            // its Module node is the synthetic body's exact source range.
+            _ if n == NodeId(0) => (n, FunctionKind::Plain),
+            _ => unreachable!("function nodes have a function form"),
         };
         self.out.functions.push(Function {
             node: n,
@@ -619,12 +705,15 @@ impl Binder<'_> {
             ..Default::default()
         };
         let old_forbidden = std::mem::take(&mut self.forbidden_parameters);
-        let params = self
-            .children(n)
-            .into_iter()
-            .find(|&c| self.kind(c) == HirKind::Parameters)
-            .map(|p| self.children(p))
-            .unwrap_or_default();
+        let Form::Function {
+            parameters,
+            result: return_annotation,
+            ..
+        } = self.out.hir.node(n).form
+        else {
+            unreachable!()
+        };
+        let params = parameters.map(|p| self.children(p)).unwrap_or_default();
         self.forbidden_parameters = params
             .iter()
             .filter_map(|&p| self.name(p).and_then(|t| t.name))
@@ -660,13 +749,15 @@ impl Binder<'_> {
                 continue;
             };
             let name = token.name.unwrap();
-            let children = self.children(p);
-            let annotation = children
-                .iter()
-                .copied()
-                .find(|&c| is_type(self.kind(c)))
-                .map(|a| self.annotation(a, &inner));
-            let default = children.iter().copied().find(|&c| !is_type(self.kind(c)));
+            let Form::Parameter {
+                annotation,
+                default,
+                ..
+            } = self.out.hir.node(p).form
+            else {
+                continue;
+            };
+            let annotation = annotation.map(|a| self.annotation(a, &inner));
             let mut default_ctx = inner.clone();
             default_ctx.default = true;
             default_ctx.no_wait = true;
@@ -732,14 +823,11 @@ impl Binder<'_> {
                 self.initialized[s.0 as usize] = true;
             }
         }
-        if let Some(ret) = self
-            .children(n)
-            .into_iter()
-            .find(|&c| is_type(self.kind(c)))
-        {
+        if let Some(ret) = return_annotation {
             let result = self.annotation(ret, &inner);
             self.out.functions[f.0 as usize].return_type = result;
         }
+        self.signature_ready.insert(f);
         let body = self.out.functions[f.0 as usize].body;
         if body != n {
             let result = if self.kind(body) == HirKind::Block {
@@ -887,77 +975,40 @@ impl Binder<'_> {
                     .iter()
                     .map(|t| self.out.hir.text(t.span))
                     .collect::<String>();
-                match text.as_str() {
-                    "any" => ANY,
-                    "null" => NULL,
-                    "bool" => BOOL,
-                    "int" => INT,
-                    "float" => FLOAT,
-                    "string" => STRING,
-                    "array" => ARRAY,
-                    "table" | "Map" => TABLE,
-                    "Future" => FUTURE,
-                    "generator" => GENERATOR,
-                    "closure" => self.intern_type(Type::Closure),
-                    "class" => {
-                        let name = self.intern_name("class");
-                        self.intern_type(Type::Named(name))
-                    }
-                    _ => {
-                        if let Some(t) = self.name(n) {
-                            let name = t.name.unwrap();
-                            if let Some(s) = self.lookup(name) {
-                                self.out.facts[n.0 as usize].symbol = Some(s);
-                                self.capture(s, t.span, ctx);
-                                match self.out.types[self.out.symbols[s.0 as usize].ty.0 as usize] {
-                                    Type::Class(class) => self.intern_type(Type::Instance(class)),
-                                    Type::Named(name) => self.intern_type(Type::Named(name)),
-                                    Type::Any
-                                        if matches!(
-                                            self.out.symbols[s.0 as usize].kind,
-                                            SymbolKind::Host | SymbolKind::Import
-                                        ) =>
-                                    {
-                                        self.intern_type(Type::Named(name))
-                                    }
-                                    _ => {
-                                        self.error(
-                                            D::InvalidType,
-                                            t.span,
-                                            "annotation name is not a class/native type",
-                                        );
-                                        ANY
-                                    }
-                                }
-                            } else {
-                                // Standard value categories are recognized without implicit variables.
-                                if matches!(
-                                    text.as_str(),
-                                    "Bytes"
-                                        | "TextBuffer"
-                                        | "ByteBuffer"
-                                        | "Set"
-                                        | "Range"
-                                        | "Iterator"
-                                        | "AsyncIterator"
-                                        | "thread"
-                                        | "weakref"
-                                        | "class"
-                                        | "instance"
-                                ) {
+                if let Some(builtin) = super::types::builtin_type(&text) {
+                    self.hint(&builtin)
+                } else {
+                    if let Some(t) = self.name(n) {
+                        let name = t.name.unwrap();
+                        if let Some(s) = self.lookup(name) {
+                            self.out.facts[n.0 as usize].symbol = Some(s);
+                            self.capture(s, t.span, ctx);
+                            match self.out.types[self.out.symbols[s.0 as usize].ty.0 as usize] {
+                                Type::Class(class) => self.intern_type(Type::Instance(class)),
+                                Type::Named(name) => self.intern_type(Type::Named(name)),
+                                Type::Any
+                                    if matches!(
+                                        self.out.symbols[s.0 as usize].kind,
+                                        SymbolKind::Host | SymbolKind::Import
+                                    ) =>
+                                {
                                     self.intern_type(Type::Named(name))
-                                } else {
+                                }
+                                _ => {
                                     self.error(
                                         D::InvalidType,
                                         t.span,
-                                        format!("unknown type {text}"),
+                                        "annotation name is not a class/native type",
                                     );
                                     ANY
                                 }
                             }
                         } else {
+                            self.error(D::InvalidType, t.span, format!("unknown type {text}"));
                             ANY
                         }
+                    } else {
+                        ANY
                     }
                 }
             }
@@ -1102,6 +1153,16 @@ impl Binder<'_> {
         if expected == ANY {
             return;
         }
+        if self.incomplete_signature(actual) || self.incomplete_signature(expected) {
+            self.pending_requirements.push(PendingRequirement {
+                node: n,
+                actual,
+                expected,
+                label: label.to_owned(),
+            });
+            self.check(n, RuntimeChecks::TYPE);
+            return;
+        }
         if !self.compatible(actual, expected) {
             self.error(
                 D::TypeMismatch,
@@ -1113,6 +1174,21 @@ impl Binder<'_> {
             );
         } else if actual == ANY || actual != expected {
             self.check(n, RuntimeChecks::TYPE);
+        }
+    }
+    fn incomplete_signature(&self, ty: TypeId) -> bool {
+        match &self.out.types[ty.0 as usize] {
+            Type::Function(function) | Type::BoundMethod(function) => {
+                !self.signature_ready.contains(function)
+            }
+            Type::Tuple(types) | Type::Union(types) => {
+                types.iter().any(|&ty| self.incomplete_signature(ty))
+            }
+            Type::Callable(types, result) => {
+                types.iter().any(|&ty| self.incomplete_signature(ty))
+                    || self.incomplete_signature(*result)
+            }
+            _ => false,
         }
     }
     fn pattern_names(&mut self, n: NodeId) -> SmallVec<[PatternName; 4]> {
@@ -1207,13 +1283,13 @@ impl Binder<'_> {
         n: NodeId,
         value: TypeId,
         ctx: &Context,
-        declare: bool,
+        mode: PatternUse,
         mutable: bool,
     ) {
         self.pattern_defaults(n, ctx);
         let names = self.pattern_names(n);
         for name in names {
-            let symbol = if declare {
+            let symbol = if matches!(mode, PatternUse::Declaration | PatternUse::Branch) {
                 self.declare(Declaration {
                     name: name.name,
                     span: name.span,
@@ -1236,7 +1312,7 @@ impl Binder<'_> {
         }
         // Assign all OR alternatives to the same committed bindings.
         self.pattern_facts(n);
-        self.pattern_type(n, value);
+        self.pattern_type(n, value, mode);
     }
     fn pattern_facts(&mut self, n: NodeId) {
         if matches!(
@@ -1253,70 +1329,57 @@ impl Binder<'_> {
             }
         }
     }
-    fn pattern_type(&mut self, n: NodeId, value: TypeId) {
-        match self.kind(n) {
-            HirKind::TuplePattern => {
-                if let Type::Tuple(ts) = self.out.types[value.0 as usize].clone() {
-                    let children = self.children(n);
-                    let rest = children
-                        .last()
-                        .is_some_and(|&c| self.kind(c) == HirKind::RestPattern);
-                    if (!rest && children.len() != ts.len())
-                        || (rest && children.len() - 1 > ts.len())
-                    {
-                        self.error(
-                            D::TypeMismatch,
-                            self.span(n),
-                            "tuple pattern has incompatible arity",
-                        );
-                    }
-                    for (i, c) in children.into_iter().enumerate() {
-                        if self.kind(c) == HirKind::RestPattern {
-                            let t = self
-                                .intern_type(Type::Tuple(ts.get(i..).unwrap_or_default().to_vec()));
-                            self.pattern_type(c, t);
-                        } else {
-                            self.pattern_type(c, ts.get(i).copied().unwrap_or(ANY));
-                        }
-                    }
-                } else if value != ANY {
-                    let expected = self.intern_tuple_unknown(n);
-                    self.require(n, value, expected, "tuple pattern");
-                }
+    fn pattern_type(&mut self, n: NodeId, value: TypeId, mode: PatternUse) {
+        let mut projected = super::patterns::Projections::new();
+        let matches = super::patterns::project(self, n, value, &mut projected);
+        if !matches && mode != PatternUse::Branch && !self.exhausted {
+            self.error(
+                D::TypeMismatch,
+                self.span(n),
+                "required pattern cannot match the known value shape",
+            );
+        }
+        projected.sort_unstable_by_key(|&(node, _)| self.out.facts[node.0 as usize].symbol);
+        let mut first = 0;
+        while first < projected.len() {
+            let symbol = self.out.facts[projected[first].0.0 as usize].symbol;
+            let mut end = first + 1;
+            let mut ty = projected[first].1;
+            while end < projected.len()
+                && self.out.facts[projected[end].0.0 as usize].symbol == symbol
+            {
+                let next = projected[end].1;
+                ty = if ty == ANY || next == ANY {
+                    ANY
+                } else if ty == next {
+                    ty
+                } else {
+                    self.intern_type(Type::Union(vec![ty, next]))
+                };
+                end += 1;
             }
-            HirKind::ArrayPattern => {
-                self.require(n, value, ARRAY, "array pattern");
-                for c in self.children(n) {
-                    self.pattern_type(
-                        c,
-                        if self.kind(c) == HirKind::RestPattern {
-                            ARRAY
-                        } else {
-                            ANY
-                        },
+            for &(node, _) in &projected[first..end] {
+                self.set_ty(node, ty);
+                if mode == PatternUse::Assignment
+                    && let Some(symbol) = symbol
+                    && self.annotations.contains(&symbol)
+                {
+                    self.require(
+                        node,
+                        ty,
+                        self.out.symbols[symbol.0 as usize].ty,
+                        "assignment",
                     );
                 }
             }
-            HirKind::NamePattern | HirKind::RestPattern => {
-                if let Some(s) = self.out.facts[n.0 as usize].symbol
-                    && !self.out.symbols[s.0 as usize].mutable
-                {
-                    self.out.symbols[s.0 as usize].ty = value;
-                }
+            if mode != PatternUse::Assignment
+                && let Some(symbol) = symbol
+                && !self.out.symbols[symbol.0 as usize].mutable
+            {
+                self.out.symbols[symbol.0 as usize].ty = ty;
             }
-            HirKind::GroupPattern | HirKind::TypePattern | HirKind::OrPattern => {
-                for c in self.children(n) {
-                    if is_pattern(self.kind(c)) {
-                        self.pattern_type(c, value);
-                    }
-                }
-            }
-            _ => (),
+            first = end;
         }
-    }
-    fn intern_tuple_unknown(&mut self, n: NodeId) -> TypeId {
-        let len = self.children(n).len();
-        self.intern_type(Type::Tuple(vec![ANY; len]))
     }
     fn visit(&mut self, n: NodeId, ctx: &Context) -> TypeId {
         if !self.budget(n) {
@@ -1350,7 +1413,7 @@ impl Binder<'_> {
                         p,
                         annotation.unwrap_or(value),
                         ctx,
-                        false,
+                        PatternUse::Existing,
                         self.modifier(n, K::Mut),
                     );
                     if let Some(init) = init
@@ -1362,13 +1425,11 @@ impl Binder<'_> {
                             }
                         }
                     }
-                    if let Some(expected) = annotation {
+                    if annotation.is_some() {
                         for name in self.pattern_names(p) {
                             if let Some(s) = self.lookup(name.name) {
                                 self.annotations.insert(s);
-                                if self.kind(p) == H::NamePattern {
-                                    self.out.symbols[s.0 as usize].ty = expected;
-                                }
+                                self.out.symbols[s.0 as usize].ty = self.ty(name.node);
                             }
                         }
                     }
@@ -1435,7 +1496,16 @@ impl Binder<'_> {
             H::Member => self.member(n, &children, ctx),
             H::Index => {
                 let object = children.first().map_or(ANY, |&c| self.visit(c, ctx));
-                let index = children.get(1).map_or(ANY, |&c| self.visit(c, ctx));
+                let mut index_ctx = ctx.clone();
+                let optional = matches!(
+                    self.out.hir.node(n).form,
+                    Form::Index { optional: true, .. } | Form::Index { chain: true, .. }
+                );
+                index_ctx.conditional |= optional && !self.definitely_nonnull(object);
+                let index = children.get(1).map_or(ANY, |&c| self.visit(c, &index_ctx));
+                if optional && object == NULL {
+                    return self.set_ty(n, NULL);
+                }
                 match self.out.types[object.0 as usize].clone() {
                     Type::Tuple(ts) => {
                         if let Some(&c) = children.get(1) {
@@ -1551,7 +1621,7 @@ impl Binder<'_> {
         let op = self.tokens(n).first().map(|t| t.kind);
         match op {
             Some(K::Await) => {
-                if ctx.no_wait && !ctx.conditional {
+                if ctx.no_wait && (!ctx.conditional || ctx.cleanup_boundary.is_some()) {
                     self.error(
                         D::NoWait,
                         self.span(n),
@@ -1606,8 +1676,15 @@ impl Binder<'_> {
     }
     fn binary(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
         let a = children.first().map_or(ANY, |&c| self.visit(c, ctx));
-        let b = children.get(1).map_or(ANY, |&c| self.visit(c, ctx));
         let op = self.tokens(n).first().map(|t| t.kind);
+        let mut right_ctx = ctx.clone();
+        right_ctx.conditional |= match op {
+            Some(K::AndAnd) => children.first().and_then(|&n| self.constant_bool(n)) != Some(true),
+            Some(K::OrOr) => children.first().and_then(|&n| self.constant_bool(n)) != Some(false),
+            Some(K::QuestionQuestion) => a != NULL,
+            _ => false,
+        };
+        let b = children.get(1).map_or(ANY, |&c| self.visit(c, &right_ctx));
         match op {
             Some(K::Is) => BOOL,
             Some(K::EqEq | K::NotEq) => BOOL,
@@ -1620,7 +1697,7 @@ impl Binder<'_> {
             Some(K::QuestionQuestion) => {
                 if a == NULL {
                     b
-                } else if a == b {
+                } else if self.definitely_nonnull(a) || a == b {
                     a
                 } else {
                     ANY
@@ -1688,15 +1765,11 @@ impl Binder<'_> {
                 self.visit(c, ctx)
             }
         });
-        if let Some(s) = self.out.facts[target.0 as usize].symbol
-            && self.annotations.contains(&s)
-            && let Some(rhs) = rhs
-        {
-            self.require(rhs, value, self.out.symbols[s.0 as usize].ty, "assignment");
-        }
         if is_pattern(self.kind(target)) {
-            self.pattern_type(target, value);
+            self.pattern_names(target);
+            self.check(target, RuntimeChecks::PATTERN);
         }
+        self.pattern_type(target, value, PatternUse::Assignment);
         value
     }
     fn location(&mut self, n: NodeId, ctx: &Context) {
@@ -1762,9 +1835,6 @@ impl Binder<'_> {
             | HirKind::ObjectPattern
             | HirKind::OrPattern
             | HirKind::TypePattern => {
-                if self.kind(n) == HirKind::OrPattern {
-                    self.pattern_names(n);
-                }
                 for c in self.children(n) {
                     if is_type(self.kind(c)) {
                         self.annotation(c, ctx);
@@ -2010,18 +2080,18 @@ impl Binder<'_> {
         ANY
     }
     fn condition(&mut self, n: NodeId, ctx: &Context, is_loop: bool) -> TypeId {
-        let children = self.children(n);
-        let pattern = children.iter().copied().find(|&c| is_pattern(self.kind(c)));
-        let condition = children.iter().copied().find(|&c| {
-            !is_pattern(self.kind(c))
-                && self.kind(c) != HirKind::Block
-                && self.kind(c) != HirKind::If
-        });
-        let value = condition.map_or(ANY, |c| self.visit(c, ctx));
-        if pattern.is_none()
-            && let Some(c) = condition
-        {
-            self.require(c, value, BOOL, "condition");
+        let Form::Condition {
+            pattern,
+            condition,
+            body,
+            otherwise,
+        } = self.out.hir.node(n).form
+        else {
+            return ANY;
+        };
+        let value = self.visit(condition, ctx);
+        if pattern.is_none() {
+            self.require(condition, value, BOOL, "condition");
         }
         let previous = self.scope;
         let mut inner = ctx.clone();
@@ -2031,20 +2101,15 @@ impl Binder<'_> {
         }
         self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
         if let Some(p) = pattern {
-            self.bind_pattern(p, value, &inner, true, false);
+            self.bind_pattern(p, value, &inner, PatternUse::Branch, false);
         }
-        let bodies: Vec<_> = children
-            .iter()
-            .copied()
-            .filter(|&c| matches!(self.kind(c), HirKind::Block | HirKind::If))
-            .collect();
-        let constant = condition.and_then(|c| self.constant_bool(c));
+        let constant = self.constant_bool(condition);
         inner.conditional |= constant != Some(true);
-        let yes = bodies.first().map_or(NULL, |&c| self.visit(c, &inner));
+        let yes = self.visit(body, &inner);
         self.scope = previous;
-        let mut otherwise = ctx.clone();
-        otherwise.conditional |= constant != Some(false);
-        let no = bodies.get(1).map_or(NULL, |&c| self.visit(c, &otherwise));
+        let mut otherwise_ctx = ctx.clone();
+        otherwise_ctx.conditional |= constant != Some(false);
+        let no = otherwise.map_or(NULL, |c| self.visit(c, &otherwise_ctx));
         if is_loop {
             NULL
         } else if yes == no {
@@ -2062,7 +2127,6 @@ impl Binder<'_> {
             self.condition(n, &c, true);
             return NULL;
         }
-        let children = self.children(n);
         let mut inner = ctx.clone();
         if label.is_some_and(|label| ctx.loops.iter().any(|(_, old, _)| *old == Some(label))) {
             self.error(
@@ -2074,18 +2138,27 @@ impl Binder<'_> {
         inner.loops.push((n, label, ctx.finally.len()));
         inner.iteration = true;
         inner.conditional |= self.kind(n) == HirKind::For;
-        let source = children
-            .iter()
-            .copied()
-            .find(|&c| !is_pattern(self.kind(c)) && self.kind(c) != HirKind::Block);
+        let (pattern, source, body, asynchronous) = match self.out.hir.node(n).form {
+            Form::For {
+                pattern,
+                source,
+                body,
+                asynchronous,
+            } => (Some(pattern), Some(source), body, asynchronous),
+            Form::Single { child } => (None, None, child, false),
+            _ => return ANY,
+        };
         let value = source.map_or(ANY, |c| self.visit(c, ctx));
-        if self.token(n, K::Await).is_some() {
-            if ctx.no_wait && !ctx.conditional {
+        if asynchronous {
+            if ctx.no_wait && (!ctx.conditional || ctx.cleanup_boundary.is_some()) {
                 self.error(
                     D::NoWait,
                     self.span(n),
                     "for await is forbidden in this execution context",
                 );
+            }
+            if ctx.no_wait {
+                self.check(n, RuntimeChecks::NO_WAIT);
             }
             if let Some(f) = ctx.function {
                 self.out.functions[f.0 as usize].known_wait = true;
@@ -2093,7 +2166,7 @@ impl Binder<'_> {
         }
         let previous = self.scope;
         self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
-        if let Some(p) = children.iter().copied().find(|&c| is_pattern(self.kind(c))) {
+        if let Some(p) = pattern {
             let item = match &self.out.types[value.0 as usize] {
                 Type::Tuple(ts) => ts
                     .iter()
@@ -2102,13 +2175,9 @@ impl Binder<'_> {
                     .unwrap_or(ANY),
                 _ => ANY,
             };
-            self.bind_pattern(p, item, &inner, true, false);
+            self.bind_pattern(p, item, &inner, PatternUse::Declaration, false);
         }
-        for c in children {
-            if self.kind(c) == HirKind::Block {
-                self.visit(c, &inner);
-            }
-        }
+        self.visit(body, &inner);
         self.scope = previous;
         NULL
     }
@@ -2120,7 +2189,7 @@ impl Binder<'_> {
             self.scope = self.new_scope(Some(previous), ctx.function, self.span(arm));
             let parts = self.children(arm);
             if let Some(&p) = parts.first() {
-                self.bind_pattern(p, value, ctx, true, false);
+                self.bind_pattern(p, value, ctx, PatternUse::Branch, false);
             }
             if self.token(arm, K::If).is_some()
                 && let Some(&guard) = parts.get(1)
@@ -2304,26 +2373,117 @@ impl Binder<'_> {
             _ => None,
         }
     }
+    fn definitely_nonnull(&self, ty: TypeId) -> bool {
+        match &self.out.types[ty.0 as usize] {
+            Type::Any | Type::Null => false,
+            Type::Union(types) => types.iter().all(|&ty| self.definitely_nonnull(ty)),
+            _ => true,
+        }
+    }
     fn falls_through(&self, n: NodeId) -> bool {
-        match self.kind(n) {
-            HirKind::Return | HirKind::Throw | HirKind::Break | HirKind::Continue => false,
-            HirKind::Block | HirKind::Module | HirKind::ExpressionStatement => self
+        match self.out.hir.node(n).form {
+            Form::Transfer { .. } => !matches!(
+                self.kind(n),
+                HirKind::Return | HirKind::Throw | HirKind::Break | HirKind::Continue
+            ),
+            Form::Statement { expression, .. } | Form::Single { child: expression }
+                if self.kind(n) != HirKind::Loop =>
+            {
+                self.falls_through(expression)
+            }
+            Form::Block { .. } | Form::Sequence
+                if matches!(self.kind(n), HirKind::Block | HirKind::Module) =>
+            {
+                self.out.hir.children(n).all(|c| self.falls_through(c))
+            }
+            Form::Condition {
+                condition,
+                body,
+                otherwise,
+                ..
+            } if self.kind(n) == HirKind::If => match self.constant_bool(condition) {
+                Some(true) => self.falls_through(body),
+                Some(false) => otherwise.is_none_or(|body| self.falls_through(body)),
+                None => {
+                    self.falls_through(body)
+                        || otherwise.is_none_or(|body| self.falls_through(body))
+                }
+            },
+            Form::Condition {
+                condition, body, ..
+            } if self.kind(n) == HirKind::While => {
+                self.constant_bool(condition) != Some(true) || self.can_break_to(body, n)
+            }
+            Form::Single { child } if self.kind(n) == HirKind::Loop => self.can_break_to(child, n),
+            Form::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                finally.is_none_or(|cleanup| self.falls_through(cleanup))
+                    && (self.falls_through(body)
+                        || catch.is_some_and(|catch| self.falls_through(catch)))
+            }
+            Form::Catch { body, .. } | Form::Label { body, .. } => self.falls_through(body),
+            Form::Match { .. } => self
                 .out
                 .hir
                 .children(n)
-                .last()
-                .is_none_or(|c| self.falls_through(c)),
-            HirKind::If => {
-                let branches: Vec<_> = self
-                    .out
-                    .hir
-                    .children(n)
-                    .filter(|&c| matches!(self.kind(c), HirKind::Block | HirKind::If))
-                    .collect();
-                branches.len() < 2 || branches.into_iter().any(|b| self.falls_through(b))
-            }
+                .skip(1)
+                .any(|arm| self.falls_through(arm)),
+            Form::MatchArm { body, .. } => self.falls_through(body),
             _ => true,
         }
+    }
+    fn can_break_to(&self, n: NodeId, target: NodeId) -> bool {
+        if self.kind(n) == HirKind::Break {
+            return self.out.facts[n.0 as usize]
+                .control
+                .as_ref()
+                .is_some_and(|flow| flow.target == Some(target));
+        }
+        if matches!(
+            self.kind(n),
+            HirKind::Function | HirKind::Closure | HirKind::Class
+        ) {
+            return false;
+        }
+        if let Form::Condition {
+            condition,
+            body,
+            otherwise,
+            ..
+        } = self.out.hir.node(n).form
+            && self.kind(n) == HirKind::If
+        {
+            return match self.constant_bool(condition) {
+                Some(true) => self.can_break_to(body, target),
+                Some(false) => otherwise.is_some_and(|body| self.can_break_to(body, target)),
+                None => {
+                    self.can_break_to(body, target)
+                        || otherwise.is_some_and(|body| self.can_break_to(body, target))
+                }
+            };
+        }
+        if let Form::Try {
+            finally: Some(finally),
+            ..
+        } = self.out.hir.node(n).form
+            && !self.falls_through(finally)
+        {
+            return self.can_break_to(finally, target);
+        }
+        for child in self.out.hir.children(n) {
+            if self.can_break_to(child, target) {
+                return true;
+            }
+            if matches!(self.kind(n), HirKind::Block | HirKind::Module)
+                && !self.falls_through(child)
+            {
+                break;
+            }
+        }
+        false
     }
     fn class_node(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
         let base = children
@@ -2565,7 +2725,7 @@ impl Binder<'_> {
                 queue.push_back(FunctionId(i as u32));
             }
         }
-        for call in self.calls.clone() {
+        for call in std::mem::take(&mut self.calls) {
             if let Some(caller) = call.caller {
                 if let Some(callee) = call.callee {
                     if self.out.functions[callee.0 as usize].kind == FunctionKind::Plain {
@@ -2605,6 +2765,94 @@ impl Binder<'_> {
             }
         }
     }
+    fn checked_signature(
+        &mut self,
+        call: &CallSite,
+        callee: NodeId,
+    ) -> Option<Arc<CheckedSignature>> {
+        let descriptor = self.external_nodes.get(&callee).cloned();
+        let key = if let Some(function) = call.callee {
+            SignatureKey::Function(function, call.bound)
+        } else {
+            SignatureKey::External(Arc::as_ptr(descriptor.as_ref()?) as usize)
+        };
+        if let Some(signature) = self.signatures.get(&key) {
+            return Some(signature.clone());
+        }
+        let count = if let Some(function) = call.callee {
+            self.out.functions[function.0 as usize].parameters.len()
+        } else {
+            descriptor.as_ref()?.signature.as_ref()?.parameters.len()
+        };
+        let bound = usize::from(call.callee.is_some() && call.bound);
+        if count == bound {
+            return Some(
+                self.empty_signature
+                    .get_or_insert_with(|| {
+                        Arc::new(CheckedSignature {
+                            parameters: Vec::new(),
+                            named: HashMap::new(),
+                            rest: None,
+                            required: Vec::new(),
+                        })
+                    })
+                    .clone(),
+            );
+        }
+        if !self.charge_work(call.node, count.saturating_mul(2)) {
+            return None;
+        }
+        let parameters = if let Some(function) = call.callee {
+            self.out.functions[function.0 as usize]
+                .parameters
+                .iter()
+                .skip(usize::from(call.bound))
+                .map(|parameter| {
+                    let symbol = &self.out.symbols[parameter.symbol.0 as usize];
+                    CheckedParameter {
+                        name: symbol.name,
+                        ty: symbol.ty,
+                        required: parameter.default.is_none() && !parameter.rest,
+                        rest: parameter.rest,
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            descriptor
+                .as_ref()?
+                .signature
+                .as_ref()?
+                .parameters
+                .iter()
+                .map(|parameter| CheckedParameter {
+                    name: self.intern_name(&parameter.name),
+                    ty: self.hint(&parameter.ty),
+                    required: !parameter.default && !parameter.rest,
+                    rest: parameter.rest,
+                })
+                .collect()
+        };
+        let mut named = HashMap::with_capacity(parameters.len());
+        let mut required = Vec::new();
+        let mut rest = None;
+        for (i, parameter) in parameters.iter().enumerate() {
+            named.insert(parameter.name, i);
+            if parameter.required {
+                required.push(i);
+            }
+            if parameter.rest {
+                rest = Some(i);
+            }
+        }
+        let signature = Arc::new(CheckedSignature {
+            parameters,
+            named,
+            required,
+            rest,
+        });
+        self.signatures.insert(key, signature.clone());
+        Some(signature)
+    }
     fn validate_call(&mut self, call: &CallSite) {
         let Form::Call {
             callee,
@@ -2615,42 +2863,10 @@ impl Binder<'_> {
         else {
             return;
         };
-        let signature = if let Some(f) = call.callee {
-            let f = &self.out.functions[f.0 as usize];
-            let bound = call.bound;
-            Some((
-                f.parameters
-                    .iter()
-                    .skip(usize::from(bound))
-                    .map(|p| {
-                        let symbol = &self.out.symbols[p.symbol.0 as usize];
-                        (symbol.name, symbol.ty, p.default.is_some(), p.rest)
-                    })
-                    .collect::<Vec<_>>(),
-                f.return_type,
-            ))
-        } else {
-            self.external_nodes
-                .get(&callee)
-                .and_then(|e| e.signature.clone())
-                .map(|sig| {
-                    let p = sig
-                        .parameters
-                        .iter()
-                        .map(|p| {
-                            let name = self.intern_name(&p.name);
-                            let ty = self.hint(&p.ty);
-                            (name, ty, p.default, p.rest)
-                        })
-                        .collect();
-                    (p, self.hint(&sig.result))
-                })
-        };
-        let Some((params, _)) = signature else {
+        let Some(signature) = self.checked_signature(call, callee) else {
             return;
         };
         let mut args = Vec::new();
-        let mut dynamic_spread = false;
         for part in arguments.into_iter().chain(trailing) {
             match self.kind(part) {
                 HirKind::Arguments => {
@@ -2660,46 +2876,76 @@ impl Binder<'_> {
                         } else {
                             None
                         };
+                        let ty = self.ty(arg);
                         if self.kind(arg) == HirKind::Spread {
-                            dynamic_spread = true;
+                            if let Type::Tuple(elements) = &self.out.types[ty.0 as usize] {
+                                let count = elements.len();
+                                if !self.charge_work(arg, count) {
+                                    return;
+                                }
+                                let Type::Tuple(elements) = &self.out.types[ty.0 as usize] else {
+                                    unreachable!()
+                                };
+                                args.extend(elements.iter().map(|&ty| (arg, None, ty, false)));
+                            } else {
+                                args.push((arg, None, ty, true));
+                            }
+                        } else {
+                            args.push((arg, named, ty, false));
                         }
-                        args.push((arg, named, self.ty(arg)));
                     }
                 }
                 HirKind::Children => {
                     let name = self.intern_name("children");
-                    args.push((part, Some(name), ARRAY));
+                    args.push((part, Some(name), ARRAY, false));
                 }
                 _ => (),
             }
         }
         let mut used = HashSet::new();
-        let mut position = 0;
-        let rest = params.iter().position(|p| p.3);
-        let named: HashMap<_, _> = params.iter().enumerate().map(|(i, p)| (p.0, i)).collect();
-        for (arg, name, ty) in args {
+        let mut position = Some(0usize);
+        let mut dynamic_spread = false;
+        let mut required_supplied = 0usize;
+        for (arg, name, ty, unknown_spread) in args {
             if !self.budget(arg) {
-                break;
+                return;
+            }
+            if unknown_spread {
+                dynamic_spread = true;
+                position = None;
+                self.check(call.node, RuntimeChecks::CALL);
+                continue;
             }
             let index = if let Some(name) = name {
-                named.get(&name).copied()
+                signature.named.get(&name).copied()
+            } else if let Some(i) = position {
+                position = Some(i + 1);
+                if i < signature.parameters.len() {
+                    Some(i)
+                } else {
+                    signature.rest
+                }
             } else {
-                let i = position;
-                position += 1;
-                if i < params.len() { Some(i) } else { rest }
+                // An unknown spread can occupy zero or more positions. The
+                // concrete slot and collisions remain runtime binding work.
+                self.check(call.node, RuntimeChecks::CALL);
+                continue;
             };
             if let Some(i) = index {
-                if !params[i].3 && !used.insert(i) {
-                    self.error(
-                        D::InvalidCall,
-                        self.span(arg),
-                        "parameter supplied more than once",
-                    );
+                let parameter = &signature.parameters[i];
+                if !parameter.rest {
+                    if !used.insert(i) {
+                        self.error(
+                            D::InvalidCall,
+                            self.span(arg),
+                            "parameter supplied more than once",
+                        );
+                    } else if parameter.required {
+                        required_supplied += 1;
+                    }
+                    self.require(arg, ty, parameter.ty, "call argument");
                 }
-                if !dynamic_spread && !params[i].3 {
-                    self.require(arg, ty, params[i].1, "call argument");
-                }
-            } else if !dynamic_spread {
+            } else {
                 self.error(
                     D::InvalidCall,
                     self.span(arg),
@@ -2711,14 +2957,23 @@ impl Binder<'_> {
                 );
             }
         }
-        if !dynamic_spread {
-            for (i, p) in params.iter().enumerate() {
-                if !p.2 && !p.3 && !used.contains(&i) {
+        if !dynamic_spread && required_supplied < signature.required.len() {
+            if !self.charge_work(call.node, signature.required.len()) {
+                return;
+            }
+            for &i in &signature.required {
+                if !used.contains(&i) {
                     self.error(
                         D::InvalidCall,
                         self.span(call.node),
-                        format!("missing required argument {}", self.out.hir.name(p.0)),
+                        format!(
+                            "missing required argument {}",
+                            self.out.hir.name(signature.parameters[i].name)
+                        ),
                     );
+                    if self.diagnostics.len() >= self.options.limits.max_diagnostics.max(1) {
+                        break;
+                    }
                 }
             }
         }
@@ -2793,6 +3048,12 @@ impl Binder<'_> {
                 .map(|f| f.captures.capacity() * size_of::<Capture>())
                 .sum(),
             imports: self.out.imports.len(),
+            signature_builds: self.signatures.len() + usize::from(self.empty_signature.is_some()),
+            signature_parameters: self
+                .signatures
+                .values()
+                .map(|signature| signature.parameters.len())
+                .sum(),
         };
     }
 }

@@ -7,6 +7,50 @@ fn input(path: &str, source: &str) -> SourceModule {
     }
 }
 #[test]
+fn exported_destructuring_projects_each_binding_type() {
+    let inputs = [
+        input("a", "pub let (x,y):(int,int)=(1,2);"),
+        input("b", "use a::{x}; let z:int=x;"),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+}
+#[test]
+fn exported_builtin_categories_match_local_annotation_semantics() {
+    let inputs = [
+        input("a", "pub fn f(x:Map){} pub fn callback(x:closure){}"),
+        input("b", "use a::{f,callback}; f({}); fn g(){} callback(g);"),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+}
+#[test]
+fn reexport_dependencies_respect_explicit_symbol_disambiguation() {
+    let inputs = [
+        input("a", "pub use z::{item};"),
+        input("z", "pub use src::{item};"),
+        input("z::item", ""),
+        input("src", "pub fn item(){}"),
+        input("consumer", "use a::{item}; item();"),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    assert!(
+        result
+            .plan
+            .initialization_order
+            .iter()
+            .position(|p| p == "z")
+            .unwrap()
+            < result
+                .plan
+                .initialization_order
+                .iter()
+                .position(|p| p == "a")
+                .unwrap()
+    );
+}
+#[test]
 fn source_modules_link_public_signatures_reexports_and_namespaces() {
     let inputs = [
         input(

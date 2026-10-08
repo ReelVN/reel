@@ -33,7 +33,20 @@ fn main() {
             }
             source.push_str(");");
         }
-        _ => panic!("mode must be captures or named"),
+        "shared" => {
+            source.push_str("fn f(");
+            for i in 0..count {
+                write!(source, "p{i}=0,").unwrap();
+            }
+            source.push_str(
+                "){}
+",
+            );
+            for _ in 0..count {
+                source.push_str("f();");
+            }
+        }
+        _ => panic!("mode must be captures, named or shared"),
     }
     let start = Instant::now();
     let parsed = parse(&source).unwrap();
@@ -48,10 +61,10 @@ fn main() {
     let module = result.module().unwrap();
     let s = module.stats();
     println!(
-        "functions,source_bytes,parse_us,analysis_us,nodes,symbols,captures,work,accounted_bytes,allocator_retained_bytes,allocations,node_size,symbol_size,capture_size,symbol_capacity_bytes,capture_capacity_bytes,mode"
+        "functions,source_bytes,parse_us,analysis_us,nodes,symbols,captures,work,accounted_bytes,allocator_retained_bytes,allocations,node_size,symbol_size,capture_size,symbol_capacity_bytes,capture_capacity_bytes,mode,signature_builds,signature_parameters"
     );
     println!(
-        "{count},{},{parse_us},{analysis_us},{},{},{},{},{},{},{},{},{},{},{},{},{mode}",
+        "{count},{},{parse_us},{analysis_us},{},{},{},{},{},{},{},{},{},{},{},{},{mode},{},{}",
         source.len(),
         s.nodes,
         s.symbols,
@@ -64,6 +77,8 @@ fn main() {
         std::mem::size_of::<Symbol>(),
         std::mem::size_of::<Capture>(),
         s.symbol_bytes,
-        s.capture_bytes
+        s.capture_bytes,
+        s.signature_builds,
+        s.signature_parameters
     );
 }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeHint {
     Any,
+    Closure,
     Null,
     Bool,
     Int,
@@ -151,13 +152,38 @@ impl MemoryResolver {
     pub fn insert(&mut self, module: ModuleInterface) {
         self.modules.insert(module.canonical_path.clone(), module);
     }
+    fn candidates(
+        &self,
+        request: &ImportRequest,
+    ) -> (Option<&ModuleInterface>, Option<&ModuleInterface>) {
+        let namespace = (request.kind != ImportKind::Symbol)
+            .then(|| self.modules.get(&request.path.join("::")))
+            .flatten();
+        let symbol_module = (request.kind != ImportKind::Wildcard)
+            .then(|| {
+                request
+                    .path
+                    .split_last()
+                    .and_then(|(_, prefix)| self.modules.get(&prefix.join("::")))
+            })
+            .flatten();
+        (namespace, symbol_module)
+    }
+    pub(super) fn dependency_modules(&self, request: &ImportRequest) -> Vec<String> {
+        let (namespace, symbol_module) = self.candidates(request);
+        namespace
+            .into_iter()
+            .chain(symbol_module)
+            .map(|module| module.canonical_path.clone())
+            .collect()
+    }
 }
 impl ModuleResolver for MemoryResolver {
     fn resolve(&mut self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
         let full = r.path.join("::");
-        let namespace = self.modules.get(&full);
-        let symbol = r.path.split_last().and_then(|(last, prefix)| {
-            let module = self.modules.get(&prefix.join("::"))?;
+        let (namespace, symbol_module) = self.candidates(r);
+        let symbol = r.path.last().and_then(|last| {
+            let module = symbol_module?;
             module
                 .exports
                 .iter()

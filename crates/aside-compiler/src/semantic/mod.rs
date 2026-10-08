@@ -2,7 +2,9 @@
 mod bind;
 mod forms;
 mod link;
+mod patterns;
 mod project;
+mod types;
 pub use link::*;
 pub mod modules;
 use crate::hir::AnalyzedModule;

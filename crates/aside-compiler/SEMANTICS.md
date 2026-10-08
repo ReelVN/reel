@@ -48,7 +48,9 @@ Algorithm:
    execute bodies. `known_wait` is a possibility summary and never rejects a
    NoWait call. Such calls preserve `NO_WAIT` runtime checks; conditional paths
    also preserve runtime checks instead of assuming they execute. Definite
-   direct restricted awaits diagnose. InitSafe/DerivedSafe and compiler-registered
+   direct restricted awaits diagnose. Finally has a lexical prohibition: explicit
+   await is rejected even in an unreachable/conditional path. Nested function
+   definitions use their own execution context. InitSafe/DerivedSafe and compiler-registered
    bind/derive identities survive resolution; shadowed ordinary functions do not
    acquire intrinsic behavior.
 7. Imports use an injected resolver returning versioned public module/symbol
@@ -107,3 +109,32 @@ token/pattern vectors use pinned smallvec 1.15.1; output remains packed arenas.
 Signature named lookups, export-name insertion and class-member lookup use maps;
 reexports and wait/dynamic summaries use worklists. There is no repeated global
 AST traversal per call, import edge or capture.
+
+Source-review corrections preserve grammar roles through `Form::Condition`,
+including an If/Block expression used as a condition. Ordinary pattern branch
+failure is distinct from an impossible required binding. One shared projection
+walk supplies local leaf types and exported destructuring descriptors; OR joins
+only possible alternatives. Assignment checks every annotated leaf and rejects
+duplicate targets. Unknown spread length does not reserve a positional slot;
+runtime binding handles its positions and collisions, while definite explicit
+conflicts still diagnose. Local and exported built-in annotations share a
+category table (`Map` is table; `TypeHint::Closure` accepts any closure signature).
+Reexport dependency edges use the resolver's actual namespace/symbol candidates.
+
+Forward named functions have an explicit internal signature-completion state.
+Contracts involving a forward signature are validated after completion, before
+the analysis gate, rather than comparing a placeholder empty signature. Return
+fallthrough respects conditional branches, try/finally, and loop break targets.
+
+Call validation caches parameter projection, named lookup, rest and required
+indices per function/bound-method or shared external descriptor. Empty signatures
+share one canonical descriptor. Parameter projection/index construction and
+remaining required-argument scans are charged before work/allocation. Repeated
+empty calls to a large defaulted signature take no per-call parameter scan.
+Statistics expose `signature_builds` and `signature_parameters`; this cache is
+temporary and is not part of retained HIR memory.
+
+The owner clarification in `9cfe5ece49a419c13b7f65992f8b68e46ab4ffac`
+was read without importing B01 code. Finally restrictions are lexical; runtime
+NoWait/Init/Derived constraints accumulate through actual calls and callbacks.
+HIR check flags retain obligations and never waive the caller's restrictions.

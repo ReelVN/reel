@@ -207,33 +207,20 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             value: body(),
         },
         H::If | H::While => {
-            let condition = children
-                .iter()
-                .copied()
-                .find(|&c| {
-                    !is_pattern(hir.node(c).kind) && !matches!(hir.node(c).kind, H::Block | H::If)
-                })
-                .unwrap();
-            let branches = children
-                .iter()
-                .copied()
-                .filter(|&c| matches!(hir.node(c).kind, H::Block | H::If))
-                .collect::<SmallVec<[_; 4]>>();
+            // Grammar order is [pattern?], condition, then, [else]. An If or
+            // Block expression is itself a legal condition.
+            let first = usize::from(pattern().is_some());
             Form::Condition {
                 pattern: pattern(),
-                condition,
-                body: branches[0],
-                otherwise: branches.get(1).copied(),
+                condition: children[first],
+                body: children[first + 1],
+                otherwise: children.get(first + 2).copied(),
             }
         }
         H::For => Form::For {
-            pattern: pattern().unwrap(),
-            source: children
-                .iter()
-                .copied()
-                .find(|&c| !is_pattern(hir.node(c).kind) && hir.node(c).kind != H::Block)
-                .unwrap(),
-            body: body(),
+            pattern: children[0],
+            source: children[1],
+            body: children[2],
             asynchronous: has(K::Await),
         },
         H::Loop => Form::Single { child: body() },

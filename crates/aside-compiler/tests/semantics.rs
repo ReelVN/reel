@@ -25,6 +25,210 @@ fn symbols<'a>(m: &'a AnalyzedModule, name: &str) -> Vec<(SymbolId, &'a Symbol)>
         .collect()
 }
 #[test]
+fn finally_await_is_lexically_forbidden_even_on_short_circuit_paths() {
+    for source in [
+        "fn f(p){try{}finally{false && await p;}}",
+        "fn f(p){try{}finally{true || await p;}}",
+        "fn f(p){try{}finally{1 ?? await p;}}",
+        "fn f(p){try{}finally{null?[await p];}}",
+    ] {
+        rejects(source, DiagnosticCode::NoWait);
+    }
+    rejects(
+        "fn f(p){try{}finally{if false {await p;}}}",
+        DiagnosticCode::NoWait,
+    );
+    rejects(
+        "fn f(xs){try{}finally{if false {for await x in xs {}}}}",
+        DiagnosticCode::NoWait,
+    );
+    valid("fn f(p){try{}finally{let callback=||{await p;};}}");
+    valid(
+        "fn f(callback){try{}finally{false && callback(); true || callback(); 1 ?? callback(); null?[callback()];}}",
+    );
+}
+#[test]
+fn pattern_alternatives_and_nonmatching_arms_are_valid_source() {
+    let m = valid("let (x,_) | (x,_,_) = (1,2); let y:int=x;");
+    assert!(matches!(
+        m.types()[symbols(&m, "x")[0].1.ty.0 as usize],
+        Type::Int
+    ));
+    valid("match 1 {(a,b)=>0,_=>1,}");
+}
+#[test]
+fn unknown_spreads_do_not_claim_positional_parameter_slots() {
+    let m = valid("fn f(a){} fn g(xs){f(...xs,a:1);}");
+    assert!(
+        m.facts()
+            .iter()
+            .any(|f| f.checks.0 & RuntimeChecks::CALL != 0)
+    );
+    valid("fn f(a,b){} fn g(xs){f(...xs,2,a:1);}");
+    valid("fn f(a){} f(...(),a:1);");
+    rejects("fn f(a){} f(...(1,),a:1);", DiagnosticCode::InvalidCall);
+    rejects(
+        "fn f(a){} fn g(xs){f(1,...xs,a:1);}",
+        DiagnosticCode::InvalidCall,
+    );
+    rejects(
+        "fn f(a:int){} fn g(xs){f(...xs,a:\"bad\");}",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+#[test]
+fn grouped_and_destructured_assignments_check_leaf_contracts() {
+    rejects(
+        "let mut x:int=1; (x)=\"bad\";",
+        DiagnosticCode::TypeMismatch,
+    );
+    rejects(
+        "let mut a:int=1; let mut b:int=2; (a,b)=(\"bad\",2);",
+        DiagnosticCode::TypeMismatch,
+    );
+    rejects("let mut x=1; (x,x)=(1,2);", DiagnosticCode::PatternBindings);
+}
+#[test]
+fn nested_if_expressions_keep_condition_and_body_roles() {
+    valid("if if true { true } else { false } {}");
+    valid("while if true { false } else { true } {break;}");
+    valid("fn f(xs){for x in if true {xs} else {[]} {x;}}");
+}
+#[test]
+fn forward_function_signatures_are_independent_of_source_order() {
+    valid("fn f(cb:fn(int)->int=g){cb(1)} fn g(x:int)->int{x}");
+    valid("fn f(){let cb:fn(int)->int=g;} fn g(x:int)->int{x}");
+    rejects(
+        "fn f(){let cb:fn(int)->int=g;} fn g(x:bool)->bool{x}",
+        DiagnosticCode::TypeMismatch,
+    );
+    rejects(
+        "let mut (a,b):(int,int)=(1,2); (a,b)=(1,\"bad\");",
+        DiagnosticCode::TypeMismatch,
+    );
+    let m = valid("fn f(value){let mut x:int=1; (x)=value;}");
+    assert!(
+        m.facts()
+            .iter()
+            .any(|facts| facts.checks.0 & RuntimeChecks::TYPE != 0)
+    );
+}
+#[test]
+fn short_circuit_effects_inherit_conditional_execution() {
+    let options = AnalysisOptions {
+        hosts: vec![ExternalSymbol::function(
+            "effect",
+            ExternalSignature {
+                parameters: vec![],
+                result: TypeHint::Bool,
+                effect: CallEffect::NoWait,
+                init_safe: Some(false),
+                derived_safe: Some(false),
+            },
+        )],
+        ..Default::default()
+    };
+    for source in [
+        "false && effect();",
+        "true || effect();",
+        "1 ?? effect();",
+        "null?[effect()];",
+    ] {
+        let result = analyze_module(source, &options, &mut NoModules).unwrap();
+        assert!(result.is_ok(), "{source}: {:?}", result.diagnostics);
+        assert!(
+            result
+                .module()
+                .unwrap()
+                .facts()
+                .iter()
+                .any(|facts| facts.checks.0 & RuntimeChecks::INIT_SAFE != 0)
+        );
+    }
+    let result = analyze_module("true && effect();", &options, &mut NoModules).unwrap();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidEffect)
+    );
+}
+#[test]
+fn shared_large_signatures_are_built_once_and_charge_parameter_work() {
+    let parameters = (0..1000)
+        .map(|i| format!("p{i}=0"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let source = format!("fn f({parameters}){{}}{}", "f();".repeat(1000));
+    let result = analyze_code(&source);
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    assert_eq!(result.stats.signature_builds, 1);
+    assert_eq!(result.stats.signature_parameters, 1000);
+    assert!(result.stats.work_units < 20_000);
+    let options = AnalysisOptions {
+        limits: AnalysisLimits {
+            max_work: result.stats.work_units - 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = analyze_module(&source, &options, &mut NoModules).unwrap();
+    assert!(result.exhausted);
+    assert!(result.module().is_none());
+    assert_eq!(
+        result.stats.signature_builds, 0,
+        "signature scan must be admitted before allocation"
+    );
+    let parameters = (0..10_000)
+        .map(|i| format!("p{i}=0"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let source = format!("fn f({parameters}){{}}{}", "f();".repeat(10_000));
+    let options = AnalysisOptions {
+        limits: AnalysisLimits {
+            max_work: 100_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = analyze_module(&source, &options, &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    assert_eq!(result.stats.signature_builds, 1);
+    assert_eq!(result.stats.signature_parameters, 10_000);
+    assert!(result.stats.work_units < 100_000);
+    let options = AnalysisOptions {
+        hosts: vec![ExternalSymbol::function(
+            "native",
+            ExternalSignature {
+                parameters: (0..100)
+                    .map(|i| ExternalParameter {
+                        name: format!("p{i}"),
+                        ty: TypeHint::Int,
+                        mutable: false,
+                        default: true,
+                        rest: false,
+                    })
+                    .collect(),
+                result: TypeHint::Null,
+                effect: CallEffect::NoWait,
+                init_safe: Some(true),
+                derived_safe: Some(true),
+            },
+        )],
+        ..Default::default()
+    };
+    let result = analyze_module(&"native();".repeat(100), &options, &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    assert_eq!(result.stats.signature_builds, 1);
+    assert_eq!(result.stats.signature_parameters, 100);
+}
+#[test]
+fn returning_try_and_loop_do_not_add_an_implicit_null() {
+    valid("fn f()->int {try{return 1;}finally{}}");
+    valid("fn f()->int {loop{return 1;}}");
+    rejects("fn f()->int {loop{break;}}", DiagnosticCode::TypeMismatch);
+}
+#[test]
 fn lexical_scope_shadowing_and_precise_reads() {
     let m = valid("let x=1; fn f(){ let x=2; { let y=x; } x } f();");
     assert_eq!(symbols(&m, "x").len(), 2);
@@ -270,7 +474,10 @@ fn forms_preserve_real_operators_and_normalize_trailing_children() {
     );
     valid("fn f(a,b){a} fn forward(values){f(...values);}");
     valid("let n=null; n?(1);");
-    valid("fn f(p,flag){try{}finally{if flag{await p;}}}");
+    rejects(
+        "fn f(p,flag){try{}finally{if flag{await p;}}}",
+        DiagnosticCode::NoWait,
+    );
     let m = valid("fn f(){let x:fn(int)->int=g; fn g(v:int)->int{v} x(1);} ");
     assert!(
         m.facts()

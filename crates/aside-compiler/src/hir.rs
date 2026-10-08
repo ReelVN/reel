@@ -306,6 +306,8 @@ pub struct AnalysisStats {
     pub symbol_bytes: usize,
     pub capture_bytes: usize,
     pub imports: usize,
+    pub signature_builds: usize,
+    pub signature_parameters: usize,
 }
 /// Created only by successful analysis; future lowering must require this wrapper.
 #[derive(Debug, Clone)]

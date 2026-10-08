@@ -1,7 +1,8 @@
 //! Source-module linking. Imports are resolved before initialization; legal SCCs
 //! are retained, with initialized-state runtime checks on imported value reads.
+use super::types::type_hint;
 use super::*;
-use crate::hir::{Form, Hir, HirKind as H, NameId, NodeId};
+use crate::hir::{Form, Hir, HirKind as H, NodeId};
 use crate::{DiagnosticCode as D, SyntaxKind as K, TextRange, TextSize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -168,16 +169,9 @@ pub fn analyze_project(
             }
         }
         for (request, _) in &module_requests {
-            let full = request.path.join("::");
-            let target = if memory.modules.contains_key(&full) {
-                full
-            } else {
-                request
-                    .path
-                    .split_last()
-                    .map_or(String::new(), |(_, p)| p.join("::"))
-            };
-            users.entry(target).or_default().insert(path.clone());
+            for target in memory.dependency_modules(request) {
+                users.entry(target).or_default().insert(path.clone());
+            }
         }
         requests.insert(path.clone(), module_requests);
     }
@@ -326,53 +320,14 @@ fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
         };
         match hir.node(d).kind {
             H::Function => {
-                let Some(name) = hir
-                    .tokens(d)
-                    .find(|t| t.kind == K::Ident)
-                    .and_then(|t| t.name)
-                else {
-                    continue;
-                };
-                let parameters = hir
-                    .children(d)
-                    .find(|&n| hir.node(n).kind == H::Parameters)
-                    .map(|p| {
-                        hir.children(p)
-                            .filter_map(|p| {
-                                let name = hir.tokens(p).find(|t| t.kind == K::Ident)?.name?;
-                                Some(ExternalParameter {
-                                    name: hir.name(name).into(),
-                                    ty: hir
-                                        .children(p)
-                                        .find(|&n| is_type(hir.node(n).kind))
-                                        .map_or(TypeHint::Any, |n| type_hint(hir, n)),
-                                    mutable: hir.tokens(p).any(|t| t.kind == K::Mut),
-                                    default: hir.tokens(p).any(|t| t.kind == K::Eq),
-                                    rest: hir.tokens(p).any(|t| t.kind == K::Ellipsis),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let result_type = if hir.tokens(d).any(|t| t.kind == K::Async) {
-                    TypeHint::Future
-                } else if hir.tokens(d).any(|t| t.kind == K::Gen) {
-                    TypeHint::Generator
-                } else {
-                    hir.children(d)
-                        .find(|&n| is_type(hir.node(n).kind))
-                        .map_or(TypeHint::Any, |n| type_hint(hir, n))
-                };
-                result.push(ExternalSymbol::function(
-                    hir.name(name),
-                    ExternalSignature {
-                        parameters,
-                        result: result_type,
-                        effect: CallEffect::Unknown,
-                        init_safe: None,
-                        derived_safe: None,
-                    },
-                ));
+                if let Form::Function {
+                    name: Some(name), ..
+                } = hir.node(d).form
+                    && let Some(name) = name.name
+                    && let Some(signature) = super::types::signature_hint(hir, d)
+                {
+                    result.push(ExternalSymbol::function(hir.name(name), signature));
+                }
             }
             H::Class => {
                 if let Some(name) = hir
@@ -387,17 +342,44 @@ fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
                 }
             }
             H::Let => {
-                let annotation = hir
-                    .children(d)
-                    .find(|&n| is_type(hir.node(n).kind))
-                    .map(|n| type_hint(hir, n));
-                if let Form::Binding { pattern, .. } = hir.node(d).form {
-                    for name in pattern_names(hir, pattern) {
+                if let Form::Binding {
+                    pattern,
+                    annotation,
+                    ..
+                } = hir.node(d).form
+                {
+                    let annotation = annotation.map(|node| type_hint(hir, node));
+                    let mut context = ExportPatternTypes(hir);
+                    let mut projected = super::patterns::Projections::new();
+                    super::patterns::project(
+                        &mut context,
+                        pattern,
+                        annotation.unwrap_or(TypeHint::Any),
+                        &mut projected,
+                    );
+                    let mut bindings = BTreeMap::new();
+                    for (node, ty) in projected {
+                        let name = match hir.node(node).form {
+                            Form::Name { name } => name.name,
+                            Form::PatternField { key, .. } => key.name,
+                            _ => None,
+                        };
+                        if let Some(name) = name {
+                            bindings
+                                .entry(name)
+                                .and_modify(|old: &mut TypeHint| {
+                                    if *old == TypeHint::Any || ty == TypeHint::Any {
+                                        *old = TypeHint::Any;
+                                    } else if *old != ty {
+                                        *old = TypeHint::Union(vec![old.clone(), ty.clone()]);
+                                    }
+                                })
+                                .or_insert(ty);
+                        }
+                    }
+                    for (name, ty) in bindings {
                         if exported.insert(name) {
-                            result.push(ExternalSymbol::value(
-                                hir.name(name),
-                                annotation.clone().unwrap_or(TypeHint::Any),
-                            ));
+                            result.push(ExternalSymbol::value(hir.name(name), ty));
                         }
                     }
                 }
@@ -407,72 +389,44 @@ fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
     }
     result
 }
-fn pattern_names(hir: &Hir, n: NodeId) -> BTreeSet<NameId> {
-    let mut stack = vec![n];
-    let mut names = BTreeSet::new();
-    while let Some(n) = stack.pop() {
-        match hir.node(n).form {
-            Form::Name { name } => {
-                if let Some(name) = name.name
-                    && hir.name(name) != "_"
-                {
-                    names.insert(name);
-                }
-            }
-            Form::PatternField { key, pattern, .. } => {
-                if let Some(pattern) = pattern {
-                    stack.push(pattern);
-                } else {
-                    names.insert(key.name.unwrap());
-                }
-            }
-            Form::Or { left, .. } => stack.push(left),
-            Form::TypePattern { pattern, .. } => stack.push(pattern),
-            Form::Sequence | Form::Single { .. } => stack.extend(hir.children(n)),
-            _ => (),
+struct ExportPatternTypes<'a>(&'a Hir);
+impl super::patterns::PatternTypes for ExportPatternTypes<'_> {
+    type Ty = TypeHint;
+    fn hir(&self) -> &Hir {
+        self.0
+    }
+    fn unknown(&self) -> TypeHint {
+        TypeHint::Any
+    }
+    fn shape(&self, ty: &TypeHint) -> super::patterns::Shape<TypeHint> {
+        use super::patterns::Shape;
+        match ty {
+            TypeHint::Any | TypeHint::Named(_) | TypeHint::Union(_) => Shape::Unknown,
+            TypeHint::Tuple(elements) => Shape::Tuple(elements.clone()),
+            TypeHint::Array => Shape::Array,
+            TypeHint::Table => Shape::Table,
+            _ => Shape::Other,
         }
     }
-    names
-}
-fn is_type(k: H) -> bool {
-    matches!(
-        k,
-        H::NamedType | H::GroupType | H::TupleType | H::UnionType | H::FunctionType
-    )
-}
-fn type_hint(hir: &Hir, n: NodeId) -> TypeHint {
-    match hir.node(n).kind {
-        H::NamedType => {
-            let text = hir.tokens(n).map(|t| hir.text(t.span)).collect::<String>();
-            match text.as_str() {
-                "any" => TypeHint::Any,
-                "null" => TypeHint::Null,
-                "bool" => TypeHint::Bool,
-                "int" => TypeHint::Int,
-                "float" => TypeHint::Float,
-                "string" => TypeHint::String,
-                "array" => TypeHint::Array,
-                "table" => TypeHint::Table,
-                "Future" => TypeHint::Future,
-                "generator" => TypeHint::Generator,
-                _ => TypeHint::Named(text),
-            }
-        }
-        H::GroupType => hir
-            .children(n)
-            .next()
-            .map_or(TypeHint::Any, |n| type_hint(hir, n)),
-        H::TupleType => TypeHint::Tuple(hir.children(n).map(|n| type_hint(hir, n)).collect()),
-        H::UnionType => TypeHint::Union(hir.children(n).map(|n| type_hint(hir, n)).collect()),
-        H::FunctionType => {
-            let mut args = hir
-                .children(n)
-                .map(|n| type_hint(hir, n))
-                .collect::<Vec<_>>();
-            let result = args.pop().unwrap_or(TypeHint::Any);
-            TypeHint::Callable(args, Box::new(result))
-        }
-        _ => TypeHint::Any,
+    fn tuple(&mut self, elements: Vec<TypeHint>) -> TypeHint {
+        TypeHint::Tuple(elements)
+    }
+    fn array(&self) -> TypeHint {
+        TypeHint::Array
+    }
+    fn table(&self) -> TypeHint {
+        TypeHint::Table
+    }
+    fn annotation(&mut self, node: NodeId) -> TypeHint {
+        type_hint(self.0, node)
+    }
+    fn compatible(&self, actual: &TypeHint, expected: &TypeHint) -> bool {
+        matches!(self.shape(actual), super::patterns::Shape::Unknown)
+            || matches!(self.shape(expected), super::patterns::Shape::Unknown)
+            || actual == expected
+    }
+    fn charge(&mut self, _: NodeId) -> bool {
+        true
     }
 }
 fn import_requests(
