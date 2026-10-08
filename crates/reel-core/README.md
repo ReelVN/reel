@@ -19,11 +19,13 @@ The `test-support` feature exposes executable fixtures, excluded from the normal
 - `CooperativeExecutor` registers only fixture copy encoding and XOR-packet verification. These are cursor-based operations using at most 256 source bytes per work unit, preallocated output and scratch storage, and a clock check before each unit. `WorkProgress.bytes` counts logical input bytes once, even when copied through scratch to output; resident output/temporary bytes are separately reserved. A packet with nonzero aggregate XOR actually fails validation. This is not a production codec or integrity algorithm. Three fixed priority deques require at most three head checks to select a chunk, independent of queue size. Visible work precedes normal work, which precedes prefetch; equal priority jobs round-robin across slices.
 - The shared fixture queue preallocates a terminal slot before publishing acceptance. A non-cloneable completion slot is consumed on settlement. Pending and undrained terminal records share the request-count limit; charged bytes conservatively include input, maximum output, scratch, completion and request metadata until drain. Cancellation of pending work settles once and releases its data; later driver calls cannot produce a business result. Once completion has been enqueued, it has already won settlement, and later cancellation is a no-op. The business layer first revokes its wait/subscription, then calls service cancellation; engine routing checks both wait activity and Scope before resuming business. An already settled result remains for resources and the process ledger, preserving an actual save commit. This distinction was confirmed by the integration owner during review. `poll`/`drain` append at most the supplied limit, including across IO lanes; callers preallocate the output vector.
 
+Each private `WorkBuffer` owns its vector followed by its ticket, matching `OwnedBytes`' field-order invariant. Output and scratch no longer borrow reservations held separately by a `WorkRequest`. Whole-job destruction frees each buffer before returning its reservation. Completion and failure drop owned scratch/input, failure drops owned output, cancellation drops all owned buffers, and admission rejection reconstructs the original request only after disposing the new output/scratch allocations. These paths preserve accounting until actual deallocation, including partial moves.
+
 Fixture constructors accept explicit `QueueLimits`; their convenience `new` creates an isolated ID domain. Use `with_ids` for replacement/shared-service checks. `DEFAULT_COOPERATIVE_QUEUE_LIMITS` is a small fixture configuration: 32 requests / 4 MiB. Tight limits in other contract scenarios are test settings, not platform defaults. Target adapter tasks choose actual queue capacities and independently verified storage levels.
 
 ## Behavioral evidence and commands
 
-Run from the repository root with Rust 1.90.0:
+Run from the repository root with Rust 1.96.0:
 
 ```sh
 cargo fmt --all -- --check
@@ -35,10 +37,13 @@ cargo check -p reel-core --all-targets --all-features --locked --target i686-unk
 cargo tree -p reel-core --all-features --locked
 cargo tree -p reel-core --no-default-features --locked
 cargo run -p reel-core --release --features test-support --example cooperative_probe --locked
+rustfmt --edition 2024 --check crates/reel-core/tests/support/dealloc_probe.rs
+bash -n crates/reel-core/tests/support/run_dealloc_probe.sh
+bash crates/reel-core/tests/support/run_dealloc_probe.sh
 git diff --check
 ```
 
-All commands above passed on 2026-10-08. In this environment Rust initially was absent from PATH; pinned rustup 1.28.2 installed toolchain 1.90.0 outside the repository. Shell setup here was:
+All commands above passed on 2026-10-08 after the residency fix. The integration owner selected Rust 1.96 because the frozen Masonry upstream workspace requires it; root `rust-version` and `rust-toolchain.toml` were updated together. Rustup installed official 1.96.0 (ac68faa20, LLVM 22.1.2) and its i686 standard library from the [official distribution](https://static.rust-lang.org/dist/channel-rust-1.96.0.toml). The earlier installation and observations under 1.90.0 remain historical evidence below, not results for 1.96. Shell setup here was:
 
 ```sh
 export PATH=/workspace/reel-cargo/bin:$PATH
@@ -51,6 +56,12 @@ export CARGO_TARGET_DIR=/workspace/reel-target
 
 The first run caught a test expectation error: it counted 4 bytes reserved by a missing-version read after that failure had already returned its output ticket. The observed residency was the surviving old-version read's 99-byte reservation. The corrected scenario checks that those 99 bytes remain charged through delivery and are returned when that stale event is dropped. Both debug and release behavior runs then passed.
 
+Independent acceptance subsequently exposed an intermediate residency bug that those end-of-operation assertions did not observe. At head `32cce8c`, a 65,537-byte copy or failed verification returned the temporary ticket while the 256-byte scratch allocation was still live. Dropping an executor with pending work also returned the output ticket too early. The standalone deallocation regression reproduced these failures in both 1.90 debug and release before changing the implementation.
+
+`tests/support/run_dealloc_probe.sh` builds the production crate with its unchanged `unsafe_code=forbid`, then compiles `dealloc_probe.rs` separately with rustc in a fresh temporary directory. No allocator dependency or production lint exception is added. This manual regression is not part of `cargo test`; run the explicit command above. Its small `GlobalAlloc` wrapper observes the exact input/output/scratch pointers immediately before forwarding `dealloc` to `System`; callbacks use integer addresses, never dereference pointers, and record data without assertions or logging inside the allocator. It also tries to reserve each entire pool while that buffer is still live. The tracker observes completion, genuine XOR failure, partial-work cancellation, pending executor destruction, and ID-exhaustion rejection after both admission buffers have been allocated.
+
+The observer failed against the old implementation: four live allocations already had zero charge and permitted a full-pool reservation. With the structural fix on 1.96, debug and release both observed `scratch bytes_still_live=256, charged=256, reserve_blocked=true` on every exit. Input remained charged 65,537 bytes at its own deallocation; output remained charged 65,537 bytes for copy paths or 1 byte for the failed verifier. All three allocations were actually observed on each path, and all pools returned to zero afterward. The integration owner's separate acceptance harness remains to be rerun on the new commit.
+
 Both dependency-tree commands report just:
 
 ```text
@@ -59,7 +70,7 @@ reel-core v0.1.0
 
 No window, GPU, audio, VM, compiler, watcher, or copied dependency is linked.
 
-The release probe actually copies and verifies 1 MiB, with four units / 1024 logical input bytes allowed per advance. It runs both a single request and a full default queue of 32 requests, each owning 32 KiB. On this Linux x86_64 KVM environment, AMD EPYC 9V74, rustc 1.90.0 / LLVM 20.1.8, the final recorded run observed:
+The release probe actually copies and verifies 1 MiB, with four units / 1024 logical input bytes allowed per advance. It runs both a single request and a full default queue of 32 requests, each owning 32 KiB. Historical observations on this Linux x86_64 KVM environment, AMD EPYC 9V74, rustc 1.90.0 / LLVM 20.1.8, before the residency fix:
 
 ```text
 case=single configured_requests=1
@@ -72,6 +83,23 @@ case=full configured_requests=32
 max_submit_ns=3585
 bytes=1048576 slices=1024 p50_ns=311 p99_ns=2323 max_ns=17045
 peaks: input=1048576 output=1048576 temporary=8192 completion=16384 queue=2130304
+after_drain: output=1048576 completion=16384 queue=0
+after_output_drop: all tickets and resident bytes returned
+```
+
+A separate run after the fix on Rust 1.96.0 / LLVM 22.1.2 observed:
+
+```text
+case=single configured_requests=1
+max_submit_ns=5248
+bytes=1048576 slices=1024 p50_ns=401 p99_ns=1752 max_ns=26079
+peaks: input=1048576 output=1048576 temporary=256 completion=512 queue=2098180
+after_drain: output=1048576 completion=512 queue=0
+after_output_drop: all tickets and resident bytes returned
+case=full configured_requests=32
+max_submit_ns=4286
+bytes=1048576 slices=1024 p50_ns=431 p99_ns=2874 max_ns=58709
+peaks: input=1048576 output=1048576 temporary=8192 completion=16384 queue=2130048
 after_drain: output=1048576 completion=16384 queue=0
 after_output_drop: all tickets and resident bytes returned
 ```

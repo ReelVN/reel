@@ -1,8 +1,8 @@
 use super::queue::{Queue, QueueUsage, charge, invalid};
 use crate::{
-    budget::{BudgetCategory, OwnedBytes, QueueLimits},
+    budget::{BudgetCategory, BudgetTicket, OwnedBytes, QueueLimits},
     clock::Clock,
-    identity::WorkId,
+    identity::{Priority, Scope, WorkId},
     request_ids::RequestIds,
     result::{RejectCode, RejectReason, Rejected, Terminal},
     wake::WakeSignal,
@@ -17,12 +17,62 @@ pub const DEFAULT_QUEUE_LIMITS: QueueLimits = QueueLimits {
 };
 const CHUNK_BYTES: usize = 256;
 
+/// Field order is the residency invariant: deallocate data before returning its
+/// ticket, including whole-Job destruction and partially moved completion paths.
+struct WorkBuffer {
+    data: Vec<u8>,
+    ticket: BudgetTicket,
+}
+
+impl WorkBuffer {
+    fn into_ticket(self) -> BudgetTicket {
+        let Self { data, ticket } = self;
+        drop(data);
+        ticket
+    }
+
+    fn into_bytes(self) -> OwnedBytes {
+        OwnedBytes::new(self.data, self.ticket).expect("preallocated output fits ticket")
+    }
+}
+
 struct Job {
-    request: WorkRequest,
-    output: Vec<u8>,
-    scratch: Vec<u8>,
+    output: WorkBuffer,
+    scratch: WorkBuffer,
+    input: OwnedBytes,
+    kind: WorkKind,
+    scope: Scope,
+    priority: Priority,
+    completion: BudgetTicket,
     cursor: usize,
     xor: u8,
+}
+
+impl Job {
+    /// Return the original request and tickets after releasing admission buffers.
+    fn into_request(self) -> WorkRequest {
+        let Self {
+            output,
+            scratch,
+            input,
+            kind,
+            scope,
+            priority,
+            completion,
+            ..
+        } = self;
+        WorkRequest {
+            kind,
+            input,
+            scope,
+            priority,
+            reservations: WorkReservations {
+                output: output.into_ticket(),
+                temporary: scratch.into_ticket(),
+                completion,
+            },
+        }
+    }
 }
 
 /// Real cursor-based copy encoding and XOR verification for contract checks.
@@ -141,21 +191,38 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
                 ),
             });
         }
+        let WorkRequest {
+            kind,
+            input,
+            scope,
+            priority,
+            reservations,
+        } = request;
         let job = Job {
-            request,
-            output,
-            scratch,
+            output: WorkBuffer {
+                data: output,
+                ticket: reservations.output,
+            },
+            scratch: WorkBuffer {
+                data: scratch,
+                ticket: reservations.temporary,
+            },
+            input,
+            kind,
+            scope,
+            priority,
+            completion: reservations.completion,
             cursor: 0,
             xor: 0,
         };
         let accepted = self.ids.accept(job, |id, job| {
-            let priority = job.request.priority;
+            let priority = job.priority;
             self.queue.accept(id.0, job, bytes, priority)
         });
         match accepted {
             Ok(id) => Ok(id),
             Err(e) => Err(Rejected {
-                request: e.request.request,
+                request: e.request.into_request(),
                 reason: e.reason,
             }),
         }
@@ -163,20 +230,23 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
     fn cancel(&mut self, id: WorkId) {
         if let Some(entry) = self.queue.take(id.0) {
             let Job {
-                request: r,
                 output,
                 scratch,
+                input,
+                scope,
+                completion,
                 ..
             } = entry.request;
             // Release buffers before returning the output/temporary tickets.
             drop(output);
             drop(scratch);
+            drop(input);
             self.queue.finish(
                 WorkEvent {
                     id,
-                    scope: r.scope,
+                    scope,
                     result: Terminal::Cancelled,
-                    completion: r.reservations.completion,
+                    completion,
                 },
                 entry.slot,
             );
@@ -196,7 +266,7 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
                 break;
             };
             let job = &mut entry.request;
-            let remaining = job.request.input.as_slice().len() - job.cursor;
+            let remaining = job.input.as_slice().len() - job.cursor;
             let count = remaining
                 .min(CHUNK_BYTES)
                 .min((budget.max_bytes - progress.bytes).min(CHUNK_BYTES as u64) as usize);
@@ -204,46 +274,51 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
                 self.queue.requeue(entry);
                 break;
             }
-            job.scratch.clear();
+            job.scratch.data.clear();
             job.scratch
-                .extend_from_slice(&job.request.input.as_slice()[job.cursor..job.cursor + count]);
-            if job.request.kind.operation == WorkOperation::Encode {
-                job.output.extend_from_slice(&job.scratch);
+                .data
+                .extend_from_slice(&job.input.as_slice()[job.cursor..job.cursor + count]);
+            if job.kind.operation == WorkOperation::Encode {
+                job.output.data.extend_from_slice(&job.scratch.data);
             } else {
-                for b in &job.scratch {
+                for b in &job.scratch.data {
                     job.xor ^= *b;
                 }
             }
             job.cursor += count;
             progress.units += 1;
             progress.bytes += count as u64;
-            if job.cursor == job.request.input.as_slice().len() {
+            if job.cursor == job.input.as_slice().len() {
                 let Job {
-                    request: r,
                     mut output,
+                    scratch,
+                    input,
+                    kind,
+                    scope,
+                    completion,
                     xor,
                     ..
                 } = entry.request;
-                let result = if r.kind.operation == WorkOperation::Verify && xor != 0 {
+                drop(scratch);
+                drop(input);
+                let result = if kind.operation == WorkOperation::Verify && xor != 0 {
+                    drop(output);
                     Terminal::Failed(WorkError {
                         code: WorkErrorCode::InvalidInput,
                         message: "XOR packet checksum mismatch".into(),
                     })
                 } else {
-                    if r.kind.operation == WorkOperation::Verify {
-                        output.push(xor);
+                    if kind.operation == WorkOperation::Verify {
+                        output.data.push(xor);
                     }
-                    Terminal::Completed(
-                        OwnedBytes::new(output, r.reservations.output)
-                            .expect("preallocated output fits ticket"),
-                    )
+                    Terminal::Completed(output.into_bytes())
                 };
                 self.queue.finish(
                     WorkEvent {
                         id: WorkId(entry.slot.id),
-                        scope: r.scope,
+                        scope,
                         result,
-                        completion: r.reservations.completion,
+                        completion,
                     },
                     entry.slot,
                 );
