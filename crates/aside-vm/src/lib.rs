@@ -1,4 +1,4 @@
-//! Aside's storage milestone. No parser, execution scheduler or native callbacks.
+//! Aside storage, verified bytecode and a budgeted resumable execution core.
 #![forbid(unsafe_code)]
 pub mod bytecode;
 mod cell;

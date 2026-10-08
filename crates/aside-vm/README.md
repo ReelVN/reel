@@ -1,8 +1,10 @@
-# Aside storage (L01 and V02)
+# Aside storage and execution (L01, V02, V03)
 
 This crate implements Value storage, an object heap, explicit roots, and one
-incremental tracing collector. It does not implement the parser, bytecode
-execution, language collection operations, native adapters, or snapshot format.
+incremental tracing collector. V03 adds a resumable verified-bytecode execution
+core; see [its public interface, limits and current review state](src/executor/README.md).
+The parser, full collection/class/task handlers, native platform adapters and
+snapshot format remain separate milestones.
 Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
 is maintained by the integration owner.
 
@@ -38,8 +40,8 @@ explicitly. `close(&mut self, &mut Heap)` preflights before changing ownership;
 an error retains the pool, while success permits a new provider. Closed inline
 control metadata stays charged until that FrameSlots owner drops. The Rc byte
 book itself stays charged while any observer/pool still physically owns it.
-Future executor frame/continuation metadata must use this same internal budget;
-this milestone allocates and accounts for window/provider metadata only.
+V03 executor frame/continuation metadata uses this same internal budget; the
+V02 milestone itself accounts for window/provider metadata.
 
 ## Public interface draft
 

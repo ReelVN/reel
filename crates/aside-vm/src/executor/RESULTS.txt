@@ -1,0 +1,12 @@
+V03 release probe
+2026-10-08T17:14:46.710378+00:00
+Linux x86_64
+CPU(s):                                  5
+Model name:                              AMD EPYC 9V74 80-Core Processor
+Rust 1.96.0; cargo run -p aside-vm --release --example executor_load
+Dependencies: V02 cceb151396cadaf4864621f332aa35337e20cac9; B01 8121429ad0658d6843018914be3253932f149d74
+Timing is one host run; allocator counts are actual measured calls.
+
+numeric iterations=1000000 instructions=3000004 work=3020530 elapsed_us=371217 slices=733 slice_p50_ns=454873 slice_p95_ns=760042 slice_max_ns=2615801 allocations=0 allocated_bytes=0 peak_shared_bytes=3090489 program_bytes=1417 frame_pool_bytes=289024
+calls ready=5000 pending=5000 native_entries=10000 elapsed_us=295839 call_p50_ns=22094 call_p95_ns=41322 call_max_ns=3514181 allocations=0 allocated_bytes=0 active_ranges=4 frames=0 peak_shared_bytes=3090917
+cancel max_root_ranges=1024 conservative_work=46169 slices=4 elapsed_ns=5828 active_ranges=4 retained_pool_bytes=289024

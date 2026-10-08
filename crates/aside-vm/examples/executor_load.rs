@@ -4,25 +4,24 @@ use std::time::Instant;
 fn vm(p: BytecodePackage) -> Vm {
     let support = RuntimeSupport {
         opcodes: vec![],
-        capabilities: p
-            .capabilities
-            .iter()
-            .map(|id| p.symbols[id.index()].clone())
-            .collect(),
-        natives: p
-            .natives
-            .iter()
-            .map(|n| NativeSupport {
-                symbol: p.symbols[n.symbol.index()].clone(),
-                abi_version: n.abi_version,
-                signature: p.signatures[n.signature.index()].clone(),
-                required_capabilities: n
-                    .capabilities
-                    .iter()
-                    .map(|id| p.symbols[id.index()].clone())
-                    .collect(),
-            })
-            .collect(),
+        capabilities: vec!["host.echo".into()],
+        natives: vec![NativeSupport {
+            symbol: "host::echo".into(),
+            abi_version: 1,
+            signature: Signature {
+                parameters: vec![Parameter {
+                    name: SymbolId(4),
+                    ty: TypeId(1),
+                    mutable: false,
+                    default: None,
+                }],
+                rest: None,
+                return_type: TypeId(1),
+                effects: Effects::ALL,
+                property_bag_tail: None,
+            },
+            required_capabilities: vec!["host.echo".into()],
+        }],
     };
     Vm::load(
         verify(p, Limits::default()).unwrap(),

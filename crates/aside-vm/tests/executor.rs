@@ -1,27 +1,28 @@
 use aside_vm::{bytecode::*, executor::*, *};
 const OWNER: RootOwner = RootOwner(17);
-fn support(p: &BytecodePackage) -> RuntimeSupport {
+fn support(_p: &BytecodePackage) -> RuntimeSupport {
+    // This fixture adapter is declared independently of package native metadata.
+    // Its fixed fixture symbol/type table is Any=0, Int=1, x=4.
     RuntimeSupport {
         opcodes: vec![],
-        capabilities: p
-            .capabilities
-            .iter()
-            .map(|s| p.symbols[s.index()].clone())
-            .collect(),
-        natives: p
-            .natives
-            .iter()
-            .map(|n| NativeSupport {
-                symbol: p.symbols[n.symbol.index()].clone(),
-                abi_version: n.abi_version,
-                signature: p.signatures[n.signature.index()].clone(),
-                required_capabilities: n
-                    .capabilities
-                    .iter()
-                    .map(|c| p.symbols[c.index()].clone())
-                    .collect(),
-            })
-            .collect(),
+        capabilities: vec!["host.echo".into()],
+        natives: vec![NativeSupport {
+            symbol: "host::echo".into(),
+            abi_version: 1,
+            signature: Signature {
+                parameters: vec![Parameter {
+                    name: SymbolId(4),
+                    ty: TypeId(1),
+                    mutable: false,
+                    default: None,
+                }],
+                rest: None,
+                return_type: TypeId(1),
+                effects: Effects::ALL,
+                property_bag_tail: None,
+            },
+            required_capabilities: vec!["host.echo".into()],
+        }],
     }
 }
 fn vm(p: BytecodePackage) -> Vm {
@@ -290,7 +291,17 @@ fn bare_delivery_stays_rooted_and_wait_arguments_survive_collections() {
     p.signatures[1].return_type = TypeId(0);
     p.functions[1].bindings[0].ty = TypeId(0);
     p.constants[1] = Const::Utf8("rooted argument".into());
-    let mut v = vm(p);
+    let mut adapter = support(&p);
+    // This separate host adapter explicitly accepts/returns Any for rooting tests.
+    adapter.natives[0].signature.parameters[0].ty = TypeId(0);
+    adapter.natives[0].signature.return_type = TypeId(0);
+    let mut v = Vm::load(
+        verify(p, Limits::default()).unwrap(),
+        adapter,
+        VmLimits::default(),
+        SessionEpoch(4),
+    )
+    .unwrap();
     v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();
     let (ticket, arg) = loop {
@@ -468,7 +479,7 @@ fn all_final_b01_cell_cases_execute_their_distinct_outcomes() {
             ),
             fixtures::CellOutcome::SecondInitializationFault => assert_eq!(
                 v.delivery_fault(id).unwrap().unwrap().kind,
-                FaultKind::InvalidState,
+                FaultKind::AlreadyInitialized,
                 "{}",
                 case.name
             ),
@@ -1102,4 +1113,213 @@ fn text_bytes_and_nested_tuple_equality_use_rooted_resumable_stages() {
     let mut output = [0; 10];
     assert_eq!(v.heap().read_bytes(result, 0, &mut output).unwrap(), 10);
     assert_eq!(std::str::from_utf8(&output).unwrap(), "中文🙂");
+}
+#[test]
+fn callback_pending_suspends_same_stack_and_inherits_nowait_dynamically() {
+    for restricted in [false, true] {
+        let mut p = with_callback(fixtures::helper_native(), false);
+        let callback = &mut p.functions[3];
+        callback.register_count = 2;
+        callback.descriptors = vec![Descriptor::Call(CallDesc {
+            target: CallTarget::Native(NativeId(0)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(0),
+                len: 1,
+            }),
+            names: vec![],
+        })];
+        callback.code = vec![
+            Instruction::new(Opcode::LoadConst, 0, 1, 0),
+            Instruction::new(Opcode::Call, 1, 0, 0),
+            Instruction::new(Opcode::Return, 1, 0, 0),
+        ];
+        let mut v = vm(p);
+        v.start(FunctionId(2), &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let id = finish(&mut v);
+        let closure = v.delivery_value(id).unwrap();
+        let root = v
+            .heap_mut()
+            .add_root(OWNER, RootKind::Host, Value::NULL)
+            .unwrap();
+        v.take_delivery_root(id, root).unwrap();
+        v.start(
+            fixtures::ENTRY,
+            &[],
+            OWNER,
+            if restricted {
+                Context::NoWait
+            } else {
+                Context::Ordinary
+            },
+        )
+        .unwrap();
+        let mut outer = None;
+        let mut callback_entries = 0;
+        let mut waits = 0;
+        loop {
+            let out = slice(&mut v);
+            gc(&mut v);
+            match out {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::HostCall(t) => match t.input {
+                    NativeInput::Entry if outer.is_none() => {
+                        outer = Some(t.frame);
+                        v.respond(
+                            t,
+                            HostResponse::CallScript {
+                                closure,
+                                arguments: &[],
+                                continuation: Continuation {
+                                    version: 1,
+                                    stage: 1,
+                                    values: &[],
+                                },
+                            },
+                        )
+                        .unwrap();
+                    }
+                    NativeInput::Entry => {
+                        assert_ne!(outer, Some(t.frame));
+                        assert_eq!(
+                            t.context,
+                            if restricted {
+                                Context::NoWait
+                            } else {
+                                Context::Ordinary
+                            }
+                        );
+                        callback_entries += 1;
+                        v.respond(t, HostResponse::Pending(t.wait_id())).unwrap();
+                    }
+                    NativeInput::CallbackReturned | NativeInput::CallbackFault => {
+                        assert_eq!(outer, Some(t.frame));
+                        if restricted {
+                            assert_eq!(t.input, NativeInput::CallbackFault);
+                            assert_eq!(
+                                v.host_callback_fault(t).unwrap().unwrap().kind,
+                                FaultKind::Effect
+                            );
+                        } else {
+                            assert_eq!(t.input, NativeInput::CallbackReturned);
+                            assert_eq!(v.host_callback_value(t).unwrap().as_int(), Some(42));
+                        }
+                        v.respond(t, HostResponse::Ready(Value::int(42))).unwrap();
+                    }
+                    o => panic!("{o:?}"),
+                },
+                RunOutcome::Waiting(w) => {
+                    assert!(!restricted);
+                    waits += 1;
+                    for _ in 0..3 {
+                        collect(&mut v);
+                    }
+                    v.complete(w, Completion::Ready(Value::int(42))).unwrap();
+                }
+                RunOutcome::Returned(id) => {
+                    assert_eq!(v.delivery_value(id).unwrap().as_int(), Some(42));
+                    break;
+                }
+                o => panic!("{o:?}"),
+            }
+        }
+        assert_eq!(callback_entries, 1);
+        assert_eq!(waits, usize::from(!restricted));
+        assert_eq!(v.stats().native_entries, 2);
+        assert_eq!(v.stats().native_resumes, 1);
+    }
+}
+#[test]
+fn defaults_read_definition_cell_after_defining_frame_is_gone() {
+    let mut v = vm(fixtures::captured_default());
+    v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let id = finish(&mut v);
+    let closure = v.delivery_value(id).unwrap();
+    let root = v
+        .heap_mut()
+        .add_root(OWNER, RootKind::Host, Value::NULL)
+        .unwrap();
+    v.take_delivery_root(id, root).unwrap();
+    let cell = v.heap().get_field(closure, 3).unwrap();
+    v.heap_mut().cell_write(cell, Value::int(99)).unwrap();
+    collect(&mut v);
+    v.start_closure(closure, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let id = finish(&mut v);
+    assert_eq!(v.delivery_value(id).unwrap().as_int(), Some(99));
+}
+#[test]
+fn frame_continuation_work_pools_and_inline_control_share_one_budget() {
+    let p = fixtures::helper_native();
+    let registry = support(&p);
+    let program = verify(p, Limits::default()).unwrap();
+    let bytes = program.stats().owned_capacity_bytes as u64;
+    let mut limits = VmLimits::default();
+    limits.heap.max_bytes = bytes + 300_000;
+    assert!(matches!(
+        Vm::load(program, registry, limits, SessionEpoch(1)),
+        Err(VmError::Heap(HeapError::ResourceLimit { .. }))
+    ));
+    let mut v = vm(fixtures::helper_native());
+    let usage = v.heap().budget_usage();
+    let before = usage.charged_bytes();
+    assert!(v.stats().control_bytes > 0);
+    assert!(v.stats().program_bytes > 0);
+    v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let root = v
+        .heap_mut()
+        .add_root(OWNER, RootKind::Host, Value::NULL)
+        .unwrap();
+    let id = loop {
+        match slice(&mut v) {
+            RunOutcome::HostCall(t) => {
+                let state = v.heap_mut().alloc_array(&[Value::int(4)]).unwrap();
+                v.respond(
+                    t,
+                    HostResponse::Continue(Continuation {
+                        version: 1,
+                        stage: 1,
+                        values: &[state],
+                    }),
+                )
+                .unwrap();
+                break t;
+            }
+            RunOutcome::BudgetYield(_) => {}
+            o => panic!("{o:?}"),
+        }
+    };
+    assert!(usage.charged_bytes() > before);
+    v.cancel(OWNER).unwrap();
+    loop {
+        match v.run_slice(SliceBudget::default(), || 0) {
+            Ok(RunOutcome::BudgetYield(_)) => {}
+            Err(VmError::Idle) => break,
+            o => panic!("{o:?}"),
+        }
+    }
+    assert!(v.heap().root_value(root).is_err());
+    assert!(matches!(
+        v.respond(id, HostResponse::Ready(Value::int(42))),
+        Err(VmError::InvalidTicket)
+    ));
+    drop(v);
+    assert!(usage.charged_bytes() < before);
+}
+#[test]
+fn vm_load_does_not_trust_erased_native_capabilities() {
+    let mut p = fixtures::helper_native();
+    let registry = support(&p);
+    p.capabilities.clear();
+    p.natives[0].capabilities.clear();
+    let verified = verify(p, Limits::default()).unwrap();
+    assert!(matches!(
+        Vm::load(verified, registry, VmLimits::default(), SessionEpoch(1)),
+        Err(VmError::Format(Error {
+            kind: ErrorKind::Capability,
+            ..
+        }))
+    ));
 }

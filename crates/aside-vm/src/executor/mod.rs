@@ -7,255 +7,9 @@ use crate::root_ranges::{ChargedVec, Reservation};
 use crate::*;
 use std::cmp::Ordering;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FrameId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ModuleInstanceId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CodeRef {
-    pub function: FunctionId,
-    pub version: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Location {
-    pub code: CodeRef,
-    pub pc: Pc,
-    pub source: Option<SourceSpan>,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DeliveryId {
-    heap: HeapId,
-    epoch: SessionEpoch,
-    serial: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WaitId {
-    heap: HeapId,
-    epoch: SessionEpoch,
-    serial: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeInput {
-    Entry,
-    Continue { version: u64, stage: u64 },
-    CallbackReturned,
-    CallbackFault,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HostTicket {
-    heap: HeapId,
-    epoch: SessionEpoch,
-    serial: u64,
-    pub frame: FrameId,
-    pub native: NativeId,
-    pub signature: SignatureId,
-    pub abi_version: u32,
-    pub owner: RootOwner,
-    pub location: Location,
-    pub input: NativeInput,
-    pub context: Context,
-    pub effects: Effects,
-}
-impl HostTicket {
-    pub fn wait_id(self) -> WaitId {
-        WaitId {
-            heap: self.heap,
-            epoch: self.epoch,
-            serial: self.serial,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug)]
-pub struct Continuation<'a> {
-    pub version: u64,
-    pub stage: u64,
-    pub values: &'a [Value],
-}
-pub enum HostResponse<'a> {
-    Ready(Value),
-    Pending(WaitId),
-    CallScript {
-        closure: Value,
-        arguments: &'a [Value],
-        continuation: Continuation<'a>,
-    },
-    Continue(Continuation<'a>),
-    Error(Value),
-}
-#[derive(Clone, Copy, Debug)]
-pub enum Completion {
-    Ready(Value),
-    Error(Value),
-}
-#[derive(Clone, Copy, Debug)]
-pub struct SliceBudget {
-    pub instructions: u32,
-    pub work: u64,
-    pub allocation_bytes: u64,
-    pub deadline_ns: Option<u64>,
-}
-impl Default for SliceBudget {
-    fn default() -> Self {
-        Self {
-            instructions: 1024,
-            work: 65536,
-            allocation_bytes: 1024 * 1024,
-            deadline_ns: None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SliceUsage {
-    pub instructions: u32,
-    pub work: u64,
-    pub allocation_bytes: u64,
-    pub required_work: u64,
-    pub required_allocation: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunOutcome {
-    Returned(DeliveryId),
-    BudgetYield(SliceUsage),
-    HostCall(HostTicket),
-    Waiting(WaitId),
-    Fault(DeliveryId),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FaultKind {
-    Thrown,
-    Type,
-    Uninitialized,
-    ReadOnly,
-    DuplicateArgument,
-    MissingArgument,
-    UnknownArgument,
-    Overflow,
-    DivisionByZero,
-    Effect,
-    Resource,
-    InvalidState,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FaultInfo {
-    pub kind: FaultKind,
-    pub location: Location,
-}
-#[derive(Debug)]
-pub enum VmError {
-    Format(bytecode::Error),
-    Heap(HeapError),
-    InvalidTicket,
-    InvalidWait,
-    InvalidDelivery,
-    Busy,
-    Idle,
-    Limit,
-    Contract(&'static str),
-}
-impl From<HeapError> for VmError {
-    fn from(e: HeapError) -> Self {
-        Self::Heap(e)
-    }
-}
-impl From<bytecode::Error> for VmError {
-    fn from(e: bytecode::Error) -> Self {
-        Self::Format(e)
-    }
-}
-impl std::fmt::Display for VmError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl std::error::Error for VmError {}
-#[derive(Clone, Copy, Debug)]
-pub struct VmLimits {
-    pub heap: HeapLimits,
-    pub slots: FrameSlotsLimits,
-    pub max_frames: u32,
-    pub max_unwinds: u32,
-    pub max_arguments: u32,
-    pub max_continuation_values: u32,
-}
-impl Default for VmLimits {
-    fn default() -> Self {
-        Self {
-            heap: HeapLimits::default(),
-            slots: FrameSlotsLimits {
-                initial_capacity: 16384,
-                max_capacity: 16384,
-                max_window_len: 8192,
-            },
-            max_frames: 128,
-            max_unwinds: 256,
-            max_arguments: 256,
-            max_continuation_values: 256,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug)]
-pub struct VmStats {
-    pub frames: u32,
-    pub unwinds: u32,
-    pub native_entries: u64,
-    pub native_resumes: u64,
-    pub slices: u64,
-    pub usage: SliceUsage,
-    pub heap: HeapStats,
-    pub slots: FrameSlotsStats,
-    pub program_bytes: u64,
-    pub control_bytes: u64,
-}
+mod api;
+pub use api::*;
 
-/// This is the dispatcher support list, never a claim about source compilation.
-pub const SUPPORTED_OPCODES: &[Opcode] = &[
-    Opcode::LoadConst,
-    Opcode::Move,
-    Opcode::Clear,
-    Opcode::BindInit,
-    Opcode::BindRead,
-    Opcode::BindWrite,
-    Opcode::CellNew,
-    Opcode::CellRead,
-    Opcode::CellWrite,
-    Opcode::CaptureRead,
-    Opcode::GlobalRead,
-    Opcode::GlobalInit,
-    Opcode::GlobalWrite,
-    Opcode::Add,
-    Opcode::Sub,
-    Opcode::Mul,
-    Opcode::Div,
-    Opcode::Rem,
-    Opcode::BitAnd,
-    Opcode::BitOr,
-    Opcode::BitXor,
-    Opcode::Shl,
-    Opcode::Shr,
-    Opcode::Eq,
-    Opcode::Ne,
-    Opcode::Lt,
-    Opcode::Le,
-    Opcode::Gt,
-    Opcode::Ge,
-    Opcode::Neg,
-    Opcode::Pos,
-    Opcode::Not,
-    Opcode::BitNot,
-    Opcode::Is,
-    Opcode::Jump,
-    Opcode::BranchBool,
-    Opcode::BranchNull,
-    Opcode::MakeClosure,
-    Opcode::Call,
-    Opcode::Return,
-    Opcode::ArgsNew,
-    Opcode::ArgsPush,
-    Opcode::ArgsNamed,
-    Opcode::Throw,
-    Opcode::Leave,
-    Opcode::EndFinally,
-];
 #[derive(Clone, Copy)]
 enum ReturnTo {
     Delivery,
@@ -427,6 +181,7 @@ pub struct Vm {
     terminal: Option<Terminal>,
     cancelling: bool,
     task_owner: Option<RootOwner>,
+    task_id: Option<TaskId>,
     cancel_roots: u32,
     native_entries: u64,
     native_resumes: u64,
@@ -505,7 +260,7 @@ impl Vm {
         let control_bytes = std::mem::size_of::<Self>()
             - std::mem::size_of::<Heap>()
             - std::mem::size_of::<FrameSlots>()
-            - std::mem::size_of::<VerifiedProgram>();
+            - std::mem::size_of::<BytecodePackage>();
         let control_charge = Reservation::new(&usage, control_bytes as u64)?;
         let frames = ChargedVec::new(&usage, limits.max_frames as usize)?;
         let unwinds = ChargedVec::new(&usage, limits.max_unwinds as usize)?;
@@ -601,6 +356,7 @@ impl Vm {
             terminal: None,
             cancelling: false,
             task_owner: None,
+            task_id: None,
             cancel_roots: 0,
             native_entries: 0,
             native_resumes: 0,
@@ -610,6 +366,12 @@ impl Vm {
     }
     pub fn program(&self) -> &VerifiedProgram {
         &self.program
+    }
+    pub fn task_id(&self) -> Option<TaskId> {
+        self.task_id
+    }
+    pub fn is_idle(&self) -> bool {
+        self.task_owner.is_none() && self.frames.data.is_empty() && self.terminal.is_none()
     }
     pub fn heap(&self) -> &Heap {
         &self.heap
@@ -660,6 +422,22 @@ impl Vm {
             code: s.code,
             pc,
             source: self.program.source_at(s.code.function, pc),
+        }
+    }
+    fn binding_location(&self, s: ScriptFrame) -> Location {
+        match s.ret {
+            ReturnTo::Register { frame, call, .. } | ReturnTo::Default { frame, call, .. } => {
+                match self.index(frame).ok().map(|i| self.frames.data[i]) {
+                    Some(Frame::Script(parent)) => self.loc(parent, call),
+                    _ => self.loc(s, s.pc),
+                }
+            }
+            ReturnTo::Native { frame } => match self.index(frame).ok().map(|i| self.frames.data[i])
+            {
+                Some(Frame::Native(n)) => n.location,
+                _ => self.loc(s, s.pc),
+            },
+            ReturnTo::Delivery => self.loc(s, s.pc),
         }
     }
     fn contract(&self, module: ModuleId, ty: TypeId, mutable: bool) -> CellContract {
@@ -713,6 +491,9 @@ impl Vm {
     fn release_cost(&self, count: u64) -> u64 {
         count * (4 * self.limits.heap.max_root_ranges as u64 + 8)
     }
+    // All construction inputs are explicit so failed root publication rolls back
+    // as one transaction before a frame becomes visible.
+    #[allow(clippy::too_many_arguments)]
     fn push_script(
         &mut self,
         function: FunctionId,
@@ -836,6 +617,7 @@ impl Vm {
         for &v in args {
             self.heap.root_insertion_barrier(v)?;
         }
+        let task = TaskId(self.serial()?);
         self.push_script(
             function,
             closure,
@@ -859,6 +641,7 @@ impl Vm {
         };
         *self.frames.data.last_mut().unwrap() = Frame::Script(s);
         self.task_owner = Some(owner);
+        self.task_id = Some(task);
         Ok(())
     }
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
@@ -1215,6 +998,7 @@ impl Vm {
         self.clear(self.delivery, 0)?;
         self.terminal = None;
         self.task_owner = None;
+        self.task_id = None;
         Ok(())
     }
     pub fn cancel(&mut self, owner: RootOwner) -> Result<(), VmError> {
@@ -1299,6 +1083,7 @@ impl Vm {
                 }
                 self.cancelling = false;
                 self.task_owner = None;
+                self.task_id = None;
                 return Err(VmError::Idle);
             }
             let Some(f) = self.frames.data.last().copied() else {
@@ -1380,7 +1165,7 @@ impl Vm {
                                 origin: s.pc,
                                 reason: ExitReason::Throw(FaultInfo {
                                     kind,
-                                    location: self.loc(s, s.pc),
+                                    location: self.binding_location(s),
                                 }),
                                 skip: None,
                             };
@@ -1438,7 +1223,7 @@ impl Vm {
                         origin: s.pc,
                         reason: ExitReason::Throw(FaultInfo {
                             kind: FaultKind::MissingArgument,
-                            location: self.loc(s, s.pc),
+                            location: self.binding_location(s),
                         }),
                         skip: None,
                     };
@@ -1710,7 +1495,7 @@ impl Vm {
         let f = &self.program.package().functions[s.code.function.index()];
         if matches!(
             op,
-            Opcode::CellWrite | Opcode::BindWrite | Opcode::GlobalWrite
+            Opcode::CellWrite | Opcode::BindWrite | Opcode::GlobalWrite | Opcode::GlobalInit
         ) && (s.context == Context::Derived || s.effects.0 & Effects::WRITE == 0)
         {
             return Err(FaultKind::Effect);
@@ -2245,7 +2030,7 @@ impl Vm {
         let f = &self.program.package().functions[s.code.function.index()];
         // A new error/return inside an active finally supersedes that exit. Nested
         // ordinary Leave stays within the outer cleanup and preserves its record.
-        while let Some(u) = self
+        if let Some(u) = self
             .unwinds
             .data
             .last()
@@ -2253,14 +2038,13 @@ impl Vm {
             .filter(|u| u.frame == s.id)
         {
             let range = f.regions[u.region.index()].finally.unwrap();
-            if !range.contains(origin)
-                || matches!(reason,ExitReason::Leave(target) if range.contains(target))
+            if range.contains(origin)
+                && !matches!(reason,ExitReason::Leave(target) if range.contains(target))
             {
-                break;
+                self.slots.release(&mut self.heap, u.value)?;
+                self.unwinds.data.pop();
+                return Ok(());
             }
-            self.slots.release(&mut self.heap, u.value)?;
-            self.unwinds.data.pop();
-            return Ok(());
         }
         let handler = match reason {
             ExitReason::Throw(_) => {
@@ -2476,6 +2260,7 @@ impl Vm {
                     epoch: self.heap.epoch(),
                     serial,
                     frame: n.id,
+                    task: self.task_id.unwrap(),
                     native: n.native,
                     signature: n.signature,
                     abi_version: self.program.package().natives[n.native.index()].abi_version,
@@ -2595,7 +2380,7 @@ fn heap_fault(e: HeapError) -> FaultKind {
         HeapError::UninitializedSlot | HeapError::UninitializedCell => FaultKind::Uninitialized,
         HeapError::ReadOnly => FaultKind::ReadOnly,
         HeapError::TypeMismatch | HeapError::WrongKind => FaultKind::Type,
-        HeapError::AlreadyInitialized => FaultKind::InvalidState,
+        HeapError::AlreadyInitialized => FaultKind::AlreadyInitialized,
         _ => FaultKind::Resource,
     }
 }
