@@ -1,3 +1,18 @@
+Current native-default integration validation at cc55dd2 (B01 57ff60e)
+59 unit + 53 executor + 15 FrameSlots + 15 storage + 1 doc test passed.
+Clippy all-targets passed; i686 tests/examples compile check passed.
+All are author self-tests; independent V03 execution remains blocked separately.
+Seven additional current-head raw runs: CURRENT-PERF-SAMPLES.jsonl
+No-default echo calls: median 39841 us / 10000 calls; p50/p95 medians 3705/3876 ns.
+Numeric million-iteration loop: median 325686 us / 3000004 instructions.
+Numeric/call/GC allocations: 0 in every run; native redundant NULL writes: 0.
+Peak shared charge: 7143765 bytes; idle root ranges: 34; FrameSlots: 289024 bytes.
+GC units/descriptors/values: 9837/45/8766; cancellation work/slices: 46169/4.
+Native default Entry/projected author-value views, default closure callbacks,
+preparation cancellation and direct Value-prefix paths execute in semantic tests.
+Source-level standard-library binding, absent handlers, snapshot/restore,
+invoke_sync and bounded final code-version retirement remain follow-up.
+
 Current V03 measurements: complete fault semantics + native root optimization
 Semantic implementation: 2842fb4092fa8b1733dd04840c76f169ac3e6342
 Measured baseline: 73467e3; measured optimized implementation: f23014d.

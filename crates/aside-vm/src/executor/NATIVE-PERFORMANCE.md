@@ -81,3 +81,25 @@ stdout. Author self-tests verify real repeated calls allocate zero times, logica
 span reads preserve bitmap errors, and callback/continued waits still preserve
 values, faults, identity and root lifetime with instruction budget 1 and GC.
 This comparison is author evidence; independent V03 execution remains separate.
+
+## Current integration check
+
+Seven additional standalone runs at native-default implementation `cc55dd2`
+(B01 `57ff60e`) repeat the same no-default echo load. This is a regression check,
+not a new matched baseline/optimized comparison; the original comparison above
+keeps identical fault semantics on both sides. Raw outputs are in
+[CURRENT-PERF-SAMPLES.jsonl](CURRENT-PERF-SAMPLES.jsonl).
+
+The current median numeric total is 325,686 µs (308,096–359,076); call total
+39,841 µs (38,564–44,439); within-run call p50/p95 medians are 3,705/3,876 ns.
+Every run still has zero numeric/call/GC allocator calls, zero redundant NULL
+publications, 34 idle root ranges, and 289,024 retained FrameSlots bytes. Peak
+shared charge is now 7,143,765 bytes, including the larger native/frame state
+and B01 cached layout. Call work is 826,980,000; live-native GC still reports
+9,837 units / 45 descriptors / 8,766 Values; cancellation still reports 46,169
+conservative work in four slices (median 6,660 ns).
+
+These timing fields cover no-default Ready/Pending dispatch. Script/native
+defaults, shared closure callbacks and fault propagation are exercised by the
+author semantic tests; this echo load is not a claim that closure-producing
+defaults allocate zero times.

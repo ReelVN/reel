@@ -4,7 +4,7 @@ The first public interface/state proposal was committed as `40d1b9d`, before the
 executor implementation. Public Rust types are now isolated in [api.rs](api.rs).
 The draft PR is https://github.com/jhq223/reel/pull/23, with the creation-time base
 `task/issue-17-frame-slots` unchanged. Language §22/§23 follows the integration
-owner's document head `32054c9`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
+owner's document head `65f8ba9`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
 `57ff60e`; independent dependency acceptance is coordinated by the integration owner.
 
 This executes verified hand-authored B01 packages. Source compilation/lowering,
@@ -38,8 +38,9 @@ Native defaults use B01's cached canonical layout and the same preparation
 stages. Entry is published only after all parameters succeed. Shared Cells stay
 in a private environment window; host_arguments borrows a separate continuous
 author-value view, projected again before every resume ticket after callbacks.
-Natives without defaults retain their direct Value path and allocate no Cell
-environment. Native rest constructs an array of tail positional values.
+Natives without defaults retain their direct Value path. A cached layout that
+needs no Cell allocates no Cell environment, including read-only Value prefixes.
+Native rest constructs an array of tail positional values.
 
 HostCall arguments borrow a contiguous rooted window. Respond consumes the
 exact issued ticket once. Continue and CallScript produce fresh resume tickets;
@@ -103,8 +104,9 @@ The executor has no separate cleanup selector. An inner catch/cleanup inside
 an active finally preserves the outer pending exit. Only an escaping new failure
 supersedes it, appending a typed ReplacedExit with the entire previous fault,
 return value or versioned Leave target. Rethrow preserves the same envelope;
-explicit throw in catch creates a new identity and CaughtFault edge. Parameter/default preparation
-failures go to the caller and never execute unentered callee-body handlers.
+explicit throw in catch creates a new identity and CaughtFault edge. Binding
+preparation failures go to the caller and skip unentered callee-body handlers;
+an entered default body uses its own real catch regions.
 Native binder faults retain their exact FaultKind; explicit ForwardFault preserves
 identity, code, origin, stack and causes. Error(NewFault) always creates a new
 fault, including when its value equals a prior fault's value. FaultBuild captures
@@ -162,8 +164,10 @@ cargo run -p aside-vm --release --example executor_load
 
 [executor tests](../../tests/executor.rs) execute the exact final B01 constructors:
 helper-native in both Ready/Pending modes, cell-closures, captured-default,
-duplicate-arguments, exception-regions and all CELL_CASES. Every execution uses
-instruction budget 1 with GC interleaved. Additional checks cover five native
+duplicate-arguments, exception-regions, all CELL_CASES, parameter-cell-default,
+and native-parameter-defaults. Shared fixture execution uses instruction budget
+1 with GC interleaved; parameter and fault construction also exercise work=1
+and allocation=0 with explicit adaptive grants. Additional checks cover five native
 response rounds, callback faults and callback Pending on the same task stack,
 NoWait dynamic inheritance, original wait source, changed definition-cell defaults,
 rooted terminal delivery, stale/cross-VM tickets and waits, common budget failure,
@@ -172,14 +176,26 @@ Additional regressions keep A waiting while B mutates the same Cell/global,
 retain multiple deliveries across GC, selectively cancel a third Task, and reject
 old Task identities after slot reuse. NoWait+Derived and Init+Derived retain both
 constraints. Callback dispatch uses the returned continuation stage, with no
-host-side round counter. Resource admission and preparation fail once and are
-routed at the caller; inner errors inside finally preserve pending Return/Throw.
+host-side round counter. Ordinary preparation faults are routed at the caller;
+hard fault/catch/unwind capacity returns ResourceBlocked with its phase and
+roots retained. Inner errors inside finally preserve pending Return/Throw.
 Normal exits nested in catch/finally use the shared B01 selector.
 Numeric edges cover exact large int/float comparisons, NaN, negative zero,
 checked overflow and strict bool. Long equality roots persist across work=1/GC.
+Further regressions cover full fault identity/stack/cyclic causes and graph
+delivery lifetime, continuation fault-slot replacement, 1,000 sequential catch
+activations, cooperative cancellation during equality and actual parameter
+preparation phases, native Entry gating, shared default closures, projected
+host argument values after callbacks, and native positional rest.
 
-[RESULTS.txt](RESULTS.txt) links the current seven-pair complete-fault
-[native comparison](NATIVE-PERFORMANCE.md) and retains the earlier historical
+At code head `cc55dd2`, author validation passed 59 unit, 53 executor, 15
+FrameSlots, 15 storage and one doc test, Clippy with warnings denied, and the
+i686 compile check. This is author evidence; independent V03 execution remains
+blocked in the separate acceptance workflow.
+
+[RESULTS.txt](RESULTS.txt) links the seven-pair complete-fault
+[native comparison](NATIVE-PERFORMANCE.md), seven additional current-code runs,
+and retains the earlier historical
 Linux x86_64 release run, including total
 instructions/work, slice and call timing, actual allocator calls/bytes, shared
 peak bytes and cancellation work. Timing varies with the host. The probe's hot
