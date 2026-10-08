@@ -1,6 +1,8 @@
 //! Design experiment only: not a VM API, wire format, or collector.
 use std::mem::size_of;
 
+pub mod trace;
+
 pub const FIELD_MAX: u32 = (1 << 24) - 1;
 pub const SMALL_MIN: i64 = -(1 << 47);
 pub const SMALL_MAX: i64 = (1 << 47) - 1;
@@ -97,6 +99,13 @@ impl<T> Arena<T> {
             return None;
         }
         slot.value.as_deref()
+    }
+    pub fn get_mut(&mut self, handle: Handle) -> Option<&mut T> {
+        let slot = self.slots.get_mut(handle.index() as usize)?;
+        if slot.generation != handle.generation() {
+            return None;
+        }
+        slot.value.as_deref_mut()
     }
     pub fn remove(&mut self, handle: Handle) -> bool {
         let Some(slot) = self.slots.get_mut(handle.index() as usize) else {

@@ -5,6 +5,10 @@
 `docs/`。基线提交：`98f4be2344c1ac12815d19b6bc0ace39cdc77cc4`。
 范围仅本目录，依赖只有 Rust 标准库；汇总脚本仅依赖 Python 标准库。
 结果和建议见 [REPORT.md](REPORT.md)，原始采样保存在 [results/](results/)。
+新增 [有界解释执行 trace](TRACE.md) 使用同一标量取指循环和动态类型检查，
+覆盖剧情变量、UI 属性、浮点动画及独立 wide-int 压力；数组内核仅是组成成本。
+trace 二进制为 trace-bench，数组二进制仍为 value-layout-bench。
+下文说明原数组夹具；trace 的 wide 共享/释放策略与存储核算单列于 TRACE.md。
 
 ## 表示与边界
 

@@ -1,0 +1,161 @@
+Binary SHA-256: d3b790d4acbbc50dde7fc876092547e4a9caf88ec222ff01cfe1b70fd9531e52
+Commands: objdump -d -C --no-show-raw-insn target/release/trace-bench; nm -C; readelf -r
+Exact excerpts: scalar opcode fetch, indirect opcode dispatch, dynamic register type dispatch, shared native host calls.
+Shared HostHeap::get relocation: 000000074570  000000000008 R_X86_64_RELATIVE                    6d3d0
+Shared HostHeap::call relocation: 000000074578  000000000008 R_X86_64_RELATIVE                    6d490
+Shared HostHeap::set relocation: 000000074588  000000000008 R_X86_64_RELATIVE                    6d430
+
+nanbox8_slots_rc
+00000000000599e0 <value_layout_bench::trace::execute>:
+   59a7f:	lea    0x0(,%rbp,2),%rcx
+   59a87:	add    %rbp,%rcx
+   59a8a:	movzbl (%rbx,%rcx,4),%edx
+   59a8e:	movzwl 0x2(%rbx,%rcx,4),%r13d
+   59a94:	movzwl 0x4(%rbx,%rcx,4),%eax
+   59a99:	movzwl 0x6(%rbx,%rcx,4),%edi
+   59a9e:	mov    0x8(%rbx,%rcx,4),%ecx
+   59aa2:	inc    %rbp
+   59aa5:	lea    -0x4d530(%rip),%r9        # c57c <anon.03464d30ebb3d4961f2d40d797733269.847.llvm.1275362730591129583+0x733>
+   59aac:	movslq (%r9,%rdx,4),%rsi
+   59ab0:	add    %r9,%rsi
+   59ab3:	jmp    *%rsi
+   59ab5:	mov    0x10(%r14),%rsi
+   59ab9:	cmp    %rax,%rsi
+   59abc:	jbe    5a55e <value_layout_bench::trace::execute+0xb7e>
+   59ac2:	mov    0x8(%r14),%rcx
+   59ac6:	mov    (%rcx,%rax,8),%rax
+   59aca:	movabs $0x8007000000000000,%r8
+   59ad4:	add    %rax,%r8
+   59ad7:	shr    $0x30,%r8
+   59adb:	cmp    $0x4,%r8w
+   59ae0:	ja     59b4d <value_layout_bench::trace::execute+0x16d>
+   59ae2:	mov    $0x14,%r9d
+   59ae8:	bt     %r8d,%r9d
+   59aec:	jae    5a491 <value_layout_bench::trace::execute+0xab1>
+   59af2:	mov    %rax,%r8
+   59af5:	and    %r11,%r8
+   59af8:	movabs $0x7ffd000000000000,%r9
+   59b02:	cmp    %r9,%r8
+   59b05:	jne    59b52 <value_layout_bench::trace::execute+0x172>
+   59b07:	mov    %eax,%r10d
+   59b0a:	and    $0xffffff,%r10d
+   59b11:	mov    $0x5,%r8b
+   59b14:	cmp    0x40(%r14),%r10
+   59b18:	jae    5a494 <value_layout_bench::trace::execute+0xab4>
+   59b1e:	mov    0x38(%r14),%r9
+   59b22:	lea    (%r10,%r10,2),%r10
+   59b26:	shr    $0x18,%rax
+   59b2a:	and    $0xffffff,%eax
+   59b2f:	cmp    %eax,(%r9,%r10,8)
+   59b33:	jne    5a494 <value_layout_bench::trace::execute+0xab4>
+   59b39:	lea    (%r9,%r10,8),%rax
+   59b3d:	cmpl   $0x0,0x8(%rax)
+   59b41:	je     5a494 <value_layout_bench::trace::execute+0xab4>
+Common native host calls retained in this monomorphization:
+HostHeap::get:    59de9:	call   *0x1a781(%rip)        # 74570 <_DYNAMIC+0xa18>
+HostHeap::call:    5a35d:	call   *0x1a215(%rip)        # 74578 <_DYNAMIC+0xa20>
+HostHeap::set:    5a44b:	call   *0x1a137(%rip)        # 74588 <_DYNAMIC+0xa30>
+
+nanbox8_box_rc
+000000000005a620 <value_layout_bench::trace::execute>:
+   5a6bf:	lea    0x0(,%rbp,2),%rcx
+   5a6c7:	add    %rbp,%rcx
+   5a6ca:	movzbl (%rbx,%rcx,4),%edx
+   5a6ce:	movzwl 0x2(%rbx,%rcx,4),%r13d
+   5a6d4:	movzwl 0x4(%rbx,%rcx,4),%eax
+   5a6d9:	movzwl 0x6(%rbx,%rcx,4),%edi
+   5a6de:	mov    0x8(%rbx,%rcx,4),%ecx
+   5a6e2:	inc    %rbp
+   5a6e5:	lea    -0x4e0f0(%rip),%r9        # c5fc <anon.03464d30ebb3d4961f2d40d797733269.847.llvm.1275362730591129583+0x7b3>
+   5a6ec:	movslq (%r9,%rdx,4),%rsi
+   5a6f0:	add    %r9,%rsi
+   5a6f3:	jmp    *%rsi
+   5a6f5:	mov    0x10(%r14),%rsi
+   5a6f9:	cmp    %rax,%rsi
+   5a6fc:	jbe    5b20b <value_layout_bench::trace::execute+0xbeb>
+   5a702:	mov    0x8(%r14),%rcx
+   5a706:	mov    (%rcx,%rax,8),%rax
+   5a70a:	movabs $0x8007000000000000,%r8
+   5a714:	add    %rax,%r8
+   5a717:	shr    $0x30,%r8
+   5a71b:	cmp    $0x4,%r8w
+   5a720:	ja     5a799 <value_layout_bench::trace::execute+0x179>
+   5a722:	mov    $0x14,%r9d
+   5a728:	bt     %r8d,%r9d
+   5a72c:	jae    5b131 <value_layout_bench::trace::execute+0xb11>
+   5a732:	mov    %rax,%r8
+   5a735:	and    %r11,%r8
+   5a738:	movabs $0x7ffd000000000000,%r9
+   5a742:	cmp    %r9,%r8
+   5a745:	jne    5a79e <value_layout_bench::trace::execute+0x17e>
+   5a747:	mov    %eax,%r10d
+   5a74a:	and    $0xffffff,%r10d
+   5a751:	mov    $0x5,%r8b
+   5a754:	cmp    0x40(%r14),%r10
+   5a758:	jae    5b134 <value_layout_bench::trace::execute+0xb14>
+   5a75e:	mov    0x38(%r14),%r9
+   5a762:	lea    (%r10,%r10,2),%r10
+   5a766:	shr    $0x18,%rax
+   5a76a:	and    $0xffffff,%eax
+   5a76f:	cmp    %eax,(%r9,%r10,8)
+   5a773:	jne    5b134 <value_layout_bench::trace::execute+0xb14>
+   5a779:	lea    (%r9,%r10,8),%rax
+   5a77d:	cmpl   $0x0,0x8(%rax)
+   5a781:	je     5b134 <value_layout_bench::trace::execute+0xb14>
+Common native host calls retained in this monomorphization:
+HostHeap::get:    5aa59:	call   *0x19b11(%rip)        # 74570 <_DYNAMIC+0xa18>
+HostHeap::call:    5aff1:	call   *0x19581(%rip)        # 74578 <_DYNAMIC+0xa20>
+HostHeap::set:    5b0eb:	call   *0x19497(%rip)        # 74588 <_DYNAMIC+0xa30>
+
+explicit16 (16-byte register stride and explicit tag-indexed dispatch)
+000000000005b2d0 <value_layout_bench::trace::execute>:
+   5b37d:	lea    0x0(,%rbp,2),%rax
+   5b385:	add    %rbp,%rax
+   5b388:	movzbl (%rbx,%rax,4),%edx
+   5b38c:	movzwl 0x2(%rbx,%rax,4),%r13d
+   5b392:	movzwl 0x4(%rbx,%rax,4),%edi
+   5b397:	movzwl 0x6(%rbx,%rax,4),%r8d
+   5b39d:	mov    0x8(%rbx,%rax,4),%ecx
+   5b3a1:	inc    %rbp
+   5b3a4:	lea    -0x4ed2f(%rip),%rsi        # c67c <anon.03464d30ebb3d4961f2d40d797733269.847.llvm.1275362730591129583+0x833>
+   5b3ab:	movslq (%rsi,%rdx,4),%rax
+   5b3af:	add    %rsi,%rax
+   5b3b2:	jmp    *%rax
+   5b3b4:	mov    0x10(%r14),%rsi
+   5b3b8:	cmp    %rdi,%rsi
+   5b3bb:	jbe    5ba36 <value_layout_bench::trace::execute+0x766>
+   5b3c1:	mov    0x8(%r14),%rcx
+   5b3c5:	shl    $0x4,%edi
+   5b3c8:	mov    (%rcx,%rdi,1),%r9
+   5b3cc:	mov    0x8(%rcx,%rdi,1),%rax
+   5b3d1:	mov    $0x1,%dil
+   5b3d4:	lea    -0x4ecaf(%rip),%r10        # c72c <anon.03464d30ebb3d4961f2d40d797733269.847.llvm.1275362730591129583+0x8e3>
+   5b3db:	movslq (%r10,%r9,4),%r9
+   5b3df:	add    %r10,%r9
+   5b3e2:	jmp    *%r9
+   5b3e5:	xor    %edi,%edi
+   5b3e7:	cmp    %r8,%rsi
+   5b3ea:	jbe    5ba43 <value_layout_bench::trace::execute+0x773>
+   5b3f0:	shl    $0x4,%r8d
+   5b3f4:	mov    (%rcx,%r8,1),%r9
+   5b3f8:	mov    0x8(%rcx,%r8,1),%r8
+   5b3fd:	lea    -0x4ecc4(%rip),%r10        # c740 <anon.03464d30ebb3d4961f2d40d797733269.847.llvm.1275362730591129583+0x8f7>
+   5b404:	movslq (%r10,%r9,4),%r9
+   5b408:	add    %r10,%r9
+   5b40b:	jmp    *%r9
+   5b40e:	test   %dil,%dil
+   5b411:	je     5b6d0 <value_layout_bench::trace::execute+0x400>
+   5b417:	movq   %rax,%xmm1
+   5b41c:	xorps  %xmm0,%xmm0
+   5b41f:	cvtsi2sd %r8,%xmm0
+   5b424:	xor    %edi,%edi
+   5b426:	add    $0xfffffffe,%edx
+   5b429:	lea    -0x4eccc(%rip),%r8        # c764 <anon.03464d30ebb3d4961f2d40d797733269.847.llvm.1275362730591129583+0x91b>
+   5b430:	movslq (%r8,%rdx,4),%rax
+   5b434:	add    %r8,%rax
+Common native host calls retained in this monomorphization:
+HostHeap::get:    5b531:	call   *0x19039(%rip)        # 74570 <_DYNAMIC+0xa18>
+HostHeap::call:    5b833:	call   *0x18d3f(%rip)        # 74578 <_DYNAMIC+0xa20>
+HostHeap::set:    5b8dc:	call   *0x18ca6(%rip)        # 74588 <_DYNAMIC+0xa30>
+
+The movupd instructions in the prologue move the code slice descriptor. Each loop iteration still loads a scalar opcode plus register operands, dispatches it, and performs dynamic register type checks; scalar float math in opcode handlers uses SSE registers without vectorizing the instruction loop.

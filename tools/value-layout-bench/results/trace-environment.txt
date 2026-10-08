@@ -1,0 +1,23 @@
+Captured UTC: 2026-10-08T12:05:30.555284+00:00
+Kernel: Linux-6.18.44-x86_64-with-glibc2.41
+rustc 1.90.0 (1159e78c4 2025-09-14)
+binary: rustc
+commit-hash: 1159e78c4747b02ef996e55082b704c09b970588
+commit-date: 2025-09-14
+host: x86_64-unknown-linux-gnu
+release: 1.90.0
+LLVM version: 20.1.8
+Available CPU affinity: [0, 1, 2, 3, 4]
+cpu.max: 400000 100000
+memory.max: 17179869184
+Command for each of two independent runs: taskset -c 0 ./target/release/trace-bench --samples 11 --cycles 65536 --seed 11400714819323198485
+Release: opt-level=3, thin LTO, codegen-units=1, debug=1; no target-cpu=native; System allocator
+RUSTFLAGS: <unset>
+source sha256: Cargo.toml 4a04f3059c3f7eb089a7d5f69960d58b24674e50f5da0c6677ee16c3f17714b7
+source sha256: src/bin/trace-bench.rs 5a507a11d70be7859b8f5fb75b2c2e6857f6210afbbb31c8c502507ed0496017
+source sha256: src/lib.rs 4f96869a9cbd3fdda3f00313c15417398567d81c47d81285af2bf2acec430716
+source sha256: src/main.rs 4dd97b778a60b568216cda603c286b3fe45d505822bff8d5605114d9d04569cf
+source sha256: src/trace/mod.rs 458b07f01016322c02e30689463a5e7c7914f6a9d0d29b9b0e6ba699218fa7d4
+source sha256: src/trace/program.rs 3a8e6489d5ef8e747aa97a94f925ed29799c3e7b962e7535937d5ae833e3fcc9
+source sha256: src/trace/wide.rs b53a1a65c60a9ac487b5fe4a4c9b95df279858a2920d4f26b687cc1e4d728411
+binary sha256: d3b790d4acbbc50dde7fc876092547e4a9caf88ec222ff01cfe1b70fd9531e52
