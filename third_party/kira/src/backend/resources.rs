@@ -58,7 +58,9 @@ impl<T> ResourceStorage<T> {
 		// Check producer credit before next() frees an arena slot. A consumer
 		// can only add credit. Full queues retain finished resources in the arena.
 		while !self.unused_resource_producer.is_full() {
-			let Some((_, resource)) = retired.next() else { break; };
+			let Some((_, resource)) = retired.next() else {
+				break;
+			};
 			#[cfg(test)]
 			reel_tests::before_unused_push();
 			self.unused_resource_producer
@@ -213,7 +215,10 @@ impl<T> ResourceController<T> {
 	}
 
 	// Main-track control uses explicit, quota-limited reclamation.
-	pub(crate) fn insert_without_reclamation(&mut self, resource: T) -> Result<Key, ResourceLimitReached> {
+	pub(crate) fn insert_without_reclamation(
+		&mut self,
+		resource: T,
+	) -> Result<Key, ResourceLimitReached> {
 		let key = self.try_reserve()?;
 		self.push_new(key, resource);
 		Ok(key)
@@ -232,13 +237,26 @@ impl<T> ResourceController<T> {
 			.unwrap_or_else(|_| panic!("new resource producer full"));
 	}
 
+	// Pure move: caller reserves its destination before removing ownership.
+	pub(crate) fn try_pop_unused(&mut self) -> Option<T> {
+		self.unused_resource_consumer
+			.get_mut()
+			.expect("unused resource consumer mutex poisoned")
+			.pop()
+			.ok()
+	}
+
 	pub(crate) fn reclaim_unused(&mut self, limit: usize) -> (usize, bool) {
 		let limit = limit.min(self.arena_controller.capacity());
-		let consumer = self.unused_resource_consumer.get_mut()
+		let consumer = self
+			.unused_resource_consumer
+			.get_mut()
 			.expect("unused resource consumer mutex poisoned");
 		let mut reclaimed = 0;
 		while reclaimed < limit {
-			let Ok(resource) = consumer.pop() else { return (reclaimed, false); };
+			let Ok(resource) = consumer.pop() else {
+				return (reclaimed, false);
+			};
 			drop(resource);
 			reclaimed += 1;
 		}

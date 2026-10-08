@@ -1,4 +1,7 @@
-use crate::maintenance::{ReclaimNotifier, RetirementSignal};
+use crate::maintenance::{
+    AudioReclaimService, DeferredManager, DeferredRenderer, Envelope, Job, RetirementSignal,
+    TeardownCredit, try_producer,
+};
 use crate::{AudioError, AudioErrorKind, AudioFormat, PcmFill};
 use kira::{
     AudioManager, AudioManagerSettings, Frame, Tween,
@@ -10,46 +13,56 @@ use kira::{
     },
     track::MainTrackBuilder,
 };
+#[cfg(test)]
+use reel_core::wake::WakeSignal;
 use reel_core::{
     budget::{BudgetPool, BudgetTicket},
     result::{RejectCode, RejectReason, Rejected},
-    wake::WakeSignal,
 };
 use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 
-struct Bridge {
+pub(crate) struct Bridge {
     sample_rate: u32,
     signal: Arc<RetirementSignal>,
     fill: Option<PcmFill>,
+    renderer_credit: Option<TeardownCredit>,
+}
+impl Bridge {
+    pub fn has_fill(&self) -> bool {
+        self.fill.is_some()
+    }
 }
 impl Backend for Bridge {
-    type Settings = (u32, Arc<RetirementSignal>);
+    type Settings = (u32, Arc<RetirementSignal>, TeardownCredit);
     type Error = AudioError;
-    fn setup((sample_rate, signal): Self::Settings, _: usize) -> Result<(Self, u32), AudioError> {
+    fn setup(
+        (sample_rate, signal, credit): Self::Settings,
+        _: usize,
+    ) -> Result<(Self, u32), AudioError> {
         Ok((
             Self {
                 sample_rate,
                 signal,
                 fill: None,
+                renderer_credit: Some(credit),
             },
             sample_rate,
         ))
     }
-    fn start(&mut self, mut renderer: Renderer) -> Result<(), AudioError> {
+    fn start(&mut self, renderer: Renderer) -> Result<(), AudioError> {
         debug_assert_ne!(self.sample_rate, 0);
         let signal = self.signal.clone();
-        self.fill = Some(Box::new(move |out| {
-            renderer.on_start_processing();
-            // finished() marks observation before removal; wake only AFTER the
-            // RT publication phase, so an early empty control drain cannot lose it.
-            if signal.observed.swap(false, Ordering::AcqRel) {
-                signal.pending.store(true, Ordering::Release);
-            }
-            renderer.process(out, 2);
-        }));
+        let mut deferred = DeferredRenderer::new(
+            renderer,
+            self.renderer_credit
+                .take()
+                .expect("reserved Renderer credit"),
+        );
+        // Call a method on the whole Drop shell, avoiding disjoint field capture.
+        self.fill = Some(Box::new(move |out| deferred.render(out, &signal)));
         Ok(())
     }
 }
@@ -168,27 +181,25 @@ impl SoundData for BudgetedData {
 /// Kira native handles stay private to this adapter. Capacity and all control
 /// allocations are established before real-time consumption starts.
 pub struct KiraMixer {
-    manager: AudioManager<Bridge>,
+    manager: DeferredManager,
     signal: Arc<RetirementSignal>,
-    _notifier: ReclaimNotifier,
 }
-/// A count of completed control-side destructors, not a time-slice guarantee.
+/// A count of pure ownership transfers. Destruction/budget return is asynchronous.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReclaimProgress {
-    pub reclaimed_sounds: usize,
+    pub transferred_sounds: usize,
     /// A reached quota requests another maintenance turn even if the queue
     /// happens to be empty. False only observed no currently published garbage;
     /// active sounds or a retirement in flight still own their PCM/tickets.
     pub needs_maintenance: bool,
 }
 impl KiraMixer {
-    /// maintenance_wake is the host's existing control scheduler wake. A host
-    /// acknowledges it BEFORE a maintenance tick; it must schedule another tick
-    /// when needs_maintenance is true, including while the UI is sleeping.
+    /// Host-owned service outlives mixers. Generation and two teardown credits
+    /// are reserved before Kira construction; old resident generations cause Busy.
     pub fn new(
         format: &AudioFormat,
         limits: MixerLimits,
-        maintenance_wake: WakeSignal,
+        service: &AudioReclaimService,
     ) -> Result<Self, AudioError> {
         format.validate()?;
         if !(1..=256).contains(&limits.max_sounds)
@@ -199,10 +210,9 @@ impl KiraMixer {
                 "invalid Kira resource/buffer limits",
             ));
         }
-        let signal = Arc::new(RetirementSignal::default());
-        let notifier = ReclaimNotifier::new(signal.clone(), maintenance_wake)?;
+        let (signal, renderer_credit, manager_credit) = service.reserve_generation()?;
         let manager = AudioManager::<Bridge>::new(AudioManagerSettings {
-            backend_settings: (format.sample_rate_hz, signal.clone()),
+            backend_settings: (format.sample_rate_hz, signal.clone(), renderer_credit),
             capacities: kira::Capacities {
                 sub_track_capacity: 0,
                 send_track_capacity: 0,
@@ -213,33 +223,73 @@ impl KiraMixer {
             main_track_builder: MainTrackBuilder::new().sound_capacity(limits.max_sounds),
             internal_buffer_size: limits.internal_buffer_frames,
         })?;
-        Ok(Self {
-            manager,
-            signal,
-            _notifier: notifier,
-        })
+        let manager = DeferredManager::new(manager, manager_credit);
+        #[cfg(test)]
+        if service
+            .shared
+            .abort_construction
+            .swap(false, Ordering::AcqRel)
+        {
+            return Err(AudioError::new(
+                AudioErrorKind::DeviceFailure,
+                "injected construction abort",
+            ));
+        }
+        Ok(Self { manager, signal })
     }
     /// Linear transfer, at most once. Keep this manager alive while the output owns fill.
     pub fn take_fill(&mut self) -> Option<PcmFill> {
-        self.manager.backend_mut().fill.take()
+        self.manager
+            .manager
+            .as_mut()
+            .expect("owned manager")
+            .backend_mut()
+            .fill
+            .take()
     }
-    /// Normal control-tick maintenance. At most min(limit, max_sounds) resource
-    /// destructors run, including limit=0 (no progress). A single PCM destructor
-    /// is indivisible and its measured worst cost may exceed a time quota.
-    /// No new play or ticket is needed; main-track play has no hidden cleanup.
+    /// Transfers at most min(limit, max_sounds) retired Sounds. Destination
+    /// credit is reserved before Kira pop; full/contended queue retains ownership.
+    /// Quota/full returns needs_maintenance. No physical destructor runs here.
     pub fn reclaim_unused(&mut self, limit: usize) -> ReclaimProgress {
-        let (reclaimed_sounds, needs_maintenance) = self.manager.main_track().reclaim_unused(limit);
-        if needs_maintenance {
-            self.signal.pending.store(true, Ordering::Release);
+        let signal = self.signal.clone();
+        let track = self
+            .manager
+            .manager
+            .as_mut()
+            .expect("owned manager")
+            .main_track();
+        let limit = limit.min(track.sound_capacity());
+        let mut transferred_sounds = 0;
+        let mut needs_maintenance = true;
+        if signal.shared.accepting()
+            && let Some(mut producer) = try_producer(&signal.shared)
+        {
+            while transferred_sounds < limit {
+                let Ok(chunk) = producer.write_chunk_uninit(1) else {
+                    break;
+                };
+                let Some(sound) = track.try_take_unused_sound() else {
+                    needs_maintenance = false;
+                    break;
+                };
+                chunk.fill_from_iter(std::iter::once(Envelope::normal(
+                    Job::Sound(sound),
+                    &signal,
+                )));
+                transferred_sounds += 1;
+            }
+        }
+        if needs_maintenance || transferred_sounds != 0 {
+            signal.shared.notify();
         }
         ReclaimProgress {
-            reclaimed_sounds,
+            transferred_sounds,
             needs_maintenance,
         }
     }
-    /// Reclaim BEFORE requesting a new PCM construction ticket. Inspect progress
-    /// even on Busy. Allocate/decode input only after the returned ticket is Ok;
-    /// never return tickets merely because playback is stopped.
+    /// Attempt transfer BEFORE reserving construction memory. Never waits for
+    /// budget: Busy is retried after completion wake, including a transfer with
+    /// no physical release yet. Allocate/decode only after the ticket is Ok.
     pub fn reserve_decode_budget(
         &mut self,
         pool: &BudgetPool,
@@ -249,19 +299,55 @@ impl KiraMixer {
         let progress = self.reclaim_unused(reclaim_limit);
         (progress, pool.reserve(bytes))
     }
+    /// Rejection returns the unchanged unaccepted request. Success transfers
+    /// EVERY internal PCM reference, including the original data, to the worker.
     pub fn play(&mut self, sound: DecodedSound) -> Result<Playback, Rejected<DecodedSound>> {
-        // Retain the exact request through Kira's fallible play; clone only immutable refs.
+        let signal = self.signal.clone();
+        let reject = |request| Rejected {
+            request,
+            reason: RejectReason::new(
+                RejectCode::Busy,
+                "Kira or background ownership capacity exhausted",
+            ),
+        };
+        if !signal.shared.accepting() {
+            return Err(reject(sound));
+        }
+        let Some(mut producer) = try_producer(&signal.shared) else {
+            return Err(reject(sound));
+        };
+        // Actual destination credit BEFORE acceptance. No fallible send follows.
+        let Ok(chunk) = producer.write_chunk_uninit(1) else {
+            return Err(reject(sound));
+        };
         let data = BudgetedData {
             data: sound.data.clone(),
             budget: sound.budget.clone(),
-            signal: self.signal.clone(),
+            signal: signal.clone(),
         };
-        match self.manager.play(data) {
-            Ok(handle) => Ok(Playback { handle }),
-            Err(_) => Err(Rejected {
-                request: sound,
-                reason: RejectReason::new(RejectCode::Busy, "Kira sound capacity exhausted"),
-            }),
+        match self
+            .manager
+            .manager
+            .as_mut()
+            .expect("owned manager")
+            .play(data)
+        {
+            Ok(handle) => {
+                #[cfg(test)]
+                {
+                    let hook = signal.shared.after_accept.lock().unwrap().clone();
+                    if let Some(hook) = hook {
+                        hook();
+                    }
+                }
+                chunk.fill_from_iter(std::iter::once(Envelope::normal(
+                    Job::AcceptedData(sound),
+                    &signal,
+                )));
+                signal.shared.notify();
+                Ok(Playback { handle })
+            }
+            Err(_) => Err(reject(sound)),
         }
     }
 }
@@ -299,161 +385,4 @@ fn immediate() -> Tween {
 }
 
 #[cfg(test)]
-mod retirement_tests {
-    use super::*;
-    use crate::{
-        AudioDeviceConfig, AudioOutput, AudioRequest, ChannelLayout, OfflineOutput, SampleFormat,
-    };
-    use reel_core::budget::{BudgetCategory, QueueLimits};
-    use std::{sync::mpsc, thread, time::Duration};
-    fn format() -> AudioFormat {
-        let mut output = OfflineOutput::new(
-            AudioDeviceConfig {
-                sample_rate_hz: 48_000,
-                sample_format: SampleFormat::F32,
-                layout: ChannelLayout::Stereo,
-            },
-            WakeSignal::new(|| {}),
-        )
-        .unwrap();
-        output.configure(AudioRequest::default()).unwrap()
-    }
-    #[test]
-    fn single_budget_a_to_b_reclaims_actual_pcm_and_wakes_sleeping_control() {
-        for (label, limits) in [
-            (
-                "one-ticket",
-                QueueLimits {
-                    max_requests: 1,
-                    max_bytes: 16_384,
-                },
-            ),
-            (
-                "one-sound-bytes",
-                QueueLimits {
-                    max_requests: 8,
-                    max_bytes: 1_024,
-                },
-            ),
-        ] {
-            let pool = BudgetPool::new(BudgetCategory::CpuOutput, limits);
-            let (notifications, wakeups) = mpsc::channel();
-            let wake = WakeSignal::new(move || {
-                notifications.send(thread::current().id()).unwrap();
-            });
-            let mut mixer = KiraMixer::new(
-                &format(),
-                MixerLimits {
-                    max_sounds: 1,
-                    internal_buffer_frames: 64,
-                },
-                wake.clone(),
-            )
-            .unwrap();
-            let mut fill = mixer.take_fill().unwrap();
-            let (progress, ticket) = mixer.reserve_decode_budget(&pool, 1_024, 1);
-            assert_eq!(progress.reclaimed_sounds, 0);
-            let a = DecodedSound::new(48_000, vec![[0.1, -0.2]; 64], ticket.unwrap()).unwrap();
-            let actual_pcm = Arc::downgrade(&a.data.frames);
-            let a_handle = mixer.play(a).unwrap();
-            let mut pcm = [0.0; 512 * 2];
-            fill(&mut pcm);
-            assert!(a_handle.is_stopped());
-            assert!(
-                pcm.chunks_exact(2)
-                    .any(|f| (f[0] - 0.1).abs() < 1e-6 && (f[1] + 0.2).abs() < 1e-6)
-            );
-            // A is Stopped but still in arena; no early budget return.
-            assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 0);
-            assert!(actual_pcm.upgrade().is_some());
-            assert_eq!(pool.usage().tickets, 1);
-            assert!(pool.reserve(1_024).is_err());
-            fill(&mut pcm); // publish retired A, then set notification flag.
-            let notifier_thread = wakeups.recv_timeout(Duration::from_secs(1)).unwrap();
-            assert_ne!(notifier_thread, thread::current().id());
-            assert!(wake.acknowledge()); // Existing host scheduling contract: before drain.
-            assert_eq!(pool.usage().tickets, 1);
-            // Weak is a liveness observer, not proof of physical deallocation:
-            // drop it first so it cannot retain Arc<[Frame]>'s allocation. The
-            // standalone allocator probe separately verifies the actual free.
-            drop(actual_pcm);
-            // This entry performs the actual reclaim BEFORE reserving B's ticket.
-            let (progress, b_ticket) = mixer.reserve_decode_budget(&pool, 1_024, 1);
-            assert_eq!(progress.reclaimed_sounds, 1);
-            assert!(progress.needs_maintenance); // Quota hit does NOT claim empty.
-            let b_ticket = b_ticket.unwrap(); // Both single-amount configurations can progress.
-            // Even with no subsequent PCM callback, hitting the quota wakes another
-            // maintenance turn; the host can sleep on its existing wake source.
-            wakeups.recv_timeout(Duration::from_secs(1)).unwrap();
-            assert!(wake.acknowledge());
-            assert_eq!(
-                mixer.reclaim_unused(1),
-                ReclaimProgress {
-                    reclaimed_sounds: 0,
-                    needs_maintenance: false
-                }
-            );
-            let b = DecodedSound::new(48_000, vec![[0.3, -0.4]; 64], b_ticket).unwrap();
-            let b_handle = mixer.play(b).unwrap();
-            fill(&mut pcm);
-            assert!(b_handle.is_stopped());
-            assert!(
-                pcm.chunks_exact(2)
-                    .any(|f| (f[0] - 0.3).abs() < 1e-6 && (f[1] + 0.4).abs() < 1e-6)
-            );
-            fill(&mut pcm);
-            assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
-            assert_eq!(pool.usage().tickets, 0);
-            println!(
-                "{label}: A stopped still charged; publish wakes control; reserve_decode_budget reclaimed A's PCM before B reserve; quota wakes next tick; same mixer/fill B=[0.3,-0.4]"
-            );
-        }
-    }
-    #[test]
-    fn bounded_tick_and_successful_play_do_not_hide_bulk_pcm_destruction() {
-        let pool = BudgetPool::new(
-            BudgetCategory::CpuOutput,
-            QueueLimits {
-                max_requests: 2,
-                max_bytes: 4_096,
-            },
-        );
-        let mut mixer = KiraMixer::new(
-            &format(),
-            MixerLimits {
-                max_sounds: 2,
-                internal_buffer_frames: 64,
-            },
-            WakeSignal::new(|| {}),
-        )
-        .unwrap();
-        let mut fill = mixer.take_fill().unwrap();
-        for value in [0.1, 0.2] {
-            let (_, ticket) = mixer.reserve_decode_budget(&pool, 1_024, 1);
-            mixer
-                .play(
-                    DecodedSound::new(48_000, vec![[value, -value]; 64], ticket.unwrap()).unwrap(),
-                )
-                .unwrap();
-        }
-        let mut pcm = [0.0; 512 * 2];
-        fill(&mut pcm);
-        fill(&mut pcm); // both retired; no control play needed.
-        assert_eq!(pool.usage().tickets, 2);
-        assert_eq!(mixer.reclaim_unused(0).reclaimed_sounds, 0);
-        assert_eq!(pool.usage().tickets, 2);
-        let progress = mixer.reclaim_unused(1);
-        assert_eq!(progress.reclaimed_sounds, 1);
-        assert!(progress.needs_maintenance);
-        assert_eq!(pool.usage().tickets, 1);
-        let c =
-            DecodedSound::new(48_000, vec![[0.3, -0.4]; 64], pool.reserve(1_024).unwrap()).unwrap();
-        mixer.play(c).unwrap();
-        assert_eq!(pool.usage().tickets, 2); // remaining retired sound was NOT drained by play.
-        assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
-        assert_eq!(pool.usage().tickets, 1); // only new C remains resident.
-        println!(
-            "two retired sounds: tick limit 0 drops none; limit 1 drops exactly one; successful play(C) does not reclaim the other"
-        );
-    }
-}
+mod retirement_tests;

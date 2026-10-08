@@ -7,6 +7,7 @@ mod mixer;
 mod output;
 mod pcm;
 pub use contracts::*;
+pub use maintenance::{AudioReclaimService, ReclaimLimits, ReclaimStatus};
 pub use mixer::{
     DecodedSound, DecodedSoundRequest, KiraMixer, MAX_DECODED_FRAMES, MixerLimits, Playback,
     ReclaimProgress,

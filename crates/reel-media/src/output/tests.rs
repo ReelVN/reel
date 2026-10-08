@@ -487,6 +487,8 @@ fn stop_disposes_fill_even_if_native_callback_object_is_retained() {
 
 #[test]
 fn native_generated_then_write_failure_invalidates_epoch_and_freezes_counts() {
+    let service =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
     let mut output = output();
     output.driver.clock = AudioClockCapability::Unavailable; // CPAL's declared capability.
@@ -503,7 +505,7 @@ fn native_generated_then_write_failure_invalidates_epoch_and_freezes_counts() {
             max_sounds: 1,
             internal_buffer_frames: 64,
         },
-        WakeSignal::new(|| {}),
+        &service,
     )
     .unwrap();
     let (_, ticket) = mixer.reserve_decode_budget(&pool, 1_024, 1);
@@ -543,6 +545,7 @@ fn native_generated_then_write_failure_invalidates_epoch_and_freezes_counts() {
     );
     let generated = output.clock_observation();
     assert_eq!(generated.generated_frames, 512);
+    assert_eq!(generated.submitted_frames(), None);
     assert_eq!(generated.submitted_frames, 0); // native acceptance unknown, not software generation.
     assert_eq!(generated.estimated_presented_frames, 0);
     assert_eq!(generated.presented_frames(), None);
@@ -587,8 +590,7 @@ fn native_generated_then_write_failure_invalidates_epoch_and_freezes_counts() {
     );
     drop(mixer);
     let format = output.configure(AudioRequest::default()).unwrap();
-    let mut rebuilt =
-        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let mut rebuilt = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
     assert!(output.start(rebuilt.take_fill().unwrap()).is_ok());
     assert!(output.status().output_epoch.0 > fault.output_epoch.0);
     output
@@ -627,6 +629,7 @@ fn native_silent_eagain_before_any_write_never_promotes_software_count_to_clock(
         .render(&mut data, timing());
     let observation = output.clock_observation();
     assert_eq!(observation.generated_frames, 1_024);
+    assert_eq!(observation.submitted_frames(), None);
     assert_eq!(observation.submitted_frames, 0);
     assert_eq!(observation.estimated_presented_frames, 0);
     assert_eq!(observation.presented_frames(), None);
@@ -636,4 +639,35 @@ fn native_silent_eagain_before_any_write_never_promotes_software_count_to_clock(
     println!(
         "native EAGAIN with frames_written=0: generated=1024, submitted=unknown, presented=None despite latency=0; no Xrun event needed for safety"
     );
+}
+
+#[test]
+fn unavailable_precision_hides_both_queries_and_preserves_generated_diagnostics() {
+    let mut output = output(); // controlled Estimated-capability driver
+    assert!(output.start(Box::new(|pcm| pcm.fill(0.25))).is_ok());
+    let mut data = [0.0f32; 2];
+    let mut no_estimate = timing();
+    no_estimate.latency_frames = None;
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, no_estimate);
+    let unavailable = output.clock_observation();
+    assert_eq!(unavailable.generated_frames, 1);
+    assert_eq!(unavailable.precision, ClockPrecision::Unavailable);
+    assert_eq!(unavailable.submitted_frames, 0);
+    assert_eq!(unavailable.estimated_presented_frames, 0);
+    assert_eq!(unavailable.submitted_frames(), None);
+    assert_eq!(unavailable.presented_frames(), None);
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert_eq!(output.clock_observation().submitted_frames(), Some(2));
+    assert_eq!(output.clock_observation().presented_frames(), Some(1));
+    output.stop().unwrap();
 }

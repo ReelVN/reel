@@ -4,6 +4,8 @@
     any(target_os = "linux", target_os = "windows", target_os = "macos")
 ))]
 fn main() {
+    let mut service =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     use reel_core::{clock::MonoTime, wake::WakeSignal};
     use reel_media::*;
     use std::sync::{
@@ -22,8 +24,7 @@ fn main() {
         .configure(AudioRequest::default())
         .expect("negotiate known layout");
     println!("negotiated={format:?}");
-    let mut mixer =
-        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let mut kira_fill = mixer.take_fill().unwrap();
@@ -32,6 +33,11 @@ fn main() {
         kira_fill(pcm);
     })) {
         eprintln!("start_rejected_uncalled_fill: {:?}", rejected.reason);
+        drop(rejected.request);
+        drop(mixer);
+        service
+            .drain_and_join()
+            .expect("final host drain after refusal");
         std::process::exit(3);
     }
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -50,6 +56,8 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert_eq!(calls.load(Ordering::Relaxed), at_stop);
     println!("fill_calls={at_stop} post_stop_fill_calls=0");
+    drop(mixer);
+    println!("final_reclamation={:?}", service.drain_and_join().unwrap());
 }
 #[cfg(not(all(
     feature = "cpal-output",

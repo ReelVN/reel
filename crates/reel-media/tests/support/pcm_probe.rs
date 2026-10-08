@@ -18,7 +18,16 @@ fn decoded(pool: &BudgetPool, frame: [f32; 2], frames: usize) -> DecodedSound {
         .unwrap();
     DecodedSound::new(48_000, pcm, ticket).unwrap()
 }
+fn wait_for(mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    while !done() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+}
 fn full_unused_queue_remains_allocation_free() {
+    let mut service =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     let pool = BudgetPool::new(
         BudgetCategory::CpuOutput,
         QueueLimits {
@@ -42,7 +51,7 @@ fn full_unused_queue_remains_allocation_free() {
             max_sounds: 1,
             internal_buffer_frames: 64,
         },
-        WakeSignal::new(|| {}),
+        &service,
     )
     .unwrap();
     let _a = mixer.play(decoded(&pool, [0.1, -0.2], 64)).unwrap();
@@ -66,13 +75,15 @@ fn full_unused_queue_remains_allocation_free() {
     }
     assert!(b.is_stopped());
     assert_eq!(pool.usage().tickets, 2); // A unused, B retained in arena.
-    assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
+    assert_eq!(mixer.reclaim_unused(1).transferred_sounds, 1);
     ENABLED.set(true);
     output.render(&mut data, timing);
     ENABLED.set(false);
-    assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
-    assert_eq!(pool.usage().tickets, 0);
+    assert_eq!(mixer.reclaim_unused(1).transferred_sounds, 1);
+    wait_for(|| pool.usage().tickets == 0);
     output.stop().unwrap();
+    drop(mixer);
+    service.drain_and_join().unwrap();
     let counts = COUNTS.get();
     assert_eq!(
         (
@@ -83,10 +94,12 @@ fn full_unused_queue_remains_allocation_free() {
         (0, 0, 0)
     );
     println!(
-        "full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_reclaim=1+1"
+        "full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_transfer=1+1 physical_release=worker"
     );
 }
 fn main() {
+    let mut service =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     full_unused_queue_remains_allocation_free();
     const BLOCKS: usize = 4096;
     const FRAMES: usize = 512;
@@ -114,8 +127,7 @@ fn main() {
             ..AudioRequest::default()
         })
         .unwrap();
-    let mut mixer =
-        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
     let first = mixer
         .play(decoded(&pool, [0.8, -0.8], 48_000).looping())
         .ok()
@@ -222,5 +234,6 @@ fn main() {
         pool.usage().peak_bytes
     );
     drop(mixer);
+    service.drain_and_join().unwrap();
     assert_eq!(pool.usage().bytes, 0);
 }

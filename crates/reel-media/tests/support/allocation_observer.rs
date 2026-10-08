@@ -2,7 +2,16 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::Instant,
 };
+pub(crate) static BACKGROUND_ENABLED: AtomicBool = AtomicBool::new(false);
+pub(crate) static TARGET_LAYOUT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static WORKER_PCM_FREES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static WRONG_THREAD_PCM_FREES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static WORKER_PCM_FREE_NS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static WORKER_LARGEST_FREE: AtomicUsize = AtomicUsize::new(0);
+thread_local! { static BACKGROUND_REENTRY: Cell<bool> = const { Cell::new(false) }; }
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Counts {
     pub allocations: usize,
@@ -40,7 +49,26 @@ unsafe impl GlobalAlloc for Observer {
             c.freed_bytes += layout.size();
             c.largest_free = c.largest_free.max(layout.size());
         });
+        let track = BACKGROUND_ENABLED.load(Ordering::Acquire) && !BACKGROUND_REENTRY.replace(true);
+        let worker = track && std::thread::current().name() == Some("reel-audio-reclaim");
+        let pcm = track && layout.size() == TARGET_LAYOUT.load(Ordering::Acquire);
+        let begin = (worker && pcm).then(Instant::now);
         unsafe { System.dealloc(ptr, layout) }
+        if worker {
+            WORKER_LARGEST_FREE.fetch_max(layout.size(), Ordering::AcqRel);
+        }
+        if pcm {
+            if worker {
+                let ns = begin.unwrap().elapsed().as_nanos().min(usize::MAX as u128) as usize;
+                WORKER_PCM_FREE_NS.fetch_max(ns, Ordering::AcqRel);
+                WORKER_PCM_FREES.fetch_add(1, Ordering::Release);
+            } else {
+                WRONG_THREAD_PCM_FREES.fetch_add(1, Ordering::Release);
+            }
+        }
+        if track {
+            BACKGROUND_REENTRY.set(false);
+        }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         count(|c| c.reallocations += 1);

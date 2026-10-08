@@ -269,7 +269,11 @@ impl Callback {
         self.clock.write(AudioClockObservation {
             output_epoch: self.epoch,
             generated_frames: self.generated,
-            submitted_frames: if submission_known { self.generated } else { 0 },
+            submitted_frames: if precision == ClockPrecision::Unavailable {
+                0
+            } else {
+                self.generated
+            },
             estimated_presented_frames: if precision == ClockPrecision::Unavailable {
                 0
             } else {

@@ -227,7 +227,7 @@ pub struct AudioClockObservation {
     /// Does not prove native write acceptance or presentation; epoch-scoped.
     pub generated_frames: u64,
     /// Frames handed to a driver with submission guarantees. Zero is an invalid
-    /// sentinel for an Unavailable capability, NOT proof that zero frames played.
+    /// sentinel under Unavailable precision, NOT proof that zero frames played.
     pub submitted_frames: u64,
     /// Usable only when precision != Unavailable and output_epoch is current.
     /// Zero under Unavailable is an invalid sentinel, NEVER a MediaPTS anchor.
@@ -241,6 +241,10 @@ pub struct AudioClockObservation {
     pub precision: ClockPrecision,
 }
 impl AudioClockObservation {
+    /// None under Unavailable: the numeric field then has no submission validity.
+    pub fn submitted_frames(&self) -> Option<u64> {
+        (self.precision != ClockPrecision::Unavailable).then_some(self.submitted_frames)
+    }
     pub fn presented_frames(&self) -> Option<u64> {
         (self.precision != ClockPrecision::Unavailable).then_some(self.estimated_presented_frames)
     }

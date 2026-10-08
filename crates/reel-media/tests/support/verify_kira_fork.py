@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix='reel-kira-provenance-') as temporary:
     for name, expected in original.items():
         path = restored/name if name in modified else fork/name
         assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, name
-for name, source in json.loads((fork/'LICENSE-SOURCES.json').read_text()).items():
-    assert hashlib.sha256((fork/name).read_bytes()).hexdigest() == source['sha256'], name
-print(f'fork provenance: {len(original)} original crate file hashes verified; only two patched source files; license hashes verified')
+for manifest in ['LICENSE-SOURCES.json', 'UPSTREAM-CONFIG-SOURCES.json']:
+    for name, source in json.loads((fork/manifest).read_text()).items():
+        assert hashlib.sha256((fork/name).read_bytes()).hexdigest() == source['sha256'], name
+print(f'fork provenance: {len(original)} original crate file hashes verified; only two patched source files; license/config hashes verified')

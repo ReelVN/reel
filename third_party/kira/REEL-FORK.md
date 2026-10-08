@@ -17,7 +17,9 @@ and the rest of the ecosystem remain ordinary Cargo.lock dependencies.
 Production changes are restricted to two upstream files, recorded in
 `REEL-PATCH.patch`: backend/resources.rs guards unused capacity BEFORE
 DrainFilter.next frees a slot; track/main/handle.rs exposes quota-limited
-control reclamation. Main-track play bypasses implicit reclamation so it cannot
+control reclamation plus pure-move try_pop_unused/try_take_unused_sound. Reel
+reserves an existing rtrb destination chunk before taking Sound and uses host-owned
+background destruction. Main-track play bypasses implicit reclamation so it cannot
 silently destroy a batch beyond a control tick's quota. Other upstream control
 APIs retain their original implicit cleanup behavior and are disabled by Reel's
 zero capacities. This fork is used by Reel's private main-track Backend bridge;
@@ -41,3 +43,7 @@ maintenance flag, never a claim that the queue was drained.
 `#[cfg(test)]` only, not a Cargo feature. Scheduling barriers cannot enter normal
 library builds. The regression uses actual StaticSound/Renderer PCM and pauses
 only a legal arena-free -> unused-publish interval.
+
+The exact VCS commit's repository-root rustfmt.toml was omitted by publishing.
+It is restored unchanged (hard_tabs = true), with URL/hash in
+UPSTREAM-CONFIG-SOURCES.json; no unmodified imported source is reformatted.

@@ -15,6 +15,12 @@ pub struct MainTrackHandle {
 }
 
 impl MainTrackHandle {
+	/// Moves one retired Sound without destroying it. Reserve the caller's
+	/// bounded destination before calling; None leaves all remaining ownership.
+	pub fn try_take_unused_sound(&mut self) -> Option<Box<dyn Sound>> {
+		self.sound_controller.try_pop_unused()
+	}
+
 	/// Reclaims at most `limit` retired sounds on the calling control thread.
 	/// Returns (reclaimed count, further maintenance required). Reaching the
 	/// limit requires another maintenance turn; observing an empty queue does
