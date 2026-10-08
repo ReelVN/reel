@@ -108,6 +108,8 @@ fn main() {
     );
     let mut calls = vm(fixtures::helper_native());
     let mut timings = Vec::with_capacity(10000);
+    let mut instructions = 0u64;
+    let mut work = 0u64;
     let start = Instant::now();
     let allocated = allocation_counter::measure(|| {
         for round in 0..10000 {
@@ -116,7 +118,7 @@ fn main() {
                 .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
                 .unwrap();
             loop {
-                match calls
+                let out = calls
                     .run_slice(
                         calls.task_id().unwrap(),
                         SliceBudget {
@@ -125,8 +127,10 @@ fn main() {
                         },
                         || 0,
                     )
-                    .unwrap()
-                {
+                    .unwrap();
+                instructions += calls.stats().usage.instructions as u64;
+                work += calls.stats().usage.work;
+                match out {
                     RunOutcome::BudgetYield(_) => {}
                     RunOutcome::HostCall(ticket) => {
                         if round % 2 == 0 {
@@ -154,7 +158,7 @@ fn main() {
         }
     });
     println!(
-        "calls ready=5000 pending=5000 native_entries={} elapsed_us={} call_p50_ns={} call_p95_ns={} call_max_ns={} allocations={} allocated_bytes={} active_ranges={} frames={} peak_shared_bytes={} native_null_publications={}",
+        "calls ready=5000 pending=5000 native_entries={} instructions={instructions} work={work} elapsed_us={} call_p50_ns={} call_p95_ns={} call_max_ns={} allocations={} allocated_bytes={} active_ranges={} frames={} peak_shared_bytes={} native_null_publications={}",
         calls.stats().native_entries,
         start.elapsed().as_micros(),
         percentile(&mut timings, 50),
@@ -180,6 +184,26 @@ fn main() {
             break;
         }
     }
+    let start = Instant::now();
+    let mut units = 0u64;
+    let mut descriptors = 0u64;
+    let mut values = 0u64;
+    let allocated_gc = allocation_counter::measure(|| {
+        calls.begin_collection().unwrap();
+        while calls.heap().phase() != GcPhase::Idle {
+            let p = calls.gc_step(GcBudget::default()).unwrap();
+            units += p.units as u64;
+            descriptors += p.range_descriptors as u64;
+            values += p.range_values as u64;
+        }
+    });
+    println!(
+        "gc native_live=true units={units} descriptors={descriptors} values={values} elapsed_ns={} allocations={} allocated_bytes={}",
+        start.elapsed().as_nanos(),
+        allocated_gc.count_total,
+        allocated_gc.bytes_total
+    );
+    assert_eq!(allocated_gc.count_total, 0);
     calls.cancel(RootOwner(1)).unwrap();
     let start = Instant::now();
     let mut units = 0;
