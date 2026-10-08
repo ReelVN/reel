@@ -1,0 +1,204 @@
+   Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check)
+    Finished `test` profile [unoptimized] target(s) in 9.08s
+     Running unittests src/main.rs (tools/masonry-contract-check/target/debug/deps/masonry_contract_check-e9656b124f7a8696)
+
+running 3 tests
+test checks::real_upstream_input_gap ... ok
+test checks::base_layer_transform_boundary ... ok
+test checks::real_upstream_groups ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+   Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check)
+    Finished `dev` profile [unoptimized] target(s) in 6.10s
+     Running `tools/masonry-contract-check/target/debug/masonry-contract-check`
+groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+groups isolated=true: cached_layers=1 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+upstream unaccepted-layout: hover=false, capture=None, handled=No, values=[]
+upstream captured-node removal: cancel_callbacks=0
+checking file masonry_core/src/app/mod.rs
+checking file masonry_core/src/app/presented_geometry.rs
+checking file masonry_core/src/app/render_root.rs
+checking file masonry_core/src/core/contexts.rs
+checking file masonry_core/src/passes/event.rs
+checking file masonry_core/src/passes/update.rs
+patching file masonry_core/src/app/mod.rs
+patching file masonry_core/src/app/presented_geometry.rs
+patching file masonry_core/src/app/render_root.rs
+patching file masonry_core/src/core/contexts.rs
+patching file masonry_core/src/passes/event.rs
+patching file masonry_core/src/passes/update.rs
+fixed source verified: 72 files, 592487 bytes; patch applied to masonry_core only
+   Compiling tree_arena v0.2.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/tree_arena)
+   Compiling masonry_core v0.4.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/masonry_core)
+   Compiling masonry v0.4.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
+   Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment)
+    Finished `test` profile [unoptimized] target(s) in 34.45s
+     Running unittests ../src/main.rs (tools/masonry-contract-check/target/debug/deps/masonry_contract_check-a0c535a03b1db0e9)
+
+running 7 tests
+test presentation::actual_slider_cancellation ... ok
+test presentation::actual_slider_dpi ... ok
+test checks::base_layer_transform_boundary ... ok
+test presentation::singular_transform_is_not_hittable ... ok
+test presentation::actual_slider_frozen_input ... ok
+test checks::real_upstream_groups ... ok
+test presentation::actual_button_topology_and_skin ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling smallvec v1.16.2
+   Compiling libm v0.2.16
+   Compiling cfg-if v1.0.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling arrayvec v0.7.8
+   Compiling bitflags v2.13.2
+   Compiling polycool v0.4.0
+   Compiling log v0.4.34
+   Compiling kurbo v0.13.1
+   Compiling core_maths v0.1.1
+   Compiling writeable v0.6.4
+   Compiling simd-adler32 v0.3.10
+   Compiling adler2 v2.0.1
+   Compiling crc32fast v1.5.2
+   Compiling syn v3.0.6
+   Compiling foldhash v0.2.0
+   Compiling litemap v0.8.3
+   Compiling libc v0.2.190
+   Compiling linebender_resource_handle v0.1.1
+   Compiling miniz_oxide v0.9.1
+   Compiling once_cell v1.21.4
+   Compiling flate2 v1.1.10
+   Compiling synstructure v0.14.0
+   Compiling autocfg v1.5.1
+   Compiling utf8_iter v1.0.4
+   Compiling num-traits v0.2.19
+   Compiling memmap2 v0.9.11
+   Compiling hashbrown v0.16.1
+   Compiling miniz_oxide v0.8.9
+   Compiling bytemuck_derive v1.12.1
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling bytemuck v1.25.2
+   Compiling zerofrom v0.1.8
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling yoke v0.8.3
+   Compiling font-types v0.11.3
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling read-fonts v0.37.0
+   Compiling color v0.3.3
+   Compiling tinystr v0.8.4
+   Compiling icu_locale_core v2.3.0
+   Compiling potential_utf v0.1.6
+   Compiling icu_provider v2.3.1
+   Compiling icu_collections v2.3.0
+   Compiling peniko v0.6.1
+   Compiling fdeflate v0.3.7
+   Compiling icu_properties_data v2.3.0
+   Compiling version_check v0.9.5
+   Compiling icu_locale_fallback_data v2.3.0
+   Compiling pkg-config v0.3.34
+   Compiling slotmap v1.1.1
+   Compiling yeslogic-fontconfig-sys v6.0.1
+   Compiling png v0.18.1
+   Compiling libloading v0.8.9
+   Compiling icu_normalizer_data v2.3.0
+   Compiling float-cmp v0.9.0
+   Compiling icu_segmenter_data v2.3.0
+   Compiling strict-num v0.1.1
+   Compiling dlib v0.5.3
+   Compiling tracing-core v0.1.36
+   Compiling skrifa v0.40.0
+   Compiling syn v2.0.119
+   Compiling ttf-parser v0.25.1
+   Compiling roxmltree v0.20.0
+   Compiling arrayref v0.3.9
+   Compiling regex-syntax v0.8.11
+   Compiling num-conv v0.2.2
+   Compiling thiserror v2.0.21
+   Compiling time-core v0.1.9
+   Compiling regex-automata v0.4.18
+   Compiling time-macros v0.2.32
+   Compiling tiny-skia-path v0.12.0
+   Compiling fontconfig-parser v0.5.8
+   Compiling tracing-attributes v0.1.31
+   Compiling icu_locale_fallback v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling euclid v0.22.14
+   Compiling thiserror-impl v2.0.21
+   Compiling parlance v0.1.0
+   Compiling unicode-ccc v0.4.0
+   Compiling unicode-properties v0.1.4
+   Compiling tinyvec v1.13.3
+   Compiling memchr v2.8.3
+   Compiling powerfmt v0.2.1
+   Compiling unicode-script v0.5.8
+   Compiling pin-project-lite v0.2.17
+   Compiling siphasher v1.0.4
+   Compiling unicode-bidi-mirroring v0.4.0
+   Compiling uuid v1.27.0
+   Compiling lazy_static v1.5.1
+   Compiling deranged v0.5.8
+   Compiling sharded-slab v0.1.7
+   Compiling accesskit v0.24.1
+   Compiling rustybuzz v0.20.1
+   Compiling svgtypes v0.16.1
+   Compiling time v0.3.55
+   Compiling tracing v0.1.44
+   Compiling fontdb v0.23.0
+   Compiling roxmltree v0.21.1
+   Compiling fontique v0.8.0
+   Compiling icu_segmenter v2.3.0
+   Compiling guillotiere v0.7.0
+   Compiling parley_data v0.8.0
+   Compiling icu_normalizer v2.3.0
+   Compiling matchers v0.2.0
+   Compiling harfrust v0.5.2
+   Compiling tracing-log v0.2.0
+   Compiling imaging v0.0.1
+   Compiling hashbrown v0.17.1
+   Compiling simplecss v0.2.2
+   Compiling keyboard-types v0.8.3
+   Compiling thread_local v1.1.10
+   Compiling base64 v0.22.1
+   Compiling zune-core v0.5.3
+   Compiling fearless_simd v0.4.1
+   Compiling nu-ansi-term v0.50.3
+   Compiling quick-error v2.0.1
+   Compiling dpi v0.1.2
+   Compiling xmlwriter v0.1.0
+   Compiling data-url v0.3.2
+   Compiling color_quant v1.1.0
+   Compiling unicode-bidi v0.3.18
+   Compiling pico-args v0.5.0
+   Compiling unicode-vo v0.1.0
+   Compiling byteorder-lite v0.1.0
+   Compiling imagesize v0.14.0
+   Compiling weezl v0.1.12
+   Compiling usvg v0.47.0
+   Compiling gif v0.14.2
+   Compiling vello_common v0.0.7
+   Compiling image-webp v0.2.4
+   Compiling ui-events v0.3.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling zune-jpeg v0.5.15
+   Compiling tree_arena v0.2.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/tree_arena)
+   Compiling parley v0.8.0
+   Compiling tiny-skia v0.12.0
+   Compiling vello_api v0.0.7
+   Compiling rgb v0.8.53
+   Compiling anymore v1.0.0
+   Compiling cursor-icon v1.2.0
+   Compiling anymap3 v1.1.0
+   Compiling masonry_core v0.4.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/masonry_core)
+   Compiling resvg v0.47.0
+   Compiling vello_cpu v0.0.7
+   Compiling linebender_include_doc_path v0.1.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
+   Compiling understory_virtual_list v0.1.2
+   Compiling masonry v0.4.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
