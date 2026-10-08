@@ -117,6 +117,11 @@ AudioRequest 含首选采样率、允许的设备格式/布局与最大供给帧
 每次 PcmFill 接收 n 帧、恰好 2×n 个 f32，1≤n≤max_pull_frames，切片只在调用期间有效。设备块超过上限时分块供给；设备缓冲长度必须为设备声道数的整数倍。输出适配器预分配转换缓冲，每次先清零供给区，混音器覆盖完整样本；异常长度不得越界，须静音并报告设备契约错误。非有限样本替换为零，转换为整数格式时限幅。回调路径不分配、不读取文件、不等待主线程。
 PcmFill 仅拥有混音状态、预分配缓冲与有界控制队列，不捕获 VM 或舞台。start 在接受前完成设备准备；拒绝返回尚未调用过的原 fill 及原因，可在兼容格式下重试；格式变化必须重建 fill。接受后供给由唯一输出线程串行调用，后续设备失败只通过 AudioStatus 报告。AudioStatus 含 Stopped/Running/Suspended/Failed、欠载计数和最近设备错误。stop 无论返回成功或错误，都须先保证不再调用 fill；不得在 fill 内等待 stop。欠载填静音，断连与采样率变化先停止，再配置并重建混音供给；不在后台悄悄更改格式。
 音频状态转换按以下规则执行：configure 只用于 Stopped；start 只接受已配置的 Stopped，接受供给后进入 Running。suspend 成功时已等待当前供给结束，进入 Suspended，保留相同 fill/mixer 并冻结逻辑音频时间；resume 验证设备格式一致后复用它。suspend 或 resume 失败进入 Failed，保留旧供给所有权直到控制侧 stop。stop 在任何状态先停止后续供给并等待在途调用结束，再丢弃 fill，返回 Stopped；返回错误仍保证供给已停止。设备断开或格式变化进入 Failed，原因分别标为 DeviceFailure 或 ReconfigureRequired；状态变化触发 WakeSignal，主线程媒体协调器读取状态后安排恢复，实时供给只发布故障、停止调用 fill 或输出静音。此时暂停媒体逻辑时间，通过 stop、configure、新建 Kira manager 和 fill 恢复。媒体服务以稳定 MediaId 保存资源、位置、音量、循环与分组参数，重建原生音轨并重绑已有逻辑活动及等待；增加 MediaEpoch 过滤旧完成消息。成功重建保持活动身份并继续，恢复失败只把受影响活动结算 Failed 一次。重建期间允许短暂停音；普通挂起采用保留 mixer 的路径。原生 Kira 句柄始终留在媒体适配器内部。
+### PCM 释放与主循环
+音频服务使用有界的非实时清理工作线程处理已接受 PCM 的最终释放。主控制线程先取得清理队列信用，再从 Kira 退休队列移交完整 Sound；队满时对象保持原位，后续维护继续推进。Sound、实际 PCM 与预算票据一起转移，物理释放完成后归还额度并唤醒等待者。接口分别记录已移交数量与已完成释放，申请解码预算可以等待这次真实释放。
+每个 mixer generation 创建时预留 Renderer、AudioManager 的一次性退出信用，普通退休任务使用独立额度。成功 play 持有的原 DecodedSound 引用也纳入有界后台移交，覆盖各个可能成为最后引用的路径。创建或重建先取得所需信用，旧 generation 的总数量受限。同步拒绝的请求按原接口返还调用者，由调用者安排其释放。
+stop 先关闭供给并等待在途调用结束，再销毁 fill 外壳；外壳与 mixer 将内部混音对象交给清理服务。Stopped 表示供给已停止，PCM 驻留以票据和清理完成记录为准。清理服务由宿主持有，跨越 mixer 寿命；宿主最终退出时显式 drain/join。验收分别测主侧移交、后台实际释放、原生 pause 与供给栅栏等待，0.5ms 主循环回收目标针对主侧工作。所有队列、在途清理对象与保留的旧 generation 都计入容量和驻留边界。
+
 ## 资源与工作执行
 ReadRequest 使用 AssetKey、版本、offset:u64、受限 len:u32 和优先级，不要求路径、mmap 或文件监视器。AssetIo 可读包、内存或平台文件系统，接口须快速返回；真正可能阻塞的文件调用交给平台异步机制或 IO 工作者。SaveWrite 使用应用保存命名空间和独立进程请求身份；完成只表示该平台已验证的持久提交级别。缺少可靠原子替换的平台须采用经故障验证的双槽或版本日志，不能假定 rename/fsync 一定适用。
 WorkRequest 是图像解码、快照编码、包验证等有限工作描述，拥有输入、优先级、取消身份与预算票据，不接收脚本闭包。WorkCaps 声明线程或协作模式及支持种类。协作实现保留游标，在工作单位、字节或截止时间到达时让出；不能用一次阻塞整图解码冒充分片执行。无工作线程且无可分片实现时，明确不支持该工作或要求预转换资源。实时音频供给不能被普通协作任务饿死。
@@ -207,7 +212,7 @@ release.json 使用 UTF-8 JSON，列出 release_id、入口、引擎/格式范�
 对白模型以 DialogueInteraction{id,mode,current_line_ids,lines,page_locale} 为权威。lines 的元素是 DialogueLine{id,speaker_id,speaker_name,content,resolved_text,reveal,voice,position}，content 保留内容 ID/参数，resolved_text 是提交时的文本结构。NVL 的已累积行与本次 current_line_ids 分开；speaker_name/text/reveal 的快捷字段只投影第一个当前行，空组投影为空文本和零揭示数。HistoryGroup{group_id,interaction_id,lines,resume_point} 记录一个提交行组；单行快捷字段投影本组第一行。新组或清页均通过一次事务提交，推进作用于当前组，历史添加一次。
 
 音频时钟与媒体读取
-AudioClockObservation 包含 OutputEpoch、submitted_frames、estimated_presented_frames、对应 MonoTime、sample_rate_hz、latency_frames 及 Measured/Estimated/Unavailable 精度。适配器使用设备时间戳或明确延迟估计，而非把写进缓冲的帧直接当成已经播放。每个媒体同步组记录实际有效 PCM 的设备帧区间到 MediaPTS 的映射，效果/重采样延迟计入映射。欠载填零时设备帧推进，但该流内容时钟停在最后有效内容，视频跟随该时钟暂停；其他音轨可继续。输出 epoch 改变使旧时钟观察失效并重新建立关联。
+AudioCaps 声明输出时钟能力。AudioClockObservation 包含 OutputEpoch、generated_frames、submitted_frames、estimated_presented_frames、对应 MonoTime、sample_rate_hz、latency_frames、uncertainty_frames 及 Measured/Estimated/Unavailable 精度。generated_frames 仅作当前 epoch 的软件生成诊断；成功提交与设备呈现分别记录。Unavailable 的提交/呈现数字为无效占位，查询返回 None。当前 CPAL 缺少逐块提交确认，因此声明 Unavailable；设备时间戳与回调次数仅保留为诊断。原生 Xrun 关闭供给、使 epoch 与媒体映射失效并交控制侧重建；内容队列短缺填零按当前设备时钟协议处理。适配器使用设备时间戳或明确延迟估计，而非把写进缓冲的帧直接当成已经播放。每个媒体同步组记录实际有效 PCM 的设备帧区间到 MediaPTS 的映射，效果/重采样延迟计入映射。欠载填零时设备帧推进，但该流内容时钟停在最后有效内容，视频跟随该时钟暂停；其他音轨可继续。输出 epoch 改变使旧时钟观察失效并重新建立关联。
 解码 EOF 表示输入耗尽，播放完成还需最后有效音频区间按观察精度消费、视频末帧已由调度器处理（提交或按隐藏/过期/表面不可用策略丢弃），且媒体时间线到达终点。seek 增加 MediaEpoch，唤醒并取消阻塞读取，清空该媒体的解码/PCM/纹理等待队列，从目标位置建立新映射；旧结果只释放资源。clock_observation 是一致的只读快照，状态变化通过 WakeSignal 通知。
 DescribeRequest 按 AssetKey 与固定内容版本返回 AssetInfo{length:Option<u64>,range_read,seekable,version,media_type}；.rpk 静态资源有确定长度。媒体适配定义 worker-owned MediaSource 的 Read/Seek 视图，经独立 IO 队列桥接 core::AssetIo，阻塞仅发生于解码工作线程。取消、关闭和错误唤醒等待者，IO 执行容量独立于等待它的解码工作容量；主线程、音频供给和同一个被占满的工作池不等待这个桥。未知长度或不可 seek 的源采用对应解码能力，调用 seek 前校验能力。
 
@@ -246,6 +251,27 @@ E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P
 验收采用最小宿主夹具和针对性 UI 片段，不要求制作完整可玩流程。NullPlatform、记录型渲染器、假时钟和内存 IO 验证无隐式设备、时间或文件系统依赖；关闭 winit/wgpu 后检查核心及传递依赖。用例覆盖单次输入消费、配对按下与释放、拖动失焦、模态隔离、嵌套合成、保存后切场景、读档后旧结果、重载已有回调及节点销毁后的异步完成。音频、恢复与帧预算分别提供可重复的负载和观察值。协作执行器测单步最大耗时、满队列、取消与过期完成；表面丢失及挂起恢复测时钟和资源身份。Vita 承诺前先做 32 位交叉构建，再依次验证启动、输入、图片/字形、音频、可靠保存与效果，不承诺未经实测的帧率。
 每个代理任务写明目标、允许目录、冻结的接口版本、已有代码、禁止扩大的范围、行为场景与性能预算。Issue 按可验收成果组织，PR 保持独立可审查；提交包含实际改动、相关用例、运行命令、观察结果与未解决项。不得以测试数量、模拟成功或完成报告代替实际契约验证。接口或依赖变更先提交设计修改，经负责人确认后继续。负责人亲自审输入、所有权、保存、音频和平台关键路径，重跑关键验证并处理跨模块冲突。性能计数器从第一阶段建立，协议变更同步三份设计。各后端的构建、设备和尾延迟验证属于对应实现任务。代码与文档以同一能力清单记录结果。
 
+## 十五 Masonry 生产适配合同
+本节规定生产适配的实现边界。隔离实验已验证真实控件与 CPU 记录路径；生产源码接入、后端设备和下列新增接口按各自用例验收。固定上游要求 Rust 1.96，工作区采用 1.96.0 工具链。
+
+呈现几何与上下文
+Masonry 导出几何、选择输入源并分发事件；FrameId、surface epoch、呈现接受门、预算和 NodeId↔WidgetId 的代际映射归 Reel。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。
+几何快照包含全部登记节点，包括 stashed 节点。采用连续记录与 children 索引数组，每节点保存 WidgetId、parent 索引、children 范围、对齐 border-box 尺寸、border/paint insets、局部变换、border-box 到 window 变换、window 子树 bounds、已解析 content baselines、border-box 坐标的 clip 和 frozen 命中标志（content-box getter 只转换一次）。整帧保存 DPI、根及 id 索引。布局缓存、属性、action 和完整 WidgetState 留在当前运行时。路径沿 parent links 在有上限的复用缓冲中生成一次，整次事件借用；内存与构建成本计入候选帧预算。
+每次真实指针分发固定一个 view，命中、捕获、祖先路由、hover、cursor 和所有输入上下文共用它。Context 借用 view 与已验证记录索引，QueryCtx 保持可复制；每个 context 无需克隆 Arc。自身几何 getter 的前置条件由构造入口保证。查询缺失或已销毁子节点时，QueryCtx::get、get_raw/get_raw_mut 等入口返回 Option/Result；Presented 缺失记录保持缺失，既不回退 Live，也不按当前控件几何重新命中。WidgetRef::children 依据所选拓扑枚举并过滤已销毁节点。布局、动画、普通 mutation 以及非指针状态更新显式使用 Live。
+实现必须逐一迁移 event.rs、update.rs、contexts.rs、widget_ref.rs、render_root.rs、anim.rs 的 context 构造入口及其实际调用方；旧实验六文件范围只是原型范围。当前存活、stashed、disabled 状态继续即时生效；disabled 命中保留祖先消费路径，自身行为跳过。捕获失效与普通命中的 disabled 处理分别判断。
+接受新视图仅发送实际路径差异的通知。需要退出的 hover/active 状态及失效捕获使用旧视图完成清理，再用新视图处理进入和静止 cursor；仍有效且在新视图中的捕获继续。清空 Presented 或切换表面代数时保留旧视图直到必要退出结束。Up/Cancel 在捕获目标回调开始时记录终止已交付，回调期间仍可观察捕获状态，删除与祖先冒泡只清理一次。
+
+统一记录流
+默认 Scene 路径复用 VisualLayerPlan 的完整有序重放。Reel sink 在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 在 sink 重新登记。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。
+独立片段是画序分段，消费时按原顺序组成完整流。使用稳定层边界时，paint_layer_mode 为 retained 声明：初始 Inline，缓存回调未执行时保留，显式设置 Inline 才恢复普通模式；其他 pre/paint/post 回调执行时，保留未重声明的层模式。
+外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。现有缺少作用域的 post-children placeholder 需在 fork 中改为该完整合同；Reel 始终只有这一条画序来源。
+
+作者滑条
+复用 Slider 的指针、键盘与 AccessKit 行为。slider.rs 提供只读规范化值/范围/步长、静默投影更新及变化标记，并让原 Widget 回调与作者包装器共用同一行为入口。Reel 包装器拥有轨道/滑块节点，替换全部默认绘制阶段，明确登记自身属性与默认值；装饰节点由控件统一处理命中和焦点。
+SliderInputProjection 保存所选帧的 a/b、axis/direction、min/max/step、步进锚点及配置版本。中心与指针逆映射共用同一几何 helper；范围与步长配置通过统一规范化，范围改变而值未变也更新外观和可访问性。退化几何产生空的指针映射，避免除零；无效配置在提交前报告。
+业务 value 由 Reel 当前模型管理，外部更新即时生效，旧帧显示值只用于绘制。指针按冻结投影产生绝对值，键盘/AccessKit 增减从当前业务值开始。配置版本仅随 range/step、axis/direction、端点策略等显式交互配置改变；普通布局尺寸、父级变换、动画与 value 更新保持版本。配置已变而对应帧尚未接受时，控件保留祖先消费，暂不执行旧投影行为；已有捕获沿失效路径交付一次 Cancel。新配置帧接受后恢复。
+源码导入范围根据上述实际调用闭包确定，至少审查 masonry_core、tree_arena 与受影响的 masonry widgets 及构建资源，保留上游来源/许可证，普通依赖继续锁定引用。生产验收覆盖首帧/清空、缺失子查询、路径变更、单次终止、绘制组跨片段、外部内容作用域，以及图片滑条与业务绑定的同一数值/几何。
+
 ## 参考来源
 [1] Ren’Py 保存与回滚 https://www.renpy.org/doc/html/save_load_rollback.html
 [2] Ren’Py Screens https://www.renpy.org/doc/html/screens.html
@@ -263,3 +289,4 @@ E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P
 [13] VitaSDK 音频 https://docs.vitasdk.org/group__SceAudioUser.html
 [14] Kira Backend https://docs.rs/kira/latest/kira/backend/trait.Backend.html
 [15] Kira Frame https://docs.rs/kira/latest/kira/struct.Frame.html
+
