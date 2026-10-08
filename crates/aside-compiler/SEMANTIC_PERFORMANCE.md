@@ -248,3 +248,34 @@ Rust 1.96.0 workspace fmt, strict all-target clippy, debug and release tests pas
 The immutable T01 integrity check remains 10 sources/32 unchanged assertion maps;
 24 bilingual scene pairs and bounded child-process diagnostics pass. Execution
 remains `waiting_runtime` and the author-guide sources are unchanged.
+
+
+## Provenance lifecycle regression after `a50a7ce`
+
+The 10,000-module chain starts with `m0: pub let x=1;`; every later module is
+`pub use m<previous>::{x};`. It is legal under the default analysis budgets.
+Before this fix, analysis completed but releasing the Arc provenance tail on a
+2 MiB debug thread stack aborted with stack overflow. Iterative release now drops
+both the ordinary result and a separately retained final shared tail safely.
+The sharing case validates all 9,999 hops after result destruction and checks
+that the origin's Weak reference can no longer upgrade after final release.
+
+A separate single debug observation measured analysis/result-drop at 951/28 ms;
+a single release observation measured 190/24 ms. Shared result-drop plus intact-
+history validation and final-tail release took 25 ms debug / 20 ms release.
+These are regression observations, not medians or an engine performance claim.
+Raw before/after observations and exact commands are in
+`bench-results/semantic/provenance-lifecycle.txt`.
+
+The direct namespace counterexample `a: pub let x=1;` and
+`b: use a as ns; let z:int=ns.x;` now retains exactly module a/export=None for the
+namespace and a/export=x for the member. Repeated normalization no longer creates
+nonexistent export a. Named imports, multi-hop namespace aliases, legal cycles and
+a self-module namespace reexport are source-level regressions too.
+
+This fix changes only module reference normalization/destruction plus tests and
+compiler evidence. The prior binding, return-contract, budget, Context and capture
+implementations are unchanged. Rust 1.96.0 fmt, strict all-target clippy and full
+workspace debug/release checks pass, including previous source counterexamples,
+24 guide pairs and the immutable 10-source/32-assertion T01 conversion integrity.
+Execution remains `waiting_runtime`.

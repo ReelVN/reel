@@ -181,3 +181,20 @@ including partial admission after the seeded name index. At zero budget no
 semantic symbols/captures are allocated; parser/CST/HIR projection still has its
 separate bounded allocation policy. `declaration_budget_probe` reports that
 boundary from actual source and allocator instrumentation.
+
+
+Resolver-reference normalization is idempotent for an already resolved module/
+version hop. Repeating MemoryResolver→overlay→binder normalization preserves
+namespace `export=None` and the exact named export of a reexport; it never derives
+an export from a namespace's display name. Source regressions cover direct member
+reads, ordinary symbols, aliasing namespace reexports, legal module cycles and a
+namespace reexport of its own module.
+
+`ResolutionSource` releases exclusively owned previous nodes iteratively using
+`take()` and `Arc::into_inner()`. Each detached node drops with no previous edge;
+a shared tail remains intact until its final owner releases it. No chain copy or
+new arena is needed. The source-level 10,000-module default-budget regression
+analyzes and drops its result on a 2 MiB thread stack, then repeats with a retained
+shared tail. It verifies all 9,999 import-origin hops remain readable and a weak
+origin reference expires after final release. Child-process isolation preserves a
+useful test failure for a process-aborting stack regression.

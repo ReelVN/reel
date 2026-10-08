@@ -342,3 +342,156 @@ fn injectable_resolver_identity_uses_returned_canonical_module() {
         );
     }
 }
+
+#[test]
+fn direct_namespace_resolution_is_idempotent_and_has_no_fabricated_export() {
+    let inputs = [
+        input("a", "pub let x=1;"),
+        input("b", "use a as ns; let z:int=ns.x;"),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let b = result
+        .modules()
+        .unwrap()
+        .iter()
+        .find(|m| m.canonical_path() == "b")
+        .unwrap();
+    let mut namespace_count = 0;
+    for binding in b.external_bindings() {
+        let descriptor = &binding.descriptor;
+        let reference = descriptor.reference.as_ref().unwrap();
+        assert_eq!((&*reference.module, &*reference.version), ("a", "test-v1"));
+        let source = descriptor.resolved_from.as_ref().unwrap();
+        if descriptor.namespace.is_some() {
+            namespace_count += 1;
+            assert_eq!(reference.export, None);
+            assert_eq!(
+                source.reference.export, None,
+                "namespace must never invent export a"
+            );
+            assert!(
+                source.previous.is_none(),
+                "normalization must not add another resolution hop"
+            );
+        } else {
+            assert_eq!(reference.export.as_deref(), Some("x"));
+            assert_eq!(source.reference.export.as_deref(), Some("x"));
+            assert!(source.previous.is_none());
+        }
+        assert!(std::sync::Arc::ptr_eq(reference, &source.reference));
+    }
+    assert!(namespace_count > 0);
+}
+
+#[test]
+fn namespace_and_symbol_aliases_preserve_identity_through_a_legal_cycle() {
+    let inputs = [
+        input("origin", "pub let x=1;"),
+        input("a", "pub use origin as ns; pub use b::{mirror as alias};"),
+        input(
+            "b",
+            "pub use a::{ns as mirror}; pub use origin::{x as number};",
+        ),
+        input(
+            "consumer",
+            "use a::{alias as local}; use b::{number as n}; let x:int=local.x; let y:int=n;",
+        ),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    assert!(result.plan.components.iter().any(|c| c == &["a", "b"]));
+    let m = result
+        .modules()
+        .unwrap()
+        .iter()
+        .find(|m| m.canonical_path() == "consumer")
+        .unwrap();
+    let alias = m
+        .external_bindings()
+        .iter()
+        .find(|b| b.descriptor.name == "alias")
+        .unwrap();
+    let declaration = alias.descriptor.reference.as_ref().unwrap();
+    assert_eq!(
+        (&*declaration.module, declaration.export.as_deref()),
+        ("origin", None)
+    );
+    let expected = [
+        ("a", Some("alias")),
+        ("b", Some("mirror")),
+        ("a", Some("ns")),
+        ("origin", None),
+    ];
+    let mut source = alias.descriptor.resolved_from.as_deref();
+    for (module, export) in expected {
+        let hop = source.unwrap();
+        assert_eq!(
+            (&*hop.reference.module, hop.reference.export.as_deref()),
+            (module, export)
+        );
+        source = hop.previous.as_deref();
+    }
+    assert!(source.is_none());
+    let number = m
+        .external_bindings()
+        .iter()
+        .find(|b| b.descriptor.name == "number")
+        .unwrap();
+    assert_eq!(
+        number
+            .descriptor
+            .reference
+            .as_ref()
+            .unwrap()
+            .export
+            .as_deref(),
+        Some("x")
+    );
+    let head = number.descriptor.resolved_from.as_ref().unwrap();
+    assert_eq!(
+        (&*head.reference.module, head.reference.export.as_deref()),
+        ("b", Some("number"))
+    );
+    assert_eq!(
+        head.previous.as_ref().unwrap().reference.export.as_deref(),
+        Some("x")
+    );
+}
+
+#[test]
+fn namespace_reexport_of_its_own_module_keeps_the_actual_export_hop() {
+    let inputs = [
+        input("a", "pub let x=1; pub use a as ns;"),
+        input("b", "use a::{ns as local}; let x:int=local.x;"),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let b = result
+        .modules()
+        .unwrap()
+        .iter()
+        .find(|m| m.canonical_path() == "b")
+        .unwrap();
+    let namespace = b
+        .external_bindings()
+        .iter()
+        .find(|b| b.descriptor.name == "ns")
+        .unwrap();
+    let origin = namespace.descriptor.reference.as_ref().unwrap();
+    assert_eq!((&*origin.module, origin.export.as_deref()), ("a", None));
+    let head = namespace.descriptor.resolved_from.as_ref().unwrap();
+    assert_eq!(
+        (&*head.reference.module, head.reference.export.as_deref()),
+        ("a", Some("ns"))
+    );
+    let previous = head.previous.as_ref().unwrap();
+    assert_eq!(
+        (
+            &*previous.reference.module,
+            previous.reference.export.as_deref()
+        ),
+        ("a", None)
+    );
+    assert!(previous.previous.is_none());
+}

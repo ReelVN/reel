@@ -67,6 +67,20 @@ pub struct ResolutionSource {
     pub reference: Arc<SymbolReference>,
     pub previous: Option<Arc<ResolutionSource>>,
 }
+impl Drop for ResolutionSource {
+    fn drop(&mut self) {
+        // Detach before releasing the last Arc. Every uniquely owned node is
+        // dropped with previous=None; a shared tail remains owned by its users.
+        // Arc::into_inner also handles simultaneous final releases correctly.
+        let mut previous = self.previous.take();
+        while let Some(source) = previous {
+            let Some(mut source) = Arc::into_inner(source) else {
+                break;
+            };
+            previous = source.previous.take();
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ExternalSymbol {
     pub name: String,
@@ -179,6 +193,14 @@ pub struct ResolvedImport {
 impl ResolvedImport {
     pub(super) fn retain_references(mut self) -> Self {
         for symbol in &mut self.bindings {
+            // A resolver may already have normalized the returned interface.
+            // Preserve that hop verbatim: inferring its kind again from the
+            // presence of a previous hop can turn a module into a fake export.
+            if symbol.resolved_from.as_ref().is_some_and(|source| {
+                source.reference.module == self.module && source.reference.version == self.version
+            }) {
+                continue;
+            }
             let namespace = symbol
                 .namespace
                 .as_ref()
