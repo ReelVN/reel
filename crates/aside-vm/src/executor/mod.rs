@@ -104,7 +104,7 @@ struct ScriptFrame {
 enum NativePhase {
     Copy { source: ArgSource, index: u32 },
     Bind { index: u32, positional: u32 },
-    Issued(HostTicket),
+    Issued { serial: u64, input: NativeInput },
     Waiting(WaitId),
     Continue,
     Callback { count: u32 },
@@ -1015,13 +1015,44 @@ impl Vm {
             Ok(None)
         }
     }
+    fn make_ticket(
+        &self,
+        n: NativeFrame,
+        task: TaskId,
+        serial: u64,
+        input: NativeInput,
+    ) -> HostTicket {
+        HostTicket {
+            heap: self.heap.id(),
+            epoch: self.heap.epoch(),
+            serial,
+            frame: n.id,
+            task,
+            native: n.native,
+            signature: n.signature,
+            abi_version: self.program.package().natives[n.native.index()].abi_version,
+            owner: n.owner,
+            location: n.location,
+            input,
+            context: n.context,
+            effects: n.effects,
+            continuation: if input == NativeInput::Entry {
+                None
+            } else {
+                Some(ContinuationState {
+                    version: n.continuation_version,
+                    stage: n.continuation_stage,
+                })
+            },
+        }
+    }
     fn ticket(&self, ticket: HostTicket) -> Result<NativeFrame, VmError> {
         let task = self.task(ticket.task).map_err(|_| VmError::InvalidTicket)?;
         if ticket.heap != self.heap.id() || ticket.epoch != self.heap.epoch() || task.cancelling {
             return Err(VmError::InvalidTicket);
         }
         match task.frames.data.last() {
-            Some(Frame::Native(n)) if matches!(n.phase,NativePhase::Issued(t) if t==ticket) => {
+            Some(Frame::Native(n)) if matches!(n.phase,NativePhase::Issued {serial,input} if self.make_ticket(*n,ticket.task,serial,input)==ticket) => {
                 Ok(*n)
             }
             _ => Err(VmError::InvalidTicket),
@@ -2657,39 +2688,24 @@ impl Vm {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 let serial = self.serial()?;
-                let ticket = HostTicket {
-                    heap: self.heap.id(),
-                    epoch: self.heap.epoch(),
-                    serial,
-                    frame: n.id,
-                    task: self.active.task_id.unwrap(),
-                    native: n.native,
-                    signature: n.signature,
-                    abi_version: self.program.package().natives[n.native.index()].abi_version,
-                    owner: n.owner,
-                    location: n.location,
-                    input,
-                    context: n.context,
-                    effects: n.effects,
-                    continuation: if input == NativeInput::Entry {
-                        None
-                    } else {
-                        Some(ContinuationState {
-                            version: n.continuation_version,
-                            stage: n.continuation_stage,
-                        })
-                    },
-                };
+                let ticket = self.make_ticket(n, self.active.task_id.unwrap(), serial, input);
                 if input == NativeInput::Entry {
                     self.native_entries += 1;
                 } else {
                     self.native_resumes += 1;
                 }
-                n.phase = NativePhase::Issued(ticket);
+                n.phase = NativePhase::Issued { serial, input };
                 self.active.frames.data[top] = Frame::Native(n);
                 return Ok(Some(RunOutcome::HostCall(ticket)));
             }
-            NativePhase::Issued(ticket) => return Ok(Some(RunOutcome::HostCall(ticket))),
+            NativePhase::Issued { serial, input } => {
+                return Ok(Some(RunOutcome::HostCall(self.make_ticket(
+                    n,
+                    self.active.task_id.unwrap(),
+                    serial,
+                    input,
+                ))));
+            }
             NativePhase::Waiting(wait) => return Ok(Some(RunOutcome::Waiting(wait))),
             NativePhase::Continue => {
                 if !m.take(0, 1, 0) {

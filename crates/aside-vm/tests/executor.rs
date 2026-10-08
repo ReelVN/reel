@@ -400,7 +400,11 @@ fn cancellation_is_bounded_and_invalidates_ticket_immediately() {
 #[test]
 fn load_rejects_unconnected_handlers_even_if_unreachable() {
     let mut p = fixtures::exception_regions();
-    p.functions[0].code[0] = Instruction::new(Opcode::MakeArray, 0, 0, 0);
+    let descriptor = p.functions[0].descriptors.len() as u32;
+    p.functions[0].code.extend([
+        Instruction::new(Opcode::MakeArray, 0, descriptor, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ]);
     p.functions[0]
         .descriptors
         .push(Descriptor::Sequence(RegWindow {
