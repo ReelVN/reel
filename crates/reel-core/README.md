@@ -15,11 +15,11 @@ Specification locations: [engine architecture](../../docs/engine-architecture.md
 
 The `test-support` feature exposes executable fixtures, excluded from the normal core build:
 
-- `MemoryAssetIo` has independent read/describe and save queues. `complete_next_read` and `complete_next_save` explicitly drive memory operations; `poll` only appends completed events. Exact resource versions are immutable. Reads can reach EOF or fail for an unavailable version. Same-slot saves commit in submission order, reject non-increasing sequence numbers, and move the entire data buffer into the store only on success. Injected failure and cancellation preserve the previous slot. The fixture advertises only `Visible`; requesting `Durable` is rejected before acceptance. It makes no filesystem, crash-recovery, or durable-ledger claim.
-- `CooperativeExecutor` registers only fixture copy encoding and XOR-packet verification. These are cursor-based operations using at most 256 source bytes per work unit, preallocated output and scratch storage, and a clock check before each unit. `WorkProgress.bytes` measures source bytes handled, separately from resident-byte reservations. A packet with nonzero aggregate XOR actually fails validation. This is not a production codec or integrity algorithm. Visible work precedes normal work, which precedes prefetch; equal priority jobs round-robin across slices.
+- `MemoryAssetIo` has independent read/describe and save queues. `complete_next_read` and `complete_next_save` explicitly drive memory operations; `poll` only appends completed events. Ready read/save lanes alternate, so a ready save is delivered within two `poll(limit=1)` calls even when each call is preceded by a new completed read. Exact resource versions are immutable. Reads can reach EOF or fail for an unavailable version. Same-slot saves commit in submission order, reject non-increasing sequence numbers, and move the entire data buffer into the store only on success. Injected failure and cancellation preserve the previous slot. The fixture advertises only `Visible`; requesting `Durable` is rejected before acceptance. It makes no filesystem, crash-recovery, or durable-ledger claim.
+- `CooperativeExecutor` registers only fixture copy encoding and XOR-packet verification. These are cursor-based operations using at most 256 source bytes per work unit, preallocated output and scratch storage, and a clock check before each unit. `WorkProgress.bytes` counts logical input bytes once, even when copied through scratch to output; resident output/temporary bytes are separately reserved. A packet with nonzero aggregate XOR actually fails validation. This is not a production codec or integrity algorithm. Three fixed priority deques require at most three head checks to select a chunk, independent of queue size. Visible work precedes normal work, which precedes prefetch; equal priority jobs round-robin across slices.
 - The shared fixture queue preallocates a terminal slot before publishing acceptance. A non-cloneable completion slot is consumed on settlement. Pending and undrained terminal records share the request-count limit; charged bytes conservatively include input, maximum output, scratch, completion and request metadata until drain. Cancellation of pending work settles once and releases its data; later driver calls cannot produce a business result. Once completion has been enqueued, it has already won settlement, and later cancellation is a no-op. The business layer first revokes its wait/subscription, then calls service cancellation; engine routing checks both wait activity and Scope before resuming business. An already settled result remains for resources and the process ledger, preserving an actual save commit. This distinction was confirmed by the integration owner during review. `poll`/`drain` append at most the supplied limit, including across IO lanes; callers preallocate the output vector.
 
-Fixture constructors accept explicit `QueueLimits`; their convenience `new` creates an isolated ID domain. Use `with_ids` for replacement/shared-service checks. Tight limits in the contract scenarios are test settings, not platform defaults. Target adapter tasks choose actual queue capacities and independently verified storage levels.
+Fixture constructors accept explicit `QueueLimits`; their convenience `new` creates an isolated ID domain. Use `with_ids` for replacement/shared-service checks. `DEFAULT_COOPERATIVE_QUEUE_LIMITS` is a small fixture configuration: 32 requests / 4 MiB. Tight limits in other contract scenarios are test settings, not platform defaults. Target adapter tasks choose actual queue capacities and independently verified storage levels.
 
 ## Behavioral evidence and commands
 
@@ -47,7 +47,7 @@ export RUSTUP_HOME=/workspace/reel-rustup
 export CARGO_TARGET_DIR=/workspace/reel-target
 ```
 
-`tests/contracts.rs` exercises original buffer/key-pointer preservation on rejection and retry, byte and request exhaustion, undrained terminal backpressure, repeated cancellation, output and completion-ticket residency, fixed versions/EOF/errors, stale epochs released without business delivery, process-owned saves under a saturated read lane, commit order, failure preserving the old slot, and rejection of unprovided durability. Work scenarios check partial progress, byte/unit/deadline limits using a fake clock, priority selection, cancellation after partial processing, real validation failure, empty work, and missing output/scratch reservations. Shared IO counters are exercised across adapter replacement and both IO lanes at the end of the `u64` range. Ticket ownership is also moved across a thread; wake coalescing is driven from worker threads.
+`tests/contracts.rs` exercises original buffer/key-pointer preservation on rejection and retry, byte and request exhaustion, undrained terminal backpressure, repeated cancellation, output and completion-ticket residency, fixed versions/EOF/errors, stale epochs released without business delivery, process-owned saves under a saturated read lane, commit order, failure preserving the old slot, and rejection of unprovided durability. A continuous-read scenario confirms a ready save is delivered within two single-event polls. Work scenarios check partial progress, byte/unit/deadline limits using a fake clock, priority selection, cancellation after partial processing, real validation failure, empty work, missing output/scratch reservations, and payload delivery with the default request queue completely full. Shared IO counters are exercised across adapter replacement and both IO lanes at the end of the `u64` range. Ticket ownership is also moved across a thread; wake coalescing is driven from worker threads.
 
 The first run caught a test expectation error: it counted 4 bytes reserved by a missing-version read after that failure had already returned its output ticket. The observed residency was the surviving old-version read's 99-byte reservation. The corrected scenario checks that those 99 bytes remain charged through delivery and are returned when that stale event is dropped. Both debug and release behavior runs then passed.
 
@@ -59,13 +59,20 @@ reel-core v0.1.0
 
 No window, GPU, audio, VM, compiler, watcher, or copied dependency is linked.
 
-The release probe actually copies and verifies 1 MiB, with four units / 1024 source bytes allowed per advance. On this Linux x86_64 KVM environment, AMD EPYC 9V74, rustc 1.90.0 / LLVM 20.1.8, the final recorded run observed:
+The release probe actually copies and verifies 1 MiB, with four units / 1024 logical input bytes allowed per advance. It runs both a single request and a full default queue of 32 requests, each owning 32 KiB. On this Linux x86_64 KVM environment, AMD EPYC 9V74, rustc 1.90.0 / LLVM 20.1.8, the final recorded run observed:
 
 ```text
-submit_ns=5608
-bytes=1048576 slices=1024 p50_ns=340 p99_ns=4036 max_ns=52499
+case=single configured_requests=1
+max_submit_ns=5959
+bytes=1048576 slices=1024 p50_ns=330 p99_ns=1983 max_ns=93851
 peaks: input=1048576 output=1048576 temporary=256 completion=512 queue=2098188
 after_drain: output=1048576 completion=512 queue=0
+after_output_drop: all tickets and resident bytes returned
+case=full configured_requests=32
+max_submit_ns=3585
+bytes=1048576 slices=1024 p50_ns=311 p99_ns=2323 max_ns=17045
+peaks: input=1048576 output=1048576 temporary=8192 completion=16384 queue=2130304
+after_drain: output=1048576 completion=16384 queue=0
 after_output_drop: all tickets and resident bytes returned
 ```
 

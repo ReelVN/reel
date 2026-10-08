@@ -23,6 +23,7 @@ pub(super) struct CompletionSlot {
 pub(super) struct Entry<R> {
     pub slot: CompletionSlot,
     pub request: R,
+    priority: usize,
 }
 struct Finished<E> {
     event: E,
@@ -32,7 +33,7 @@ struct Finished<E> {
 /// Settlement follows removal of the owning Entry; no growing tombstone set.
 pub(super) struct Queue<R, E> {
     limits: QueueLimits,
-    pending: VecDeque<Entry<R>>,
+    pending: [VecDeque<Entry<R>>; 3],
     events: VecDeque<Finished<E>>,
     usage: QueueUsage,
 }
@@ -41,12 +42,23 @@ impl<R, E> Queue<R, E> {
     pub fn new(limits: QueueLimits) -> Self {
         Self {
             limits,
-            pending: VecDeque::new(),
+            pending: std::array::from_fn(|_| VecDeque::new()),
             events: VecDeque::new(),
             usage: QueueUsage::default(),
         }
     }
-    pub fn accept(&mut self, id: u64, request: R, bytes: u64) -> Result<(), Rejected<R>> {
+    pub fn accept(
+        &mut self,
+        id: u64,
+        request: R,
+        bytes: u64,
+        priority: Priority,
+    ) -> Result<(), Rejected<R>> {
+        let priority = match priority {
+            Priority::Prefetch => 0,
+            Priority::Normal => 1,
+            Priority::Visible => 2,
+        };
         let next = self
             .usage
             .bytes
@@ -57,7 +69,7 @@ impl<R, E> Queue<R, E> {
                 RejectCode::Busy,
                 "request/completion queue full",
             ))
-        } else if self.pending.try_reserve(1).is_err()
+        } else if self.pending[priority].try_reserve(1).is_err()
             || self
                 .events
                 .try_reserve(self.usage.requests as usize + 1 - self.events.len())
@@ -73,9 +85,10 @@ impl<R, E> Queue<R, E> {
         if let Some(reason) = failure {
             return Err(Rejected { request, reason });
         }
-        self.pending.push_back(Entry {
+        self.pending[priority].push_back(Entry {
             slot: CompletionSlot { id, bytes },
             request,
+            priority,
         });
         self.usage.requests += 1;
         self.usage.bytes = next.expect("checked above");
@@ -83,7 +96,7 @@ impl<R, E> Queue<R, E> {
         Ok(())
     }
     pub fn pending(&self) -> impl Iterator<Item = &Entry<R>> {
-        self.pending.iter()
+        self.pending.iter().flat_map(|q| q.iter())
     }
     pub fn check_capacity(&self, bytes: u64) -> Result<(), RejectReason> {
         if self.usage.requests >= self.limits.max_requests
@@ -100,27 +113,20 @@ impl<R, E> Queue<R, E> {
         }
         Ok(())
     }
-    pub fn pop_priority(&mut self, priority: impl Fn(&R) -> Priority) -> Option<Entry<R>> {
-        let mut best = 0;
-        let mut highest = priority(&self.pending.front()?.request);
-        for (index, entry) in self.pending.iter().enumerate().skip(1) {
-            let p = priority(&entry.request);
-            if p > highest {
-                best = index;
-                highest = p;
-            }
-        }
-        self.pending.remove(best)
-    }
     pub fn pop(&mut self) -> Option<Entry<R>> {
-        self.pending.pop_front()
+        // Exactly three head checks, independent of queued request count.
+        self.pending.iter_mut().rev().find_map(|q| q.pop_front())
     }
     pub fn take(&mut self, id: u64) -> Option<Entry<R>> {
-        let index = self.pending.iter().position(|e| e.slot.id == id)?;
-        self.pending.remove(index)
+        for queue in &mut self.pending {
+            if let Some(index) = queue.iter().position(|e| e.slot.id == id) {
+                return queue.remove(index);
+            }
+        }
+        None
     }
     pub fn requeue(&mut self, entry: Entry<R>) {
-        self.pending.push_back(entry);
+        self.pending[entry.priority].push_back(entry);
     }
     pub fn finish(&mut self, event: E, slot: CompletionSlot) {
         // The slot was reserved at accept, before any ID or effect was published.
@@ -141,7 +147,7 @@ impl<R, E> Queue<R, E> {
     }
     pub fn usage(&self) -> QueueUsage {
         QueueUsage {
-            pending: self.pending.len(),
+            pending: self.pending.iter().map(VecDeque::len).sum(),
             completed: self.events.len(),
             ..self.usage
         }

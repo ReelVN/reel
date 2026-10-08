@@ -664,3 +664,89 @@ fn service_ids_survive_adapter_replacement_and_exhaust_without_accepting() {
     drop(replacement);
     p.empty();
 }
+
+#[test]
+fn continuous_reads_deliver_a_ready_save_within_two_single_event_polls() {
+    let p = Pools::new();
+    let (signal, _) = wake();
+    let mut io = MemoryAssetIo::new(limits(1, 4096), limits(1, 4096), signal);
+    let save = io
+        .replace_save(p.save(1, b"committed", SaveDurability::Visible))
+        .unwrap();
+    io.complete_next_save();
+    let mut events = Vec::with_capacity(3);
+    for _ in 0..2 {
+        io.read(p.read(version(1), 0, 4, scope(1))).unwrap();
+        io.complete_next_read(); // another read result is ready before every poll
+        let before = events.len();
+        io.poll(&mut events, 1);
+        assert_eq!(events.len(), before + 1);
+        if events.last().unwrap().id == save {
+            break;
+        }
+    }
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].id, save);
+    assert!(matches!(
+        events[1].result,
+        Terminal::Completed(IoPayload::Saved(_))
+    ));
+    assert_eq!(io.save_usage().requests, 0);
+    io.poll(&mut events, 1);
+    assert_eq!(events.len(), 3); // the second read is also retained and delivered
+    drop(events);
+    drop(io);
+    p.empty();
+}
+
+#[test]
+fn configured_default_full_work_queue_makes_progress_and_delivers_every_payload() {
+    let p = Pools::new();
+    let (signal, _) = wake();
+    let mut executor = CooperativeExecutor::new(
+        FakeClock::default(),
+        DEFAULT_COOPERATIVE_QUEUE_LIMITS,
+        signal,
+    );
+    let mut ids = Vec::new();
+    for n in 0..DEFAULT_COOPERATIVE_QUEUE_LIMITS.max_requests {
+        ids.push(
+            executor
+                .submit(p.work(
+                    &[n as u8; 64],
+                    CooperativeExecutor::<FakeClock>::copy_kind(),
+                    Scope::Process,
+                ))
+                .unwrap(),
+        );
+    }
+    let rejected = executor
+        .submit(p.work(
+            b"overflow",
+            CooperativeExecutor::<FakeClock>::copy_kind(),
+            Scope::Process,
+        ))
+        .unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::Busy);
+    drop(rejected);
+    let mut events = Vec::with_capacity(ids.len());
+    for _ in &ids {
+        let progress = executor.advance(WorkBudget {
+            max_units: 1,
+            max_bytes: 64,
+            deadline: None,
+        });
+        assert_eq!((progress.units, progress.bytes), (1, 64));
+        executor.drain(&mut events, 1);
+    }
+    for (n, e) in events.iter().enumerate() {
+        assert_eq!(e.id, ids[n]);
+        let Terminal::Completed(bytes) = &e.result else {
+            panic!("full queue lost result")
+        };
+        assert_eq!(bytes.as_slice(), &[n as u8; 64]);
+    }
+    assert_eq!(executor.usage().requests, 0);
+    drop(events);
+    p.empty();
+}

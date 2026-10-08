@@ -10,6 +10,11 @@ use crate::{
 };
 
 pub const COMPLETION_BYTES: u64 = 512;
+/// Fixture starting configuration; production adapters choose their own limits.
+pub const DEFAULT_QUEUE_LIMITS: QueueLimits = QueueLimits {
+    max_requests: 32,
+    max_bytes: 4 << 20,
+};
 const CHUNK_BYTES: usize = 256;
 
 struct Job {
@@ -143,9 +148,10 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
             cursor: 0,
             xor: 0,
         };
-        let accepted = self
-            .ids
-            .accept(job, |id, job| self.queue.accept(id.0, job, bytes));
+        let accepted = self.ids.accept(job, |id, job| {
+            let priority = job.request.priority;
+            self.queue.accept(id.0, job, bytes, priority)
+        });
         match accepted {
             Ok(id) => Ok(id),
             Err(e) => Err(Rejected {
@@ -186,7 +192,7 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
             {
                 break;
             }
-            let Some(mut entry) = self.queue.pop_priority(|j| j.request.priority) else {
+            let Some(mut entry) = self.queue.pop() else {
                 break;
             };
             let job = &mut entry.request;

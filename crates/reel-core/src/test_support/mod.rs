@@ -6,6 +6,7 @@ mod queue;
 
 pub use cooperative::COMPLETION_BYTES as WORK_COMPLETION_BYTES;
 pub use cooperative::CooperativeExecutor;
+pub use cooperative::DEFAULT_QUEUE_LIMITS as DEFAULT_COOPERATIVE_QUEUE_LIMITS;
 pub use memory_io::COMPLETION_BYTES as IO_COMPLETION_BYTES;
 pub use memory_io::{MemoryAsset, MemoryAssetIo, StoredSave};
 pub use queue::QueueUsage;

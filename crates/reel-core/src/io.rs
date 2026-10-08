@@ -125,5 +125,7 @@ pub trait AssetIo {
     /// If already settled/queued, preserve that terminal; cancellation is a no-op.
     /// A caller must first revoke its business wait, even if the IO cannot abort.
     fn cancel(&mut self, id: IoId);
+    /// With a nonzero limit, ready read/save lanes must make progress under
+    /// continuing traffic in the other lane. Append at most `limit` total events.
     fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize);
 }

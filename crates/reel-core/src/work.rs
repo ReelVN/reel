@@ -61,7 +61,8 @@ pub struct WorkBudget {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorkProgress {
     pub units: u32,
-    /// Bytes examined or copied this slice; output/temporary residency is reserved separately.
+    /// Logical input bytes handled this slice, counted once despite scratch/output
+    /// copies. Maximum output and temporary residency are reserved separately.
     pub bytes: u64,
     pub has_work: bool,
 }

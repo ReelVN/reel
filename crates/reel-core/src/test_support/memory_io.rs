@@ -1,7 +1,7 @@
 use super::queue::{Queue, QueueUsage, charge, invalid};
 use crate::{
     budget::{BudgetCategory, BudgetTicket, OwnedBytes, QueueLimits},
-    identity::{IoId, ResourceVersion, Scope},
+    identity::{IoId, Priority, ResourceVersion, Scope},
     io::*,
     request_ids::RequestIds,
     result::{RejectCode, Rejected, Terminal},
@@ -40,6 +40,7 @@ pub struct MemoryAssetIo {
     ids: RequestIds<IoId>,
     wake: WakeSignal,
     fail_next_save: bool,
+    poll_save_next: bool,
 }
 
 impl MemoryAssetIo {
@@ -67,6 +68,7 @@ impl MemoryAssetIo {
             ids,
             wake,
             fail_next_save: false,
+            poll_save_next: false,
         }
     }
     pub fn insert_asset(
@@ -102,10 +104,7 @@ impl MemoryAssetIo {
     }
 
     pub fn complete_next_read(&mut self) -> bool {
-        let Some(entry) = self.reads.pop_priority(|r| match r {
-            ReadOp::Describe(r) => r.priority,
-            ReadOp::Read(r) => r.priority,
-        }) else {
+        let Some(entry) = self.reads.pop() else {
             return false;
         };
         let (scope, completion, result) = match entry.request {
@@ -243,7 +242,11 @@ impl AssetIo for MemoryAssetIo {
             Err(reason) => return Err(Rejected { request, reason }),
         };
         let accepted = self.ids.accept(ReadOp::Describe(request), |id, r| {
-            self.reads.accept(id.0, r, bytes)
+            let ReadOp::Describe(ref request) = r else {
+                unreachable!()
+            };
+            let priority = request.priority;
+            self.reads.accept(id.0, r, bytes, priority)
         });
         match accepted {
             Ok(id) => Ok(id),
@@ -278,7 +281,11 @@ impl AssetIo for MemoryAssetIo {
             Err(reason) => return Err(Rejected { request, reason }),
         };
         let accepted = self.ids.accept(ReadOp::Read(request), |id, r| {
-            self.reads.accept(id.0, r, bytes)
+            let ReadOp::Read(ref request) = r else {
+                unreachable!()
+            };
+            let priority = request.priority;
+            self.reads.accept(id.0, r, bytes, priority)
         });
         match accepted {
             Ok(id) => Ok(id),
@@ -333,8 +340,9 @@ impl AssetIo for MemoryAssetIo {
             Ok(n) => n,
             Err(reason) => return Err(Rejected { request, reason }),
         };
-        self.ids
-            .accept(request, |id, r| self.writes.accept(id.0, r, bytes))
+        self.ids.accept(request, |id, r| {
+            self.writes.accept(id.0, r, bytes, Priority::Normal)
+        })
     }
     fn cancel(&mut self, id: IoId) {
         if let Some(entry) = self.reads.take(id.0) {
@@ -369,8 +377,19 @@ impl AssetIo for MemoryAssetIo {
         }
     }
     fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
-        let before = out.len();
-        self.reads.drain(out, limit);
-        self.writes.drain(out, limit - (out.len() - before));
+        for _ in 0..limit {
+            let read_ready = self.reads.usage().completed > 0;
+            let save_ready = self.writes.usage().completed > 0;
+            if !read_ready && !save_ready {
+                break;
+            }
+            if save_ready && (self.poll_save_next || !read_ready) {
+                self.writes.drain(out, 1);
+                self.poll_save_next = false;
+            } else {
+                self.reads.drain(out, 1);
+                self.poll_save_next = true;
+            }
+        }
     }
 }
