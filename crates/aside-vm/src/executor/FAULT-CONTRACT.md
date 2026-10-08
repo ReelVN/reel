@@ -120,5 +120,8 @@ effects remain. Repeated ordinary run_slice grants are not invoke_sync.
 Script parameter-default Cell identity consumes B01 `57ff60e`: preceding Cells
 are initialized before later defaults, transferred through the internal prefix
 path and reused by the body. Exact B01 parameter_cell_default executes with
-instruction/work/allocation slicing and GC. Native default preparation is the
-next separate integration using B01's cached native layout API.
+instruction/work/allocation slicing and GC. Native default preparation consumes
+B01's cached native layout API, using a charged private Cell window only when
+needed. All defaults/type checks precede Entry; callback/wait resume projects
+the current author values into the host view before issuing its fresh ticket.
+The exact native_parameter_defaults fixture executes with budget/GC slicing.

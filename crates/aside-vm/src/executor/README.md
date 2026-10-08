@@ -34,6 +34,12 @@ Parameter preparation proceeds in order: create/initialize a shared parameter
 Cell before the next default, pass it only through the internal prefix path,
 and reuse it at body entry. Ordinary calls pass author Values and create their
 own bindings, including ordinary calls to the same default FunctionDef.
+Native defaults use B01's cached canonical layout and the same preparation
+stages. Entry is published only after all parameters succeed. Shared Cells stay
+in a private environment window; host_arguments borrows a separate continuous
+author-value view, projected again before every resume ticket after callbacks.
+Natives without defaults retain their direct Value path and allocate no Cell
+environment. Native rest constructs an array of tail positional values.
 
 HostCall arguments borrow a contiguous rooted window. Respond consumes the
 exact issued ticket once. Continue and CallScript produce fresh resume tickets;
@@ -85,8 +91,8 @@ generic field writes cannot bypass them. Closure code/capture fields are immutab
 
 Every other opcode, including unreachable code, is rejected during load. The
 current core also rejects structural/named/function type definitions, tuple
-constants, async/generator functions, rest/property-bag signatures, native script
-defaults, and excessive register/signature sizes during load. Packed spreads, collection/class/member/pattern/iterator/task/await/yield handlers and
+constants, async/generator functions, script rest/property-bag signatures,
+and excessive register/signature sizes during load. Packed spreads, other collection/class/member/pattern/iterator/task/await/yield handlers and
 snapshot/restore remain follow-up work on this exact execution interface. Return
 type, binding type, initialization and mutability checks happen at runtime.
 

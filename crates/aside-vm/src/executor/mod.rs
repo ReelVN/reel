@@ -10,7 +10,10 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 mod api;
+#[cfg(test)]
+mod cancellation_tests;
 mod faults;
+mod parameters;
 pub use api::*;
 
 #[derive(Clone, Copy)]
@@ -52,6 +55,10 @@ enum ReturnTo {
     },
     Native {
         frame: FrameId,
+    },
+    NativeDefault {
+        frame: FrameId,
+        parameter: u32,
     },
 }
 #[derive(Clone, Copy)]
@@ -138,12 +145,40 @@ struct ScriptFrame {
 }
 #[derive(Clone, Copy)]
 enum NativePhase {
-    Copy { source: ArgSource, index: u32 },
-    Bind { index: u32, positional: u32 },
-    Issued { serial: u64, input: NativeInput },
+    Copy {
+        source: ArgSource,
+        index: u32,
+    },
+    Rest,
+    Bind {
+        index: u32,
+        positional: u32,
+    },
+    Defaults {
+        parameter: u32,
+    },
+    Parameter {
+        parameter: u32,
+        storage: BindingStorage,
+    },
+    DefaultCall {
+        parameter: u32,
+        function: FunctionId,
+    },
+    Project {
+        index: u32,
+        input: NativeInput,
+    },
+    Issue(NativeInput),
+    Issued {
+        serial: u64,
+        input: NativeInput,
+    },
     Waiting(WaitId),
     Continue,
-    Callback { count: u32 },
+    Callback {
+        count: u32,
+    },
     Resume(NativeInput),
     CallbackFaultBuild,
     WaitingFaultBuild,
@@ -157,6 +192,9 @@ struct NativeFrame {
     signature: SignatureId,
     args: RootRangeToken,
     bound: RootRangeToken,
+    bindings: Option<RootRangeToken>,
+    module: ModuleInstanceId,
+    has_defaults: bool,
     roots: RootRangeToken,
     argument_count: u32,
     continuation_len: u32,
@@ -172,6 +210,11 @@ struct NativeFrame {
     fault_count: u32,
     pending_fault: Option<FaultSeed>,
     phase: NativePhase,
+}
+impl NativeFrame {
+    fn root_count(self) -> u64 {
+        3 + u64::from(self.bindings.is_some())
+    }
 }
 #[derive(Clone, Copy)]
 enum Frame {
@@ -362,27 +405,19 @@ impl Vm {
             }
         }
         for sig in &p.signatures {
-            if sig.rest.is_some()
-                || sig.property_bag_tail.is_some()
-                || sig.parameters.len() > limits.max_arguments as usize
+            if sig.property_bag_tail.is_some()
+                || sig.parameters.len() + usize::from(sig.rest.is_some())
+                    > limits.max_arguments as usize
             {
                 return Err(VmError::Contract(
-                    "rest/property bag or excessive signature is not supported",
-                ));
-            }
-        }
-        for native in &p.natives {
-            if p.signatures[native.signature.index()]
-                .parameters
-                .iter()
-                .any(|p| p.default.is_some())
-            {
-                return Err(VmError::Contract(
-                    "native script defaults require a module environment adapter",
+                    "property bag or excessive signature is not supported",
                 ));
             }
         }
         for f in &p.functions {
+            if p.signatures[f.signature.index()].rest.is_some() {
+                return Err(VmError::Contract("script rest handler is not connected"));
+            }
             if f.kind != FunctionKind::Plain {
                 return Err(VmError::Contract(
                     "async/generator handler is not connected",
@@ -597,20 +632,35 @@ impl Vm {
         }
     }
     fn binding_location(&self, s: ScriptFrame) -> Location {
-        match s.ret {
-            ReturnTo::Register { frame, call, .. } | ReturnTo::Default { frame, call, .. } => {
-                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
-                    Some(Frame::Script(parent)) => self.loc(parent, call),
-                    _ => self.loc(s, s.pc),
+        let mut current = s;
+        let mut index = self.index(s.id).unwrap_or(0);
+        loop {
+            match current.ret {
+                ReturnTo::Default { frame, .. } => {
+                    if index > 0
+                        && let Frame::Script(parent) = self.active.frames.data[index - 1]
+                        && parent.id == frame
+                    {
+                        current = parent;
+                        index -= 1;
+                    } else {
+                        return self.loc(current, current.pc);
+                    }
                 }
-            }
-            ReturnTo::Native { frame } => {
-                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
-                    Some(Frame::Native(n)) => n.location,
-                    _ => self.loc(s, s.pc),
+                ReturnTo::Register { frame, call, .. } => {
+                    return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
+                        Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
+                        _ => self.loc(current, current.pc),
+                    };
                 }
+                ReturnTo::Native { frame } | ReturnTo::NativeDefault { frame, .. } => {
+                    return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
+                        Some(Frame::Native(n)) if n.id == frame => n.location,
+                        _ => self.loc(current, current.pc),
+                    };
+                }
+                ReturnTo::Delivery => return self.loc(current, current.pc),
             }
-            ReturnTo::Delivery => self.loc(s, s.pc),
         }
     }
     fn contract(&self, module: ModuleId, ty: TypeId, mutable: bool) -> CellContract {
@@ -679,13 +729,21 @@ impl Vm {
     }
     fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
         let signature = self.program.package().natives[native.index()].signature;
+        let sig = &self.program.package().signatures[signature.index()];
+        let cells = self.program.native_parameters_need_cells(native).unwrap();
+        let extra = if cells {
+            sig.parameters.len() as u64 + u64::from(sig.rest.is_some()) + self.release_cost(1)
+        } else {
+            0
+        };
         3 + self.limits.max_native_faults as u64
             + self.limits.max_arguments as u64
             + self.limits.max_continuation_values as u64
             + count as u64 * 2
-            + self.program.package().signatures[signature.index()]
-                .parameters
-                .len() as u64
+            + sig.parameters.len() as u64
+            + u64::from(sig.rest.is_some())
+            + extra
+            + self.native_layout_work()
             + self.release_cost(3)
     }
     // All construction inputs are explicit so failed root publication rolls back
@@ -722,10 +780,10 @@ impl Vm {
         );
         let shared_parameters = matches!(source, ArgSource::Prefix { .. });
         let module = if let ArgSource::Prefix { frame } = source {
-            let Frame::Script(parent) = self.active.frames.data[self.index(frame)?] else {
-                return Err(VmError::Contract("default prefix owner"));
-            };
-            parent.module
+            match self.active.frames.data[self.index(frame)?] {
+                Frame::Script(parent) => parent.module,
+                Frame::Native(parent) => parent.module,
+            }
         } else {
             ModuleInstanceId(f.module.0)
         };
@@ -940,10 +998,11 @@ impl Vm {
                 ))
             }
             ArgSource::Prefix { frame, .. } => {
-                let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
-                    unreachable!()
+                let range = match self.active.frames.data[self.index(frame)?] {
+                    Frame::Script(s) => s.bound,
+                    Frame::Native(n) => n.bindings.unwrap_or(n.bound),
                 };
-                Ok((-1, self.value(s.bound, index)?))
+                Ok((-1, self.value(range, index)?))
             }
         }
     }
@@ -1004,9 +1063,10 @@ impl Vm {
             return Err(VmError::Limit);
         }
         let signature = self.program.package().natives[native.index()].signature;
-        let n = self.program.package().signatures[signature.index()]
-            .parameters
-            .len() as u32;
+        let sig = &self.program.package().signatures[signature.index()];
+        let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
+        let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
+        let needs_cells = self.program.native_parameters_need_cells(native)?;
         let id = FrameId(self.serial()?);
         let args = self.open(s.owner, RootKind::Arguments, count * 2)?;
         let bound = match self.open(s.owner, RootKind::Arguments, n) {
@@ -1015,6 +1075,18 @@ impl Vm {
                 self.slots.release(&mut self.heap, args)?;
                 return Err(e);
             }
+        };
+        let bindings = if needs_cells {
+            match self.open(s.owner, RootKind::Arguments, n) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    self.slots.release(&mut self.heap, bound)?;
+                    self.slots.release(&mut self.heap, args)?;
+                    return Err(e);
+                }
+            }
+        } else {
+            None
         };
         let roots = match self.open(
             s.owner,
@@ -1025,6 +1097,9 @@ impl Vm {
         ) {
             Ok(r) => r,
             Err(e) => {
+                if let Some(r) = bindings {
+                    self.slots.release(&mut self.heap, r)?;
+                }
                 self.slots.release(&mut self.heap, bound)?;
                 self.slots.release(&mut self.heap, args)?;
                 return Err(e);
@@ -1036,6 +1111,9 @@ impl Vm {
             signature,
             args,
             bound,
+            bindings,
+            module: s.module,
+            has_defaults,
             roots,
             argument_count: count,
             continuation_len: 0,
@@ -1565,7 +1643,7 @@ impl Vm {
                 if let Some(f) = self.active.frames.data.last().copied() {
                     let count = match f {
                         Frame::Script(_) => 4,
-                        Frame::Native(_) => 3,
+                        Frame::Native(n) => n.root_count(),
                     };
                     if !m.take(0, self.release_cost(count), 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
@@ -1612,7 +1690,11 @@ impl Vm {
                 continue;
             }
             if self.active.cooperative_cancel {
-                if !m.take(0, 3, 0) {
+                if !m.take(
+                    0,
+                    2 * self.active.frames.data.len() as u64 + self.native_layout_work() + 3,
+                    0,
+                ) {
                     return Ok(RunOutcome::BudgetYield(m.usage));
                 }
                 self.seed_cancellation()?;
@@ -1680,6 +1762,9 @@ impl Vm {
                 }
             }
             Frame::Native(n) => {
+                if let Some(r) = n.bindings {
+                    self.slots.release(&mut self.heap, r)?;
+                }
                 for r in [n.args, n.bound, n.roots] {
                     self.slots.release(&mut self.heap, r)?;
                 }
@@ -1848,39 +1933,8 @@ impl Vm {
                 let p = &self.program.package().signatures[signature.index()].parameters
                     [parameter as usize];
                 let input = self.value(s.bound, parameter)?;
-                let prepared = match storage {
-                    BindingStorage::Value(_) => self.check_type(p.ty, input).map(|()| input),
-                    BindingStorage::Cell(_) if s.shared_parameters => {
-                        let expected = self.contract(ModuleId(s.module.0), p.ty, p.mutable);
-                        self.heap
-                            .cell_info(input)
-                            .map_err(heap_fault)
-                            .and_then(|info| {
-                                if !info.initialized {
-                                    Err(FaultKind::Uninitialized)
-                                } else if info.contract != expected {
-                                    Err(FaultKind::Type)
-                                } else {
-                                    self.heap
-                                        .cell_read(input)
-                                        .map_err(heap_fault)
-                                        .and_then(|value| self.check_type(p.ty, value))
-                                        .map(|()| input)
-                                }
-                            })
-                    }
-                    BindingStorage::Cell(_) => {
-                        let contract = self.contract(ModuleId(s.module.0), p.ty, p.mutable);
-                        self.check_type(p.ty, input).and_then(|()| {
-                            let cell = self
-                                .heap
-                                .alloc_language_cell(contract)
-                                .map_err(heap_fault)?;
-                            self.heap.cell_initialize(cell, input).map_err(heap_fault)?;
-                            Ok(cell)
-                        })
-                    }
-                };
+                let contract = self.contract(ModuleId(s.module.0), p.ty, p.mutable);
+                let prepared = self.parameter_value(contract, input, storage, s.shared_parameters);
                 match prepared {
                     Ok(value) => {
                         self.put(s.bound, parameter, value)?;
@@ -3106,6 +3160,26 @@ impl Vm {
                 });
                 self.active.frames.data[i] = Frame::Native(n);
             }
+            ReturnTo::NativeDefault { frame, parameter } => {
+                let i = self.index(frame)?;
+                let Frame::Native(mut n) = self.active.frames.data[i] else {
+                    return Err(VmError::Contract("native default target"));
+                };
+                if let Some(seed) = error {
+                    self.put(n.roots, 0, value)?;
+                    self.put(
+                        n.roots,
+                        self.native_pending_slot(),
+                        cause.unwrap_or(Value::NULL),
+                    )?;
+                    n.pending_fault = Some(seed);
+                    n.phase = NativePhase::Commit(true);
+                } else {
+                    self.put(n.bound, parameter, value)?;
+                    n.phase = NativePhase::Defaults { parameter };
+                }
+                self.active.frames.data[i] = Frame::Native(n);
+            }
         }
         Ok(true)
     }
@@ -3139,9 +3213,16 @@ impl Vm {
                     // FrameSlots::open initialized the complete physical range
                     // and its bitmap under native_push_cost. Re-publishing each
                     // unused NULL only satisfied the former whole-window borrow.
-                    n.phase = NativePhase::Bind {
-                        index: 0,
-                        positional: 0,
+                    n.phase = if self.program.package().signatures[n.signature.index()]
+                        .rest
+                        .is_some()
+                    {
+                        NativePhase::Rest
+                    } else {
+                        NativePhase::Bind {
+                            index: 0,
+                            positional: 0,
+                        }
                     };
                 }
             }
@@ -3150,12 +3231,34 @@ impl Vm {
                 mut positional,
             } => {
                 let sig = &self.program.package().signatures[n.signature.index()];
-                if !m.take(0, sig.parameters.len() as u64 + 2, 0) {
+                let tail = index < n.argument_count
+                    && sig.rest.is_some()
+                    && positional as usize >= sig.parameters.len()
+                    && self.value(n.args, index * 2)?.as_int() == Some(-1);
+                let bytes = if tail
+                    && (self
+                        .heap
+                        .info(self.value(n.bound, sig.parameters.len() as u32)?)?
+                        .len as usize)
+                        .is_multiple_of(VALUE_CHUNK_LEN)
+                {
+                    VALUE_CHUNK_BYTES
+                } else {
+                    0
+                };
+                if !m.take(0, sig.parameters.len() as u64 + 3, bytes) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 if index < n.argument_count {
-                    match self.bound_argument(n.signature, n.bound, n.args, index, &mut positional)
-                    {
+                    let prepared = if tail {
+                        let rest = self.value(n.bound, sig.parameters.len() as u32)?;
+                        let value = self.value(n.args, index * 2 + 1)?;
+                        positional += 1;
+                        self.heap.array_push(rest, value).map_err(heap_fault)
+                    } else {
+                        self.bound_argument(n.signature, n.bound, n.args, index, &mut positional)
+                    };
+                    match prepared {
                         Ok(()) => {
                             n.phase = NativePhase::Bind {
                                 index: index + 1,
@@ -3166,15 +3269,31 @@ impl Vm {
                             self.native_fault(&mut n, kind)?;
                         }
                     }
+                } else if n.has_defaults || sig.rest.is_some() {
+                    n.phase = NativePhase::Defaults { parameter: 0 };
                 } else if self.slots.borrow_initialized(n.bound).is_err() {
                     self.native_fault(&mut n, FaultKind::MissingArgument)?;
                 } else {
                     n.phase = NativePhase::Resume(NativeInput::Entry);
                 }
             }
-            NativePhase::Resume(input) => {
+            NativePhase::Rest
+            | NativePhase::Defaults { .. }
+            | NativePhase::Parameter { .. }
+            | NativePhase::DefaultCall { .. }
+            | NativePhase::Project { .. } => {
+                if !self.native_parameter_step(&mut n, m)? {
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+            }
+            NativePhase::Resume(input) | NativePhase::Issue(input) => {
                 if !m.take(0, 1, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                if matches!(n.phase, NativePhase::Resume(_)) && n.bindings.is_some() {
+                    n.phase = NativePhase::Project { index: 0, input };
+                    self.active.frames.data[top] = Frame::Native(n);
+                    return Ok(None);
                 }
                 let serial = self.serial()?;
                 let ticket = self.make_ticket(n, self.active.task_id.unwrap(), serial, input);
@@ -3300,7 +3419,11 @@ impl Vm {
                 }
             }
             NativePhase::Release(error) => {
-                if !m.take(0, self.release_cost(3) + self.commit_work(n.ret), 0) {
+                if !m.take(
+                    0,
+                    self.release_cost(n.root_count()) + self.commit_work(n.ret),
+                    0,
+                ) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 let value = self.value(n.roots, 0)?;

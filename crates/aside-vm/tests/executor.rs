@@ -397,6 +397,139 @@ fn cancellation_is_bounded_and_invalidates_ticket_immediately() {
     assert_eq!(v.stats().frames, 0);
     assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
 }
+
+#[test]
+fn native_default_type_failure_and_partial_preparation_resource_failure_never_issue_entry() {
+    for limited_frames in [false, true] {
+        let mut p = fixtures::native_parameter_defaults();
+        if !limited_frames {
+            p.functions[1].code[4] = Instruction::new(Opcode::LoadConst, 3, 0, 0);
+            p.functions[1]
+                .code
+                .push(Instruction::new(Opcode::Return, 3, 0, 0));
+        }
+        let mut limits = VmLimits::default();
+        if limited_frames {
+            limits.max_frames = 2;
+        }
+        let mut v = Vm::load(
+            verify(p, Limits::default()).unwrap(),
+            native_default_registry(false),
+            limits,
+            SessionEpoch(4),
+        )
+        .unwrap();
+        let task = v
+            .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let d = task_finish(&mut v, task);
+        let expected = if limited_frames {
+            FaultKind::Resource
+        } else {
+            FaultKind::Type
+        };
+        let info = v.delivery_fault(d).unwrap().unwrap();
+        assert_eq!(info.kind, expected);
+        assert_eq!(v.stats().native_entries, 0);
+        assert_eq!(
+            v.heap()
+                .core_error_info(v.delivery_value(d).unwrap())
+                .unwrap()
+                .code
+                .kind,
+            expected
+        );
+        if limited_frames {
+            assert_eq!(info.location.pc, Pc(1));
+            assert_eq!(info.location.code.function, FunctionId(0));
+        }
+        v.discard_delivery(d).unwrap();
+        collect(&mut v);
+        assert_eq!(v.heap().stats().live_objects, 0);
+        assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+    }
+}
+
+#[test]
+fn native_rest_collects_only_tail_positional_arguments_with_defaults_skipped() {
+    let mut p = fixtures::native_parameter_defaults();
+    let f = &mut p.functions[0];
+    f.register_count = 6;
+    f.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 1, 0),
+        Instruction::new(Opcode::LoadConst, 1, 2, 0),
+        Instruction::new(Opcode::LoadConst, 2, 1, 0),
+        Instruction::new(Opcode::LoadConst, 3, 2, 0),
+        Instruction::new(Opcode::LoadConst, 4, 1, 0),
+        Instruction::new(Opcode::Call, 5, 0, 0),
+        Instruction::new(Opcode::Return, 5, 0, 0),
+    ];
+    let Descriptor::Call(call) = &mut f.descriptors[0] else {
+        panic!()
+    };
+    call.arguments = Arguments::Window(RegWindow {
+        start: Reg(0),
+        len: 5,
+    });
+    let mut v = native_default_vm(p, false);
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut work = 1;
+    let mut allocation_bytes = 0;
+    let t = loop {
+        match v
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work,
+                    allocation_bytes,
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap()
+        {
+            RunOutcome::BudgetYield(u) => {
+                work = u.required_work.max(1);
+                allocation_bytes = u.required_allocation;
+                gc(&mut v);
+            }
+            RunOutcome::HostCall(t) => break t,
+            other => panic!("{other:?}"),
+        }
+    };
+    let args = v.host_arguments(t).unwrap();
+    assert_eq!(args[0].as_int(), Some(41));
+    assert_eq!(args[1].as_int(), Some(1));
+    assert_eq!(args[2].as_int(), Some(41));
+    let rest = args[3];
+    assert_eq!(v.heap().info(rest).unwrap().len, 2);
+    assert_eq!(v.heap().get_field(rest, 0).unwrap().as_int(), Some(1));
+    assert_eq!(v.heap().get_field(rest, 1).unwrap().as_int(), Some(41));
+    collect(&mut v);
+    v.cancel_task(task).unwrap();
+    loop {
+        match v.run_slice(
+            task,
+            SliceBudget {
+                instructions: 1,
+                work: 16416,
+                ..SliceBudget::default()
+            },
+            || 0,
+        ) {
+            Ok(RunOutcome::BudgetYield(u)) => assert!(u.work <= 16416),
+            Err(VmError::Idle) => break,
+            other => panic!("{other:?}"),
+        }
+    }
+    collect(&mut v);
+    assert!(v.heap().info(rest).is_err());
+    assert_eq!(v.heap().stats().live_objects, 0);
+    assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+}
 #[test]
 fn load_rejects_unconnected_handlers_even_if_unreachable() {
     let mut p = fixtures::exception_regions();
@@ -3432,4 +3565,302 @@ fn exact_b01_parameter_cell_fixture_shares_default_closure_and_body_but_ordinary
     collect(&mut v);
     assert!(v.heap().cell_info(owner_cell).is_err());
     assert!(v.heap().cell_info(ordinary_cell).is_err());
+}
+
+fn native_default_registry(closures: bool) -> RuntimeSupport {
+    // Independent fixture adapter declaration; never copied from the package.
+    RuntimeSupport {
+        opcodes: vec![],
+        capabilities: vec!["host.parameter_defaults".into()],
+        natives: vec![NativeSupport {
+            symbol: "host::parameter_defaults".into(),
+            abi_version: 1,
+            signature: Signature {
+                parameters: vec![
+                    Parameter {
+                        name: SymbolId(4),
+                        ty: TypeId(1),
+                        mutable: true,
+                        default: None,
+                    },
+                    Parameter {
+                        name: SymbolId(14),
+                        ty: TypeId(if closures { 0 } else { 1 }),
+                        mutable: false,
+                        default: Some(FunctionId(1)),
+                    },
+                    Parameter {
+                        name: SymbolId(15),
+                        ty: TypeId(if closures { 0 } else { 1 }),
+                        mutable: true,
+                        default: Some(FunctionId(2)),
+                    },
+                ],
+                rest: Some(Parameter {
+                    name: SymbolId(18),
+                    ty: TypeId(0),
+                    mutable: true,
+                    default: None,
+                }),
+                return_type: TypeId(0),
+                effects: Effects::ALL,
+                property_bag_tail: None,
+            },
+            required_capabilities: vec!["host.parameter_defaults".into()],
+        }],
+    }
+}
+
+#[test]
+fn readonly_value_native_defaults_use_no_cell_environment_and_allow_ready_in_nowait() {
+    let mut p = fixtures::native_parameter_defaults();
+    p.signatures[1].parameters[0].mutable = false;
+    p.signatures[2].parameters[0].mutable = false;
+    p.signatures[3].parameters[0].mutable = false;
+    p.signatures[2].effects = Effects(0);
+    p.signatures[3].effects = Effects(Effects::ALLOCATE);
+    p.functions[1].bindings[0].mutable = false;
+    p.functions[1].bindings[0].storage = BindingStorage::Value(Reg(0));
+    p.functions[1].code = vec![
+        Instruction::new(Opcode::LoadConst, 1, 1, 0),
+        Instruction::new(Opcode::Return, 1, 0, 0),
+    ];
+    p.functions[2].bindings[0].mutable = false;
+    p.functions[2].bindings[0].storage = BindingStorage::Value(Reg(0));
+    p.functions[2].bindings[1].storage = BindingStorage::Value(Reg(1));
+    p.functions[2].code = vec![
+        Instruction::new(Opcode::MakeClosure, 2, 0, 0),
+        Instruction::new(Opcode::Call, 3, 1, 0),
+        Instruction::new(Opcode::Return, 3, 0, 0),
+    ];
+    p.functions[3].captures = vec![CaptureKind::Value];
+    p.functions[3].code = vec![
+        Instruction::new(Opcode::CaptureRead, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    let mut registry = native_default_registry(false);
+    registry.natives[0].signature.parameters[0].mutable = false;
+    let program = verify(p, Limits::default()).unwrap();
+    assert!(!program.native_parameters_need_cells(NativeId(0)).unwrap());
+    let mut v = Vm::load(program, registry, VmLimits::default(), SessionEpoch(4)).unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::NoWait)
+        .unwrap();
+    let t = task_ticket(&mut v, task);
+    collect(&mut v);
+    assert_eq!(
+        v.stats().slots.active_ranges,
+        v.pooled_root_ranges() + 4 + 3
+    );
+    assert_eq!(v.heap().stats().live_objects, 1); // Only the native's empty rest array.
+    for value in &v.host_arguments(t).unwrap()[..3] {
+        assert_eq!(value.as_int(), Some(41));
+    }
+    v.respond(t, HostResponse::Ready(Value::NULL)).unwrap();
+    let d = task_finish(&mut v, task);
+    assert_eq!(v.delivery_value(d).unwrap().tag(), ValueTag::Null);
+    assert_eq!(v.stats().native_entries, 1);
+    v.discard_delivery(d).unwrap();
+    collect(&mut v);
+    assert_eq!(v.heap().stats().live_objects, 0);
+}
+fn native_default_vm(p: BytecodePackage, closures: bool) -> Vm {
+    Vm::load(
+        verify(p, Limits::default()).unwrap(),
+        native_default_registry(closures),
+        VmLimits::default(),
+        SessionEpoch(4),
+    )
+    .unwrap()
+}
+#[test]
+fn exact_b01_native_default_fixture_prepares_cells_defaults_and_author_values_before_one_entry() {
+    for pending in [false, true] {
+        let mut v = native_default_vm(fixtures::native_parameter_defaults(), false);
+        let t = v
+            .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let mut work = 1;
+        let mut allocation_bytes = 0;
+        let mut entries = 0;
+        let d = loop {
+            let out = v
+                .run_slice(
+                    t,
+                    SliceBudget {
+                        instructions: 1,
+                        work,
+                        allocation_bytes,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            gc(&mut v);
+            match out {
+                RunOutcome::BudgetYield(u) => {
+                    work = u.required_work.max(1);
+                    allocation_bytes = u.required_allocation;
+                }
+                RunOutcome::HostCall(ticket) => {
+                    entries += 1;
+                    assert_eq!(ticket.input, NativeInput::Entry);
+                    assert_eq!(v.host_arguments(ticket).unwrap().len(), 4);
+                    assert_eq!(v.host_arguments(ticket).unwrap()[0].as_int(), Some(43));
+                    assert_eq!(v.host_arguments(ticket).unwrap()[1].as_int(), Some(42));
+                    assert_eq!(v.host_arguments(ticket).unwrap()[2].as_int(), Some(42));
+                    let rest = v.host_arguments(ticket).unwrap()[3];
+                    assert_eq!(v.heap().info(rest).unwrap().kind, ObjectKind::Array);
+                    assert_eq!(v.heap().info(rest).unwrap().len, 0);
+                    v.respond(
+                        ticket,
+                        if pending {
+                            HostResponse::Pending(ticket.wait_id())
+                        } else {
+                            HostResponse::Ready(Value::NULL)
+                        },
+                    )
+                    .unwrap();
+                }
+                RunOutcome::Waiting(w) => {
+                    collect(&mut v);
+                    v.complete(w, Completion::Ready(Value::NULL)).unwrap();
+                }
+                RunOutcome::Returned(d) => break d,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(entries, 1);
+        assert_eq!(v.stats().native_entries, 1);
+        assert_eq!(v.delivery_value(d).unwrap().tag(), ValueTag::Null);
+        v.discard_delivery(d).unwrap();
+        collect(&mut v);
+        assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+        assert_eq!(v.heap().stats().live_objects, 0);
+    }
+}
+
+fn native_closure_defaults() -> BytecodePackage {
+    let mut p = fixtures::native_parameter_defaults();
+    p.signatures[1].parameters[1].ty = TypeId(0);
+    p.signatures[1].parameters[2].ty = TypeId(0);
+    p.signatures[2].return_type = TypeId(0);
+    p.signatures[2].effects = Effects(Effects::WRITE | Effects::ALLOCATE);
+    p.signatures[3].parameters[1].ty = TypeId(0);
+    p.signatures[3].return_type = TypeId(0);
+    p.signatures[4].return_type = TypeId(0);
+    p.functions[2].bindings[1].ty = TypeId(0);
+    let i = Instruction::new;
+    p.functions[1].code[4] = i(Opcode::MakeClosure, 3, 0, 0);
+    p.functions[1].code.push(i(Opcode::Return, 3, 0, 0));
+    p.functions[1].descriptors = vec![Descriptor::Closure {
+        function: FunctionId(4),
+        captures: vec![CaptureSource::Binding(BindingId(0))],
+    }];
+    let mut writer = p.functions[3].clone();
+    writer.register_count = 3;
+    writer.signature = SignatureId(5);
+    writer.code = vec![
+        i(Opcode::CaptureRead, 0, 0, 0),
+        i(Opcode::CellRead, 1, 0, 0),
+        i(Opcode::LoadConst, 2, 2, 0),
+        i(Opcode::Add, 1, 1, 2),
+        i(Opcode::CellWrite, 0, 1, 0),
+        i(Opcode::Return, 1, 0, 0),
+    ];
+    p.signatures.push(Signature {
+        parameters: vec![],
+        rest: None,
+        return_type: TypeId(1),
+        effects: Effects(Effects::WRITE),
+        property_bag_tail: None,
+    });
+    p.functions.push(writer);
+    p
+}
+#[test]
+fn native_arguments_are_reprojected_after_default_closure_callbacks_and_continued_wait() {
+    let mut v = native_default_vm(native_closure_defaults(), true);
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut closure = None;
+    let mut cell = None;
+    let mut callbacks = 0;
+    let d = loop {
+        match task_slice(&mut v, task) {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::HostCall(t) => {
+                let stage = t.continuation.map_or(0, |c| c.stage);
+                match (t.input, stage) {
+                    (NativeInput::Entry, 0) => {
+                        let args = v.host_arguments(t).unwrap();
+                        assert_eq!(args[0].as_int(), Some(43));
+                        assert!(args[1].same_bits(args[2]));
+                        closure = Some(args[1]);
+                        cell = Some(v.heap().get_field(args[1], 3).unwrap());
+                        v.respond(
+                            t,
+                            HostResponse::CallScript {
+                                closure: closure.unwrap(),
+                                arguments: &[],
+                                continuation: continue_at(1, FaultRetention::Preserve),
+                            },
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::CallbackReturned, 1 | 3) => {
+                        callbacks += 1;
+                        let expected = if stage == 1 { 44 } else { 45 };
+                        assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(expected));
+                        assert_eq!(v.host_arguments(t).unwrap()[0].as_int(), Some(expected));
+                        assert_eq!(
+                            v.heap().cell_read(cell.unwrap()).unwrap().as_int(),
+                            Some(expected)
+                        );
+                        if stage == 1 {
+                            v.respond(
+                                t,
+                                HostResponse::Continue(continue_at(2, FaultRetention::Preserve)),
+                            )
+                            .unwrap();
+                        } else {
+                            v.respond(t, HostResponse::Pending(t.wait_id())).unwrap();
+                        }
+                    }
+                    (NativeInput::Continue { .. }, 2) => {
+                        assert_eq!(v.host_arguments(t).unwrap()[0].as_int(), Some(44));
+                        v.respond(
+                            t,
+                            HostResponse::CallScript {
+                                closure: closure.unwrap(),
+                                arguments: &[],
+                                continuation: continue_at(3, FaultRetention::Preserve),
+                            },
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::WaitingReturned, 3) => {
+                        assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(99));
+                        assert_eq!(v.host_arguments(t).unwrap()[0].as_int(), Some(45));
+                        v.respond(t, HostResponse::Ready(Value::NULL)).unwrap();
+                    }
+                    other => panic!("{other:?}"),
+                }
+                assert!(matches!(v.host_arguments(t), Err(VmError::InvalidTicket)));
+            }
+            RunOutcome::Waiting(w) => {
+                collect(&mut v);
+                v.complete(w, Completion::Ready(Value::int(99))).unwrap();
+            }
+            RunOutcome::Returned(d) => break d,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(callbacks, 2);
+    assert_eq!(v.stats().native_entries, 1);
+    v.discard_delivery(d).unwrap();
+    collect(&mut v);
+    assert!(v.heap().cell_info(cell.unwrap()).is_err());
+    assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
 }

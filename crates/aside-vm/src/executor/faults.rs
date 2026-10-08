@@ -322,11 +322,7 @@ impl Vm {
             Frame::Native(n) => StackEntry {
                 frame: n.id,
                 location: n.location,
-                module: ModuleInstanceId(
-                    self.program.package().functions[n.location.code.function.index()]
-                        .module
-                        .0,
-                ),
+                module: n.module,
                 module_version: version,
                 source_version: version,
                 kind: StackFrameKind::Native {
