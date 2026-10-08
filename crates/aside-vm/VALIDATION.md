@@ -32,6 +32,7 @@ cd /workspace/reel
 | `cargo test -p aside-vm --release` | Exit 0, same behavior checks passed with optimizations |
 | `rustup target add i686-unknown-linux-gnu` | Exit 0, cross std installed |
 | `cargo check -p aside-vm --all-targets --target i686-unknown-linux-gnu` | Exit 0, library, tests and example type-checked; layout assertions evaluated |
+| `cargo build -p aside-vm --lib --target i686-unknown-linux-gnu` | Exit 0, 32-bit rlib compiled; no executable/device run |
 | `cargo tree -p aside-vm -e normal,build` | Only slotmap 1.1.1 and its build dependency version_check 0.9.5; no Reel/platform/gc-arena dependency |
 | `cargo run -p aside-vm --release --example storage_load` | Exit 0; seven fixed loads, zero GC allocations, all objects/payload reclaimed |
 | `/workspace/aside-target/release/examples/storage_load` (two further sequential runs) | Both exit 0; raw outputs retained |
@@ -126,7 +127,10 @@ full VM, N100 or Vita performance.
 ## Platform and implementation limits
 
 x64 behavior ran in this container: Value size 16, alignment 8. i686 is a compile
-check: static assertions confirm size 16 and u64 target alignment 4. No 32-bit
+check: the library rlib compiles, and static assertions confirm size 16 and
+alignment 4. A standalone check linked against that rlib also compiled with
+explicit `size_of::<aside_vm::Value>() == 16` and
+`align_of::<aside_vm::Value>() == 4` assertions. No 32-bit
 binary was linked/run and no physical device or Vita runner/SDK was available.
 Numeric/GC behavior on a real 32-bit device remains unverified; i686 compilation
 must not be described as Vita/device execution.
@@ -136,3 +140,17 @@ full collection/text semantics, native adapters and snapshot/restore codecs are
 not implemented. Restore invalidation is demonstrated with a fresh heap identity.
 General operations will need continuations or input caps at their own boundary.
 The integration owner controls D01/this PR merge order and maintains author guides.
+
+Standalone i686 layout check (also exited 0, no executable run):
+
+```sh
+cat > /tmp/aside-layout32.rs <<'RS'
+extern crate aside_vm;
+const _: () = assert!(std::mem::size_of::<aside_vm::Value>() == 16);
+const _: () = assert!(std::mem::align_of::<aside_vm::Value>() == 4);
+RS
+rustc --target i686-unknown-linux-gnu --crate-type lib --edition 2024 \
+  -L dependency=/workspace/aside-target/i686-unknown-linux-gnu/debug/deps \
+  --extern aside_vm=/workspace/aside-target/i686-unknown-linux-gnu/debug/libaside_vm.rlib \
+  /tmp/aside-layout32.rs -o /tmp/libaside_layout32.rlib
+```
