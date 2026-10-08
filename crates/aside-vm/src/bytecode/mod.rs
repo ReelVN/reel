@@ -13,7 +13,10 @@ mod verify;
 pub use codec::{decode, encode};
 pub use model::*;
 pub use spec::*;
-pub use verify::{HandlerKind, HandlerTarget, PackageStats, VerifiedProgram, disassemble, verify};
+pub use verify::{
+    CleanupDestination, HandlerKind, HandlerTarget, PackageStats, VerifiedProgram, disassemble,
+    verify,
+};
 
 /// All limits apply to the whole package, including nested descriptor records.
 /// Work is bounded independently for decoding, verification and runtime admission;
