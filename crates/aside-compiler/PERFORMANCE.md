@@ -6,7 +6,7 @@ no semantic execution or bytecode is measured. Source construction and a warmup
 of both APIs occur before sample regions. stats_alloc instruments the system
 allocator with atomic counters, so timings include instrumentation cost.
 
-Implementation/probe SHA-256: `67d7222cb84f9614a36b407a7ba2e3583ec56013b9666ca3a1d0092eb9548b47`. This hashes relative path, NUL,
+Implementation/probe SHA-256: `5883859abc3d226d90c1a573fddb5f1c52608a9094a32795393d91c544c3ccb1`. This hashes relative path, NUL,
 file bytes, NUL for Cargo.lock, compiler Cargo.toml, examples/frontend_probe.rs
 and sorted src/*.rs. Docs/results are excluded, so reporting commits do not
 change the measured code identity.
@@ -21,9 +21,9 @@ SHA-256 `e2e114d6bcecedb41f04565ea55a92eec216c5200ae1ee4cd6bd0f285810cb7d`.
 
 | Case | Samples | Median ms | p95 ms | Max ms | Allocation ops | Reallocation ops | Allocated bytes | Retained result bytes | Peak child RSS KiB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Mixed lex | 31 | 1.981 | 2.204 | 2.260 | 6146 | 16 | 3194976 | 3145728 | 9216 |
-| Mixed parse | 31 | 9.081 | 16.675 | 32.602 | 127075 | 30762 | 10305752 | 3337376 | 9216 |
-| 100000 named arguments | 11 | 84.341 | 92.348 | 92.348 | 700070 | 52 | 50239822 | 13600512 | 39480 |
+| Mixed lex | 31 | 1.919 | 3.545 | 4.982 | 6146 | 16 | 3194976 | 3145728 | 9088 |
+| Mixed parse | 31 | 10.951 | 19.333 | 19.655 | 147567 | 31786 | 11651380 | 3337376 | 9216 |
+| 100000 named arguments | 11 | 127.137 | 161.627 | 161.627 | 700070 | 52 | 50239822 | 13600512 | 40260 |
 
 Allocation values are per call (first sample; all raw samples are committed).
 stats_alloc's allocated/deallocated counters include reallocation growth/shrink;
@@ -69,10 +69,7 @@ CSV, RSS and budget outputs are committed in [bench-results](bench-results/).
   blocks, closure vs logical OR, grouped unions/function types, pattern is/OR,
   match block/object arms, yield/range/assignment and class/head children.
   Destructuring assignment reuses the pattern production, including object,
-  default/rest forms; mutable-name eligibility remains a binder rule. Grouped
-  call/index/member receivers retain expression trees even when their arguments,
-  indexes or collection literals contain commas. Sole nested groups continue to
-  propagate tuple/array/object destructuring, including `((a,b)) = pair;`.
+  default/rest forms; mutable-name eligibility remains a binder rule.
 - Numeric/base/int64 minimum/float boundaries and malformed Unicode escapes
   (+, empty digits, surrogates, >10FFFF) test exact ranges. Valid scalar
   boundaries, raw/triple strings and nested comments/interpolation are covered.
@@ -126,14 +123,60 @@ They now exit 0 with AssignExpr → GroupExpr → MemberExpr/IndexExpr and no
 pattern nodes. Controls without nested commas and grouped tuple/array/object
 destructuring exit 0 in both revisions; the latter retain GroupPattern trees.
 This is source parsing evidence, not executed target evaluation or mutability
-validation. The fix propagates nested structural markers only when a group
-contains that sole structure; suffixes retain location expression parsing.
+validation. That fix was later superseded by the shared grammar trial below after Type/OR
+wrappers exposed a regression; these historical observations remain intact.
 
 ```sh
 git worktree add --detach /tmp/reel-assignment-before fc418d9
 CARGO_TARGET_DIR=/tmp/reel-issue8-repro-target cargo build --manifest-path /tmp/reel-assignment-before/Cargo.toml -p aside-compiler --example check --locked
 cargo build -p aside-compiler --example check --locked
 python3 crates/aside-compiler/bench-results/run_assignment_probe.py /tmp/reel-issue8-repro-target/debug/examples/check target/debug/examples/check > crates/aside-compiler/bench-results/assignment-lookahead-before-after.json
+```
+
+## Shared-pattern trial regression and bounds
+
+Fix `46392a80bd96104ed4954500f9a055397e35a0d7` replaces the delimiter/structure
+heuristic with a silent trial of the actual pattern/type/default-expression
+grammar. [pattern-trial-before-after.json](bench-results/pattern-trial-before-after.json)
+records 88 real CLI runs and executable hashes: debug/release, module/body,
+before `b6463fa` and after the fix. Typed/OR grouped tuples and arrays failed
+before with ASP009, but all four now exit 0 with TypePattern/OrPattern trees.
+The four prior location examples and grouped tuple/array/object rest controls
+exit 0 in both revisions and keep their respective tree families.
+
+The matrix test compares exact green trees against the pattern entry for
+tuple, array/rest, object/default/rest and nested structures, each combined
+with plain/type/union/OR/type-OR wrappers, four grouping depths and both entries
+(160 assignment scenes). Member/index suffixes, type/OR receivers, failure
+diagnostics and continued declarations are checked separately. A default
+closure containing another structural assignment exercises nested trials.
+Failed trials cannot authorize tuple/array setters as destructuring targets.
+Name mutability and equal OR bindings remain subsequent binder checks.
+
+Trials borrow source/tokens and suppress tree emission and diagnostics. All
+trials, including nested defaults, share at most `16 * admitted_tokens` token
+advances. Completed grammar decisions are cached by significant token offset
+and pipe context; storage is bounded by twice the admitted token count.
+Recursion inherits caller depth and uses the same maximum 128 depth budget.
+Resource exhaustion returns ASR001 at the real candidate without consuming
+caller input. A forced one-token unit test verifies this boundary, unchanged
+cursor/tree/flags, lossless tail and no failed-diagnostic leakage. Cache hits
+spend no further trial advances. Wide 10000-name tuples inside 48 groups parse
+as both values and assignment patterns; 500 nested closure-default candidates
+exit with a lossless budget error.
+
+The fixed-source table above was rerun after this code change. Relative to the
+previous recorded mixed parse, allocation operations increased from 127075 to
+147567 and allocated bytes from 10305752 to 11651380; retained result bytes
+remain 3337376. Timings/RSS are separate instrumented host observations, not
+a controlled speed comparison or a target-device guarantee.
+
+```sh
+# BEFORE_DEBUG/BEFORE_RELEASE are the separately retained b6463fa check CLIs.
+# They can also be rebuilt in a detached b6463fa worktree with a separate target.
+cargo build -p aside-compiler --example check --locked
+cargo build -p aside-compiler --example check --release --locked
+python3 crates/aside-compiler/bench-results/run_pattern_trial_probe.py /tmp/reel-pattern-repro/check-before-debug /tmp/reel-pattern-repro/check-before-release target/debug/examples/check target/release/examples/check 46392a80bd96104ed4954500f9a055397e35a0d7 > crates/aside-compiler/bench-results/pattern-trial-before-after.json
 ```
 
 All owner-resolved forms are implemented and ASP015 removed. Binding/name/type/
