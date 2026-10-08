@@ -95,7 +95,7 @@ struct ScriptFrame {
     argument_count: u32,
     closure: bool,
     effects: Effects,
-    context: Context,
+    context: ContextFlags,
     owner: RootOwner,
     ret: ReturnTo,
     phase: ScriptPhase,
@@ -125,11 +125,12 @@ struct NativeFrame {
     continuation_version: u64,
     continuation_stage: u64,
     effects: Effects,
-    context: Context,
+    context: ContextFlags,
     owner: RootOwner,
     location: Location,
     ret: ReturnTo,
     callback_fault: Option<FaultInfo>,
+    pending_fault: Option<FaultInfo>,
     phase: NativePhase,
 }
 #[derive(Clone, Copy)]
@@ -159,30 +160,99 @@ struct Terminal {
     fault: Option<FaultInfo>,
 }
 
-/// One task at a time; a scheduler can own multiple VMs without changing the ABI.
-/// Field order releases owned code and vectors before refunding reservations.
-pub struct Vm {
-    program: VerifiedProgram,
-    program_charge: Reservation,
-    slots: FrameSlots,
+#[derive(Clone, Copy)]
+struct CaughtFault {
+    frame: FrameId,
+    region: RegionId,
+    info: FaultInfo,
+}
+/// One shared heap/module set, with bounded independent task state machines.
+struct TaskState {
     frames: ChargedVec<Frame>,
     unwinds: ChargedVec<Unwind>,
-    scratch: ChargedVec<Value>,
-    text_scratch: ChargedVec<u8>,
+    caught: ChargedVec<CaughtFault>,
     equality_cursors: ChargedVec<u32>,
-    equality_roots: RootRangeToken,
-    globals: RootRangeToken,
-    constants: RootRangeToken,
-    delivery: RootRangeToken,
-    heap: Heap,
-    limits: VmLimits,
-    control_charge: Reservation,
-    next_id: u64,
+    equality_roots: Option<RootRangeToken>,
+    delivery: Option<RootRangeToken>,
     terminal: Option<Terminal>,
     cancelling: bool,
     task_owner: Option<RootOwner>,
     task_id: Option<TaskId>,
+    root_owner: RootOwner,
     cancel_roots: u32,
+    release_external: bool,
+}
+impl TaskState {
+    fn new(
+        usage: &HeapBudgetUsage,
+        heap: &mut Heap,
+        slots: &mut FrameSlots,
+        limits: VmLimits,
+        pooled: bool,
+    ) -> Result<Self, VmError> {
+        let cap = if pooled {
+            limits.max_frames as usize
+        } else {
+            0
+        };
+        let regions = if pooled {
+            limits.max_unwinds as usize
+        } else {
+            0
+        };
+        let frames = ChargedVec::new(usage, cap)?;
+        let unwinds = ChargedVec::new(usage, regions)?;
+        let caught = ChargedVec::new(usage, regions)?;
+        let equality_cursors = ChargedVec::new(usage, regions)?;
+        let equality_roots = if pooled {
+            Some(slots.open(
+                heap,
+                RootOwner(u64::MAX),
+                RootKind::Work,
+                limits.max_unwinds.checked_mul(2).ok_or(VmError::Limit)?,
+            )?)
+        } else {
+            None
+        };
+        let delivery = if pooled {
+            Some(slots.open(heap, RootOwner(u64::MAX), RootKind::Delivery, 2)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            frames,
+            unwinds,
+            caught,
+            equality_cursors,
+            equality_roots,
+            delivery,
+            terminal: None,
+            cancelling: false,
+            task_owner: None,
+            task_id: None,
+            root_owner: RootOwner(u64::MAX),
+            cancel_roots: 0,
+            release_external: false,
+        })
+    }
+}
+/// Task selection swaps bounded state owners; all registered windows remain in
+/// the single FrameSlots provider. Field order deallocates before budget refunds.
+pub struct Vm {
+    program: VerifiedProgram,
+    program_charge: Reservation,
+    slots: FrameSlots,
+    active: TaskState,
+    tasks: ChargedVec<TaskState>,
+    active_slot: Option<usize>,
+    scratch: ChargedVec<Value>,
+    text_scratch: ChargedVec<u8>,
+    globals: RootRangeToken,
+    constants: RootRangeToken,
+    heap: Heap,
+    limits: VmLimits,
+    control_charge: Reservation,
+    next_id: u64,
     native_entries: u64,
     native_resumes: u64,
     slices: u64,
@@ -198,7 +268,24 @@ impl Vm {
         support.opcodes = SUPPORTED_OPCODES.to_vec();
         program.require_runtime(&support)?;
         let p = program.package();
-        if limits.max_frames == 0 || limits.max_unwinds == 0 {
+        if limits.max_frames == 0
+            || limits.max_unwinds == 0
+            || limits.max_tasks == 0
+            || limits
+                .max_arguments
+                .checked_add(limits.max_continuation_values)
+                .and_then(|n| n.checked_add(3))
+                .is_none_or(|n| n > limits.slots.max_window_len)
+            || limits
+                .max_unwinds
+                .checked_mul(2)
+                .is_none_or(|n| n > limits.slots.max_window_len)
+            || limits
+                .max_tasks
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(2))
+                .is_none_or(|n| n > limits.heap.max_root_ranges)
+        {
             return Err(VmError::Limit);
         }
         // Load rejects unsupported operand semantics as well as unsupported opcodes.
@@ -249,7 +336,9 @@ impl Vm {
                     "async/generator handler is not connected",
                 ));
             }
-            if f.register_count > limits.slots.max_window_len {
+            if f.register_count > limits.slots.max_window_len
+                || f.regions.len() as u64 * 2 + 3 > limits.slots.max_window_len as u64
+            {
                 return Err(VmError::Limit);
             }
         }
@@ -262,8 +351,13 @@ impl Vm {
             - std::mem::size_of::<FrameSlots>()
             - std::mem::size_of::<BytecodePackage>();
         let control_charge = Reservation::new(&usage, control_bytes as u64)?;
-        let frames = ChargedVec::new(&usage, limits.max_frames as usize)?;
-        let unwinds = ChargedVec::new(&usage, limits.max_unwinds as usize)?;
+        let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
+        let mut tasks = ChargedVec::new(&usage, limits.max_tasks as usize)?;
+        for _ in 0..limits.max_tasks {
+            tasks
+                .data
+                .push(TaskState::new(&usage, &mut heap, &mut slots, limits, true)?);
+        }
         let scratch = ChargedVec::new(
             &usage,
             limits.max_arguments.max(
@@ -275,13 +369,6 @@ impl Vm {
             ) as usize,
         )?;
         let text_scratch = ChargedVec::new(&usage, limits.heap.max_mutation_bytes as usize)?;
-        let equality_cursors = ChargedVec::new(&usage, limits.max_unwinds as usize)?;
-        let equality_roots = slots.open(
-            &mut heap,
-            RootOwner(u64::MAX),
-            RootKind::Work,
-            limits.max_unwinds.checked_mul(2).ok_or(VmError::Limit)?,
-        )?;
         let constants = slots.open(
             &mut heap,
             RootOwner(u64::MAX),
@@ -335,29 +422,22 @@ impl Vm {
                 offset += 1;
             }
         }
-        let delivery = slots.open(&mut heap, RootOwner(u64::MAX), RootKind::Delivery, 1)?;
         Ok(Self {
             program,
             program_charge,
             slots,
-            frames,
-            unwinds,
+            active,
+            tasks,
+            active_slot: None,
             scratch,
             text_scratch,
-            equality_cursors,
-            equality_roots,
+
             globals,
             constants,
-            delivery,
             heap,
             limits,
             control_charge,
             next_id: 1,
-            terminal: None,
-            cancelling: false,
-            task_owner: None,
-            task_id: None,
-            cancel_roots: 0,
             native_entries: 0,
             native_resumes: 0,
             slices: 0,
@@ -368,10 +448,12 @@ impl Vm {
         &self.program
     }
     pub fn task_id(&self) -> Option<TaskId> {
-        self.task_id
+        self.active
+            .task_id
+            .or_else(|| self.tasks.data.iter().find_map(|t| t.task_id))
     }
     pub fn is_idle(&self) -> bool {
-        self.task_owner.is_none() && self.frames.data.is_empty() && self.terminal.is_none()
+        self.active.task_id.is_none() && self.tasks.data.iter().all(|t| t.task_id.is_none())
     }
     pub fn heap(&self) -> &Heap {
         &self.heap
@@ -388,8 +470,20 @@ impl Vm {
     }
     pub fn stats(&self) -> VmStats {
         VmStats {
-            frames: self.frames.data.len() as u32,
-            unwinds: self.unwinds.data.len() as u32,
+            frames: (self.active.frames.data.len()
+                + self
+                    .tasks
+                    .data
+                    .iter()
+                    .map(|t| t.frames.data.len())
+                    .sum::<usize>()) as u32,
+            unwinds: (self.active.unwinds.data.len()
+                + self
+                    .tasks
+                    .data
+                    .iter()
+                    .map(|t| t.unwinds.data.len())
+                    .sum::<usize>()) as u32,
             native_entries: self.native_entries,
             native_resumes: self.native_resumes,
             slices: self.slices,
@@ -408,11 +502,11 @@ impl Vm {
     fn index(&self, id: FrameId) -> Result<usize, VmError> {
         // Explicit stack return/argument targets are the current frame or its
         // immediate caller. No per-register or per-call map/linear search.
-        let len = self.frames.data.len();
-        if len > 0 && self.frames.data[len - 1].id() == id {
+        let len = self.active.frames.data.len();
+        if len > 0 && self.active.frames.data[len - 1].id() == id {
             return Ok(len - 1);
         }
-        if len > 1 && self.frames.data[len - 2].id() == id {
+        if len > 1 && self.active.frames.data[len - 2].id() == id {
             return Ok(len - 2);
         }
         Err(VmError::Contract("missing immediate caller"))
@@ -427,16 +521,17 @@ impl Vm {
     fn binding_location(&self, s: ScriptFrame) -> Location {
         match s.ret {
             ReturnTo::Register { frame, call, .. } | ReturnTo::Default { frame, call, .. } => {
-                match self.index(frame).ok().map(|i| self.frames.data[i]) {
+                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
                     Some(Frame::Script(parent)) => self.loc(parent, call),
                     _ => self.loc(s, s.pc),
                 }
             }
-            ReturnTo::Native { frame } => match self.index(frame).ok().map(|i| self.frames.data[i])
-            {
-                Some(Frame::Native(n)) => n.location,
-                _ => self.loc(s, s.pc),
-            },
+            ReturnTo::Native { frame } => {
+                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
+                    Some(Frame::Native(n)) => n.location,
+                    _ => self.loc(s, s.pc),
+                }
+            }
             ReturnTo::Delivery => self.loc(s, s.pc),
         }
     }
@@ -482,14 +577,37 @@ impl Vm {
     }
     fn open(
         &mut self,
-        owner: RootOwner,
+        _owner: RootOwner,
         kind: RootKind,
         len: u32,
     ) -> Result<RootRangeToken, VmError> {
-        Ok(self.slots.open(&mut self.heap, owner, kind, len)?)
+        Ok(self
+            .slots
+            .open(&mut self.heap, self.active.root_owner, kind, len)?)
     }
     fn release_cost(&self, count: u64) -> u64 {
         count * (4 * self.limits.heap.max_root_ranges as u64 + 8)
+    }
+    fn script_push_cost(&self, function: FunctionId, count: u32) -> u64 {
+        let f = &self.program.package().functions[function.index()];
+        f.register_count as u64
+            + 3
+            + 2 * f.regions.len() as u64
+            + count as u64 * 2
+            + self.program.package().signatures[f.signature.index()]
+                .parameters
+                .len() as u64
+            + self.release_cost(4)
+    }
+    fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
+        let signature = self.program.package().natives[native.index()].signature;
+        3 + self.limits.max_arguments as u64
+            + self.limits.max_continuation_values as u64
+            + count as u64 * 2
+            + self.program.package().signatures[signature.index()]
+                .parameters
+                .len() as u64
+            + self.release_cost(3)
     }
     // All construction inputs are explicit so failed root publication rolls back
     // as one transaction before a frame becomes visible.
@@ -501,17 +619,18 @@ impl Vm {
         source: ArgSource,
         count: u32,
         owner: RootOwner,
-        context: Context,
+        context: ContextFlags,
         effects: Effects,
         ret: ReturnTo,
     ) -> Result<(), VmError> {
-        if self.frames.data.len() == self.limits.max_frames as usize
+        if self.active.frames.data.len() == self.limits.max_frames as usize
             || count > self.limits.max_arguments
         {
             return Err(VmError::Limit);
         }
         let f = &self.program.package().functions[function.index()];
         let registers = f.register_count;
+        let env_len = 3 + f.regions.len() as u32 * 2;
         let n = self.program.package().signatures[f.signature.index()]
             .parameters
             .len() as u32;
@@ -526,7 +645,7 @@ impl Vm {
         let id = FrameId(self.serial()?);
         // Failed construction rolls back published roots and does not push a partial frame.
         let regs = self.open(owner, RootKind::TaskFrame, registers)?;
-        let env = match self.open(owner, RootKind::TaskFrame, 2) {
+        let env = match self.open(owner, RootKind::TaskFrame, env_len) {
             Ok(r) => r,
             Err(e) => {
                 self.slots.release(&mut self.heap, regs)?;
@@ -571,7 +690,7 @@ impl Vm {
             ret,
             phase: ScriptPhase::Copy { source, index: 0 },
         };
-        self.frames.data.push(Frame::Script(s));
+        self.active.frames.data.push(Frame::Script(s));
         Ok(())
     }
     pub fn start(
@@ -580,7 +699,7 @@ impl Vm {
         args: &[Value],
         owner: RootOwner,
         context: Context,
-    ) -> Result<(), VmError> {
+    ) -> Result<TaskId, VmError> {
         self.start_impl(function, None, args, owner, context)
     }
     pub fn start_closure(
@@ -589,7 +708,7 @@ impl Vm {
         args: &[Value],
         owner: RootOwner,
         context: Context,
-    ) -> Result<(), VmError> {
+    ) -> Result<TaskId, VmError> {
         let function = self.closure_function(closure)?;
         self.start_impl(function, Some(closure), args, owner, context)
     }
@@ -600,10 +719,7 @@ impl Vm {
         args: &[Value],
         owner: RootOwner,
         context: Context,
-    ) -> Result<(), VmError> {
-        if self.task_owner.is_some() || self.terminal.is_some() {
-            return Err(VmError::Busy);
-        }
+    ) -> Result<TaskId, VmError> {
         if function.index() >= self.program.package().functions.len()
             || args.len() > self.limits.max_arguments as usize
             || owner == RootOwner(u64::MAX)
@@ -617,18 +733,38 @@ impl Vm {
         for &v in args {
             self.heap.root_insertion_barrier(v)?;
         }
-        let task = TaskId(self.serial()?);
-        self.push_script(
+        let serial = self.serial()?;
+        let task = TaskId {
+            heap: self.heap.id(),
+            epoch: self.heap.epoch(),
+            serial,
+        };
+        self.restore_active();
+        let slot = self
+            .tasks
+            .data
+            .iter()
+            .position(|s| s.task_id.is_none())
+            .ok_or(VmError::Limit)?;
+        self.select_slot(slot);
+        self.active.task_id = Some(task);
+        self.active.task_owner = Some(owner);
+        self.active.root_owner = RootOwner(u64::MAX.checked_sub(serial + 1).ok_or(VmError::Limit)?);
+        if let Err(e) = self.push_script(
             function,
             closure,
             ArgSource::None,
             args.len() as u32,
             owner,
-            context,
+            ContextFlags::from(context),
             Effects::ALL,
             ReturnTo::Delivery,
-        )?;
-        let Frame::Script(mut s) = *self.frames.data.last().unwrap() else {
+        ) {
+            self.active.task_id = None;
+            self.active.task_owner = None;
+            return Err(e);
+        }
+        let Frame::Script(mut s) = *self.active.frames.data.last().unwrap() else {
             unreachable!()
         };
         for (i, &v) in args.iter().enumerate() {
@@ -639,10 +775,10 @@ impl Vm {
             index: 0,
             positional: 0,
         };
-        *self.frames.data.last_mut().unwrap() = Frame::Script(s);
-        self.task_owner = Some(owner);
-        self.task_id = Some(task);
-        Ok(())
+        *self.active.frames.data.last_mut().unwrap() = Frame::Script(s);
+        self.active.task_owner = Some(owner);
+        self.active.task_id = Some(task);
+        Ok(task)
     }
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
         if self.heap.info(closure)?.kind != ObjectKind::Closure {
@@ -677,7 +813,7 @@ impl Vm {
         match source {
             ArgSource::None => Err(VmError::Contract("external arguments already copied")),
             ArgSource::Caller { frame, descriptor } => {
-                let Frame::Script(s) = self.frames.data[self.index(frame)?] else {
+                let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
                     return Err(VmError::Contract("argument source"));
                 };
                 let Descriptor::Call(desc) = &self.program.package().functions
@@ -707,7 +843,7 @@ impl Vm {
                 }
             }
             ArgSource::Native { frame, .. } => {
-                let Frame::Native(n) = self.frames.data[self.index(frame)?] else {
+                let Frame::Native(n) = self.active.frames.data[self.index(frame)?] else {
                     unreachable!()
                 };
                 Ok((
@@ -716,7 +852,7 @@ impl Vm {
                 ))
             }
             ArgSource::Prefix { frame, .. } => {
-                let Frame::Script(s) = self.frames.data[self.index(frame)?] else {
+                let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
                     unreachable!()
                 };
                 Ok((-1, self.value(s.bound, index)?))
@@ -774,7 +910,7 @@ impl Vm {
         s: ScriptFrame,
         dest: Reg,
     ) -> Result<(), VmError> {
-        if self.frames.data.len() == self.limits.max_frames as usize
+        if self.active.frames.data.len() == self.limits.max_frames as usize
             || count > self.limits.max_arguments
         {
             return Err(VmError::Limit);
@@ -795,7 +931,7 @@ impl Vm {
         let roots = match self.open(
             s.owner,
             RootKind::NativeContinuation,
-            2 + self.limits.max_continuation_values + self.limits.max_arguments,
+            3 + self.limits.max_continuation_values + self.limits.max_arguments,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -804,7 +940,7 @@ impl Vm {
                 return Err(e);
             }
         };
-        self.frames.data.push(Frame::Native(NativeFrame {
+        self.active.frames.data.push(Frame::Native(NativeFrame {
             id,
             native,
             signature,
@@ -830,6 +966,7 @@ impl Vm {
                 call: s.pc,
             },
             callback_fault: None,
+            pending_fault: None,
             phase: NativePhase::Copy { source, index: 0 },
         }));
         Ok(())
@@ -864,11 +1001,26 @@ impl Vm {
         }
         Ok(n.callback_fault)
     }
-    fn ticket(&self, ticket: HostTicket) -> Result<NativeFrame, VmError> {
-        if ticket.heap != self.heap.id() || ticket.epoch != self.heap.epoch() || self.cancelling {
+    pub fn host_callback_cause(&self, ticket: HostTicket) -> Result<Option<Value>, VmError> {
+        let n = self.ticket(ticket)?;
+        if !matches!(ticket.input, NativeInput::CallbackFault) {
             return Err(VmError::InvalidTicket);
         }
-        match self.frames.data.last() {
+        if n.callback_fault.is_some_and(|f| f.has_cause) {
+            Ok(Some(self.value(
+                n.roots,
+                2 + self.limits.max_continuation_values + self.limits.max_arguments,
+            )?))
+        } else {
+            Ok(None)
+        }
+    }
+    fn ticket(&self, ticket: HostTicket) -> Result<NativeFrame, VmError> {
+        let task = self.task(ticket.task).map_err(|_| VmError::InvalidTicket)?;
+        if ticket.heap != self.heap.id() || ticket.epoch != self.heap.epoch() || task.cancelling {
+            return Err(VmError::InvalidTicket);
+        }
+        match task.frames.data.last() {
             Some(Frame::Native(n)) if matches!(n.phase,NativePhase::Issued(t) if t==ticket) => {
                 Ok(*n)
             }
@@ -882,11 +1034,29 @@ impl Vm {
         ticket: HostTicket,
         response: HostResponse<'_>,
     ) -> Result<(), VmError> {
+        self.select_task(ticket.task)
+            .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
         match response {
             HostResponse::Ready(v) | HostResponse::Error(v) => {
+                let error = matches!(response, HostResponse::Error(_));
+                n.pending_fault = if error {
+                    if ticket.input == NativeInput::CallbackFault
+                        && self.value(n.roots, 0)?.same_bits(v)
+                    {
+                        n.callback_fault
+                    } else {
+                        Some(FaultInfo {
+                            kind: FaultKind::Thrown,
+                            location: n.location,
+                            has_cause: false,
+                        })
+                    }
+                } else {
+                    None
+                };
                 self.put(n.roots, 0, v)?;
-                n.phase = NativePhase::Commit(matches!(response, HostResponse::Error(_)));
+                n.phase = NativePhase::Commit(error);
             }
             HostResponse::Pending(wait) => {
                 if wait != ticket.wait_id() {
@@ -894,10 +1064,7 @@ impl Vm {
                 }
                 // NoWait constrains actual waiting, not the native's signature mask.
                 if no_wait(n.context) || n.effects.0 & Effects::WAIT == 0 {
-                    self.put(n.roots, 0, Value::NULL)?;
-                    n.phase = NativePhase::Commit(true);
-                    // Fault metadata is kept at original call location, not resume PC.
-                    self.put(n.roots, 1, Value::int(FaultKind::Effect as i64))?;
+                    self.native_fault(&mut n, FaultKind::Effect)?;
                 } else {
                     n.phase = NativePhase::Waiting(wait);
                 }
@@ -932,7 +1099,7 @@ impl Vm {
                 };
             }
         }
-        *self.frames.data.last_mut().unwrap() = Frame::Native(n);
+        *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
         Ok(())
     }
     fn save_continuation(
@@ -958,10 +1125,12 @@ impl Vm {
         Ok(())
     }
     pub fn complete(&mut self, wait: WaitId, result: Completion) -> Result<(), VmError> {
-        if self.cancelling {
+        self.select_task(wait.task)
+            .map_err(|_| VmError::InvalidWait)?;
+        if self.active.cancelling {
             return Err(VmError::InvalidWait);
         }
-        let Some(Frame::Native(mut n)) = self.frames.data.last().copied() else {
+        let Some(Frame::Native(mut n)) = self.active.frames.data.last().copied() else {
             return Err(VmError::InvalidWait);
         };
         if !matches!(n.phase,NativePhase::Waiting(w) if w==wait) {
@@ -972,19 +1141,34 @@ impl Vm {
             Completion::Error(v) => (v, true),
         };
         self.put(n.roots, 0, v)?;
+        n.pending_fault = error.then_some(FaultInfo {
+            kind: FaultKind::Thrown,
+            location: n.location,
+            has_cause: false,
+        });
         n.phase = NativePhase::Commit(error);
-        *self.frames.data.last_mut().unwrap() = Frame::Native(n);
+        *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
         Ok(())
     }
     pub fn delivery_value(&self, id: DeliveryId) -> Result<Value, VmError> {
         self.delivery_check(id)?;
-        self.value(self.delivery, 0)
+        self.value(self.task(id.task)?.delivery.unwrap(), 0)
+    }
+    pub fn delivery_cause(&self, id: DeliveryId) -> Result<Option<Value>, VmError> {
+        let t = self.delivery_check(id)?;
+        if t.fault.is_some_and(|f| f.has_cause) {
+            Ok(Some(self.value(self.task(id.task)?.delivery.unwrap(), 1)?))
+        } else {
+            Ok(None)
+        }
     }
     pub fn delivery_fault(&self, id: DeliveryId) -> Result<Option<FaultInfo>, VmError> {
         Ok(self.delivery_check(id)?.fault)
     }
     fn delivery_check(&self, id: DeliveryId) -> Result<Terminal, VmError> {
-        self.terminal
+        self.task(id.task)
+            .map_err(|_| VmError::InvalidDelivery)?
+            .terminal
             .filter(|t| t.id == id)
             .ok_or(VmError::InvalidDelivery)
     }
@@ -995,29 +1179,94 @@ impl Vm {
     }
     pub fn discard_delivery(&mut self, id: DeliveryId) -> Result<(), VmError> {
         self.delivery_check(id)?;
-        self.clear(self.delivery, 0)?;
-        self.terminal = None;
-        self.task_owner = None;
-        self.task_id = None;
+        self.select_task(id.task)?;
+        self.clear(self.active.delivery.unwrap(), 0)?;
+        self.clear(self.active.delivery.unwrap(), 1)?;
+        self.active.terminal = None;
+        self.active.task_owner = None;
+        self.active.task_id = None;
+        Ok(())
+    }
+    pub fn cancel_task(&mut self, task: TaskId) -> Result<(), VmError> {
+        self.select_task(task)?;
+        self.cancel_active(false)
+    }
+    fn cancel_active(&mut self, external: bool) -> Result<(), VmError> {
+        if self.active.cancelling {
+            self.active.release_external |= external;
+            return Ok(());
+        }
+        self.active.cancelling = true;
+        self.active.cancel_roots = 0;
+        self.active.release_external = external;
+        if self.active.terminal.take().is_some() {
+            self.clear(self.active.delivery.unwrap(), 0)?;
+            self.clear(self.active.delivery.unwrap(), 1)?;
+        }
         Ok(())
     }
     pub fn cancel(&mut self, owner: RootOwner) -> Result<(), VmError> {
-        if self.task_owner != Some(owner) {
-            return Err(VmError::Idle);
+        self.restore_active();
+        let mut found = false;
+        for slot in 0..self.tasks.data.len() {
+            if self.tasks.data[slot].task_owner == Some(owner) {
+                self.select_slot(slot);
+                self.cancel_active(true)?;
+                self.restore_active();
+                found = true;
+            }
         }
-        self.cancelling = true;
-        self.cancel_roots = 0;
-        if let Some(t) = self.terminal.take() {
-            self.clear(self.delivery, 0)?;
-            let _ = t;
+        if found { Ok(()) } else { Err(VmError::Idle) }
+    }
+    fn restore_active(&mut self) {
+        if let Some(slot) = self.active_slot.take() {
+            std::mem::swap(&mut self.active, &mut self.tasks.data[slot]);
         }
+    }
+    fn select_slot(&mut self, slot: usize) {
+        self.restore_active();
+        std::mem::swap(&mut self.active, &mut self.tasks.data[slot]);
+        self.active_slot = Some(slot);
+    }
+    fn task(&self, id: TaskId) -> Result<&TaskState, VmError> {
+        if id.heap != self.heap.id() || id.epoch != self.heap.epoch() {
+            return Err(VmError::UnknownTask);
+        }
+        if self.active.task_id == Some(id) {
+            return Ok(&self.active);
+        }
+        self.tasks
+            .data
+            .iter()
+            .find(|t| t.task_id == Some(id))
+            .ok_or(VmError::UnknownTask)
+    }
+    fn select_task(&mut self, id: TaskId) -> Result<(), VmError> {
+        if self.active.task_id == Some(id) {
+            return Ok(());
+        }
+        if id.heap != self.heap.id() || id.epoch != self.heap.epoch() {
+            return Err(VmError::UnknownTask);
+        }
+        let slot = self
+            .tasks
+            .data
+            .iter()
+            .position(|t| t.task_id == Some(id))
+            .ok_or(VmError::UnknownTask)?;
+        self.select_slot(slot);
         Ok(())
+    }
+    pub fn pooled_root_ranges(&self) -> u32 {
+        2 + 2 * self.limits.max_tasks
     }
     pub fn run_slice(
         &mut self,
+        task: TaskId,
         budget: SliceBudget,
         mut now: impl FnMut() -> u64,
     ) -> Result<RunOutcome, VmError> {
+        self.select_task(task)?;
         self.slices += 1;
         let mut meter = Meter {
             budget,
@@ -1029,7 +1278,7 @@ impl Vm {
     }
     fn run(&mut self, m: &mut Meter, now: &mut impl FnMut() -> u64) -> Result<RunOutcome, VmError> {
         loop {
-            if let Some(t) = self.terminal {
+            if let Some(t) = self.active.terminal {
                 return Ok(if t.fault.is_some() {
                     RunOutcome::Fault(t.id)
                 } else {
@@ -1039,26 +1288,33 @@ impl Vm {
             if m.budget.deadline_ns.is_some_and(|d| now() >= d) {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
-            if self.cancelling {
-                if !self.equality_cursors.data.is_empty() {
+            if self.active.cancelling {
+                if !self.active.caught.data.is_empty() {
                     if !m.take(0, 1, 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
-                    let depth = self.equality_cursors.data.len() as u32 - 1;
-                    self.clear(self.equality_roots, depth * 2)?;
-                    self.clear(self.equality_roots, depth * 2 + 1)?;
-                    self.equality_cursors.data.pop();
+                    self.active.caught.data.pop();
                     continue;
                 }
-                if let Some(u) = self.unwinds.data.last().copied() {
+                if !self.active.equality_cursors.data.is_empty() {
+                    if !m.take(0, 1, 0) {
+                        return Ok(RunOutcome::BudgetYield(m.usage));
+                    }
+                    let depth = self.active.equality_cursors.data.len() as u32 - 1;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
+                    self.active.equality_cursors.data.pop();
+                    continue;
+                }
+                if let Some(u) = self.active.unwinds.data.last().copied() {
                     if !m.take(0, self.release_cost(1), 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                     self.slots.release(&mut self.heap, u.value)?;
-                    self.unwinds.data.pop();
+                    self.active.unwinds.data.pop();
                     continue;
                 }
-                if let Some(f) = self.frames.data.last().copied() {
+                if let Some(f) = self.active.frames.data.last().copied() {
                     let count = match f {
                         Frame::Script(_) => 4,
                         Frame::Native(_) => 3,
@@ -1067,26 +1323,27 @@ impl Vm {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                     self.release_frame(f)?;
-                    self.frames.data.pop();
+                    self.active.frames.data.pop();
                     continue;
                 }
-                if self.cancel_roots < self.heap.root_slots() {
+                if self.active.release_external && self.active.cancel_roots < self.heap.root_slots()
+                {
                     if !m.take(0, 1, 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
                     self.heap.release_owner_step(
-                        self.task_owner.unwrap(),
-                        &mut self.cancel_roots,
+                        self.active.task_owner.unwrap(),
+                        &mut self.active.cancel_roots,
                         1,
                     );
                     continue;
                 }
-                self.cancelling = false;
-                self.task_owner = None;
-                self.task_id = None;
+                self.active.cancelling = false;
+                self.active.task_owner = None;
+                self.active.task_id = None;
                 return Err(VmError::Idle);
             }
-            let Some(f) = self.frames.data.last().copied() else {
+            let Some(f) = self.active.frames.data.last().copied() else {
                 return Err(VmError::Idle);
             };
             match f {
@@ -1118,8 +1375,30 @@ impl Vm {
         }
         Ok(())
     }
+    fn preparation_fault(&mut self, s: &mut ScriptFrame, kind: FaultKind) -> Result<(), VmError> {
+        self.put(s.env, 1, Value::NULL)?;
+        self.clear(s.env, 2)?;
+        s.phase = ScriptPhase::Release {
+            reason: ExitReason::Throw(FaultInfo {
+                kind,
+                location: self.binding_location(*s),
+                has_cause: false,
+            }),
+        };
+        Ok(())
+    }
+    fn native_fault(&mut self, n: &mut NativeFrame, kind: FaultKind) -> Result<(), VmError> {
+        self.put(n.roots, 0, Value::NULL)?;
+        n.pending_fault = Some(FaultInfo {
+            kind,
+            location: n.location,
+            has_cause: false,
+        });
+        n.phase = NativePhase::Commit(true);
+        Ok(())
+    }
     fn script_step(&mut self, mut s: ScriptFrame, m: &mut Meter) -> Result<bool, VmError> {
-        let top = self.frames.data.len() - 1;
+        let top = self.active.frames.data.len() - 1;
         let signature = self.program.package().functions[s.code.function.index()].signature;
         match s.phase {
             ScriptPhase::Copy { source, index } => {
@@ -1127,13 +1406,20 @@ impl Vm {
                     return Ok(false);
                 }
                 if index < s.argument_count {
-                    let (name, v) = self.argument(source, index)?;
-                    self.put(s.args, index * 2, Value::int(name))?;
-                    self.put(s.args, index * 2 + 1, v)?;
-                    s.phase = ScriptPhase::Copy {
-                        source,
-                        index: index + 1,
-                    };
+                    match self.argument(source, index) {
+                        Ok((name, v)) => {
+                            self.put(s.args, index * 2, Value::int(name))?;
+                            self.put(s.args, index * 2 + 1, v)?;
+                            s.phase = ScriptPhase::Copy {
+                                source,
+                                index: index + 1,
+                            };
+                        }
+                        Err(e) => {
+                            let kind = language_fault(e)?;
+                            self.preparation_fault(&mut s, kind)?;
+                        }
+                    }
                 } else {
                     s.phase = ScriptPhase::Bind {
                         index: 0,
@@ -1160,15 +1446,7 @@ impl Vm {
                             }
                         }
                         Err(kind) => {
-                            self.put(s.env, 1, Value::NULL)?;
-                            s.phase = ScriptPhase::Exit {
-                                origin: s.pc,
-                                reason: ExitReason::Throw(FaultInfo {
-                                    kind,
-                                    location: self.binding_location(s),
-                                }),
-                                skip: None,
-                            };
+                            self.preparation_fault(&mut s, kind)?;
                         }
                     }
                 } else {
@@ -1187,13 +1465,7 @@ impl Vm {
                         parameter: parameter + 1,
                     };
                 } else if let Some(default) = sig.parameters[parameter as usize].default {
-                    let registers =
-                        self.program.package().functions[default.index()].register_count;
-                    if !m.take(
-                        0,
-                        registers as u64 + parameter as u64 * 2 + self.release_cost(4),
-                        0,
-                    ) {
+                    if !m.take(0, self.script_push_cost(default, parameter), 0) {
                         return Ok(false);
                     }
                     let closure = if s.closure {
@@ -1201,8 +1473,8 @@ impl Vm {
                     } else {
                         None
                     };
-                    self.frames.data[top] = Frame::Script(s);
-                    self.push_script(
+                    self.active.frames.data[top] = Frame::Script(s);
+                    let prepared = self.push_script(
                         default,
                         closure,
                         ArgSource::Prefix { frame: s.id },
@@ -1215,18 +1487,16 @@ impl Vm {
                             parameter,
                             call: s.pc,
                         },
-                    )?;
-                    return Ok(true);
+                    );
+                    match prepared {
+                        Ok(()) => return Ok(true),
+                        Err(e) => {
+                            let kind = language_fault(e)?;
+                            self.preparation_fault(&mut s, kind)?;
+                        }
+                    }
                 } else {
-                    self.put(s.env, 1, Value::NULL)?;
-                    s.phase = ScriptPhase::Exit {
-                        origin: s.pc,
-                        reason: ExitReason::Throw(FaultInfo {
-                            kind: FaultKind::MissingArgument,
-                            location: self.binding_location(s),
-                        }),
-                        skip: None,
-                    };
+                    self.preparation_fault(&mut s, FaultKind::MissingArgument)?;
                 }
             }
             ScriptPhase::Install { binding } => {
@@ -1258,13 +1528,23 @@ impl Vm {
                             match b.storage {
                                 BindingStorage::Value(r) => self.put(s.regs, r.0, v)?,
                                 BindingStorage::Cell(r) => {
-                                    let cell = self.heap.alloc_language_cell(self.contract(
+                                    let allocation = self.heap.alloc_language_cell(self.contract(
                                         ModuleId(s.module.0),
                                         b.ty,
                                         b.mutable,
-                                    ))?;
-                                    self.heap.cell_initialize(cell, v)?;
-                                    self.put(s.regs, r.0, cell)?;
+                                    ));
+                                    match allocation {
+                                        Ok(cell) => {
+                                            self.heap.cell_initialize(cell, v)?;
+                                            self.put(s.regs, r.0, cell)?;
+                                        }
+                                        Err(e) => {
+                                            let kind = language_fault(VmError::Heap(e))?;
+                                            self.preparation_fault(&mut s, kind)?;
+                                            self.active.frames.data[top] = Frame::Script(s);
+                                            return Ok(true);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1293,12 +1573,13 @@ impl Vm {
                         s.phase = ScriptPhase::Exit {
                             origin: s.pc,
                             reason: ExitReason::Throw(FaultInfo {
+                                has_cause: false,
                                 kind: vm_fault(error),
                                 location: self.loc(s, s.pc),
                             }),
                             skip: None,
                         };
-                        self.frames.data[top] = Frame::Script(s);
+                        self.active.frames.data[top] = Frame::Script(s);
                         return Ok(true);
                     }
                 };
@@ -1308,7 +1589,7 @@ impl Vm {
                 let step = self.execute(&mut s, op, a, b, c);
                 match step {
                     Ok(true) => {
-                        self.frames.data[top] = Frame::Script(s);
+                        self.active.frames.data[top] = Frame::Script(s);
                         return Ok(true);
                     }
                     Ok(false) => {}
@@ -1317,6 +1598,7 @@ impl Vm {
                         s.phase = ScriptPhase::Exit {
                             origin: s.pc,
                             reason: ExitReason::Throw(FaultInfo {
+                                has_cause: false,
                                 kind,
                                 location: self.loc(s, s.pc),
                             }),
@@ -1339,11 +1621,11 @@ impl Vm {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
                 }
-                if !self.equality_cursors.data.is_empty() {
-                    let depth = self.equality_cursors.data.len() as u32 - 1;
-                    self.clear(self.equality_roots, depth * 2)?;
-                    self.clear(self.equality_roots, depth * 2 + 1)?;
-                    self.equality_cursors.data.pop();
+                if !self.active.equality_cursors.data.is_empty() {
+                    let depth = self.active.equality_cursors.data.len() as u32 - 1;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
+                    self.active.equality_cursors.data.pop();
                 } else {
                     match result {
                         Ok(equal) => {
@@ -1356,6 +1638,7 @@ impl Vm {
                             s.phase = ScriptPhase::Exit {
                                 origin: s.pc,
                                 reason: ExitReason::Throw(FaultInfo {
+                                    has_cause: false,
                                     kind,
                                     location: self.loc(s, s.pc),
                                 }),
@@ -1375,6 +1658,7 @@ impl Vm {
                     self.program.package().functions[s.code.function.index()]
                         .regions
                         .len() as u64
+                        + self.active.caught.data.len() as u64
                         + 2
                         + self.release_cost(1),
                     0,
@@ -1384,24 +1668,42 @@ impl Vm {
                 self.exit_step(&mut s, origin, reason, skip)?;
             }
             ScriptPhase::Release { reason } => {
+                if !m.take(0, self.active.caught.data.len() as u64, 0) {
+                    return Ok(false);
+                }
+                if let Some(index) = self.active.caught.data.iter().position(|c| c.frame == s.id) {
+                    if !m.take(0, self.active.caught.data.len() as u64 + 2, 0) {
+                        return Ok(false);
+                    }
+                    let record = self.active.caught.data.remove(index);
+                    self.clear(s.env, 3 + record.region.0 * 2)?;
+                    self.clear(s.env, 4 + record.region.0 * 2)?;
+                    self.active.frames.data[top] = Frame::Script(s);
+                    return Ok(true);
+                }
                 if !m.take(0, self.release_cost(4), 0) {
                     return Ok(false);
                 }
                 let value = self.value(s.env, 1)?;
+                let cause = match reason {
+                    ExitReason::Throw(info) if info.has_cause => Some(self.value(s.env, 2)?),
+                    _ => None,
+                };
                 self.commit(
                     s.ret,
                     value,
+                    cause,
                     match reason {
                         ExitReason::Throw(info) => Some(info),
                         _ => None,
                     },
                 )?;
                 self.release_frame(Frame::Script(s))?;
-                self.frames.data.remove(top);
+                self.active.frames.data.remove(top);
                 return Ok(true);
             }
         }
-        self.frames.data[top] = Frame::Script(s);
+        self.active.frames.data[top] = Frame::Script(s);
         Ok(true)
     }
     fn instruction_cost(
@@ -1438,19 +1740,15 @@ impl Vm {
                         self.heap.info(self.slots.read(at(s.regs, r.0))?)?.len / 2
                     }
                 };
-                let regs = match d.target {
-                    CallTarget::Function(id) => {
-                        self.program.package().functions[id.index()].register_count
-                    }
-                    CallTarget::Native(_) => {
-                        self.limits.max_arguments + self.limits.max_continuation_values + 2
-                    }
+                let cost = match d.target {
+                    CallTarget::Function(id) => self.script_push_cost(id, count),
+                    CallTarget::Native(id) => self.native_push_cost(id, count),
                     CallTarget::Register(r) => self
                         .closure_function(self.slots.read(at(s.regs, r.0))?)
-                        .map(|id| self.program.package().functions[id.index()].register_count)
-                        .unwrap_or(0),
+                        .map(|id| self.script_push_cost(id, count))
+                        .unwrap_or(1),
                 };
-                (regs as u64 + count as u64 * 2 + self.release_cost(4), 0)
+                (cost + self.active.unwinds.data.len() as u64 + 1, 0)
             }
             Opcode::MakeClosure => {
                 let Descriptor::Closure { captures, .. } = &f.descriptors[b as usize] else {
@@ -1462,6 +1760,10 @@ impl Vm {
                         * VALUE_CHUNK_BYTES,
                 )
             }
+            Opcode::Rethrow => (
+                f.regions.len() as u64 + self.active.caught.data.len() as u64 + 3,
+                0,
+            ),
             Opcode::EndFinally => (self.release_cost(1), 0),
             Opcode::GlobalRead | Opcode::GlobalInit | Opcode::GlobalWrite => {
                 (self.program.package().modules.len() as u64 + 1, 0)
@@ -1496,7 +1798,7 @@ impl Vm {
         if matches!(
             op,
             Opcode::CellWrite | Opcode::BindWrite | Opcode::GlobalWrite | Opcode::GlobalInit
-        ) && (s.context == Context::Derived || s.effects.0 & Effects::WRITE == 0)
+        ) && (s.context.derived || s.effects.0 & Effects::WRITE == 0)
         {
             return Err(FaultKind::Effect);
         }
@@ -1670,10 +1972,12 @@ impl Vm {
                         ObjectKind::Tuple | ObjectKind::String | ObjectKind::Bytes
                     )
                 {
-                    self.equality_cursors.data.clear();
-                    self.put(self.equality_roots, 0, left).map_err(vm_fault)?;
-                    self.put(self.equality_roots, 1, right).map_err(vm_fault)?;
-                    self.equality_cursors.data.push(0);
+                    self.active.equality_cursors.data.clear();
+                    self.put(self.active.equality_roots.unwrap(), 0, left)
+                        .map_err(vm_fault)?;
+                    self.put(self.active.equality_roots.unwrap(), 1, right)
+                        .map_err(vm_fault)?;
+                    self.active.equality_cursors.data.push(0);
                     s.phase = ScriptPhase::Equality {
                         dest: r(a),
                         negated: op == Opcode::Ne,
@@ -1774,12 +2078,22 @@ impl Vm {
                     descriptor: DescriptorId(b),
                 };
                 let mut caller = *s;
-                if self.unwinds.data.iter().any(|u| u.frame == s.id) {
+                if self.active.unwinds.data.iter().any(|u| u.frame == s.id) {
                     caller.context = inherit(caller.context, Context::NoWait);
                 }
+                let dynamic = if let CallTarget::Register(reg) = target {
+                    let closure = self.read(*s, reg)?;
+                    Some((
+                        closure,
+                        self.closure_function(closure)
+                            .map_err(|_| FaultKind::Type)?,
+                    ))
+                } else {
+                    None
+                };
                 s.pc.0 += 1;
                 let caller_index = self.index(s.id).map_err(|_| FaultKind::InvalidState)?;
-                self.frames.data[caller_index] = Frame::Script(*s);
+                self.active.frames.data[caller_index] = Frame::Script(*s);
                 match target {
                     CallTarget::Native(native) => {
                         if s.effects.0 & Effects::HOST == 0 {
@@ -1810,11 +2124,8 @@ impl Vm {
                             return Err(vm_fault(e));
                         }
                     }
-                    CallTarget::Register(reg) => {
-                        let closure = self.read(*s, reg)?;
-                        let function = self
-                            .closure_function(closure)
-                            .map_err(|_| FaultKind::Type)?;
+                    CallTarget::Register(_) => {
+                        let (closure, function) = dynamic.unwrap();
                         if let Err(e) = self.push_script(
                             function,
                             Some(closure),
@@ -1861,9 +2172,47 @@ impl Vm {
                 s.phase = ScriptPhase::Exit {
                     origin: s.pc,
                     reason: ExitReason::Throw(FaultInfo {
+                        has_cause: false,
                         kind: FaultKind::Thrown,
                         location: self.loc(*s, s.pc),
                     }),
+                    skip: None,
+                };
+                return Ok(false);
+            }
+            Opcode::Rethrow => {
+                let region = f
+                    .regions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(id, r)| {
+                        r.catch
+                            .as_ref()
+                            .filter(|c| c.range.contains(s.pc))
+                            .map(|c| (id, c.range.end.0 - c.range.start.0))
+                    })
+                    .min_by_key(|(_, n)| *n)
+                    .map(|(id, _)| RegionId(id as u32))
+                    .ok_or(FaultKind::InvalidState)?;
+                let info = self
+                    .active
+                    .caught
+                    .data
+                    .iter()
+                    .find(|c| c.frame == s.id && c.region == region)
+                    .map(|c| c.info)
+                    .ok_or(FaultKind::InvalidState)?;
+                let value = self.value(s.env, 3 + region.0 * 2).map_err(vm_fault)?;
+                self.put(s.env, 1, value).map_err(vm_fault)?;
+                if info.has_cause {
+                    let cause = self.value(s.env, 4 + region.0 * 2).map_err(vm_fault)?;
+                    self.put(s.env, 2, cause).map_err(vm_fault)?;
+                } else {
+                    self.clear(s.env, 2).map_err(vm_fault)?;
+                }
+                s.phase = ScriptPhase::Exit {
+                    origin: s.pc,
+                    reason: ExitReason::Throw(info),
                     skip: None,
                 };
                 return Ok(false);
@@ -1881,6 +2230,7 @@ impl Vm {
             }
             Opcode::EndFinally => {
                 let Some(u) = self
+                    .active
                     .unwinds
                     .data
                     .last()
@@ -1893,10 +2243,16 @@ impl Vm {
                 self.slots
                     .write(&mut self.heap, at(s.env, 1), value)
                     .map_err(heap_fault)?;
+                if matches!(u.reason,ExitReason::Throw(info) if info.has_cause) {
+                    let cause = self.value(u.value, 1).map_err(vm_fault)?;
+                    self.put(s.env, 2, cause).map_err(vm_fault)?;
+                } else {
+                    self.clear(s.env, 2).map_err(vm_fault)?;
+                }
                 self.slots
                     .release(&mut self.heap, u.value)
                     .map_err(heap_fault)?;
-                self.unwinds.data.pop();
+                self.active.unwinds.data.pop();
                 s.phase = ScriptPhase::Exit {
                     origin: u.origin,
                     reason: u.reason,
@@ -1938,10 +2294,10 @@ impl Vm {
         dest: Reg,
         negated: bool,
     ) -> Result<(), VmError> {
-        let depth = self.equality_cursors.data.len() as u32 - 1;
-        let offset = self.equality_cursors.data[depth as usize];
-        let left = self.value(self.equality_roots, depth * 2)?;
-        let right = self.value(self.equality_roots, depth * 2 + 1)?;
+        let depth = self.active.equality_cursors.data.len() as u32 - 1;
+        let offset = self.active.equality_cursors.data[depth as usize];
+        let left = self.value(self.active.equality_roots.unwrap(), depth * 2)?;
+        let right = self.value(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
         let result = if left.tag() == ValueTag::Object && right.tag() == ValueTag::Object {
             let l = self.heap.info(left)?;
             let r = self.heap.info(right)?;
@@ -1959,7 +2315,7 @@ impl Vm {
                             let mut b = [0];
                             self.heap.read_bytes(left, offset, &mut a)?;
                             self.heap.read_bytes(right, offset, &mut b)?;
-                            self.equality_cursors.data[depth as usize] += 1;
+                            self.active.equality_cursors.data[depth as usize] += 1;
                             if a != b { Some(false) } else { None }
                         }
                     }
@@ -1969,7 +2325,8 @@ impl Vm {
                         } else if offset == l.len {
                             Some(true)
                         } else {
-                            if self.equality_cursors.data.len() == self.limits.max_unwinds as usize
+                            if self.active.equality_cursors.data.len()
+                                == self.limits.max_unwinds as usize
                             {
                                 s.phase = ScriptPhase::EqualityCleanup {
                                     dest,
@@ -1980,10 +2337,10 @@ impl Vm {
                             }
                             let a = self.heap.get_field(left, offset)?;
                             let b = self.heap.get_field(right, offset)?;
-                            self.equality_cursors.data[depth as usize] += 1;
-                            self.put(self.equality_roots, (depth + 1) * 2, a)?;
-                            self.put(self.equality_roots, (depth + 1) * 2 + 1, b)?;
-                            self.equality_cursors.data.push(0);
+                            self.active.equality_cursors.data[depth as usize] += 1;
+                            self.put(self.active.equality_roots.unwrap(), (depth + 1) * 2, a)?;
+                            self.put(self.active.equality_roots.unwrap(), (depth + 1) * 2 + 1, b)?;
+                            self.active.equality_cursors.data.push(0);
                             None
                         }
                     }
@@ -2006,10 +2363,10 @@ impl Vm {
                     result: Ok(false),
                 };
             } else {
-                self.clear(self.equality_roots, depth * 2)?;
-                self.clear(self.equality_roots, depth * 2 + 1)?;
-                self.equality_cursors.data.pop();
-                if self.equality_cursors.data.is_empty() {
+                self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
+                self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
+                self.active.equality_cursors.data.pop();
+                if self.active.equality_cursors.data.is_empty() {
                     s.phase = ScriptPhase::EqualityCleanup {
                         dest,
                         negated,
@@ -2028,24 +2385,6 @@ impl Vm {
         skip: Option<RegionId>,
     ) -> Result<(), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
-        // A new error/return inside an active finally supersedes that exit. Nested
-        // ordinary Leave stays within the outer cleanup and preserves its record.
-        if let Some(u) = self
-            .unwinds
-            .data
-            .last()
-            .copied()
-            .filter(|u| u.frame == s.id)
-        {
-            let range = f.regions[u.region.index()].finally.unwrap();
-            if range.contains(origin)
-                && !matches!(reason,ExitReason::Leave(target) if range.contains(target))
-            {
-                self.slots.release(&mut self.heap, u.value)?;
-                self.unwinds.data.pop();
-                return Ok(());
-            }
-        }
         let handler = match reason {
             ExitReason::Throw(_) => {
                 self.program
@@ -2089,21 +2428,85 @@ impl Vm {
                     })
             }
         };
+        // A new error/return inside an active finally supersedes that exit. Nested
+        // ordinary Leave stays within the outer cleanup and preserves its record.
+        if let Some(u) = self
+            .active
+            .unwinds
+            .data
+            .last()
+            .copied()
+            .filter(|u| u.frame == s.id)
+        {
+            let range = f.regions[u.region.index()].finally.unwrap();
+            let handled_inside = handler.is_some_and(|h| range.contains(h.pc));
+            if range.contains(origin)
+                && !handled_inside
+                && !matches!(reason,ExitReason::Leave(target) if range.contains(target))
+            {
+                if let ExitReason::Throw(mut info) = reason {
+                    let previous = self.value(u.value, 0)?;
+                    self.put(s.env, 2, previous)?;
+                    info.has_cause = true;
+                    s.phase = ScriptPhase::Exit {
+                        origin,
+                        reason: ExitReason::Throw(info),
+                        skip,
+                    };
+                }
+                self.slots.release(&mut self.heap, u.value)?;
+                self.active.unwinds.data.pop();
+                return Ok(());
+            }
+        }
         if let Some(handler) = handler {
             let value = self.value(s.env, 1)?;
             match handler.kind {
                 HandlerKind::Catch => {
+                    let ExitReason::Throw(info) = reason else {
+                        return Err(VmError::Contract("catch on normal exit"));
+                    };
+                    let base = 3 + handler.region.0 * 2;
+                    self.put(s.env, base, value)?;
+                    if info.has_cause {
+                        let cause = self.value(s.env, 2)?;
+                        self.put(s.env, base + 1, cause)?;
+                    } else {
+                        self.clear(s.env, base + 1)?;
+                    }
+                    if let Some(index) = self
+                        .active
+                        .caught
+                        .data
+                        .iter()
+                        .position(|c| c.frame == s.id && c.region == handler.region)
+                    {
+                        self.active.caught.data[index].info = info;
+                    } else {
+                        if self.active.caught.data.len() == self.limits.max_unwinds as usize {
+                            return Err(VmError::Limit);
+                        }
+                        self.active.caught.data.push(CaughtFault {
+                            frame: s.id,
+                            region: handler.region,
+                            info,
+                        });
+                    }
                     self.put(s.regs, handler.exception.unwrap().0, value)?;
                     s.pc = handler.pc;
                     s.phase = ScriptPhase::Body;
                 }
                 HandlerKind::Finally => {
-                    if self.unwinds.data.len() == self.limits.max_unwinds as usize {
+                    if self.active.unwinds.data.len() == self.limits.max_unwinds as usize {
                         return Err(VmError::Limit);
                     }
-                    let root = self.open(s.owner, RootKind::Exception, 1)?;
+                    let root = self.open(s.owner, RootKind::Exception, 2)?;
                     self.put(root, 0, value)?;
-                    self.unwinds.data.push(Unwind {
+                    if matches!(reason,ExitReason::Throw(info) if info.has_cause) {
+                        let cause = self.value(s.env, 2)?;
+                        self.put(root, 1, cause)?;
+                    }
+                    self.active.unwinds.data.push(Unwind {
                         frame: s.id,
                         origin,
                         reason,
@@ -2129,14 +2532,21 @@ impl Vm {
         &mut self,
         ret: ReturnTo,
         value: Value,
+        cause: Option<Value>,
         error: Option<FaultInfo>,
     ) -> Result<(), VmError> {
         match ret {
             ReturnTo::Delivery => {
-                self.put(self.delivery, 0, value)?;
+                self.put(self.active.delivery.unwrap(), 0, value)?;
+                if let Some(c) = cause {
+                    self.put(self.active.delivery.unwrap(), 1, c)?;
+                } else {
+                    self.clear(self.active.delivery.unwrap(), 1)?;
+                }
                 let serial = self.serial()?;
-                self.terminal = Some(Terminal {
+                self.active.terminal = Some(Terminal {
                     id: DeliveryId {
+                        task: self.active.task_id.unwrap(),
                         heap: self.heap.id(),
                         epoch: self.heap.epoch(),
                         serial,
@@ -2146,15 +2556,25 @@ impl Vm {
             }
             ReturnTo::Register { frame, call, .. } | ReturnTo::Default { frame, call, .. } => {
                 let i = self.index(frame)?;
-                let Frame::Script(mut parent) = self.frames.data[i] else {
+                let Frame::Script(mut parent) = self.active.frames.data[i] else {
                     return Err(VmError::Contract("return target"));
                 };
                 if let Some(info) = error {
                     self.put(parent.env, 1, value)?;
-                    parent.phase = ScriptPhase::Exit {
-                        origin: call,
-                        reason: ExitReason::Throw(info),
-                        skip: None,
+                    if let Some(c) = cause {
+                        self.put(parent.env, 2, c)?;
+                    } else {
+                        self.clear(parent.env, 2)?;
+                    }
+                    parent.phase = match ret {
+                        ReturnTo::Default { .. } => ScriptPhase::Release {
+                            reason: ExitReason::Throw(info),
+                        },
+                        _ => ScriptPhase::Exit {
+                            origin: call,
+                            reason: ExitReason::Throw(info),
+                            skip: None,
+                        },
                     };
                 } else {
                     match ret {
@@ -2168,21 +2588,24 @@ impl Vm {
                         _ => unreachable!(),
                     }
                 }
-                self.frames.data[i] = Frame::Script(parent);
+                self.active.frames.data[i] = Frame::Script(parent);
             }
             ReturnTo::Native { frame } => {
                 let i = self.index(frame)?;
-                let Frame::Native(mut n) = self.frames.data[i] else {
+                let Frame::Native(mut n) = self.active.frames.data[i] else {
                     return Err(VmError::Contract("native callback return target"));
                 };
                 self.put(n.roots, 0, value)?;
+                let cause_slot =
+                    2 + self.limits.max_continuation_values + self.limits.max_arguments;
+                self.put(n.roots, cause_slot, cause.unwrap_or(Value::NULL))?;
                 n.callback_fault = error;
                 n.phase = NativePhase::Resume(if error.is_some() {
                     NativeInput::CallbackFault
                 } else {
                     NativeInput::CallbackReturned
                 });
-                self.frames.data[i] = Frame::Native(n);
+                self.active.frames.data[i] = Frame::Native(n);
             }
         }
         Ok(())
@@ -2192,21 +2615,28 @@ impl Vm {
         mut n: NativeFrame,
         m: &mut Meter,
     ) -> Result<Option<RunOutcome>, VmError> {
-        let top = self.frames.data.len() - 1;
+        let top = self.active.frames.data.len() - 1;
         match n.phase {
             NativePhase::Copy { source, index } => {
                 if !m.take(0, 1, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
-                let root_len = 2 + self.limits.max_continuation_values + self.limits.max_arguments;
+                let root_len = 3 + self.limits.max_continuation_values + self.limits.max_arguments;
                 if index < n.argument_count {
-                    let (name, value) = self.argument(source, index)?;
-                    self.put(n.args, index * 2, Value::int(name))?;
-                    self.put(n.args, index * 2 + 1, value)?;
-                    n.phase = NativePhase::Copy {
-                        source,
-                        index: index + 1,
-                    };
+                    match self.argument(source, index) {
+                        Ok((name, value)) => {
+                            self.put(n.args, index * 2, Value::int(name))?;
+                            self.put(n.args, index * 2 + 1, value)?;
+                            n.phase = NativePhase::Copy {
+                                source,
+                                index: index + 1,
+                            };
+                        }
+                        Err(e) => {
+                            let kind = language_fault(e)?;
+                            self.native_fault(&mut n, kind)?;
+                        }
+                    }
                 } else if index < n.argument_count + root_len {
                     self.put(n.roots, index - n.argument_count, Value::NULL)?;
                     n.phase = NativePhase::Copy {
@@ -2238,14 +2668,11 @@ impl Vm {
                             }
                         }
                         Err(kind) => {
-                            self.put(n.roots, 0, Value::NULL)?;
-                            self.put(n.roots, 1, Value::int(kind as i64))?;
-                            n.phase = NativePhase::Commit(true);
+                            self.native_fault(&mut n, kind)?;
                         }
                     }
                 } else if self.slots.borrow_initialized(n.bound).is_err() {
-                    self.put(n.roots, 1, Value::int(FaultKind::MissingArgument as i64))?;
-                    n.phase = NativePhase::Commit(true);
+                    self.native_fault(&mut n, FaultKind::MissingArgument)?;
                 } else {
                     n.phase = NativePhase::Resume(NativeInput::Entry);
                 }
@@ -2260,7 +2687,7 @@ impl Vm {
                     epoch: self.heap.epoch(),
                     serial,
                     frame: n.id,
-                    task: self.task_id.unwrap(),
+                    task: self.active.task_id.unwrap(),
                     native: n.native,
                     signature: n.signature,
                     abi_version: self.program.package().natives[n.native.index()].abi_version,
@@ -2269,6 +2696,14 @@ impl Vm {
                     input,
                     context: n.context,
                     effects: n.effects,
+                    continuation: if input == NativeInput::Entry {
+                        None
+                    } else {
+                        Some(ContinuationState {
+                            version: n.continuation_version,
+                            stage: n.continuation_stage,
+                        })
+                    },
                 };
                 if input == NativeInput::Entry {
                     self.native_entries += 1;
@@ -2276,7 +2711,7 @@ impl Vm {
                     self.native_resumes += 1;
                 }
                 n.phase = NativePhase::Issued(ticket);
-                self.frames.data[top] = Frame::Native(n);
+                self.active.frames.data[top] = Frame::Native(n);
                 return Ok(Some(RunOutcome::HostCall(ticket)));
             }
             NativePhase::Issued(ticket) => return Ok(Some(RunOutcome::HostCall(ticket))),
@@ -2293,14 +2728,12 @@ impl Vm {
             NativePhase::Callback { count } => {
                 let closure = self.value(n.roots, 1)?;
                 let function = self.closure_function(closure)?;
-                let cost = self.program.package().functions[function.index()].register_count as u64
-                    + count as u64 * 2
-                    + self.release_cost(4);
+                let cost = self.script_push_cost(function, count);
                 if !m.take(0, cost, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
-                self.frames.data[top] = Frame::Native(n);
-                self.push_script(
+                self.active.frames.data[top] = Frame::Native(n);
+                let prepared = self.push_script(
                     function,
                     Some(closure),
                     ArgSource::Native { frame: n.id },
@@ -2309,8 +2742,20 @@ impl Vm {
                     n.context,
                     n.effects,
                     ReturnTo::Native { frame: n.id },
-                )?;
-                return Ok(None);
+                );
+                match prepared {
+                    Ok(()) => return Ok(None),
+                    Err(e) => {
+                        let kind = language_fault(e)?;
+                        self.put(n.roots, 0, Value::NULL)?;
+                        n.callback_fault = Some(FaultInfo {
+                            kind,
+                            location: n.location,
+                            has_cause: false,
+                        });
+                        n.phase = NativePhase::Resume(NativeInput::CallbackFault);
+                    }
+                }
             }
             NativePhase::Commit(error) => {
                 if !m.take(0, 1, 0) {
@@ -2325,7 +2770,11 @@ impl Vm {
                         )
                         .is_err()
                 {
-                    self.put(n.roots, 1, Value::int(FaultKind::Type as i64))?;
+                    n.pending_fault = Some(FaultInfo {
+                        kind: FaultKind::Type,
+                        location: n.location,
+                        has_cause: false,
+                    });
                     n.phase = NativePhase::Release(true);
                 } else {
                     n.phase = NativePhase::Release(error);
@@ -2336,44 +2785,46 @@ impl Vm {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 let value = self.value(n.roots, 0)?;
-                let kind = match self.value(n.roots, 1)?.as_int() {
-                    Some(x) if x == FaultKind::Effect as i64 => FaultKind::Effect,
-                    Some(x) if x == FaultKind::Type as i64 => FaultKind::Type,
-                    Some(x) if x == FaultKind::MissingArgument as i64 => FaultKind::MissingArgument,
-                    Some(x) if x == FaultKind::DuplicateArgument as i64 => {
-                        FaultKind::DuplicateArgument
-                    }
-                    _ => FaultKind::Thrown,
-                };
-                self.commit(
-                    n.ret,
-                    value,
-                    error.then_some(FaultInfo {
-                        kind,
+                let info = if error {
+                    Some(n.pending_fault.unwrap_or(FaultInfo {
+                        kind: FaultKind::Thrown,
                         location: n.location,
-                    }),
-                )?;
+                        has_cause: false,
+                    }))
+                } else {
+                    None
+                };
+                let cause = if info.is_some_and(|f| f.has_cause) {
+                    Some(self.value(
+                        n.roots,
+                        2 + self.limits.max_continuation_values + self.limits.max_arguments,
+                    )?)
+                } else {
+                    None
+                };
+                self.commit(n.ret, value, cause, info)?;
                 self.release_frame(Frame::Native(n))?;
-                self.frames.data.remove(top);
+                self.active.frames.data.remove(top);
                 return Ok(None);
             }
         }
-        self.frames.data[top] = Frame::Native(n);
+        self.active.frames.data[top] = Frame::Native(n);
         Ok(None)
     }
 }
 fn at(range: RootRangeToken, index: u32) -> RangePosition {
     RangePosition { range, index }
 }
-fn inherit(parent: Context, child: Context) -> Context {
-    if parent != Context::Ordinary {
-        parent
-    } else {
-        child
+fn inherit(parent: ContextFlags, child: Context) -> ContextFlags {
+    let c = ContextFlags::from(child);
+    ContextFlags {
+        no_wait: parent.no_wait || c.no_wait,
+        init: parent.init || c.init,
+        derived: parent.derived || c.derived,
     }
 }
-fn no_wait(context: Context) -> bool {
-    context != Context::Ordinary
+fn no_wait(context: ContextFlags) -> bool {
+    context.no_wait || context.init || context.derived
 }
 fn heap_fault(e: HeapError) -> FaultKind {
     match e {
@@ -2382,6 +2833,29 @@ fn heap_fault(e: HeapError) -> FaultKind {
         HeapError::TypeMismatch | HeapError::WrongKind => FaultKind::Type,
         HeapError::AlreadyInitialized => FaultKind::AlreadyInitialized,
         _ => FaultKind::Resource,
+    }
+}
+fn language_fault(e: VmError) -> Result<FaultKind, VmError> {
+    match e {
+        VmError::Limit => Ok(FaultKind::Resource),
+        VmError::Contract("invalid argument name") => Ok(FaultKind::Type),
+        VmError::Heap(
+            h @ (HeapError::UninitializedSlot
+            | HeapError::UninitializedCell
+            | HeapError::AlreadyInitialized
+            | HeapError::ReadOnly
+            | HeapError::TypeMismatch
+            | HeapError::WrongKind
+            | HeapError::OutOfBounds
+            | HeapError::ObjectCapacity
+            | HeapError::RootCapacity
+            | HeapError::RootRangeCapacity
+            | HeapError::WindowCapacity
+            | HeapError::AllocationFailure
+            | HeapError::OperationLimit { .. }
+            | HeapError::ResourceLimit { .. }),
+        ) => Ok(heap_fault(h)),
+        other => Err(other),
     }
 }
 fn vm_fault(e: VmError) -> FaultKind {

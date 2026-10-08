@@ -68,6 +68,7 @@ fn main() {
             let t = Instant::now();
             let out = numeric
                 .run_slice(
+                    numeric.task_id().unwrap(),
                     SliceBudget {
                         instructions: 4096,
                         ..SliceBudget::default()
@@ -117,6 +118,7 @@ fn main() {
             loop {
                 match calls
                     .run_slice(
+                        calls.task_id().unwrap(),
                         SliceBudget {
                             instructions: 1,
                             ..SliceBudget::default()
@@ -169,7 +171,9 @@ fn main() {
         .unwrap();
     loop {
         if matches!(
-            calls.run_slice(SliceBudget::default(), || 0).unwrap(),
+            calls
+                .run_slice(calls.task_id().unwrap(), SliceBudget::default(), || 0)
+                .unwrap(),
             RunOutcome::HostCall(_)
         ) {
             break;
@@ -182,6 +186,7 @@ fn main() {
     loop {
         slices += 1;
         match calls.run_slice(
+            calls.task_id().unwrap(),
             SliceBudget {
                 work: 16416,
                 ..SliceBudget::default()

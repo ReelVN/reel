@@ -98,6 +98,7 @@ impl Heap {
         })
     }
     pub fn cell_read(&self, cell: Value) -> Result<Value, HeapError> {
+        self.cell_info(cell)?;
         self.get_field(cell, 0)
     }
     fn cell_publish(

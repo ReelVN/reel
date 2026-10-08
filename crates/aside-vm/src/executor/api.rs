@@ -7,7 +7,11 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TaskId(pub u64);
+pub struct TaskId {
+    pub(super) heap: HeapId,
+    pub(super) epoch: SessionEpoch,
+    pub(super) serial: u64,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModuleInstanceId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,12 +27,14 @@ pub struct Location {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeliveryId {
+    pub(super) task: TaskId,
     pub(super) heap: HeapId,
     pub(super) epoch: SessionEpoch,
     pub(super) serial: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WaitId {
+    pub(super) task: TaskId,
     pub(super) heap: HeapId,
     pub(super) epoch: SessionEpoch,
     pub(super) serial: u64,
@@ -39,6 +45,26 @@ pub enum NativeInput {
     Continue { version: u64, stage: u64 },
     CallbackReturned,
     CallbackFault,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContextFlags {
+    pub no_wait: bool,
+    pub init: bool,
+    pub derived: bool,
+}
+impl From<Context> for ContextFlags {
+    fn from(c: Context) -> Self {
+        Self {
+            no_wait: c == Context::NoWait,
+            init: c == Context::Init,
+            derived: c == Context::Derived,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContinuationState {
+    pub version: u64,
+    pub stage: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostTicket {
@@ -53,12 +79,14 @@ pub struct HostTicket {
     pub owner: RootOwner,
     pub location: Location,
     pub input: NativeInput,
-    pub context: Context,
+    pub context: ContextFlags,
+    pub continuation: Option<ContinuationState>,
     pub effects: Effects,
 }
 impl HostTicket {
     pub fn wait_id(self) -> WaitId {
         WaitId {
+            task: self.task,
             heap: self.heap,
             epoch: self.epoch,
             serial: self.serial,
@@ -138,6 +166,7 @@ pub enum FaultKind {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FaultInfo {
+    pub has_cause: bool,
     pub kind: FaultKind,
     pub location: Location,
 }
@@ -145,6 +174,7 @@ pub struct FaultInfo {
 pub enum VmError {
     Format(bytecode::Error),
     Heap(HeapError),
+    UnknownTask,
     InvalidTicket,
     InvalidWait,
     InvalidDelivery,
@@ -171,6 +201,7 @@ impl std::fmt::Display for VmError {
 impl std::error::Error for VmError {}
 #[derive(Clone, Copy, Debug)]
 pub struct VmLimits {
+    pub max_tasks: u32,
     pub heap: HeapLimits,
     pub slots: FrameSlotsLimits,
     pub max_frames: u32,
@@ -181,6 +212,7 @@ pub struct VmLimits {
 impl Default for VmLimits {
     fn default() -> Self {
         Self {
+            max_tasks: 16,
             heap: HeapLimits::default(),
             slots: FrameSlotsLimits {
                 initial_capacity: 16384,
@@ -254,6 +286,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::ArgsPush,
     Opcode::ArgsNamed,
     Opcode::Throw,
+    Opcode::Rethrow,
     Opcode::Leave,
     Opcode::EndFinally,
 ];
