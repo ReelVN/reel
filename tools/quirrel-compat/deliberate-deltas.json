@@ -23,9 +23,11 @@
     "id": "per_instance_fields",
     "spec": "docs/aside-language.md §8",
     "upstream_fixtures": ["testData/exec/valid_syntax/classes.nut"],
+    "upstream_oracle_status": "missing_mutable_default_aliasing_oracle",
+    "upstream_fixture_scope": "Related scalar-field class syntax/inheritance coverage only. classes.nut has no assertion comparing mutable field defaults across two instances and does not establish shared-default aliasing or per-instance allocation behavior.",
     "quirrel": "Class field declarations can carry shared mutable default objects.",
     "aside": "Initialize fields per instance, base to derived; constructor/failed-instance state and readonly initialization are explicit.",
-    "handling": "Keep the original class suite intact; inspect field allocation and constructor order separately before conversion.",
+    "handling": "No corresponding original mutable-default aliasing oracle is identified in this baseline. Keep classes.nut, its original results and goldens intact as related class coverage only; add a covering upstream oracle or separate Aside native cases before claiming differential coverage of per-instance field allocation.",
     "required_aside_cases": ["two instances have independent field arrays", "base-to-derived evaluation order", "super.init does not repeat field initialization", "Failed instance aliases reject ordinary operations"],
     "status": "waiting_runtime"
   },
