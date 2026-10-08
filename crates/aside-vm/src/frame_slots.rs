@@ -40,9 +40,14 @@ pub struct FrameSlotsStats {
     pub metadata_bytes: u64,
     pub charged_bytes: u64,
 }
+/// Mapping/copy sizes and memory residency, not an exact total-work count.
+/// See [`FrameSlots::relocate`] for the additional work performed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RelocationCost {
+    /// Mapping size, including holes and the sentinel; not total index inspections.
     pub descriptor_slots: u32,
+    /// Value positions copied from registered windows, including uninitialized nulls.
+    /// Does not include null initialization of the full replacement capacity.
     pub values: u32,
     pub bitmap_bytes: u64,
     pub old_buffer_bytes: u64,
@@ -59,6 +64,9 @@ pub struct RangeReleaseCursor {
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RangeReleaseProgress {
+    /// Descriptor indices inspected, including holes. Excludes free-span Vec
+    /// insertion/coalescing, whose work per released range is bounded by the
+    /// configured range capacity; this is not a total-work count.
     pub slots: u32,
     pub ranges: u32,
     pub complete: bool,
@@ -406,6 +414,9 @@ impl FrameSlots {
             spans[i - 1].len += right.len;
         }
     }
+    /// Unregister a range and recycle its span while retaining pool capacity.
+    /// Recycling may shift/coalesce O(max_root_ranges) free-span Vec entries;
+    /// cancellation's descriptor-index count does not include that work.
     pub fn release(&mut self, heap: &mut Heap, range: RootRangeToken) -> Result<(), HeapError> {
         self.check_heap(heap)?;
         let w = self.window(range)?;
@@ -426,6 +437,10 @@ impl FrameSlots {
         });
         Ok(())
     }
+    /// Inspect at most `slots` descriptor indices and revoke this owner's ranges.
+    /// Each revocation also calls [`Self::release`] and maintains the free-span
+    /// Vec. [`RangeReleaseProgress::slots`] excludes that work, so the quota
+    /// bounds index inspections rather than total work or wall-clock time.
     pub fn release_owner_step(
         &mut self,
         heap: &mut Heap,
@@ -493,6 +508,12 @@ impl FrameSlots {
         }
         Ok(())
     }
+    /// Relocate at an exclusive safe point, preserving logical windows and bits.
+    /// [`RelocationCost`] reports mapping size and registered-window copy volume.
+    /// Actual work also includes descriptor preflight, two full mapping passes,
+    /// null initialization of all `capacity` Values, zeroing the entire new
+    /// bitmap, per-Value barriers/bit copying, and releasing replaced buffers.
+    /// Its `descriptor_slots` and `values` fields are not exact total-work counts.
     pub fn relocate(
         &mut self,
         heap: &mut Heap,
