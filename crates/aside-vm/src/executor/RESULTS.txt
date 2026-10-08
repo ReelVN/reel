@@ -1,12 +1,23 @@
-V03 release probe
-2026-10-08T17:14:46.710378+00:00
-Linux x86_64
-CPU(s):                                  5
-Model name:                              AMD EPYC 9V74 80-Core Processor
-Rust 1.96.0; cargo run -p aside-vm --release --example executor_load
-Dependencies: V02 cceb151396cadaf4864621f332aa35337e20cac9; B01 8121429ad0658d6843018914be3253932f149d74
-Timing is one host run; allocator counts are actual measured calls.
+V03 shared-session release probe (supersedes the single-task c42c991 run)
+2026-10-08T17:57Z; Linux x86_64, 5 vCPU
+AMD EPYC 9V74 80-Core Processor
+rustc 1.96.0 (ac68faa20 2026-05-25)
+Implementation measured: d1c8139d759ad9c2d21388252a5e07836a543d5b
+Dependencies: V02 cceb151396cadaf4864621f332aa35337e20cac9; B01 be4f98ef34b78acb847bbddc80d928fd78fd8f64
+Language contract: 9cfe5ece49a419c13b7f65992f8b68e46ab4ffac
+Command: cargo run -p aside-vm --release --example executor_load
+One host run; timing is not a device guarantee. Allocator counts are measured.
+Default max_tasks=16. Idle pooled roots: module/constants 2 + task roots 16*2=34.
+All retained pools remain capacity-charged. No source compilation is claimed.
 
-numeric iterations=1000000 instructions=3000004 work=3020530 elapsed_us=371217 slices=733 slice_p50_ns=454873 slice_p95_ns=760042 slice_max_ns=2615801 allocations=0 allocated_bytes=0 peak_shared_bytes=3090489 program_bytes=1417 frame_pool_bytes=289024
-calls ready=5000 pending=5000 native_entries=10000 elapsed_us=295839 call_p50_ns=22094 call_p95_ns=41322 call_max_ns=3514181 allocations=0 allocated_bytes=0 active_ranges=4 frames=0 peak_shared_bytes=3090917
-cancel max_root_ranges=1024 conservative_work=46169 slices=4 elapsed_ns=5828 active_ranges=4 retained_pool_bytes=289024
+numeric iterations=1000000 instructions=3000004 work=3020530 elapsed_us=343852 slices=733 slice_p50_ns=419280 slice_p95_ns=613132 slice_max_ns=4567906 allocations=0 allocated_bytes=0 peak_shared_bytes=4369353 program_bytes=1417 frame_pool_bytes=289024
+calls ready=5000 pending=5000 native_entries=10000 elapsed_us=231686 call_p50_ns=19048 call_p95_ns=42154 call_max_ns=1268938 allocations=0 allocated_bytes=0 active_ranges=34 frames=0 peak_shared_bytes=4369781
+cancel max_root_ranges=1024 conservative_work=46169 slices=4 elapsed_ns=6530 active_ranges=34 retained_pool_bytes=289024
+
+Validation at the measured implementation:
+cargo test -p aside-vm: 41 unit + 37 executor + 15 FrameSlots + 15 storage + 1 doc test passed.
+cargo clippy -p aside-vm --all-targets -- -D warnings: passed.
+cargo check -p aside-vm --tests --examples --target i686-unknown-linux-gnu: passed.
+i686 is compilation only; no linked 32-bit execution or device measurement.
+Remaining: complete ErrorEnvelope stack and nested cause metadata; source lowering,
+async/generator and other absent handlers, and snapshot/restore. See README.md.

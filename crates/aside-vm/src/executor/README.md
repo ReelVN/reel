@@ -112,7 +112,7 @@ operation. A repeated undersized grant does not silently overrun the budget.
 
 Argument pairs, parameter search, binding/installation and continuation stages
 consume separate work. Text/Bytes equality walks one byte pair per step; tuple
-equality uses a capacity-charged explicit cursor stack and one shared root window.
+equality uses a capacity-charged explicit cursor stack and one root window per Task.
 String concatenation precharges copying and allocation and is bounded by
 HeapLimits.max_mutation_bytes. Frame/window construction precharges initialization
 and descriptor searches. Native response acceptance is outside run_slice and
