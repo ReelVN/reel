@@ -909,7 +909,13 @@ fn counts(p: &BytecodePackage) -> Result<[u32; 9], Error> {
 /// Encodes validated fields; does not serialize Rust layout or runtime values.
 pub fn encode(package: &BytecodePackage, limits: Limits) -> Result<Vec<u8>, Error> {
     let stats = super::verify::validate(package, limits)?;
-    encode_fields(package, limits, stats.owned_capacity_bytes)
+    // Validation's derived cache has been dropped; only the package remains
+    // resident while encoding allocates its output buffer.
+    encode_fields(
+        package,
+        limits,
+        stats.owned_capacity_bytes - stats.derived_capacity_bytes,
+    )
 }
 fn encode_fields(
     package: &BytecodePackage,

@@ -3,6 +3,11 @@ use super::*;
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
 const FIXTURES: &[Fixture] = &[
     (
+        "native-parameter-defaults",
+        fixtures::native_parameter_defaults,
+        include_bytes!("testdata/native-parameter-defaults.ab"),
+    ),
+    (
         "parameter-cell-default",
         fixtures::parameter_cell_default,
         include_bytes!("testdata/parameter-cell-default.ab"),
@@ -810,8 +815,9 @@ fn decoder_capacity_accounting_matches_actual_allocator_residency() {
             decoded = Some(decode(&bytes, limits()).unwrap());
         });
         let program = verify(decoded.unwrap(), limits()).unwrap();
-        let expected =
-            program.stats().owned_capacity_bytes - std::mem::size_of::<BytecodePackage>();
+        let expected = program.stats().owned_capacity_bytes
+            - program.stats().derived_capacity_bytes
+            - std::mem::size_of::<BytecodePackage>();
         assert_eq!(
             allocation.bytes_current as usize, expected,
             "retained capacity {name}"
@@ -1869,4 +1875,184 @@ fn parameter_layout_index_is_sparse_under_shared_large_signatures() {
     let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
     assert_eq!(program.package(), &p);
     assert!(program.stats().validation_scratch_peak <= p.symbols.len() * 16);
+}
+
+#[test]
+fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
+    let p = fixtures::native_parameter_defaults();
+    let bytes = encode(&p, limits()).unwrap();
+    let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
+    assert_eq!(program.package(), &p);
+    assert_eq!(encode(program.package(), limits()).unwrap(), bytes);
+    assert!(program.native_parameters_need_cells(NativeId(0)).unwrap());
+    for (i, expected) in [
+        BindingStorage::Cell(Reg(0)),
+        BindingStorage::Cell(Reg(1)),
+        BindingStorage::Value(Reg(2)),
+        BindingStorage::Value(Reg(3)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            program
+                .native_parameter_storage(NativeId(0), i as u32)
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(program.stats().derived_capacity_bytes, 2 * 8);
+    assert_eq!(
+        program
+            .native_parameter_storage(NativeId(0), 4)
+            .unwrap_err()
+            .kind,
+        ErrorKind::Index
+    );
+    assert_eq!(
+        program
+            .native_parameters_need_cells(NativeId(1))
+            .unwrap_err()
+            .kind,
+        ErrorKind::Index
+    );
+    assert_eq!(
+        program
+            .native_parameter_storage(NativeId(1), 0)
+            .unwrap_err()
+            .kind,
+        ErrorKind::Index
+    );
+    let ordinary = verify(fixtures::helper_native(), limits()).unwrap();
+    assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
+    assert_eq!(ordinary.stats().derived_capacity_bytes, 0);
+    assert_eq!(
+        ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
+        BindingStorage::Value(Reg(0))
+    );
+    let mut no_defaults = p;
+    for param in &mut no_defaults.signatures[1].parameters {
+        param.default = None;
+    }
+    no_defaults.functions[0].descriptors.clear();
+    no_defaults.functions[0].code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    let ordinary = verify(no_defaults, limits()).unwrap();
+    assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
+    assert_eq!(ordinary.stats().derived_capacity_bytes, 0);
+    assert_eq!(
+        ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
+        BindingStorage::Value(Reg(0))
+    );
+}
+
+#[test]
+fn native_default_prefix_contracts_and_mutable_cell_requirements_are_checked() {
+    let base = fixtures::native_parameter_defaults();
+    for function in [1, 2] {
+        for field in 0..7 {
+            let mut p = base.clone();
+            match field {
+                0 => p.signatures[function + 1].parameters[0].name = SymbolId(14),
+                1 => p.signatures[function + 1].parameters[0].ty = TypeId(0),
+                2 => p.signatures[function + 1].parameters[0].mutable = false,
+                3 => p.functions[function].bindings[0].storage = BindingStorage::Value(Reg(0)),
+                4 => p.functions[function].bindings[0].storage = BindingStorage::Cell(Reg(1)),
+                5 => {
+                    let duplicate = p.functions[function].bindings[0].clone();
+                    p.functions[function].bindings.push(duplicate);
+                }
+                6 => p.functions[function].bindings[0].ty = TypeId(0),
+                _ => unreachable!(),
+            }
+            bad(p, ErrorKind::Signature);
+        }
+    }
+    let mut p = base;
+    for function in [1, 2] {
+        p.functions[function].bindings[0].storage = BindingStorage::Value(Reg(0));
+    }
+    bad(p, ErrorKind::Signature);
+}
+
+#[test]
+fn native_readonly_prefix_uses_the_first_thunk_and_rejects_later_disagreement() {
+    for cell in [false, true] {
+        let mut p = fixtures::native_parameter_defaults();
+        for signature in [1, 2, 3] {
+            p.signatures[signature].parameters[0].mutable = false;
+        }
+        for function in [1, 2] {
+            p.functions[function].bindings[0].mutable = false;
+            p.functions[function].bindings[0].storage = if cell {
+                BindingStorage::Cell(Reg(0))
+            } else {
+                BindingStorage::Value(Reg(0))
+            };
+            p.functions[function]
+                .code
+                .retain(|i| i.opcode != Opcode::BindWrite as u16);
+        }
+        let program = verify(p.clone(), limits()).unwrap();
+        assert_eq!(
+            program.native_parameter_storage(NativeId(0), 0).unwrap(),
+            p.functions[1].bindings[0].storage
+        );
+        for function in [1, 2] {
+            let mut inconsistent = p.clone();
+            inconsistent.functions[function].bindings[0].storage = if cell {
+                BindingStorage::Value(Reg(0))
+            } else {
+                BindingStorage::Cell(Reg(0))
+            };
+            bad(inconsistent, ErrorKind::Signature);
+        }
+    }
+}
+
+#[test]
+fn shared_native_signatures_do_not_duplicate_retained_parameter_layouts() {
+    let mut p = fixtures::native_parameter_defaults();
+    let single = verify(p.clone(), limits()).unwrap().stats();
+    for i in 1..100 {
+        p.symbols.push(format!("host::defaults_{i}"));
+        let mut native = p.natives[0].clone();
+        native.symbol = SymbolId(p.symbols.len() as u32 - 1);
+        p.natives.push(native);
+    }
+    let program = verify(p, limits()).unwrap();
+    assert_eq!(
+        program.stats().derived_capacity_bytes,
+        single.derived_capacity_bytes
+    );
+    for i in 0..100 {
+        assert!(program.native_parameters_need_cells(NativeId(i)).unwrap());
+        assert_eq!(
+            program.native_parameter_storage(NativeId(i), 1).unwrap(),
+            BindingStorage::Cell(Reg(1))
+        );
+    }
+}
+
+#[test]
+fn verified_native_cache_capacity_matches_actual_retained_allocation() {
+    let bytes = encode(&fixtures::native_parameter_defaults(), limits()).unwrap();
+    let mut loaded = None;
+    let allocation = allocation_counter::measure(|| {
+        loaded = Some(VerifiedProgram::decode(&bytes, limits()).unwrap());
+    });
+    let program = loaded.unwrap();
+    let stats = program.stats();
+    assert_eq!(
+        allocation.bytes_current as usize,
+        stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
+    );
+    assert_eq!(stats.derived_capacity_bytes, 16);
+    assert!(
+        allocation.bytes_max as usize
+            <= stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
+                + stats.validation_scratch_peak
+    );
 }
