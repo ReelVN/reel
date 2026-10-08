@@ -1,4 +1,10 @@
-# Issue #10: bounded Kira retirement and clock evidence
+# Issue #10: bounded Kira retirement and clock evidence (historical)
+
+This is the `97ecb904` direct-control reclamation record. The approved host-owned
+background service supersedes its API/destruction statements and resolves the
+measured large-PCM main-frame cost; see [BACKGROUND-RECLAIM.md](BACKGROUND-RECLAIM.md)
+and [RECLAIM-DESIGN.md](RECLAIM-DESIGN.md). Its source evidence and timing data are
+preserved rather than presented as the current implementation.
 
 Recorded 2026-10-08, Rust 1.96.0, Debian 13 x86_64 KVM container. D01 dependency:
 `issue-1-core-contracts` at `c03226a59a9dd4f8b448d4eea82262a1d6e57ef8`.

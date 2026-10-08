@@ -1,0 +1,45 @@
+Recorded 2026-10-08. Rust 1.96.0, Linux x86_64/KVM; nproc=5, cgroup CPU quota=4.
+Implementation: 18eb52350f8282af96939cbcfe461a58fad155c8.
+See BACKGROUND-RECLAIM.md for interpretation and platform limits.
+
+$ crates/reel-media/tests/support/run_pcm_probe.sh
+exit=0
+Re-run shipping debug/release builds at the published implementation HEAD; allocation/touch and harness completion waits excluded from timed control work.
+System::dealloc observer measures actual PCM layout free, no Weak retaining that allocation.
+
+profile=debug probe=pcm
+full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_transfer=1+1 physical_release=worker
+real_kira blocks=4096 frames_per_block=512 device=8ch/48000Hz/i16 mixer=2ch/f32 samples=[32767,-32768,0,0,0,0,0,0]
+callback alloc=0 realloc=0 dealloc=0 p95_us=451.202 p99_us=1464.482 max_us=3317.168 block_deadline_us=10666.667 elapsed_ms=1438.782
+clock epoch=4 submitted=2097152 estimated_presented=2096128 latency=Some(512) uncertainty=Some(0) precision=Estimated
+lifecycle suspended_position=0.680000000 stopped_position=0.690666667 stop_prevents_fill=true; cpu_pcm_budget_peak_bytes=1537024
+profile=debug probe=reclaim
+background_retirement real_kira_frames=64 actual_pcm_bytes=512 ticket_peak_bytes=1024 samples=16 capacity=1
+control_transfer median_us=2.624 max_us=3.585 alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us=10.676 play_max_us=16.696
+worker_full_job median_us=6.850 max_us=13.090; actual_System_PCM_free median_us=0.551 max_us=1.001 largest_worker_free_bytes=1128 PCM_frees_on_control=0; tickets_return_after_physical_free=true
+background_retirement real_kira_frames=48000 actual_pcm_bytes=384000 ticket_peak_bytes=768000 samples=16 capacity=1
+control_transfer median_us=2.313 max_us=3.034 alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us=12.148 play_max_us=27.752
+worker_full_job median_us=58.729 max_us=677.323; actual_System_PCM_free median_us=51.968 max_us=664.233 largest_worker_free_bytes=384016 PCM_frees_on_control=0; tickets_return_after_physical_free=true
+background_retirement real_kira_frames=8388608 actual_pcm_bytes=67108864 ticket_peak_bytes=134217728 samples=16 capacity=1
+control_transfer median_us=3.325 max_us=4.627 alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us=43.646 play_max_us=45.849
+worker_full_job median_us=2671.444 max_us=4015.004; actual_System_PCM_free median_us=2650.112 max_us=3992.610 largest_worker_free_bytes=67108880 PCM_frees_on_control=0; tickets_return_after_physical_free=true
+live_64MiB_stop samples=16 offline_stop_median_us=8.954 offline_stop_max_us=10.817 manager_move_median_us=1.453 manager_move_max_us=1.762 largest_control_free_bytes=4096; actual_worker_PCM_free_median_us=3745.415 max_us=5319.491
+final_host_drain generations=0 outstanding=0 control_owners=0 worker_errors=0; native_pause_and_inflight_fence_have_no_0.5ms_promise=true
+profile=release probe=pcm
+full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_transfer=1+1 physical_release=worker
+real_kira blocks=4096 frames_per_block=512 device=8ch/48000Hz/i16 mixer=2ch/f32 samples=[32767,-32768,0,0,0,0,0,0]
+callback alloc=0 realloc=0 dealloc=0 p95_us=34.552 p99_us=75.514 max_us=261.665 block_deadline_us=10666.667 elapsed_ms=117.006
+clock epoch=4 submitted=2097152 estimated_presented=2096128 latency=Some(512) uncertainty=Some(0) precision=Estimated
+lifecycle suspended_position=0.680000000 stopped_position=0.690666667 stop_prevents_fill=true; cpu_pcm_budget_peak_bytes=1537024
+profile=release probe=reclaim
+background_retirement real_kira_frames=64 actual_pcm_bytes=512 ticket_peak_bytes=1024 samples=16 capacity=1
+control_transfer median_us=0.161 max_us=0.341 alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us=2.244 play_max_us=6.500
+worker_full_job median_us=1.792 max_us=4.106; actual_System_PCM_free median_us=0.431 max_us=1.612 largest_worker_free_bytes=1128 PCM_frees_on_control=0; tickets_return_after_physical_free=true
+background_retirement real_kira_frames=48000 actual_pcm_bytes=384000 ticket_peak_bytes=768000 samples=16 capacity=1
+control_transfer median_us=0.160 max_us=0.331 alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us=2.624 play_max_us=3.665
+worker_full_job median_us=36.115 max_us=65.158; actual_System_PCM_free median_us=34.593 max_us=62.855 largest_worker_free_bytes=384016 PCM_frees_on_control=0; tickets_return_after_physical_free=true
+background_retirement real_kira_frames=8388608 actual_pcm_bytes=67108864 ticket_peak_bytes=134217728 samples=16 capacity=1
+control_transfer median_us=0.491 max_us=0.851 alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us=9.885 play_max_us=10.366
+worker_full_job median_us=3874.039 max_us=4689.370; actual_System_PCM_free median_us=3867.289 max_us=4683.551 largest_worker_free_bytes=67108880 PCM_frees_on_control=0; tickets_return_after_physical_free=true
+live_64MiB_stop samples=16 offline_stop_median_us=1.983 offline_stop_max_us=2.434 manager_move_median_us=0.821 manager_move_max_us=1.022 largest_control_free_bytes=4096; actual_worker_PCM_free_median_us=4735.130 max_us=6186.792
+final_host_drain generations=0 outstanding=0 control_owners=0 worker_errors=0; native_pause_and_inflight_fence_have_no_0.5ms_promise=true

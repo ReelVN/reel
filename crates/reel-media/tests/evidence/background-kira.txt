@@ -1,0 +1,19 @@
+Recorded 2026-10-08. Rust 1.96.0, Linux x86_64/KVM; nproc=5, cgroup CPU quota=4.
+Implementation: 18eb52350f8282af96939cbcfe461a58fad155c8.
+See BACKGROUND-RECLAIM.md for interpretation and platform limits.
+
+$ crates/reel-media/tests/support/run_kira_regression.sh
+exit=0
+This isolated upstream test exercises the original bounded synchronous quota API. Its printed control drop is not the engine background service.
+The shipping engine instead reserves a service queue chunk before the pure-move pop; background-regressions.txt and background-audio-probes.txt prove that ownership path.
+
+fork provenance: 126 original crate file hashes verified; only two patched source files; license/config hashes verified
+   Compiling kira v0.12.5 (/tmp/reel-kira-test.yQ6tda)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.48s
+     Running unittests src/lib.rs (/workspace/reel-build/debug/deps/kira-d4f7141bea8d5164)
+
+running 1 test
+real_kira A=[0.1,-0.2] B=[0.3,-0.4]; freed-before-publish schedule; full queue retained B; quota=0/1 respected; play(C) did not reclaim; PCM dropped by control
+test backend::resources::reel_tests::reel_retirement_interleaving_retains_pcm_and_explicit_reclaim_has_quota ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 94 filtered out; finished in 0.00s

@@ -2,6 +2,9 @@
 
 This records the initial implementation at `71d9d56e009a3891ad1f6e439f3a7b15db1660ea`. The approved Kira fork, explicit reclamation API, current measurements and CPAL Unavailable clock policy supersede its dependency and clock statements; see [RETIREMENT.md](RETIREMENT.md) and the current [README](README.md). The historical CPAL null-sink run below does not establish physical device playback.
 
+Current host-owned cleanup and real main/worker measurements are in
+[BACKGROUND-RECLAIM.md](BACKGROUND-RECLAIM.md); RETIREMENT.md is also historical.
+
 Validated 2026-10-08 on Debian 13 x86_64, a KVM container exposing 5 vCPUs of an AMD EPYC 9V74. This is not Windows, N100 or an audio-hardware latency run. `/dev/snd` is absent. Production source and its contracts are in the preceding implementation commits; this file records outcomes, not acceptance by the integration owner.
 
 ## Environment preparation actually used

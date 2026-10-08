@@ -1,0 +1,59 @@
+Recorded 2026-10-08. Rust 1.96.0, Linux x86_64/KVM; nproc=5, cgroup CPU quota=4.
+Implementation: 18eb52350f8282af96939cbcfe461a58fad155c8.
+See BACKGROUND-RECLAIM.md for interpretation and platform limits.
+
+$ cargo test -p reel-media --locked --offline -- --nocapture
+exit=0
+The printed worker panic is the deliberate fault injection; catch_unwind drains the real owned job.
+
+   Compiling reel-media v0.1.0 (/workspace/reel/crates/reel-media)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+     Running unittests src/lib.rs (/workspace/reel-build/debug/deps/reel_media-4294f6ccc4fa84e0)
+
+running 15 tests
+test mixer::retirement_tests::service_drop_detaches_and_retains_consumers_until_late_mixer_teardown ... ok
+successful play preemption: worker destroys real Renderer first; original accepted DecodedSound remains charged, then moves as last PCM owner to worker; no control-thread last-reference release
+test mixer::retirement_tests::accepted_original_cannot_become_last_pcm_reference_on_preempted_control ... ok
+test output::tests::accepted_async_failure_retains_fill_until_stop_and_old_faults_are_isolated ... ok
+test output::tests::native_build_and_play_rejection_return_identical_uncalled_fill ... ok
+
+thread 'reel-audio-reclaim' (22840) panicked at crates/reel-media/src/mixer/retirement_tests.rs:305:13:
+injected worker failure; owned job unwinds on worker
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+native EPIPE: real Kira generated=512; submitted/presented unknown; epoch 4->5; closed next callback stays silent/calls=1; software count invalidated; rebuild has fresh diagnostics
+capacity=1: queued+inflight=2; full destination retains third native Sound and rejects play unchanged; reserved Renderer/Manager moves still succeed; old generation blocks rebuild until real completion; untaken fill drains at final host exit
+test mixer::retirement_tests::full_normal_queue_preserves_unused_and_reserved_teardowns_and_bounds_rebuild ... ok
+test output::tests::native_generated_then_write_failure_invalidates_epoch_and_freezes_counts ... ok
+native EAGAIN with frames_written=0: generated=1024, submitted=unknown, presented=None despite latency=0; no Xrun event needed for safety
+construction abort moves both native owners; caught worker failure unwinds real Sound on worker, refuses new generations, drains reserved teardown and reports error at host join
+test output::tests::realtime_fault_wakes_control_without_polling_the_output ... ok
+test mixer::retirement_tests::construction_abort_and_worker_error_keep_reserved_ownership_and_exit ... ok
+test output::tests::native_silent_eagain_before_any_write_never_promotes_software_count_to_clock ... ok
+test output::tests::scheduling_denial_is_visible_without_discarding_accepted_fill ... ok
+test output::tests::stop_disposes_fill_even_if_native_callback_object_is_retained ... ok
+test output::tests::suspend_resume_failures_retain_and_stop_error_still_drops_fill ... ok
+test output::tests::unavailable_precision_hides_both_queries_and_preserves_generated_diagnostics ... ok
+test output::tests::suspend_and_stop_close_entry_then_wait_for_inflight_call ... ok
+one-ticket: same mixer/fill A->B; transfer=1 remains Busy while worker gated; physical release then completion wake permits B; no early ticket return
+one-sound-bytes: same mixer/fill A->B; transfer=1 remains Busy while worker gated; physical release then completion wake permits B; no early ticket return
+test mixer::retirement_tests::single_budget_a_to_b_waits_for_actual_background_release_and_wakes ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/audio_contracts.rs (/workspace/reel-build/debug/deps/audio_contracts-8e6b3a9c365fb6a9)
+
+running 6 tests
+test conversion_zeroes_scratch_sanitizes_nonfinite_chunks_and_limits_integers ... ok
+test bounded_queue_underrun_supplies_silence_counts_missing_frames_and_clock_advances ... ok
+test mono_unsigned_silence_and_all_supported_integer_float_formats ... ok
+test real_kira_mixes_stereo_then_maps_explicit_71_and_freezes_on_suspend ... ok
+test format_change_invalidates_clock_requires_stop_and_new_kira_at_negotiated_rate ... ok
+test kira_full_play_capacity_returns_original_budgeted_request_and_stop_commands_still_work ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reel_media
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
