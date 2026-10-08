@@ -1,8 +1,9 @@
 //! Aside 1.1 lossless syntax and conservative semantic analysis.
-//! No lowering, bytecode or execution.
+//! Source analysis and bounded lowering to the shared bytecode format.
 mod diagnostic;
 pub mod hir;
 pub mod semantic;
+pub mod lowering;
 pub use semantic::{
     Analysis, AnalysisContext, AnalysisLimits, AnalysisOptions, analyze, analyze_module,
     analyze_source,
