@@ -79,6 +79,8 @@ Regions use `[start,end)` protected code, optional `[catch_start,catch_end)` plu
 
 Binary envelope: magic `ASIDBC01`, format/language/host ABI u32, content version u64, actual total byte length u32, section counts; ordered count-prefixed records with explicit tags. Reject unknown versions/tags/flags and unsupported opcode/native/capabilities, including instructions in unreachable code. Configurable input/record/string/register/work/allocation limits; scan full shape and counts before materializing, checked arithmetic, fallible reservation, then validate all references and control flow. Private VerifiedProgram owns immutable package plus capacity accounting and can only be constructed by validation. Separate format validation and explicit runtime capability validation permit tooling to inspect full language targets without claiming dispatch support.
 
+Decoding, verification and runtime admission independently enforce max_work. Shared signature scans, default capture equality, capability searches and trusted-registry comparisons are charged before the inner work; compressed metadata cannot hide a function × parameter × capture traversal. VerifiedProgram retains Limits for later runtime admission. This accounting does not change the v1 wire schema.
+
 Shared fixtures in `fixtures.rs` and fixed wire snapshots in `testdata/`: ordinary main → helper → native with one register-window argument (same package for Ready/Pending); mutable cell captured by two closures and outer scope; throw/catch/finally with source spans. These are hand-authored bytecode, not claimed source compilation or runtime execution.
 
 

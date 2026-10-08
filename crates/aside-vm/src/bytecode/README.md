@@ -2,13 +2,15 @@
 
 Implemented in `aside-vm::bytecode`; format contract and all 77 opcode entries are in `FORMAT.md` and `spec.rs`. This is program data, verification and disassembly. It contains no dispatcher, frontend dependency, heap mutation or GC/root-range code.
 
-The branch combines accepted D01 `c03226a` and storage `95a7e84`. Owner language clarifications `999a8e3` and `c18db94` are preserved. The initial interface checkpoint was `178df78`; the corrected implementation is `fb3c1fc23f5f34c5a73b02af967bbc97f296b007`.
+The branch combines accepted D01 `c03226a` and storage `95a7e84`. Owner language clarifications `999a8e3` and `c18db94` are preserved. The initial interface checkpoint was `178df78`; `fb3c1fc23f5f34c5a73b02af967bbc97f296b007` closed the initial five reported regressions. The follow-up shared-graph work accounting and its evidence are described below.
 
 ## Loading and integration
 
 Tooling calls `decode(bytes, limits)` for bounded shape/index decoding, then `verify(package, limits)` (or `VerifiedProgram::decode`) for semantic package validation. `disassemble(&program, &mut sink)` writes a listing including descriptors, regions, native versions and source byte spans. The validated package is immutable through the public API; `VerifiedProgram` construction is private.
 
 Execution loading uses `VerifiedProgram::load(bytes, limits, &support)`. The trusted native adapter independently resolves its registration's parameter names/types into the package tables, then supplies the exact signature and `required_capabilities`. Every trusted native requirement must be authorized and declared in both the package and native record. Copying untrusted declarations into RuntimeSupport is not registration validation. Unsupported opcodes are rejected even when unreachable.
+
+Decoding, package verification and runtime admission each enforce max_work independently. VerifiedProgram retains the supplied Limits for subsequent require_runtime calls. Repeated shared signature/parameter/capture scans, capability searches, native signature comparisons, registry string comparisons and opcode support scans charge their upper work bound before the comparison or inner traversal. An error's source-map lookup uses the previously verified PC ordering and binary search.
 
 `InstructionSpec::visit_registers_budgeted` charges known window/list sizes before iteration and can reject scalar visits; `visit_registers` is the unmetered adapter for trusted analysis. Match outputs use ConditionalWrite. CellNew has exactly one operand, BindingId: its Cell storage register comes from BindingDef. Explicit cells start uninitialized and retain the fixed type/mutable contract through every alias. The runtime retains the TypeId's code/content version and definition ModuleInstance; GC release state is separate from initialization.
 
@@ -39,9 +41,11 @@ export CARGO_TARGET_DIR=/tmp/reel-b01-target
 
 The i686 commands used `/tmp/reel-b01-i686` as CARGO_TARGET_DIR. These are actual cross compilation and rlib build checks, not 32-bit execution results.
 
-Debug and release each passed 28 unit tests (25 B01 plus 3 existing storage internals) and 15 storage integration tests. The behavior evidence includes every truncation position of all ten snapshots (with rewritten total length to reach inner fields), scalar/type/descriptor round trips, all opcode families, unknown versions/tags/flags and unused operands, malformed indices/windows/signatures/captures/regions, UTF-8 boundaries, iterative type/pattern graph handling, and deterministic field mutations that cannot panic or publish invalid programs.
+Debug and release each passed 34 unit tests (31 B01 plus 3 existing storage internals) and 15 storage integration tests. The behavior evidence includes every truncation position of all ten snapshots (with rewritten total length to reach inner fields), scalar/type/descriptor round trips, all opcode families, unknown versions/tags/flags and unused operands, malformed indices/windows/signatures/captures/regions, UTF-8 boundaries, iterative type/pattern graph handling, and deterministic field mutations that cannot panic or publish invalid programs.
 
 The five independently reported regressions have explicit tests: a <2048-byte real encoded package declaring a billion-register window is rejected with max_work=20,000 before window traversal; the budgeted visitor observes no window registers before failed precharge; two consumed finally layers never re-enter the inner layer; split lexical parent blocks are rejected; valid nested Leave inside finally is accepted; erasing package/native capability declarations cannot bypass trusted host requirements. Scratch allocation/fill, bulk pattern copies and metadata scans are also charged before their inner work.
+
+`shared_defaults_cannot_hide_function_parameter_capture_product_work` constructs 100 ordinary functions sharing a 100-default signature, 100 Plain/NoWait default thunks with matching preceding-parameter signatures, and 1000 captures per function. The real encoded package is 269,562 bytes with 205,757 records (within the default 262,144 record bound); complete verification charges 10,485,168 work units. Byte decoding succeeds under max_work=1,000,000, then package validation rejects at function 5 before further shared capture comparisons. The recorded debug run rejected in approximately 52ms. Five additional regressions cover shared function parameters without defaults, shared native parameters, signature capability searches, positional-only call descriptors, and runtime registry admission. These checks do not change the wire format or golden snapshots.
 
 ## Byte and capacity measurements
 

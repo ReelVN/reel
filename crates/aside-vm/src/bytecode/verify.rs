@@ -29,6 +29,7 @@ pub struct HandlerTarget {
 pub struct VerifiedProgram {
     package: BytecodePackage,
     stats: PackageStats,
+    limits: Limits,
 }
 impl VerifiedProgram {
     pub fn package(&self) -> &BytecodePackage {
@@ -84,8 +85,9 @@ impl VerifiedProgram {
     /// This includes unreachable code: unsupported instructions are never no-ops.
     pub fn require_runtime(&self, support: &RuntimeSupport) -> Result<(), Error> {
         let p = &self.package;
+        let mut b = Budget::new(self.limits, self.stats.owned_capacity_bytes);
         for c in &p.capabilities {
-            if !support.capabilities.contains(&p.symbols[c.index()]) {
+            if !contains_text(&support.capabilities, &p.symbols[c.index()], &mut b)? {
                 return Err(Error::new(
                     ErrorKind::Capability,
                     format!("missing capability {}", p.symbols[c.index()]),
@@ -94,11 +96,20 @@ impl VerifiedProgram {
         }
         for native in &p.natives {
             let name = &p.symbols[native.symbol.index()];
-            let registered = support.natives.iter().find(|n| {
-                n.symbol == *name
-                    && n.abi_version == native.abi_version
-                    && n.signature == p.signatures[native.signature.index()]
-            });
+            let mut registered = None;
+            for n in &support.natives {
+                b.work(1)?;
+                if b.text_equal(&n.symbol, name)? && n.abi_version == native.abi_version {
+                    // Parameters contain fixed-size fields; the rest and tail are
+                    // fixed-size optional records. Charge before derived equality.
+                    let signature = &p.signatures[native.signature.index()];
+                    b.work(signature.parameters.len() as u64 + 1)?;
+                    if n.signature == *signature {
+                        registered = Some(n);
+                        break;
+                    }
+                }
+            }
             let Some(registered) = registered else {
                 return Err(Error::new(
                     ErrorKind::Capability,
@@ -108,20 +119,16 @@ impl VerifiedProgram {
                     ),
                 ));
             };
+            b.work(registered.required_capabilities.len() as u64)?;
             for cap in &registered.required_capabilities {
                 check(
-                    support.capabilities.contains(cap),
+                    contains_text(&support.capabilities, cap, &mut b)?,
                     ErrorKind::Capability,
                     "trusted native capability is not authorized",
                 )?;
                 check(
-                    native
-                        .capabilities
-                        .iter()
-                        .any(|id| p.symbols[id.index()] == *cap)
-                        && p.capabilities
-                            .iter()
-                            .any(|id| p.symbols[id.index()] == *cap),
+                    contains_symbol_text(p, &native.capabilities, cap, &mut b)?
+                        && contains_symbol_text(p, &p.capabilities, cap, &mut b)?,
                     ErrorKind::Capability,
                     "package omitted a capability required by trusted native registration",
                 )?;
@@ -130,6 +137,7 @@ impl VerifiedProgram {
         for (fi, f) in p.functions.iter().enumerate() {
             for (pc, i) in f.code.iter().enumerate() {
                 let opcode = instruction_spec(i.opcode).expect("verified opcode").opcode;
+                b.work(support.opcodes.len() as u64 + 1)?;
                 if !support.opcodes.contains(&opcode) {
                     return Err(located(
                         p,
@@ -148,7 +156,11 @@ impl VerifiedProgram {
 }
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
     let stats = validate(&package, limits)?;
-    Ok(VerifiedProgram { package, stats })
+    Ok(VerifiedProgram {
+        package,
+        stats,
+        limits,
+    })
 }
 struct Budget {
     limits: Limits,
@@ -158,6 +170,15 @@ struct Budget {
     peak: usize,
 }
 impl Budget {
+    fn new(limits: Limits, owned: usize) -> Self {
+        Self {
+            limits,
+            work: 0,
+            owned,
+            scratch: 0,
+            peak: 0,
+        }
+    }
     fn work(&mut self, n: u64) -> Result<(), Error> {
         self.work = self
             .work
@@ -167,6 +188,10 @@ impl Budget {
             return Err(Error::new(ErrorKind::Limit, "verification work limit"));
         }
         Ok(())
+    }
+    fn text_equal(&mut self, a: &str, b: &str) -> Result<bool, Error> {
+        self.work(a.len().max(b.len()) as u64 + 1)?;
+        Ok(a == b)
     }
     fn vec<T>(&mut self, n: usize) -> Result<Vec<T>, Error> {
         self.work(n as u64)?;
@@ -200,6 +225,29 @@ impl Budget {
         drop(v);
         self.scratch -= bytes;
     }
+}
+fn contains_text(items: &[String], text: &str, b: &mut Budget) -> Result<bool, Error> {
+    b.work(items.len() as u64)?;
+    for item in items {
+        if b.text_equal(item, text)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+fn contains_symbol_text(
+    p: &BytecodePackage,
+    items: &[SymbolId],
+    text: &str,
+    b: &mut Budget,
+) -> Result<bool, Error> {
+    b.work(items.len() as u64)?;
+    for item in items {
+        if b.text_equal(&p.symbols[item.index()], text)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 fn check(ok: bool, kind: ErrorKind, detail: &str) -> Result<(), Error> {
     if ok {
@@ -264,23 +312,21 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
         ErrorKind::Limit,
         "retained capacity/records",
     )?;
-    let mut b = Budget {
-        limits,
-        work: 0,
-        owned,
-        scratch: 0,
-        peak: 0,
-    };
+    let mut b = Budget::new(limits, owned);
     b.work(encoded as u64)?;
     for (i, s) in p.symbols.iter().enumerate() {
+        b.work(s.len() as u64)?;
         check(
             s.len() <= limits.max_string_bytes as usize && !s.is_empty() && !s.contains('\0'),
             ErrorKind::Encoding,
             "symbol text",
         )?;
         for other in &p.symbols[..i] {
-            b.work((s.len().max(other.len()) + 1) as u64)?;
-            check(s != other, ErrorKind::Encoding, "duplicate interned symbol")?;
+            check(
+                !b.text_equal(s, other)?,
+                ErrorKind::Encoding,
+                "duplicate interned symbol",
+            )?;
         }
     }
     for (i, c) in p.constants.iter().enumerate() {
@@ -357,6 +403,7 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
             )?;
             if let Some(cap) = tail.capability {
                 symbol(p, cap)?;
+                b.work(p.capabilities.len() as u64)?;
                 check(
                     p.capabilities.contains(&cap),
                     ErrorKind::Capability,
@@ -403,6 +450,7 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
         if let Some(rest) = &s.rest {
             symbol(p, rest.name)?;
             ty(p, rest.ty)?;
+            b.work(s.parameters.len() as u64)?;
             check(
                 rest.default.is_none() && !s.parameters.iter().any(|p| p.name == rest.name),
                 ErrorKind::Signature,
@@ -429,7 +477,9 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
             ErrorKind::Version,
             "native ABI version zero",
         )?;
-        for param in &p.signatures[n.signature.index()].parameters {
+        let parameters = &p.signatures[n.signature.index()].parameters;
+        b.work(parameters.len() as u64)?;
+        for param in parameters {
             if let Some(default) = param.default {
                 check(
                     p.functions[default.index()].captures.is_empty(),
@@ -457,6 +507,7 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
     unique_slice(&p.modules, |m| m.path.0, &mut b, "duplicate module path")?;
     for (mi, m) in p.modules.iter().enumerate() {
         let path = symbol(p, m.path)?;
+        b.work(path.len() as u64)?;
         check(
             path.split("::")
                 .all(|s| !s.is_empty() && s.chars().all(|c| c == '_' || c.is_alphanumeric())),
@@ -613,9 +664,11 @@ fn validate_function(
     get(&p.modules, f.module.0, "function module")?;
     symbol(p, f.name)?;
     let s = get(&p.signatures, f.signature.0, "function signature")?;
+    b.work(s.parameters.len() as u64)?;
     for param in &s.parameters {
         if let Some(default) = param.default {
             let default = &p.functions[default.index()];
+            b.work(default.captures.len() as u64)?;
             check(
                 default.captures == f.captures && default.module == f.module,
                 ErrorKind::Capture,
@@ -760,6 +813,7 @@ fn validate_call(
                         )?;
                     }
                 }
+                b.work(s.parameters.len() as u64)?;
                 for (i, param) in s.parameters.iter().enumerate() {
                     b.work(c.names.len() as u64)?;
                     check(
@@ -834,6 +888,7 @@ fn validate_descriptor(
                 let ms = get(&p.signatures, mf.signature.0, "method signature")?;
                 validate_captures(p, f, method.function, &method.captures, b)?;
                 if !method.is_static {
+                    b.work(5)?; // Equality with the four-byte receiver name.
                     check(
                         !ms.parameters.is_empty() && symbol(p, ms.parameters[0].name)? == "self",
                         ErrorKind::Signature,
@@ -1435,11 +1490,12 @@ fn exception_target(f: &FunctionDef, pc: Pc, skip: Option<RegionId>) -> Option<H
 fn located(p: &BytecodePackage, fi: usize, pc: usize, mut e: Error) -> Error {
     e.function = Some(FunctionId(fi as u32));
     e.pc = Some(Pc(pc as u32));
-    e.source = p.functions[fi]
-        .source_map
-        .iter()
-        .find(|m| m.pc.index() == pc)
-        .map(|m| m.span);
+    // All callers reach this after the source map's strict PC order is checked.
+    let map = &p.functions[fi].source_map;
+    e.source = map
+        .binary_search_by_key(&Pc(pc as u32), |m| m.pc)
+        .ok()
+        .map(|i| map[i].span);
     e
 }
 

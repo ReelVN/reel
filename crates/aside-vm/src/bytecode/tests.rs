@@ -1216,3 +1216,247 @@ fn native_requirements_cannot_be_erased_from_untrusted_package_metadata() {
     let correct = verify(fixtures::helper_native(), limits()).unwrap();
     correct.require_runtime(&trusted).unwrap();
 }
+
+fn budget_package(parameters: u32, extra_symbols: u32) -> BytecodePackage {
+    let mut p = BytecodePackage {
+        symbols: vec!["budget::fixture".into(), "function".into()],
+        types: vec![TypeDef::Builtin(BuiltinType::Any)],
+        modules: vec![ModuleDef {
+            path: SymbolId(0),
+            imports: vec![],
+            exports: vec![],
+            globals: vec![],
+            initializer: None,
+        }],
+        ..BytecodePackage::default()
+    };
+    p.symbols.extend((0..parameters).map(|i| format!("p{i}")));
+    p.symbols
+        .extend((0..extra_symbols).map(|i| format!("n{i}")));
+    p.signatures.push(Signature {
+        parameters: (0..parameters)
+            .map(|i| Parameter {
+                name: SymbolId(i + 2),
+                ty: TypeId(0),
+                mutable: false,
+                default: None,
+            })
+            .collect(),
+        rest: None,
+        return_type: TypeId(0),
+        effects: Effects(0),
+        property_bag_tail: None,
+    });
+    p
+}
+fn budget_function(signature: u32, registers: u32, captures: usize) -> FunctionDef {
+    FunctionDef {
+        module: ModuleId(0),
+        name: SymbolId(1),
+        kind: FunctionKind::Plain,
+        signature: SignatureId(signature),
+        context: Context::Ordinary,
+        captures: vec![CaptureKind::Cell; captures],
+        register_count: registers.max(1),
+        bindings: vec![],
+        descriptors: vec![],
+        code: vec![Instruction::new(Opcode::Return, 0, 0, 0)],
+        regions: vec![],
+        source_map: vec![],
+    }
+}
+fn assert_shared_scan_limit(p: BytecodePackage, max_work: u64) {
+    let bytes = super::codec::encode_unverified(&p);
+    let small = Limits {
+        max_work,
+        ..limits()
+    };
+    // The low limit must reach semantic verification, not fail byte decoding.
+    decode(&bytes, small).unwrap();
+    assert_eq!(verify(p, small).unwrap_err().kind, ErrorKind::Limit);
+    assert_eq!(
+        VerifiedProgram::decode(&bytes, small).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+}
+
+#[test]
+fn shared_defaults_cannot_hide_function_parameter_capture_product_work() {
+    const FUNCTIONS: u32 = 100;
+    const PARAMETERS: u32 = 100;
+    const CAPTURES: usize = 1000;
+    let mut p = budget_package(PARAMETERS, 0);
+    let inputs = p.signatures[0].parameters.clone();
+    for i in 0..PARAMETERS {
+        let mut signature = p.signatures[0].clone();
+        signature.parameters = inputs[..i as usize].to_vec();
+        p.signatures.push(signature);
+        p.signatures[0].parameters[i as usize].default = Some(FunctionId(FUNCTIONS + i));
+    }
+    p.functions = (0..FUNCTIONS)
+        .map(|_| budget_function(0, PARAMETERS, CAPTURES))
+        .chain((0..PARAMETERS).map(|i| {
+            let mut f = budget_function(i + 1, i, CAPTURES);
+            f.context = Context::NoWait;
+            f
+        }))
+        .collect();
+    let stats = verify(p.clone(), limits()).unwrap().stats();
+    assert!(stats.records < limits().max_records as u64);
+    assert!(stats.encoded_bytes < 512 * 1024);
+    let comparisons = FUNCTIONS as u64 * PARAMETERS as u64 * CAPTURES as u64;
+    assert!(stats.validation_work >= comparisons + stats.encoded_bytes as u64);
+    let bytes = super::codec::encode_unverified(&p);
+    let small = Limits {
+        max_work: 1_000_000,
+        ..limits()
+    };
+    decode(&bytes, small).unwrap();
+    let began = std::time::Instant::now();
+    let error = VerifiedProgram::decode(&bytes, small).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Limit);
+    assert!(error.function.is_some_and(|f| f.0 < FUNCTIONS));
+    assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    println!(
+        "shared-default-product: bytes={} records={} full_work={} limit={} rejected_function={:?} elapsed={:?}",
+        bytes.len(),
+        stats.records,
+        stats.validation_work,
+        small.max_work,
+        error.function,
+        began.elapsed()
+    );
+}
+
+#[test]
+fn every_function_prepays_its_shared_parameter_scan_without_defaults() {
+    const FUNCTIONS: u32 = 100;
+    const PARAMETERS: u32 = 100;
+    let mut p = budget_package(PARAMETERS, 0);
+    let mut empty = p.signatures[0].clone();
+    empty.parameters.clear();
+    p.signatures.push(empty);
+    p.functions = (0..FUNCTIONS)
+        .map(|_| budget_function(1, PARAMETERS, 0))
+        .collect();
+    let baseline = verify(p.clone(), limits()).unwrap().stats();
+    for f in &mut p.functions {
+        f.signature = SignatureId(0);
+    }
+    let full = verify(p.clone(), limits()).unwrap().stats();
+    assert_eq!(full.encoded_bytes, baseline.encoded_bytes);
+    let scan_work = FUNCTIONS as u64 * PARAMETERS as u64;
+    assert!(full.validation_work >= baseline.validation_work + scan_work);
+    assert_shared_scan_limit(p, baseline.validation_work + scan_work / 2);
+}
+
+#[test]
+fn every_native_prepays_its_shared_parameter_scan() {
+    const NATIVES: u32 = 100;
+    const PARAMETERS: u32 = 100;
+    let mut p = budget_package(PARAMETERS, NATIVES);
+    let baseline = verify(p.clone(), limits()).unwrap().stats();
+    p.natives = (0..NATIVES)
+        .map(|i| NativeDef {
+            symbol: SymbolId(2 + PARAMETERS + i),
+            signature: SignatureId(0),
+            abi_version: 1,
+            capabilities: vec![],
+        })
+        .collect();
+    let full = verify(p.clone(), limits()).unwrap().stats();
+    let wire_work = (full.encoded_bytes - baseline.encoded_bytes) as u64;
+    let uniqueness_work = NATIVES as u64 * (NATIVES - 1) as u64 / 2;
+    let scan_work = NATIVES as u64 * PARAMETERS as u64;
+    let other_work = baseline.validation_work + wire_work + uniqueness_work;
+    assert!(full.validation_work >= other_work + scan_work);
+    assert_shared_scan_limit(p, other_work + scan_work / 2);
+}
+
+#[test]
+fn property_bag_capability_searches_are_charged_for_each_signature() {
+    const SIGNATURES: u32 = 100;
+    const CAPABILITIES: u32 = 100;
+    let mut p = budget_package(1, CAPABILITIES);
+    p.capabilities = (0..CAPABILITIES).map(|i| SymbolId(3 + i)).collect();
+    p.signatures = vec![p.signatures[0].clone(); SIGNATURES as usize];
+    let baseline = verify(p.clone(), limits()).unwrap().stats();
+    for signature in &mut p.signatures {
+        signature.property_bag_tail = Some(PropertyBagTail {
+            target_parameter: 0,
+            capability: p.capabilities.last().copied(),
+            require_writable: false,
+            require_animatable: false,
+        });
+    }
+    let full = verify(p.clone(), limits()).unwrap().stats();
+    let wire_work = (full.encoded_bytes - baseline.encoded_bytes) as u64;
+    let scan_work = SIGNATURES as u64 * CAPABILITIES as u64;
+    let other_work = baseline.validation_work + wire_work;
+    assert!(full.validation_work >= other_work + scan_work);
+    assert_shared_scan_limit(p, other_work + scan_work / 2);
+}
+
+#[test]
+fn positional_only_call_descriptors_prepay_shared_required_parameter_scan() {
+    const CALLS: u32 = 100;
+    const PARAMETERS: u32 = 100;
+    let mut p = budget_package(PARAMETERS, 1);
+    let mut empty = p.signatures[0].clone();
+    empty.parameters.clear();
+    p.signatures.push(empty);
+    p.natives.push(NativeDef {
+        symbol: SymbolId(2 + PARAMETERS),
+        signature: SignatureId(0),
+        abi_version: 1,
+        capabilities: vec![],
+    });
+    p.functions.push(budget_function(1, PARAMETERS, 0));
+    let baseline = verify(p.clone(), limits()).unwrap().stats();
+    p.functions[0].descriptors = vec![
+        Descriptor::Call(CallDesc {
+            target: CallTarget::Native(NativeId(0)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(0),
+                len: PARAMETERS,
+            }),
+            names: vec![],
+        });
+        CALLS as usize
+    ];
+    let full = verify(p.clone(), limits()).unwrap().stats();
+    let wire_work = (full.encoded_bytes - baseline.encoded_bytes) as u64;
+    let scan_work = CALLS as u64 * PARAMETERS as u64;
+    let other_work = baseline.validation_work + wire_work;
+    assert!(full.validation_work >= other_work + scan_work);
+    assert_shared_scan_limit(p, other_work + scan_work / 2);
+}
+
+#[test]
+fn runtime_admission_uses_the_saved_work_limit_for_registry_scans() {
+    let program = verify(
+        fixtures::helper_native(),
+        Limits {
+            max_work: 10_000,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let mut support = RuntimeSupport {
+        opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
+        capabilities: vec!["host.echo".into()],
+        natives: vec![NativeSupport {
+            symbol: "host::echo".into(),
+            abi_version: 1,
+            signature: program.package().signatures[0].clone(),
+            required_capabilities: vec!["host.echo".into()],
+        }],
+    };
+    program.require_runtime(&support).unwrap();
+    support.capabilities = (0..2000).map(|i| format!("unrelated.{i}")).collect();
+    support.capabilities.push("host.echo".into());
+    assert_eq!(
+        program.require_runtime(&support).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+}
