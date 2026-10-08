@@ -30,14 +30,14 @@ fn timed<T>(report: &mut Report, op: impl FnOnce() -> T) -> T {
     report.operations += 1;
     result
 }
-fn cycle(h: &mut Heap, report: &mut Report, samples: &mut [u64; 16384]) {
+fn cycle(h: &mut Heap, report: &mut Report, samples: &mut [u64; 16384], allowance: GcBudget) {
     h.begin_collection().unwrap();
     while h.phase() != GcPhase::Idle {
         let phase = h.phase();
         let mut ns = 0;
         let mut progress = GcProgress::default();
         // Keep measured phase workloads separate; transitions themselves are O(1).
-        let mut budget = GcBudget::default();
+        let mut budget = allowance;
         match phase {
             GcPhase::Mark => {
                 budget.weak = 0;
@@ -55,7 +55,7 @@ fn cycle(h: &mut Heap, report: &mut Report, samples: &mut [u64; 16384]) {
         });
         report.gc_allocations += allocations.count_total;
         assert_eq!(allocations.count_total, 0);
-        assert!(progress.units <= 256 && progress.bytes <= 16_384);
+        assert!(progress.units <= budget.units && progress.bytes <= budget.bytes);
         samples[report.steps] = ns;
         report.steps += 1;
         report.max_step_ns = report.max_step_ns.max(ns);
@@ -71,6 +71,14 @@ fn cycle(h: &mut Heap, report: &mut Report, samples: &mut [u64; 16384]) {
     }
 }
 fn run(name: &str, objects: u32, build: impl FnOnce(&mut Heap, &mut Report) -> Value) {
+    run_budget(name, objects, GcBudget::default(), build);
+}
+fn run_budget(
+    name: &str,
+    objects: u32,
+    budget: GcBudget,
+    build: impl FnOnce(&mut Heap, &mut Report) -> Value,
+) {
     let mut report = Report::default();
     let mut samples = [0u64; 16384];
     let total = allocation_counter::measure(|| {
@@ -88,10 +96,10 @@ fn run(name: &str, objects: u32, build: impl FnOnce(&mut Heap, &mut Report) -> V
         });
         let value = build(&mut h, &mut report);
         let root = h.add_root(RootOwner(1), RootKind::Host, value).unwrap();
-        cycle(&mut h, &mut report, &mut samples);
+        cycle(&mut h, &mut report, &mut samples, budget);
         assert!(h.info(value).is_ok());
         h.release_root(root).unwrap();
-        cycle(&mut h, &mut report, &mut samples);
+        cycle(&mut h, &mut report, &mut samples, budget);
         let stats = h.stats();
         assert_eq!(stats.live_objects, 0);
         assert_eq!(stats.pending_bytes, 0);
@@ -115,7 +123,8 @@ fn run(name: &str, objects: u32, build: impl FnOnce(&mut Heap, &mut Report) -> V
     samples[..report.steps].sort_unstable();
     let quantile = |percent: usize| samples[(report.steps - 1) * percent / 100];
     println!(
-        "{name},operations={},max_mutation_ns={},gc_steps={},gc_p50_ns={},gc_p95_ns={},gc_p99_ns={},gc_max_ns={},mark_max_ns={},weak_max_ns={},sweep_max_ns={},gc_allocations={},allocation_count={},allocated_bytes={},actual_peak_bytes={},peak_charged_bytes={},reserved_bytes={},peak_pending_bytes={},chunk_allocations={},released_edges={},freed_charged_bytes={},final_live={},heap_drop_ns={}",
+        "{name},gc_units={},operations={},max_mutation_ns={},gc_steps={},gc_p50_ns={},gc_p95_ns={},gc_p99_ns={},gc_max_ns={},mark_max_ns={},weak_max_ns={},sweep_max_ns={},gc_allocations={},allocation_count={},allocated_bytes={},actual_peak_bytes={},peak_charged_bytes={},reserved_bytes={},peak_pending_bytes={},chunk_allocations={},released_edges={},freed_charged_bytes={},final_live={},heap_drop_ns={}",
+        budget.units,
         report.operations,
         report.max_mutation_ns,
         report.steps,
@@ -142,7 +151,7 @@ fn run(name: &str, objects: u32, build: impl FnOnce(&mut Heap, &mut Report) -> V
 }
 fn main() {
     println!(
-        "value_size={},value_align={},pointer_bits={},gc_units=256,gc_bytes=16384",
+        "value_size={},value_align={},pointer_bits={},default_gc_units=256,gc_bytes=16384",
         std::mem::size_of::<Value>(),
         std::mem::align_of::<Value>(),
         usize::BITS
@@ -205,4 +214,22 @@ fn main() {
         }
         b
     });
+    // A one-unit slice isolates individual chunk frees rather than averaging
+    // them inside a larger sweep call. The allocation/build load is unchanged.
+    run_budget(
+        "byte_buffer_1mib_one_unit",
+        8,
+        GcBudget {
+            units: 1,
+            ..GcBudget::default()
+        },
+        |h, r| {
+            let b = timed(r, || h.alloc_byte_buffer(&[]).unwrap());
+            let block = [0x80; 4096];
+            for _ in 0..256 {
+                timed(r, || h.bytes_append(b, &block).unwrap());
+            }
+            b
+        },
+    );
 }
