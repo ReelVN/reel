@@ -120,7 +120,7 @@ PcmFill 仅拥有混音状态、预分配缓冲与有界控制队列，不捕获
 ## 资源与工作执行
 ReadRequest 使用 AssetKey、版本、offset:u64、受限 len:u32 和优先级，不要求路径、mmap 或文件监视器。AssetIo 可读包、内存或平台文件系统，接口须快速返回；真正可能阻塞的文件调用交给平台异步机制或 IO 工作者。SaveWrite 使用应用保存命名空间和独立进程请求身份；完成只表示该平台已验证的持久提交级别。缺少可靠原子替换的平台须采用经故障验证的双槽或版本日志，不能假定 rename/fsync 一定适用。
 WorkRequest 是图像解码、快照编码、包验证等有限工作描述，拥有输入、优先级、取消身份与预算票据，不接收脚本闭包。WorkCaps 声明线程或协作模式及支持种类。协作实现保留游标，在工作单位、字节或截止时间到达时让出；不能用一次阻塞整图解码冒充分片执行。无工作线程且无可分片实现时，明确不支持该工作或要求预转换资源。实时音频供给不能被普通协作任务饿死。
-所有队列同时限制数量和字节。拒绝返回原请求及原因，不丢数据、不暗中改为同步执行。完成消息拥有自身数据，包含请求身份、所有者或会话代数，最多一个终态；取消即使不能中断底层工作，也不得再交付业务结果，最终释放额度。poll/drain 每次最多写入 limit 个事件，调用方预分配容量。IO 读取与保存各自保留容量。
+所有队列同时限制数量和字节。拒绝返回原请求及原因，不丢数据、不暗中改为同步执行。完成消息拥有自身数据，包含请求身份、所有者或会话代数，最多一个终态。业务取消先撤销对应等待/订阅，再请求底层取消；结果路由始终核对等待仍有效及 Scope 匹配。服务尚未结算时取消产生唯一 Cancelled；已结算且排队的终态保持原结果，交付后只用于额度与进程账本结算，已取消业务保持终止。这样已发生的保存提交仍有准确记录，旧读取或工作结果也无法重新唤醒已取消任务。poll/drain 每次最多写入 limit 个事件，调用方预分配容量。IO 读取与保存各自保留容量；完成消息通过两路轮转等有限等待策略交付，持续读取也须让已完成的保存及时出队。
 ## 桌面与 PS Vita 目标
 首批桌面目标是 Windows、Linux、macOS，各组合完成构建和行为验证后才列为支持。移动端与 Web 需要另外适配生命周期、输入、媒体与存储。PS Vita 是未来移植目标，当前接口不代表已经可运行。
 Rust 的 armv7-sony-vita-newlibeabihf 目标为 Tier 3，依赖 VitaSDK，标准库部分支持且无预编译标准库；VitaSDK 是开源 homebrew 工具链。[10] 因此先验证锁定工具链和完整依赖树，不从 target 存在推导 Masonry、Parley、Kira 等已兼容。
@@ -246,6 +246,27 @@ E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P
 验收采用最小宿主夹具和针对性 UI 片段，不要求制作完整可玩流程。NullPlatform、记录型渲染器、假时钟和内存 IO 验证无隐式设备、时间或文件系统依赖；关闭 winit/wgpu 后检查核心及传递依赖。用例覆盖单次输入消费、配对按下与释放、拖动失焦、模态隔离、嵌套合成、保存后切场景、读档后旧结果、重载已有回调及节点销毁后的异步完成。音频、恢复与帧预算分别提供可重复的负载和观察值。协作执行器测单步最大耗时、满队列、取消与过期完成；表面丢失及挂起恢复测时钟和资源身份。Vita 承诺前先做 32 位交叉构建，再依次验证启动、输入、图片/字形、音频、可靠保存与效果，不承诺未经实测的帧率。
 每个代理任务写明目标、允许目录、冻结的接口版本、已有代码、禁止扩大的范围、行为场景与性能预算。Issue 按可验收成果组织，PR 保持独立可审查；提交包含实际改动、相关用例、运行命令、观察结果与未解决项。不得以测试数量、模拟成功或完成报告代替实际契约验证。接口或依赖变更先提交设计修改，经负责人确认后继续。负责人亲自审输入、所有权、保存、音频和平台关键路径，重跑关键验证并处理跨模块冲突。性能计数器从第一阶段建立，协议变更同步三份设计。各后端的构建、设备和尾延迟验证属于对应实现任务。代码与文档以同一能力清单记录结果。
 
+## 十五 Masonry 生产适配合同
+本节规定生产适配的实现边界。隔离实验已验证真实控件与 CPU 记录路径；生产源码接入、后端设备和下列新增接口按各自用例验收。固定上游要求 Rust 1.96，工作区采用 1.96.0 工具链。
+
+呈现几何与上下文
+Masonry 导出几何、选择输入源并分发事件；FrameId、surface epoch、呈现接受门、预算和 NodeId↔WidgetId 的代际映射归 Reel。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。
+几何快照包含全部登记节点，包括 stashed 节点。采用连续记录与 children 索引数组，每节点保存 WidgetId、parent 索引、children 范围、对齐 border-box 尺寸、border/paint insets、局部变换、border-box 到 window 变换、window 子树 bounds、已解析 content baselines、border-box 坐标的 clip 和 frozen 命中标志（content-box getter 只转换一次）。整帧保存 DPI、根及 id 索引。布局缓存、属性、action 和完整 WidgetState 留在当前运行时。路径沿 parent links 在有上限的复用缓冲中生成一次，整次事件借用；内存与构建成本计入候选帧预算。
+每次真实指针分发固定一个 view，命中、捕获、祖先路由、hover、cursor 和所有输入上下文共用它。Context 借用 view 与已验证记录索引，QueryCtx 保持可复制；每个 context 无需克隆 Arc。自身几何 getter 的前置条件由构造入口保证。查询缺失或已销毁子节点时，QueryCtx::get、get_raw/get_raw_mut 等入口返回 Option/Result；Presented 缺失记录保持缺失，既不回退 Live，也不按当前控件几何重新命中。WidgetRef::children 依据所选拓扑枚举并过滤已销毁节点。布局、动画、普通 mutation 以及非指针状态更新显式使用 Live。
+实现必须逐一迁移 event.rs、update.rs、contexts.rs、widget_ref.rs、render_root.rs、anim.rs 的 context 构造入口及其实际调用方；旧实验六文件范围只是原型范围。当前存活、stashed、disabled 状态继续即时生效；disabled 命中保留祖先消费路径，自身行为跳过。捕获失效与普通命中的 disabled 处理分别判断。
+接受新视图仅发送实际路径差异的通知。需要退出的 hover/active 状态及失效捕获使用旧视图完成清理，再用新视图处理进入和静止 cursor；仍有效且在新视图中的捕获继续。清空 Presented 或切换表面代数时保留旧视图直到必要退出结束。Up/Cancel 在捕获目标回调开始时记录终止已交付，回调期间仍可观察捕获状态，删除与祖先冒泡只清理一次。
+
+统一记录流
+默认 Scene 路径复用 VisualLayerPlan 的完整有序重放。Reel sink 在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 在 sink 重新登记。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。
+独立片段是画序分段，消费时按原顺序组成完整流。使用稳定层边界时，paint_layer_mode 为 retained 声明：初始 Inline，缓存回调未执行时保留，显式设置 Inline 才恢复普通模式；其他 pre/paint/post 回调执行时，保留未重声明的层模式。
+外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。现有缺少作用域的 post-children placeholder 需在 fork 中改为该完整合同；Reel 始终只有这一条画序来源。
+
+作者滑条
+复用 Slider 的指针、键盘与 AccessKit 行为。slider.rs 提供只读规范化值/范围/步长、静默投影更新及变化标记，并让原 Widget 回调与作者包装器共用同一行为入口。Reel 包装器拥有轨道/滑块节点，替换全部默认绘制阶段，明确登记自身属性与默认值；装饰节点由控件统一处理命中和焦点。
+SliderInputProjection 保存所选帧的 a/b、axis/direction、min/max/step、步进锚点及配置版本。中心与指针逆映射共用同一几何 helper；范围与步长配置通过统一规范化，范围改变而值未变也更新外观和可访问性。退化几何产生空的指针映射，避免除零；无效配置在提交前报告。
+业务 value 由 Reel 当前模型管理，外部更新即时生效，旧帧显示值只用于绘制。指针按冻结投影产生绝对值，键盘/AccessKit 增减从当前业务值开始。配置版本仅随 range/step、axis/direction、端点策略等显式交互配置改变；普通布局尺寸、父级变换、动画与 value 更新保持版本。配置已变而对应帧尚未接受时，控件保留祖先消费，暂不执行旧投影行为；已有捕获沿失效路径交付一次 Cancel。新配置帧接受后恢复。
+源码导入范围根据上述实际调用闭包确定，至少审查 masonry_core、tree_arena 与受影响的 masonry widgets 及构建资源，保留上游来源/许可证，普通依赖继续锁定引用。生产验收覆盖首帧/清空、缺失子查询、路径变更、单次终止、绘制组跨片段、外部内容作用域，以及图片滑条与业务绑定的同一数值/几何。
+
 ## 参考来源
 [1] Ren’Py 保存与回滚 https://www.renpy.org/doc/html/save_load_rollback.html
 [2] Ren’Py Screens https://www.renpy.org/doc/html/screens.html
@@ -263,3 +284,4 @@ E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P
 [13] VitaSDK 音频 https://docs.vitasdk.org/group__SceAudioUser.html
 [14] Kira Backend https://docs.rs/kira/latest/kira/backend/trait.Backend.html
 [15] Kira Frame https://docs.rs/kira/latest/kira/struct.Frame.html
+
