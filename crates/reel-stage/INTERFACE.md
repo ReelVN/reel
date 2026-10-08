@@ -36,7 +36,11 @@ both dependencies before rebasing onto the shared production base.
 - Shared and mutable safe-tree lookup walks parent links on the native call stack
   and borrows direct children; no per-query ancestor Vec is allocated. Frozen
   bounds/clip reject candidates before live eligibility. Layer interception also
-  checks current disabled/stashed/liveness; captured terminal cleanup is separate.
+  checks current disabled/stashed/liveness and selected snapshot visibility.
+  Layer behavior and capture acceptance require the selected record and every
+  parent record to be unstashed. Live uses current eligibility. Ordinary transform
+  changes do not re-hit-test capture. Terminal/exit cleanup keeps the old binding,
+  including hidden records, until its one Cancel and exits have been delivered.
 - Snapshot: contiguous geometric records + child indices + sorted WidgetId
   index, including stashed registrations; no WidgetState, property/layout cache,
   widget/action or per-node ancestor vector. Insets/clip use border coordinates;

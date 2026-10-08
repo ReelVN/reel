@@ -232,7 +232,7 @@ pub(crate) fn run_on_pointer_event_with_view(
         if !root.is_still_interactive(layer_id) {
             continue;
         }
-        let Some(geometry) = view.bind(layer_id) else {
+        let Some(geometry) = view.bind_visible(layer_id) else {
             continue;
         };
         let mut layer_root = root.widget_arena.get_node_mut(layer_id);

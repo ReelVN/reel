@@ -701,6 +701,105 @@ fn live_stashing_and_missing_new_view_cancel_alive_capture_once() {
 }
 
 #[test]
+fn accepting_frozen_hidden_target_or_ancestor_cancels_old_visible_capture_once() {
+    for ancestor in [false, true] {
+        let trace = Rc::new(RefCell::new(vec![]));
+        let mut inner = StageGroup::new(trace.clone(), 1., Rect::new(0., 0., 300., 200.));
+        let slider = inner.add(
+            Observed {
+                inner: masonry::widgets::Slider::new(0., 1., 0.),
+                trace: trace.clone(),
+                isolated: false,
+                queries: None,
+            }
+            .prepare(),
+            Point::new(10., 10.),
+            Size::new(100., 30.),
+        );
+        let inner = inner.prepare();
+        let inner_id = inner.id();
+        let mut outer = StageGroup::new(trace.clone(), 1., Rect::new(0., 0., 400., 300.));
+        outer.add(inner, Point::ZERO, Size::new(300., 200.));
+        let outer = outer.prepare();
+        let outer_id = outer.id();
+        let (root, signals) = root(outer);
+        let mut bridge = PresentationBridge::new(root, SurfaceEpoch(1), bridge_limits()).unwrap();
+        let visible = bridge.record(FrameId(1)).unwrap();
+        assert_eq!(bridge.resolve(accept(&visible)), NoticeResult::Accepted);
+        let parent = if ancestor { outer_id } else { inner_id };
+        let stash = |bridge: &mut PresentationBridge, stashed| {
+            bridge.edit_widget(parent, |mut w| {
+                let mut g = w.downcast::<StageGroup>();
+                g.ctx.set_stashed(&mut g.widget.children[0].0, stashed);
+            });
+        };
+        stash(&mut bridge, true);
+        let hidden = bridge.record(FrameId(2)).unwrap();
+        assert!(hidden.geometry().get(slider).unwrap().is_stashed);
+        if ancestor {
+            assert!(hidden.geometry().get(inner_id).unwrap().is_stashed);
+        }
+        stash(&mut bridge, false);
+        // A remains selected: live unstash makes its visible Slider eligible again.
+        bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+        assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
+        trace.borrow_mut().clear();
+        signals.borrow_mut().clear();
+        assert_eq!(bridge.resolve(accept(&hidden)), NoticeResult::Accepted);
+        assert_eq!(
+            bridge.root().pointer_capture_target(),
+            None,
+            "accepted hidden record invalidates capture: ancestor={ancestor}"
+        );
+        let cancels: Vec<_> = trace
+            .borrow()
+            .iter()
+            .filter(|s| s.widget == slider && s.kind == "cancel")
+            .cloned()
+            .collect();
+        assert_eq!(cancels.len(), 1);
+        assert_eq!(cancels[0].size, Size::new(100., 30.));
+        bridge.handle_pointer_event(mouse("move", Point::new(80., 20.)));
+        bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+        bridge.handle_pointer_event(mouse("up", Point::new(35., 20.)));
+        assert_eq!(bridge.root().pointer_capture_target(), None);
+        assert_eq!(
+            trace
+                .borrow()
+                .iter()
+                .filter(|s| s.widget == slider)
+                .map(|s| s.kind)
+                .collect::<Vec<_>>(),
+            vec!["cancel"],
+            "hidden accepted projection suppresses subsequent Slider events"
+        );
+        assert!(
+            !signals
+                .borrow()
+                .iter()
+                .any(|s| matches!(s, masonry_core::app::RenderRootSignal::Action(..)))
+        );
+        let visible_again = bridge.record(FrameId(3)).unwrap();
+        assert_eq!(
+            bridge.resolve(accept(&visible_again)),
+            NoticeResult::Accepted
+        );
+        bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+        assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
+        bridge.handle_pointer_event(mouse("up", Point::new(35., 20.)));
+        assert_eq!(bridge.root().pointer_capture_target(), None);
+        assert_eq!(
+            trace
+                .borrow()
+                .iter()
+                .filter(|s| s.widget == slider && s.kind == "cancel")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
 fn actual_bridge_record_and_input_measurements() {
     use std::time::Instant;
     for count in [32, 256, 1024] {

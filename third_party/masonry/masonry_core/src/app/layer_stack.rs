@@ -409,4 +409,86 @@ mod input_tests {
             }
         }
     }
+
+    #[test]
+    fn layer_hooks_wait_for_visible_presented_record_after_live_unstash() {
+        for presented in [false, true] {
+            let hooks = Rc::new(Cell::new(0));
+            let cancels = Rc::new(Cell::new(0));
+            let signals = Rc::new(RefCell::new(vec![]));
+            let sink = signals.clone();
+            let widget = Probe {
+                hooks: hooks.clone(),
+                cancels: cancels.clone(),
+            }
+            .prepare();
+            let layer = widget.id();
+            let mut root = RenderRoot::new(
+                widget,
+                move |s| sink.borrow_mut().push(s),
+                RenderRootOptions {
+                    default_properties: Arc::new(DefaultProperties::new()),
+                    use_system_fonts: false,
+                    size_policy: WindowSizePolicy::User,
+                    size: PhysicalSize::new(100, 100),
+                    scale_factor: 1.,
+                    test_font: None,
+                },
+            );
+            let limits = GeometryLimits {
+                max_nodes: 8,
+                max_bytes: 4096,
+                max_path: 8,
+            };
+            root.record_presented_geometry(limits).unwrap();
+            let stash = |root: &mut RenderRoot, stashed| {
+                root.edit_widget(root.root_id(), |mut w| {
+                    let mut stack = w.downcast::<LayerStack>();
+                    stack
+                        .ctx
+                        .set_stashed(&mut stack.widget.layers[0].root, stashed);
+                });
+            };
+            stash(&mut root, true);
+            let (_, hidden) = root.record_presented_geometry(limits).unwrap();
+            assert!(hidden.get(layer).unwrap().is_stashed);
+            assert_ne!(hidden.hit_test((20., 20.).into()), Some(layer));
+            if presented {
+                root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
+                    hidden,
+                ))));
+            }
+            stash(&mut root, false);
+            signals.borrow_mut().clear();
+            root.handle_pointer_event(down());
+            assert_eq!(
+                hooks.get(),
+                usize::from(!presented),
+                "live unstash cannot enable a hidden presented layer"
+            );
+            assert_eq!(root.pointer_capture_target(), (!presented).then_some(layer));
+            assert_eq!(
+                signals
+                    .borrow()
+                    .iter()
+                    .filter(|s| matches!(s, RenderRootSignal::Action(..)))
+                    .count(),
+                usize::from(!presented)
+            );
+            if presented {
+                let (_, visible) = root.record_presented_geometry(limits).unwrap();
+                root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
+                    visible,
+                ))));
+                root.handle_pointer_event(down());
+                assert_eq!(hooks.get(), 1);
+                assert_eq!(root.pointer_capture_target(), Some(layer));
+            }
+            stash(&mut root, true);
+            assert_eq!(cancels.get(), 1);
+            assert_eq!(root.pointer_capture_target(), None);
+            root.handle_pointer_event(down());
+            assert_eq!(cancels.get(), 1);
+        }
+    }
 }

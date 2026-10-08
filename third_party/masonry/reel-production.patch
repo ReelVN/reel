@@ -1704,7 +1704,7 @@
          this.ctx.get_mut(layer)
      }
  
-@@ -246,3 +246,167 @@
+@@ -246,3 +246,249 @@
          trace_span!("LayerStack", id = id.trace())
      }
  }
@@ -1871,6 +1871,88 @@
 +            }
 +        }
 +    }
++
++    #[test]
++    fn layer_hooks_wait_for_visible_presented_record_after_live_unstash() {
++        for presented in [false, true] {
++            let hooks = Rc::new(Cell::new(0));
++            let cancels = Rc::new(Cell::new(0));
++            let signals = Rc::new(RefCell::new(vec![]));
++            let sink = signals.clone();
++            let widget = Probe {
++                hooks: hooks.clone(),
++                cancels: cancels.clone(),
++            }
++            .prepare();
++            let layer = widget.id();
++            let mut root = RenderRoot::new(
++                widget,
++                move |s| sink.borrow_mut().push(s),
++                RenderRootOptions {
++                    default_properties: Arc::new(DefaultProperties::new()),
++                    use_system_fonts: false,
++                    size_policy: WindowSizePolicy::User,
++                    size: PhysicalSize::new(100, 100),
++                    scale_factor: 1.,
++                    test_font: None,
++                },
++            );
++            let limits = GeometryLimits {
++                max_nodes: 8,
++                max_bytes: 4096,
++                max_path: 8,
++            };
++            root.record_presented_geometry(limits).unwrap();
++            let stash = |root: &mut RenderRoot, stashed| {
++                root.edit_widget(root.root_id(), |mut w| {
++                    let mut stack = w.downcast::<LayerStack>();
++                    stack
++                        .ctx
++                        .set_stashed(&mut stack.widget.layers[0].root, stashed);
++                });
++            };
++            stash(&mut root, true);
++            let (_, hidden) = root.record_presented_geometry(limits).unwrap();
++            assert!(hidden.get(layer).unwrap().is_stashed);
++            assert_ne!(hidden.hit_test((20., 20.).into()), Some(layer));
++            if presented {
++                root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
++                    hidden,
++                ))));
++            }
++            stash(&mut root, false);
++            signals.borrow_mut().clear();
++            root.handle_pointer_event(down());
++            assert_eq!(
++                hooks.get(),
++                usize::from(!presented),
++                "live unstash cannot enable a hidden presented layer"
++            );
++            assert_eq!(root.pointer_capture_target(), (!presented).then_some(layer));
++            assert_eq!(
++                signals
++                    .borrow()
++                    .iter()
++                    .filter(|s| matches!(s, RenderRootSignal::Action(..)))
++                    .count(),
++                usize::from(!presented)
++            );
++            if presented {
++                let (_, visible) = root.record_presented_geometry(limits).unwrap();
++                root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
++                    visible,
++                ))));
++                root.handle_pointer_event(down());
++                assert_eq!(hooks.get(), 1);
++                assert_eq!(root.pointer_capture_target(), Some(layer));
++            }
++            stash(&mut root, true);
++            assert_eq!(cancels.get(), 1);
++            assert_eq!(root.pointer_capture_target(), None);
++            root.handle_pointer_event(down());
++            assert_eq!(cancels.get(), 1);
++        }
++    }
 +}
 --- a/masonry_core/src/app/mod.rs
 +++ b/masonry_core/src/app/mod.rs
@@ -1888,7 +1970,7 @@
  mod visual_layers;
 --- /dev/null
 +++ b/masonry_core/src/app/presented_geometry.rs
-@@ -0,0 +1,587 @@
+@@ -0,0 +1,604 @@
 +// Copyright 2026 the Xilem Authors and Reel contributors
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -2154,6 +2236,23 @@
 +                })
 +            }
 +        }
++    }
++    /// Bind behavior only if the selected record and its ancestors are visible.
++    /// Current eligibility is checked separately. Cleanup uses `bind` so hidden
++    /// records can still supply the old geometry for terminal/exit callbacks.
++    pub(crate) fn bind_visible(self, id: WidgetId) -> Option<ContextGeometry<'a>> {
++        let geometry = self.bind(id)?;
++        if let ContextGeometry::Presented { view, index } = geometry {
++            let mut ancestor = Some(index);
++            while let Some(index) = ancestor {
++                let record = &view.records[index];
++                if record.is_stashed {
++                    return None;
++                }
++                ancestor = record.parent;
++            }
++        }
++        Some(geometry)
 +    }
 +    pub(crate) fn scale(self, live: f64) -> f64 {
 +        match self {
@@ -3446,7 +3545,7 @@
 +        if !root.is_still_interactive(layer_id) {
 +            continue;
 +        }
-+        let Some(geometry) = view.bind(layer_id) else {
++        let Some(geometry) = view.bind_visible(layer_id) else {
 +            continue;
 +        };
          let mut layer_root = root.widget_arena.get_node_mut(layer_id);
@@ -3793,7 +3892,7 @@
 -
 +    let physical = root.global_state.last_pointer_physical;
 +    if let Some(id) = root.global_state.pointer_capture_target
-+        && (!root.is_still_interactive(id) || new.bind(id).is_none())
++        && (!root.is_still_interactive(id) || new.bind_visible(id).is_none())
 +    {
 +        if root.global_state.pointer_capture_terminal_delivered != Some(id) {
 +            crate::passes::event::run_on_pointer_event_with_view(

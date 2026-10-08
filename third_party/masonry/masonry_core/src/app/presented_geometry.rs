@@ -264,6 +264,23 @@ impl<'a> GeometryView<'a> {
             }
         }
     }
+    /// Bind behavior only if the selected record and its ancestors are visible.
+    /// Current eligibility is checked separately. Cleanup uses `bind` so hidden
+    /// records can still supply the old geometry for terminal/exit callbacks.
+    pub(crate) fn bind_visible(self, id: WidgetId) -> Option<ContextGeometry<'a>> {
+        let geometry = self.bind(id)?;
+        if let ContextGeometry::Presented { view, index } = geometry {
+            let mut ancestor = Some(index);
+            while let Some(index) = ancestor {
+                let record = &view.records[index];
+                if record.is_stashed {
+                    return None;
+                }
+                ancestor = record.parent;
+            }
+        }
+        Some(geometry)
+    }
     pub(crate) fn scale(self, live: f64) -> f64 {
         match self {
             Self::Presented(Some(v)) => v.scale_factor,

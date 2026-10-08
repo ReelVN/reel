@@ -32,8 +32,10 @@ Production local changes:
   Stashed changes now request pointer reconciliation immediately.
   Rechecks target liveness after notifications that may remove it, retains
   invalidations and reconciles surviving ancestor flags in the bounded rewrite.
-- Layer pointer interception obeys current disabled/stashed/liveness, independently
-  of reliable terminal capture cleanup.
+- Layer pointer interception obeys current disabled/stashed/liveness and the
+  selected snapshot's effective stashing, including parent records. Capture
+  acceptance uses the same snapshot visibility check without re-hit-testing its
+  geometry; terminal/exit cleanup retains the old binding independently.
 - Safe tree_arena shared/mutable lookups borrow direct children via parent links
   on the call stack without temporary ancestor Vecs. Scope/reparent/removal unit
   checks and real whole-dispatch allocation probes cover the changed lookup paths.

@@ -47,8 +47,8 @@ public APIs, limits and ownership are in [INTERFACE.md](INTERFACE.md).
   verify no partial route/publication, and recover after releasing leases.
 
 `cargo test --workspace --features reel-core/test-support --locked --
---test-threads=1` passed 12 D01, 22 stage contracts and the real-dispatch allocation
-contract. Direct masonry_core/tree_arena unit checks also passed (4 and 1).
+--test-threads=1` passed 12 D01, 23 stage contracts and the real-dispatch allocation
+contract. Direct masonry_core/tree_arena unit checks also passed (5 and 1).
 The original real
 Button/Slider/Image checks remain: disabled-child ancestor consumption,
 Up/Cancel followed by ancestor deletion, QueryCtx/RawCtx frozen geometry,
@@ -64,6 +64,18 @@ ancestor flags with the selected view, preserving callback invalidations. Disabl
 and stashed Layer interception cannot emit actions from Down in Live or Presented;
 captured cleanup still receives exactly one Cancel. Shared/mutable safe-tree lookups
 no longer allocate ancestor Vecs and preserve descendant scope after reparent/removal.
+
+The reverse stash/unstash regressions record a hidden snapshot, then live-unstash
+before a visible candidate is accepted. Presented Layer interception remains
+suppressed; Live immediately resumes. In the real bridge, A is accepted visible,
+B is recorded while the Slider or its ancestor is stashed, then live is unstashed
+and Down captures under A. Accepting B now sends exactly one Cancel using A and
+suppresses further Slider Move/Down/action until a visible C is accepted. Layer
+behavior and capture validity walk the selected record's parent links to check
+effective hidden state without allocating or re-hit-testing geometry. Normal
+move/scale acceptance still retains capture. Both failures before the correction
+and debug/release results are in `frozen-*-before-fix.log` and
+`frozen-visibility-*.log`; terminal/exit contexts still use the old binding.
 
 The 64-retired-key probe is bounded by the configured pool: at max_candidates=1,
 two old keys retain two charged leases, and the remaining 62 record attempts return
@@ -86,7 +98,7 @@ reconciliation when stashed state changes; final debug/release runs pass.
 
 2026-10-08; Linux x86_64 KVM container, Intel Xeon Platinum 8573C, Rust 1.96.0,
 release `opt-level=3`, no default features, 1920×1080. Three consecutive processes
-ran with no concurrent builds/tests from this task. Each tree has real Sliders
+at `694b395` ran with no concurrent builds/tests from this task. Each tree has real Sliders
 plus a StageGroup and LayerStack; the exported node count is asserted. Samples
 include diagnostic traces: 10 record warmups then 100 cached record/replay/export
 samples, and 100 pointer warmups then 1000 captured-drag samples. p95 uses nearest
@@ -129,6 +141,14 @@ all assert zero allocations and reallocations during warmed whole dispatch. At
 new spatial index. Native lookup call stacks are separate from the reused heap
 route buffers. stats_alloc=0.1.10 is pinned, dev-only, and used only in that test
 binary; the normal library and contract timing binary use their usual allocator.
+
+After the frozen-visibility correction, one additional full release run passed
+23 stage contracts and the allocation contract (`frozen-visibility-release-tests.log`).
+All warmed whole-dispatch cases still allocated/reallocated zero times. At 1026
+nodes uncaptured hit/miss p95 was 5.065/4.917µs; export p95/max was 117.144/154.465µs,
+record+replay p95/max was 2.060/2.351ms, and captured pointer p95/max was
+1.422/29.824µs. Geometry and budget charges were unchanged. This single run does
+not replace the three-run baseline above or constitute a device latency guarantee.
 
 ## Reproduction and boundaries
 

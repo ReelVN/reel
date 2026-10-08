@@ -891,7 +891,7 @@ pub(crate) fn transition_pointer_geometry(
     root.global_state.needs_pointer_pass = false;
     let physical = root.global_state.last_pointer_physical;
     if let Some(id) = root.global_state.pointer_capture_target
-        && (!root.is_still_interactive(id) || new.bind(id).is_none())
+        && (!root.is_still_interactive(id) || new.bind_visible(id).is_none())
     {
         if root.global_state.pointer_capture_terminal_delivered != Some(id) {
             crate::passes::event::run_on_pointer_event_with_view(
