@@ -1,6 +1,6 @@
 # B01 v1 shared bytecode contract
 
-Frozen source: `1226c6b39dfdbd13eca665accd2ecd95bcb7d5d2:docs/aside-language.md` §22 (and §§3,7–16), with owner clarification `999a8e3860f97056dc4c7003435014a9da1166e8`. The initial review draft was `9f36fba`; the following reflects the reviewed implementation. Local base combines D01 `c03226a` and storage `95a7e84`. No dispatcher, frontend, heap or root-range changes.
+Frozen source: `1226c6b39dfdbd13eca665accd2ecd95bcb7d5d2:docs/aside-language.md` §22 (and §§3,7–16), with owner clarifications `999a8e3860f97056dc4c7003435014a9da1166e8` and `c18db948554cdc278307617846060fe133922818`. The initial review draft was `9f36fba`; the following reflects the reviewed implementation. Local base combines D01 `c03226a` and storage `95a7e84`. No dispatcher, frontend, heap or root-range changes.
 
 Public data: `BytecodePackage {versions, content_version, symbols, types, constants, signatures, natives, modules, functions, capabilities, sources}`. Separate u32 newtypes: SymbolId, TypeId, ConstId, SignatureId, NativeId, ModuleId, FunctionId, GlobalId, BindingId, CaptureId, DescriptorId, RegionId, SourceId, Reg, Pc. `Const = Null | Bool | Int(i64) | FloatBits(u64) | Utf8(String) | Bytes(Vec<u8>) | Tuple(Vec<ConstId>)`; tuple references point backwards (finite immutable DAG). No Value/HeapId/token/address.
 
