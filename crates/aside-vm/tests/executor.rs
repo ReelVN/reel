@@ -3357,3 +3357,79 @@ fn cooperative_cancel_during_entry_preparation_never_enters_its_body_handler() {
     );
     assert_eq!(v.stats().usage.instructions, 0);
 }
+
+#[test]
+fn exact_b01_parameter_cell_fixture_shares_default_closure_and_body_but_ordinary_calls_are_independent()
+ {
+    let mut v = vm(fixtures::parameter_cell_default());
+    let t = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut work = 1;
+    let mut allocation_bytes = 0;
+    let d = loop {
+        match v
+            .run_slice(
+                t,
+                SliceBudget {
+                    instructions: 1,
+                    work,
+                    allocation_bytes,
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap()
+        {
+            RunOutcome::BudgetYield(u) => {
+                work = u.required_work.max(1);
+                allocation_bytes = u.required_allocation;
+                gc(&mut v);
+            }
+            RunOutcome::Returned(d) => break d,
+            other => panic!("{other:?}"),
+        }
+    };
+    collect(&mut v);
+    let result = v.delivery_value(d).unwrap();
+    let owner_result = v.heap().get_field(result, 0).unwrap();
+    let owner_closure = v.heap().get_field(owner_result, 1).unwrap();
+    let ordinary_closure = v.heap().get_field(result, 1).unwrap();
+    assert_eq!(
+        v.heap().get_field(owner_result, 0).unwrap().as_int(),
+        Some(43)
+    );
+    let owner_cell = v.heap().get_field(owner_closure, 3).unwrap();
+    let ordinary_cell = v.heap().get_field(ordinary_closure, 3).unwrap();
+    assert!(!owner_cell.same_bits(ordinary_cell));
+    assert_eq!(v.heap().cell_read(owner_cell).unwrap().as_int(), Some(43));
+    assert_eq!(
+        v.heap().cell_read(ordinary_cell).unwrap().as_int(),
+        Some(42)
+    );
+    // Two parameter Cells, two closures and two tuples; the prefix call adds no Cell.
+    assert_eq!(v.heap().stats().live_objects, 6);
+    for (closure, expected) in [(owner_closure, 43), (ordinary_closure, 42)] {
+        let t = v
+            .start_closure(closure, &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let r = task_finish(&mut v, t);
+        assert_eq!(v.delivery_value(r).unwrap().as_int(), Some(expected));
+        v.discard_delivery(r).unwrap();
+    }
+    v.heap_mut().cell_write(owner_cell, Value::int(99)).unwrap();
+    let t = v
+        .start_closure(owner_closure, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let r = task_finish(&mut v, t);
+    assert_eq!(v.delivery_value(r).unwrap().as_int(), Some(99));
+    assert_eq!(
+        v.heap().cell_read(ordinary_cell).unwrap().as_int(),
+        Some(42)
+    );
+    v.discard_delivery(r).unwrap();
+    v.discard_delivery(d).unwrap();
+    collect(&mut v);
+    assert!(v.heap().cell_info(owner_cell).is_err());
+    assert!(v.heap().cell_info(ordinary_cell).is_err());
+}

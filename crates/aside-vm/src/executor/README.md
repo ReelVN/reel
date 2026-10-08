@@ -4,8 +4,8 @@ The first public interface/state proposal was committed as `40d1b9d`, before the
 executor implementation. Public Rust types are now isolated in [api.rs](api.rs).
 The draft PR is https://github.com/jhq223/reel/pull/23, with the creation-time base
 `task/issue-17-frame-slots` unchanged. Language §22/§23 follows the integration
-owner's document head `7322292`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
-`be4f98e`; independent dependency acceptance is coordinated by the integration owner.
+owner's document head `32054c9`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
+`57ff60e`; independent dependency acceptance is coordinated by the integration owner.
 
 This executes verified hand-authored B01 packages. Source compilation/lowering,
 creator-guide snippets and production source execution are **not** claimed.
@@ -30,6 +30,10 @@ host/delivery serials are monotonic. Internal argument/return targets are the
 current frame or its immediate caller; no register objects or state HashMap exist.
 Defaults run for every call in the callee closure's definition environment and
 module, with preceding bound parameters as inputs and inherited NoWait.
+Parameter preparation proceeds in order: create/initialize a shared parameter
+Cell before the next default, pass it only through the internal prefix path,
+and reuse it at body entry. Ordinary calls pass author Values and create their
+own bindings, including ordinary calls to the same default FunctionDef.
 
 HostCall arguments borrow a contiguous rooted window. Respond consumes the
 exact issued ticket once. Continue and CallScript produce fresh resume tickets;
@@ -74,7 +78,7 @@ Supported: load/move/clear, binding init/read/write, CellNew(binding)/read/write
 capture/global reads and global init/write, numeric/bitwise arithmetic and unary
 operations, exact numeric/scalar/identity equality and comparisons, rooted
 resumable String/Bytes/tuple equality, bounded string concatenation, strict bool
-and null branches, closure creation, ordinary Call/Return, ordered ArgsNew/
+and null branches, closure creation, bounded MakeTuple, ordinary Call/Return, ordered ArgsNew/
 ArgsPush/ArgsNamed, Throw/Rethrow/Leave/EndFinally. The same Cell kind stores initialized
 state, immutable mutability and code/module-versioned builtin type contracts;
 generic field writes cannot bypass them. Closure code/capture fields are immutable.

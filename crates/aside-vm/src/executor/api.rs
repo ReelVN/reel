@@ -312,6 +312,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::BranchBool,
     Opcode::BranchNull,
     Opcode::MakeClosure,
+    Opcode::MakeTuple,
     Opcode::Call,
     Opcode::Return,
     Opcode::ArgsNew,

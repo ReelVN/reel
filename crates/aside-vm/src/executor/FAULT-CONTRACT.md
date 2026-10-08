@@ -117,7 +117,8 @@ limits across yields, return owned success/fault, and map ResourceBlocked to a
 host control failure while driving bounded cancellation. Already committed side
 effects remain. Repeated ordinary run_slice grants are not invoke_sync.
 
-Parameter-default Cell identity is a separate pending §22 integration: preceding
-parameter Cells must exist before later defaults and be shared with the body.
-The executor will consume the integration owner's final B01 Parameter Cell
-layout verification change, rather than duplicating its verifier.
+Script parameter-default Cell identity consumes B01 `57ff60e`: preceding Cells
+are initialized before later defaults, transferred through the internal prefix
+path and reused by the body. Exact B01 parameter_cell_default executes with
+instruction/work/allocation slicing and GC. Native default preparation is the
+next separate integration using B01's cached native layout API.

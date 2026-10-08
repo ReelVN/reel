@@ -154,6 +154,8 @@ impl Vm {
                     ScriptPhase::Copy { .. }
                         | ScriptPhase::Bind { .. }
                         | ScriptPhase::Defaults { .. }
+                        | ScriptPhase::DefaultCall { .. }
+                        | ScriptPhase::Parameter { .. }
                         | ScriptPhase::Install { .. }
                 );
                 self.active.abort_equality |= matches!(

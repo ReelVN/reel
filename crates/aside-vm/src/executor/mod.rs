@@ -81,6 +81,14 @@ enum ScriptPhase {
     Defaults {
         parameter: u32,
     },
+    DefaultCall {
+        parameter: u32,
+        function: FunctionId,
+    },
+    Parameter {
+        parameter: u32,
+        storage: BindingStorage,
+    },
     Install {
         binding: u32,
     },
@@ -121,6 +129,7 @@ struct ScriptFrame {
     bound: RootRangeToken,
     argument_count: u32,
     closure: bool,
+    shared_parameters: bool,
     effects: Effects,
     context: ContextFlags,
     owner: RootOwner,
@@ -383,6 +392,17 @@ impl Vm {
                 || f.regions.len() as u64 * 2 + 3 > limits.slots.max_window_len as u64
             {
                 return Err(VmError::Limit);
+            }
+            for instruction in &f.code {
+                if instruction.opcode == Opcode::MakeTuple as u16 {
+                    let Descriptor::Sequence(w) = f.descriptors[instruction.operands[1] as usize]
+                    else {
+                        unreachable!()
+                    };
+                    if w.len > limits.heap.max_mutation_values {
+                        return Err(VmError::Limit);
+                    }
+                }
             }
         }
         let mut heap = Heap::new(epoch, limits.heap)?;
@@ -700,7 +720,15 @@ impl Vm {
                     .effects
                     .0,
         );
-        let module = ModuleInstanceId(f.module.0);
+        let shared_parameters = matches!(source, ArgSource::Prefix { .. });
+        let module = if let ArgSource::Prefix { frame } = source {
+            let Frame::Script(parent) = self.active.frames.data[self.index(frame)?] else {
+                return Err(VmError::Contract("default prefix owner"));
+            };
+            parent.module
+        } else {
+            ModuleInstanceId(f.module.0)
+        };
         let id = FrameId(self.serial()?);
         // Failed construction rolls back published roots and does not push a partial frame.
         let regs = self.open(owner, RootKind::TaskFrame, registers)?;
@@ -743,6 +771,7 @@ impl Vm {
             bound,
             argument_count: count,
             closure: closure.is_some(),
+            shared_parameters,
             effects,
             context,
             owner,
@@ -1726,7 +1755,14 @@ impl Vm {
                     return Ok(false);
                 }
                 if index < s.argument_count {
-                    match self.bound_argument(signature, s.bound, s.args, index, &mut positional) {
+                    let binding = if s.shared_parameters {
+                        self.value(s.args, index * 2 + 1)
+                            .and_then(|value| self.put(s.bound, index, value))
+                            .map_err(vm_fault)
+                    } else {
+                        self.bound_argument(signature, s.bound, s.args, index, &mut positional)
+                    };
+                    match binding {
                         Ok(()) => {
                             s.phase = ScriptPhase::Bind {
                                 index: index + 1,
@@ -1742,49 +1778,118 @@ impl Vm {
                 }
             }
             ScriptPhase::Defaults { parameter } => {
-                if !m.take(0, 1, 0) {
+                let f = &self.program.package().functions[s.code.function.index()];
+                if !m.take(0, f.bindings.len() as u64 + 2, 0) {
                     return Ok(false);
                 }
                 let sig = &self.program.package().signatures[signature.index()];
                 if parameter as usize == sig.parameters.len() {
                     s.phase = ScriptPhase::Install { binding: 0 };
                 } else if self.slots.read(at(s.bound, parameter)).is_ok() {
-                    s.phase = ScriptPhase::Defaults {
-                        parameter: parameter + 1,
-                    };
+                    let storage = f
+                        .bindings
+                        .iter()
+                        .find(|b| b.initialization == BindingInitialization::Parameter(parameter))
+                        .map_or(BindingStorage::Value(Reg(parameter)), |b| b.storage);
+                    s.phase = ScriptPhase::Parameter { parameter, storage };
                 } else if let Some(default) = sig.parameters[parameter as usize].default {
-                    if !m.take(0, self.script_push_cost(default, parameter), 0) {
-                        return Ok(false);
-                    }
-                    let closure = if s.closure {
-                        Some(self.value(s.env, 0)?)
-                    } else {
-                        None
-                    };
-                    self.active.frames.data[top] = Frame::Script(s);
-                    let prepared = self.push_script(
-                        default,
-                        closure,
-                        ArgSource::Prefix { frame: s.id },
+                    s.phase = ScriptPhase::DefaultCall {
                         parameter,
-                        s.owner,
-                        inherit(s.context, Context::NoWait),
-                        s.effects,
-                        ReturnTo::Default {
-                            frame: s.id,
-                            parameter,
-                            call: s.pc,
-                        },
-                    );
-                    match prepared {
-                        Ok(()) => return Ok(true),
-                        Err(e) => {
-                            let kind = language_fault(e)?;
-                            self.preparation_fault(&mut s, kind)?;
-                        }
-                    }
+                        function: default,
+                    };
                 } else {
                     self.preparation_fault(&mut s, FaultKind::MissingArgument)?;
+                }
+            }
+            ScriptPhase::DefaultCall {
+                parameter,
+                function: default,
+            } => {
+                if !m.take(0, self.script_push_cost(default, parameter) + 1, 0) {
+                    return Ok(false);
+                }
+                let closure = if s.closure {
+                    Some(self.value(s.env, 0)?)
+                } else {
+                    None
+                };
+                self.active.frames.data[top] = Frame::Script(s);
+                let prepared = self.push_script(
+                    default,
+                    closure,
+                    ArgSource::Prefix { frame: s.id },
+                    parameter,
+                    s.owner,
+                    inherit(s.context, Context::NoWait),
+                    s.effects,
+                    ReturnTo::Default {
+                        frame: s.id,
+                        parameter,
+                        call: s.pc,
+                    },
+                );
+                match prepared {
+                    Ok(()) => return Ok(true),
+                    Err(e) => {
+                        let kind = language_fault(e)?;
+                        self.preparation_fault(&mut s, kind)?;
+                    }
+                }
+            }
+            ScriptPhase::Parameter { parameter, storage } => {
+                let bytes = if matches!(storage, BindingStorage::Cell(_)) && !s.shared_parameters {
+                    std::mem::size_of::<crate::cell::CellState>() as u64
+                } else {
+                    0
+                };
+                if !m.take(0, 4, bytes) {
+                    return Ok(false);
+                }
+                let p = &self.program.package().signatures[signature.index()].parameters
+                    [parameter as usize];
+                let input = self.value(s.bound, parameter)?;
+                let prepared = match storage {
+                    BindingStorage::Value(_) => self.check_type(p.ty, input).map(|()| input),
+                    BindingStorage::Cell(_) if s.shared_parameters => {
+                        let expected = self.contract(ModuleId(s.module.0), p.ty, p.mutable);
+                        self.heap
+                            .cell_info(input)
+                            .map_err(heap_fault)
+                            .and_then(|info| {
+                                if !info.initialized {
+                                    Err(FaultKind::Uninitialized)
+                                } else if info.contract != expected {
+                                    Err(FaultKind::Type)
+                                } else {
+                                    self.heap
+                                        .cell_read(input)
+                                        .map_err(heap_fault)
+                                        .and_then(|value| self.check_type(p.ty, value))
+                                        .map(|()| input)
+                                }
+                            })
+                    }
+                    BindingStorage::Cell(_) => {
+                        let contract = self.contract(ModuleId(s.module.0), p.ty, p.mutable);
+                        self.check_type(p.ty, input).and_then(|()| {
+                            let cell = self
+                                .heap
+                                .alloc_language_cell(contract)
+                                .map_err(heap_fault)?;
+                            self.heap.cell_initialize(cell, input).map_err(heap_fault)?;
+                            Ok(cell)
+                        })
+                    }
+                };
+                match prepared {
+                    Ok(value) => {
+                        self.put(s.bound, parameter, value)?;
+                        self.put(s.regs, storage.reg().0, value)?;
+                        s.phase = ScriptPhase::Defaults {
+                            parameter: parameter + 1,
+                        };
+                    }
+                    Err(kind) => self.preparation_fault(&mut s, kind)?,
                 }
             }
             ScriptPhase::Install { binding } => {
@@ -1792,18 +1897,8 @@ impl Vm {
                     return Ok(false);
                 }
                 let f = &self.program.package().functions[s.code.function.index()];
-                // Parameters without explicit binding entries still occupy leading registers.
-                let n = self.program.package().signatures[signature.index()]
-                    .parameters
-                    .len() as u32;
-                if binding < n {
-                    let v = self.value(s.bound, binding)?;
-                    self.put(s.regs, binding, v)?;
-                    s.phase = ScriptPhase::Install {
-                        binding: binding + 1,
-                    };
-                } else if ((binding - n) as usize) < f.bindings.len() {
-                    let b = f.bindings[(binding - n) as usize].clone();
+                if (binding as usize) < f.bindings.len() {
+                    let b = f.bindings[binding as usize].clone();
                     match b.initialization {
                         BindingInitialization::Explicit => {
                             // Value binding bitmap starts uninitialized even if a temporary used it.
@@ -1811,31 +1906,8 @@ impl Vm {
                                 self.clear(s.regs, b.storage.reg().0)?;
                             }
                         }
-                        BindingInitialization::Parameter(parameter) => {
-                            let v = self.value(s.bound, parameter)?;
-                            match b.storage {
-                                BindingStorage::Value(r) => self.put(s.regs, r.0, v)?,
-                                BindingStorage::Cell(r) => {
-                                    let allocation = self.heap.alloc_language_cell(self.contract(
-                                        ModuleId(s.module.0),
-                                        b.ty,
-                                        b.mutable,
-                                    ));
-                                    match allocation {
-                                        Ok(cell) => {
-                                            self.heap.cell_initialize(cell, v)?;
-                                            self.put(s.regs, r.0, cell)?;
-                                        }
-                                        Err(e) => {
-                                            let kind = language_fault(VmError::Heap(e))?;
-                                            self.preparation_fault(&mut s, kind)?;
-                                            self.active.frames.data[top] = Frame::Script(s);
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // Prepared in parameter order before subsequent defaults.
+                        BindingInitialization::Parameter(_) => {}
                     }
                     s.phase = ScriptPhase::Install {
                         binding: binding + 1,
@@ -2070,6 +2142,15 @@ impl Vm {
                         * VALUE_CHUNK_BYTES,
                 )
             }
+            Opcode::MakeTuple => {
+                let Descriptor::Sequence(w) = f.descriptors[b as usize] else {
+                    unreachable!()
+                };
+                (
+                    w.len as u64 + 1,
+                    (w.len as u64).div_ceil(VALUE_CHUNK_LEN as u64) * VALUE_CHUNK_BYTES,
+                )
+            }
             Opcode::Throw | Opcode::Rethrow => (
                 f.regions.len() as u64 + self.active.caught.data.len() as u64 + 3,
                 0,
@@ -2116,6 +2197,7 @@ impl Vm {
             op,
             Opcode::CellNew
                 | Opcode::MakeClosure
+                | Opcode::MakeTuple
                 | Opcode::ArgsNew
                 | Opcode::ArgsPush
                 | Opcode::ArgsNamed
@@ -2124,6 +2206,17 @@ impl Vm {
             return Err(FaultKind::Effect);
         }
         match op {
+            Opcode::MakeTuple => {
+                let Descriptor::Sequence(w) = f.descriptors[b as usize] else {
+                    unreachable!()
+                };
+                let values = self
+                    .slots
+                    .borrow_initialized_window(s.regs, w.start.0, w.len)
+                    .map_err(heap_fault)?;
+                let tuple = self.heap.alloc_tuple(values).map_err(heap_fault)?;
+                self.write(*s, r(a), tuple)?;
+            }
             Opcode::LoadConst => {
                 let v = self.slots.read(at(self.constants, b)).map_err(heap_fault)?;
                 self.write(*s, r(a), v)?;
@@ -2985,9 +3078,7 @@ impl Vm {
                         ReturnTo::Register { reg, .. } => self.put(parent.regs, reg.0, value)?,
                         ReturnTo::Default { parameter, .. } => {
                             self.put(parent.bound, parameter, value)?;
-                            parent.phase = ScriptPhase::Defaults {
-                                parameter: parameter + 1,
-                            };
+                            parent.phase = ScriptPhase::Defaults { parameter };
                         }
                         _ => unreachable!(),
                     }
