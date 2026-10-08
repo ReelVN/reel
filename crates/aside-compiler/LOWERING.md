@@ -70,7 +70,7 @@ Compiler and bytecode checks use independent limits; B01's verification allocati
 limit is capped to the compiler's remaining capacity. `capacity_peak_bytes` is a
 conservative upper bound, not an RSS measurement.
 
-The 17 lowering integration tests compile actual source through L03, inspect IR
+The 19 lowering integration tests compile actual source through L03, inspect IR
 and register liveness/order, verify with B01, encode/decode, disassemble and check
 all source-map boundaries. They cover Cell/capture identity, trusted native
 defaults and namespace links, cleanup regions, Context preservation, inferred
