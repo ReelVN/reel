@@ -288,7 +288,7 @@ VM 保存完整可恢复执行状态和对象图，宿主协调请求、舞台/�
 
 缺少 native adapter、代码版本或 ABI 时报告精确对象路径/版本并使保存或恢复失败。restore 在隔离堆先分配身份，再连接引用、等待、订阅和 native 描述，完整验证后一次公开；失败保留当前会话。禁止以新代码 PC 猜测旧恢复点。SessionEpoch 在新游戏/加载/回滚更新，TaskId、WaitId 与 native 完成消息匹配 epoch 后至多交付一次，旧结果丢弃。
 
-捕获、恢复提交和热重载提交互斥。发行存档使用匹配游戏包代码；开发存档嵌入无法由固定包取得的全部被引用版本。旧代码/模块/native 版本在最后帧、闭包或快照引用离开后释放。跨版本迁移是显式流程，不默许替换执行中函数。
+捕获、恢复提交和热重载提交互斥。发行存档使用匹配游戏包代码；开发存档嵌入无法由固定包取得的全部被引用版本。旧代码/模块/native/源码映射版本在最后强版本引用离开后释放；持有者包括帧、闭包、快照、故障栈/原因节点、FaultInfo/FaultRoot 和进行中的 FaultBuild。跨版本迁移是显式流程，不默许替换执行中函数。
 
 进程服务请求按 adapter 处理：仅当前正在持久提交的 SaveRequest，在该独立存档副本中记成功，活会话仍等待真实写盘，内存回滚快照不做此归一化。已结算请求恢复既有终态。其他未结算外部写请求只在精确进程/请求身份及完成记录匹配时重接，否则以 OperationInterrupted 结算；始终不盲目重放外部写入。
 
@@ -383,9 +383,10 @@ ErrorEnvelope、分块调用栈与原因节点使用现有 Heap 的私有对象�
 建立完成后，故障身份、原值、code、origin 和原始 stack 固定。原因关系由 VM 追加，已有节点保持原内容；FaultInfo 显示当前已追加的关系。关系具有明确种类：
 - CaughtFault：建立新故障时关联的活动 catch。
 - ExplicitCause：native 或显式包装关联的原故障。
-- ReplacedExit：finally 真正替代的退出，保存替代位置及 Throw(FaultId)、Return(Value) 或 Leave(CodeRef, target)。
+- AwaitedFault：本次 await 交付关联的生产者完整故障与稳定等待 activation。
+- ReplacedExit：finally 真正替代的退出，保存替代位置及 Throw(FaultId)、Return(Value)、Leave(CodeRef, target) 或 Close(kind, logical_id, activation)。Close 区分 generator/thread。合作取消按既有规则注入可捕获的 Cancelled，因此其退出保留完整 Throw(FaultId)；owner/region 的硬撤销遵循既有硬终止规则。
 
-同一故障可以同时保留 catch 原因与被替代的 Return。原有原因始终保留。每次展开事件具有稳定身份，按预算暂停后继续只追加一次。重抛和显式转发可以形成共享引用或回边；诊断游标记录已访问身份并输出引用关系，GC、快照和诊断均以显式游标遍历。原始栈只捕获一次，异步传播另记有类型的因果关系。
+同一故障可以同时保留 catch 原因与被替代的 Return。原有原因始终保留。每次展开事件具有稳定身份，按预算暂停后继续只追加一次。重抛和显式转发可以形成共享引用或回边；诊断游标记录已访问身份并输出引用关系，GC、快照和诊断均以显式游标遍历。原始栈只捕获一次。失败的 await 为每个实际等待者建立独立 envelope：value/code 来自生产者故障，origin/stack 来自消费者的 await 位置和调用链，AwaitedFault 指向生产者完整故障。生产者记录保持原状，因此多个等待者拥有各自的传播链。Future adoption 传递故障身份，实际 await 交付时才包装。稳定等待 activation 与交付阶段一起保存，分片或恢复后只建立一次；之后再次 await 使用新的 activation。若 await 位于活动 catch 内，其 catch 原因也按通用规则保留。包装使用同一 FaultBuild 和容量规则。
 
 异常路由使用当前抛出/重抛/调用处的 PC 和已消费区域；原始故障位置用于诊断。finally 内被其内部 catch 处理的错误保持外层 pending exit。错误真正逃出 finally 时，先把完整旧退出发布到原因图，再清除旧展开根。
 
