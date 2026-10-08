@@ -15,15 +15,71 @@ id!(NodeId, NameId, ScopeId, SymbolId, FunctionId, TypeId);
 /// remain ordered with nodes, preserving operators, field names and punctuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirKind {
-    Module, Block, Let, Function, Class, Import, ImportPath, ImportGroup,
-    Parameters, Parameter, NamedType, TupleType, UnionType, FunctionType, GroupType,
-    ExpressionStatement, Return, Break, Continue, Throw, Yield, Name, Literal,
-    String, Interpolation, Tuple, Group, Array, Object, ObjectField, Spread,
-    Prefix, Binary, Range, Assignment, Member, Index, Call, Arguments, Argument,
-    NamedArgument, Children, Closure, If, While, For, Loop, Label, Match, MatchArm,
-    Try, Catch, Finally, NamePattern, WildcardPattern, LiteralPattern,
-    TuplePattern, GroupPattern, ArrayPattern, ObjectPattern, PatternField,
-    RestPattern, OrPattern, TypePattern, ModifiedDeclaration,
+    Module,
+    Block,
+    Let,
+    Function,
+    Class,
+    Import,
+    ImportPath,
+    ImportGroup,
+    Parameters,
+    Parameter,
+    NamedType,
+    TupleType,
+    UnionType,
+    FunctionType,
+    GroupType,
+    ExpressionStatement,
+    Return,
+    Break,
+    Continue,
+    Throw,
+    Yield,
+    Name,
+    Literal,
+    String,
+    Interpolation,
+    Tuple,
+    Group,
+    Array,
+    Object,
+    ObjectField,
+    Spread,
+    Prefix,
+    Binary,
+    Range,
+    Assignment,
+    Member,
+    Index,
+    Call,
+    Arguments,
+    Argument,
+    NamedArgument,
+    Children,
+    Closure,
+    If,
+    While,
+    For,
+    Loop,
+    Label,
+    Match,
+    MatchArm,
+    Try,
+    Catch,
+    Finally,
+    NamePattern,
+    WildcardPattern,
+    LiteralPattern,
+    TuplePattern,
+    GroupPattern,
+    ArrayPattern,
+    ObjectPattern,
+    PatternField,
+    RestPattern,
+    OrPattern,
+    TypePattern,
+    ModifiedDeclaration,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HirToken {
@@ -33,13 +89,17 @@ pub struct HirToken {
     pub name: Option<NameId>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HirElement { Node(NodeId), Token(HirToken) }
+pub enum HirElement {
+    Node(NodeId),
+    Token(HirToken),
+}
 #[derive(Debug, Clone)]
 pub struct HirNode {
     pub kind: HirKind,
     pub span: TextRange,
     pub parent: Option<NodeId>,
     pub elements: Range<u32>,
+    pub form: Form,
 }
 #[derive(Debug, Clone)]
 pub struct Hir {
@@ -49,30 +109,80 @@ pub struct Hir {
     pub names: Vec<String>,
 }
 impl Hir {
-    pub fn node(&self, id: NodeId) -> &HirNode { &self.nodes[id.0 as usize] }
+    pub fn node(&self, id: NodeId) -> &HirNode {
+        &self.nodes[id.0 as usize]
+    }
     pub fn elements(&self, id: NodeId) -> &[HirElement] {
         let r = &self.node(id).elements;
         &self.elements[r.start as usize..r.end as usize]
     }
-    pub fn children(&self, id: NodeId) -> impl Iterator<Item=NodeId> + '_ {
-        self.elements(id).iter().filter_map(|e| match e { HirElement::Node(n) => Some(*n), _ => None })
+    pub fn children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.elements(id).iter().filter_map(|e| match e {
+            HirElement::Node(n) => Some(*n),
+            _ => None,
+        })
     }
-    pub fn tokens(&self, id: NodeId) -> impl Iterator<Item=HirToken> + '_ {
-        self.elements(id).iter().filter_map(|e| match e { HirElement::Token(t) => Some(*t), _ => None })
+    pub fn tokens(&self, id: NodeId) -> impl Iterator<Item = HirToken> + '_ {
+        self.elements(id).iter().filter_map(|e| match e {
+            HirElement::Token(t) => Some(*t),
+            _ => None,
+        })
     }
-    pub fn name(&self, id: NameId) -> &str { &self.names[id.0 as usize] }
-    pub fn text(&self, span: TextRange) -> &str { &self.source[crate::byte_range(span)] }
+    pub fn name(&self, id: NameId) -> &str {
+        &self.names[id.0 as usize]
+    }
+    pub fn text(&self, span: TextRange) -> &str {
+        &self.source[crate::byte_range(span)]
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
-    Any, Null, Bool, Int, Float, String, Array, Table, Future, Generator,
-    Tuple(Vec<TypeId>), Union(Vec<TypeId>), Callable(Vec<TypeId>, TypeId),
-    Function(FunctionId), Class(NodeId), Instance(NodeId), Named(NameId),
+    Any,
+    Null,
+    Bool,
+    Int,
+    Float,
+    String,
+    Array,
+    Table,
+    Future,
+    Generator,
+    Tuple(Vec<TypeId>),
+    Union(Vec<TypeId>),
+    Callable(Vec<TypeId>, TypeId),
+    Function(FunctionId),
+    BoundMethod(FunctionId),
+    Class(NodeId),
+    Instance(NodeId),
+    Named(NameId),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SymbolKind { Local, Parameter, Function, Class, Import, Host, Catch, Receiver, Super }
+pub enum SymbolKind {
+    Local,
+    Parameter,
+    Function,
+    Class,
+    Import,
+    Host,
+    Catch,
+    Receiver,
+    Super,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Storage { Local, Module, ValueCapture, SharedCell }
+pub enum Storage {
+    Local,
+    Module,
+    ValueCapture,
+    SharedCell,
+}
+/// SharedCell carries this state on the cell itself, including read-only cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Initialization {
+    ScopeEntry,
+    Declaration,
+    Parameter,
+    External,
+}
 #[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: NameId,
@@ -83,6 +193,7 @@ pub struct Symbol {
     pub mutable: bool,
     pub ty: TypeId,
     pub storage: Storage,
+    pub initialization: Initialization,
     /// Allocate this binding (and any cell) afresh on each loop iteration.
     pub per_iteration: bool,
 }
@@ -94,11 +205,27 @@ pub struct Scope {
     pub symbols: Vec<SymbolId>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FunctionKind { Plain, Async, Generator }
+pub enum FunctionKind {
+    Plain,
+    Async,
+    Generator,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Receiver { None, ExplicitSelf, Static }
+pub enum Receiver {
+    None,
+    ExplicitSelf,
+    Static,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureMode { Value, Cell }
+pub enum FunctionRole {
+    Body,
+    FieldInitializer,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMode {
+    Value,
+    Cell,
+}
 #[derive(Debug, Clone)]
 pub struct Capture {
     pub symbol: SymbolId,
@@ -120,6 +247,8 @@ pub struct Function {
     pub parent: Option<FunctionId>,
     pub kind: FunctionKind,
     pub receiver: Receiver,
+    pub role: FunctionRole,
+    pub lexical_class: Option<NodeId>,
     pub parameters: Vec<Parameter>,
     pub return_type: TypeId,
     pub body: NodeId,
@@ -136,6 +265,7 @@ pub struct NodeFacts {
     pub scope: Option<ScopeId>,
     pub checks: RuntimeChecks,
     pub control: Option<ControlTransfer>,
+    pub intrinsic: Option<crate::semantic::Intrinsic>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuntimeChecks(pub u16);
@@ -147,6 +277,10 @@ impl RuntimeChecks {
     pub const PATTERN: u16 = 16;
     pub const MUTABILITY: u16 = 32;
     pub const RECEIVER: u16 = 64;
+    pub const DERIVED_SAFE: u16 = 128;
+    pub const INIT_SAFE: u16 = 256;
+    pub const PROPERTY: u16 = 512;
+    pub const WRITE_EFFECT: u16 = 1024;
 }
 #[derive(Debug, Clone)]
 pub struct ControlTransfer {
@@ -181,15 +315,208 @@ pub struct AnalyzedModule {
     pub(crate) imports: Vec<Import>,
     pub(crate) exports: Vec<SymbolId>,
     pub(crate) stats: AnalysisStats,
+    pub(crate) external: Vec<ExternalBinding>,
 }
 impl AnalyzedModule {
-    pub fn hir(&self) -> &Hir { &self.hir }
-    pub fn facts(&self) -> &[NodeFacts] { &self.facts }
-    pub fn types(&self) -> &[Type] { &self.types }
-    pub fn scopes(&self) -> &[Scope] { &self.scopes }
-    pub fn symbols(&self) -> &[Symbol] { &self.symbols }
-    pub fn functions(&self) -> &[Function] { &self.functions }
-    pub fn imports(&self) -> &[Import] { &self.imports }
-    pub fn exports(&self) -> &[SymbolId] { &self.exports }
-    pub fn stats(&self) -> &AnalysisStats { &self.stats }
+    pub fn hir(&self) -> &Hir {
+        &self.hir
+    }
+    pub fn facts(&self) -> &[NodeFacts] {
+        &self.facts
+    }
+    pub fn types(&self) -> &[Type] {
+        &self.types
+    }
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
+    pub fn symbols(&self) -> &[Symbol] {
+        &self.symbols
+    }
+    pub fn functions(&self) -> &[Function] {
+        &self.functions
+    }
+    pub fn imports(&self) -> &[Import] {
+        &self.imports
+    }
+    pub fn exports(&self) -> &[SymbolId] {
+        &self.exports
+    }
+    pub fn stats(&self) -> &AnalysisStats {
+        &self.stats
+    }
+    pub fn external_bindings(&self) -> &[ExternalBinding] {
+        &self.external
+    }
+}
+
+/// Full resolver signature survives analysis, including named-call semantics.
+#[derive(Debug, Clone)]
+pub struct ExternalBinding {
+    pub symbol: Option<SymbolId>,
+    pub node: Option<NodeId>,
+    pub descriptor: Arc<crate::semantic::ExternalSymbol>,
+}
+
+/// Grammar roles resolved once during projection. Sequence items use the
+/// existing packed children edges; no second per-node child allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKey {
+    Name(HirToken),
+    Expression(NodeId),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    Sequence,
+    Block {
+        tail: Option<NodeId>,
+    },
+    Binding {
+        pattern: NodeId,
+        annotation: Option<NodeId>,
+        initializer: Option<NodeId>,
+        mutable: bool,
+    },
+    Function {
+        name: Option<HirToken>,
+        parameters: Option<NodeId>,
+        result: Option<NodeId>,
+        body: NodeId,
+        kind: FunctionKind,
+    },
+    Class {
+        name: Option<HirToken>,
+        base: Option<NodeId>,
+    },
+    Parameter {
+        name: HirToken,
+        annotation: Option<NodeId>,
+        default: Option<NodeId>,
+        mutable: bool,
+        rest: bool,
+    },
+    Import {
+        path: NodeId,
+    },
+    ImportPath {
+        alias: Option<HirToken>,
+        group: Option<NodeId>,
+        wildcard: bool,
+    },
+    TypeName,
+    FunctionType {
+        result: NodeId,
+    },
+    Single {
+        child: NodeId,
+    },
+    Statement {
+        expression: NodeId,
+        terminated: bool,
+    },
+    Transfer {
+        value: Option<NodeId>,
+        label: Option<HirToken>,
+    },
+    Name {
+        name: HirToken,
+    },
+    Wildcard,
+    Literal {
+        token: HirToken,
+    },
+    LiteralPattern {
+        value: NodeId,
+        negative: bool,
+    },
+    Field {
+        key: FieldKey,
+        value: NodeId,
+    },
+    Spread {
+        value: NodeId,
+    },
+    Unary {
+        operator: HirToken,
+        value: NodeId,
+    },
+    Binary {
+        left: NodeId,
+        operator: HirToken,
+        right: NodeId,
+    },
+    Member {
+        object: NodeId,
+        key: HirToken,
+        optional: bool,
+        chain: bool,
+    },
+    Index {
+        object: NodeId,
+        index: NodeId,
+        optional: bool,
+        chain: bool,
+    },
+    Call {
+        callee: NodeId,
+        arguments: Option<NodeId>,
+        children: Option<NodeId>,
+        optional: bool,
+        chain: bool,
+    },
+    Argument {
+        name: Option<HirToken>,
+        value: NodeId,
+    },
+    Condition {
+        pattern: Option<NodeId>,
+        condition: NodeId,
+        body: NodeId,
+        otherwise: Option<NodeId>,
+    },
+    For {
+        pattern: NodeId,
+        source: NodeId,
+        body: NodeId,
+        asynchronous: bool,
+    },
+    Label {
+        name: HirToken,
+        body: NodeId,
+    },
+    Match {
+        value: NodeId,
+    },
+    MatchArm {
+        pattern: NodeId,
+        guard: Option<NodeId>,
+        body: NodeId,
+    },
+    Try {
+        body: NodeId,
+        catch: Option<NodeId>,
+        finally: Option<NodeId>,
+    },
+    Catch {
+        name: HirToken,
+        body: NodeId,
+    },
+    PatternField {
+        key: HirToken,
+        pattern: Option<NodeId>,
+        default: Option<NodeId>,
+    },
+    Or {
+        left: NodeId,
+        right: NodeId,
+    },
+    TypePattern {
+        pattern: NodeId,
+        annotation: NodeId,
+    },
+    Modified {
+        declaration: NodeId,
+        public: bool,
+        static_member: bool,
+    },
 }

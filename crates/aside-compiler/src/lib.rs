@@ -1,6 +1,12 @@
-//! Aside 1.1 source frontend. Syntax only: no lowering, bytecode or execution.
+//! Aside 1.1 lossless syntax and conservative semantic analysis.
+//! No lowering, bytecode or execution.
 mod diagnostic;
 pub mod hir;
+pub mod semantic;
+pub use semantic::{
+    Analysis, AnalysisContext, AnalysisLimits, AnalysisOptions, analyze, analyze_module,
+    analyze_source,
+};
 mod lexer;
 mod parser;
 mod raw;
