@@ -488,3 +488,126 @@ pub fn readonly_cell_write() -> BytecodePackage {
         .insert(2, instruction(Opcode::CellWrite, 0, 1, 0));
     p
 }
+
+/// owner(mut x, y=default_y(x)) and default_y both bind x to Cell(Reg(0)).
+/// The internal prefix path reuses the owner's cell; default_y increments it
+/// and returns a closure, then the owner increments it again. Expected owner
+/// tuple: (43, closure reading 43). Main also CALLS THE SAME default FunctionDef
+/// normally with 41: that invocation owns a new cell and its closure reads 42.
+/// These are runtime expectations, not semantic execution claims by B01.
+pub fn parameter_cell_default() -> BytecodePackage {
+    let mut p = base();
+    p.symbols.extend(["y".into(), "default_y".into()]);
+    p.sources[0].text = "fn owner(mut x: int, y = { x += 1; || x }) { x += 1; (x,y) }\n".into();
+    let x = parameter(4, 1, true);
+    let mut y = parameter(14, 0, false);
+    y.default = Some(FunctionId(2));
+    p.signatures = vec![
+        signature(vec![], 0, Effects::ALL),
+        signature(vec![x.clone(), y.clone()], 0, Effects::ALL),
+        signature(vec![x], 0, Effects(Effects::ALLOCATE | Effects::WRITE)),
+        signature(vec![], 1, Effects(0)),
+    ];
+    let parameter_binding = |name, ty, mutable, storage, i| BindingDef {
+        name: SymbolId(name),
+        ty: TypeId(ty),
+        mutable,
+        storage,
+        initialization: BindingInitialization::Parameter(i),
+    };
+    let mut main = function(
+        1,
+        0,
+        4,
+        vec![
+            instruction(Opcode::LoadConst, 0, 1, 0),
+            instruction(Opcode::Call, 1, 0, 0),
+            instruction(Opcode::Call, 2, 1, 0),
+            instruction(Opcode::MakeTuple, 3, 2, 0),
+            instruction(Opcode::Return, 3, 0, 0),
+        ],
+    );
+    main.descriptors = vec![
+        Descriptor::Call(CallDesc {
+            target: CallTarget::Function(FunctionId(1)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(0),
+                len: 1,
+            }),
+            names: vec![],
+        }),
+        Descriptor::Call(CallDesc {
+            target: CallTarget::Function(FunctionId(2)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(0),
+                len: 1,
+            }),
+            names: vec![],
+        }),
+        Descriptor::Sequence(RegWindow {
+            start: Reg(1),
+            len: 2,
+        }),
+    ];
+    let mut owner = function(
+        2,
+        1,
+        5,
+        vec![
+            instruction(Opcode::BindRead, 2, 0, 0),
+            instruction(Opcode::LoadConst, 3, 2, 0),
+            instruction(Opcode::Add, 4, 2, 3),
+            instruction(Opcode::BindWrite, 0, 4, 0),
+            instruction(Opcode::BindRead, 2, 0, 0),
+            instruction(Opcode::BindRead, 3, 1, 0),
+            instruction(Opcode::MakeTuple, 4, 0, 0),
+            instruction(Opcode::Return, 4, 0, 0),
+        ],
+    );
+    owner.bindings = vec![
+        parameter_binding(4, 1, true, BindingStorage::Cell(Reg(0)), 0),
+        parameter_binding(14, 0, false, BindingStorage::Value(Reg(1)), 1),
+    ];
+    owner.descriptors = vec![Descriptor::Sequence(RegWindow {
+        start: Reg(2),
+        len: 2,
+    })];
+    let mut default = function(
+        15,
+        2,
+        5,
+        vec![
+            instruction(Opcode::BindRead, 1, 0, 0),
+            instruction(Opcode::LoadConst, 2, 2, 0),
+            instruction(Opcode::Add, 3, 1, 2),
+            instruction(Opcode::BindWrite, 0, 3, 0),
+            instruction(Opcode::MakeClosure, 4, 0, 0),
+            instruction(Opcode::Return, 4, 0, 0),
+        ],
+    );
+    default.context = Context::NoWait;
+    default.bindings = vec![parameter_binding(
+        4,
+        1,
+        true,
+        BindingStorage::Cell(Reg(0)),
+        0,
+    )];
+    default.descriptors = vec![Descriptor::Closure {
+        function: FunctionId(3),
+        captures: vec![CaptureSource::Binding(BindingId(0))],
+    }];
+    let mut read = function(
+        8,
+        3,
+        2,
+        vec![
+            instruction(Opcode::CaptureRead, 0, 0, 0),
+            instruction(Opcode::CellRead, 1, 0, 0),
+            instruction(Opcode::Return, 1, 0, 0),
+        ],
+    );
+    read.captures = vec![CaptureKind::Cell];
+    p.functions = vec![main, owner, default, read];
+    p
+}

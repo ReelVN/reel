@@ -3,6 +3,11 @@ use super::*;
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
 const FIXTURES: &[Fixture] = &[
     (
+        "parameter-cell-default",
+        fixtures::parameter_cell_default,
+        include_bytes!("testdata/parameter-cell-default.ab"),
+    ),
+    (
         "initialized-null-cell",
         fixtures::initialized_null_cell,
         include_bytes!("testdata/initialized-null-cell.ab"),
@@ -1670,4 +1675,198 @@ fn leave_cleanup_preserves_enclosing_catch_and_validates_destination() {
             .kind,
         ErrorKind::Index
     );
+}
+
+#[test]
+fn parameter_cell_default_is_an_internal_prefix_and_an_ordinary_call_target() {
+    let p = fixtures::parameter_cell_default();
+    let bytes = encode(&p, limits()).unwrap();
+    let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
+    assert_eq!(program.package(), &p);
+    assert_eq!(p.signatures[1].parameters[1].default, Some(FunctionId(2)));
+    for function in [1, 2] {
+        let binding = &p.functions[function].bindings[0];
+        assert_eq!(binding.initialization, BindingInitialization::Parameter(0));
+        assert_eq!(binding.storage, BindingStorage::Cell(Reg(0)));
+        assert!(binding.mutable);
+    }
+    let Descriptor::Call(call) = &p.functions[0].descriptors[1] else {
+        panic!("ordinary call")
+    };
+    assert_eq!(call.target, CallTarget::Function(FunctionId(2)));
+    assert_eq!(
+        call.arguments,
+        Arguments::Window(RegWindow {
+            start: Reg(0),
+            len: 1
+        })
+    );
+    let mut listing = String::new();
+    disassemble(&program, &mut listing).unwrap();
+    assert!(listing.contains("Cell(Reg(0))") && listing.contains("Parameter(0)"));
+}
+
+#[test]
+fn default_prefix_name_type_mutability_storage_and_unique_bindings_are_checked() {
+    let base = fixtures::parameter_cell_default();
+    let mut p = base.clone();
+    p.signatures[2].parameters[0].name = SymbolId(14);
+    bad(p, ErrorKind::Signature);
+    let mut p = base.clone();
+    p.signatures[2].parameters[0].ty = TypeId(0);
+    bad(p, ErrorKind::Signature);
+    let mut p = base.clone();
+    p.signatures[2].parameters[0].mutable = false;
+    bad(p, ErrorKind::Signature);
+    for function in [1, 2] {
+        for field in 0..6 {
+            let mut p = base.clone();
+            let binding = &mut p.functions[function].bindings[0];
+            match field {
+                0 => binding.name = SymbolId(14),
+                1 => binding.ty = TypeId(0),
+                2 => binding.mutable = false,
+                3 => binding.storage = BindingStorage::Value(Reg(0)),
+                4 => binding.storage = BindingStorage::Cell(Reg(1)),
+                5 => {
+                    let duplicate = binding.clone();
+                    p.functions[function].bindings.push(duplicate);
+                }
+                _ => unreachable!(),
+            }
+            bad(p, ErrorKind::Signature);
+        }
+    }
+    let mut p = base.clone();
+    for function in [1, 2] {
+        p.functions[function].bindings[0].storage = BindingStorage::Value(Reg(0));
+    }
+    bad(p, ErrorKind::Signature); // Matching Value copies cannot share a mutable prefix.
+    let mut p = base;
+    p.functions[2].code[0] = Instruction::new(Opcode::CellNew, 0, 0, 0);
+    bad(p, ErrorKind::Capture); // The binder, rather than CellNew, owns Parameter initialization.
+}
+
+#[test]
+fn every_owner_of_a_shared_signature_must_match_default_parameter_storage() {
+    let mut p = fixtures::parameter_cell_default();
+    p.functions.push(p.functions[1].clone());
+    verify(p.clone(), limits()).unwrap();
+    p.functions[4].bindings[0].storage = BindingStorage::Value(Reg(0));
+    let bytes = super::codec::encode_unverified(&p);
+    for error in [
+        verify(p, limits()).unwrap_err(),
+        VerifiedProgram::decode(&bytes, limits()).unwrap_err(),
+    ] {
+        assert_eq!(error.kind, ErrorKind::Signature);
+        assert_eq!(error.function, Some(FunctionId(4)));
+    }
+    let mut p = fixtures::captured_default();
+    p.symbols.push("game::other".into());
+    let mut module = p.modules[0].clone();
+    module.path = SymbolId(p.symbols.len() as u32 - 1);
+    p.modules.push(module);
+    p.functions[2].module = ModuleId(1);
+    bad(p, ErrorKind::Capture);
+}
+
+#[test]
+fn readonly_prefix_and_rest_parameter_cells_use_existing_binding_fields() {
+    for cell in [false, true] {
+        let mut p = fixtures::parameter_cell_default();
+        for signature in [1, 2] {
+            p.signatures[signature].parameters[0].mutable = false;
+        }
+        for function in [1, 2] {
+            let binding = &mut p.functions[function].bindings[0];
+            binding.mutable = false;
+            binding.storage = if cell {
+                BindingStorage::Cell(Reg(0))
+            } else {
+                BindingStorage::Value(Reg(0))
+            };
+            p.functions[function].code = vec![
+                Instruction::new(Opcode::BindRead, 2, 0, 0),
+                Instruction::new(Opcode::Return, 2, 0, 0),
+            ];
+            p.functions[function].descriptors.clear();
+        }
+        let bytes = encode(&p, limits()).unwrap();
+        assert_eq!(
+            VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+            &p
+        );
+    }
+    let mut p = budget_package(0, 1);
+    p.signatures[0].rest = Some(Parameter {
+        name: SymbolId(2),
+        ty: TypeId(0),
+        mutable: true,
+        default: None,
+    });
+    let mut f = budget_function(0, 2, 0);
+    f.bindings = vec![BindingDef {
+        name: SymbolId(2),
+        ty: TypeId(0),
+        mutable: true,
+        storage: BindingStorage::Cell(Reg(0)),
+        initialization: BindingInitialization::Parameter(0),
+    }];
+    f.code = vec![
+        Instruction::new(Opcode::BindRead, 1, 0, 0),
+        Instruction::new(Opcode::Return, 1, 0, 0),
+    ];
+    p.functions.push(f);
+    let bytes = encode(&p, limits()).unwrap();
+    assert_eq!(
+        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        &p
+    );
+    p.functions[0].bindings[0].initialization = BindingInitialization::Parameter(1);
+    bad(p, ErrorKind::Signature);
+}
+
+#[test]
+fn shared_default_prefix_layout_comparisons_are_precharged() {
+    const FUNCTIONS: u32 = 100;
+    const PARAMETERS: u32 = 100;
+    let mut p = budget_package(PARAMETERS, 0);
+    let prefix = p.signatures[0].parameters.clone();
+    for i in 0..PARAMETERS {
+        let mut s = p.signatures[0].clone();
+        s.parameters = prefix[..i as usize].to_vec();
+        p.signatures.push(s);
+        p.signatures[0].parameters[i as usize].default = Some(FunctionId(FUNCTIONS + i));
+    }
+    p.functions = (0..FUNCTIONS)
+        .map(|_| budget_function(0, PARAMETERS, 0))
+        .chain((0..PARAMETERS).map(|i| {
+            let mut f = budget_function(i + 1, i, 0);
+            f.context = Context::NoWait;
+            f
+        }))
+        .collect();
+    let stats = verify(p.clone(), limits()).unwrap().stats();
+    let pairs = FUNCTIONS as u64 * PARAMETERS as u64 * (PARAMETERS - 1) as u64 / 2;
+    assert!(stats.validation_work >= pairs + stats.encoded_bytes as u64);
+    let bytes = super::codec::encode_unverified(&p);
+    assert!(bytes.len() < 128 * 1024);
+    let small = Limits {
+        max_work: 300_000,
+        ..limits()
+    };
+    decode(&bytes, small).unwrap();
+    let error = VerifiedProgram::decode(&bytes, small).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Limit);
+    assert!(error.function.is_some_and(|f| f.0 < FUNCTIONS));
+}
+
+#[test]
+fn parameter_layout_index_is_sparse_under_shared_large_signatures() {
+    let mut p = budget_package(1000, 0);
+    p.functions = (0..20).map(|_| budget_function(0, 1000, 0)).collect();
+    let bytes = encode(&p, limits()).unwrap();
+    let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
+    assert_eq!(program.package(), &p);
+    assert!(program.stats().validation_scratch_peak <= p.symbols.len() * 16);
 }
