@@ -1,5 +1,7 @@
 use super::*;
+use std::collections::{BinaryHeap, hash_map::RandomState};
 use std::fmt::Write;
+use std::hash::BuildHasher;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackageStats {
@@ -23,6 +25,12 @@ pub struct HandlerTarget {
     pub kind: HandlerKind,
     pub pc: Pc,
     pub exception: Option<Reg>,
+}
+/// Saved normal exit destination; this is query metadata, not a wire record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanupDestination {
+    Return,
+    Leave(Pc),
 }
 /// Construction is restricted to the verifier. Accessors only borrow immutable data.
 #[derive(Debug)]
@@ -65,6 +73,37 @@ impl VerifiedProgram {
         pc: Pc,
         skip: Option<RegionId>,
     ) -> Result<Option<HandlerTarget>, Error> {
+        let f = self.unwind_function(function, pc, skip)?;
+        Ok(exception_target(f, pc, skip))
+    }
+    /// Selects the next finally for a saved Return/Leave exit. Keep original_pc
+    /// and destination fixed while finally bodies execute; after EndFinally,
+    /// pass its region as consumed. A Leave remaining in its source's enclosing
+    /// protected/catch block preserves that block, including an outer catch.
+    /// Finally blocks never select themselves. No allocation or execution occurs.
+    pub fn cleanup_handler(
+        &self,
+        function: FunctionId,
+        original_pc: Pc,
+        destination: CleanupDestination,
+        consumed: Option<RegionId>,
+    ) -> Result<Option<HandlerTarget>, Error> {
+        let f = self.unwind_function(function, original_pc, consumed)?;
+        if let CleanupDestination::Leave(target) = destination {
+            check(
+                target.index() < f.code.len(),
+                ErrorKind::Index,
+                "cleanup target PC",
+            )?;
+        }
+        Ok(unwind_target(f, original_pc, consumed, Some(destination)))
+    }
+    fn unwind_function(
+        &self,
+        function: FunctionId,
+        pc: Pc,
+        skip: Option<RegionId>,
+    ) -> Result<&FunctionDef, Error> {
         let f = get(&self.package.functions, function.0, "exception function")?;
         check(
             pc.index() < f.code.len(),
@@ -79,7 +118,7 @@ impl VerifiedProgram {
                 "unwind cursor does not enclose original fault",
             )?;
         }
-        Ok(exception_target(f, pc, skip))
+        Ok(f)
     }
     /// A dispatcher must check its actual implemented opcodes and native registry.
     /// This includes unreachable code: unsupported instructions are never no-ops.
@@ -134,11 +173,20 @@ impl VerifiedProgram {
                 )?;
             }
         }
+        // Typed Opcode entries share the frozen u16 domain. Normalize once;
+        // dispatch admission does not rescan the host list per instruction.
+        let opcode_slots = INSTRUCTION_SPECS.last().expect("opcode table").opcode as usize + 1;
+        let mut supported = b.vec::<bool>(opcode_slots)?;
+        supported.resize(opcode_slots, false);
+        b.work(support.opcodes.len() as u64)?;
+        for opcode in &support.opcodes {
+            supported[*opcode as usize] = true;
+        }
         for (fi, f) in p.functions.iter().enumerate() {
             for (pc, i) in f.code.iter().enumerate() {
-                let opcode = instruction_spec(i.opcode).expect("verified opcode").opcode;
-                b.work(support.opcodes.len() as u64 + 1)?;
-                if !support.opcodes.contains(&opcode) {
+                b.work(1)?;
+                if !supported[i.opcode as usize] {
+                    let opcode = instruction_spec(i.opcode).expect("verified opcode").opcode;
                     return Err(located(
                         p,
                         fi,
@@ -151,6 +199,7 @@ impl VerifiedProgram {
                 }
             }
         }
+        b.release(supported);
         Ok(())
     }
 }
@@ -287,12 +336,106 @@ fn unique_slice<T>(
     b: &mut Budget,
     label: &str,
 ) -> Result<(), Error> {
-    for (i, v) in items.iter().enumerate() {
-        for other in &items[..i] {
-            b.work(1)?;
-            check(key(v) != key(other), ErrorKind::Signature, label)?;
-        }
+    if items.len() < 2 {
+        return Ok(());
     }
+    let sorted = sorted_keys(items.iter().map(key), 1, b)?;
+    b.work(sorted.len() as u64)?;
+    for pair in sorted.windows(2) {
+        check(pair[0] != pair[1], ErrorKind::Signature, label)?;
+    }
+    b.release(sorted);
+    Ok(())
+}
+
+/// Rust 1.96 BinaryHeap keeps the reserved Vec allocation: push sifts upward
+/// through at most floor(log2(len)) parents, and into_sorted_vec compares at
+/// most twice per downward level. Charge those bounds before each operation.
+/// Keys are fixed-size scalars or borrowed strings with a byte-comparison bound.
+fn sorted_keys<K: Ord>(
+    keys: impl ExactSizeIterator<Item = K>,
+    comparison_work: u64,
+    b: &mut Budget,
+) -> Result<Vec<K>, Error> {
+    let mut heap = BinaryHeap::from(b.vec(keys.len())?);
+    for key in keys {
+        let height = (heap.len() + 1).ilog2() as u64;
+        b.work((height + 1) * comparison_work)?;
+        heap.push(key);
+    }
+    let height = heap.len().checked_ilog2().unwrap_or(0) as u64;
+    let work = (heap.len() as u64)
+        .checked_mul(2 * height + 1)
+        .and_then(|work| work.checked_mul(comparison_work))
+        .ok_or_else(|| Error::new(ErrorKind::Limit, "sort work overflow"))?;
+    b.work(work)?;
+    Ok(heap.into_sorted_vec())
+}
+
+fn validate_symbols(p: &BytecodePackage, b: &mut Budget) -> Result<(), Error> {
+    let hashes = RandomState::new();
+    validate_symbols_with_hash(p, b, |text| hashes.hash_one(text))
+}
+
+fn validate_symbols_with_hash(
+    p: &BytecodePackage,
+    b: &mut Budget,
+    hash: impl Fn(&str) -> u64,
+) -> Result<(), Error> {
+    for s in &p.symbols {
+        b.work(s.len() as u64 + 1)?;
+        check(
+            s.len() <= b.limits.max_string_bytes as usize && !s.is_empty() && !s.contains('\0'),
+            ErrorKind::Encoding,
+            "symbol text",
+        )?;
+    }
+    // Hash bytes are charged once, before the iterator hashes any string.
+    // Hashes only partition the sort: equal hashes always undergo exact byte
+    // comparison, including a sorted fallback for an adversarial collision group.
+    for s in &p.symbols {
+        b.work(s.len() as u64 + 1)?;
+    }
+    let sorted = sorted_keys(
+        p.symbols
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (hash(s), i as u32)),
+        2,
+        b,
+    )?;
+    b.work(2 * sorted.len() as u64)?;
+    let mut start = 0;
+    while start < sorted.len() {
+        let mut end = start + 1;
+        while end < sorted.len() && sorted[end].0 == sorted[start].0 {
+            end += 1;
+        }
+        let group = &sorted[start..end];
+        if group.len() > 1 {
+            b.work(group.len() as u64)?;
+            let comparison_work = group
+                .iter()
+                .map(|(_, i)| p.symbols[*i as usize].len() as u64 + 1)
+                .max()
+                .expect("nonempty collision group");
+            let texts = sorted_keys(
+                group.iter().map(|(_, i)| p.symbols[*i as usize].as_str()),
+                comparison_work,
+                b,
+            )?;
+            for pair in texts.windows(2) {
+                check(
+                    !b.text_equal(pair[0], pair[1])?,
+                    ErrorKind::Encoding,
+                    "duplicate interned symbol",
+                )?;
+            }
+            b.release(texts);
+        }
+        start = end;
+    }
+    b.release(sorted);
     Ok(())
 }
 fn version(p: &BytecodePackage) -> Result<(), Error> {
@@ -314,21 +457,7 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
     )?;
     let mut b = Budget::new(limits, owned);
     b.work(encoded as u64)?;
-    for (i, s) in p.symbols.iter().enumerate() {
-        b.work(s.len() as u64)?;
-        check(
-            s.len() <= limits.max_string_bytes as usize && !s.is_empty() && !s.contains('\0'),
-            ErrorKind::Encoding,
-            "symbol text",
-        )?;
-        for other in &p.symbols[..i] {
-            check(
-                !b.text_equal(s, other)?,
-                ErrorKind::Encoding,
-                "duplicate interned symbol",
-            )?;
-        }
-    }
+    validate_symbols(p, &mut b)?;
     for (i, c) in p.constants.iter().enumerate() {
         match c {
             Const::Tuple(ids) => {
@@ -1420,65 +1549,67 @@ fn edge(f: &FunctionDef, from: usize, to: usize, leave: bool, b: &mut Budget) ->
     Ok(())
 }
 fn exception_target(f: &FunctionDef, pc: Pc, skip: Option<RegionId>) -> Option<HandlerTarget> {
+    unwind_target(f, pc, skip, None)
+}
+fn strict_region_ancestor(f: &FunctionDef, parent: RegionId, child: RegionId) -> bool {
+    parent != child
+        && ranges(&f.regions[parent.index()]).any(|block| {
+            ranges(&f.regions[child.index()])
+                .all(|part| block.start <= part.start && part.end <= block.end)
+        })
+}
+fn protected_or_catch_block(r: &ExceptionRegion, pc: Pc) -> Option<PcRange> {
+    if r.protected.contains(pc) {
+        Some(r.protected)
+    } else {
+        r.catch
+            .as_ref()
+            .filter(|c| c.range.contains(pc))
+            .map(|c| c.range)
+    }
+}
+fn unwind_target(
+    f: &FunctionDef,
+    pc: Pc,
+    skip: Option<RegionId>,
+    destination: Option<CleanupDestination>,
+) -> Option<HandlerTarget> {
     let mut best: Option<(u32, HandlerTarget)> = None;
     for (id, r) in f.regions.iter().enumerate() {
         let region = RegionId(id as u32);
-        if skip == Some(region) {
+        if let Some(consumed) = skip
+            && !strict_region_ancestor(f, region, consumed)
+        {
             continue;
         }
-        if let Some(consumed) = skip {
-            let consumed = &f.regions[consumed.index()];
-            if !ranges(r).any(|parent| {
-                ranges(consumed).all(|part| parent.start <= part.start && part.end <= parent.end)
-            }) {
-                continue;
-            }
-        }
-        let candidate = if r.protected.contains(pc) {
-            if let Some(c) = &r.catch {
-                Some((
-                    r.protected,
-                    HandlerTarget {
-                        region,
-                        kind: HandlerKind::Catch,
-                        pc: c.range.start,
-                        exception: Some(c.exception),
-                    },
-                ))
-            } else {
-                r.finally.map(|range| {
-                    (
-                        r.protected,
-                        HandlerTarget {
-                            region,
-                            kind: HandlerKind::Finally,
-                            pc: range.start,
-                            exception: None,
-                        },
-                    )
-                })
-            }
-        } else if let Some(c) = &r.catch {
-            if c.range.contains(pc) {
-                r.finally.map(|range| {
-                    (
-                        c.range,
-                        HandlerTarget {
-                            region,
-                            kind: HandlerKind::Finally,
-                            pc: range.start,
-                            exception: None,
-                        },
-                    )
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         // A finally range is intentionally not a candidate for its own region.
-        if let Some((range, target)) = candidate {
+        let Some(range) = protected_or_catch_block(r, pc) else {
+            continue;
+        };
+        if let Some(CleanupDestination::Leave(target)) = destination
+            && range.contains(target)
+        {
+            continue;
+        }
+        let catch = (destination.is_none() && range == r.protected)
+            .then_some(r.catch.as_ref())
+            .flatten();
+        let target = if let Some(c) = catch {
+            Some(HandlerTarget {
+                region,
+                kind: HandlerKind::Catch,
+                pc: c.range.start,
+                exception: Some(c.exception),
+            })
+        } else {
+            r.finally.map(|range| HandlerTarget {
+                region,
+                kind: HandlerKind::Finally,
+                pc: range.start,
+                exception: None,
+            })
+        };
+        if let Some(target) = target {
             let width = range.end.0 - range.start.0;
             if best.is_none_or(|(old, _)| width < old) {
                 best = Some((width, target));
@@ -1577,4 +1708,85 @@ pub fn disassemble(program: &VerifiedProgram, out: &mut impl Write) -> std::fmt:
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_index_tests {
+    use super::*;
+
+    #[test]
+    fn symbol_hash_collisions_keep_exact_unique_checks_and_bounded_scratch() {
+        let mut p = BytecodePackage {
+            symbols: (0..10_000).map(|i| format!("s{i:04x}")).collect(),
+            ..BytecodePackage::default()
+        };
+        let limits = Limits::default();
+        let (_, owned, _) = super::super::codec::measure(&p, limits).unwrap();
+        let mut b = Budget::new(limits, owned);
+        let allocation = allocation_counter::measure(|| {
+            // Force every distinct symbol into one bucket. Equality stays exact,
+            // the fallback remains sorted, and no probabilistic assumption is needed.
+            validate_symbols_with_hash(&p, &mut b, |_| 0).unwrap();
+        });
+        assert_eq!(allocation.bytes_current, 0);
+        assert_eq!(allocation.bytes_max as usize, b.peak);
+        assert_eq!(b.scratch, 0);
+        assert_eq!(
+            b.peak,
+            p.symbols.len() * (std::mem::size_of::<(u64, u32)>() + std::mem::size_of::<&str>())
+        );
+        assert!(b.work < limits.max_work);
+
+        p.symbols.push(p.symbols[0].clone());
+        let mut b = Budget::new(limits, owned);
+        assert_eq!(
+            validate_symbols_with_hash(&p, &mut b, |_| 0)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Encoding
+        );
+        let mut b = Budget::new(
+            Limits {
+                max_work: 100,
+                ..limits
+            },
+            owned,
+        );
+        assert_eq!(
+            validate_symbols_with_hash(&p, &mut b, |_| 0)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(
+            b.peak, 0,
+            "work limit is checked before reserving the index"
+        );
+    }
+
+    #[test]
+    fn collision_fallback_capacity_is_checked_before_its_reservation() {
+        let p = BytecodePackage {
+            symbols: (0..1000).map(|i| format!("s{i:04x}")).collect(),
+            ..BytecodePackage::default()
+        };
+        let limits = Limits::default();
+        let (_, owned, _) = super::super::codec::measure(&p, limits).unwrap();
+        let index_bytes = p.symbols.len() * std::mem::size_of::<(u64, u32)>();
+        let group_bytes = p.symbols.len() * std::mem::size_of::<&str>();
+        let mut b = Budget::new(
+            Limits {
+                max_allocation_bytes: owned + index_bytes + group_bytes - 1,
+                ..limits
+            },
+            owned,
+        );
+        assert_eq!(
+            validate_symbols_with_hash(&p, &mut b, |_| 0)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(b.peak, index_bytes);
+    }
 }

@@ -1021,7 +1021,14 @@ fn nested_try_can_leave_inside_finally_but_cannot_escape_it() {
             finally: None,
         },
     ];
-    verify(p.clone(), limits()).unwrap();
+    let program = verify(p.clone(), limits()).unwrap();
+    assert_eq!(
+        program
+            .cleanup_handler(FunctionId(0), Pc(3), CleanupDestination::Leave(Pc(5)), None)
+            .unwrap(),
+        None,
+        "an inner Leave preserves the already active outer finally"
+    );
     p.functions[0].code[3].operands[0] = 6;
     bad(p, ErrorKind::ControlFlow);
 }
@@ -1355,20 +1362,25 @@ fn every_native_prepays_its_shared_parameter_scan() {
     const NATIVES: u32 = 100;
     const PARAMETERS: u32 = 100;
     let mut p = budget_package(PARAMETERS, NATIVES);
-    let baseline = verify(p.clone(), limits()).unwrap().stats();
+    let mut empty = p.signatures[0].clone();
+    empty.parameters.clear();
+    p.signatures.push(empty);
     p.natives = (0..NATIVES)
         .map(|i| NativeDef {
             symbol: SymbolId(2 + PARAMETERS + i),
-            signature: SignatureId(0),
+            signature: SignatureId(1),
             abi_version: 1,
             capabilities: vec![],
         })
         .collect();
+    let baseline = verify(p.clone(), limits()).unwrap().stats();
+    for native in &mut p.natives {
+        native.signature = SignatureId(0);
+    }
     let full = verify(p.clone(), limits()).unwrap().stats();
-    let wire_work = (full.encoded_bytes - baseline.encoded_bytes) as u64;
-    let uniqueness_work = NATIVES as u64 * (NATIVES - 1) as u64 / 2;
+    assert_eq!(full.encoded_bytes, baseline.encoded_bytes);
     let scan_work = NATIVES as u64 * PARAMETERS as u64;
-    let other_work = baseline.validation_work + wire_work + uniqueness_work;
+    let other_work = baseline.validation_work;
     assert!(full.validation_work >= other_work + scan_work);
     assert_shared_scan_limit(p, other_work + scan_work / 2);
 }
@@ -1458,5 +1470,204 @@ fn runtime_admission_uses_the_saved_work_limit_for_registry_scans() {
     assert_eq!(
         program.require_runtime(&support).unwrap_err().kind,
         ErrorKind::Limit
+    );
+}
+
+fn ordinary_large_package(functions: u32) -> BytecodePackage {
+    let mut p = budget_package(0, 0);
+    p.constants.push(Const::Null);
+    for i in 0..functions {
+        p.symbols.push(format!("f{i:04x}"));
+        let mut f = budget_function(0, 1, 0);
+        f.name = SymbolId(i + 2);
+        f.code
+            .insert(0, Instruction::new(Opcode::LoadConst, 0, 0, 0));
+        p.functions.push(f);
+        p.modules[0].globals.push(GlobalDef {
+            name: SymbolId(i + 2),
+            ty: TypeId(0),
+            mutable: false,
+            linked_function: Some(FunctionId(i)),
+        });
+    }
+    p
+}
+
+#[test]
+fn ordinary_project_loading_scales_under_default_limits() {
+    let support = RuntimeSupport {
+        opcodes: INSTRUCTION_SPECS.iter().map(|s| s.opcode).collect(),
+        natives: vec![],
+        capabilities: vec![],
+    };
+    for count in [1000, 5000, 10_000] {
+        let p = ordinary_large_package(count);
+        let bytes = super::codec::encode_unverified(&p);
+        let began = std::time::Instant::now();
+        let loaded = VerifiedProgram::load(&bytes, limits(), &support);
+        println!(
+            "ordinary-project functions={count} symbols={} bytes={} load={:?} result={:?}",
+            p.symbols.len(),
+            bytes.len(),
+            began.elapsed(),
+            loaded.as_ref().map(|v| v.stats()).map_err(|e| e.kind)
+        );
+        let loaded = loaded.expect("ordinary project must load with unchanged default limits");
+        assert_eq!(loaded.package().functions.len(), count as usize);
+        assert_eq!(encode(loaded.package(), limits()).unwrap(), bytes);
+        assert!(loaded.stats().validation_work < count as u64 * 300);
+        // A host registry containing repeated entries is normalized once as well.
+        loaded
+            .require_runtime(&RuntimeSupport {
+                opcodes: [Opcode::LoadConst, Opcode::Return].repeat(5000),
+                natives: vec![],
+                capabilities: vec![],
+            })
+            .unwrap();
+    }
+}
+
+fn cleanups_nested_in_catch() -> BytecodePackage {
+    let mut p = budget_package(0, 0);
+    p.constants.push(Const::Null);
+    let mut f = budget_function(0, 1, 0);
+    f.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 0, 0),
+        Instruction::new(Opcode::Throw, 0, 0, 0),
+        Instruction::new(Opcode::Move, 0, 0, 0),
+        Instruction::new(Opcode::Move, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+        Instruction::new(Opcode::Leave, 9, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+        Instruction::new(Opcode::Move, 0, 0, 0),
+        Instruction::new(Opcode::EndFinally, 2, 0, 0),
+        Instruction::new(Opcode::Leave, 12, 0, 0),
+        Instruction::new(Opcode::Move, 0, 0, 0),
+        Instruction::new(Opcode::EndFinally, 1, 0, 0),
+        Instruction::new(Opcode::Leave, 16, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+        Instruction::new(Opcode::Move, 0, 0, 0),
+        Instruction::new(Opcode::EndFinally, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    let range = |start, end| PcRange {
+        start: Pc(start),
+        end: Pc(end),
+    };
+    f.regions = vec![
+        ExceptionRegion {
+            protected: range(0, 2),
+            catch: Some(CatchRegion {
+                range: range(2, 14),
+                exception: Reg(0),
+            }),
+            finally: Some(range(14, 16)),
+        },
+        ExceptionRegion {
+            protected: range(3, 10),
+            catch: None,
+            finally: Some(range(10, 12)),
+        },
+        ExceptionRegion {
+            protected: range(4, 7),
+            catch: None,
+            finally: Some(range(7, 9)),
+        },
+    ];
+    p.functions.push(f);
+    p
+}
+
+#[test]
+fn return_cleanup_uses_catch_nesting_and_strict_consumed_ancestors() {
+    let bytes = encode(&cleanups_nested_in_catch(), limits()).unwrap();
+    let p = VerifiedProgram::decode(&bytes, limits()).unwrap();
+    let mut consumed = None;
+    for (region, pc) in [(2, 7), (1, 10), (0, 14)] {
+        let target = p
+            .cleanup_handler(FunctionId(0), Pc(4), CleanupDestination::Return, consumed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            target,
+            HandlerTarget {
+                region: RegionId(region),
+                kind: HandlerKind::Finally,
+                pc: Pc(pc),
+                exception: None,
+            }
+        );
+        consumed = Some(target.region);
+    }
+    assert_eq!(
+        p.cleanup_handler(FunctionId(0), Pc(4), CleanupDestination::Return, consumed)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        p.exception_handler(FunctionId(0), Pc(4), Some(RegionId(2)))
+            .unwrap()
+            .unwrap()
+            .region,
+        RegionId(1)
+    );
+    assert_eq!(
+        p.cleanup_handler(
+            FunctionId(0),
+            Pc(13),
+            CleanupDestination::Return,
+            Some(RegionId(2))
+        )
+        .unwrap_err()
+        .kind,
+        ErrorKind::Region
+    );
+    assert_eq!(
+        p.cleanup_handler(FunctionId(0), Pc(16), CleanupDestination::Return, None)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn leave_cleanup_preserves_enclosing_catch_and_validates_destination() {
+    let p = verify(cleanups_nested_in_catch(), limits()).unwrap();
+    for (source, destination, region) in [(5, 9, 2), (9, 12, 1), (12, 16, 0)] {
+        let exit = CleanupDestination::Leave(Pc(destination));
+        assert_eq!(
+            p.cleanup_handler(FunctionId(0), Pc(source), exit, None)
+                .unwrap()
+                .unwrap()
+                .region,
+            RegionId(region)
+        );
+        assert_eq!(
+            p.cleanup_handler(FunctionId(0), Pc(source), exit, Some(RegionId(region)))
+                .unwrap(),
+            None
+        );
+    }
+    assert_eq!(
+        p.cleanup_handler(
+            FunctionId(0),
+            Pc(12),
+            CleanupDestination::Leave(Pc(17)),
+            None
+        )
+        .unwrap_err()
+        .kind,
+        ErrorKind::Index
+    );
+    assert_eq!(
+        p.cleanup_handler(FunctionId(0), Pc(17), CleanupDestination::Return, None)
+            .unwrap_err()
+            .kind,
+        ErrorKind::Index
+    );
+    assert_eq!(
+        p.cleanup_handler(FunctionId(1), Pc(4), CleanupDestination::Return, None)
+            .unwrap_err()
+            .kind,
+        ErrorKind::Index
     );
 }
