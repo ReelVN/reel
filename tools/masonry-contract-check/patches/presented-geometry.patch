@@ -13,10 +13,10 @@ index 0bb460e..6dd94bf 100644
  mod visual_layers;
 diff --git a/masonry_core/src/app/presented_geometry.rs b/masonry_core/src/app/presented_geometry.rs
 new file mode 100644
-index 0000000..343f57d
+index 0000000..221612d
 --- /dev/null
 +++ b/masonry_core/src/app/presented_geometry.rs
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,183 @@
 +// Copyright 2026 the Xilem Authors and Reel contributors
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -177,7 +177,14 @@ index 0000000..343f57d
 +                .find_widget_under_pointer(pos)
 +                .map(|w| w.id())
 +        };
-+        target.filter(|id| self.is_still_interactive(*id))
++        // Disabled widgets remain hit targets so the event pass can skip their behavior
++        // and bubble through the selected ancestor route. Capture eligibility is separate.
++        target.filter(|id| {
++            self.widget_arena
++                .nodes
++                .find(*id)
++                .is_some_and(|node| !node.item.state.is_stashed)
++        })
 +    }
 +    pub(crate) fn input_path(&self, id: WidgetId) -> Vec<WidgetId> {
 +        if self.global_state.input_geometry_active {
@@ -194,7 +201,7 @@ index 0000000..343f57d
 +    }
 +}
 diff --git a/masonry_core/src/app/render_root.rs b/masonry_core/src/app/render_root.rs
-index bdf243f..aca89e5 100644
+index bdf243f..f033380 100644
 --- a/masonry_core/src/app/render_root.rs
 +++ b/masonry_core/src/app/render_root.rs
 @@ -86,6 +86,9 @@ pub(crate) struct RenderRootState {
@@ -207,7 +214,18 @@ index bdf243f..aca89e5 100644
  
      /// Currently focused widget.
      pub(crate) focused_widget: Option<WidgetId>,
-@@ -342,6 +345,9 @@ impl RenderRoot {
+@@ -124,6 +127,10 @@ pub(crate) struct RenderRootState {
+     /// Widget that currently has pointer capture.
+     pub(crate) pointer_capture_target: Option<WidgetId>,
+ 
++    /// Capture whose Up/Cancel callback has begun, before ancestor bubbling completes.
++    /// Keep capture active for the real control's terminal handler, without cancelling twice.
++    pub(crate) pointer_capture_terminal_delivered: Option<WidgetId>,
++
+     /// Current cursor icon.
+     pub(crate) cursor_icon: CursorIcon,
+ 
+@@ -342,6 +349,9 @@ impl RenderRoot {
                  size_policy,
                  size,
                  last_mouse_pos: None,
@@ -217,16 +235,24 @@ index bdf243f..aca89e5 100644
                  focused_widget: None,
                  focused_path: Vec::new(),
                  next_focused_widget: None,
+@@ -352,6 +362,7 @@ impl RenderRoot {
+                 hovered_path: Vec::new(),
+                 active_path: Vec::new(),
+                 pointer_capture_target: None,
++                pointer_capture_terminal_delivered: None,
+                 cursor_icon: CursorIcon::Default,
+                 font_context: FontContext {
+                     collection: Collection::new(CollectionOptions {
 diff --git a/masonry_core/src/core/contexts.rs b/masonry_core/src/core/contexts.rs
-index 5fe87d8..6d805d6 100644
+index 5fe87d8..6db9486 100644
 --- a/masonry_core/src/core/contexts.rs
 +++ b/masonry_core/src/core/contexts.rs
-@@ -164,6 +164,33 @@ pub struct AccessCtx<'a> {
+@@ -164,6 +164,32 @@ pub struct AccessCtx<'a> {
      pub(crate) tree_update: &'a mut TreeUpdate,
  }
  
 +// Geometry is frozen only during pointer dispatch/update. Status/property state stays live.
-+impl_context_method!(QueryCtx<'_>, EventCtx<'_>, UpdateCtx<'_>, {
++impl_context_method!(QueryCtx<'_>, EventCtx<'_>, UpdateCtx<'_>, RawCtx<'_>, {
 +    fn geometry_state(&self) -> &WidgetState {
 +        if self.global_state.input_geometry_active {
 +            if let Some(view) = &self.global_state.presented_geometry {
@@ -244,7 +270,6 @@ index 5fe87d8..6d805d6 100644
 +    ComposeCtx<'_>,
 +    PaintCtx<'_>,
 +    AccessCtx<'_>,
-+    RawCtx<'_>,
 +    {
 +        fn geometry_state(&self) -> &WidgetState {
 +            self.widget_state
@@ -255,7 +280,7 @@ index 5fe87d8..6d805d6 100644
  // --- MARK: GETTERS
  // Methods for all context types
  impl_context_method!(
-@@ -226,7 +253,7 @@ impl_context_method!(
+@@ -226,7 +252,7 @@ impl_context_method!(
          ///
          /// This transform is applied before `scroll_translation` and `origin`.
          pub fn transform(&self) -> Affine {
@@ -264,7 +289,7 @@ index 5fe87d8..6d805d6 100644
          }
      }
  );
-@@ -492,7 +519,7 @@ impl EventCtx<'_> {
+@@ -492,7 +518,7 @@ impl EventCtx<'_> {
      /// Converts the given position from the window's coordinate space
      /// to this widget's content-box coordinate space.
      pub fn local_position(&self, p: PhysicalPosition<f64>) -> Point {
@@ -273,7 +298,7 @@ index 5fe87d8..6d805d6 100644
          self.to_local(Point { x, y })
      }
  }
-@@ -1195,15 +1222,15 @@ impl_context_method!(
+@@ -1195,15 +1221,15 @@ impl_context_method!(
          /// Returns the aligned content-box rect of this widget
          /// in this widget's content-box coordinate space.
          pub fn content_box(&self) -> Rect {
@@ -293,7 +318,7 @@ index 5fe87d8..6d805d6 100644
          }
  
          /// Returns the aligned paint-box rect of this widget
-@@ -1211,8 +1238,8 @@ impl_context_method!(
+@@ -1211,8 +1237,8 @@ impl_context_method!(
          ///
          /// Covers the area we expect to be invalidated when the widget is painted.
          pub fn paint_box(&self) -> Rect {
@@ -304,7 +329,7 @@ index 5fe87d8..6d805d6 100644
          }
  
          /// Returns the widget's bounding-box rect in the window's coordinate space.
-@@ -1226,19 +1253,19 @@ impl_context_method!(
+@@ -1226,19 +1252,19 @@ impl_context_method!(
          ///
          /// [bounding box documentation]: crate::doc::masonry_concepts#bounding-box
          pub fn bounding_box(&self) -> Rect {
@@ -329,7 +354,7 @@ index 5fe87d8..6d805d6 100644
          }
  
          /// The clip path of the widget, if any was set.
-@@ -1249,8 +1276,10 @@ impl_context_method!(
+@@ -1249,8 +1275,10 @@ impl_context_method!(
          /// [`LayoutCtx::set_clip_path`](crate::core::LayoutCtx::set_clip_path).
          pub fn clip_path(&self) -> Option<Rect> {
              // Translate the clip path to the widget's content-box coordinate space.
@@ -342,7 +367,7 @@ index 5fe87d8..6d805d6 100644
          }
  
          /// Returns the [`Vec2`] for translating between this widget's
-@@ -1259,7 +1288,7 @@ impl_context_method!(
+@@ -1259,7 +1287,7 @@ impl_context_method!(
          /// Add this [`Vec2`] to translate from content-box to border-box,
          /// and subtract this [`Vec2`] to translate from border-box to content-box.
          pub fn border_box_translation(&self) -> Vec2 {
@@ -351,7 +376,7 @@ index 5fe87d8..6d805d6 100644
          }
  
          /// Returns the global transform mapping this widget's content-box coordinate space
-@@ -1271,8 +1300,8 @@ impl_context_method!(
+@@ -1271,8 +1299,8 @@ impl_context_method!(
          /// Multiply by this to convert from this widget's content-box coordinate space to the window's,
          /// or use the inverse of this transform to go from window's space to this widget's content-box.
          pub fn window_transform(&self) -> Affine {
@@ -362,7 +387,7 @@ index 5fe87d8..6d805d6 100644
                  .window_transform
                  .pre_translate(translation)
          }
-@@ -1280,8 +1309,8 @@ impl_context_method!(
+@@ -1280,8 +1308,8 @@ impl_context_method!(
          /// Converts the `point` from the window's coordinate space
          /// to this widget's content-box coordinate space.
          pub fn to_local(&self, point: Point) -> Point {
@@ -373,7 +398,7 @@ index 5fe87d8..6d805d6 100644
              to_border_box.then_translate(to_content_box) * point
          }
  
-@@ -1290,15 +1319,22 @@ impl_context_method!(
+@@ -1290,15 +1318,22 @@ impl_context_method!(
          ///
          /// The returned point is relative to the window's content area; it excludes window chrome.
          pub fn to_window(&self, point: Point) -> Point {
@@ -399,7 +424,7 @@ index 5fe87d8..6d805d6 100644
          }
      }
  );
-@@ -1598,13 +1634,47 @@ impl_context_method!(
+@@ -1598,13 +1633,53 @@ impl_context_method!(
              fn remove_node(
                  global_state: &mut RenderRootState,
                  parent_state: &mut WidgetState,
@@ -412,7 +437,10 @@ index 5fe87d8..6d805d6 100644
                  let state = &mut node.item.state;
  
 -                // TODO - Send event to widget
-+                if global_state.pointer_capture_target == Some(state.id) {
++                if global_state.pointer_capture_target == Some(state.id)
++                    && global_state.pointer_capture_terminal_delivered != Some(state.id)
++                {
++                    global_state.pointer_capture_terminal_delivered = Some(state.id);
 +                    let stack = property_arena.get(state.property_stack_id, widget_type_id);
 +                    let mut props = PropertiesMut {
 +                        local: &mut node.item.properties,
@@ -442,13 +470,16 @@ index 5fe87d8..6d805d6 100644
 +                        }),
 +                    );
 +                    ctx.global_state.input_geometry_active = previous;
-+                    ctx.global_state.pointer_capture_target = None;
-+                    ctx.global_state.needs_pointer_pass = true;
++                }
++                if global_state.pointer_capture_target == Some(state.id) {
++                    global_state.pointer_capture_target = None;
++                    global_state.pointer_capture_terminal_delivered = None;
++                    global_state.needs_pointer_pass = true;
 +                }
  
                  let parent_name = widget.short_type_name();
                  let parent_id = state.id;
-@@ -1615,7 +1685,7 @@ impl_context_method!(
+@@ -1615,7 +1690,7 @@ impl_context_method!(
                          );
                      };
  
@@ -457,7 +488,7 @@ index 5fe87d8..6d805d6 100644
                  }
  
                  // If we remove the focus anchor, its parent becomes the anchor.
-@@ -1637,7 +1707,12 @@ impl_context_method!(
+@@ -1637,7 +1712,12 @@ impl_context_method!(
                  .children
                  .item_mut(id)
                  .expect("remove_child: child not found");
@@ -472,7 +503,7 @@ index 5fe87d8..6d805d6 100644
              let _ = self.children.remove(id).unwrap();
  
 diff --git a/masonry_core/src/passes/event.rs b/masonry_core/src/passes/event.rs
-index f39a681..f5d12d5 100644
+index f39a681..0abc64f 100644
 --- a/masonry_core/src/passes/event.rs
 +++ b/masonry_core/src/passes/event.rs
 @@ -28,11 +28,7 @@ fn get_pointer_target(
@@ -579,6 +610,26 @@ index f39a681..f5d12d5 100644
                  root.global_state.next_focused_widget = None;
              }
          }
+@@ -247,6 +260,11 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
+         skip_if_disabled,
+         matches!(event, PointerEvent::Down { .. }),
+         |widget, ctx, props, event| {
++            if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_))
++                && ctx.global_state.pointer_capture_target == Some(ctx.widget_state.id)
++            {
++                ctx.global_state.pointer_capture_terminal_delivered = Some(ctx.widget_state.id);
++            }
+             widget.on_pointer_event(ctx, props, event);
+         },
+         !is_very_frequent(event),
+@@ -257,6 +275,7 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
+         // it is notified of the pointer event before the capture is released, so it knows it is
+         // about to lose the pointer.
+         root.global_state.pointer_capture_target = None;
++        root.global_state.pointer_capture_terminal_delivered = None;
+     }
+ 
+     if !is_very_frequent(event) {
 diff --git a/masonry_core/src/passes/update.rs b/masonry_core/src/passes/update.rs
 index bd5be0e..2f5d06d 100644
 --- a/masonry_core/src/passes/update.rs

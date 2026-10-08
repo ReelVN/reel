@@ -13,6 +13,14 @@ use masonry_core::{
 use std::{any::TypeId, cell::RefCell, rc::Rc, sync::Arc};
 
 pub type Trace = Rc<RefCell<Vec<Observation>>>;
+pub type GeometryTrace = Rc<RefCell<Vec<GeometryObservation>>>;
+#[derive(Debug, Clone)]
+pub struct GeometryObservation {
+    pub widget: WidgetId,
+    pub kind: &'static str,
+    pub size: Option<Size>,
+    pub transform: Affine,
+}
 #[derive(Debug, Clone)]
 pub struct Observation {
     pub widget: WidgetId,
@@ -54,6 +62,7 @@ pub struct Observed<W> {
     pub inner: W,
     pub trace: Trace,
     pub isolated: bool,
+    pub queries: Option<GeometryTrace>,
 }
 impl<W: Widget> Widget for Observed<W> {
     type Action = W::Action;
@@ -69,10 +78,28 @@ impl<W: Widget> Widget for Observed<W> {
     fn on_text_event(&mut self, c: &mut EventCtx<'_>, p: &mut PropertiesMut<'_>, e: &TextEvent) {
         self.inner.on_text_event(c, p, e);
     }
+    fn on_access_event(
+        &mut self,
+        c: &mut EventCtx<'_>,
+        p: &mut PropertiesMut<'_>,
+        e: &AccessEvent,
+    ) {
+        self.inner.on_access_event(c, p, e);
+    }
     fn register_children(&mut self, c: &mut RegisterCtx<'_>) {
         self.inner.register_children(c);
     }
     fn update(&mut self, c: &mut UpdateCtx<'_>, p: &mut PropertiesMut<'_>, e: &Update) {
+        if matches!(e, Update::HoveredChanged(_) | Update::ActiveChanged(_))
+            && let Some(trace) = &self.queries
+        {
+            trace.borrow_mut().push(GeometryObservation {
+                widget: c.widget_id(),
+                kind: "update",
+                size: Some(c.content_box().size()),
+                transform: c.window_transform(),
+            });
+        }
         self.inner.update(c, p, e);
     }
     fn property_changed(&mut self, c: &mut UpdateCtx<'_>, t: TypeId) {
@@ -124,6 +151,17 @@ impl<W: Widget> Widget for Observed<W> {
     fn accepts_text_input(&self) -> bool {
         self.inner.accepts_text_input()
     }
+    fn get_cursor(&self, c: &QueryCtx<'_>, pos: Point) -> CursorIcon {
+        if let Some(trace) = &self.queries {
+            trace.borrow_mut().push(GeometryObservation {
+                widget: c.widget_id(),
+                kind: "cursor",
+                size: Some(c.content_box().size()),
+                transform: c.window_transform(),
+            });
+        }
+        self.inner.get_cursor(c, pos)
+    }
 }
 
 /// Author group implemented entirely through public Masonry extension points.
@@ -134,6 +172,8 @@ pub struct StageGroup {
     pub clip: Rect,
     pub trace: Trace,
     pub consume: bool,
+    pub remove_on_terminal: bool,
+    pub queries: Option<GeometryTrace>,
 }
 impl StageGroup {
     pub fn new(trace: Trace, opacity: f32, clip: Rect) -> Self {
@@ -143,9 +183,16 @@ impl StageGroup {
             clip,
             trace,
             consume: false,
+            remove_on_terminal: false,
+            queries: None,
         }
     }
-    pub fn add<W: Widget>(&mut self, child: NewWidget<W>, origin: Point, size: Size) -> WidgetId {
+    pub fn add<W: Widget + ?Sized>(
+        &mut self,
+        child: NewWidget<W>,
+        origin: Point,
+        size: Size,
+    ) -> WidgetId {
         let id = child.id();
         self.children.push((child.erased().to_pod(), origin, size));
         id
@@ -169,6 +216,27 @@ impl Widget for StageGroup {
         e: &PointerEvent,
     ) {
         observe(&self.trace, c, e);
+        if let Some(trace) = &self.queries {
+            for (child, _, _) in &mut self.children {
+                let (_, raw) = c.get_raw(child);
+                trace.borrow_mut().push(GeometryObservation {
+                    widget: raw.widget_id(),
+                    kind: "raw",
+                    size: None,
+                    transform: raw.transform(),
+                });
+            }
+        }
+        if self.remove_on_terminal
+            && matches!(e, PointerEvent::Up(_) | PointerEvent::Cancel(_))
+            && let Some(index) = self
+                .children
+                .iter()
+                .position(|(child, _, _)| child.id() == c.target())
+        {
+            let (child, _, _) = self.children.remove(index);
+            c.remove_child(child);
+        }
         if self.consume {
             c.set_handled();
         }
@@ -178,7 +246,20 @@ impl Widget for StageGroup {
             c.register_child(child);
         }
     }
-    fn update(&mut self, _: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, _: &Update) {}
+    fn update(&mut self, c: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, e: &Update) {
+        if matches!(
+            e,
+            Update::ChildHoveredChanged(_) | Update::ChildActiveChanged(_)
+        ) && let Some(trace) = &self.queries
+        {
+            trace.borrow_mut().push(GeometryObservation {
+                widget: c.widget_id(),
+                kind: "update",
+                size: Some(c.content_box().size()),
+                transform: c.window_transform(),
+            });
+        }
+    }
     fn property_changed(&mut self, _: &mut UpdateCtx<'_>, _: TypeId) {}
     fn measure(
         &mut self,
@@ -273,6 +354,7 @@ impl SliderFixture {
                 inner: Slider::new(0., 1., 0.),
                 trace: trace.clone(),
                 isolated: false,
+                queries: None,
             }
             .prepare(),
             Point::new(10., 10.),
@@ -351,6 +433,7 @@ pub fn image_button(trace: Trace, isolated: bool) -> (NewWidget<Observed<Button>
             inner: Button::new(child),
             trace,
             isolated,
+            queries: None,
         }
         .prepare(),
         image_id,

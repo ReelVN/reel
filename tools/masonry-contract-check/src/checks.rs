@@ -40,6 +40,44 @@ pub fn groups() {
             .filter(|l| matches!(&l.kind,VisualLayerKind::Scene(s) if s.validate().is_err()))
             .count();
         let mut scene = Scene::new();
+        if isolated {
+            let mut groups = 0;
+            let mut clips = 0;
+            for (index, layer) in plan.layers.iter().enumerate() {
+                if let VisualLayerKind::Scene(fragment) = &layer.kind {
+                    let before = (groups, clips);
+                    let commands: Vec<_> = fragment
+                        .commands()
+                        .iter()
+                        .map(|command| match command {
+                            Command::PushGroup(_) => {
+                                groups += 1;
+                                "PushGroup"
+                            }
+                            Command::PopGroup => {
+                                groups -= 1;
+                                "PopGroup"
+                            }
+                            Command::PushClip(_) => {
+                                clips += 1;
+                                "PushClip"
+                            }
+                            Command::PopClip => {
+                                clips -= 1;
+                                "PopClip"
+                            }
+                            Command::PushContext(_) => "PushContext",
+                            Command::PopContext => "PopContext",
+                            Command::Draw(_) => "Draw",
+                        })
+                        .collect();
+                    println!(
+                        "isolated fragment {index}: (group,clip) {before:?} -> {:?}, commands={commands:?}",
+                        (groups, clips)
+                    );
+                }
+            }
+        }
         plan.replay_into(&mut scene);
         scene
             .validate()
@@ -137,10 +175,164 @@ pub fn upstream_input_gap() {
 pub fn run() {
     groups();
     base_layer_boundary();
+    disabled_child_route();
+    terminal_bubble_removal();
     #[cfg(not(feature = "experimental"))]
     upstream_input_gap();
     #[cfg(feature = "experimental")]
     crate::presentation::run();
+}
+pub fn disabled_child_route() {
+    #[cfg(feature = "experimental")]
+    let modes = [false, true];
+    #[cfg(not(feature = "experimental"))]
+    let modes = [false];
+    for presented in modes {
+        let mut f = SliderFixture::new();
+        let queries: GeometryTrace = Rc::new(RefCell::new(vec![]));
+        f.root.edit_widget(f.group, |mut w| {
+            let group = w.downcast::<StageGroup>();
+            group.widget.consume = true;
+            group.widget.queries = Some(queries.clone());
+        });
+        f.root.redraw();
+        #[cfg(feature = "experimental")]
+        if presented {
+            let view = f.root.capture_presented_geometry(1);
+            f.root.set_presented_geometry(view);
+            f.change_layout();
+        }
+        f.root
+            .edit_widget(f.slider, |mut w| w.ctx.set_disabled(true));
+        f.trace.borrow_mut().clear();
+        queries.borrow_mut().clear();
+        assert_eq!(
+            f.root
+                .handle_pointer_event(mouse("down", Point::new(35., 20.))),
+            Handled::Yes
+        );
+        assert!(f.values().is_empty());
+        assert_eq!(f.root.pointer_capture_target(), None);
+        assert!(
+            !f.trace.borrow().iter().any(|o| o.widget == f.slider),
+            "disabled child behavior must be skipped"
+        );
+        assert!(
+            f.trace
+                .borrow()
+                .iter()
+                .any(|o| o.widget == f.group && o.target == f.slider && o.kind == "down"),
+            "disabled hit must retain the ancestor route"
+        );
+        let queries = queries.borrow();
+        let raw = queries
+            .iter()
+            .find(|q| q.kind == "raw" && q.widget == f.slider)
+            .unwrap();
+        assert_eq!(raw.size, None);
+        assert_eq!(raw.transform, masonry_core::kurbo::Affine::IDENTITY);
+        println!(
+            "disabled child presented={presented}: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0"
+        );
+    }
+}
+
+pub fn terminal_bubble_removal() {
+    #[cfg(feature = "experimental")]
+    let modes = [false, true];
+    #[cfg(not(feature = "experimental"))]
+    let modes = [false];
+    for presented in modes {
+        for control in ["button", "slider"] {
+            for terminal in ["up", "cancel"] {
+                let trace = Rc::new(RefCell::new(vec![]));
+                let mut group = StageGroup::new(trace.clone(), 1., Rect::new(0., 0., 300., 200.));
+                group.remove_on_terminal = true;
+                let child = if control == "button" {
+                    image_button(trace.clone(), false).0.erased()
+                } else {
+                    Observed {
+                        inner: masonry::widgets::Slider::new(0., 1., 0.),
+                        trace: trace.clone(),
+                        isolated: false,
+                        queries: None,
+                    }
+                    .prepare()
+                    .erased()
+                };
+                let child_id = group.add(child, Point::new(10., 10.), Size::new(100., 30.));
+                let group = group.prepare();
+                let group_id = group.id();
+                let (mut root, signals) = root(group);
+                root.redraw();
+                #[cfg(feature = "experimental")]
+                if presented {
+                    let view = root.capture_presented_geometry(1);
+                    root.set_presented_geometry(view);
+                }
+                root.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+                root.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+                assert_eq!(root.pointer_capture_target(), Some(child_id));
+                trace.borrow_mut().clear();
+                signals.borrow_mut().clear();
+                root.handle_pointer_event(mouse(terminal, Point::new(35., 20.)));
+                let samples = trace.borrow();
+                let delivered: Vec<_> = samples
+                    .iter()
+                    .filter(|o| o.widget == child_id)
+                    .map(|o| o.kind)
+                    .collect();
+                assert_eq!(
+                    delivered,
+                    vec![terminal],
+                    "one terminal before ancestor removal: {control}/{terminal}/presented={presented}"
+                );
+                assert!(
+                    samples.iter().any(|o| o.widget == group_id
+                        && o.target == child_id
+                        && o.kind == terminal)
+                );
+                assert!(
+                    samples
+                        .iter()
+                        .find(|o| o.widget == child_id)
+                        .unwrap()
+                        .active,
+                    "real Up/Cancel handler must still see capture as active"
+                );
+                if control == "button" && terminal == "up" {
+                    assert!(
+                        samples
+                            .iter()
+                            .find(|o| o.widget == child_id)
+                            .unwrap()
+                            .hovered,
+                        "real Button release keeps its hover condition before ancestor deletion"
+                    );
+                }
+                assert!(root.get_widget(child_id).is_none());
+                assert_eq!(root.pointer_capture_target(), None);
+                let clicks = signals.borrow().iter().filter(|s| matches!(s, masonry_core::app::RenderRootSignal::Action(a, id) if *id == child_id && a.downcast_ref::<masonry::widgets::ButtonPress>().is_some())).count();
+                // The unchanged action pass intentionally drops actions whose source
+                // was deleted before action propagation (passes/action.rs:65).
+                assert_eq!(
+                    clicks, 0,
+                    "deleted-source action must follow upstream lifetime rules"
+                );
+                println!(
+                    "ancestor removal {control}/{terminal} presented={presented}: terminal={delivered:?}, capture=None, button clicks={clicks}"
+                );
+            }
+        }
+    }
+}
+#[test]
+fn disabled_child_bubbles_to_consuming_parent() {
+    disabled_child_route();
+}
+#[test]
+fn ancestor_removes_child_after_terminal_delivery() {
+    terminal_bubble_removal();
 }
 #[test]
 fn real_upstream_groups() {

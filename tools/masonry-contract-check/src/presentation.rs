@@ -285,8 +285,118 @@ pub fn run() {
     dpi();
     topology_and_skin();
     singular();
+    geometry_queries();
     measure();
     scaled_measure();
+}
+pub fn geometry_queries() {
+    let mut f = SliderFixture::new();
+    let queries: GeometryTrace = Rc::new(RefCell::new(vec![]));
+    f.root.edit_widget(f.slider, |mut w| {
+        w.downcast::<Observed<Slider>>().widget.queries = Some(queries.clone());
+    });
+    f.root.edit_widget(f.group, |mut w| {
+        w.downcast::<StageGroup>().widget.queries = Some(queries.clone());
+    });
+    let mut gate = Gate::default();
+    let first = gate.record(&mut f.root, 1);
+    assert!(gate.resolve(&mut f.root, &first, Outcome::Accepted(1)));
+    f.change_layout();
+    f.root.edit_widget(f.group, |mut w| {
+        w.ctx.set_transform(Affine::translate((40., 15.)))
+    });
+    f.root.edit_widget(f.slider, |mut w| {
+        w.ctx.set_transform(Affine::translate((7., 3.)))
+    });
+    let second = gate.record(&mut f.root, 2);
+    assert!(!gate.resolve(&mut f.root, &second, Outcome::Skipped));
+    let current = Affine::translate((207., 98.));
+    assert_eq!(
+        f.root
+            .get_widget(f.slider)
+            .unwrap()
+            .ctx()
+            .window_transform(),
+        current
+    );
+    f.root.edit_widget(f.group, |mut w| {
+        let mut group = w.downcast::<StageGroup>();
+        let (_, raw) = group.ctx.get_raw(&mut group.widget.children[0].0);
+        assert_eq!(
+            raw.transform(),
+            Affine::translate((7., 3.)),
+            "ordinary mutation RawCtx stays live"
+        );
+    });
+    for (frame, point, size, transform) in [
+        (
+            1,
+            Point::new(35., 20.),
+            Size::new(100., 30.),
+            Affine::translate((10., 10.)),
+        ),
+        (2, Point::new(257., 108.), Size::new(200., 40.), current),
+    ] {
+        if frame == 2 {
+            assert!(gate.resolve(&mut f.root, &second, Outcome::Accepted(2)));
+        }
+        f.root
+            .handle_pointer_event(mouse("move", Point::new(390., 290.)));
+        queries.borrow_mut().clear();
+        f.root.handle_pointer_event(mouse("move", point));
+        f.root.handle_pointer_event(mouse("down", point));
+        for kind in ["cursor", "update", "raw"] {
+            let samples = queries.borrow();
+            let found: Vec<_> = samples
+                .iter()
+                .filter(|q| q.widget == f.slider && q.kind == kind)
+                .collect();
+            assert!(
+                !found.is_empty(),
+                "{kind} must actually execute for frame {frame}"
+            );
+            for q in found {
+                if kind == "raw" {
+                    assert_eq!(
+                        q.transform,
+                        if frame == 1 {
+                            Affine::IDENTITY
+                        } else {
+                            Affine::translate((7., 3.))
+                        },
+                        "raw local transform frame {frame}"
+                    );
+                } else {
+                    assert_eq!(q.size, Some(size), "{kind} dimensions frame {frame}");
+                    assert_eq!(
+                        q.transform, transform,
+                        "{kind} window transform frame {frame}"
+                    );
+                }
+            }
+        }
+        let samples = queries.borrow();
+        assert!(
+            samples.iter().any(|q| q.widget == f.group
+                && q.kind == "update"
+                && q.transform
+                    == if frame == 1 {
+                        Affine::IDENTITY
+                    } else {
+                        Affine::translate((40., 15.))
+                    }),
+            "ancestor UpdateCtx must use selected geometry too"
+        );
+        drop(samples);
+        f.root.handle_pointer_event(mouse("up", point));
+    }
+    println!(
+        "geometry queries: real QueryCtx cursor, pointer UpdateCtx and EventCtx.get_raw use frame 1 until accepted frame 2; ordinary QueryCtx/MutateCtx RawCtx remain live"
+    );
+}
+#[test]
+fn cursor_update_and_raw_share_selected_geometry() {
+    geometry_queries();
 }
 #[test]
 fn actual_slider_frozen_input() {
@@ -447,6 +557,7 @@ pub fn scaled_measure() {
                     inner: Slider::new(0., 1., 0.),
                     trace: trace.clone(),
                     isolated: false,
+                    queries: None,
                 }
                 .prepare(),
                 Point::new((i % 16) as f64 * 100., (i / 16) as f64 * 30.),

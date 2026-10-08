@@ -6,32 +6,38 @@
 
 ## 运行与证据
 
-需要 Rust 1.96、rustfmt、Python 3、`patch`、Linux Fontconfig 链接环境。普通 Cargo 依赖由 `Cargo.lock` 固定；默认关闭 Masonry 的渲染/窗口 features。
+需要已安装 Rust **1.96.0**、该版本的 rustfmt/clippy、Python 3、`patch`、Linux Fontconfig 链接环境。普通 Cargo 依赖由 `Cargo.lock` 固定；默认关闭 Masonry 的渲染/窗口 features。
+
+`check.sh` 显式导出 `RUSTUP_TOOLCHAIN=1.96.0`，因此在仓库根调用、根工具链仍为 1.90 或环境中指定旧工具链时也选择正确版本。直接 Cargo 命令须带 `+1.96.0`；仅传 `--manifest-path` 不会改变 rustup 的工作目录工具链选择。需要准备工具链时：
+
+```sh
+rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+```
 
 ```sh
 ./tools/masonry-contract-check/scripts/check.sh
 ```
 
-脚本依次检查格式、运行未修改上游对照、生成并验证实验源码、运行补丁行为检查、运行 release 测量、核对依赖闭包。已有固定提交的 Xilem 检出时可传 `--source /path/to/xilem`；它读取该提交的 Git archive，忽略检出中的工作改动。
+脚本依次检查格式、两种构建的 clippy（all-targets，`-D warnings`）、未修改上游对照、生成并验证实验源码、补丁行为检查、release 测量和依赖闭包。默认 codeload 固定提交下载路径已实际完成并通过来源检查及后续完整构建。已有固定提交的 Xilem 检出时可传 `--source /path/to/xilem`；它读取该提交的 Git archive，忽略检出中的工作改动。
 
 单独运行未修改上游：
 
 ```sh
-cargo run --locked --manifest-path tools/masonry-contract-check/Cargo.toml
+cargo +1.96.0 run --locked --manifest-path tools/masonry-contract-check/Cargo.toml
 ```
 
 单独运行输入补丁实验：
 
 ```sh
 python3 tools/masonry-contract-check/scripts/prepare.py
-cargo run --locked --release \
+cargo +1.96.0 run --locked --release \
   --manifest-path tools/masonry-contract-check/experiment/Cargo.toml \
   --features experimental --target-dir tools/masonry-contract-check/target
 ```
 
 `experiment/` 和 `target/` 是忽略的生成物。持久实验修改放入 `patches/presented-geometry.patch`；生成器会重建 `experiment/`。源文件逐一核对 `upstream-source.sha256`，保留上游许可证；应用补丁前先做 dry-run。基线和实验使用各自 lockfile，避免把本地 patch 混入普通依赖验证。
 
-真实命令、环境准备、结果和测量见 [REPORT.md](REPORT.md)；原始输出见 [evidence/verification.log](evidence/verification.log)。
+真实命令、环境准备、结果和测量见 [REPORT.md](REPORT.md)；原始输出见 [evidence/verification.log](evidence/verification.log)。独立层责任边界与 slider 包装方案的源码分析见 [ADAPTATION-NOTES.md](ADAPTATION-NOTES.md)，其中尚未实现的方案不作为行为通过结论。
 
 ## 可直接使用的上游能力
 
@@ -47,23 +53,25 @@ cargo run --locked --release \
 
 | 路径与位置 | 观察 | 接入边界 / 最小方案 |
 | --- | --- | --- |
-| `masonry_core/src/passes/event.rs:17` / `:75` | 按当前 arena 命中及冒泡；没有冻结视图定向入口 | 输入目标和路径需统一来自一次选定的呈现视图 |
+| `masonry_core/src/passes/event.rs:18` / `:72` | 按当前 arena 命中及冒泡；没有冻结视图定向入口 | 输入目标和路径需统一来自一次选定的呈现视图 |
 | `masonry_core/src/passes/update.rs:825` / `:940` | 布局重写会按当前布局重新计算 hover，捕获祖先和 cursor 查询也用当前树 | 指针更新必须用同一几何源；接受新帧时重算静止 hover |
-| `masonry_core/src/core/contexts.rs:494` / `:1181` / `:1282` | 局部坐标、尺寸、变换、裁剪等读取当前状态 | EventCtx、指针更新中的 QueryCtx/UpdateCtx 使用同一冻结几何；状态和有效性继续实时读取 |
+| `masonry_core/src/core/contexts.rs:494` / `:1182` / `:1282` | 局部坐标、尺寸、变换、裁剪等读取当前状态 | EventCtx、指针更新中的 QueryCtx/UpdateCtx/RawCtx 使用同一冻结几何；状态和有效性继续实时读取 |
 | `masonry_core/src/core/contexts.rs:1597` / `:1607` | 被捕获节点删除后捕获会清掉，但没有 Cancel 回调 | 删除前仍存活时交付一次 Cancel；实验补丁实现此行为 |
-| `masonry_core/src/passes/paint.rs:294` / `:358` | base layer 的绘制用恒等层变换和逆根变换，命中仍包含根变换 | 使用恒等宿主根 + 变换的舞台子组；实验不修改绘制源码 |
+| `masonry_core/src/passes/paint.rs:297` / `:352` | base layer 的绘制用恒等层变换和逆根变换，命中仍包含根变换 | 使用恒等宿主根 + 变换的舞台子组；实验不修改绘制源码 |
 | `masonry_core/src/passes/paint.rs:98` | 每次重绘先重置 `paint_layer_mode`，无 paint 回调的缓存帧丢失原边界 | 分层模式如成为生产依赖，需持久化模式；当前只使用完整记录流 |
-| `masonry_core/src/passes/paint.rs:151` / `:284`，`app/visual_layers.rs:24` | `IsolatedScene` 分割穿过组/裁剪作用域：三个片段中两个不能独立通过 Scene 校验；串联可正确渲染 | 独立离屏层/External 混合不能直接逐层渲染；需要显式 Begin/End 组记录和祖先裁剪上下文或等价层树 |
-| `masonry/src/widgets/slider.rs:32` / `:281` | 内置滑条直接绘制轨道和滑块，只有数值/风格属性 | 作者节点槽位要增加控件适配；本实验没有另造滑条来声称槽位已支持 |
+| `masonry_core/src/passes/paint.rs:151` / `:272`，`app/visual_layers.rs:25` | `IsolatedScene` 分割穿过组/裁剪作用域：三个片段中两个不能独立通过 Scene 校验；串联可正确渲染 | 独立离屏层/External 混合不能直接逐层渲染；需要显式 Begin/End 组记录和祖先裁剪上下文或等价层树 |
+| `masonry/src/widgets/slider.rs:32` / `:368` | 内置滑条直接绘制轨道和滑块，只有数值/风格属性 | 水平作者槽位可由行为包装器承载；完整几何/方向/值投影接口见 ADAPTATION-NOTES。本轮只分析，没有声称槽位已实现 |
 | `masonry/src/widgets/button.rs:109` / `slider.rs:154` | 控件捕获/发出 Action，但没有自动 `set_handled` | stage 的同步路由策略需消费相应输入；实验由拥有组明确消费，不能仅依赖返回的 Handled |
 
 ## 实验补丁与待负责人决定的接口
 
-生产接入 **尚未授权，也没有实施**。可审查差异位于 [patches/presented-geometry.patch](patches/presented-geometry.patch)。仅修改 `masonry_core` 六个文件：增加实验 `app/presented_geometry.rs`，接入 `app/mod.rs`、`app/render_root.rs`、`core/contexts.rs`、`passes/event.rs`、`passes/update.rs`。
+负责人已确认最小输入 fork 的必要性并授权继续实验完善；**生产源码导入仍待审查，尚未实施**。可审查差异位于 [patches/presented-geometry.patch](patches/presented-geometry.patch)。仅修改 `masonry_core` 六个文件：增加实验 `app/presented_geometry.rs`，接入 `app/mod.rs`、`app/render_root.rs`、`core/contexts.rs`、`passes/event.rs`、`passes/update.rs`。
 
 最低本地源码闭包是 `masonry_core` + 同级 `tree_arena`，加上原始 workspace 继承配置和许可证：72 个原始文件，592,487 字节。仅前者有代码差异；后者满足同级 path 依赖。生成器缩小 workspace members 并显式标注成员 workspace 路径。`masonry`、文档宏、Parley、Peniko、Imaging、Vello CPU 等继续普通依赖。依赖检查确认一个可执行文件只链接一份 Masonry core/UI 数学和记录类型；不并存仓库内与 Git 版 UI 类型。
 
-原型冻结 WidgetId、几何状态、DPI、子序和祖先路径。每个输入固定同一视图：先按冻结画序/裁剪/逆矩阵选目标，再核验当前存活/禁用状态；不按当前几何二次命中。捕获、hover、上下文几何、祖先事件/状态路由和 cursor QueryCtx 共用该源。布局、绘制和普通 mutation 仍读当前状态。接受匹配且未过期的帧时才替换视图。
+原型冻结 WidgetId、几何状态、DPI、子序和祖先路径。每个输入固定同一视图：先按冻结画序/裁剪/逆矩阵选目标，再核验当前存活/stashed 状态；禁用目标保留命中路径，由事件循环跳过其行为并沿祖先冒泡，捕获目标禁用的取消规则单独保留。不按当前几何二次命中。捕获、hover、上下文几何、祖先事件/状态路由、cursor QueryCtx 和指针阶段 RawCtx 共用该源；布局、绘制和普通 mutation 仍读当前状态。接受匹配且未过期的帧时才替换视图。
+
+审查修正有实际回归用例：无快照与冻结快照下禁用子 Slider 的父组均消费点击；真实 Button/Slider 的 Up/Cancel 在冒泡中删除子控件时仅交付一次终止，真实 handler 仍看到 active capture，Button Up 仍看到 hover。删除前已开始的终止回调用一个捕获终止标记识别，删除不再追加 Cancel。正常事件外删除仍交付一次 Cancel。QueryCtx cursor、指针 UpdateCtx 的尺寸/窗口变换和 EventCtx.get_raw 的局部变换均直接执行并验证，新帧接受后才切换；普通 QueryCtx/MutateCtx RawCtx 仍读当前几何。
 
 建议负责人确认生产接口时保留“显式几何提供器 + 选定视图内的定向分发”边界，而不是照搬原型：
 

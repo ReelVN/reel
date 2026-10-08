@@ -4,9 +4,13 @@ import json
 from pathlib import Path
 import subprocess
 
+def cargo_output(*args, **kwargs):
+    # Direct invocation from the repository root must select the pinned MSRV too.
+    return subprocess.check_output(['cargo', '+1.96.0', *args], **kwargs)
+
 base=Path(__file__).resolve().parents[1]
 for manifest in [base/'Cargo.toml',base/'experiment/Cargo.toml']:
-    metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--manifest-path',str(manifest),'--format-version','1']))
+    metadata=json.loads(cargo_output('metadata','--locked','--manifest-path',str(manifest),'--format-version','1'))
     assert Path(metadata['workspace_root'])==manifest.parent
     packages={p['id']:p for p in metadata['packages']}
     nodes={n['id']:n for n in metadata['resolve']['nodes']}
@@ -23,6 +27,6 @@ for manifest in [base/'Cargo.toml',base/'experiment/Cargo.toml']:
         assert len(found)==1,(name,found)
         print(f"{manifest.parent.name}: {name} {found[0]['version']} source={found[0]['source'] or found[0]['manifest_path']}")
     # Cargo tree applies target cfg filtering, unlike a raw metadata traversal.
-    tree=subprocess.check_output(['cargo','tree','--locked','--manifest-path',str(manifest),'-e','normal,build','--prefix','none'],text=True)
+    tree=cargo_output('tree','--locked','--manifest-path',str(manifest),'-e','normal,build','--prefix','none',text=True)
     assert not any(line.split()[0] in {'winit','wgpu','masonry_winit'} for line in tree.splitlines())
     print(f'{manifest.parent.name}: isolated workspace; no active winit/wgpu/masonry_winit; Fontconfig remains a Linux transitive dependency')

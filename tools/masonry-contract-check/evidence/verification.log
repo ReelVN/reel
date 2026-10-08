@@ -1,22 +1,37 @@
+cargo 1.96.0 (30a34c682 2026-05-25)
+rustc 1.96.0 (ac68faa20 2026-05-25)
+    Checking masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check)
+    Finished `dev` profile [unoptimized] target(s) in 1.68s
    Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check)
-    Finished `test` profile [unoptimized] target(s) in 9.08s
+    Finished `test` profile [unoptimized] target(s) in 2.52s
      Running unittests src/main.rs (tools/masonry-contract-check/target/debug/deps/masonry_contract_check-e9656b124f7a8696)
 
-running 3 tests
+running 5 tests
+test checks::disabled_child_bubbles_to_consuming_parent ... ok
 test checks::real_upstream_input_gap ... ok
+test checks::ancestor_removes_child_after_terminal_delivery ... ok
 test checks::base_layer_transform_boundary ... ok
 test checks::real_upstream_groups ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
 
    Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check)
-    Finished `dev` profile [unoptimized] target(s) in 6.10s
+    Finished `dev` profile [unoptimized] target(s) in 2.10s
      Running `tools/masonry-contract-check/target/debug/masonry-contract-check`
 groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+isolated fragment 0: (group,clip) (0, 0) -> (2, 3), commands=["PushClip", "PushGroup", "PushClip", "PushGroup", "PushClip", "PushClip", "Draw", "PopClip"]
+isolated fragment 1: (group,clip) (2, 3) -> (2, 3), commands=["PushClip", "Draw", "PopClip"]
+isolated fragment 2: (group,clip) (2, 3) -> (0, 0), commands=["PopClip", "PopGroup", "PopClip", "PopGroup", "PopClip"]
 groups isolated=true: cached_layers=1 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
 base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+disabled child presented=false: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+ancestor removal button/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
 upstream unaccepted-layout: hover=false, capture=None, handled=No, values=[]
 upstream captured-node removal: cancel_callbacks=0
+source: https://codeload.github.com/linebender/xilem/tar.gz/271a27a6d4a930f7878d404f9014e3c50a3a9b88
 checking file masonry_core/src/app/mod.rs
 checking file masonry_core/src/app/presented_geometry.rs
 checking file masonry_core/src/app/render_root.rs
@@ -30,185 +45,54 @@ patching file masonry_core/src/core/contexts.rs
 patching file masonry_core/src/passes/event.rs
 patching file masonry_core/src/passes/update.rs
 fixed source verified: 72 files, 592487 bytes; patch applied to masonry_core only
+    Checking tree_arena v0.2.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/tree_arena)
+    Checking masonry_core v0.4.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/masonry_core)
+    Checking masonry v0.4.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
+    Checking masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment)
+    Finished `dev` profile [unoptimized] target(s) in 7.94s
    Compiling tree_arena v0.2.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/tree_arena)
    Compiling masonry_core v0.4.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/masonry_core)
    Compiling masonry v0.4.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
    Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment)
-    Finished `test` profile [unoptimized] target(s) in 34.45s
+    Finished `test` profile [unoptimized] target(s) in 9.75s
      Running unittests ../src/main.rs (tools/masonry-contract-check/target/debug/deps/masonry_contract_check-a0c535a03b1db0e9)
 
-running 7 tests
+running 10 tests
+test checks::disabled_child_bubbles_to_consuming_parent ... ok
+test checks::ancestor_removes_child_after_terminal_delivery ... ok
 test presentation::actual_slider_cancellation ... ok
 test presentation::actual_slider_dpi ... ok
-test checks::base_layer_transform_boundary ... ok
-test presentation::singular_transform_is_not_hittable ... ok
 test presentation::actual_slider_frozen_input ... ok
+test presentation::cursor_update_and_raw_share_selected_geometry ... ok
+test presentation::singular_transform_is_not_hittable ... ok
+test checks::base_layer_transform_boundary ... ok
 test checks::real_upstream_groups ... ok
 test presentation::actual_button_topology_and_skin ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
 
-   Compiling proc-macro2 v1.0.107
-   Compiling unicode-ident v1.0.26
-   Compiling quote v1.0.47
-   Compiling smallvec v1.16.2
-   Compiling libm v0.2.16
-   Compiling cfg-if v1.0.5
-   Compiling stable_deref_trait v1.2.1
-   Compiling arrayvec v0.7.8
-   Compiling bitflags v2.13.2
-   Compiling polycool v0.4.0
-   Compiling log v0.4.34
-   Compiling kurbo v0.13.1
-   Compiling core_maths v0.1.1
-   Compiling writeable v0.6.4
-   Compiling simd-adler32 v0.3.10
-   Compiling adler2 v2.0.1
-   Compiling crc32fast v1.5.2
-   Compiling syn v3.0.6
-   Compiling foldhash v0.2.0
-   Compiling litemap v0.8.3
-   Compiling libc v0.2.190
-   Compiling linebender_resource_handle v0.1.1
-   Compiling miniz_oxide v0.9.1
-   Compiling once_cell v1.21.4
-   Compiling flate2 v1.1.10
-   Compiling synstructure v0.14.0
-   Compiling autocfg v1.5.1
-   Compiling utf8_iter v1.0.4
-   Compiling num-traits v0.2.19
-   Compiling memmap2 v0.9.11
-   Compiling hashbrown v0.16.1
-   Compiling miniz_oxide v0.8.9
-   Compiling bytemuck_derive v1.12.1
-   Compiling zerofrom-derive v0.1.8
-   Compiling yoke-derive v0.8.4
-   Compiling bytemuck v1.25.2
-   Compiling zerofrom v0.1.8
-   Compiling zerovec-derive v0.11.6
-   Compiling displaydoc v0.2.7
-   Compiling yoke v0.8.3
-   Compiling font-types v0.11.3
-   Compiling zerotrie v0.2.5
-   Compiling zerovec v0.11.8
-   Compiling read-fonts v0.37.0
-   Compiling color v0.3.3
-   Compiling tinystr v0.8.4
-   Compiling icu_locale_core v2.3.0
-   Compiling potential_utf v0.1.6
-   Compiling icu_provider v2.3.1
-   Compiling icu_collections v2.3.0
-   Compiling peniko v0.6.1
-   Compiling fdeflate v0.3.7
-   Compiling icu_properties_data v2.3.0
-   Compiling version_check v0.9.5
-   Compiling icu_locale_fallback_data v2.3.0
-   Compiling pkg-config v0.3.34
-   Compiling slotmap v1.1.1
-   Compiling yeslogic-fontconfig-sys v6.0.1
-   Compiling png v0.18.1
-   Compiling libloading v0.8.9
-   Compiling icu_normalizer_data v2.3.0
-   Compiling float-cmp v0.9.0
-   Compiling icu_segmenter_data v2.3.0
-   Compiling strict-num v0.1.1
-   Compiling dlib v0.5.3
-   Compiling tracing-core v0.1.36
-   Compiling skrifa v0.40.0
-   Compiling syn v2.0.119
-   Compiling ttf-parser v0.25.1
-   Compiling roxmltree v0.20.0
-   Compiling arrayref v0.3.9
-   Compiling regex-syntax v0.8.11
-   Compiling num-conv v0.2.2
-   Compiling thiserror v2.0.21
-   Compiling time-core v0.1.9
-   Compiling regex-automata v0.4.18
-   Compiling time-macros v0.2.32
-   Compiling tiny-skia-path v0.12.0
-   Compiling fontconfig-parser v0.5.8
-   Compiling tracing-attributes v0.1.31
-   Compiling icu_locale_fallback v2.3.0
-   Compiling icu_properties v2.3.0
-   Compiling euclid v0.22.14
-   Compiling thiserror-impl v2.0.21
-   Compiling parlance v0.1.0
-   Compiling unicode-ccc v0.4.0
-   Compiling unicode-properties v0.1.4
-   Compiling tinyvec v1.13.3
-   Compiling memchr v2.8.3
-   Compiling powerfmt v0.2.1
-   Compiling unicode-script v0.5.8
-   Compiling pin-project-lite v0.2.17
-   Compiling siphasher v1.0.4
-   Compiling unicode-bidi-mirroring v0.4.0
-   Compiling uuid v1.27.0
-   Compiling lazy_static v1.5.1
-   Compiling deranged v0.5.8
-   Compiling sharded-slab v0.1.7
-   Compiling accesskit v0.24.1
-   Compiling rustybuzz v0.20.1
-   Compiling svgtypes v0.16.1
-   Compiling time v0.3.55
-   Compiling tracing v0.1.44
-   Compiling fontdb v0.23.0
-   Compiling roxmltree v0.21.1
-   Compiling fontique v0.8.0
-   Compiling icu_segmenter v2.3.0
-   Compiling guillotiere v0.7.0
-   Compiling parley_data v0.8.0
-   Compiling icu_normalizer v2.3.0
-   Compiling matchers v0.2.0
-   Compiling harfrust v0.5.2
-   Compiling tracing-log v0.2.0
-   Compiling imaging v0.0.1
-   Compiling hashbrown v0.17.1
-   Compiling simplecss v0.2.2
-   Compiling keyboard-types v0.8.3
-   Compiling thread_local v1.1.10
-   Compiling base64 v0.22.1
-   Compiling zune-core v0.5.3
-   Compiling fearless_simd v0.4.1
-   Compiling nu-ansi-term v0.50.3
-   Compiling quick-error v2.0.1
-   Compiling dpi v0.1.2
-   Compiling xmlwriter v0.1.0
-   Compiling data-url v0.3.2
-   Compiling color_quant v1.1.0
-   Compiling unicode-bidi v0.3.18
-   Compiling pico-args v0.5.0
-   Compiling unicode-vo v0.1.0
-   Compiling byteorder-lite v0.1.0
-   Compiling imagesize v0.14.0
-   Compiling weezl v0.1.12
-   Compiling usvg v0.47.0
-   Compiling gif v0.14.2
-   Compiling vello_common v0.0.7
-   Compiling image-webp v0.2.4
-   Compiling ui-events v0.3.0
-   Compiling tracing-subscriber v0.3.23
-   Compiling zune-jpeg v0.5.15
    Compiling tree_arena v0.2.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/tree_arena)
-   Compiling parley v0.8.0
-   Compiling tiny-skia v0.12.0
-   Compiling vello_api v0.0.7
-   Compiling rgb v0.8.53
-   Compiling anymore v1.0.0
-   Compiling cursor-icon v1.2.0
-   Compiling anymap3 v1.1.0
    Compiling masonry_core v0.4.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/masonry_core)
-   Compiling resvg v0.47.0
-   Compiling vello_cpu v0.0.7
-   Compiling linebender_include_doc_path v0.1.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
-   Compiling understory_virtual_list v0.1.2
    Compiling masonry v0.4.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
-   Compiling imaging_vello_cpu v0.0.1
    Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment)
-    Finished `release` profile [optimized + debuginfo] target(s) in 7m 35s
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 01s
      Running `tools/masonry-contract-check/target/release/masonry-contract-check`
 groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+isolated fragment 0: (group,clip) (0, 0) -> (2, 3), commands=["PushClip", "PushGroup", "PushClip", "PushGroup", "PushClip", "PushClip", "Draw", "PopClip"]
+isolated fragment 1: (group,clip) (2, 3) -> (2, 3), commands=["PushClip", "Draw", "PopClip"]
+isolated fragment 2: (group,clip) (2, 3) -> (0, 0), commands=["PopClip", "PopGroup", "PopClip", "PopGroup", "PopClip"]
 groups isolated=true: cached_layers=1 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
 base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+disabled child presented=false: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+disabled child presented=true: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+ancestor removal button/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal button/up presented=true: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=true: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=true: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=true: terminal=["cancel"], capture=None, button clicks=0
 presented input: retained frame=1 across skipped/unavailable/error/mismatched/stale/expired outcomes; real slider values=0.25,0.7,1; accepted frame=3 switches coordinates+hover
 drag focus: terminal=["cancel"], capture=None, later value changes=0
 drag release: terminal=["up"], capture=None, later value changes=0
@@ -217,9 +101,10 @@ drag disable: terminal=["cancel"], capture=None, later value changes=0
 DPI: physical-to-logical conversion uses accepted scale=1 then scale=2
 button: orphan up=0, paired up=1; author image reflects hover/active; frozen rotation/scale/clip/order/ancestor route survive failed present; acceptance switches all
 singular affine: excluded from snapshot hit/capture
-measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=2296B; pointer ns p50=1736 p95=1944 p99=43796; capture ns p50=675 p95=763 p99=12242
-measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=26352B; pointer p95=7060ns capture p95=142002ns miss_scan p95=1400ns
-measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=200176B; pointer p95=28295ns capture p95=1491787ns miss_scan p95=172430ns
+geometry queries: real QueryCtx cursor, pointer UpdateCtx and EventCtx.get_raw use frame 1 until accepted frame 2; ordinary QueryCtx/MutateCtx RawCtx remain live
+measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=2296B; pointer ns p50=1878 p95=5260 p99=1033090; capture ns p50=716 p95=1310 p99=703830
+measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=26352B; pointer p95=7293ns capture p95=359252ns miss_scan p95=1828ns
+measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=200176B; pointer p95=68240ns capture p95=1987506ns miss_scan p95=215202ns
 masonry-contract-check: masonry 0.4.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88
 masonry-contract-check: masonry_core 0.4.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88
 masonry-contract-check: tree_arena 0.2.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88

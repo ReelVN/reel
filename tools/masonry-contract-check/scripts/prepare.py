@@ -11,14 +11,17 @@ import tarfile
 import urllib.request
 
 REV = '271a27a6d4a930f7878d404f9014e3c50a3a9b88'
+URL = f'https://codeload.github.com/linebender/xilem/tar.gz/{REV}'
 BASE = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source', type=Path, help='existing Xilem git checkout (archive reads the fixed commit, not working changes)')
 args = parser.parse_args()
 if args.source:
+    print(f'source: git archive {REV} from {args.source}', flush=True)
     archive = subprocess.check_output(['git', '-C', str(args.source), 'archive', REV])
 else:
-    with urllib.request.urlopen(f'https://codeload.github.com/linebender/xilem/tar.gz/{REV}') as response:
+    print(f'source: {URL}', flush=True)
+    with urllib.request.urlopen(URL, timeout=60) as response:
         archive = response.read()
 expected = dict(line.split('  ', 1)[::-1] for line in (BASE/'upstream-source.sha256').read_text().splitlines())
 files = {}
