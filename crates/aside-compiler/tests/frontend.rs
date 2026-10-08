@@ -730,3 +730,53 @@ fn identifier_rules_use_the_pinned_xid_table_even_when_logos_regex_tables_differ
     }
     rejects("let \u{301} = 1;", E::Module, D::InvalidCharacter);
 }
+
+#[test]
+fn assignment_targets_keep_nested_calls_indexes_and_collection_receivers() {
+    for (source, target_kind) in [
+        ("(f(a, b).x) = value;", K::MemberExpr),
+        ("(a[(i, j)]) = value;", K::IndexExpr),
+        ("([1][0]) = value;", K::IndexExpr),
+        ("({x: 0}.x) = value;", K::MemberExpr),
+        ("(((f(a, b).x))) = value;", K::MemberExpr),
+        ("(((a[(i, j)]))) = value;", K::IndexExpr),
+        ("((a,b)[(i,j)]) = value;", K::IndexExpr),
+        ("({a: x, b: y}.slot) = value;", K::MemberExpr),
+        ("(([a,b]).slot) = value;", K::MemberExpr),
+    ] {
+        let p = ok(source, E::Module);
+        ranges(&p, source);
+        let target = node(&p, K::AssignExpr).children().next().unwrap();
+        assert_eq!(target.kind(), K::GroupExpr, "{source}");
+        assert!(
+            target.descendants().any(|n| n.kind() == target_kind),
+            "{source}"
+        );
+        for kind in [
+            K::GroupPattern,
+            K::TuplePattern,
+            K::ArrayPattern,
+            K::ObjectPattern,
+        ] {
+            assert_eq!(has(&p, kind), 0, "{source}: unexpected {kind:?}");
+        }
+    }
+    let p = ok("(f(a,b).x) = value;", E::Module);
+    assert_eq!(has(&p, K::CallExpr), 1);
+    assert_eq!(node(&p, K::CallExpr).text().to_string(), "f(a,b)");
+    let p = ok("(a[(i,j)]) = value;", E::Module);
+    assert_eq!(node(&p, K::TupleExpr).text().to_string(), "(i,j)");
+    for source in [
+        "((a,b)) = pair;",
+        "((((a,b)))) = pair;",
+        "((a,(b,c))) = nested;",
+        "(([a,...rest])) = items;",
+        "(({name, ...rest})) = record;",
+        "(()) = empty;",
+    ] {
+        let p = ok(source, E::Module);
+        ranges(&p, source);
+        assert!(has(&p, K::GroupPattern) > 0, "{source}");
+        assert_eq!(has(&p, K::GroupExpr), 0, "{source}");
+    }
+}

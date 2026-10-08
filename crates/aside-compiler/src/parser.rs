@@ -502,8 +502,45 @@ impl Parser<'_> {
     // lookahead, then reuse the same pattern production as let/for/match.
     // Ordinary parenthesized locations (a.b)/(a[i]) remain expressions.
     fn assignment_pattern_ahead(&self) -> bool {
-        let opening = self.peek();
-        let closing = match opening {
+        // A comma/rest belongs to the delimiter that directly contains it.
+        // Nested structure propagates only through a group's sole child;
+        // receiver/call/index/member tokens make that group an expression.
+        enum Content {
+            Empty,
+            Child(bool),
+            Other,
+        }
+        struct Frame {
+            close: K,
+            direct_structure: bool,
+            content: Content,
+        }
+        impl Frame {
+            fn new(close: K) -> Self {
+                Self {
+                    close,
+                    direct_structure: false,
+                    content: Content::Empty,
+                }
+            }
+            fn structural(&self) -> bool {
+                match self.close {
+                    K::RBracket | K::RBrace => true,
+                    K::RParen => {
+                        self.direct_structure
+                            || matches!(self.content, Content::Empty | Content::Child(true))
+                    }
+                    _ => false,
+                }
+            }
+            fn child(&mut self, structural: bool) {
+                self.content = match self.content {
+                    Content::Empty => Content::Child(structural),
+                    _ => Content::Other,
+                };
+            }
+        }
+        let closing = match self.peek() {
             K::LParen => K::RParen,
             K::LBracket => K::RBracket,
             _ => return false,
@@ -512,15 +549,9 @@ impl Parser<'_> {
             .iter()
             .filter(|t| !t.kind.is_trivia());
         tokens.next();
-        let mut stack = vec![closing];
-        let mut structural = opening == K::LBracket;
-        let mut first = true;
+        let mut stack = vec![Frame::new(closing)];
         for token in tokens.by_ref() {
             let kind = token.kind;
-            structural |= kind == K::Comma
-                || kind == K::Ellipsis
-                || first && matches!(kind, K::LBrace | K::LBracket | K::RParen);
-            first = false;
             let close = match kind {
                 K::LParen | K::QuestionParen => Some(K::RParen),
                 K::LBracket | K::QuestionBracket => Some(K::RBracket),
@@ -532,17 +563,25 @@ impl Parser<'_> {
                 if stack.len() >= self.limits.max_depth {
                     return false;
                 }
-                stack.push(close);
+                stack.push(Frame::new(close));
             } else if matches!(
                 kind,
                 K::RParen | K::RBracket | K::RBrace | K::InterpolationEnd
             ) {
-                if stack.pop() != Some(kind) {
+                let frame = stack.pop().unwrap();
+                if frame.close != kind {
                     return false;
                 }
-                if stack.is_empty() {
+                let structural = frame.structural();
+                if let Some(parent) = stack.last_mut() {
+                    parent.child(structural);
+                } else {
                     return structural && tokens.next().is_some_and(|t| t.kind == K::Eq);
                 }
+            } else {
+                let frame = stack.last_mut().unwrap();
+                frame.direct_structure |= matches!(kind, K::Comma | K::Ellipsis);
+                frame.content = Content::Other;
             }
         }
         false

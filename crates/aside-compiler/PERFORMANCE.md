@@ -6,7 +6,7 @@ no semantic execution or bytecode is measured. Source construction and a warmup
 of both APIs occur before sample regions. stats_alloc instruments the system
 allocator with atomic counters, so timings include instrumentation cost.
 
-Implementation/probe SHA-256: `46e328eb400d650352e3b2376345bca94c7cf928bf1e3ecd5375cb0fe75e0881`. This hashes relative path, NUL,
+Implementation/probe SHA-256: `67d7222cb84f9614a36b407a7ba2e3583ec56013b9666ca3a1d0092eb9548b47`. This hashes relative path, NUL,
 file bytes, NUL for Cargo.lock, compiler Cargo.toml, examples/frontend_probe.rs
 and sorted src/*.rs. Docs/results are excluded, so reporting commits do not
 change the measured code identity.
@@ -21,9 +21,9 @@ SHA-256 `e2e114d6bcecedb41f04565ea55a92eec216c5200ae1ee4cd6bd0f285810cb7d`.
 
 | Case | Samples | Median ms | p95 ms | Max ms | Allocation ops | Reallocation ops | Allocated bytes | Retained result bytes | Peak child RSS KiB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Mixed lex | 31 | 2.169 | 3.642 | 10.447 | 6146 | 16 | 3194976 | 3145728 | 9088 |
-| Mixed parse | 31 | 9.398 | 11.242 | 12.794 | 127075 | 30762 | 10299608 | 3337376 | 9088 |
-| 100000 named arguments | 11 | 87.497 | 103.079 | 103.079 | 700070 | 52 | 50239822 | 13600512 | 40204 |
+| Mixed lex | 31 | 1.981 | 2.204 | 2.260 | 6146 | 16 | 3194976 | 3145728 | 9216 |
+| Mixed parse | 31 | 9.081 | 16.675 | 32.602 | 127075 | 30762 | 10305752 | 3337376 | 9216 |
+| 100000 named arguments | 11 | 84.341 | 92.348 | 92.348 | 700070 | 52 | 50239822 | 13600512 | 39480 |
 
 Allocation values are per call (first sample; all raw samples are committed).
 stats_alloc's allocated/deallocated counters include reallocation growth/shrink;
@@ -69,7 +69,10 @@ CSV, RSS and budget outputs are committed in [bench-results](bench-results/).
   blocks, closure vs logical OR, grouped unions/function types, pattern is/OR,
   match block/object arms, yield/range/assignment and class/head children.
   Destructuring assignment reuses the pattern production, including object,
-  default/rest forms; mutable-name eligibility remains a binder rule.
+  default/rest forms; mutable-name eligibility remains a binder rule. Grouped
+  call/index/member receivers retain expression trees even when their arguments,
+  indexes or collection literals contain commas. Sole nested groups continue to
+  propagate tuple/array/object destructuring, including `((a,b)) = pair;`.
 - Numeric/base/int64 minimum/float boundaries and malformed Unicode escapes
   (+, empty digits, surrogates, >10FFFF) test exact ranges. Valid scalar
   boundaries, raw/triple strings and nested comments/interpolation are covered.

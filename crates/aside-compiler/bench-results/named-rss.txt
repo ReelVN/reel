@@ -1,3 +1,3 @@
-child_max_rss_kib=40204
-child_user_seconds=1.158564
-child_system_seconds=0.016509
+child_max_rss_kib=39480
+child_user_seconds=1.120762
+child_system_seconds=0.011264
