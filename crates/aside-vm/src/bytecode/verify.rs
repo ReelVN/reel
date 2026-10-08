@@ -81,6 +81,9 @@ impl VerifiedProgram {
     /// pass its region as consumed. A Leave remaining in its source's enclosing
     /// protected/catch block preserves that block, including an outer catch.
     /// Finally blocks never select themselves. No allocation or execution occurs.
+    /// A trusted executor queries an already determined exit: PC/cursor checks
+    /// do not revalidate arbitrary source-to-target control flow; a verified
+    /// instruction or valid executor state must guarantee destination legality.
     pub fn cleanup_handler(
         &self,
         function: FunctionId,
