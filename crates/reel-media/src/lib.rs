@@ -1,0 +1,22 @@
+//! AudioOutput and the Kira bridge, architecture contract 1.1.
+#![allow(clippy::result_large_err)]
+
+mod contracts;
+mod mixer;
+mod output;
+mod pcm;
+pub use contracts::*;
+pub use mixer::{DecodedSound, DecodedSoundRequest, KiraMixer, MixerLimits, Playback};
+pub use output::{OfflineOutput, UnderrunSignal, bounded_pcm_queue};
+pub use pcm::DeviceSample;
+
+#[cfg(all(
+    feature = "cpal-output",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+mod desktop;
+#[cfg(all(
+    feature = "cpal-output",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+pub use desktop::CpalOutput;
