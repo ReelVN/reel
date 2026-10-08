@@ -2242,3 +2242,86 @@ fn shared_cleanup_selects_full_lexical_parents_for_return_and_leave_inside_catch
         }
     }
 }
+
+#[test]
+fn exhausted_unwind_roots_become_a_consumed_resource_fault_and_release_outer_state() {
+    let p = finally_program(true);
+    let registry = support(&p);
+    let mut limits = VmLimits::default();
+    limits.heap.max_root_ranges = 39;
+    let mut v = Vm::load(
+        verify(p, Limits::default()).unwrap(),
+        registry,
+        limits,
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let t = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, t);
+    assert_eq!(
+        v.delivery_fault(d).unwrap().unwrap().kind,
+        FaultKind::Resource
+    );
+    assert_eq!(v.delivery_cause(d).unwrap().unwrap().as_int(), Some(41));
+    assert_eq!(v.stats().unwinds, 0);
+    assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+}
+
+#[test]
+fn explicit_throw_in_catch_sets_new_source_and_retains_original_value_as_cause() {
+    let mut p = fixtures::exception_regions();
+    let i = Instruction::new;
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    f.register_count = 2;
+    f.code = vec![
+        i(Opcode::LoadConst, 0, 1, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::LoadConst, 0, 2, 0),
+        i(Opcode::Throw, 0, 0, 0),
+    ];
+    f.regions = vec![ExceptionRegion {
+        protected: PcRange {
+            start: Pc(0),
+            end: Pc(2),
+        },
+        catch: Some(CatchRegion {
+            range: PcRange {
+                start: Pc(2),
+                end: Pc(4),
+            },
+            exception: Reg(1),
+        }),
+        finally: None,
+    }];
+    let mut v = vm(p);
+    let t = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, t);
+    collect(&mut v);
+    let f = v.delivery_fault(d).unwrap().unwrap();
+    assert_eq!(f.location.pc, Pc(3));
+    assert!(f.has_cause);
+    assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(1));
+    assert_eq!(v.delivery_cause(d).unwrap().unwrap().as_int(), Some(41));
+}
+
+#[test]
+fn dynamic_text_allocation_obeys_the_inherited_effect_mask() {
+    let mut p = binary_program(Opcode::Add);
+    p.signatures[0].effects = Effects(Effects::WRITE);
+    let mut v = vm(p);
+    let a = v.heap_mut().alloc_string("a").unwrap();
+    let b = v.heap_mut().alloc_string("b").unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[a, b], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, task);
+    assert_eq!(
+        v.delivery_fault(d).unwrap().unwrap().kind,
+        FaultKind::Effect
+    );
+}

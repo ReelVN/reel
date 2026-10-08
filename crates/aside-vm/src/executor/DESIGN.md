@@ -1,8 +1,10 @@
 # V03 execution interface draft
 
 Task ownership is corrected by [TASK-DRAFT.md](TASK-DRAFT.md); the original
-single-task scheduling proposal is superseded. The implementation is being moved
-to one shared-session Heap/module set with a bounded TaskState pool.
+single-task scheduling proposal is superseded. The implementation now uses
+one shared-session Heap/module set with a bounded TaskState pool. See
+[README.md](README.md) for the current API, dependency pins and remaining limits.
+This file retains the initial interface proposal for review provenance.
 
 Contract: `docs/aside-language.md` at c18db948554cdc278307617846060fe133922818 §22.
 Dependencies: V02 b14e393; B01 178df78, to be replaced with the integration owner's final reviewed head before acceptance. PR base is `task/issue-17-frame-slots`, selected at creation and retained.

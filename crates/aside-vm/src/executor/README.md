@@ -4,9 +4,9 @@ The first public interface/state proposal was committed as `40d1b9d`, before the
 executor implementation. Public Rust types are now isolated in [api.rs](api.rs).
 The draft PR is https://github.com/jhq223/reel/pull/23, with the creation-time base
 `task/issue-17-frame-slots` unchanged. The frozen language document is exactly
-`c18db948554cdc278307617846060fe133922818`. Integrated dependencies: V02 `cceb151`
-and B01 `8121429` (B01 independent cost revalidation is still coordinated by the
-integration owner).
+`9cfe5ece49a419c13b7f65992f8b68e46ab4ffac`, which clarifies shared-session
+Tasks and accumulating contexts. Integrated dependencies: V02 `cceb151` and B01
+`be4f98e`; independent dependency acceptance is coordinated by the integration owner.
 
 This executes verified hand-authored B01 packages. Source compilation/lowering,
 creator-guide snippets and production source execution are **not** claimed.
@@ -19,8 +19,12 @@ Native signatures/capabilities must come from independent adapter metadata,
 resolved against the program's tables; they must not be copied from an untrusted
 package. Tests and the probe independently declare the fixture echo adapter.
 
-`start`/`start_closure` allocate bounded frames and copy externally borrowed
-arguments before returning. `run_slice` drives ScriptFrame binding/body/exit
+One Vm owns one shared Heap, FrameSlots and module/global set. A bounded,
+preallocated and capacity-charged TaskState pool holds independent stacks,
+unwinds/caught faults, waits, deliveries, cancellation and equality cursors.
+`start`/`start_closure` return a fresh TaskId and copy externally borrowed
+arguments before returning. `run_slice(task, budget, now)` selects that Task and
+drives ScriptFrame binding/body/exit
 and NativeFrame copy/bind/issue/wait/callback/resume/commit/release stages.
 A TaskId is fixed for the entire task, including native callbacks; FrameId and
 host/delivery serials are monotonic. Internal argument/return targets are the
@@ -34,21 +38,26 @@ they never issue the original native entry again. Pending requires the scoped
 `ticket.wait_id()` identity. Ready/Error completion consumes only the current
 wait; old, repeated and cross-VM completions fail without committing a result.
 The host can inspect continuation values and callback value/fault metadata.
-Effects and Context are carried on tickets and inherited by callbacks. A native
+Each resume ticket carries the continuation's version/stage, including callback
+resumes. Effects intersect along calls; NoWait, Init and Derived accumulate as
+independent flags on tickets and callbacks. A native
 that may wait can still return Ready in NoWait; actual Pending faults at the
 original call location. Cleanup calls inherit NoWait dynamically.
 
 Returned/Fault holds a delivery root. `delivery_value` keeps it registered;
 `take_delivery_root` publishes to an existing host root before clearing delivery;
-`discard_delivery` explicitly releases the result. A task cannot be restarted
-while an unclaimed delivery exists. Heap allocations/mutations for host results
+`discard_delivery` releases the result and makes that Task slot reusable. IDs
+include TaskId and heap/epoch/serial; old identities never identify a reused
+slot. Other Tasks may start/run while an earlier Task waits or retains a result. Heap allocations/mutations for host results
 use the same total byte ceiling; collection always goes through `Vm::gc_step`
 with the single FrameSlots provider.
 
-`cancel(owner)` invalidates tickets immediately and enters hard owner teardown.
-Subsequent slices release comparison/unwind/frame roots, then scan single host
-root descriptors. Completion is `VmError::Idle` with `is_idle()==true`, which
-means the task is gone. It does not run script finalizers. External native
+`cancel_task(task)` invalidates exactly that Task's tickets immediately and enters
+hard task teardown. `cancel(owner)` selects all of that owner's Tasks and also
+releases the owner's external single roots. Subsequent slices release that Task's
+comparison/unwind/frame roots and bounded external descriptor scan. `VmError::Idle`
+means the selected Task is gone; `is_idle()` checks whether any Task remains.
+Selective cancellation keeps other Tasks and the shared module roots usable. It does not run script finalizers. External native
 resource cancellation remains the owning adapter's responsibility; this core
 retains no platform handles. Retained frame/window/work pool capacities remain
 charged until the VM is dropped.
@@ -62,27 +71,35 @@ capture/global reads and global init/write, numeric/bitwise arithmetic and unary
 operations, exact numeric/scalar/identity equality and comparisons, rooted
 resumable String/Bytes/tuple equality, bounded string concatenation, strict bool
 and null branches, closure creation, ordinary Call/Return, ordered ArgsNew/
-ArgsPush/ArgsNamed, Throw/Leave/EndFinally. The same Cell kind stores initialized
+ArgsPush/ArgsNamed, Throw/Rethrow/Leave/EndFinally. The same Cell kind stores initialized
 state, immutable mutability and code/module-versioned builtin type contracts;
 generic field writes cannot bypass them. Closure code/capture fields are immutable.
 
 Every other opcode, including unreachable code, is rejected during load. The
 current core also rejects structural/named/function type definitions, tuple
 constants, async/generator functions, rest/property-bag signatures, native script
-defaults, and excessive register/signature sizes during load. Rethrow, packed
-spreads, collection/class/member/pattern/iterator/task/await/yield handlers and
+defaults, and excessive register/signature sizes during load. Packed spreads, collection/class/member/pattern/iterator/task/await/yield handlers and
 snapshot/restore remain follow-up work on this exact execution interface. Return
 type, binding type, initialization and mutability checks happen at runtime.
 
-**Outstanding shared-interface conflict:** B01 currently exposes only
-`exception_handler(function, pc, consumed_region)` for throws. Its strict consumed
-subtree semantics are used for exception continuation. Return/Leave require a
-normal cleanup selector that does not choose catch and that can represent an
-explicit target PC. V03 contains a clearly marked temporary adapter for that
-selection; it must be replaced by B01's shared API before final acceptance.
-No old "skip one region" exception semantics are reused. Nested-finally behavior
-checks below are preliminary until that shared normal-exit API is connected.
-Full exception cause envelopes and Rethrow are not yet provided by this core.
+Normal Return/Leave use B01's `cleanup_handler(function, original_pc,
+CleanupDestination, consumed_region)`; faults use its `exception_handler`.
+Both use the same full lexical region relationships and strict consumed ancestors.
+The executor has no separate cleanup selector. An inner catch/cleanup inside
+an active finally preserves the outer pending exit. Only an escaping new failure
+supersedes it, retaining the previous exit's value as a direct rooted cause.
+Rethrow preserves the caught source/kind/cause; explicit throw in catch uses the
+new source with the previous caught value as cause. Parameter/default preparation
+failures go to the caller and never execute unentered callee-body handlers.
+Native binder faults retain their exact FaultKind; callback faults retain their
+source/kind/cause when forwarded by the host. Root/unwind admission exhaustion
+becomes a consumed Resource fault rather than replaying the same phase.
+
+**Remaining exception contract work:** this core exposes FaultInfo (stable kind,
+original location) and a direct cause Value. It does not yet retain the complete
+ErrorEnvelope stack or arbitrarily nested cause metadata described in §14.
+This limitation remains explicit for integration review and is not a claim of
+complete language exception diagnostics or snapshot support.
 
 ## Budget units and atomic boundaries
 
@@ -111,8 +128,8 @@ cleanup discards at most one superseded unwind root per internal step. Slice
 work/allocation reports are conservative dispatch charges, not measured CPU
 cycles; the probe separately measures actual elapsed time and allocator calls.
 Deadlines are checked between stages; a stage's atomic cost remains the stated
-bound. Heap, code capacity, window values/bitmap/metadata, frame/unwind vectors,
-comparison cursor/root storage, capture/text scratch and VM inline control all
+bound. Heap, code capacity, window values/bitmap/metadata, Task/frame/unwind/caught
+vectors, comparison cursor/root storage, capture/text scratch and VM inline control all
 share HeapBudgetUsage. No continuation contains uncharged owned host closures.
 
 ## Verification and performance evidence
@@ -134,6 +151,13 @@ response rounds, callback faults and callback Pending on the same task stack,
 NoWait dynamic inheritance, original wait source, changed definition-cell defaults,
 rooted terminal delivery, stale/cross-VM tickets and waits, common budget failure,
 owner cancellation, two finally layers and a normal nested try inside finally.
+Additional regressions keep A waiting while B mutates the same Cell/global,
+retain multiple deliveries across GC, selectively cancel a third Task, and reject
+old Task identities after slot reuse. NoWait+Derived and Init+Derived retain both
+constraints. Callback dispatch uses the returned continuation stage, with no
+host-side round counter. Resource admission and preparation fail once and are
+routed at the caller; inner errors inside finally preserve pending Return/Throw.
+Normal exits nested in catch/finally use the shared B01 selector.
 Numeric edges cover exact large int/float comparisons, NaN, negative zero,
 checked overflow and strict bool. Long equality roots persist across work=1/GC.
 

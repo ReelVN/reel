@@ -41,5 +41,5 @@ Finally correction: select the innermost exception target before discarding an
 active cleanup record. If the target lies inside that active finally, retain the
 outer pending return/throw. If it escapes, replace that exit and retain its value
 as cause. Tests cover explicit throw, type error, native Error and callback Error,
-each with pending return and pending throw. Normal return/Leave still requires the
-missing B01 shared cleanup selector already reported; no format/opcode is copied.
+each with pending return and pending throw. Normal Return/Leave now use B01 be4f98e's shared cleanup_handler; throws use
+exception_handler. No format/opcode or lexical cleanup selector is copied.

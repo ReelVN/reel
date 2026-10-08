@@ -1791,7 +1791,7 @@ impl Vm {
                         * VALUE_CHUNK_BYTES,
                 )
             }
-            Opcode::Rethrow => (
+            Opcode::Throw | Opcode::Rethrow => (
                 f.regions.len() as u64 + self.active.caught.data.len() as u64 + 3,
                 0,
             ),
@@ -2019,6 +2019,9 @@ impl Vm {
                     && self.is_text(left, ObjectKind::String)
                     && self.is_text(right, ObjectKind::String)
                 {
+                    if s.effects.0 & Effects::ALLOCATE == 0 {
+                        return Err(FaultKind::Effect);
+                    }
                     self.concat_text(left, right)?
                 } else {
                     binary(op, left, right)?
@@ -2197,13 +2200,37 @@ impl Vm {
             }
             Opcode::Throw => {
                 let v = self.read(*s, r(a))?;
-                self.slots
-                    .write(&mut self.heap, at(s.env, 1), v)
-                    .map_err(heap_fault)?;
+                let prior = f
+                    .regions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(id, region)| {
+                        region
+                            .catch
+                            .as_ref()
+                            .filter(|c| c.range.contains(s.pc))
+                            .map(|c| (RegionId(id as u32), c.range.end.0 - c.range.start.0))
+                    })
+                    .min_by_key(|(_, width)| *width)
+                    .map(|(id, _)| id);
+                let prior = prior.filter(|id| {
+                    self.active
+                        .caught
+                        .data
+                        .iter()
+                        .any(|c| c.frame == s.id && c.region == *id)
+                });
+                if let Some(region) = prior {
+                    let previous = self.value(s.env, 3 + region.0 * 2).map_err(vm_fault)?;
+                    self.put(s.env, 2, previous).map_err(vm_fault)?;
+                } else {
+                    self.clear(s.env, 2).map_err(vm_fault)?;
+                }
+                self.put(s.env, 1, v).map_err(vm_fault)?;
                 s.phase = ScriptPhase::Exit {
                     origin: s.pc,
                     reason: ExitReason::Throw(FaultInfo {
-                        has_cause: false,
+                        has_cause: prior.is_some(),
                         kind: FaultKind::Thrown,
                         location: self.loc(*s, s.pc),
                     }),
@@ -2408,6 +2435,29 @@ impl Vm {
         }
         Ok(())
     }
+    fn handler_resource_fault(
+        &mut self,
+        s: &mut ScriptFrame,
+        origin: Pc,
+        target: Pc,
+        kind: FaultKind,
+    ) -> Result<(), VmError> {
+        let previous = self.value(s.env, 1)?;
+        self.put(s.env, 2, previous)?;
+        self.put(s.env, 1, Value::NULL)?;
+        // This handler cannot publish its retained state. Route the new failure
+        // from its entry so the shared selector proceeds to lexical ancestors.
+        s.phase = ScriptPhase::Exit {
+            origin: target,
+            reason: ExitReason::Throw(FaultInfo {
+                kind,
+                location: self.loc(*s, origin),
+                has_cause: true,
+            }),
+            skip: None,
+        };
+        Ok(())
+    }
     fn exit_step(
         &mut self,
         s: &mut ScriptFrame,
@@ -2490,7 +2540,13 @@ impl Vm {
                         self.active.caught.data[index].info = info;
                     } else {
                         if self.active.caught.data.len() == self.limits.max_unwinds as usize {
-                            return Err(VmError::Limit);
+                            self.handler_resource_fault(
+                                s,
+                                origin,
+                                handler.pc,
+                                FaultKind::Resource,
+                            )?;
+                            return Ok(());
                         }
                         self.active.caught.data.push(CaughtFault {
                             frame: s.id,
@@ -2504,9 +2560,17 @@ impl Vm {
                 }
                 HandlerKind::Finally => {
                     if self.active.unwinds.data.len() == self.limits.max_unwinds as usize {
-                        return Err(VmError::Limit);
+                        self.handler_resource_fault(s, origin, handler.pc, FaultKind::Resource)?;
+                        return Ok(());
                     }
-                    let root = self.open(s.owner, RootKind::Exception, 2)?;
+                    let root = match self.open(s.owner, RootKind::Exception, 2) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let kind = language_fault(e)?;
+                            self.handler_resource_fault(s, origin, handler.pc, kind)?;
+                            return Ok(());
+                        }
+                    };
                     self.put(root, 0, value)?;
                     if matches!(reason,ExitReason::Throw(info) if info.has_cause) {
                         let cause = self.value(s.env, 2)?;
