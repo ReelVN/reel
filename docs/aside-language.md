@@ -329,6 +329,32 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 
 该决策使实现拥有明确起点。后续布局优化保留相同语言语义、快照格式和作者 API，以正式 VM 的剧情、UI、动画、对象图和密集数据负载复测。优化验收同时报告延迟分位数、内存峰值、分配与回收成本。
 
+## 二十二 字节码与执行器的实现合同
+公共格式位于 aside-vm::bytecode，只包含程序数据、验证和反汇编；aside-compiler 单向依赖它，格式模块不引用 Rowan、parser 或 Reel。下列合同承载完整语言目标，各实现任务分别记录已运行的指令与行为。
+
+程序与验证
+BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Signature 保存参数名称/顺序/类型/可变性、缺省表达式入口、rest、返回契约和效果；缺省仍在每次调用时运行。
+Const 使用完整 int64、float64 位编码、UTF-8、Bytes 与规定的不可变结构。磁盘格式使用小端整数和 u32 索引；PC 表示指令序号。版本 1 每条指令为 16 字节：u16 opcode、u16 flags、三个 u32 操作数，未声明 flags 为零；复杂操作引用有类型的描述表。常量/符号/函数/模块/寄存器/PC 分别使用不同索引类型。编码器逐字段写入，运行时 Value、HeapId、root token 和 Rust 内存布局不进入包。
+执行器只接收字段私有的 VerifiedProgram。解码/验证先核对长度与总量限制再分配，检查所有索引、窗口、跳转、捕获、签名/缺省入口、异常与清理区域、控制流及 native 版本/能力。未知 opcode 或缺少所需能力给出定位错误；动态类型、初始化状态、只读写和效果仍在运行时检查。包加载和不可变代码另有容量账本。
+指令规格表统一规定操作数、读写寄存器、分支、可抛错/可暂停与描述表引用，并由 encoder、decoder、verifier、disassembler 和 dispatcher 共同引用。指令族覆盖值/绑定、cell/全局、数值与严格 bool 控制流、闭包/调用/返回、集合/类/成员、模式/迭代、异常/finally、yield/await 与任务；children 和属性引用按既定语义降为通用操作及描述。编译器和执行器使用同一份规格，禁止各自猜测编号和操作数含义。
+
+连续帧与可扫描根区
+热寄存器保存在 VM 拥有的连续 FrameSlots 窗口，按 base+Reg 访问；它们不进入 BTreeMap 集合，也不按每个寄存器分配对象或 RootToken。帧使用可复用且受容量约束的窗口；语言未初始化状态用独立 bitmap 表示，null 保持普通值含义。
+Heap 为每个固定长度根区登记带 HeapId/SessionEpoch 和代际 RangeKey 的 RootRangeToken，只保存 owner/kind/长度和游标。每次 GC 步临时借用 VM 的 RootRanges 查询切片，Heap 不保存地址或长期借用。寄存器、实参、native 临时值、异常和交付结果均有根区。长期宿主保留继续使用单值根。
+根区先建立全 null 的有效槽位，登记与 provider 映射在对 GC 可见前一起发布，随后逐项经插入屏障发布真实值。结束根区时先注销，再释放窗口。每次覆盖、移动、参数复制和结果交付均先屏障再写入；目标根先发布，来源根后清除。根扫描以描述符槽位、generation 和元素偏移推进，空洞/描述符/单个Value分别计工作量；槽位复用时重置旧游标。物理搬迁仅在安全点更新映射，保持逻辑身份、长度与顺序；短期借用结束后才能搬迁或重入。
+仍有效根区缺失 provider 或长度不符是运行时一致性错误，不能按空根跳过。存在外部根区时，原有 gc_step 入口也须接入同一 provider，或明确拒绝缺失 provider 的调用。单值根、全部根区和灰队列处理完才进入统一弱引用截止点。窗口容量、bitmap、帧/续体元数据、描述符、空闲池、退休槽及搬迁双份驻留都计入总字节额度；实际释放后才退账，保留的池容量持续计费。相关接口保持 VM 内部封装，避免绕过屏障直接写槽。
+
+恢复、调用与结果
+ScriptFrame 保存 FrameId、固定 CodeRef/ModuleInstanceId、PC、窗口、闭包/接收者、参数绑定阶段、返回目标、效果、owner/region、异常展开与当前操作阶段；NativeFrame 保存版本化续体与其强引用槽。源码错误节点和未解决诊断不进入可执行 lowering。
+run_slice 接收指令、内部工作、分配和时钟额度，返回 Returned、BudgetYield、HostCall、Waiting 或 Fault。长比较、展开、匹配等按明确阶段计费。普通函数、async 和 generator 共用调用绑定规则，由函数种类决定执行/创建任务/创建生成器。
+HostCall 在暴露响应 ticket 前已登记状态和参数根。ticket 含调用序号、native 符号/签名版本、任务/owner 和源位置，响应消费一次；参数只通过短生命周期借用访问。Returned/Fault 的数据继续留在 VM 登记的交付根或拥有型宿主根中，直到转移到另一已登记根或拥有型根句柄，或显式放弃结果；领取裸 Value 本身保持原交付根，避免失去保活。
+Ready 先发布结果再提交返回槽并进入后继；Pending 保存等待描述和后继阶段；CallScript 先保留 NativeFrame 再在同任务压入 callback；Continue 保存算法阶段在下一片继续；Error 从原调用点展开。发出、等待、提交、完成是可保存的不同阶段，恢复不得重跑已生效 native 入口。快照使用逻辑 ID 和代码版本，恢复时重新分配对象与根区，不序列化运行时 token。
+赋值位置与实参保持源码求值顺序。无展开普通调用使用连续参数窗口；展开在其源码位置捕获元素，随后参数的副作用不能反向改变先前展开。可变捕获使用共享 cell，每轮循环的绑定独立；不会保存可移动窗口的地址作为 upvalue。
+
+贯通验收
+共享格式、验证器和手写包先固定；lowering 与 dispatcher 随后并行使用它们。源码验收必须真实经过解析、名称/捕获分析、寄存器 IR、字节码验证和执行：普通 helper 内的 native Ready/Pending 均得到同一结果；指令预算设为 1 时仍保持结果和副作用次数。native 入口只调用一次，重复/旧 epoch 完成被拒绝；暂停参数只由帧保活，期间完成 GC 后仍有效，任务与结果释放后可回收。
+CallScript/Continue 验收多次恢复、callback fault 和受限上下文；帧压入/弹出、已扫描寄存器改写、根区复用与搬迁在每个 GC 步之间验证。Quirrel 转换断言接入相同源码链路，语法通过和执行通过分列。快照 round-trip、完整标准库、类/模块、生成器和异步语义各自按既定规范验收；单条源码执行成功只记录为执行链路贯通。
+
 ## 参考来源
 - Value 实验：https://github.com/jhq223/reel/pull/2
 - 实验说明：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/TRACE.md
@@ -336,3 +362,4 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 - slotmap 键契约：https://docs.rs/slotmap/1.1.1/slotmap/struct.KeyData.html
 - slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
 - 增量回收参考：https://github.com/kyren/gc-arena
+
