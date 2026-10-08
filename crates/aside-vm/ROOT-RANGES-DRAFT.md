@@ -1,6 +1,8 @@
 # V02 root ranges and FrameSlots — interface draft for review
 
-Status: proposed interfaces and ownership only; implementation has not started.
+Status: the owner approved the b68045d interface draft on 2026-10-08;
+V02 is now implemented and validated. This file records the reviewed contract.
+Actual evidence and remaining limits are in [ROOT-RANGES-VALIDATION.md](ROOT-RANGES-VALIDATION.md).
 Issue: https://github.com/jhq223/reel/issues/17.
 
 The frozen contract is section 22 of `docs/aside-language.md` at
@@ -29,9 +31,9 @@ the executor task. Those future allocations must use the same byte ceiling;
 this task accounts for the window/provider metadata it actually allocates.
 It does not claim that a working window constitutes a working executor.
 
-## Public storage interfaces proposed for lib exports
+## Reviewed public storage interfaces
 
-The following Rust signatures are a draft, not already implemented exports.
+The following Rust signatures are implemented exports.
 Types have private representation unless fields are shown.
 
 ```rust
@@ -60,6 +62,8 @@ impl FrameSlots {
     pub fn new(heap: &mut Heap, limits: FrameSlotsLimits)
         -> Result<Self, HeapError>;
     pub fn roots(&self) -> RootRanges<'_>;
+    pub fn range_owner(&self, heap: &Heap, range: RootRangeToken)
+        -> Result<(RootOwner, RootKind), HeapError>;
     pub fn open(&mut self, heap: &mut Heap, owner: RootOwner,
                 kind: RootKind, len: u32) -> Result<RootRangeToken, HeapError>;
     pub fn read(&self, at: RangePosition) -> Result<Value, HeapError>;
@@ -113,8 +117,8 @@ ends before a write, relocation, release, or VM reentry. `RangePosition` is
 a storage position, not a second bytecode Reg type. Consumers convert their
 verified operand to its u32 offset; this task never defines bytecode operands.
 
-Compatibility changes requiring review: `gc_step` now returns `Result`, and
-`HeapLimits` gains `max_root_ranges` (proposed default 1,024, independent of
+Approved compatibility changes: `gc_step` now returns `Result`, and
+`HeapLimits` gains `max_root_ranges` (default 1,024, independent of
 single roots). Existing heap tests/load calls will check successful Results.
 With any live external descriptor, provider-less `gc_step` returns
 `MissingRootProvider` before changing any phase/cursor, including Weak/Sweep.
@@ -260,7 +264,7 @@ their largest indivisible work/time, allocations and simultaneous residency.
 If the configured maximum is too costly for a target's safe-point budget, the
 caller reduces the configured limits; this draft does not claim device timings.
 
-## Planned behavioral and cost evidence after review
+## Behavioral and cost evidence required by the reviewed contract
 
 - Between every one-unit GC step, overwrite a previously scanned register with
   an otherwise white object; move/swap the sole unscanned child behind the cursor
@@ -336,6 +340,7 @@ Measurements ran in this Linux x86_64 KVM container with five exposed CPUs,
 reported model Intel Xeon Platinum 8573C, using rustc 1.96.0
 `ac68faa20` (2026-05-25); this is not the N100/Vita reference hardware.
 i686 library, tests and example were cross-checked and the library compiled;
-no 32-bit binary or device was executed. No V02 behavior is claimed validated
-yet. Implementation remains pending the integration owner's interface review;
-the authorized draft PR initially contains this draft and baseline evidence.
+no 32-bit binary or device was executed. These preparation measurements describe
+the accepted pre-V02 baseline. The initial draft PR contained this contract and
+baseline evidence; V02 implementation evidence is recorded separately in
+[ROOT-RANGES-VALIDATION.md](ROOT-RANGES-VALIDATION.md).

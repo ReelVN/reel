@@ -1,6 +1,8 @@
+use crate::HeapBudgetUsage;
 use crate::gc::Collector;
 use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, VALUE_CHUNK_BYTES, Values};
-use crate::slots::{HeapKey, RootKey, Slots, heap_key, index};
+use crate::root_ranges::{BOOK_BYTES, RangeDescriptor};
+use crate::slots::{HeapKey, RangeKey, RootKey, Slots, heap_key, index};
 use crate::{GcPhase, HeapHandle, HeapId, SessionEpoch, Value, WeakHandle};
 use slotmap::Key;
 use std::collections::VecDeque;
@@ -66,6 +68,8 @@ pub enum RootKind {
     NativeContinuation,
     Host,
     Work,
+    Arguments,
+    Exception,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct RootOwner(pub u64);
@@ -91,6 +95,7 @@ impl RootToken {
 pub struct HeapLimits {
     pub max_objects: u32,
     pub max_roots: u32,
+    pub max_root_ranges: u32,
     pub max_bytes: u64,
     pub max_mutation_values: u32,
     pub max_mutation_bytes: u32,
@@ -100,6 +105,7 @@ impl Default for HeapLimits {
         Self {
             max_objects: 16_384,
             max_roots: 1024,
+            max_root_ranges: 1024,
             max_bytes: 32 * 1024 * 1024,
             max_mutation_values: 256,
             max_mutation_bytes: 4096,
@@ -122,6 +128,20 @@ pub enum HeapError {
     OutOfBounds,
     ObjectCapacity,
     RootCapacity,
+    InvalidRootRange,
+    RootRangeCapacity,
+    WindowCapacity,
+    RootProviderAttached,
+    MissingRootProvider,
+    WrongRootProvider,
+    RootRangeLength {
+        expected: u32,
+        actual: u32,
+    },
+    UninitializedSlot,
+    InvalidRangeCursor,
+    AllocationFailure,
+    HeapUnavailable,
     OperationLimit {
         requested: u64,
         limit: u64,
@@ -155,6 +175,9 @@ pub struct HeapStats {
     pub roots: u32,
     pub retired_objects: u32,
     pub retired_roots: u32,
+    pub root_ranges: u32,
+    pub retired_root_ranges: u32,
+    pub external_bytes: u64,
     pub reserved_bytes: u64,
     pub payload_bytes: u64,
     pub pending_bytes: u64,
@@ -190,6 +213,11 @@ pub struct Heap {
     pub(crate) objects: Slots<HeapKey, Object>,
     roots: Slots<RootKey, Root>,
     pub(crate) root_index: Vec<Option<RootKey>>,
+    pub(crate) ranges: Slots<RangeKey, RangeDescriptor>,
+    pub(crate) range_index: Vec<Option<RangeKey>>,
+    pub(crate) range_scan_len: usize,
+    pub(crate) next_attachment: u64,
+    pub(crate) usage: HeapBudgetUsage,
     pub(crate) allocations: VecDeque<HeapKey>,
     pub(crate) gray: VecDeque<HeapKey>,
     pub(crate) release: VecDeque<HeapKey>,
@@ -199,7 +227,6 @@ pub struct Heap {
     payload_bytes: u64,
     pub(crate) pending_bytes: u64,
     pub(crate) peak_pending_bytes: u64,
-    peak: u64,
     chunk_allocations: u64,
     _thread: PhantomData<Rc<()>>,
 }
@@ -208,7 +235,7 @@ impl Heap {
     pub fn new(epoch: SessionEpoch, limits: HeapLimits) -> Result<Self, HeapError> {
         Self::with_retirement(epoch, limits, u32::MAX)
     }
-    fn with_retirement(
+    pub(crate) fn with_retirement(
         epoch: SessionEpoch,
         limits: HeapLimits,
         retirement: u32,
@@ -217,6 +244,7 @@ impl Heap {
             || limits.max_objects == u32::MAX
             || limits.max_roots == 0
             || limits.max_roots == u32::MAX
+            || limits.max_root_ranges == u32::MAX
             || limits.max_mutation_values == 0
             || limits.max_mutation_bytes == 0
         {
@@ -226,10 +254,15 @@ impl Heap {
             + 2 * std::mem::align_of::<crate::slots::Slot<Object>>().max(4);
         let root_stride = std::mem::size_of::<crate::slots::Slot<Root>>()
             + 2 * std::mem::align_of::<crate::slots::Slot<Root>>().max(4);
+        let range_stride = std::mem::size_of::<crate::slots::Slot<RangeDescriptor>>()
+            + 2 * std::mem::align_of::<crate::slots::Slot<RangeDescriptor>>().max(4);
         let estimate = (limits.max_objects as u64 + 1) * object_stride as u64
             + (limits.max_roots as u64 + 1) * root_stride as u64
             + limits.max_objects as u64 * 3 * std::mem::size_of::<HeapKey>() as u64
             + (limits.max_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
+            + (limits.max_root_ranges as u64 + 1)
+                * (range_stride as u64 + std::mem::size_of::<Option<RangeKey>>() as u64)
+            + BOOK_BYTES
             + std::mem::size_of::<Self>() as u64;
         if estimate > limits.max_bytes {
             return Err(HeapError::ResourceLimit {
@@ -242,33 +275,47 @@ impl Heap {
         if estimate > isize::MAX as u64 {
             return Err(HeapError::InvalidLimits);
         }
+        let usage = HeapBudgetUsage::new(limits.max_bytes);
+        usage.charge(estimate - BOOK_BYTES);
         let mut heap = Self {
             id: HeapId::fresh().ok_or(HeapError::IdentityExhausted)?,
             epoch,
             objects: Slots::new(limits.max_objects as usize, retirement),
             roots: Slots::new(limits.max_roots as usize, retirement),
             root_index: vec![None; limits.max_roots as usize + 1],
+            ranges: Slots::new(limits.max_root_ranges as usize, retirement),
+            range_index: vec![None; limits.max_root_ranges as usize + 1],
+            range_scan_len: 0,
+            next_attachment: 0,
+            usage,
             allocations: VecDeque::with_capacity(limits.max_objects as usize),
             gray: VecDeque::with_capacity(limits.max_objects as usize),
             release: VecDeque::with_capacity(limits.max_objects as usize),
             gc: Collector::default(),
             limits,
-            reserved: 0,
+            reserved: estimate,
             payload_bytes: 0,
             pending_bytes: 0,
             peak_pending_bytes: 0,
-            peak: 0,
             chunk_allocations: 0,
             _thread: PhantomData,
         };
-        heap.reserved = heap.objects.reserved_bytes()
+        let actual = heap.objects.reserved_bytes()
             + heap.roots.reserved_bytes()
             + (heap.root_index.capacity() * std::mem::size_of::<Option<RootKey>>()) as u64
+            + heap.ranges.reserved_bytes()
+            + (heap.range_index.capacity() * std::mem::size_of::<Option<RangeKey>>()) as u64
+            + BOOK_BYTES
             + ((heap.allocations.capacity() + heap.gray.capacity() + heap.release.capacity())
                 * std::mem::size_of::<HeapKey>()) as u64
             + std::mem::size_of::<Self>() as u64;
-        heap.ensure_bytes(0)?;
-        heap.peak = heap.reserved;
+        if actual > estimate {
+            heap.usage.ensure(actual - estimate)?;
+            heap.usage.charge(actual - estimate);
+        } else {
+            heap.usage.refund(estimate - actual);
+        }
+        heap.reserved = actual;
         Ok(heap)
     }
     pub fn id(&self) -> HeapId {
@@ -288,36 +335,31 @@ impl Heap {
             roots: self.roots.occupied() as u32,
             retired_objects: self.objects.retired() as u32,
             retired_roots: self.roots.retired() as u32,
+            root_ranges: self.ranges.occupied() as u32,
+            retired_root_ranges: self.ranges.retired() as u32,
+            external_bytes: self.usage.charged_bytes() - self.reserved - self.payload_bytes,
             reserved_bytes: self.reserved,
             payload_bytes: self.payload_bytes,
             pending_bytes: self.pending_bytes,
             peak_pending_bytes: self.peak_pending_bytes,
-            charged_bytes: self.reserved + self.payload_bytes,
-            peak_charged_bytes: self.peak,
+            charged_bytes: self.usage.charged_bytes(),
+            peak_charged_bytes: self.usage.peak_charged_bytes(),
             chunk_allocations: self.chunk_allocations,
             gray_len: self.gray.len() as u32,
             allocation_queue_len: self.allocations.len() as u32,
         }
     }
     fn ensure_bytes(&self, bytes: u64) -> Result<(), HeapError> {
-        let used = self.reserved + self.payload_bytes;
-        if bytes > self.limits.max_bytes.saturating_sub(used) {
-            Err(HeapError::ResourceLimit {
-                requested: bytes,
-                used,
-                limit: self.limits.max_bytes,
-            })
-        } else {
-            Ok(())
-        }
+        self.usage.ensure(bytes)
     }
     fn charge(&mut self, bytes: u64, chunks: u64) {
         self.payload_bytes += bytes;
         self.chunk_allocations += chunks;
-        self.peak = self.peak.max(self.reserved + self.payload_bytes);
+        self.usage.charge(bytes);
     }
     pub(crate) fn freed(&mut self, bytes: u64) {
         self.payload_bytes -= bytes;
+        self.usage.refund(bytes);
     }
     pub(crate) fn key(&self, value: Value) -> Result<HeapKey, HeapError> {
         let (heap, raw) = value.object_parts().ok_or(HeapError::WrongKind)?;
@@ -365,6 +407,9 @@ impl Heap {
         self.validate_value(value)?;
         self.shade(value);
         Ok(())
+    }
+    pub(crate) fn root_insertion_barrier(&mut self, value: Value) -> Result<(), HeapError> {
+        self.barrier(value)
     }
     fn input_values(&self, values: &[Value]) -> Result<(), HeapError> {
         if values.len() as u64 > self.limits.max_mutation_values as u64 {
@@ -808,6 +853,23 @@ impl Heap {
     }
 }
 
+impl Drop for Heap {
+    fn drop(&mut self) {
+        self.usage.0.heap_alive.set(false);
+        self.objects.drop_storage();
+        self.roots.drop_storage();
+        self.ranges.drop_storage();
+        drop(std::mem::take(&mut self.root_index));
+        drop(std::mem::take(&mut self.range_index));
+        drop(std::mem::take(&mut self.allocations));
+        drop(std::mem::take(&mut self.gray));
+        drop(std::mem::take(&mut self.release));
+        // The Rc book itself remains physically live while an observer/pool owns it.
+        self.usage
+            .refund(self.reserved - BOOK_BYTES + self.payload_bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,7 +877,7 @@ mod tests {
     fn collect(h: &mut Heap) {
         h.begin_collection().unwrap();
         while h.phase() != GcPhase::Idle {
-            h.gc_step(GcBudget::default());
+            h.gc_step(GcBudget::default()).unwrap();
         }
     }
     #[test]

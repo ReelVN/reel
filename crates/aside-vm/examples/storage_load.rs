@@ -50,7 +50,7 @@ fn cycle(h: &mut Heap, report: &mut Report, samples: &mut [u64; 16384], allowanc
         }
         let allocations = allocation_counter::measure(|| {
             let start = Instant::now();
-            progress = h.gc_step(budget);
+            progress = h.gc_step(budget).unwrap();
             ns = start.elapsed().as_nanos() as u64;
         });
         report.gc_allocations += allocations.count_total;
