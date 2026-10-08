@@ -24,10 +24,10 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 - reel-player：平台适配、窗口与事件循环，组装引擎、渲染和媒体输出。
 - reel-cli：检查、开发运行和构建，调用编译器与播放器库入口。
 依赖箭头固定为 stage→core，render→stage/core，media→core，engine→aside-vm/stage/media/core，player→engine/render/core，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
-通用依赖直接使用锁定版本，不复制进仓库。Parley、winit、wgpu、Kira、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理；只有确认必须修改上游代码时，才评估纳入源码。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。Masonry 先验证适配层能否满足需求，再决定是否维护仓库内分支，不预先复制整套 UI 生态。
+通用依赖直接使用锁定版本，不复制进仓库。Parley、winit、wgpu、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理。已确认需要修改的 Masonry 和 Kira 使用固定源码快照；其余依赖继续锁定引用。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。Masonry 的呈现几何与统一绘制适配使用仓库内分支，范围由实际调用闭包确定。Kira 0.12.5 的本地修改集中在退休 Sound 的有界纯移动接口和退休队列容量检查，支持后台 PCM 释放；其内部 atomic-arena 继续使用普通依赖。
 third_party/quirrel 保存 Quirrel 4.41 的固定源码与对应测试快照，基线为 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，用于规范核对与差分测试。它属于开发工具，不链接进发行播放器；Aside 编译器与 VM 是工作区自己的 Rust 实现。[6]
-Masonry 既定核对基线为 271a27a6d4a930f7878d404f9014e3c50a3a9b88。嵌套效果与分层输出仍需验证，不能据此推定现成支持。[5] 若必须修改，将所需上游 crates 放入 third_party/masonry，同时保留必需的同级路径依赖、工作区继承配置和构建资源。通过工作区 path 依赖接入，统一同名库的来源并检查依赖树，避免意外同时链接仓库内版本与上游版本。
-仓库内第三方源码采用固定快照，不递归保留嵌套 .git。每份快照记录上游地址、提交、版本、导入日期与本地修改，保留并核对许可证及版权声明；更新时可追溯差异。当前仅 Quirrel 对照快照和可能需要修改的 Masonry 属于候选范围，其他依赖没有已确认的复制需要。
+Masonry 既定核对基线为 271a27a6d4a930f7878d404f9014e3c50a3a9b88。生产适配与验收范围见第十五节。[5] 所需上游 crates 放入 third_party/masonry，同时保留必需的同级路径依赖、工作区继承配置和构建资源。通过工作区 path 依赖接入，统一同名库的来源并检查依赖树，避免意外同时链接仓库内版本与上游版本。
+仓库内第三方源码采用固定快照，不递归保留嵌套 .git。每份快照记录上游地址、提交、版本、导入日期与本地修改，保留并核对许可证及版权声明；更新时可追溯差异。当前源码快照包括 Quirrel 行为对照、Masonry 生产适配所需 crates 和 Kira 0.12.5。Kira 保留对应上游许可证、精确版本的格式配置与两文件补丁，升级时反向核对未修改源码；音频清理线程和预算策略留在 reel-media 适配层。
 播放器的 source 能力选择性引入编译器；精简版本只加载字节码。hot-reload 只开启模块替换协议，可接收外部编译产物。编译器、监视器和对照运行时留在开发侧，精简构建检查实际依赖树。[7]
 
 ## 三 平台接口与移植边界
