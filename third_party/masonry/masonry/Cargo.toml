@@ -1,0 +1,32 @@
+[package]
+name = "masonry"
+version.workspace = true # We mimic Xilem's version
+description = "Traits and types of the Masonry toolkit."
+keywords = ["gui", "ui", "toolkit"]
+categories = ["gui", "internationalization", "accessibility"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+exclude = ["screenshots", "examples/assets"]
+
+[package.metadata.docs.rs]
+all-features = true
+# There are no platform specific docs.
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[features]
+default = []
+tracy = ["masonry_core/tracy"]
+
+[dependencies]
+accesskit.workspace = true
+masonry_core.workspace = true
+smallvec.workspace = true
+tracing = { workspace = true, features = ["default"] }
+include_doc_path.workspace = true
+resvg.workspace = true
+
+[lints]
+workspace = true
