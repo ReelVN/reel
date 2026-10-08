@@ -115,6 +115,27 @@ nodes may enclose the tree after exhaustion; the complete source is preserved.
 Deep-chain regression runs in a child, protecting the test runner from a future
 stack-overflow regression.
 
+## Before/after grouped assignment reproduction
+
+The previous baseline `fc418d9` and fix `d453c6a` were built as separate check
+CLIs. [assignment-lookahead-before-after.json](bench-results/assignment-lookahead-before-after.json)
+retains all 36 actual runs, including source, argv, exit code, complete tree and
+diagnostics in both module and body entries. Four grouped location targets
+failed before: `(f(a, b).x)`, `(a[(i, j)])`, `([1][0])`, `({x: 0}.x)`.
+They now exit 0 with AssignExpr → GroupExpr → MemberExpr/IndexExpr and no
+pattern nodes. Controls without nested commas and grouped tuple/array/object
+destructuring exit 0 in both revisions; the latter retain GroupPattern trees.
+This is source parsing evidence, not executed target evaluation or mutability
+validation. The fix propagates nested structural markers only when a group
+contains that sole structure; suffixes retain location expression parsing.
+
+```sh
+git worktree add --detach /tmp/reel-assignment-before fc418d9
+CARGO_TARGET_DIR=/tmp/reel-issue8-repro-target cargo build --manifest-path /tmp/reel-assignment-before/Cargo.toml -p aside-compiler --example check --locked
+cargo build -p aside-compiler --example check --locked
+python3 crates/aside-compiler/bench-results/run_assignment_probe.py /tmp/reel-issue8-repro-target/debug/examples/check target/debug/examples/check > crates/aside-compiler/bench-results/assignment-lookahead-before-after.json
+```
+
 All owner-resolved forms are implemented and ASP015 removed. Binding/name/type/
 effect checks, mutability, lowering, bytecode and execution remain later passes,
 not successful features claimed by this source frontend.
