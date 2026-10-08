@@ -1,0 +1,72 @@
+Binary SHA-256: 0b57b37e219fc6c2fdcdeee0a624099a4d17f1cdacc037dde8c40d34387d75f3
+Command: objdump -d -C --no-show-raw-insn target/release/value-layout-bench
+Selected exact excerpts; both read monomorphizations retain repeated-pass memory loops.
+
+Candidate: reserved WIDE tag and integer loads/sign extension/checks:
+000000000005a5d0 <value_layout_bench::read>:
+   5a6d0:	shl    $0x10,%rdi
+   5a6d4:	sar    $0x10,%rdi
+   5a6d8:	add    %rdi,%r10
+   5a6db:	add    $0x8,%rax
+   5a6df:	cmp    %rax,%rsi
+   5a6e2:	je     5a663 <value_layout_bench::read+0x93>
+   5a6e8:	mov    (%r14,%rax,1),%rdi
+   5a6ec:	mov    %rdi,%r9
+   5a6ef:	and    %rcx,%r9
+   5a6f2:	cmp    %r8,%r9
+   5a6f5:	jne    5a6d0 <value_layout_bench::read+0x100>
+   5a6f7:	mov    %edi,%r9d
+   5a6fa:	and    $0xffffff,%r9d
+   5a701:	cmp    0x50(%r11),%r9
+   5a705:	jae    5aadd <value_layout_bench::read+0x50d>
+   5a70b:	mov    0x48(%r11),%r13
+   5a70f:	shl    $0x4,%r9d
+   5a713:	shr    $0x18,%rdi
+   5a717:	and    $0xffffff,%edi
+   5a71d:	cmp    %edi,0x0(%r13,%r9,1)
+   5a722:	jne    5aadd <value_layout_bench::read+0x50d>
+   5a728:	add    %r9,%r13
+   5a72b:	mov    0x8(%r13),%rdi
+   5a72f:	test   %rdi,%rdi
+   5a732:	je     5aadd <value_layout_bench::read+0x50d>
+   5a738:	mov    (%rdi),%rdi
+   5a73b:	add    %rdi,%r10
+   5a73e:	add    $0x8,%rax
+   5a742:	cmp    %rax,%rsi
+   5a745:	jne    5a6e8 <value_layout_bench::read+0x118>
+   5a747:	jmp    5a663 <value_layout_bench::read+0x93>
+   5a74c:	nopl   0x0(%rax)
+   5a750:	mov    0x18(%rsp),%rax
+   5a755:	mov    %rax,(%rsp)
+   5a759:	mov    0x10(%rsp),%rax
+   5a75e:	mov    %rax,0x8(%rsp)
+   5a763:	mov    0x8(%rsp),%rbp
+   5a768:	test   %rbp,%rbp
+   5a76b:	je     5a660 <value_layout_bench::read+0x90>
+
+Baseline: packed integer loads and accumulation:
+000000000005ab40 <value_layout_bench::read>:
+   5ad9e:	cmove  %r8,%rax
+   5ada2:	sub    %rax,%rcx
+   5ada5:	mov    %rcx,%rax
+   5ada8:	shl    $0x4,%rax
+   5adac:	add    %r10,%rax
+   5adaf:	lea    0x28(%r10),%r8
+   5adb3:	pxor   %xmm0,%xmm0
+   5adb7:	pxor   %xmm1,%xmm1
+   5adbb:	nopl   0x0(%rax,%rax,1)
+   5adc0:	movdqu -0x20(%r8),%xmm2
+   5adc6:	movdqu -0x10(%r8),%xmm3
+   5adcc:	punpcklqdq %xmm3,%xmm2
+   5add0:	paddq  %xmm2,%xmm0
+   5add4:	movdqu (%r8),%xmm2
+   5add9:	movdqu 0x10(%r8),%xmm3
+   5addf:	punpcklqdq %xmm3,%xmm2
+   5ade3:	paddq  %xmm2,%xmm1
+   5ade7:	add    $0x40,%r8
+   5adeb:	add    $0xfffffffffffffffc,%rcx
+   5adef:	jne    5adc0 <value_layout_bench::read+0x280>
+   5adf1:	paddq  %xmm0,%xmm1
+   5adf5:	pshufd $0xee,%xmm1,%xmm0
+   5adfa:	paddq  %xmm1,%xmm0
+   5adfe:	movq   %xmm0,%r11

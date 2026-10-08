@@ -1,0 +1,13 @@
+boundary validation passed; Explicit=16 align=8, NanBox=8 align=8, Handle=8, Slot=16, Object=8; seed=11400714819323198485; samples=11; n=262144; cache_n=4194304; visits=16777216
+int_4k: n=4096, passes=4096, wide=0, excluded_shared_harness_bytes=65536
+int_scan: n=262144, passes=64, wide=0, excluded_shared_harness_bytes=4194304
+float_scan: n=262144, passes=64, wide=0, excluded_shared_harness_bytes=4194304
+mixed_dispatch: n=262144, passes=64, wide=0, excluded_shared_harness_bytes=4194304
+object_read: n=262144, passes=64, wide=0, excluded_shared_harness_bytes=4194304
+cache_seq: n=4194304, passes=4, wide=0, excluded_shared_harness_bytes=67108864
+cache_random: n=4194304, passes=4, wide=0, excluded_shared_harness_bytes=83886080
+wide_000pct: n=262144, passes=64, wide=0, excluded_shared_harness_bytes=4194304
+wide_001pct: n=262144, passes=64, wide=2621, excluded_shared_harness_bytes=4194304
+wide_010pct: n=262144, passes=64, wide=26214, excluded_shared_harness_bytes=4194304
+wide_050pct: n=262144, passes=64, wide=131072, excluded_shared_harness_bytes=4194304
+wide_100pct: n=262144, passes=64, wide=262144, excluded_shared_harness_bytes=4194304
