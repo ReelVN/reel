@@ -166,3 +166,85 @@ python3 crates/aside-compiler/bench-results/semantic/run_probe.py \
 The full debug/release suite, strict clippy, fmt and immutable-fixture integrity
 checks passed again on the correction. Guide, captures/defaults and T01 sources
 remain unchanged; execution remains waiting_runtime.
+
+## Declared contracts, predeclaration admission and lowering references (`95abf2a`)
+
+This latest paired rerun compares `962573b` with `95abf2a`, on the same environment
+and unchanged `semantic_probe` source/instrumentation. Each timing has seven
+separate release processes. The earlier tables remain historical samples;
+`contracts-before-*.csv` and `contracts-after-*.csv` are the current comparison.
+
+| Workload | N | Before analysis ms | After analysis ms | After parse ms | After retained bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Captures | 1,000 | 10.142 | 9.492 | 3.314 | 5,999,477 |
+| Captures | 5,000 | 57.299 | 59.171 | 16.829 | 32,860,757 |
+| Captures | 10,000 | 113.099 | 114.017 | 31.915 | 65,723,629 |
+| Shared signature | 1,000 | 1.902 | 2.025 | 0.743 | 1,407,893 |
+| Shared signature | 5,000 | 10.863 | 9.606 | 3.878 | 7,705,909 |
+| Shared signature | 10,000 | 21.349 | 20.182 | 7.817 | 15,412,541 |
+
+The capture N=10k median increases by 0.8%; shared timings vary in both directions
+across sizes. These differences do not establish a general speed improvement.
+Separating declaration contracts from consumers keeps linear scaling and unchanged
+retained memory on these workloads. No-wait declaration flags occupy existing
+Function padding on this target; provenance storage is additional for modules/
+external descriptors, which these no-host workloads do not exercise.
+
+Capture N=10k still produces 40,000 symbols and 10,000 captures, with symbol/capture
+capacity bytes 2,359,296 / 640,000. Live payloads remain 1,440,000 / 160,000 bytes;
+whole-process RSS in the new separate sample is 77,000 KiB. Allocation calls are
+1,480,132 before and 1,460,133 after: default visibility uses scope boundaries
+without copying a parameter-name set, and method-context construction borrows names.
+All values include actual source parser→HIR→analysis rather than fabricated HIR.
+
+More complete admission raises charged work from 220,000 to 380,006 for captures
+N=10k and from 70,001 to 90,010 for shared N=10k. The latter still builds exactly
+one 10,000-parameter signature and passes a 100,000-work budget. Work counts include
+attempted admission debits; a rejected debit does not imply the work or allocation
+ran. The current reverse-named N=10k sample analyzes in 16.114 ms, with 70,016
+charged work units.
+
+`declaration_budget_probe` generates 10,002 named declarations, parses once before
+the instrumented region, then runs real HIR projection and semantic analysis for
+each budget. The baseline uses `962573b` plus only the exact new probe source;
+its implementation is unchanged. Each budget row is a single release observation,
+not a timing median. The symbol-capacity column describes the partial arena at
+admission failure; failed analyses drop it and cannot produce `AnalyzedModule`.
+
+| Work budget | Before allocated symbols | After allocated symbols | After symbol-capacity bytes | After diagnostic count |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 10,002 | 0 | 0 | 1 |
+| 1 | 10,002 | 0 | 0 | 1 |
+| 5 | 10,002 | 0 | 0 | 1 |
+| 100 | 10,002 | 0 | 0 | 1 |
+| 10,004 | 10,002 | 0 | 0 | 1 |
+| 10,010 | 10,002 | 2 | 144 | 1 |
+| 20,000 | 10,002 | 4,997 | 294,912 | 1 |
+
+At zero budget, the baseline failed only after all declarations; the current
+version declines the seeded name-index debit before allocating semantic facts,
+functions or symbols. It reports 146 retained allocator bytes for the bounded
+diagnostic. HIR projection still happens before semantic admission, with its
+own node/depth/source limits: this is not a claim of zero parser/projection work.
+Partial budgets also admit metadata and symbol work separately before allocation.
+The default budget completes all 10,002 symbols in 21.356 ms in this single
+observation, charging 80,027 units.
+
+The new context/reference API is checked with actual source: module/function/
+generator/NoWait entry contexts, ordinary/async/generator functions, restricted
+class methods, field initializers, derive callbacks, host aliases, custom canonical
+resolver names, namespace members and multiple aliasing reexports. Declared
+contexts remain separate from inferred effects. ABI/capabilities/default linkage
+are not benchmarked or implemented here; trusted package linkage remains required.
+
+Reproduce the new admission probe:
+
+```sh
+cargo build -p aside-compiler --example declaration_budget_probe --release --locked
+./target/release/examples/declaration_budget_probe 10000
+```
+
+Rust 1.96.0 workspace fmt, strict all-target clippy, debug and release tests pass.
+The immutable T01 integrity check remains 10 sources/32 unchanged assertion maps;
+24 bilingual scene pairs and bounded child-process diagnostics pass. Execution
+remains `waiting_runtime` and the author-guide sources are unchanged.

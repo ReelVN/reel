@@ -22,8 +22,11 @@ Algorithm:
 2. For each lexical block, predeclare read-only fn bindings and pending lets/
    classes. Visit statements in order. Reads of same-frame uninitialized names
    diagnose; deferred function captures retain an initialization runtime check.
-   Analyze a function's defaults before introducing that parameter, with earlier
-   parameters visible and later parameter names forbidden. Capture references
+   Prepare all named function parameter/return contracts before analyzing any
+   defaults or body (and prepare all class method contracts before method bodies).
+   Keep parameter annotations in lexical order; mask own/later parameters during
+   defaults, including nested closures, while keeping previous parameters visible.
+   A default-local shadow retains its own lexical identity. Capture references
    through every intervening function using definition-site scope.
 3. Mutable and forward read-only captures use a shared symbolic cell. Symbols
    preserve initialization timing, type, mutability and declaration span. Named
@@ -138,3 +141,43 @@ The owner clarification in `9cfe5ece49a419c13b7f65992f8b68e46ab4ffac`
 was read without importing B01 code. Finally restrictions are lexical; runtime
 NoWait/Init/Derived constraints accumulate through actual calls and callbacks.
 HIR check flags retain obligations and never waive the caller's restrictions.
+
+
+Owner §22 retention contract (`7322292a32a416e6963e5b70162a25fb4e38e54a`)
+was read without importing engine code or changing the author guides.
+`AnalyzedModule::entry_context()` preserves the embedding context;
+`Function::declared_context` preserves NoWait/Init/Derived restrictions and
+`DeclaredContext::effect()` exposes the declared wait allowance. These are
+separate from `known_wait` and `dynamic_calls` possibility summaries. Plain/async
+bodies reset declaration context; generators, restricted methods and field
+initializers declare NoWait, known derive callbacks declare Derived+NoWait.
+Default expression entries require NoWait and retain their parameter node and
+capture layout. Lowering must generate those entries with that restriction and
+runtime must accumulate the actual caller constraints.
+
+`AnalyzedModule::symbol_reference()` qualifies local slots with module/content
+version. External descriptors preserve shared `SymbolReference` declaration
+identity (canonical module/version/export), while `resolved_from` retains a
+shared immutable chain of reexport module/export identities. Local import aliases
+never rename the declaration identity. Namespace members and qualified annotations
+use the resolver's returned canonical module/version, including custom resolvers.
+A namespace references its module with `export=None`; its reexported binding has
+an explicit export identity in the resolution chain.
+
+Hosts may attach the exact trusted registration reference using
+`ExternalSymbol::with_reference()`. Missing host identity remains `None` rather
+than being guessed from display names. The compiler does not construct a second
+native registry, infer ABI/capabilities, or fabricate default implementations.
+Package linkage must resolve and validate these references against the same trusted
+input, and report missing/conflicting linkage at the preserved binding/node span.
+Analysis success alone does not establish native linkage or execution success.
+
+Name-index work is admitted before cloning semantic names or allocating facts;
+each predeclaration admits metadata work before function/type construction and
+each symbol admits work before allocation. Block/import/signature phases stop on
+exhaustion, and exhausted analyses do not allocate effect-summary graphs. The
+10,002-declaration regression exercises budgets 0/1/5/100/10004/10010/20000,
+including partial admission after the seeded name index. At zero budget no
+semantic symbols/captures are allocated; parser/CST/HIR projection still has its
+separate bounded allocation policy. `declaration_budget_probe` reports that
+boundary from actual source and allocator instrumentation.

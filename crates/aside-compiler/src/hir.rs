@@ -242,6 +242,23 @@ pub struct Parameter {
     pub default: Option<NodeId>,
     pub rest: bool,
 }
+/// Declared restrictions, independent of inferred possibility summaries and
+/// caller constraints. Runtime combines these with the effective calling context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeclaredContext {
+    pub no_wait: bool,
+    pub init: bool,
+    pub derived: bool,
+}
+impl DeclaredContext {
+    pub fn effect(self) -> crate::semantic::CallEffect {
+        if self.no_wait {
+            crate::semantic::CallEffect::NoWait
+        } else {
+            crate::semantic::CallEffect::MayWait
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct Function {
     pub node: NodeId,
@@ -249,6 +266,7 @@ pub struct Function {
     pub kind: FunctionKind,
     pub receiver: Receiver,
     pub role: FunctionRole,
+    pub declared_context: DeclaredContext,
     pub lexical_class: Option<NodeId>,
     pub parameters: Vec<Parameter>,
     pub return_type: TypeId,
@@ -312,6 +330,7 @@ pub struct AnalysisStats {
 /// Created only by successful analysis; future lowering must require this wrapper.
 #[derive(Debug, Clone)]
 pub struct AnalyzedModule {
+    pub(crate) entry_context: crate::semantic::AnalysisContext,
     pub(crate) canonical_path: String,
     pub(crate) version: String,
     pub(crate) hir: Hir,
@@ -325,7 +344,27 @@ pub struct AnalyzedModule {
     pub(crate) stats: AnalysisStats,
     pub(crate) external: Vec<ExternalBinding>,
 }
+/// A local slot is stable within the fixed module content version, rather than
+/// a process pointer or a globally meaningful arena index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalSymbolRef<'a> {
+    pub module: &'a str,
+    pub version: &'a str,
+    pub slot: SymbolId,
+}
 impl AnalyzedModule {
+    pub fn entry_context(&self) -> crate::semantic::AnalysisContext {
+        self.entry_context
+    }
+    pub fn symbol_reference(&self, slot: SymbolId) -> Option<LocalSymbolRef<'_>> {
+        self.symbols.get(slot.0 as usize)?;
+        Some(LocalSymbolRef {
+            module: &self.canonical_path,
+            version: &self.version,
+            slot,
+        })
+    }
+
     pub fn canonical_path(&self) -> &str {
         &self.canonical_path
     }
