@@ -186,7 +186,7 @@ pub fn cell_closures() -> BytecodePackage {
         4,
         vec![
             instruction(Opcode::LoadConst, 0, 1, 0),
-            instruction(Opcode::CellNew, 1, 0, 0),
+            instruction(Opcode::CellNew, 0, 0, 0),
             instruction(Opcode::BindInit, 0, 0, 0),
             instruction(Opcode::MakeClosure, 2, 0, 0),
             instruction(Opcode::MakeClosure, 3, 0, 0),
@@ -286,7 +286,7 @@ pub fn captured_default() -> BytecodePackage {
         3,
         vec![
             instruction(Opcode::LoadConst, 0, 1, 0),
-            instruction(Opcode::CellNew, 1, 0, 0),
+            instruction(Opcode::CellNew, 0, 0, 0),
             instruction(Opcode::BindInit, 0, 0, 0),
             instruction(Opcode::MakeClosure, 2, 0, 0),
             instruction(Opcode::Return, 2, 0, 0),
@@ -353,5 +353,138 @@ pub fn duplicate_arguments() -> BytecodePackage {
         }),
     ];
     f.source_map.clear();
+    p
+}
+
+/// Forward readonly capture: closure creation precedes the binding initializer.
+/// The cell exists with an unset initialization bit, then accepts BindInit once.
+/// Calling the closure before that publication must raise UninitializedBinding;
+/// afterwards it reads 1, and CellWrite through any alias raises ReadOnlyWrite.
+pub fn forward_readonly_cell() -> BytecodePackage {
+    let mut p = base();
+    p.signatures = vec![
+        signature(vec![], 0, Effects::ALL),
+        signature(vec![], 1, Effects::ALL),
+    ];
+    let mut outer = function(
+        7,
+        0,
+        3,
+        vec![
+            instruction(Opcode::CellNew, 0, 0, 0),
+            instruction(Opcode::MakeClosure, 2, 0, 0),
+            instruction(Opcode::LoadConst, 0, 2, 0),
+            instruction(Opcode::BindInit, 0, 0, 0),
+            instruction(Opcode::Return, 2, 0, 0),
+        ],
+    );
+    outer.bindings = vec![BindingDef {
+        name: SymbolId(9),
+        ty: TypeId(1),
+        mutable: false,
+        storage: BindingStorage::Cell(Reg(1)),
+        initialization: BindingInitialization::Explicit,
+    }];
+    outer.descriptors = vec![Descriptor::Closure {
+        function: FunctionId(1),
+        captures: vec![CaptureSource::Binding(BindingId(0))],
+    }];
+    let mut read = function(
+        2,
+        1,
+        2,
+        vec![
+            instruction(Opcode::CaptureRead, 0, 0, 0),
+            instruction(Opcode::CellRead, 1, 0, 0),
+            instruction(Opcode::Return, 1, 0, 0),
+        ],
+    );
+    read.captures = vec![CaptureKind::Cell];
+    p.functions = vec![outer, read];
+    p
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellOutcome {
+    IntOne,
+    Null,
+    UninitializedReadFault,
+    SecondInitializationFault,
+    ReadonlyWriteFault,
+}
+pub struct CellCase {
+    pub name: &'static str,
+    pub package: fn() -> BytecodePackage,
+    pub invoke_returned_closure: bool,
+    pub expected: CellOutcome,
+}
+/// Runtime acceptance cases. B01 verifies their format; the later dispatcher
+/// must assert these distinct outcomes rather than treating them as executed.
+pub const CELL_CASES: &[CellCase] = &[
+    CellCase {
+        name: "forward-readonly-cell",
+        package: forward_readonly_cell,
+        invoke_returned_closure: true,
+        expected: CellOutcome::IntOne,
+    },
+    CellCase {
+        name: "initialized-null-cell",
+        package: initialized_null_cell,
+        invoke_returned_closure: true,
+        expected: CellOutcome::Null,
+    },
+    CellCase {
+        name: "uninitialized-cell-read",
+        package: uninitialized_cell_read,
+        invoke_returned_closure: false,
+        expected: CellOutcome::UninitializedReadFault,
+    },
+    CellCase {
+        name: "second-cell-initialization",
+        package: second_cell_initialization,
+        invoke_returned_closure: false,
+        expected: CellOutcome::SecondInitializationFault,
+    },
+    CellCase {
+        name: "readonly-cell-write",
+        package: readonly_cell_write,
+        invoke_returned_closure: true,
+        expected: CellOutcome::ReadonlyWriteFault,
+    },
+];
+pub fn initialized_null_cell() -> BytecodePackage {
+    let mut p = forward_readonly_cell();
+    p.functions[0].bindings[0].ty = TypeId(0);
+    p.signatures[1].return_type = TypeId(0);
+    p.functions[0].code[2] = instruction(Opcode::LoadConst, 0, 0, 0);
+    p
+}
+pub fn uninitialized_cell_read() -> BytecodePackage {
+    let mut p = forward_readonly_cell();
+    p.functions[0].descriptors.push(Descriptor::Call(CallDesc {
+        target: CallTarget::Register(Reg(2)),
+        arguments: Arguments::Window(RegWindow {
+            start: Reg(0),
+            len: 0,
+        }),
+        names: vec![],
+    }));
+    p.functions[0]
+        .code
+        .insert(2, instruction(Opcode::Call, 0, 1, 0));
+    p
+}
+pub fn second_cell_initialization() -> BytecodePackage {
+    let mut p = forward_readonly_cell();
+    p.functions[0]
+        .code
+        .insert(4, instruction(Opcode::BindInit, 0, 0, 0));
+    p
+}
+pub fn readonly_cell_write() -> BytecodePackage {
+    let mut p = forward_readonly_cell();
+    p.functions[1]
+        .code
+        .insert(2, instruction(Opcode::CellWrite, 0, 1, 0));
     p
 }

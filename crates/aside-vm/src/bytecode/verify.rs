@@ -53,9 +53,11 @@ impl VerifiedProgram {
         program.require_runtime(support)?;
         Ok(program)
     }
-    /// Routes a new fault from the original call/instruction PC. Catch faults
+    /// Routes from the instruction PC that starts this unwind (including the
+    /// Rethrow instruction, independently of the envelope's original source). Catch faults
     /// bypass that catch; finally faults bypass the same finally. After cleanup,
-    /// `skip` identifies the consumed region in the saved unwind record.
+    /// `skip` identifies the consumed lexical subtree in the saved unwind
+    /// record. Subsequent targets are strict ancestors; inner layers never re-enter.
     pub fn exception_handler(
         &self,
         function: FunctionId,
@@ -69,7 +71,12 @@ impl VerifiedProgram {
             "exception source PC",
         )?;
         if let Some(id) = skip {
-            get(&f.regions, id.0, "consumed exception region")?;
+            let consumed = get(&f.regions, id.0, "consumed exception region")?;
+            check(
+                ranges(consumed).any(|range| range.contains(pc)),
+                ErrorKind::Region,
+                "unwind cursor does not enclose original fault",
+            )?;
         }
         Ok(exception_target(f, pc, skip))
     }
@@ -87,11 +94,12 @@ impl VerifiedProgram {
         }
         for native in &p.natives {
             let name = &p.symbols[native.symbol.index()];
-            if !support.natives.iter().any(|n| {
+            let registered = support.natives.iter().find(|n| {
                 n.symbol == *name
                     && n.abi_version == native.abi_version
                     && n.signature == p.signatures[native.signature.index()]
-            }) {
+            });
+            let Some(registered) = registered else {
                 return Err(Error::new(
                     ErrorKind::Capability,
                     format!(
@@ -99,6 +107,24 @@ impl VerifiedProgram {
                         native.abi_version
                     ),
                 ));
+            };
+            for cap in &registered.required_capabilities {
+                check(
+                    support.capabilities.contains(cap),
+                    ErrorKind::Capability,
+                    "trusted native capability is not authorized",
+                )?;
+                check(
+                    native
+                        .capabilities
+                        .iter()
+                        .any(|id| p.symbols[id.index()] == *cap)
+                        && p.capabilities
+                            .iter()
+                            .any(|id| p.symbols[id.index()] == *cap),
+                    ErrorKind::Capability,
+                    "package omitted a capability required by trusted native registration",
+                )?;
             }
         }
         for (fi, f) in p.functions.iter().enumerate() {
@@ -143,6 +169,7 @@ impl Budget {
         Ok(())
     }
     fn vec<T>(&mut self, n: usize) -> Result<Vec<T>, Error> {
+        self.work(n as u64)?;
         let bytes = n
             .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| Error::new(ErrorKind::Limit, "scratch size"))?;
@@ -1004,6 +1031,7 @@ fn pattern_bindings(
                 out.push((*name, *output));
             }
             PatternNode::Tuple { items, rest } | PatternNode::Array { items, rest } => {
+                b.work(items.len() as u64 + u64::from(rest.is_some()))?;
                 check(
                     stack.len() + items.len() + usize::from(rest.is_some()) <= limit,
                     ErrorKind::Limit,
@@ -1015,6 +1043,7 @@ fn pattern_bindings(
                 }
             }
             PatternNode::Object { fields, rest } => {
+                b.work(fields.len() as u64 + u64::from(rest.is_some()))?;
                 check(
                     stack.len() + fields.len() + usize::from(rest.is_some()) <= limit,
                     ErrorKind::Limit,
@@ -1113,12 +1142,15 @@ fn validate_regions(f: &FunctionDef, b: &mut Budget) -> Result<(), Error> {
             }
             for (inner, outer) in [(r, other), (other, r)] {
                 for block in ranges(outer) {
-                    if block.contains(inner.protected.start) {
+                    b.work(3)?;
+                    if ranges(inner).any(|part| block.start <= part.start && part.end <= block.end)
+                    {
                         for part in ranges(inner) {
+                            b.work(1)?;
                             check(
                                 block.start <= part.start && part.end <= block.end,
                                 ErrorKind::Region,
-                                "nested region handlers escape enclosing block",
+                                "region protected/catch/finally must share one lexical parent block",
                             )?;
                         }
                     }
@@ -1181,9 +1213,7 @@ fn validate_instruction(
             )?,
         }
     }
-    let mut registers = 0u64;
-    spec.visit_registers(f, i, |_, _| registers += 1)?;
-    b.work(registers)?;
+    spec.visit_registers_budgeted(f, i, |units| b.work(units), |_, _| {})?;
     if spec.may_throw {
         b.work(f.regions.len() as u64)?;
         if let Some(target) = exception_target(f, Pc(pc as u32), None) {
@@ -1200,21 +1230,21 @@ fn validate_instruction(
         }
     }
     if spec.opcode == Opcode::CellNew {
-        let binding = &f.bindings[i.operands[1] as usize];
+        let binding = &f.bindings[i.operands[0] as usize];
         check(
-            binding.storage == BindingStorage::Cell(Reg(i.operands[0]))
+            matches!(binding.storage, BindingStorage::Cell(_))
                 && binding.initialization == BindingInitialization::Explicit,
             ErrorKind::Capture,
-            "CellNew destination/contract must match its explicit cell binding",
+            "CellNew requires an explicit cell binding contract",
         )?;
     }
+    b.work(f.regions.len() as u64)?;
     let in_finally = f
         .regions
         .iter()
         .any(|r| r.finally.is_some_and(|range| range.contains(Pc(pc as u32))));
     let restricted =
         f.context != Context::Ordinary || in_finally || f.kind == FunctionKind::Generator;
-    b.work(f.regions.len() as u64)?;
     if spec.opcode == Opcode::Await {
         check(
             !restricted && p.signatures[f.signature.index()].effects.0 & Effects::WAIT != 0,
@@ -1240,6 +1270,7 @@ fn validate_instruction(
         check(!in_finally, ErrorKind::ControlFlow, "Return from finally")?;
     }
     if spec.opcode == Opcode::Rethrow {
+        b.work(f.regions.len() as u64)?;
         check(
             f.regions.iter().any(|r| {
                 r.catch
@@ -1269,7 +1300,6 @@ fn validate_instruction(
         }
         Flow::Jump => edge(f, pc, i.operands[0] as usize, false, b)?,
         Flow::Leave => {
-            check(!in_finally, ErrorKind::ControlFlow, "Leave from finally")?;
             edge(f, pc, i.operands[0] as usize, true, b)?;
         }
         Flow::Branch => {
@@ -1340,6 +1370,14 @@ fn exception_target(f: &FunctionDef, pc: Pc, skip: Option<RegionId>) -> Option<H
         let region = RegionId(id as u32);
         if skip == Some(region) {
             continue;
+        }
+        if let Some(consumed) = skip {
+            let consumed = &f.regions[consumed.index()];
+            if !ranges(r).any(|parent| {
+                ranges(consumed).all(|part| parent.start <= part.start && part.end <= parent.end)
+            }) {
+                continue;
+            }
         }
         let candidate = if r.protected.contains(pc) {
             if let Some(c) = &r.catch {

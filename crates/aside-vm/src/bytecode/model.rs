@@ -485,4 +485,6 @@ pub struct NativeSupport {
     /// program's tables using its independent native registration metadata.
     /// Copying an untrusted package signature is not registry validation.
     pub signature: Signature,
+    /// Required by the trusted host registration, independent of package claims.
+    pub required_capabilities: Vec<String>,
 }
