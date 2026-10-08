@@ -456,3 +456,245 @@ fn budgets_cover_recursion_flat_chains_lexing_diagnostics_and_source_admission()
     }
     assert_eq!(offset, 22);
 }
+
+#[test]
+fn approved_types_patterns_yield_chains_classes_and_arm_blocks_have_precise_trees() {
+    let p = ok("value is (A|null) | value is B", E::Pattern);
+    let outer = node(&p, K::OrPattern);
+    assert_eq!(
+        outer.children().map(|n| n.kind()).collect::<Vec<_>>(),
+        vec![K::TypePattern, K::TypePattern]
+    );
+    assert_eq!(has(&p, K::UnionType), 1);
+    assert_eq!(has(&p, K::GroupType), 1);
+    let p = ok("fn(A) -> fn(B) -> C|null", E::Type);
+    assert_eq!(has(&p, K::FunctionType), 2);
+    assert_eq!(has(&p, K::UnionType), 1);
+    let p = ok("(fn(A) -> R)|null", E::Type);
+    assert_eq!(p.syntax().children().next().unwrap().kind(), K::UnionType);
+    let p = ok("fn(A) -> R|null", E::Type);
+    assert_eq!(
+        p.syntax().children().next().unwrap().kind(),
+        K::FunctionType
+    );
+    for (s, k) in [
+        ("(A)", K::GroupType),
+        ("(A,)", K::TupleType),
+        ("(A,B)", K::TupleType),
+        ("()", K::TupleType),
+    ] {
+        let p = ok(s, E::Type);
+        assert_eq!(p.syntax().children().next().unwrap().kind(), k);
+    }
+    let p = ok("|x: (A|null)| x", E::Expression);
+    assert_eq!(has(&p, K::UnionType), 1);
+    assert_eq!(has(&p, K::ClosureExpr), 1);
+    let p = ok("|x: A|null| body", E::Expression);
+    assert_eq!(has(&p, K::UnionType), 0);
+    assert_eq!(has(&p, K::BinaryExpr), 1); // first outer pipe always closes parameters
+    let p = ok("|x: A, y: (B|null)| y", E::Expression);
+    assert_eq!(has(&p, K::Param), 2);
+    let source = "let incoming = yield outgoing + 1 .. end; yield;";
+    let p = ok(source, E::Block);
+    let yielded = node(&p, K::YieldExpr);
+    assert_eq!(yielded.children().next().unwrap().kind(), K::RangeExpr);
+    let p = rejects("yield a = b;", E::Block, D::InvalidAssignment);
+    assert!(
+        p.diagnostics()
+            .iter()
+            .any(|d| d.code == D::InvalidAssignment && byte_range(d.range) == (8..9))
+    );
+    let p = ok("a = obj[index()] = value();", E::Block);
+    let outer = node(&p, K::AssignExpr);
+    assert_eq!(outer.children().last().unwrap().kind(), K::AssignExpr);
+    assert_eq!(has(&p, K::CallExpr), 2);
+    for source in ["let x = (a = b);", "f(a = b)", "1 + (a = b)"] {
+        let entry = if source.starts_with("let") {
+            E::Module
+        } else {
+            E::Expression
+        };
+        let p = rejects(source, entry, D::InvalidAssignment);
+        assert!(
+            p.diagnostics()
+                .iter()
+                .any(|d| d.code == D::InvalidAssignment && &source[byte_range(d.range)] == "=")
+        );
+    }
+    ok(
+        "class Name: Parent {} let C = Name; let A = class {}; let B = class: Parent { fn init(self) {} };",
+        E::Module,
+    );
+    rejects(
+        "let C = class InternalName {};",
+        E::Module,
+        D::ExpectedDeclaration,
+    );
+    let p = ok("match x { _ => { let v = f(); v }, }", E::Expression);
+    assert_eq!(has(&p, K::Block), 1);
+    assert_eq!(has(&p, K::ObjectExpr), 0);
+    let p = ok("match x { _ => ({name: value}), }", E::Expression);
+    assert_eq!(has(&p, K::ObjectExpr), 1);
+    assert_eq!(has(&p, K::Block), 0);
+    let p = rejects(
+        "match x { _ => {name: value}, }",
+        E::Expression,
+        D::MissingSemicolon,
+    );
+    ranges(&p, "match x { _ => {name: value}, }");
+}
+
+#[test]
+fn exact_token_emission_limits_cover_eof_string_closing_and_interpolation() {
+    use aside_compiler::lex_with_limits;
+    for source in [
+        "\"a\"",
+        "\"\"",
+        "f\"a{name}\"",
+        "f\"{name}\"",
+        "let x = 1;",
+        "",
+    ] {
+        let needed = lex(source).unwrap().tokens.len();
+        for budget in 0..=needed + 1 {
+            let l = lex_with_limits(
+                source,
+                Limits {
+                    max_tokens: budget,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                l.exhausted,
+                budget < needed,
+                "source={source}, budget={budget}: {l:?}"
+            );
+            let ordinary =
+                if l.exhausted && l.tokens.last().is_some_and(|t| t.kind == K::ErrorToken) {
+                    l.tokens.len() - 1
+                } else {
+                    l.tokens.len()
+                };
+            assert!(ordinary <= budget);
+            assert!(l.tokens.len() <= budget + 1);
+            if l.exhausted {
+                assert!(l.diagnostics.iter().any(|d| d.code == D::BudgetExceeded));
+            }
+            let restored: String = l.tokens.iter().map(|t| t.text(source)).collect();
+            assert_eq!(restored, source);
+            let p = parse_with_options(
+                source,
+                ParseOptions {
+                    entry: E::Expression,
+                    limits: Limits {
+                        max_tokens: budget,
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+            assert_eq!(p.exhausted(), l.exhausted);
+            ranges(&p, source);
+        }
+    }
+}
+#[test]
+fn unicode_escape_digits_are_ascii_hex_without_signs() {
+    for source in [
+        r#""\u{+41}""#,
+        r#""\u{-41}""#,
+        r#""\u{４１}""#,
+        r#""\u{}""#,
+        r#""\u{D800}""#,
+        r#""\u{DFFF}""#,
+        r#""\u{110000}""#,
+    ] {
+        let p = rejects(source, E::Expression, D::InvalidUnicodeEscape);
+        let d = p
+            .diagnostics()
+            .iter()
+            .find(|d| d.code == D::InvalidUnicodeEscape)
+            .unwrap();
+        assert_eq!(&source[byte_range(d.range)], &source[1..source.len() - 1]);
+        ranges(&p, source);
+    }
+    for source in [
+        r#""\u{0}""#,
+        r#""\u{41}""#,
+        r#""\u{000041}""#,
+        r#""\u{D7FF}""#,
+        r#""\u{E000}""#,
+        r#""\u{10FFFF}""#,
+    ] {
+        ok(source, E::Expression);
+    }
+}
+#[test]
+fn large_named_argument_list_keeps_the_first_duplicate_range() {
+    use std::fmt::Write;
+    let mut source = String::from("f(");
+    for i in 0..100_000 {
+        write!(source, "k{i}:0,").unwrap();
+    }
+    let duplicate = source.len();
+    source.push_str("k0:1)");
+    let p = rejects(&source, E::Expression, D::DuplicateArgument);
+    assert_eq!(has(&p, K::NamedArg), 100_001);
+    assert!(!p.exhausted());
+    let d = p
+        .diagnostics()
+        .iter()
+        .find(|d| d.code == D::DuplicateArgument)
+        .unwrap();
+    assert_eq!(byte_range(d.range), duplicate..duplicate + 2);
+    assert_eq!(byte_range(d.related[0].range), 2..4);
+}
+
+#[test]
+fn class_heads_zero_tuples_and_closure_default_delimiters_share_the_grammar() {
+    let p = ok("class: factory() { let x = 1; }", E::Expression);
+    assert_eq!(has(&p, K::Children), 0);
+    let p = ok("class: (factory() { node; }) { let x = 1; }", E::Expression);
+    assert_eq!(has(&p, K::Children), 1);
+    for (s, k) in [
+        ("()", K::TuplePattern),
+        ("(x)", K::GroupPattern),
+        ("(x,)", K::TuplePattern),
+        ("(x,y)", K::TuplePattern),
+    ] {
+        let p = ok(s, E::Pattern);
+        assert_eq!(p.syntax().children().next().unwrap().kind(), k);
+    }
+    for source in [
+        "|x = 1| x",
+        "|x: (int|null) = null| x",
+        "|x = (a | b)| x",
+        "|x = {n: a | b}| x",
+        "|x = f(a | b)| x",
+        "|x = f\"{a | b}\"| x",
+    ] {
+        ok(source, E::Expression);
+    }
+    rejects("-true", E::Pattern, D::ExpectedPattern);
+}
+#[test]
+fn chinese_diagnostic_renders_from_the_same_byte_labels() {
+    use codespan_reporting::{
+        files::SimpleFiles,
+        term::{Config, emit_into_string},
+    };
+    let source = "let 中文 = \"\\u{+41}\";";
+    let p = rejects(source, E::Module, D::InvalidUnicodeEscape);
+    let mut files = SimpleFiles::new();
+    let id = files.add("中文.aside", source);
+    let d = p
+        .diagnostics()
+        .iter()
+        .find(|d| d.code == D::InvalidUnicodeEscape)
+        .unwrap();
+    let rendered = emit_into_string(&Config::default(), &files, &d.to_codespan(id)).unwrap();
+    assert!(rendered.contains("error[ASL006]"));
+    assert!(rendered.contains("中文.aside:1:11"));
+    assert!(rendered.contains(source));
+}

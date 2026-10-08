@@ -98,3 +98,36 @@ fn every_bilingual_author_scene_parses_in_its_actual_context() {
         }
     }
 }
+
+#[test]
+fn every_guide_prefix_recovers_without_losing_utf8_bytes() {
+    for (i, (line, source)) in snippets(ZH).iter().enumerate() {
+        for end in 0..=source.len() {
+            if !source.is_char_boundary(end) {
+                continue;
+            }
+            let prefix = &source[..end];
+            let parsed = parse_with_options(
+                prefix,
+                ParseOptions {
+                    entry: SCENES[i].1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                parsed.syntax().text().to_string(),
+                prefix,
+                "{} at line {line}, byte {end}",
+                SCENES[i].0
+            );
+            for d in parsed.diagnostics() {
+                assert!(usize::from(d.range.end()) <= end);
+                assert!(
+                    prefix.is_char_boundary(usize::from(d.range.start()))
+                        && prefix.is_char_boundary(usize::from(d.range.end()))
+                );
+            }
+        }
+    }
+}

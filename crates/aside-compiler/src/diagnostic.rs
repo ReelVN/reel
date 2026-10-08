@@ -29,7 +29,6 @@ pub enum DiagnosticCode {
     DuplicateArgument,
     ChildrenConflict,
     BudgetExceeded,
-    UnresolvedSyntax,
 }
 impl DiagnosticCode {
     pub fn as_str(self) -> &'static str {
@@ -59,7 +58,6 @@ impl DiagnosticCode {
             Self::DuplicateArgument => "ASP013",
             Self::ChildrenConflict => "ASP014",
             Self::BudgetExceeded => "ASR001",
-            Self::UnresolvedSyntax => "ASP015",
         }
     }
 }

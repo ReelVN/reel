@@ -10,21 +10,33 @@ fn live(stats: Stats) -> isize {
 }
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "parse".into());
-    assert!(matches!(mode.as_str(), "parse" | "lex"));
-    let source = UNIT.repeat(1024);
+    assert!(matches!(mode.as_str(), "parse" | "lex" | "named"));
+    let source = if mode == "named" {
+        use std::fmt::Write;
+        let mut source = String::from("f(");
+        for i in 0..100_000 {
+            write!(source, "k{i}:0,").unwrap();
+        }
+        source.push_str(");");
+        source
+    } else {
+        UNIT.repeat(1024)
+    };
     let tokens = lex(&source).unwrap().tokens.len();
     assert!(parse(&source).unwrap().is_ok()); // warm up, outside sample regions
+    let samples = if mode == "named" { 11 } else { 31 };
     println!(
-        "mode={mode},source_bytes={},units=1024,tokens={tokens},samples=31",
-        source.len()
+        "mode={mode},source_bytes={},units={},tokens={tokens},samples={samples}",
+        source.len(),
+        if mode == "named" { 100_000 } else { 1024 }
     );
     println!(
         "sample,parse_ns,allocations,reallocations,allocated_bytes,reallocated_net_bytes,retained_bytes,live_after_drop"
     );
-    for sample in 0..31 {
+    for sample in 0..samples {
         let region = Region::new(ALLOCATOR);
         let started = Instant::now();
-        let (elapsed, stats, after_drop) = if mode == "parse" {
+        let (elapsed, stats, after_drop) = if mode != "lex" {
             let output = black_box(parse(black_box(&source)).unwrap());
             let elapsed = started.elapsed().as_nanos();
             assert!(output.is_ok());

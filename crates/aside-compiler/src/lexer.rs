@@ -35,6 +35,7 @@ pub fn lex_with_limits(source: &str, limits: Limits) -> Result<Lexed, SourceTooL
         modes: Vec::new(),
         limits,
         exhausted: false,
+        tail_start: None,
     }
     .run())
 }
@@ -59,15 +60,25 @@ struct Scanner<'a> {
     modes: Vec<Mode>,
     limits: Limits,
     exhausted: bool,
+    tail_start: Option<usize>,
 }
 impl Scanner<'_> {
-    fn emit(&mut self, kind: K, start: usize, end: usize) {
+    // Ordinary tokens are charged at emission, including every string boundary.
+    // One separate ErrorToken tail may follow the ordinary token limit.
+    fn emit(&mut self, kind: K, start: usize, end: usize) -> bool {
         if start < end {
+            if self.tokens.len() >= self.limits.max_tokens {
+                self.tail_start.get_or_insert(start);
+                self.error(D::BudgetExceeded, start, end, "token budget exhausted");
+                self.exhausted = true;
+                return false;
+            }
             self.tokens.push(Token {
                 kind,
                 range: span(start, end),
             });
         }
+        true
     }
     fn error(&mut self, code: D, start: usize, end: usize, message: &str) {
         if self.exhausted {
@@ -139,7 +150,13 @@ impl Scanner<'_> {
             }
         }
         if self.exhausted {
-            self.emit(K::ErrorToken, self.pos, self.source.len());
+            let start = self.tail_start.unwrap_or(self.pos);
+            if start < self.source.len() {
+                self.tokens.push(Token {
+                    kind: K::ErrorToken,
+                    range: span(start, self.source.len()),
+                });
+            }
         }
         Lexed {
             tokens: self.tokens,
@@ -203,7 +220,9 @@ impl Scanner<'_> {
         {
             *braces += 1;
         }
-        self.emit(kind, start, self.pos);
+        if !self.emit(kind, start, self.pos) {
+            return;
+        }
         if kind == K::StringStart {
             let text = &self.source[start..self.pos];
             self.push_mode(
@@ -276,15 +295,21 @@ impl Scanner<'_> {
         while self.pos < self.source.len() {
             let rest = &self.source[self.pos..];
             if rest.starts_with(delimiter) {
-                self.emit(K::StringText, start, self.pos);
+                if !self.emit(K::StringText, start, self.pos) {
+                    return;
+                }
                 let end_start = self.pos;
                 self.pos += delimiter.len();
-                self.emit(K::StringEnd, end_start, self.pos);
+                if !self.emit(K::StringEnd, end_start, self.pos) {
+                    return;
+                }
                 self.modes.pop();
                 return;
             }
             if !triple && rest.starts_with(['\n', '\r']) {
-                self.emit(K::StringText, start, self.pos);
+                if !self.emit(K::StringText, start, self.pos) {
+                    return;
+                }
                 self.error(
                     D::UnterminatedString,
                     opening,
@@ -294,15 +319,19 @@ impl Scanner<'_> {
                 self.modes.pop();
                 return;
             }
-            if format && rest.starts_with("{{") || format && rest.starts_with("}}") {
+            if format && (rest.starts_with("{{") || rest.starts_with("}}")) {
                 self.pos += 2;
                 continue;
             }
             if format && rest.starts_with('{') {
-                self.emit(K::StringText, start, self.pos);
+                if !self.emit(K::StringText, start, self.pos) {
+                    return;
+                }
                 let hole = self.pos;
                 self.pos += 1;
-                self.emit(K::InterpolationStart, hole, self.pos);
+                if !self.emit(K::InterpolationStart, hole, self.pos) {
+                    return;
+                }
                 self.push_mode(
                     Mode::Hole {
                         braces: 0,
@@ -359,6 +388,7 @@ impl Scanner<'_> {
                 let closed = self.source[self.pos..].starts_with('}');
                 let value = &self.source[digits..self.pos];
                 let valid = !value.is_empty()
+                    && value.bytes().all(|b| b.is_ascii_hexdigit())
                     && value.len() <= 6
                     && u32::from_str_radix(value, 16)
                         .ok()

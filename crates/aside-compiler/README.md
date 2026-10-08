@@ -9,8 +9,9 @@ Syntax success does not imply name/type/effect validity or a runnable game.
 
 The workspace comes from D01 `c03226a`; only this directory and compiler lockfile
 entries change relative to that base. [INTERFACE.md](INTERFACE.md) records the
-initial interface draft and owner-visible grammar gaps. Until owner resolution,
-provisional syntax gets `ASP015`; it is not claimed to be accepted syntax.
+approved public interface and the owner decisions resolving the original syntax
+gaps. Pattern OR binding consistency, names, effects and runtime type rules remain
+work for subsequent passes.
 
 ```rust
 use aside_compiler::{parse, lex, EntryPoint, ParseOptions, parse_with_options};
@@ -42,7 +43,8 @@ Identifiers are checked with the pinned unicode-ident XID tables (exported
 `UNICODE_VERSION`); no normalization changes the spelling.
 
 Default budgets: 8 MiB source, 1,000,000 tokens, 128 recursive/syntax levels,
-128 diagnostics. Source above admission limits returns `SourceTooLarge` before
+128 diagnostics. Ordinary token emission is capped exactly; one separate error-tail
+leaf may exceed that count to preserve unprocessed text. Source above admission limits returns `SourceTooLarge` before
 allocation. Other exhaustion marks `exhausted()`, emits `ASR001`, and preserves
 the remaining source as an error subtree. The configured depth is clamped to
 1..128 for Rust stack safety; unwind and the lossless error tail may add enclosing
@@ -61,8 +63,8 @@ cargo test -p aside-compiler --locked
 cargo test -p aside-compiler --release --locked
 cargo run -p aside-compiler --example check -- path/to/file.aside module
 cargo build -p aside-compiler --example frontend_probe --release --locked
-/usr/bin/time -v target/release/examples/frontend_probe parse
-/usr/bin/time -v target/release/examples/frontend_probe lex
+python3 crates/aside-compiler/bench-results/run_probe.py parse
+python3 crates/aside-compiler/bench-results/run_probe.py lex
 ```
 
 `ASIDE_DUMP_TREE=1` prints the actual CST in the check example. Source diagnostics
@@ -74,5 +76,8 @@ bilingual source equality, and parses both editions. No guide edits or fixture
 rewrites conceal discrepancies. [tests/frontend.rs](tests/frontend.rs) checks
 tree nesting/ambiguity pairs, malformed literals, Chinese/emoji ranges, recovery,
 every UTF-8 truncation of representative forms, seeded arbitrary input at every
-entry, and deep/flat budget cases. Performance evidence is in
+entry, and deep/flat budget cases. Else-if chains are additionally tested in an isolated
+child process, protecting the test runner from a stack-overflow regression.
+The 100,000-name argument case preserves the first duplicate range using a
+HashMap rather than repeated linear search. Performance evidence is in
 [PERFORMANCE.md](PERFORMANCE.md).

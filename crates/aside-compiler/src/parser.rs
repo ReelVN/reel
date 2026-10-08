@@ -60,6 +60,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
         exhausted: lexed.exhausted,
         frames: Vec::new(),
         allow_min: false,
+        stop_pipe: false,
     };
     p.start(K::Root);
     match options.entry {
@@ -98,6 +99,7 @@ struct Parser<'a> {
     exhausted: bool,
     frames: Vec<Vec<usize>>,
     allow_min: bool,
+    stop_pipe: bool,
 }
 #[derive(Clone, Copy)]
 struct Marker {
@@ -110,6 +112,7 @@ struct Expr {
     height: usize,
     target: bool,
     assignment: bool,
+    assignment_range: Option<TextRange>,
     missing_else: bool,
     children_named: bool,
 }
@@ -120,6 +123,7 @@ impl Expr {
             height: 1,
             target: false,
             assignment: false,
+            assignment_range: None,
             missing_else: false,
             children_named: false,
         }
@@ -303,7 +307,8 @@ impl Parser<'_> {
     fn statement(&mut self, end: K, tail: bool) {
         match self.peek() {
             K::Semi => self.bump(),
-            K::Use | K::Pub | K::Fn | K::Async | K::Gen | K::Class => self.declaration(false),
+            K::Use | K::Pub | K::Fn | K::Async | K::Gen => self.declaration(false),
+            K::Class if self.nth(1) == K::Ident => self.declaration(false),
             K::Let => self.let_decl(false),
             K::LBrace => self.block(),
             K::Return | K::Throw | K::Break | K::Continue => self.jump(),
@@ -343,12 +348,14 @@ impl Parser<'_> {
         if !self.enter() {
             return;
         }
+        let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         self.start(K::Block);
         self.expect(K::LBrace);
         self.statements(K::RBrace, true);
         self.expect(K::RBrace);
         self.finish();
         self.leave();
+        self.stop_pipe = previous_pipe;
     }
     fn expr(&mut self, min: u8, head: bool, value: bool) -> Expr {
         if !self.enter() {
@@ -358,6 +365,9 @@ impl Parser<'_> {
         let mut lhs = self.atom(head, value);
         while !self.halted {
             let op = self.peek();
+            if self.stop_pipe && op == K::Pipe {
+                break;
+            }
             if matches!(
                 op,
                 K::Dot
@@ -427,10 +437,10 @@ impl Parser<'_> {
                 self.wrap(cp, kind);
                 self.bump();
                 let rhs = if op == K::Is {
-                    self.ty();
+                    self.type_atom(true);
                     Expr::new(K::TypeName)
                 } else {
-                    self.expr(right, head, true)
+                    self.expr(right, head, kind != K::AssignExpr || value)
                 };
                 if is_comparison(op)
                     && (is_comparison_kind(lhs.kind) || is_comparison_kind(rhs.kind))
@@ -455,7 +465,7 @@ impl Parser<'_> {
                         "assignment requires a location or destructuring names",
                     );
                 }
-                if lhs.assignment || rhs.assignment {
+                if lhs.assignment || rhs.assignment && kind != K::AssignExpr {
                     self.error_at(
                         D::InvalidAssignment,
                         operator_range,
@@ -468,6 +478,7 @@ impl Parser<'_> {
                     kind: if is_comparison(op) { K::Is } else { kind },
                     height: lhs.height.max(rhs.height) + 1,
                     assignment: kind == K::AssignExpr,
+                    assignment_range: (kind == K::AssignExpr).then_some(operator_range),
                     ..Expr::new(kind)
                 };
             } else {
@@ -478,7 +489,11 @@ impl Parser<'_> {
             }
         }
         if value && lhs.assignment {
-            self.error(D::InvalidAssignment, "assignment has no expression value");
+            self.error_at(
+                D::InvalidAssignment,
+                lhs.assignment_range.unwrap_or(self.range()),
+                "assignment has no expression value",
+            );
         }
         self.leave();
         lhs
@@ -516,7 +531,7 @@ impl Parser<'_> {
                 Expr::new(K::MatchExpr)
             }
             K::Class => {
-                self.class_decl();
+                self.class_decl(false);
                 Expr::new(K::ClassDecl)
             }
             K::Await | K::Bang | K::Tilde | K::Plus | K::Minus => {
@@ -537,7 +552,7 @@ impl Parser<'_> {
                 let rhs = if matches!(self.peek(), K::Semi | K::RBrace | K::Comma | K::Eof) {
                     Expr::new(K::LiteralExpr)
                 } else {
-                    self.expr(0, head, true)
+                    self.expr(2, head, true)
                 };
                 self.finish();
                 Expr {
@@ -594,6 +609,7 @@ impl Parser<'_> {
         self.finish();
     }
     fn string_expr(&mut self) {
+        let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         self.start(K::StringExpr);
         self.bump();
         while !matches!(self.peek(), K::StringEnd | K::Eof) && !self.halted {
@@ -613,9 +629,11 @@ impl Parser<'_> {
             self.progress(before);
         }
         self.expect(K::StringEnd);
+        self.stop_pipe = previous_pipe;
         self.finish();
     }
     fn tuple(&mut self) -> Expr {
+        let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         let cp = self.checkpoint();
         self.bump();
         let mut count = 0usize;
@@ -640,12 +658,14 @@ impl Parser<'_> {
         };
         self.wrap(cp, kind);
         self.finish();
+        self.stop_pipe = previous_pipe;
         Expr {
             target,
             ..Expr::new(kind)
         }
     }
     fn array(&mut self) -> Expr {
+        let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         self.start(K::ArrayExpr);
         self.bump();
         let mut target = true;
@@ -668,12 +688,14 @@ impl Parser<'_> {
         }
         self.expect(K::RBracket);
         self.finish();
+        self.stop_pipe = previous_pipe;
         Expr {
             target,
             ..Expr::new(K::ArrayExpr)
         }
     }
     fn object(&mut self) {
+        let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         self.start(K::ObjectExpr);
         self.bump();
         while !matches!(self.peek(), K::RBrace | K::Eof) && !self.halted {
@@ -703,11 +725,14 @@ impl Parser<'_> {
             self.progress(before);
         }
         self.expect(K::RBrace);
+        self.stop_pipe = previous_pipe;
         self.finish();
     }
     fn arguments(&mut self) -> bool {
+        let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         self.start(K::ArgList);
-        let mut names: Vec<(String, TextRange)> = Vec::new();
+        let mut names: std::collections::HashMap<String, TextRange> =
+            std::collections::HashMap::new();
         let mut children = false;
         while !matches!(self.peek(), K::RParen | K::Eof) && !self.halted {
             let before = self.cursor;
@@ -723,8 +748,7 @@ impl Parser<'_> {
                 let range = self.range();
                 let name = self.text().to_owned();
                 children |= name == "children";
-                if let Some((_, previous)) = names.iter().find(|(n, _)| *n == name) {
-                    let previous = *previous;
+                if let Some(&previous) = names.get(&name) {
                     self.error_at(D::DuplicateArgument, range, "duplicate named argument");
                     if let Some(d) = self.diagnostics.last_mut()
                         && d.code == D::DuplicateArgument
@@ -735,7 +759,7 @@ impl Parser<'_> {
                         });
                     }
                 }
-                names.push((name, range));
+                names.entry(name).or_insert(range);
                 self.bump();
                 self.bump();
             } else {
@@ -756,11 +780,12 @@ impl Parser<'_> {
         }
         self.expect(K::RParen);
         self.finish();
+        self.stop_pipe = previous_pipe;
         children
     }
     fn declaration(&mut self, member: bool) {
         let cp = self.checkpoint();
-        self.eat(K::Pub);
+        let public = self.eat(K::Pub);
         let static_member = self.eat(K::Static);
         if static_member && !member {
             self.error(
@@ -770,7 +795,7 @@ impl Parser<'_> {
         }
         match self.peek() {
             K::Fn | K::Async | K::Gen => self.fn_decl(),
-            K::Class if !member => self.class_decl(),
+            K::Class if !member => self.class_decl(true),
             K::Use if !member => self.use_decl(),
             K::Let => self.let_decl(member),
             _ => {
@@ -784,8 +809,10 @@ impl Parser<'_> {
             }
         }
         // Modifiers are owned by the same declaration node, without changing its grammar.
-        self.wrap(cp, K::ModifiedDecl);
-        self.finish();
+        if public || static_member {
+            self.wrap(cp, K::ModifiedDecl);
+            self.finish();
+        }
     }
     fn let_decl(&mut self, field: bool) {
         self.start(K::LetDecl);
@@ -834,13 +861,20 @@ impl Parser<'_> {
             self.eat(K::Mut);
             self.expect(K::Ident);
             if self.eat(K::Colon) {
-                self.ty();
+                if parens {
+                    self.ty();
+                } else {
+                    self.type_atom(true);
+                }
             }
             if self.eat(K::Eq) {
                 if rest {
                     self.error(D::InvalidRest, "rest parameter cannot have a default");
                 }
+                let previous = self.stop_pipe;
+                self.stop_pipe = !parens;
                 self.expr(0, false, true);
+                self.stop_pipe = previous;
             }
             self.finish();
             if !self.eat(K::Comma) {
@@ -864,17 +898,20 @@ impl Parser<'_> {
         }
         self.finish();
     }
-    fn class_decl(&mut self) {
+    fn class_decl(&mut self, named: bool) {
         if !self.enter() {
             return;
         }
         self.start(K::ClassDecl);
         self.expect(K::Class);
-        if !self.eat(K::Ident) {
+        if named {
+            self.expect(K::Ident);
+        } else if self.peek() == K::Ident {
             self.error(
-                D::UnresolvedSyntax,
-                "anonymous class syntax requires specification resolution (aside-language.md:136)",
+                D::ExpectedDeclaration,
+                "class expressions are anonymous; reference a named class declaration by its name",
             );
+            self.bump();
         }
         if self.eat(K::Colon) {
             self.expr(0, true, true);
@@ -948,6 +985,9 @@ impl Parser<'_> {
         self.leave();
     }
     fn if_expr(&mut self, value: bool) -> Expr {
+        if !self.enter() {
+            return Expr::new(K::Error);
+        }
         self.start(K::IfExpr);
         self.bump();
         self.condition();
@@ -963,6 +1003,7 @@ impl Parser<'_> {
             self.error(D::MissingElse, "if used as a value requires else");
         }
         self.finish();
+        self.leave();
         Expr {
             missing_else: !has_else,
             ..Expr::new(K::IfExpr)
@@ -1009,7 +1050,11 @@ impl Parser<'_> {
                 self.expr(0, true, true);
             }
             self.expect(K::FatArrow);
-            self.expr(0, false, true);
+            if self.peek() == K::LBrace {
+                self.block();
+            } else {
+                self.expr(0, false, true);
+            }
             self.finish();
             if !self.eat(K::Comma) && self.peek() != K::RBrace {
                 self.error(D::ExpectedToken, "match arms require ','");
@@ -1065,15 +1110,15 @@ impl Parser<'_> {
             return;
         }
         let cp = self.checkpoint();
-        self.type_atom();
+        self.type_atom(false);
         while self.eat(K::Pipe) && !self.halted {
             self.wrap(cp, K::UnionType);
-            self.type_atom();
+            self.type_atom(false);
             self.finish();
         }
         self.leave();
     }
-    fn type_atom(&mut self) {
+    fn type_atom(&mut self, stop_union: bool) {
         match self.peek() {
             K::Ident | K::Null => {
                 self.start(K::TypeName);
@@ -1084,22 +1129,33 @@ impl Parser<'_> {
                 self.finish();
             }
             K::LParen => {
-                self.start(K::TupleType);
+                let cp = self.checkpoint();
                 self.bump();
+                let mut count = 0;
+                let mut comma = false;
                 while !matches!(self.peek(), K::RParen | K::Eof) && !self.halted {
                     let before = self.cursor;
                     self.ty();
+                    count += 1;
                     if !self.eat(K::Comma) {
                         break;
                     }
+                    comma = true;
                     self.progress(before);
                 }
                 self.expect(K::RParen);
+                self.wrap(
+                    cp,
+                    if count == 1 && !comma {
+                        K::GroupType
+                    } else {
+                        K::TupleType
+                    },
+                );
                 self.finish();
             }
             K::Fn => {
                 self.start(K::FunctionType);
-                self.error(D::UnresolvedSyntax, "function type spelling requires specification resolution (aside-language.md:163)");
                 self.bump();
                 self.expect(K::LParen);
                 while !matches!(self.peek(), K::RParen | K::Eof) && !self.halted {
@@ -1112,7 +1168,14 @@ impl Parser<'_> {
                 }
                 self.expect(K::RParen);
                 self.expect(K::Arrow);
-                self.ty();
+                if stop_union {
+                    if self.enter() {
+                        self.type_atom(true);
+                        self.leave();
+                    }
+                } else {
+                    self.ty();
+                }
                 self.finish();
             }
             _ => {
@@ -1136,16 +1199,11 @@ impl Parser<'_> {
         self.pattern_atom();
         if self.eat(K::Is) {
             self.wrap(cp, K::TypePattern);
-            self.error(D::UnresolvedSyntax, "type-test pattern spelling requires specification resolution (aside-language.md:114)");
-            self.ty();
+            self.type_atom(true);
             self.finish();
         }
         while self.eat(K::Pipe) && !self.halted {
             self.wrap(cp, K::OrPattern);
-            self.error(
-                D::UnresolvedSyntax,
-                "OR pattern spelling requires specification resolution (aside-language.md:114)",
-            );
             self.pattern();
             self.finish();
         }
@@ -1165,6 +1223,12 @@ impl Parser<'_> {
             K::Number | K::True | K::False | K::Null | K::Minus | K::StringStart => {
                 self.start(K::LiteralPattern);
                 let negative = self.eat(K::Minus);
+                if negative && self.peek() != K::Number {
+                    self.error(
+                        D::ExpectedPattern,
+                        "negative literal patterns require a number",
+                    );
+                }
                 if self.peek() == K::StringStart {
                     if self.text().starts_with('f') {
                         self.error(

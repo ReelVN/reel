@@ -162,6 +162,7 @@ pub enum SyntaxKind {
     OrPattern,
     TypePattern,
     ModifiedDecl,
+    GroupType,
 }
 impl SyntaxKind {
     pub fn is_trivia(self) -> bool {
@@ -354,6 +355,7 @@ impl Language for AsideLanguage {
             SyntaxKind::OrPattern,
             SyntaxKind::TypePattern,
             SyntaxKind::ModifiedDecl,
+            SyntaxKind::GroupType,
         ];
         KINDS
             .get(raw.0 as usize)
