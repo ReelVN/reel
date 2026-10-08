@@ -16,6 +16,8 @@ pub use spec::*;
 pub use verify::{HandlerKind, HandlerTarget, PackageStats, VerifiedProgram, disassemble, verify};
 
 /// All limits apply to the whole package, including nested descriptor records.
+/// Work is bounded independently for decoding, verification and runtime admission;
+/// VerifiedProgram retains these limits for every require_runtime call.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub max_bytes: usize,
