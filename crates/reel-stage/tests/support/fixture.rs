@@ -205,6 +205,8 @@ pub struct StageGroup {
     pub trace: Trace,
     pub consume: bool,
     pub remove_on_terminal: bool,
+    pub remove_on_hover_enter: bool,
+    pub remove_on_active_enter: bool,
     pub queries: Option<GeometryTrace>,
 }
 impl StageGroup {
@@ -219,6 +221,8 @@ impl StageGroup {
             trace,
             consume: false,
             remove_on_terminal: false,
+            remove_on_hover_enter: false,
+            remove_on_active_enter: false,
             queries: None,
         }
     }
@@ -326,6 +330,12 @@ impl Widget for StageGroup {
                 size: Some(c.content_box().size()),
                 transform: c.window_transform(),
             });
+        }
+        if (self.remove_on_hover_enter && matches!(e, Update::ChildHoveredChanged(true)))
+            || (self.remove_on_active_enter && matches!(e, Update::ChildActiveChanged(true)))
+        {
+            let (child, _, _) = self.children.remove(0);
+            c.remove_child(child);
         }
     }
     fn get_cursor(&self, c: &QueryCtx<'_>, _: Point) -> CursorIcon {

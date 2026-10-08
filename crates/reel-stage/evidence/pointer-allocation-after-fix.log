@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running tests/pointer_allocations.rs (target/release/deps/pointer_allocations-e11573a8e7407423)
+
+running 1 test
+test real_uncaptured_pointer_dispatch_allocations ... real dispatch kind=first-child-hit controls=32 actual_nodes=34 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=1143ns max=1185ns
+real dispatch kind=wide-miss controls=32 actual_nodes=34 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=642ns max=646ns
+real dispatch kind=first-child-hit controls=256 actual_nodes=258 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=2058ns max=2184ns
+real dispatch kind=wide-miss controls=256 actual_nodes=258 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=1630ns max=26057ns
+real dispatch kind=first-child-hit controls=1024 actual_nodes=1026 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=5197ns max=32746ns
+real dispatch kind=wide-miss controls=1024 actual_nodes=1026 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=5035ns max=5064ns
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

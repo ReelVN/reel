@@ -1,0 +1,51 @@
+   Compiling rustix v1.1.5
+   Compiling yeslogic-fontconfig-sys v6.0.1
+   Compiling tracing-attributes v0.1.31
+   Compiling linux-raw-sys v0.12.1
+   Compiling num-traits v0.2.19
+   Compiling getrandom v0.4.3
+   Compiling fastrand v2.5.0
+   Compiling pxfm v0.1.30
+   Compiling color v0.3.3
+   Compiling tracing v0.1.44
+   Compiling fontique v0.8.0
+   Compiling peniko v0.6.1
+   Compiling png v0.18.1
+   Compiling tempfile v3.27.0
+   Compiling skrifa v0.40.0
+   Compiling harfrust v0.5.2
+   Compiling moxcms v0.8.1
+   Compiling profiling-procmacros v1.0.18
+   Compiling console v0.15.11
+   Compiling keyboard-types v0.8.3
+   Compiling similar v2.7.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling insta v1.46.3
+   Compiling image v0.25.10
+   Compiling ui-events v0.3.0
+   Compiling profiling v1.0.17
+   Compiling tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena)
+   Compiling parley v0.8.0
+   Compiling imaging v0.0.1
+   Compiling float-cmp v0.10.0
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.12s
+     Running unittests src/lib.rs (target/debug/deps/masonry_core-775221a0159828cb)
+
+running 1 test
+test app::layer_stack::input_tests::layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup ... 
+thread 'app::layer_stack::input_tests::layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup' (23795) panicked at masonry_core/src/app/layer_stack.rs:93:17:
+assertion `left == right` failed: ineligible layer hook: presented=false stashed=false
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    app::layer_stack::input_tests::layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p masonry_core --lib`

@@ -15,6 +15,7 @@ masonry_core = { path = "../../third_party/masonry/masonry_core", default-featur
 [dev-dependencies]
 masonry = { path = "../../third_party/masonry/masonry", default-features = false }
 imaging_vello_cpu = "=0.0.1"
+stats_alloc = "=0.1.10"
 
 [lints]
 workspace = true

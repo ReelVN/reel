@@ -1,18 +1,22 @@
 
-running 18 tests
-test actual_bridge_record_and_input_measurements ... production bridge 1080p controls=32 actual_nodes=34 geometry_bytes=11536 export_scratch_peak_bytes=256 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 11616, peak_bytes: 23776 }; record+replay p95=29138ns max=49226ns export p95=1899ns max=2103ns pointer p95=1568ns max=25296ns
-production bridge 1080p controls=256 actual_nodes=258 geometry_bytes=86800 export_scratch_peak_bytes=2048 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 86880, peak_bytes: 177888 }; record+replay p95=505671ns max=550472ns export p95=18780ns max=40347ns pointer p95=1579ns max=17034ns
-production bridge 1080p controls=1024 actual_nodes=1026 geometry_bytes=344848 export_scratch_peak_bytes=8192 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 344928, peak_bytes: 706272 }; record+replay p95=2585560ns max=4483145ns export p95=118296ns max=126289ns pointer p95=1592ns max=80166ns
+running 22 tests
+test actual_bridge_record_and_input_measurements ... production bridge 1080p controls=32 actual_nodes=34 geometry_bytes=11536 export_scratch_peak_bytes=256 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 12160, peak_bytes: 24320 }; record+replay p95=50992ns max=1914807ns export p95=2619ns max=22002ns pointer p95=1617ns max=34364ns
+production bridge 1080p controls=256 actual_nodes=258 geometry_bytes=86800 export_scratch_peak_bytes=2048 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 91008, peak_bytes: 182016 }; record+replay p95=3610333ns max=4590492ns export p95=28968ns max=3114033ns pointer p95=1474ns max=3086681ns
+production bridge 1080p controls=1024 actual_nodes=1026 geometry_bytes=344848 export_scratch_peak_bytes=8192 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 361344, peak_bytes: 722688 }; record+replay p95=5082707ns max=6217339ns export p95=125530ns max=2189942ns pointer p95=1457ns max=27938ns
 ok
+test callback_deletion_in_live_and_presented_hover_and_active ... ok
+test hover_ancestor_removes_target_before_cursor ... ok
 test live_stashing_and_missing_new_view_cancel_alive_capture_once ... ok
 test missing_children_and_frozen_widgetref_order_include_stashed ... ok
-test production_input_measurements ... measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=1120B; pointer ns p50=1433 p95=1486 p99=1562; capture ns p50=235 p95=250 p99=253
-measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=11536B; pointer p95=1738ns capture p95=1692ns miss_scan p95=325ns
-measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=86800B; pointer p95=1826ns capture p95=12285ns miss_scan p95=1952ns
+test production_input_measurements ... measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=1120B; pointer ns p50=1268 p95=1341 p99=1748; capture ns p50=234 p95=250 p99=257
+measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=11536B; pointer p95=2918ns capture p95=1841ns miss_scan p95=163ns
+measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=86800B; pointer p95=1686ns capture p95=12308ns miss_scan p95=651ns
 ok
 test raw_mut_missing_and_animation_live_with_complete_geometry_getters ... ok
 test real_record_gate_first_frame_failures_identity_order_clear_and_epoch ... ok
-test snapshot_node_path_capacity_and_lease_recovery ... budget actual_nodes=3 payload_bytes=1120 snapshot_limit_bytes=1376: full_candidate_reject=84ns retained_lease_reject=327ns release_then_record=3685ns; final_usage=BudgetUsage { tickets: 0, bytes: 0, peak_bytes: 1200 }
+test retired_candidate_keys_keep_identity_allocations_bounded_and_charged ... ok
+test snapshot_keeps_one_maximum_ticket_until_last_view_drops ... ok
+test snapshot_node_path_capacity_and_lease_recovery ... budget actual_nodes=3 payload_bytes=1120 snapshot_limit_bytes=1376: full_candidate_reject=96ns retained_lease_reject=260ns release_then_record=2970ns; final_usage=BudgetUsage { tickets: 0, bytes: 0, peak_bytes: 1200 }
 ok
 test support::checks::ancestor_removes_child_after_terminal_delivery ... ancestor removal button/up presented=false: terminal=["up"], capture=None, button clicks=0
 ancestor removal button/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
@@ -51,7 +55,7 @@ test support::presentation::singular_transform_is_not_hittable ... singular affi
 ok
 test view_change_notifies_only_differences_and_uses_old_exit_geometry ... ok
 
-test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
 
 
-Whole test process peak RSS (Linux KiB, compiler excluded): 15772
+Whole test process peak RSS (Linux KiB, compiler excluded): 17220

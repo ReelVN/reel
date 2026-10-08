@@ -30,6 +30,14 @@ Production local changes:
 - update.rs diffs old/new paths, retains old view for exits, cancels invalid
   capture, keeps valid capture and updates the stationary cursor in the new view.
   Stashed changes now request pointer reconciliation immediately.
+  Rechecks target liveness after notifications that may remove it, retains
+  invalidations and reconciles surviving ancestor flags in the bounded rewrite.
+- Layer pointer interception obeys current disabled/stashed/liveness, independently
+  of reliable terminal capture cleanup.
+- Safe tree_arena shared/mutable lookups borrow direct children via parent links
+  on the call stack without temporary ancestor Vecs. Scope/reparent/removal unit
+  checks and real whole-dispatch allocation probes cover the changed lookup paths.
+  Frozen bounds/clip reject hit candidates before current eligibility lookup.
 - paint mode is retained, including when only a different cached callback reruns.
 - Local README metadata, minor upstream doc formatting and a mutation callback
   type alias allow strict direct-crate clippy without suppressing warnings.

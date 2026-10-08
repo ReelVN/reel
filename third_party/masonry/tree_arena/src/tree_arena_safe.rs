@@ -340,23 +340,13 @@ impl<'arena, T> ArenaRefList<'arena, T> {
     }
 
     fn find_inner(self, id: NodeId) -> Option<ArenaRef<'arena, T>> {
-        let parent_id = self.parents_map.parents_map.get(&id)?;
-
-        let id_path = if let Some(parent_id) = parent_id {
-            self.parents_map.get_id_path(*parent_id, self.parent_id)
-        } else {
-            Vec::new()
-        };
-
-        let mut id_path = id_path.as_slice();
-        let mut node_children = self.children;
-        while let Some((ancestor_id, new_id_path)) = id_path.split_last() {
-            id_path = new_id_path;
-            node_children = &node_children.get(ancestor_id)?.children;
+        let parent_id = *self.parents_map.parents_map.get(&id)?;
+        if parent_id == self.parent_id {
+            return self.item(id);
         }
-
-        let node = node_children.get(&id)?;
-        Some(node.arena_ref(*parent_id, self.parents_map.parents_map))
+        // Walk parents on the call stack, then borrow each direct child. This
+        // preserves the list's descendant boundary without a temporary path Vec.
+        self.find_inner(parent_id?)?.children.item(id)
     }
 }
 
@@ -550,23 +540,28 @@ impl<'arena, T> ArenaMutList<'arena, T> {
     }
 
     fn find_mut_inner(self, id: NodeId) -> Option<ArenaMut<'arena, T>> {
-        let parent_id = self.parents_map.parents_map.get(&id)?;
-
-        let id_path = if let Some(parent_id) = parent_id {
-            self.parents_map.get_id_path(*parent_id, self.parent_id)
-        } else {
-            Vec::new()
-        };
-
-        let mut id_path = id_path.as_slice();
-        let mut node_children: &'arena mut _ = &mut *self.children;
-        while let Some((ancestor_id, new_id_path)) = id_path.split_last() {
-            id_path = new_id_path;
-            node_children = &mut node_children.get_mut(ancestor_id)?.children;
+        fn child_map<'a, T>(
+            children: &'a mut HashMap<NodeId, TreeNode<T>>,
+            parents: &HashMap<NodeId, Option<NodeId>>,
+            boundary: Option<NodeId>,
+            parent: Option<NodeId>,
+        ) -> Option<&'a mut HashMap<NodeId, TreeNode<T>>> {
+            if parent == boundary {
+                return Some(children);
+            }
+            let parent = parent?;
+            let ancestors = child_map(children, parents, boundary, *parents.get(&parent)?)?;
+            Some(&mut ancestors.get_mut(&parent)?.children)
         }
-
+        let parent_id = *self.parents_map.parents_map.get(&id)?;
+        let node_children = child_map(
+            self.children,
+            self.parents_map.parents_map,
+            self.parent_id,
+            parent_id,
+        )?;
         let node = node_children.get_mut(&id)?;
-        Some(node.arena_mut(*parent_id, &mut *self.parents_map.parents_map))
+        Some(node.arena_mut(parent_id, &mut *self.parents_map.parents_map))
     }
 
     /// No-op. Added for parity with unsafe implementation.
@@ -631,16 +626,60 @@ impl ArenaMapMut<'_> {
             parents_map: self.parents_map,
         }
     }
+}
 
-    /// Returns the path of items from the given item to the root of the tree.
-    ///
-    /// The path is in order from the bottom to the top, starting at the given item and ending at
-    /// the root.
-    ///
-    /// If `start_id` is Some, the path ends just before that id instead; `start_id` is not included.
-    ///
-    /// If there is no path from `start_id` to id, returns an empty vector.
-    fn get_id_path(&self, id: NodeId, start_id: Option<NodeId>) -> Vec<NodeId> {
-        self.reborrow().get_id_path(id, start_id)
+#[cfg(test)]
+mod read_lookup_tests {
+    use super::*;
+    #[test]
+    fn read_lookup_preserves_scope_after_reparent_and_removal() {
+        let mut tree = TreeArena::new();
+        {
+            let mut roots = tree.roots_mut();
+            let mut root = roots.insert(1_u64, "root");
+            root.children
+                .insert(2_u64, "branch")
+                .children
+                .insert(3_u64, "leaf");
+            root.children.insert(4_u64, "sibling");
+        }
+        tree.roots_mut().insert(9_u64, "other root");
+        assert_eq!(tree.find(3_u64).unwrap().item, &"leaf");
+        let branch = tree.find(2_u64).unwrap().children;
+        assert!(branch.find(3_u64).is_some());
+        for outside in [1_u64, 2, 4, 9, 99] {
+            assert!(
+                branch.find(outside).is_none(),
+                "outside child scope: {outside}"
+            );
+        }
+        for outside in [1_u64, 2, 4, 9, 99] {
+            assert!(
+                tree.find_mut(2_u64)
+                    .unwrap()
+                    .children
+                    .find_mut(outside)
+                    .is_none(),
+                "outside mutable child scope: {outside}"
+            );
+        }
+        *tree
+            .find_mut(2_u64)
+            .unwrap()
+            .children
+            .find_mut(3_u64)
+            .unwrap()
+            .item = "changed leaf";
+        tree.reparent(3_u64, 4_u64);
+        assert!(tree.find(2_u64).unwrap().children.find(3_u64).is_none());
+        assert_eq!(
+            tree.find(4_u64).unwrap().children.find(3_u64).unwrap().item,
+            &"changed leaf"
+        );
+        assert_eq!(
+            tree.find_mut(4_u64).unwrap().children.remove(3_u64),
+            Some("changed leaf")
+        );
+        assert!(tree.find(3_u64).is_none());
     }
 }

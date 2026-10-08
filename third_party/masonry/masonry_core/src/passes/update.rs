@@ -1024,13 +1024,22 @@ pub(crate) fn transition_pointer_geometry(
             });
         }
     }
+    // Notifications can delete a target or release capture. Retain the path until
+    // the next pointer pass can send exits to surviving ancestors, and preserve
+    // invalidations raised by callbacks rather than overwriting them at the end.
+    root.global_state.needs_pointer_pass |= next_hover
+        .first()
+        .is_some_and(|id| !root.is_still_interactive(*id))
+        || next_active.first().copied() != root.global_state.pointer_capture_target;
     let icon_source = root
         .global_state
         .pointer_capture_target
         .or(next_hover.first().copied());
     let new_icon = if let (Some(id), Some(pos)) = (icon_source, pointer_pos) {
-        if let Some(geometry) = new.bind(id) {
-            let node = root.widget_arena.get_node(id);
+        if let Some(geometry) = new.bind(id)
+            && let Some(node) = root.widget_arena.nodes.find(id)
+            && !node.item.state.is_stashed
+        {
             let widget = &*node.item.widget;
             let state = &node.item.state;
             let ctx = QueryCtx {
@@ -1073,7 +1082,6 @@ pub(crate) fn transition_pointer_geometry(
     prev_hover.clear();
     root.global_state.pointer_active_spare = prev_active;
     root.global_state.pointer_hover_spare = prev_hover;
-    root.global_state.needs_pointer_pass = false;
 }
 
 // ----------------

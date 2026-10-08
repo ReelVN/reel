@@ -6,6 +6,159 @@ fn production_input_measurements() {
     support::presentation::scaled_measure();
 }
 
+#[test]
+fn hover_ancestor_removes_target_before_cursor() {
+    for active in [false, true] {
+        let f = SliderFixture::new();
+        let group = f.group;
+        let slider = f.slider;
+        let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), bridge_limits()).unwrap();
+        let first = bridge.record(FrameId(1)).unwrap();
+        bridge.resolve(accept(&first));
+        bridge.edit_widget(group, |mut w| {
+            let g = w.downcast::<StageGroup>();
+            g.widget.remove_on_hover_enter = !active;
+            g.widget.remove_on_active_enter = active;
+        });
+        bridge.handle_pointer_event(mouse(
+            if active { "down" } else { "move" },
+            Point::new(35., 20.),
+        ));
+        assert!(!bridge.root().has_widget(slider));
+        assert_eq!(bridge.root().pointer_capture_target(), None);
+        assert!(!bridge.root().get_widget(group).unwrap().ctx().has_hovered());
+        assert!(!bridge.root().get_widget(group).unwrap().ctx().has_active());
+        bridge.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+    }
+}
+
+#[test]
+fn callback_deletion_in_live_and_presented_hover_and_active() {
+    for presented in [false, true] {
+        for active in [false, true] {
+            let mut f = SliderFixture::new();
+            if presented {
+                let view = f
+                    .root
+                    .capture_presented_geometry(support::limits())
+                    .unwrap();
+                f.root
+                    .set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
+                        view,
+                    ))));
+            }
+            f.root.edit_widget(f.group, |mut w| {
+                let g = w.downcast::<StageGroup>();
+                g.widget.remove_on_hover_enter = !active;
+                g.widget.remove_on_active_enter = active;
+            });
+            f.trace.borrow_mut().clear();
+            f.root.handle_pointer_event(mouse(
+                if active { "down" } else { "move" },
+                Point::new(35., 20.),
+            ));
+            assert!(!f.root.has_widget(f.slider));
+            assert_eq!(f.root.pointer_capture_target(), None);
+            let group = f.root.get_widget(f.group).unwrap();
+            assert!(!group.ctx().has_hovered());
+            assert!(!group.ctx().has_active());
+            assert_eq!(
+                f.trace
+                    .borrow()
+                    .iter()
+                    .filter(|o| o.kind == "cancel" && o.widget == f.slider)
+                    .count(),
+                usize::from(active)
+            );
+            f.root
+                .handle_pointer_event(mouse("move", Point::new(35., 20.)));
+        }
+    }
+}
+
+#[test]
+fn snapshot_keeps_one_maximum_ticket_until_last_view_drops() {
+    let f = SliderFixture::new();
+    let payload = f
+        .root
+        .capture_presented_geometry(support::limits())
+        .unwrap()
+        .retained_bytes();
+    let mut limits = bridge_limits();
+    limits.geometry.max_bytes = payload + 4096;
+    limits.max_candidates = 1;
+    limits.max_snapshot_bytes = limits.geometry.max_bytes as u64 + 256;
+    let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), limits).unwrap();
+    let c = bridge.record(FrameId(1)).unwrap();
+    let charge = bridge.snapshot_usage();
+    assert_eq!(charge.tickets, 1);
+    assert!(
+        charge.bytes >= limits.geometry.max_bytes as u64,
+        "keep original export reservation continuously charged"
+    );
+    bridge.resolve(accept(&c));
+    assert_eq!(bridge.snapshot_usage(), charge);
+    let lease = match bridge.root().input_geometry_source() {
+        InputGeometrySource::Presented(Some(v)) => v.clone(),
+        _ => panic!("accepted view"),
+    };
+    drop(c);
+    bridge.clear();
+    assert_eq!(bridge.snapshot_usage(), charge);
+    assert!(matches!(
+        bridge.record(FrameId(2)),
+        Err(RecordError::SnapshotBudget)
+    ));
+    drop(lease);
+    assert_eq!(bridge.snapshot_usage().tickets, 0);
+    assert_eq!(bridge.snapshot_usage().bytes, 0);
+    let c = bridge.record(FrameId(2)).unwrap();
+    bridge.resolve(notice(&c, PresentationOutcome::Skipped));
+    drop(c);
+    assert_eq!(bridge.snapshot_usage().bytes, 0);
+}
+
+#[test]
+fn retired_candidate_keys_keep_identity_allocations_bounded_and_charged() {
+    let f = SliderFixture::new();
+    let mut limits = bridge_limits();
+    limits.max_candidates = 1;
+    let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), limits).unwrap();
+    let mut keys = Vec::with_capacity(2);
+    let mut busy = 0;
+    for frame in 1..=64 {
+        match bridge.record(FrameId(frame)) {
+            Ok(c) => {
+                keys.push(c.key());
+                bridge.resolve(notice(&c, PresentationOutcome::Skipped));
+                drop(c);
+                assert!(
+                    bridge.snapshot_usage().bytes > 0,
+                    "retired key's identity lease is still resident"
+                );
+            }
+            Err(RecordError::SnapshotBudget) => busy += 1,
+            other => panic!("unexpected record: {other:?}"),
+        }
+    }
+    assert_eq!(keys.len(), 2);
+    assert_eq!(busy, 62);
+    assert_eq!(bridge.snapshot_usage().tickets, 2);
+    keys.clear();
+    assert_eq!(bridge.snapshot_usage().tickets, 0);
+    assert_eq!(bridge.snapshot_usage().bytes, 0);
+    let c = bridge.record(FrameId(65)).unwrap();
+    let key = c.key();
+    bridge.resolve(notice(&c, PresentationOutcome::Skipped));
+    drop(c);
+    let charge = bridge.snapshot_usage();
+    let clone = key.clone();
+    drop(key);
+    assert_eq!(bridge.snapshot_usage(), charge);
+    drop(clone);
+    assert_eq!(bridge.snapshot_usage().bytes, 0);
+}
+
 use masonry_core::{
     app::{GeometryError, GeometryLimits, InputGeometrySource},
     core::*,
@@ -20,7 +173,8 @@ fn bridge_limits() -> BridgeLimits {
         geometry: support::limits(),
         max_candidates: 4,
         max_bridge_bytes: 64 * 1024,
-        max_snapshot_bytes: 20 * 1024 * 1024,
+        // Five outstanding maximum leases plus host Arc/ticket overhead.
+        max_snapshot_bytes: 20 * 1024 * 1024 + 4096,
     }
 }
 fn accept(c: &RecordedCandidate) -> PresentationNotice {

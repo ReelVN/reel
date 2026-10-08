@@ -1704,6 +1704,174 @@
          this.ctx.get_mut(layer)
      }
  
+@@ -246,3 +246,167 @@
+         trace_span!("LayerStack", id = id.trace())
+     }
+ }
++
++#[cfg(test)]
++mod input_tests {
++    use super::*;
++    use crate::app::{
++        GeometryLimits, InputGeometrySource, RenderRoot, RenderRootOptions, RenderRootSignal,
++        WindowSizePolicy,
++    };
++    use crate::core::*;
++    use dpi::PhysicalSize;
++    use std::{
++        cell::{Cell, RefCell},
++        rc::Rc,
++        sync::Arc,
++    };
++
++    #[derive(Debug)]
++    struct Probe {
++        hooks: Rc<Cell<usize>>,
++        cancels: Rc<Cell<usize>>,
++    }
++    impl Widget for Probe {
++        type Action = u8;
++        fn register_children(&mut self, _: &mut RegisterCtx<'_>) {}
++        fn measure(
++            &mut self,
++            _: &mut MeasureCtx<'_>,
++            _: &PropertiesRef<'_>,
++            _: Axis,
++            _: LenReq,
++            _: Option<Length>,
++        ) -> Length {
++            Length::px(100.)
++        }
++        fn layout(&mut self, _: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, _: Size) {}
++        fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
++        fn accessibility_role(&self) -> Role {
++            Role::GenericContainer
++        }
++        fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
++        fn children_ids(&self) -> ChildrenIds {
++            ChildrenIds::new()
++        }
++        fn as_layer(&mut self) -> Option<&mut dyn Layer> {
++            Some(self)
++        }
++        fn on_pointer_event(
++            &mut self,
++            ctx: &mut EventCtx<'_>,
++            _: &mut PropertiesMut<'_>,
++            event: &PointerEvent,
++        ) {
++            match event {
++                PointerEvent::Down(_) => ctx.capture_pointer(),
++                PointerEvent::Cancel(_) => {
++                    assert!(
++                        ctx.is_pointer_capture_target(),
++                        "cleanup handler retains capture"
++                    );
++                    self.cancels.set(self.cancels.get() + 1);
++                }
++                _ => {}
++            }
++        }
++    }
++    impl Layer for Probe {
++        fn capture_pointer_event(
++            &mut self,
++            ctx: &mut EventCtx<'_>,
++            _: &mut PropertiesMut<'_>,
++            event: &PointerEvent,
++        ) {
++            if matches!(event, PointerEvent::Down(_)) {
++                self.hooks.set(self.hooks.get() + 1);
++                ctx.submit_action::<Self::Action>(1);
++            }
++        }
++    }
++    fn down() -> PointerEvent {
++        PointerEvent::Down(PointerButtonEvent {
++            pointer: PointerInfo {
++                pointer_id: Some(PointerId::PRIMARY),
++                persistent_device_id: None,
++                pointer_type: PointerType::Mouse,
++            },
++            state: PointerState {
++                position: dpi::PhysicalPosition::new(20., 20.),
++                ..Default::default()
++            },
++            button: Some(PointerButton::Primary),
++        })
++    }
++    #[test]
++    fn layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup() {
++        for presented in [false, true] {
++            for stashed in [false, true] {
++                let hooks = Rc::new(Cell::new(0));
++                let cancels = Rc::new(Cell::new(0));
++                let signals = Rc::new(RefCell::new(vec![]));
++                let sink = signals.clone();
++                let widget = Probe {
++                    hooks: hooks.clone(),
++                    cancels: cancels.clone(),
++                }
++                .prepare();
++                let layer = widget.id();
++                let mut root = RenderRoot::new(
++                    widget,
++                    move |s| sink.borrow_mut().push(s),
++                    RenderRootOptions {
++                        default_properties: Arc::new(DefaultProperties::new()),
++                        use_system_fonts: false,
++                        size_policy: WindowSizePolicy::User,
++                        size: PhysicalSize::new(100, 100),
++                        scale_factor: 1.,
++                        test_font: None,
++                    },
++                );
++                let (_, geometry) = root
++                    .record_presented_geometry(GeometryLimits {
++                        max_nodes: 8,
++                        max_bytes: 4096,
++                        max_path: 8,
++                    })
++                    .unwrap();
++                if presented {
++                    root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
++                        geometry,
++                    ))));
++                }
++                root.handle_pointer_event(down());
++                assert_eq!(hooks.get(), 1);
++                assert_eq!(root.pointer_capture_target(), Some(layer));
++                hooks.set(0);
++                if stashed {
++                    root.edit_widget(root.root_id(), |mut w| {
++                        let mut stack = w.downcast::<LayerStack>();
++                        stack
++                            .ctx
++                            .set_stashed(&mut stack.widget.layers[0].root, true);
++                    });
++                } else {
++                    root.edit_widget(layer, |mut w| w.ctx.set_disabled(true));
++                }
++                assert_eq!(cancels.get(), 1);
++                assert_eq!(root.pointer_capture_target(), None);
++                signals.borrow_mut().clear();
++                root.handle_pointer_event(down());
++                assert_eq!(
++                    hooks.get(),
++                    0,
++                    "ineligible layer hook: presented={presented} stashed={stashed}"
++                );
++                assert!(
++                    !signals
++                        .borrow()
++                        .iter()
++                        .any(|s| matches!(s, RenderRootSignal::Action(..)))
++                );
++                assert_eq!(cancels.get(), 1);
++            }
++        }
++    }
++}
 --- a/masonry_core/src/app/mod.rs
 +++ b/masonry_core/src/app/mod.rs
 @@ -4,6 +4,11 @@
@@ -1720,7 +1888,7 @@
  mod visual_layers;
 --- /dev/null
 +++ b/masonry_core/src/app/presented_geometry.rs
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,587 @@
 +// Copyright 2026 the Xilem Authors and Reel contributors
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -1929,7 +2097,7 @@
 +            let s = &v.records[i];
 +            let t = s.window_transform;
 +            if s.is_stashed
-+                || !eligible(s.id)
++                || !s.bounding_box.contains(p)
 +                || !t.as_coeffs().iter().all(|v| v.is_finite())
 +                || !t.determinant().is_finite()
 +                || t.determinant() == 0.
@@ -1939,9 +2107,12 @@
 +            let local = t.inverse() * p;
 +            if !local.x.is_finite()
 +                || !local.y.is_finite()
-+                || !s.bounding_box.contains(p)
 +                || s.clip_path.is_some_and(|c| !c.contains(local))
 +            {
++                return None;
++            }
++            // Frozen bounds/clip reject misses before any current-state query.
++            if !eligible(s.id) {
 +                return None;
 +            }
 +            if s.propagates_pointer_interaction {
@@ -3251,7 +3422,7 @@
          if let Some(target_widget_id) = target_widget_id {
              root.global_state
                  .emit_signal(RenderRootSignal::WidgetSelectedInInspector(
-@@ -185,9 +214,25 @@
+@@ -185,9 +214,27 @@
          return Handled::Yes;
      }
  
@@ -3270,7 +3441,9 @@
 +        GeometryView::Presented(None) => smallvec::SmallVec::new(),
 +    };
      for layer_id in layer_ids {
-+        if !root.has_widget(layer_id) {
++        // Layer interception is input behavior, not terminal capture cleanup.
++        // Cancel for the captured widget is dispatched separately below.
++        if !root.is_still_interactive(layer_id) {
 +            continue;
 +        }
 +        let Some(geometry) = view.bind(layer_id) else {
@@ -3279,7 +3452,7 @@
          let mut layer_root = root.widget_arena.get_node_mut(layer_id);
          let layer_type_id = layer_root.item.widget.type_id();
          if let Some(layer) = layer_root.item.widget.as_layer() {
-@@ -195,6 +240,7 @@
+@@ -195,6 +242,7 @@
                  .property_arena
                  .get(layer_root.item.state.property_stack_id, layer_type_id);
              let mut ctx = EventCtx {
@@ -3287,7 +3460,7 @@
                  global_state: &mut root.global_state,
                  widget_state: &mut layer_root.item.state,
                  children: layer_root.children.reborrow_mut(),
-@@ -217,9 +263,15 @@
+@@ -217,9 +265,15 @@
          }
      }
  
@@ -3306,7 +3479,7 @@
          && let Some(target_widget_id) = target_widget_id
      {
          // The next tab event will assign focus around this widget.
-@@ -228,12 +280,7 @@
+@@ -228,12 +282,7 @@
          // If we click outside of the focused widget, we clear the focus.
          if let Some(focused_widget) = root.global_state.focused_widget {
              // Focused_widget isn't ancestor of target_widget_id
@@ -3320,7 +3493,7 @@
                  root.global_state.next_focused_widget = None;
              }
          }
-@@ -247,16 +294,26 @@
+@@ -247,16 +296,26 @@
          skip_if_disabled,
          matches!(event, PointerEvent::Down { .. }),
          |widget, ctx, props, event| {
@@ -3348,7 +3521,7 @@
      }
  
      if !is_very_frequent(event) {
-@@ -313,6 +370,8 @@
+@@ -313,6 +372,8 @@
              widget.on_text_event(ctx, props, event);
          },
          true,
@@ -3357,7 +3530,7 @@
      );
  
      if let TextEvent::Keyboard(key) = event {
-@@ -378,6 +437,8 @@
+@@ -378,6 +439,8 @@
              widget.on_access_event(ctx, props, event);
          },
          true,
@@ -3587,7 +3760,7 @@
          state.needs_update_focusable = true;
  
          // Items may have been changed while they were stashed in ways that require a
-@@ -823,272 +869,211 @@
+@@ -823,272 +869,219 @@
  // --- MARK: POINTER
  /// See the [passes documentation](crate::doc::pass_system#update-passes).
  pub(crate) fn run_update_pointer_pass(root: &mut RenderRoot) {
@@ -3948,6 +4121,13 @@
 +            });
 +        }
 +    }
++    // Notifications can delete a target or release capture. Retain the path until
++    // the next pointer pass can send exits to surviving ancestors, and preserve
++    // invalidations raised by callbacks rather than overwriting them at the end.
++    root.global_state.needs_pointer_pass |= next_hover
++        .first()
++        .is_some_and(|id| !root.is_still_interactive(*id))
++        || next_active.first().copied() != root.global_state.pointer_capture_target;
      let icon_source = root
          .global_state
          .pointer_capture_target
@@ -3982,8 +4162,10 @@
 -        if state.is_disabled {
 +        .or(next_hover.first().copied());
 +    let new_icon = if let (Some(id), Some(pos)) = (icon_source, pointer_pos) {
-+        if let Some(geometry) = new.bind(id) {
-+            let node = root.widget_arena.get_node(id);
++        if let Some(geometry) = new.bind(id)
++            && let Some(node) = root.widget_arena.nodes.find(id)
++            && !node.item.state.is_stashed
++        {
 +            let widget = &*node.item.widget;
 +            let state = &node.item.state;
 +            let ctx = QueryCtx {
@@ -4032,11 +4214,10 @@
 +    prev_hover.clear();
 +    root.global_state.pointer_active_spare = prev_active;
 +    root.global_state.pointer_hover_spare = prev_hover;
-+    root.global_state.needs_pointer_pass = false;
  }
  
  // ----------------
-@@ -1131,6 +1116,7 @@
+@@ -1131,6 +1124,7 @@
  
                  if new_index != *index || state.property_cache.invalidated {
                      let mut ctx = UpdateCtx {
@@ -4044,7 +4225,7 @@
                          global_state,
                          widget_state: state,
                          children: children.reborrow_mut(),
-@@ -1210,6 +1196,7 @@
+@@ -1210,6 +1204,7 @@
  
      let stack = property_arena.get(state.property_stack_id, widget.type_id());
      let mut ctx = UpdateCtx {
@@ -4060,3 +4241,155 @@
  name = "tree_arena"
  version = "0.2.0"
  description = "An arena allocated tree."
+--- a/tree_arena/src/tree_arena_safe.rs
++++ b/tree_arena/src/tree_arena_safe.rs
+@@ -340,23 +340,13 @@
+     }
+ 
+     fn find_inner(self, id: NodeId) -> Option<ArenaRef<'arena, T>> {
+-        let parent_id = self.parents_map.parents_map.get(&id)?;
+-
+-        let id_path = if let Some(parent_id) = parent_id {
+-            self.parents_map.get_id_path(*parent_id, self.parent_id)
+-        } else {
+-            Vec::new()
+-        };
+-
+-        let mut id_path = id_path.as_slice();
+-        let mut node_children = self.children;
+-        while let Some((ancestor_id, new_id_path)) = id_path.split_last() {
+-            id_path = new_id_path;
+-            node_children = &node_children.get(ancestor_id)?.children;
+-        }
+-
+-        let node = node_children.get(&id)?;
+-        Some(node.arena_ref(*parent_id, self.parents_map.parents_map))
++        let parent_id = *self.parents_map.parents_map.get(&id)?;
++        if parent_id == self.parent_id {
++            return self.item(id);
++        }
++        // Walk parents on the call stack, then borrow each direct child. This
++        // preserves the list's descendant boundary without a temporary path Vec.
++        self.find_inner(parent_id?)?.children.item(id)
+     }
+ }
+ 
+@@ -550,23 +540,28 @@
+     }
+ 
+     fn find_mut_inner(self, id: NodeId) -> Option<ArenaMut<'arena, T>> {
+-        let parent_id = self.parents_map.parents_map.get(&id)?;
+-
+-        let id_path = if let Some(parent_id) = parent_id {
+-            self.parents_map.get_id_path(*parent_id, self.parent_id)
+-        } else {
+-            Vec::new()
+-        };
+-
+-        let mut id_path = id_path.as_slice();
+-        let mut node_children: &'arena mut _ = &mut *self.children;
+-        while let Some((ancestor_id, new_id_path)) = id_path.split_last() {
+-            id_path = new_id_path;
+-            node_children = &mut node_children.get_mut(ancestor_id)?.children;
+-        }
+-
++        fn child_map<'a, T>(
++            children: &'a mut HashMap<NodeId, TreeNode<T>>,
++            parents: &HashMap<NodeId, Option<NodeId>>,
++            boundary: Option<NodeId>,
++            parent: Option<NodeId>,
++        ) -> Option<&'a mut HashMap<NodeId, TreeNode<T>>> {
++            if parent == boundary {
++                return Some(children);
++            }
++            let parent = parent?;
++            let ancestors = child_map(children, parents, boundary, *parents.get(&parent)?)?;
++            Some(&mut ancestors.get_mut(&parent)?.children)
++        }
++        let parent_id = *self.parents_map.parents_map.get(&id)?;
++        let node_children = child_map(
++            self.children,
++            self.parents_map.parents_map,
++            self.parent_id,
++            parent_id,
++        )?;
+         let node = node_children.get_mut(&id)?;
+-        Some(node.arena_mut(*parent_id, &mut *self.parents_map.parents_map))
++        Some(node.arena_mut(parent_id, &mut *self.parents_map.parents_map))
+     }
+ 
+     /// No-op. Added for parity with unsafe implementation.
+@@ -631,16 +626,60 @@
+             parents_map: self.parents_map,
+         }
+     }
+-
+-    /// Returns the path of items from the given item to the root of the tree.
+-    ///
+-    /// The path is in order from the bottom to the top, starting at the given item and ending at
+-    /// the root.
+-    ///
+-    /// If `start_id` is Some, the path ends just before that id instead; `start_id` is not included.
+-    ///
+-    /// If there is no path from `start_id` to id, returns an empty vector.
+-    fn get_id_path(&self, id: NodeId, start_id: Option<NodeId>) -> Vec<NodeId> {
+-        self.reborrow().get_id_path(id, start_id)
+-    }
+-}
++}
++
++#[cfg(test)]
++mod read_lookup_tests {
++    use super::*;
++    #[test]
++    fn read_lookup_preserves_scope_after_reparent_and_removal() {
++        let mut tree = TreeArena::new();
++        {
++            let mut roots = tree.roots_mut();
++            let mut root = roots.insert(1_u64, "root");
++            root.children
++                .insert(2_u64, "branch")
++                .children
++                .insert(3_u64, "leaf");
++            root.children.insert(4_u64, "sibling");
++        }
++        tree.roots_mut().insert(9_u64, "other root");
++        assert_eq!(tree.find(3_u64).unwrap().item, &"leaf");
++        let branch = tree.find(2_u64).unwrap().children;
++        assert!(branch.find(3_u64).is_some());
++        for outside in [1_u64, 2, 4, 9, 99] {
++            assert!(
++                branch.find(outside).is_none(),
++                "outside child scope: {outside}"
++            );
++        }
++        for outside in [1_u64, 2, 4, 9, 99] {
++            assert!(
++                tree.find_mut(2_u64)
++                    .unwrap()
++                    .children
++                    .find_mut(outside)
++                    .is_none(),
++                "outside mutable child scope: {outside}"
++            );
++        }
++        *tree
++            .find_mut(2_u64)
++            .unwrap()
++            .children
++            .find_mut(3_u64)
++            .unwrap()
++            .item = "changed leaf";
++        tree.reparent(3_u64, 4_u64);
++        assert!(tree.find(2_u64).unwrap().children.find(3_u64).is_none());
++        assert_eq!(
++            tree.find(4_u64).unwrap().children.find(3_u64).unwrap().item,
++            &"changed leaf"
++        );
++        assert_eq!(
++            tree.find_mut(4_u64).unwrap().children.remove(3_u64),
++            Some("changed leaf")
++        );
++        assert!(tree.find(3_u64).is_none());
++    }
++}

@@ -227,7 +227,9 @@ pub(crate) fn run_on_pointer_event_with_view(
         GeometryView::Presented(None) => smallvec::SmallVec::new(),
     };
     for layer_id in layer_ids {
-        if !root.has_widget(layer_id) {
+        // Layer interception is input behavior, not terminal capture cleanup.
+        // Cancel for the captured widget is dispatched separately below.
+        if !root.is_still_interactive(layer_id) {
             continue;
         }
         let Some(geometry) = view.bind(layer_id) else {

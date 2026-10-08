@@ -20,6 +20,9 @@ both dependencies before rebasing onto the shared production base.
 - `set_input_geometry_source(source)` completes old-view exits and invalid
   capture Cancel before new-view entries/stationary cursor. Shared ancestors
   receive no duplicate notifications; surviving capture remains active.
+  Hover/active callbacks may remove the target. Cursor rechecks current liveness;
+  invalidated paths remain until a bounded rewrite pass sends exits to surviving
+  ancestors. Callback invalidations are retained instead of being overwritten.
 - `configure_input_path_storage(limit)` configures five reusable route arrays;
   `input_path_storage_bytes()` reports actual capacities. One pointer bubble
   route is built once and also used by the focus check. Hover/active each use
@@ -30,6 +33,10 @@ both dependencies before rebasing onto the shared production base.
   children. QueryCtx stays Copy. Every own context binds explicit Live or a
   borrowed view plus validated record index before invoking widget code.
   WidgetRef.children enumerates selected topology and filters destroyed nodes.
+- Shared and mutable safe-tree lookup walks parent links on the native call stack
+  and borrows direct children; no per-query ancestor Vec is allocated. Frozen
+  bounds/clip reject candidates before live eligibility. Layer interception also
+  checks current disabled/stashed/liveness; captured terminal cleanup is separate.
 - Snapshot: contiguous geometric records + child indices + sorted WidgetId
   index, including stashed registrations; no WidgetState, property/layout cache,
   widget/action or per-node ancestor vector. Insets/clip use border coordinates;
@@ -46,16 +53,22 @@ both dependencies before rebasing onto the shared production base.
   Presented(None). Limits cover nodes, export bytes/depth, candidate count,
   aggregate snapshot bytes and fixed route/registry storage. A D01 Temporary
   ticket is reserved before fixed storage allocation; a Snapshot ticket reserves
-  the maximum export allowance before record/export and then charges actual
-  retained storage. Export peak can be stricter than final residency.
+  the maximum export allowance before record/export and remains continuously
+  charged until the last key/view lease drops. The same Arc allocation provides
+  opaque candidate identity and its budget guard; no separate identity allocation
+  or unbounded external identity table is added. Retired keys remain charged.
+  This conservatively retains released scratch/export allowance; pool request and
+  byte limits apply to all outstanding leases, including retired keys. Configure
+  aggregate bytes for maximum-per-lease allowance plus host overhead.
 - `record(FrameId) -> Result<RecordedCandidate,RecordError>` requires increasing
   issued IDs. Candidate exposes `key()`, borrowed `scene()` and `geometry()`.
   Scene is actual complete VisualLayerPlan replay, with re-registered Scene IDs
   and group/clip/context scope preserved. External placeholders are explicitly
   refused, since U02 does not implement ExternalDraw.
-  An identity base layer root is required: fixed upstream paint.rs strips its
-  transform while input retains it. A nonidentity root returns
-  UnsupportedRootTransform; stage transforms belong on children of that root.
+  The host owns an identity base layer wrapper: fixed upstream paint.rs strips
+  its transform while input retains it. A nonidentity host root returns
+  UnsupportedRootTransform. The author's stage root is its child and retains
+  arbitrary stage transforms; the wrapper is an internal host implementation.
 - `PresentationNotice { key, surface_epoch, outcome }`, with
   `PresentationOutcome::{Accepted(FrameId),Skipped,SurfaceUnavailable,Error}`.
   `resolve` checks the renderer's FrameId, reported SurfaceEpoch, exact opaque

@@ -206,7 +206,7 @@ impl PresentedGeometryView {
             let s = &v.records[i];
             let t = s.window_transform;
             if s.is_stashed
-                || !eligible(s.id)
+                || !s.bounding_box.contains(p)
                 || !t.as_coeffs().iter().all(|v| v.is_finite())
                 || !t.determinant().is_finite()
                 || t.determinant() == 0.
@@ -216,9 +216,12 @@ impl PresentedGeometryView {
             let local = t.inverse() * p;
             if !local.x.is_finite()
                 || !local.y.is_finite()
-                || !s.bounding_box.contains(p)
                 || s.clip_path.is_some_and(|c| !c.contains(local))
             {
+                return None;
+            }
+            // Frozen bounds/clip reject misses before any current-state query.
+            if !eligible(s.id) {
                 return None;
             }
             if s.propagates_pointer_interaction {

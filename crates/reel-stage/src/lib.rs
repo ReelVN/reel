@@ -20,7 +20,8 @@ pub struct BridgeLimits {
     pub max_candidates: u32,
     /// Fixed route arrays and pending identity registry, reserved before allocation.
     pub max_bridge_bytes: u64,
-    /// Includes externally retained candidate geometry and accepted geometry.
+    /// Each external/accepted geometry lease keeps the maximum export reservation
+    /// plus host overhead until its final drop. Aggregate capacity is conservative.
     pub max_snapshot_bytes: u64,
 }
 /// Opaque identity minted for exactly one actual record operation.
@@ -28,7 +29,8 @@ pub struct BridgeLimits {
 pub struct CandidateKey {
     frame: FrameId,
     epoch: SurfaceEpoch,
-    identity: Arc<()>,
+    // One allocation is both exact identity and the key/view budget lease.
+    identity: Arc<BudgetTicket>,
 }
 impl CandidateKey {
     pub fn frame_id(&self) -> FrameId {
@@ -205,8 +207,8 @@ impl PresentationBridge {
             return Err(RecordError::CandidateCapacity);
         }
         // Reserve the permitted geometry maximum before record/export. Scene and widget
-        // runtime storage have separate owners. Only this bridge reserves from this pool,
-        // so replacing the reservation with the actual geometry charge is safe.
+        // runtime storage have separate owners. Keep this same ticket until the view's
+        // last lease drops, conservatively retaining the released scratch allowance too.
         let overhead =
             (size_of::<BudgetTicket>() + size_of::<CandidateKey>() + 4 * size_of::<usize>()) as u64;
         let reservation = self
@@ -238,17 +240,12 @@ impl PresentationBridge {
         let mut scene = Scene::new();
         plan.replay_into(&mut scene);
         scene.validate().map_err(|_| RecordError::InvalidScene)?;
-        let bytes = geometry.retained_bytes() as u64 + overhead;
-        drop(reservation);
-        let ticket = self
-            .snapshots
-            .reserve(bytes)
-            .map_err(|_| RecordError::SnapshotBudget)?;
-        let geometry = Arc::new(geometry.with_retention_guard(Arc::new(ticket)));
+        let lease = Arc::new(reservation);
+        let geometry = Arc::new(geometry.with_retention_guard(lease.clone()));
         let key = CandidateKey {
             frame,
             epoch: self.epoch,
-            identity: Arc::new(()),
+            identity: lease,
         };
         self.pending.push(Pending {
             key: key.clone(),

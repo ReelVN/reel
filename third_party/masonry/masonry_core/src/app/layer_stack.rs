@@ -246,3 +246,167 @@ impl Widget for LayerStack {
         trace_span!("LayerStack", id = id.trace())
     }
 }
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::app::{
+        GeometryLimits, InputGeometrySource, RenderRoot, RenderRootOptions, RenderRootSignal,
+        WindowSizePolicy,
+    };
+    use crate::core::*;
+    use dpi::PhysicalSize;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        sync::Arc,
+    };
+
+    #[derive(Debug)]
+    struct Probe {
+        hooks: Rc<Cell<usize>>,
+        cancels: Rc<Cell<usize>>,
+    }
+    impl Widget for Probe {
+        type Action = u8;
+        fn register_children(&mut self, _: &mut RegisterCtx<'_>) {}
+        fn measure(
+            &mut self,
+            _: &mut MeasureCtx<'_>,
+            _: &PropertiesRef<'_>,
+            _: Axis,
+            _: LenReq,
+            _: Option<Length>,
+        ) -> Length {
+            Length::px(100.)
+        }
+        fn layout(&mut self, _: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, _: Size) {}
+        fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
+        fn accessibility_role(&self) -> Role {
+            Role::GenericContainer
+        }
+        fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
+        fn children_ids(&self) -> ChildrenIds {
+            ChildrenIds::new()
+        }
+        fn as_layer(&mut self) -> Option<&mut dyn Layer> {
+            Some(self)
+        }
+        fn on_pointer_event(
+            &mut self,
+            ctx: &mut EventCtx<'_>,
+            _: &mut PropertiesMut<'_>,
+            event: &PointerEvent,
+        ) {
+            match event {
+                PointerEvent::Down(_) => ctx.capture_pointer(),
+                PointerEvent::Cancel(_) => {
+                    assert!(
+                        ctx.is_pointer_capture_target(),
+                        "cleanup handler retains capture"
+                    );
+                    self.cancels.set(self.cancels.get() + 1);
+                }
+                _ => {}
+            }
+        }
+    }
+    impl Layer for Probe {
+        fn capture_pointer_event(
+            &mut self,
+            ctx: &mut EventCtx<'_>,
+            _: &mut PropertiesMut<'_>,
+            event: &PointerEvent,
+        ) {
+            if matches!(event, PointerEvent::Down(_)) {
+                self.hooks.set(self.hooks.get() + 1);
+                ctx.submit_action::<Self::Action>(1);
+            }
+        }
+    }
+    fn down() -> PointerEvent {
+        PointerEvent::Down(PointerButtonEvent {
+            pointer: PointerInfo {
+                pointer_id: Some(PointerId::PRIMARY),
+                persistent_device_id: None,
+                pointer_type: PointerType::Mouse,
+            },
+            state: PointerState {
+                position: dpi::PhysicalPosition::new(20., 20.),
+                ..Default::default()
+            },
+            button: Some(PointerButton::Primary),
+        })
+    }
+    #[test]
+    fn layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup() {
+        for presented in [false, true] {
+            for stashed in [false, true] {
+                let hooks = Rc::new(Cell::new(0));
+                let cancels = Rc::new(Cell::new(0));
+                let signals = Rc::new(RefCell::new(vec![]));
+                let sink = signals.clone();
+                let widget = Probe {
+                    hooks: hooks.clone(),
+                    cancels: cancels.clone(),
+                }
+                .prepare();
+                let layer = widget.id();
+                let mut root = RenderRoot::new(
+                    widget,
+                    move |s| sink.borrow_mut().push(s),
+                    RenderRootOptions {
+                        default_properties: Arc::new(DefaultProperties::new()),
+                        use_system_fonts: false,
+                        size_policy: WindowSizePolicy::User,
+                        size: PhysicalSize::new(100, 100),
+                        scale_factor: 1.,
+                        test_font: None,
+                    },
+                );
+                let (_, geometry) = root
+                    .record_presented_geometry(GeometryLimits {
+                        max_nodes: 8,
+                        max_bytes: 4096,
+                        max_path: 8,
+                    })
+                    .unwrap();
+                if presented {
+                    root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
+                        geometry,
+                    ))));
+                }
+                root.handle_pointer_event(down());
+                assert_eq!(hooks.get(), 1);
+                assert_eq!(root.pointer_capture_target(), Some(layer));
+                hooks.set(0);
+                if stashed {
+                    root.edit_widget(root.root_id(), |mut w| {
+                        let mut stack = w.downcast::<LayerStack>();
+                        stack
+                            .ctx
+                            .set_stashed(&mut stack.widget.layers[0].root, true);
+                    });
+                } else {
+                    root.edit_widget(layer, |mut w| w.ctx.set_disabled(true));
+                }
+                assert_eq!(cancels.get(), 1);
+                assert_eq!(root.pointer_capture_target(), None);
+                signals.borrow_mut().clear();
+                root.handle_pointer_event(down());
+                assert_eq!(
+                    hooks.get(),
+                    0,
+                    "ineligible layer hook: presented={presented} stashed={stashed}"
+                );
+                assert!(
+                    !signals
+                        .borrow()
+                        .iter()
+                        .any(|s| matches!(s, RenderRootSignal::Action(..)))
+                );
+                assert_eq!(cancels.get(), 1);
+            }
+        }
+    }
+}
