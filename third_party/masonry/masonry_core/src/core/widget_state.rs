@@ -205,6 +205,7 @@ pub(crate) struct WidgetState {
     pub(crate) needs_paint: bool,
     /// How this widget subtree should be represented in the current paint pass.
     pub(crate) paint_layer_mode: PaintLayerMode,
+    pub(crate) external_paint_token: u64,
 
     /// The `accessibility` method must be called on this widget
     pub(crate) request_accessibility: bool,
@@ -326,6 +327,7 @@ impl WidgetState {
             request_post_paint: true,
             needs_paint: true,
             paint_layer_mode: PaintLayerMode::Inline,
+            external_paint_token: 0,
             request_accessibility: true,
             needs_accessibility: true,
             request_anim: true,

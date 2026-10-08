@@ -316,29 +316,20 @@ pub fn base_layer_boundary() {
         .unwrap();
     let p = transform() * Point::new(30., 20.);
     let i = (p.y.floor() as usize * 400 + p.x.floor() as usize) * 4;
-    assert_eq!(
-        img.data[i + 3],
-        0,
-        "base layer transform is stripped in upstream paint output"
-    );
-    assert_eq!(img.data[(20 * 400 + 30) * 4 + 3], 255);
+    assert_eq!(img.data[i + 3], 255, "base transform now matches geometry");
+    assert_eq!(img.data[(20 * 400 + 30) * 4 + 3], 0);
     root.handle_pointer_event(mouse("move", p));
     assert!(root.get_widget(id).unwrap().ctx().is_hovered());
-    println!(
-        "base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required"
-    );
+    println!("base-layer forward transform: CPU draw and hit agree");
     let mut bridge = reel_stage::PresentationBridge::new(
         root,
         reel_core::identity::SurfaceEpoch(1),
         crate::bridge_limits(),
     )
     .unwrap();
-    assert!(matches!(
-        bridge.record(reel_core::identity::FrameId(1)),
-        Err(reel_stage::RecordError::UnsupportedRootTransform)
-    ));
-    assert_eq!(bridge.pending_count(), 0);
-    assert_eq!(bridge.snapshot_usage().bytes, 0);
+    let candidate = bridge.record(reel_core::identity::FrameId(1)).unwrap();
+    assert!(candidate.scene().validate().is_ok());
+    assert_eq!(bridge.pending_count(), 1);
 }
 #[test]
 fn base_layer_transform_boundary() {

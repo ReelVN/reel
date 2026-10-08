@@ -1,4 +1,9 @@
-# U02 public interface — architecture §15 / contract 31b9430
+# Stage public interface — U02 §15 and R01 §16
+
+Current recording/render interface: [R01-INTERFACE.md](R01-INTERFACE.md), Issue
+#25, architecture contract `ac004182`, on independently checked U02 `8dc2428`.
+The remaining geometry/input descriptions below continue to apply. Historical
+dependency information describes U02 before this extension.
 
 Scope: third_party/masonry, crates/reel-stage, required root manifest/lock and
 this task's verification. Dependencies: PR #7 (31b9430, experiment ccd0547) and
@@ -74,15 +79,13 @@ both dependencies before rebasing onto the shared production base.
   This conservatively retains released scratch/export allowance; pool request and
   byte limits apply to all outstanding leases, including retired keys. Configure
   aggregate bytes for maximum-per-lease allowance plus host overhead.
-- `record(FrameId) -> Result<RecordedCandidate,RecordError>` requires increasing
-  issued IDs. Candidate exposes `key()`, borrowed `scene()` and `geometry()`.
-  Scene is actual complete VisualLayerPlan replay, with re-registered Scene IDs
-  and group/clip/context scope preserved. External placeholders are explicitly
-  refused, since U02 does not implement ExternalDraw.
-  The host owns an identity base layer wrapper: fixed upstream paint.rs strips
-  its transform while input retains it. A nonidentity host root returns
-  UnsupportedRootTransform. The author's stage root is its child and retains
-  arbitrary stage transforms; the wrapper is an internal host implementation.
+- `record(FrameId) -> Result<RecordedSource,RecordError>` requires increasing
+  issued IDs and moves the actual plan with its matching geometry/key.
+  `RecordedCandidate` is a compatibility alias. Production `FrameBuild` visits
+  the source directly; `scene()` is a lazy structural CPU reference. The base
+  transform and External records are now supported using the forward convention
+  described in R01. Cancellation/drop releases candidate eligibility; retained
+  key/view storage remains charged.
 - `PresentationNotice { key, surface_epoch, outcome }`, with
   `PresentationOutcome::{Accepted(FrameId),Skipped,SurfaceUnavailable,Error}`.
   `resolve` checks the renderer's FrameId, reported SurfaceEpoch, exact opaque
@@ -97,12 +100,13 @@ both dependencies before rebasing onto the shared production base.
 StageGraph owns NodeId allocation, generations and author-node mappings (§6).
 D01 identity.rs supplies FrameId/SurfaceEpoch, not an author NodeId type. U02
 uses non-reused Masonry WidgetIds for the private widget tree; it introduces no
-parallel NodeId allocator or StageGraph. Full resource-version conversion,
-renderer Scene/blob residency, ExternalDraw, author Slider, DSL and GPU/device
-support remain separate tasks. This bridge's tickets cover geometry and its
-fixed routes/registry, not the entire widget runtime or graphics resources.
+parallel NodeId allocator or StageGraph. R01 adds prepared resource versions,
+bounded frame export and ExternalDraw. Author Slider/DSL and GPU/device support
+remain separate tasks. Bridge tickets cover geometry and fixed routes/registry;
+R01 independently accounts output/resource/backend ownership and measures opaque
+producer Scene/cache residency.
 
-No author language/API behavior beyond the already approved contract is added.
-The lead maintains creator guides. Verification commands and actual measurements
-are in README.md and evidence/. 32-bit compile checks are separate from native
-library linking, target execution and real-device acceptance.
+No author language syntax is added. Both guides now state R01's Rust-only
+implementation scope. Verification and measurements are in README.md,
+R01-REPORT.md and evidence/. Historical U02 32-bit checks are separate from
+native-library linking, target execution and real-device acceptance.

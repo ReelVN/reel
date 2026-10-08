@@ -1,0 +1,82 @@
+    Updating crates.io index
+     Locking 181 packages to latest compatible versions
+      Adding accesskit v0.24.0 (available: v0.24.1)
+      Adding anymap3 v1.0.1 (available: v1.1.0)
+      Adding hashbrown v0.17.0 (available: v0.17.1)
+      Adding insta v1.46.3 (available: v1.49.0)
+      Adding parley v0.8.0 (available: v0.11.1)
+      Adding proc-macro2 v1.0.106 (available: v1.0.107)
+      Adding profiling v1.0.17 (available: v1.0.18)
+      Adding quote v1.0.45 (available: v1.0.47)
+      Adding smallvec v1.15.1 (available: v1.16.2)
+      Adding time v0.3.47 (available: v0.3.55)
+      Adding time-core v0.1.8 (available: v0.1.9)
+      Adding time-macros v0.2.27 (available: v0.2.32)
+      Adding tracing-tracy v0.11.4 (available: v0.12.0)
+ Downloading crates ...
+  Downloaded profiling-procmacros v1.0.18
+  Downloaded console v0.15.11
+  Downloaded errno v0.3.14
+  Downloaded float-cmp v0.10.0
+  Downloaded fastrand v2.5.0
+  Downloaded moxcms v0.8.1
+  Downloaded tempfile v3.27.0
+  Downloaded getrandom v0.4.3
+  Downloaded byteorder-lite v0.1.0
+  Downloaded profiling v1.0.17
+  Downloaded similar v2.7.0
+  Downloaded insta v1.46.3
+  Downloaded image v0.25.10
+  Downloaded rustix v1.1.5
+  Downloaded pxfm v0.1.30
+  Downloaded linux-raw-sys v0.12.1
+   Compiling bitflags v2.13.2
+   Compiling syn v2.0.119
+   Compiling num-traits v0.2.19
+   Compiling getrandom v0.4.3
+   Compiling rustix v1.1.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling fastrand v2.5.0
+   Compiling pxfm v0.1.30
+   Compiling png v0.18.1
+   Compiling tempfile v3.27.0
+   Compiling keyboard-types v0.8.3
+   Compiling harfrust v0.5.2
+   Compiling console v0.15.11
+   Compiling similar v2.7.0
+   Compiling moxcms v0.8.1
+   Compiling byteorder-lite v0.1.0
+   Compiling tracing-attributes v0.1.31
+   Compiling profiling-procmacros v1.0.18
+   Compiling parley v0.8.0
+   Compiling tracing v0.1.44
+   Compiling insta v1.46.3
+   Compiling profiling v1.0.17
+   Compiling tracing-subscriber v0.3.23
+   Compiling ui-events v0.3.0
+   Compiling tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena)
+   Compiling float-cmp v0.10.0
+   Compiling image v0.25.10
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.42s
+     Running unittests src/lib.rs (target/debug/deps/masonry_core-9551be951117cad1)
+
+running 5 tests
+test app::layer_stack::input_tests::layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup ... ok
+test app::layer_stack::input_tests::layer_hooks_wait_for_visible_presented_record_after_live_unstash ... ok
+test app::tracing_backend::tests::multiple_init_test_tracing_errors ... ok
+test app::visual_layers::tests::replay_into_replays_layers_in_window_space ... ok
+test app::visual_layers::tests::scene_layer_helpers_skip_external_placeholders ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/tree_arena-3b23af677b6431fb)
+
+running 4 tests
+test tree_arena_safe::read_lookup_tests::busy_lookup_workspace_is_never_overwritten_and_traits_are_preserved ... ok
+test tree_arena_safe::read_lookup_tests::read_lookup_preserves_scope_after_reparent_and_removal ... ok
+test tree_arena_safe::read_lookup_tests::repeated_parent_work_matches_the_configuration_bound ... ok
+test tree_arena_safe::read_lookup_tests::segmented_lookup_keeps_deep_scope_and_reparent_remove_correct ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+

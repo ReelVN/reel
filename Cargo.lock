@@ -841,6 +841,16 @@ name = "reel-core"
 version = "0.1.0"
 
 [[package]]
+name = "reel-render"
+version = "0.1.0"
+dependencies = [
+ "masonry",
+ "masonry_core",
+ "reel-core",
+ "reel-stage",
+]
+
+[[package]]
 name = "reel-stage"
 version = "0.1.0"
 dependencies = [

@@ -7,6 +7,17 @@ use crate::core::WidgetId;
 use crate::imaging::PaintSink;
 use crate::imaging::record::{Scene, replay_transformed};
 
+/// Reliable provenance captured when a widget's cached paint is appended.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupMetadata {
+    /// Index of the `PushGroup` command in this fragment.
+    pub command: usize,
+    /// Widget whose paint callback produced this group.
+    pub owner: WidgetId,
+    /// Effect-local coordinates to layer-local coordinates.
+    pub effect_transform: Affine,
+}
+
 /// Snapshot of Masonry's current visual layers in painter order.
 ///
 /// This is the semantic paint output of Masonry. Current hosts still consume it through
@@ -63,7 +74,7 @@ impl VisualLayerPlan {
 /// A single visual layer in Masonry's paint output.
 ///
 /// The retained scene is stored in layer-local coordinates. Apply [`transform`](Self::transform)
-/// to composite it into window space. The root layer uses the identity transform.
+/// to composite it into window space, including for the base layer.
 #[derive(Debug)]
 pub struct VisualLayer {
     /// The visual content represented by this layer.
@@ -72,6 +83,8 @@ pub struct VisualLayer {
     pub transform: Affine,
     /// The widget that requested this layer boundary.
     pub widget_id: WidgetId,
+    /// Group provenance; independent of optional context annotations or child draws.
+    pub groups: Vec<GroupMetadata>,
 }
 
 /// The content represented by a visual layer.
@@ -81,11 +94,14 @@ pub enum VisualLayerKind {
     Scene(Scene),
     /// A placeholder for externally realized content.
     ///
-    /// The `bounds` are expressed in layer-local coordinates and should be transformed
-    /// by the layer's [`VisualLayer::transform`] into window space.
+    /// Bounds are content-local; apply `content_transform` then the layer transform.
     External {
-        /// Placeholder bounds in layer-local coordinates.
+        /// Host-owned opaque content token, never a native handle.
+        token: u64,
+        /// Placeholder bounds in content-local coordinates.
         bounds: Rect,
+        /// Content-local to layer-local coordinates.
+        content_transform: Affine,
     },
 }
 
@@ -116,18 +132,23 @@ mod tests {
                     kind: VisualLayerKind::Scene(root_scene.clone()),
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
+                    groups: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::External {
+                        token: 0,
+                        content_transform: Affine::IDENTITY,
                         bounds: Rect::new(10.0, 0.0, 20.0, 10.0),
                     },
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
+                    groups: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::Scene(overlay_scene.clone()),
                     transform: Affine::translate((20.0, 5.0)),
                     widget_id: WidgetId::next(),
+                    groups: Vec::new(),
                 },
             ],
         };
@@ -158,18 +179,23 @@ mod tests {
                     kind: VisualLayerKind::Scene(root_scene),
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
+                    groups: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::External {
+                        token: 0,
+                        content_transform: Affine::IDENTITY,
                         bounds: Rect::new(10.0, 0.0, 20.0, 10.0),
                     },
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
+                    groups: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::Scene(overlay_scene),
                     transform: Affine::translate((20.0, 5.0)),
                     widget_id: WidgetId::next(),
+                    groups: Vec::new(),
                 },
             ],
         };

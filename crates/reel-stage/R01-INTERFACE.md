@@ -1,0 +1,133 @@
+# R01 interface — Issue #25 / architecture §16
+
+Contract: `ac00418231ddc16ec0b90b2181cd77138b3f6e49`; dependency U02:
+`8dc242891be199ef2e6da7bc88a6ffdaf80cc403`. The ordinary `imaging 0.0.1`
+record API is consumed directly. No imaging source fork, shaping, tessellation,
+GPU implementation, window handle, author DSL or second author-node allocator
+is introduced. `reel-stage` reads core and the selected Masonry closure;
+`reel-render` reads stage/core. Native adapters remain a subsequent task.
+
+## Recording and compilation
+
+`PresentationBridge::record(FrameId) -> Result<RecordedSource, RecordError>`
+moves the actual `VisualLayerPlan`, matching `PresentedGeometryView` and exact
+`CandidateKey` from one Masonry record operation. `RecordedCandidate` remains a
+type alias for U02 consumers. `plan()`, `geometry()` and `key()` borrow the
+frozen record. The compatibility `scene()` lazily allocates a second replay
+Scene **only when explicitly called by structural CPU reference tests**; it
+omits External draws and is not the production consumer.
+
+`FrameBuild::new(source, snapshot, FrameInfo, BuildLimits, &BudgetPool)` consumes
+one source and resource snapshot. It reserves the full output/scratch allowance
+before allocating. `step(StepBudget)` advances borrowed public
+command/clip/group/mask/draw/context data and returns `BuildProgress`.
+`finish(self)` publishes a complete immutable `RenderFrame` or returns
+`Incomplete`. `cancel(self)`, an error, source/build/frame drop or an epoch
+change releases candidate eligibility. Retained keys and geometry remain charged
+until their final lease drops. No partial frame is exposed.
+
+`BuildLimits` bounds fragments, output commands (including mask commands), mask
+definitions, nesting depth, output/scratch bytes and aggregate work units.
+`StepBudget` separately bounds committed commands, work units and byte work.
+All payload cursors survive pause: path elements, stroke dashes, gradient stops,
+glyphs, normalized variation coordinates, filters and each UTF-8/context/source
+string byte. Mapping and command-header work is prepaid across slices before
+lookup, validation or allocation. Payload-capacity reservation credit can also
+accumulate across slices; element copying has a separate byte charge.
+`minimum_units` / `minimum_bytes` identify the next indivisible element when
+the supplied slice cannot advance it. A caller must permit that minimum.
+Capacity allocation, source cleanup and upstream recording are atomic operations;
+work credit does not establish a wall-clock deadline for them. Their real costs
+and overlapping source residency are measured in [R01-REPORT.md](R01-REPORT.md).
+
+`BuildError { at: RecordLocation, kind }` reports fragment, local command,
+mask depth and owning WidgetId. Missing resources include a Blob ID lookup hint
+or External token. Structured source file/line/column and diagnostic contexts
+are retained in the completed frame. Invalid/nonfinite records, capacity/work/
+bytes exhaustion and unsupported records abort the whole candidate.
+
+## Portable stream
+
+`RenderFrame` is an immutable Arc-backed lease with frame/epoch, logical and
+physical sizes, matching geometry, commands, mask definitions and resource
+snapshot. `clone()` creates ownership for an asynchronous borrowed submission
+without duplicating payloads. `accounted_bytes()` includes conservative reserved
+scratch capacities; `reserved_bytes()` is the original maximum ticket, retained
+continuously through the last frame clone.
+
+`FrameOp` preserves Fill/Stroke/GlyphRun/BlurredRoundedRect, Push/PopClip,
+Push/PopGroup, Push/PopContext and External. kurbo/Peniko shape, brush, gradient,
+stroke, sampler and composite values are retained. Glyph IDs/positions, font
+size, font collection index, hinting, transforms, style and variation coordinates
+are copied from the original Parley result without reshaping.
+
+`CommandOrigin` identifies `(source, local ID)`; local IDs alone are never a
+global identity. Source identity and local MaskId key the bounded definition
+map. Definitions remain local, while each `MaskUse` carries its transform.
+The ordered main stream keeps clip/group/context state across fragments;
+each nested mask has its own explicit bounded cursor and validation stacks.
+Normal cross-fragment nesting is accepted. Crossed clip/group lifetimes return
+localized `UnsupportedRecord`, because imaging does not define their pixel
+meaning; underflow and unclosed lifetimes return `InvalidRecord`.
+
+`FrameGroup` carries guaranteed owner/effect space metadata recorded at the
+Masonry paint/append boundary, filters, composite, clip, mask and conservative
+ink bounds. Rect/path control bounds include stroke/miter and one physical
+pixel of AA allowance using frozen DPI. Finite bounds overflow, local-mask
+sampling footprints, Gaussian cutoff, unknown glyph outlines and filter output
+use `InkBounds::Unbounded`, requiring
+the backend to clamp to its actual target. They never substitute a layout box
+for ink bounds or guess the effect owner from a child draw.
+
+## Prepared resources
+
+`ResourceVersion` reuses core `AssetKey` + `ContentVersion`. Preparation owns
+that version; frame export never hashes, decodes or reparses a blob per draw.
+`ResourceHandle { registry, slot, generation }` rejects foreign registries and
+old slot generations. Image/font lookup first searches sorted Blob IDs, then
+checks the actual backing Arc and image/font metadata. Blob ID collisions do
+not establish object or content equality. One source object cannot have two
+ambiguous versions in a frozen lookup table.
+
+`ResourceRegistry::new(max_resources, max_bytes)` charges fixed slots,
+descriptor/identity storage, version-string capacities and owned Blob headers
+before allocation. `register_image(ResourceVersion, OwnedBytes, size, format,
+alpha_type, encoding)` and `register_font(ResourceVersion, OwnedBytes, index)`
+attach the full core byte-capacity ticket to the Blob backing allocation.
+Producer/widget/cache Blob clones keep that ticket and header reservation even
+after frame, registry and simulated graphics retirement. Imported opaque
+`register(version, ResourceData, BudgetTicket)` charges the declared retained
+extent; its producer's inaccessible allocation/cache capacity remains a separate
+accounting domain. External uses a token and a zero-byte extent ticket.
+
+`acquire(handle)` returns an owned `ResourceLease`; `freeze(&handles, &pool)`
+creates one bounded, prepaid lookup table holding the selected leases. The
+entire selected set remains leased through the frame, even if some entries are
+unused. Duplicate or ambiguous table entries are rejected.
+`retire(handle)` denies new leases and removes the registry's own reference.
+Existing build/frame/upload leases remain valid for submission. A slot can
+be reused only after the prior resource's last strong lease disappears, and
+its complete generation is incremented. Backend completion independently
+controls backend residency; raw producer aliases independently control source
+Blob memory. Coordinate registry and backend retirement explicitly.
+
+## Masonry changes and presentation
+
+The same forward local-to-window convention applies to the base and overlays.
+Full `compose_local_transform()` includes origin and scroll. Finite singular
+transforms remain drawable without inversion; input's inverse mapping is empty.
+External records retain opaque token, WidgetId, content-local bounds and forward
+content transform in exact `pre → own clip → external → children → pop clip →
+post` order. Cached pre/paint/post callbacks retain the prior mode/token until
+explicitly reset to Inline. The producer change record and complete licensed
+upstream diff are under [third_party/masonry](../../third_party/masonry).
+
+Successful export or upload never installs input geometry. Only
+`PresentationBridge::resolve` with the exact candidate identity, FrameId,
+reported SurfaceEpoch, current epoch and valid acceptance order can accept
+`PresentAccepted`. Clear/failure/cancellation retain U02's old-view exit and
+capture cleanup behavior. Backend completion is a separate event.
+
+The backend contract, upload ownership and simulated consumers are documented
+in [reel-render/README.md](../reel-render/README.md). Verification and source
+residency evidence are in [R01-REPORT.md](R01-REPORT.md).

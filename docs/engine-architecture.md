@@ -262,9 +262,9 @@ Masonry 导出几何、选择输入源并分发事件；FrameId、surface epoch�
 接受新视图仅发送实际路径差异的通知。需要退出的 hover/active 状态及失效捕获使用旧视图完成清理，再用新视图处理进入和静止 cursor；仍有效且在新视图中的捕获继续。清空 Presented 或切换表面代数时保留旧视图直到必要退出结束。Up/Cancel 在捕获目标回调开始时记录终止已交付，回调期间仍可观察捕获状态，删除与祖先冒泡只清理一次。
 
 统一记录流
-默认 Scene 路径复用 VisualLayerPlan 的完整有序重放。Reel sink 在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 在 sink 重新登记。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。
+默认记录路径直接访问 VisualLayerPlan 的完整有序片段（§16）。Reel 导出在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 与源身份一起映射。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。replay-to-Scene 仅保留为显式调用的结构/CPU 参考。
 独立片段是画序分段，消费时按原顺序组成完整流。使用稳定层边界时，paint_layer_mode 为 retained 声明：初始 Inline，缓存回调未执行时保留，显式设置 Inline 才恢复普通模式；其他 pre/paint/post 回调执行时，保留未重声明的层模式。
-外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。现有缺少作用域的 post-children placeholder 需在 fork 中改为该完整合同；Reel 始终只有这一条画序来源。
+外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。R01 的 fork 已替换原先缺少作用域的 post-children placeholder；Reel 始终只有这一条画序来源，具体外部设备实现另行验收。
 
 作者滑条
 复用 Slider 的指针、键盘与 AccessKit 行为。slider.rs 提供只读规范化值/范围/步长、静默投影更新及变化标记，并让原 Widget 回调与作者包装器共用同一行为入口。Reel 包装器拥有轨道/滑块节点，替换全部默认绘制阶段，明确登记自身属性与默认值；装饰节点由控件统一处理命中和焦点。
@@ -315,6 +315,8 @@ Vello 0.8 的编码/渐变与 blend 路径采用 sRGB，imaging_vello 0.0.1 对 
 ### 实施验收
 
 R01 固定帧、资源租约、可恢复导出和外部内容顺序，保留 U02 的真实接受/输入回归。后续 wgpu 实施在同一合同上验证实际像素、alpha/亮度 mask、嵌套透明组、crossfade、字形与图片缓存、resize/挂起/设备丢失以及上传/回收边界。每份结果区分源码审查、CPU/null 和具体图形设备；完整帧、导出、光栅、合成、提交与物理完成分开计时。
+
+R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-stage/R01-INTERFACE.md)，真实 Masonry、U02 回归与导出/驻留/清理测量见 [R01-REPORT](../crates/reel-stage/R01-REPORT.md)。自有图片/字体以 core OwnedBytes 将全 capacity 票据绑定到 Blob 底层，生产者缓存别名继续保留该账目；公开 API 导入的不透明源分配仍归生产者单独计量。输出、映射与登记表有硬额度，源 Scene 私有容量不由 command 长度推算。逐元素复制、映射和容量信用可跨 step 推进；实际容量分配与源 Drop 仍是原子操作，分别报告耗时。已知几何外延包含按冻结 DPI 计算的 AA；有限值运算溢出、本地 mask 的采样外延、Gaussian cutoff、字形轮廓与滤镜未知外延明确记为 Unbounded 并要求后端按真实输出目标裁限。记录型 PresentAccepted 是模拟接口结果，null 明确 Skipped，均不代表设备像素或 GPU 性能通过。
 
 主要依据：
 - imaging 0.0.1 公开记录：https://github.com/forest-rs/imaging/blob/eea0e47503fdab1c4159a939797ba74acab19876/imaging/src/record.rs

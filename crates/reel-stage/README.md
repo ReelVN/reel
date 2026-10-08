@@ -1,16 +1,22 @@
-# U02 production geometry and acceptance bridge
+# Stage recording, geometry and presentation
 
-Implements Issue #11 against architecture §15 at `31b9430`, with D01
-`c03226a` identities/budgets. Draft PR #12 targets PR #7's
-`task/issue-3-masonry-contract`; this branch combines both dependencies locally.
-Integrate PR #7 and D01 before moving this task onto the shared production base.
-No remote main update, merge or Actions invocation is part of this task.
+R01 implements Issue #25 against architecture §16 at `ac004182`, on U02
+`8dc2428` (Issue #11 / draft PR #12). Its draft PR targets
+`task/issue-11-presented-geometry` so that only the R01 extension is reviewed.
+The core identity/budget types are reused without a dependency cycle.
 
-The bridge records a real Masonry rewrite/layout/compose/paint cycle, replays
-its complete VisualLayerPlan into an owned Imaging Scene and pairs it with that
-cycle's compact geometry. Only an exact renderer notice can install the view.
-This is a host acceptance bridge, not StageGraph or a GPU renderer. The exact
-public APIs, limits and ownership are in [INTERFACE.md](INTERFACE.md).
+The bridge moves a real Masonry VisualLayerPlan and that cycle's compact geometry
+into a frozen RecordedSource. FrameBuild compiles the public imaging records
+directly into an immutable semantic RenderFrame, preserving cross-fragment
+groups/clips, masks, diagnostics and prepared resource references. It does not
+clone or flatten a second Scene. Only an exact renderer notice can install the
+view. See [R01-INTERFACE.md](R01-INTERFACE.md) and
+[R01-REPORT.md](R01-REPORT.md) for current interfaces, checks, measurements and
+the atomic/source-storage limits. Backend interfaces and recording/null consumers
+live in [reel-render](../reel-render/README.md); GPU/window support is subsequent.
+
+The following sections preserve U02's historical verification and measurements.
+Current full debug/release runs retain those behavior checks.
 
 ## Production changes and verification
 
@@ -248,17 +254,9 @@ geometry source, exact diff and absence of nested Git. Only four required crates
 Button/Image/Slider and Button's Label dependency plus their properties/theme
 are retained.
 
-The host owns an identity base layer wrapper. Fixed upstream paint.rs:295–315
-strips its transform while input retains it; the bridge rejects that host mismatch
-with UnsupportedRootTransform. The author's stage root is beneath the wrapper
-and retains its full transforms; this is an internal host detail. Transformed
-child-stage trees are verified. External
-placeholders are also explicitly rejected. StageGraph's author NodeId/generation
-mapping, resource-version conversion and Scene/blob residency budgets, ExternalDraw,
-author image Slider, DSL and GPU backends remain separate tasks. The bridge accounts
-geometry and fixed routes/registry, not the complete widget/graphics runtime.
-
-Creator guides were not edited. For the lead's implementation-status update:
-the already approved first-frame/clear empty hit policy, accepted-frame geometry,
-and immediate disable/stash/removal cancellation now have production evidence.
-The Option changes are Rust adaptation APIs; no author syntax/API is introduced.
+R01 replaces U02's temporary root-transform/External rejection: base and overlays
+now share complete forward origin/scroll transforms, including finite singular
+matrices; External preserves its scope and exact paint order. StageGraph's author
+NodeId/generation mapping, author image Slider, DSL and GPU remain separate tasks.
+Both creator-guide editions state the Rust recording/consumer verification scope;
+their shared Aside snippets are unchanged.

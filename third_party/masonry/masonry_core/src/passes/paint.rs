@@ -8,18 +8,21 @@ use peniko::{Color, Fill};
 use tracing::{info_span, trace};
 use tree_arena::ArenaMut;
 
-use crate::app::{RenderRoot, RenderRootState, VisualLayer, VisualLayerKind, VisualLayerPlan};
+use crate::app::{
+    GroupMetadata, RenderRoot, RenderRootState, VisualLayer, VisualLayerKind, VisualLayerPlan,
+};
 use crate::core::{
     DefaultProperties, PaintCtx, PaintLayerMode, PropertiesRef, PropertyArena, WidgetArenaNode,
     WidgetId,
 };
-use crate::imaging::record::{Clip, Geometry, Scene};
+use crate::imaging::record::{Clip, Command, Geometry, Scene};
 use crate::imaging::{PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
 
 struct LayerCollector {
     current_scene: Scene,
+    groups: Vec<GroupMetadata>,
     layers: Vec<VisualLayer>,
     current_owner_id: WidgetId,
     transform: Affine,
@@ -29,9 +32,24 @@ impl LayerCollector {
     fn new(root_id: WidgetId, transform: Affine) -> Self {
         Self {
             current_scene: Scene::new(),
+            groups: Vec::new(),
             layers: Vec::new(),
             current_owner_id: root_id,
             transform,
+        }
+    }
+
+    fn append(&mut self, scene: &Scene, transform: Affine, owner: WidgetId) {
+        let start = self.current_scene.commands().len();
+        self.current_scene.append_transformed(scene, transform);
+        for (offset, command) in self.current_scene.commands()[start..].iter().enumerate() {
+            if matches!(command, Command::PushGroup(_)) {
+                self.groups.push(GroupMetadata {
+                    command: start + offset,
+                    owner,
+                    effect_transform: transform,
+                });
+            }
         }
     }
 
@@ -50,14 +68,26 @@ impl LayerCollector {
             kind: VisualLayerKind::Scene(scene),
             transform: self.transform,
             widget_id: self.current_owner_id,
+            groups: std::mem::take(&mut self.groups),
         });
     }
 
-    fn push_external_layer(&mut self, widget_id: WidgetId, bounds: kurbo::Rect) {
+    fn push_external_layer(
+        &mut self,
+        widget_id: WidgetId,
+        token: u64,
+        bounds: kurbo::Rect,
+        content_transform: Affine,
+    ) {
         self.layers.push(VisualLayer {
-            kind: VisualLayerKind::External { bounds },
+            kind: VisualLayerKind::External {
+                token,
+                bounds,
+                content_transform,
+            },
             transform: self.transform,
             widget_id,
+            groups: Vec::new(),
         });
     }
 
@@ -74,7 +104,7 @@ fn paint_widget(
     property_arena: &PropertyArena,
     layer_collector: &mut LayerCollector,
     scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
-    window_to_layer_transform: &Affine,
+    border_box_to_layer_transform: Affine,
     node: ArenaMut<'_, WidgetArenaNode>,
 ) {
     let mut children = node.children;
@@ -161,13 +191,12 @@ fn paint_widget(
         PaintLayerMode::IsolatedScene | PaintLayerMode::External => id,
     };
 
-    let border_box_to_layer_transform = *window_to_layer_transform * state.window_transform;
     let content_box_to_layer_transform =
         border_box_to_layer_transform.pre_translate(state.border_box_translation());
     let has_clip = state.clip_path.is_some();
     let paint_as_external = paint_layer_mode == PaintLayerMode::External;
 
-    if !is_stashed && !paint_as_external {
+    if !is_stashed {
         let Some((pre_scene, scene, _)) = &mut scene_cache.get(&id) else {
             debug_panic!(
                 "Error in paint pass: scene should have been cached earlier in this function."
@@ -175,9 +204,7 @@ fn paint_widget(
             return;
         };
 
-        layer_collector
-            .scene_mut()
-            .append_transformed(pre_scene, content_box_to_layer_transform);
+        layer_collector.append(pre_scene, content_box_to_layer_transform, id);
 
         if let Some(clip) = state.clip_path {
             // The clip path is stored in border-box space, so need to use that transform.
@@ -188,9 +215,17 @@ fn paint_widget(
             });
         }
 
-        layer_collector
-            .scene_mut()
-            .append_transformed(scene, content_box_to_layer_transform);
+        if paint_as_external {
+            layer_collector.finish_current_layer(false);
+            layer_collector.push_external_layer(
+                id,
+                state.external_paint_token,
+                state.content_box().size().to_rect(),
+                content_box_to_layer_transform,
+            );
+        } else {
+            layer_collector.append(scene, content_box_to_layer_transform, id);
+        }
     }
 
     let parent_state = &mut *state;
@@ -206,13 +241,13 @@ fn paint_widget(
             property_arena,
             layer_collector,
             scene_cache,
-            window_to_layer_transform,
+            border_box_to_layer_transform * node.item.state.compose_local_transform(),
             node.reborrow_mut(),
         );
         parent_state.merge_up(&mut node.item.state);
     });
 
-    if !is_stashed && !paint_as_external {
+    if !is_stashed {
         if global_state.debug_paint {
             // Draw the global axis aligned bounding rect of the widget
             const BORDER_WIDTH: f64 = 1.0;
@@ -251,9 +286,7 @@ fn paint_widget(
             return;
         };
 
-        layer_collector
-            .scene_mut()
-            .append_transformed(post_scene, content_box_to_layer_transform);
+        layer_collector.append(post_scene, content_box_to_layer_transform, id);
 
         if global_state.inspector_state.hovered_widget == Some(id) {
             const HOVER_FILL_COLOR: Color = Color::from_rgba8(60, 60, 250, 100);
@@ -263,10 +296,6 @@ fn paint_widget(
                 .transform(border_box_to_layer_transform)
                 .draw();
         }
-    }
-
-    if paint_as_external {
-        layer_collector.push_external_layer(id, state.border_box());
     }
 
     if matches!(
@@ -293,14 +322,11 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
 
     let mut layers = Vec::new();
 
-    for (idx, &layer_widget_id) in layer_root_ids.iter().enumerate() {
-        let transform = if idx == 0 {
-            Affine::IDENTITY
-        } else {
-            root.widget_arena
-                .get_state(layer_widget_id)
-                .window_transform
-        };
+    for &layer_widget_id in &layer_root_ids {
+        let transform = root
+            .widget_arena
+            .get_state(layer_widget_id)
+            .window_transform;
 
         let mut collector = LayerCollector::new(layer_widget_id, transform);
         paint_layer(
@@ -349,15 +375,13 @@ fn paint_layer(
         return;
     };
 
-    let window_to_layer_transform = layer_node.item.state.window_transform.inverse();
-
     paint_widget(
         &mut root.global_state,
         &root.property_arena.default_properties,
         &root.property_arena,
         layer_collector,
         scene_cache,
-        &window_to_layer_transform,
+        Affine::IDENTITY,
         layer_node,
     );
 }
