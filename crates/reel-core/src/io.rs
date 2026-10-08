@@ -111,12 +111,19 @@ pub struct IoEvent {
 }
 
 /// `poll` appends at most `limit` events. Callers preallocate their output vector.
-/// Cancelled events are accounting records, not business wakeups.
+/// Before cancellation, the business layer revokes its wait/subscription. The
+/// engine delivers a result only if that wait is still active and Scope matches.
+/// Cancelled events release/account resources without resuming cancelled business.
+/// Already settled events retain their real terminal result for resource and
+/// process-ledger accounting, including a save that actually committed.
 pub trait AssetIo {
     fn capabilities(&self) -> IoCaps;
     fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>>;
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>>;
     fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>>;
+    /// If unsettled, settle Cancelled once and suppress later business output.
+    /// If already settled/queued, preserve that terminal; cancellation is a no-op.
+    /// A caller must first revoke its business wait, even if the IO cannot abort.
     fn cancel(&mut self, id: IoId);
     fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize);
 }

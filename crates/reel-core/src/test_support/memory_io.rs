@@ -3,6 +3,7 @@ use crate::{
     budget::{BudgetCategory, BudgetTicket, OwnedBytes, QueueLimits},
     identity::{IoId, ResourceVersion, Scope},
     io::*,
+    request_ids::RequestIds,
     result::{RejectCode, Rejected, Terminal},
     wake::WakeSignal,
 };
@@ -36,13 +37,22 @@ pub struct MemoryAssetIo {
     saves: BTreeMap<SaveSlot, StoredSave>,
     reads: Queue<ReadOp, IoEvent>,
     writes: Queue<SaveWrite, IoEvent>,
-    next_id: Option<u64>,
+    ids: RequestIds<IoId>,
     wake: WakeSignal,
     fail_next_save: bool,
 }
 
 impl MemoryAssetIo {
     pub fn new(read_queue: QueueLimits, save_queue: QueueLimits, wake: WakeSignal) -> Self {
+        Self::with_ids(read_queue, save_queue, wake, RequestIds::default())
+    }
+    /// Reuse the service's stream when replacing an adapter with requests still alive.
+    pub fn with_ids(
+        read_queue: QueueLimits,
+        save_queue: QueueLimits,
+        wake: WakeSignal,
+        ids: RequestIds<IoId>,
+    ) -> Self {
         Self {
             caps: IoCaps {
                 range_read: true,
@@ -54,7 +64,7 @@ impl MemoryAssetIo {
             saves: BTreeMap::new(),
             reads: Queue::new(read_queue),
             writes: Queue::new(save_queue),
-            next_id: Some(1),
+            ids,
             wake,
             fail_next_save: false,
         }
@@ -138,14 +148,14 @@ impl MemoryAssetIo {
             }
         };
         self.reads.finish(
-            entry.bytes,
             IoEvent {
-                id: IoId(entry.id),
+                id: IoId(entry.slot.id),
                 scope,
                 process_request: None,
                 result,
                 completion,
             },
+            entry.slot,
         );
         self.wake.wake();
         true
@@ -177,14 +187,14 @@ impl MemoryAssetIo {
             Terminal::Completed(IoPayload::Saved(commit))
         };
         self.writes.finish(
-            entry.bytes,
             IoEvent {
-                id: IoId(entry.id),
+                id: IoId(entry.slot.id),
                 scope: Scope::Process,
                 process_request: Some(r.identity),
                 result,
                 completion: r.completion,
             },
+            entry.slot,
         );
         self.wake.wake();
         true
@@ -232,23 +242,21 @@ impl AssetIo for MemoryAssetIo {
             Ok(n) => n,
             Err(reason) => return Err(Rejected { request, reason }),
         };
-        let Some(id) = self.next_id else {
-            return Err(Rejected {
-                request,
-                reason: invalid("IO identity space exhausted"),
-            });
-        };
-        if let Err(e) = self.reads.accept(id, ReadOp::Describe(request), bytes) {
-            let ReadOp::Describe(request) = e.request else {
-                unreachable!()
-            };
-            return Err(Rejected {
-                request,
-                reason: e.reason,
-            });
+        let accepted = self.ids.accept(ReadOp::Describe(request), |id, r| {
+            self.reads.accept(id.0, r, bytes)
+        });
+        match accepted {
+            Ok(id) => Ok(id),
+            Err(e) => {
+                let ReadOp::Describe(request) = e.request else {
+                    unreachable!()
+                };
+                Err(Rejected {
+                    request,
+                    reason: e.reason,
+                })
+            }
         }
-        self.next_id = id.checked_add(1);
-        Ok(IoId(id))
     }
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
         let checks = check_completion(&request.completion).and_then(|_| {
@@ -269,23 +277,21 @@ impl AssetIo for MemoryAssetIo {
             Ok(n) => n,
             Err(reason) => return Err(Rejected { request, reason }),
         };
-        let Some(id) = self.next_id else {
-            return Err(Rejected {
-                request,
-                reason: invalid("IO identity space exhausted"),
-            });
-        };
-        if let Err(e) = self.reads.accept(id, ReadOp::Read(request), bytes) {
-            let ReadOp::Read(request) = e.request else {
-                unreachable!()
-            };
-            return Err(Rejected {
-                request,
-                reason: e.reason,
-            });
+        let accepted = self.ids.accept(ReadOp::Read(request), |id, r| {
+            self.reads.accept(id.0, r, bytes)
+        });
+        match accepted {
+            Ok(id) => Ok(id),
+            Err(e) => {
+                let ReadOp::Read(request) = e.request else {
+                    unreachable!()
+                };
+                Err(Rejected {
+                    request,
+                    reason: e.reason,
+                })
+            }
         }
-        self.next_id = id.checked_add(1);
-        Ok(IoId(id))
     }
     fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
         if !self.caps.save_levels.contains(&request.minimum_durability) {
@@ -327,15 +333,8 @@ impl AssetIo for MemoryAssetIo {
             Ok(n) => n,
             Err(reason) => return Err(Rejected { request, reason }),
         };
-        let Some(id) = self.next_id else {
-            return Err(Rejected {
-                request,
-                reason: invalid("IO identity space exhausted"),
-            });
-        };
-        self.writes.accept(id, request, bytes)?;
-        self.next_id = id.checked_add(1);
-        Ok(IoId(id))
+        self.ids
+            .accept(request, |id, r| self.writes.accept(id.0, r, bytes))
     }
     fn cancel(&mut self, id: IoId) {
         if let Some(entry) = self.reads.take(id.0) {
@@ -344,7 +343,6 @@ impl AssetIo for MemoryAssetIo {
                 ReadOp::Read(r) => (r.scope, r.completion),
             };
             self.reads.finish(
-                entry.bytes,
                 IoEvent {
                     id,
                     scope,
@@ -352,12 +350,12 @@ impl AssetIo for MemoryAssetIo {
                     result: Terminal::Cancelled,
                     completion,
                 },
+                entry.slot,
             );
             self.wake.wake();
         } else if let Some(entry) = self.writes.take(id.0) {
             let r = entry.request;
             self.writes.finish(
-                entry.bytes,
                 IoEvent {
                     id,
                     scope: Scope::Process,
@@ -365,6 +363,7 @@ impl AssetIo for MemoryAssetIo {
                     result: Terminal::Cancelled,
                     completion: r.completion,
                 },
+                entry.slot,
             );
             self.wake.wake();
         }

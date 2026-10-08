@@ -2,7 +2,8 @@
 #![allow(clippy::result_large_err)]
 
 use reel_core::{
-    budget::*, clock::*, identity::*, io::*, result::*, test_support::*, wake::WakeSignal, work::*,
+    budget::*, clock::*, identity::*, io::*, request_ids::RequestIds, result::*, test_support::*,
+    wake::WakeSignal, work::*,
 };
 use std::sync::{
     Arc,
@@ -158,7 +159,7 @@ fn moving_tickets_charge_capacity_and_return_once_across_a_thread() {
 }
 
 #[test]
-fn read_rejection_returns_original_and_undrained_terminal_keeps_capacity() {
+fn read_pending_cancel_is_unique_and_rejection_keeps_original_under_backpressure() {
     let p = Pools::new();
     let (signal, calls) = wake();
     let mut io = MemoryAssetIo::new(limits(1, 4096), limits(1, 4096), signal.clone());
@@ -282,7 +283,7 @@ fn fixed_versions_ranges_failures_and_stale_scope_keep_owned_output() {
 }
 
 #[test]
-fn save_lane_scope_order_failure_and_durability_are_real() {
+fn save_pending_cancel_and_cancel_after_settlement_preserve_actual_commit() {
     let p = Pools::new();
     let (signal, _) = wake();
     let mut io = MemoryAssetIo::new(limits(1, 4096), limits(2, 8192), signal);
@@ -353,7 +354,7 @@ fn save_lane_scope_order_failure_and_durability_are_real() {
 }
 
 #[test]
-fn cooperative_slices_keep_cursor_output_overlap_and_full_terminal_queue() {
+fn work_cancel_after_settlement_keeps_owned_terminal_under_backpressure() {
     let p = Pools::new();
     let (signal, _) = wake();
     let mut executor = CooperativeExecutor::new(FakeClock::default(), limits(1, 4096), signal);
@@ -617,4 +618,49 @@ fn wake_clones_coalesce_and_acknowledge_before_drain_preserves_racing_wake() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(signal.acknowledge());
     assert!(!signal.acknowledge());
+}
+
+#[test]
+fn service_ids_survive_adapter_replacement_and_exhaust_without_accepting() {
+    let p = Pools::new();
+    let ids = RequestIds::<IoId>::starting_at(u64::MAX - 1);
+    let (signal, _) = wake();
+    let mut old = MemoryAssetIo::with_ids(
+        limits(1, 4096),
+        limits(1, 4096),
+        signal.clone(),
+        ids.clone(),
+    );
+    let first = old.read(p.read(version(1), 0, 1, scope(1))).unwrap();
+    let rejected = old.read(p.read(version(1), 0, 1, scope(1))).unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::Busy);
+    let mut replacement = MemoryAssetIo::with_ids(limits(1, 4096), limits(1, 4096), signal, ids);
+    let last = replacement
+        .replace_save(p.save(1, b"last", SaveDurability::Visible))
+        .unwrap();
+    assert_eq!((first.0, last.0), (u64::MAX - 1, u64::MAX));
+    // Different adapter and lane still use the one service counter; it cannot wrap.
+    let ptr = rejected.request.resource.key.0.as_ptr();
+    let exhausted = replacement.read(rejected.request).unwrap_err();
+    assert_eq!(exhausted.reason.code, RejectCode::ServiceFault);
+    assert!(!exhausted.reason.retryable());
+    assert_eq!(exhausted.request.resource.key.0.as_ptr(), ptr);
+    assert_eq!(replacement.read_usage().requests, 0);
+    assert_eq!(replacement.save_usage().requests, 1);
+    drop(exhausted);
+    old.cancel(first);
+    replacement.cancel(last);
+    let mut events = Vec::with_capacity(2);
+    old.poll(&mut events, 1);
+    replacement.poll(&mut events, 1);
+    assert_eq!((events[0].id, events[1].id), (first, last));
+    assert!(
+        events
+            .iter()
+            .all(|e| matches!(e.result, Terminal::Cancelled))
+    );
+    drop(events);
+    drop(old);
+    drop(replacement);
+    p.empty();
 }

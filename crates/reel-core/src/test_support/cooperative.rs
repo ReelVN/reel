@@ -3,6 +3,7 @@ use crate::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
     clock::Clock,
     identity::WorkId,
+    request_ids::RequestIds,
     result::{RejectCode, RejectReason, Rejected, Terminal},
     wake::WakeSignal,
     work::*,
@@ -26,7 +27,7 @@ pub struct CooperativeExecutor<C> {
     wake: WakeSignal,
     queue: Queue<Job, WorkEvent>,
     caps: WorkCaps,
-    next_id: Option<u64>,
+    ids: RequestIds<WorkId>,
 }
 
 impl<C: Clock> CooperativeExecutor<C> {
@@ -45,6 +46,14 @@ impl<C: Clock> CooperativeExecutor<C> {
         }
     }
     pub fn new(clock: C, limits: QueueLimits, wake: WakeSignal) -> Self {
+        Self::with_ids(clock, limits, wake, RequestIds::default())
+    }
+    pub fn with_ids(
+        clock: C,
+        limits: QueueLimits,
+        wake: WakeSignal,
+        ids: RequestIds<WorkId>,
+    ) -> Self {
         Self {
             clock,
             wake,
@@ -54,7 +63,7 @@ impl<C: Clock> CooperativeExecutor<C> {
                 kinds: vec![Self::copy_kind(), Self::xor_kind()],
                 queue: limits,
             },
-            next_id: Some(1),
+            ids,
         }
     }
     pub fn usage(&self) -> QueueUsage {
@@ -109,12 +118,6 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
             Ok(n) => n,
             Err(reason) => return Err(Rejected { request, reason }),
         };
-        let Some(id) = self.next_id else {
-            return Err(Rejected {
-                request,
-                reason: invalid("work identity space exhausted"),
-            });
-        };
         if let Err(reason) = self.queue.check_capacity(bytes) {
             return Err(Rejected { request, reason });
         }
@@ -140,14 +143,16 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
             cursor: 0,
             xor: 0,
         };
-        if let Err(e) = self.queue.accept(id, job, bytes) {
-            return Err(Rejected {
+        let accepted = self
+            .ids
+            .accept(job, |id, job| self.queue.accept(id.0, job, bytes));
+        match accepted {
+            Ok(id) => Ok(id),
+            Err(e) => Err(Rejected {
                 request: e.request.request,
                 reason: e.reason,
-            });
+            }),
         }
-        self.next_id = id.checked_add(1);
-        Ok(WorkId(id))
     }
     fn cancel(&mut self, id: WorkId) {
         if let Some(entry) = self.queue.take(id.0) {
@@ -161,13 +166,13 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
             drop(output);
             drop(scratch);
             self.queue.finish(
-                entry.bytes,
                 WorkEvent {
                     id,
                     scope: r.scope,
                     result: Terminal::Cancelled,
                     completion: r.reservations.completion,
                 },
+                entry.slot,
             );
             self.wake.wake();
         }
@@ -228,13 +233,13 @@ impl<C: Clock> WorkExecutor for CooperativeExecutor<C> {
                     )
                 };
                 self.queue.finish(
-                    entry.bytes,
                     WorkEvent {
-                        id: WorkId(entry.id),
+                        id: WorkId(entry.slot.id),
                         scope: r.scope,
                         result,
                         completion: r.reservations.completion,
                     },
+                    entry.slot,
                 );
                 self.wake.wake();
             } else {

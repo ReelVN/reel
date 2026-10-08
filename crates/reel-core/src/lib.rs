@@ -6,6 +6,7 @@ pub mod budget;
 pub mod clock;
 pub mod identity;
 pub mod io;
+pub mod request_ids;
 pub mod result;
 pub mod wake;
 pub mod work;

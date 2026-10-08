@@ -15,10 +15,14 @@ pub struct QueueUsage {
     pub completed: usize,
 }
 
-pub(super) struct Entry<R> {
+/// Linear permission to enqueue exactly one terminal record.
+pub(super) struct CompletionSlot {
     pub id: u64,
-    pub request: R,
     pub bytes: u64,
+}
+pub(super) struct Entry<R> {
+    pub slot: CompletionSlot,
+    pub request: R,
 }
 struct Finished<E> {
     event: E,
@@ -69,7 +73,10 @@ impl<R, E> Queue<R, E> {
         if let Some(reason) = failure {
             return Err(Rejected { request, reason });
         }
-        self.pending.push_back(Entry { id, request, bytes });
+        self.pending.push_back(Entry {
+            slot: CompletionSlot { id, bytes },
+            request,
+        });
         self.usage.requests += 1;
         self.usage.bytes = next.expect("checked above");
         self.usage.peak_bytes = self.usage.peak_bytes.max(self.usage.bytes);
@@ -109,15 +116,18 @@ impl<R, E> Queue<R, E> {
         self.pending.pop_front()
     }
     pub fn take(&mut self, id: u64) -> Option<Entry<R>> {
-        let index = self.pending.iter().position(|e| e.id == id)?;
+        let index = self.pending.iter().position(|e| e.slot.id == id)?;
         self.pending.remove(index)
     }
     pub fn requeue(&mut self, entry: Entry<R>) {
         self.pending.push_back(entry);
     }
-    pub fn finish(&mut self, bytes: u64, event: E) {
+    pub fn finish(&mut self, event: E, slot: CompletionSlot) {
         // The slot was reserved at accept, before any ID or effect was published.
-        self.events.push_back(Finished { event, bytes });
+        self.events.push_back(Finished {
+            event,
+            bytes: slot.bytes,
+        });
     }
     pub fn drain(&mut self, out: &mut Vec<E>, limit: usize) {
         for _ in 0..limit {

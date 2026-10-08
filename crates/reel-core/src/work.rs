@@ -87,9 +87,16 @@ pub struct WorkEvent {
     pub completion: BudgetTicket,
 }
 
+/// Owning bounded admission and at most one terminal event per accepted request.
+/// The business layer revokes waits/subscriptions before calling `cancel`. The
+/// engine checks both wait activity and Scope before restoring business execution.
+/// Settled events remain available for resource accounting after business cancel.
 pub trait WorkExecutor {
     fn capabilities(&self) -> WorkCaps;
     fn submit(&mut self, work: WorkRequest) -> Result<WorkId, Rejected<WorkRequest>>;
+    /// Unsettled work produces Cancelled once, even if underlying work cannot stop
+    /// immediately. An already queued terminal keeps its actual result; it must
+    /// not resume a revoked business wait. Repeated cancellation is a no-op.
     fn cancel(&mut self, id: WorkId);
     fn advance(&mut self, budget: WorkBudget) -> WorkProgress;
     fn drain(&mut self, out: &mut Vec<WorkEvent>, limit: usize);
