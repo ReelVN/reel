@@ -568,6 +568,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                             v.respond(
                                 t,
                                 HostResponse::Continue(Continuation {
+                                    faults: FaultRetention::Preserve,
                                     version: 7,
                                     stage: 1,
                                     values: &[state],
@@ -594,6 +595,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                                     closure,
                                     arguments: &[],
                                     continuation: Continuation {
+                                        faults: FaultRetention::Preserve,
                                         version: 7,
                                         stage: 2,
                                         values: &[state],
@@ -620,6 +622,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                                         closure,
                                         arguments: &[],
                                         continuation: Continuation {
+                                            faults: FaultRetention::Preserve,
                                             version: 7,
                                             stage: rounds,
                                             values: &[state],
@@ -1185,6 +1188,7 @@ fn callback_pending_suspends_same_stack_and_inherits_nowait_dynamically() {
                                 closure,
                                 arguments: &[],
                                 continuation: Continuation {
+                                    faults: FaultRetention::Preserve,
                                     version: 1,
                                     stage: 1,
                                     values: &[],
@@ -1293,6 +1297,7 @@ fn frame_continuation_work_pools_and_inline_control_share_one_budget() {
                 v.respond(
                     t,
                     HostResponse::Continue(Continuation {
+                        faults: FaultRetention::Preserve,
                         version: 1,
                         stage: 1,
                         values: &[state],
@@ -1679,6 +1684,7 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                                         closure,
                                         arguments: &[],
                                         continuation: Continuation {
+                                            faults: FaultRetention::Preserve,
                                             version: 17,
                                             stage: 73,
                                             values: &[],
@@ -1687,7 +1693,8 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                                 )
                                 .unwrap();
                             } else {
-                                v.respond(t, HostResponse::Error(Value::int(1))).unwrap();
+                                v.respond(t, HostResponse::Error(NewFault::thrown(Value::int(1))))
+                                    .unwrap();
                             }
                         }
                         NativeInput::CallbackFault => {
@@ -1701,8 +1708,14 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                             );
                             let info = v.host_callback_fault(t).unwrap().unwrap();
                             assert_eq!(info.location.code.function, FunctionId(3));
-                            let value = v.host_callback_value(t).unwrap();
-                            v.respond(t, HostResponse::Error(value)).unwrap();
+                            let _value = v.host_callback_value(t).unwrap();
+                            v.respond(
+                                t,
+                                HostResponse::ForwardFault(
+                                    v.host_callback_fault(t).unwrap().unwrap().id,
+                                ),
+                            )
+                            .unwrap();
                         }
                         o => panic!("{o:?}"),
                     },
@@ -1717,7 +1730,14 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                 let info = v.delivery_fault(delivery).unwrap().unwrap();
                 assert_eq!(info.kind, FaultKind::Thrown);
                 assert_eq!(info.location.pc, Pc(1));
-                assert!(!info.has_cause);
+                assert!(
+                    v.heap()
+                        .fault_causes(info.id)
+                        .unwrap()
+                        .next(v.heap())
+                        .unwrap()
+                        .is_none()
+                );
             } else {
                 assert_eq!(v.delivery_fault(delivery).unwrap(), None);
             }
@@ -1740,12 +1760,20 @@ fn escaping_finally_error_preserves_pending_value_as_rooted_cause() {
         .unwrap();
     let t = task_ticket(&mut v, task);
     let exception = v.heap_mut().alloc_string("cleanup failed").unwrap();
-    v.respond(t, HostResponse::Error(exception)).unwrap();
+    v.respond(t, HostResponse::Error(NewFault::thrown(exception)))
+        .unwrap();
     let d = task_finish(&mut v, task);
     collect(&mut v);
     let f = v.delivery_fault(d).unwrap().unwrap();
     assert_eq!(f.location.pc, Pc(4));
-    assert!(f.has_cause);
+    assert!(
+        v.heap()
+            .fault_causes(f.id)
+            .unwrap()
+            .next(v.heap())
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(v.delivery_cause(d).unwrap().unwrap().as_int(), Some(41));
     assert!(v.delivery_value(d).unwrap().same_bits(exception));
 }
@@ -1879,6 +1907,7 @@ fn continuation_dispatch_uses_returned_stage_without_host_round_counter() {
                     v.respond(
                         t,
                         HostResponse::Continue(Continuation {
+                            faults: FaultRetention::Preserve,
                             version: 19,
                             stage: stage + 1,
                             values: &[],
@@ -1892,6 +1921,7 @@ fn continuation_dispatch_uses_returned_stage_without_host_round_counter() {
                             closure,
                             arguments: &[],
                             continuation: Continuation {
+                                faults: FaultRetention::Preserve,
                                 version: 19,
                                 stage: stage + 1,
                                 values: &[],
@@ -2036,6 +2066,7 @@ fn resource_failures_during_default_and_callback_preparation_are_consumed_faults
             closure,
             arguments: &[],
             continuation: Continuation {
+                faults: FaultRetention::Preserve,
                 version: 1,
                 stage: 99,
                 values: &[],
@@ -2049,8 +2080,12 @@ fn resource_failures_during_default_and_callback_preparation_are_consumed_faults
     let fault = v.host_callback_fault(resume).unwrap().unwrap();
     assert_eq!(fault.kind, FaultKind::Resource);
     assert_eq!(fault.location, ticket.location);
-    let value = v.host_callback_value(resume).unwrap();
-    v.respond(resume, HostResponse::Error(value)).unwrap();
+    let _value = v.host_callback_value(resume).unwrap();
+    v.respond(
+        resume,
+        HostResponse::ForwardFault(v.host_callback_fault(resume).unwrap().unwrap().id),
+    )
+    .unwrap();
     let d = task_finish(&mut v, task);
     assert_eq!(
         v.delivery_fault(d).unwrap().unwrap().kind,
@@ -2244,7 +2279,7 @@ fn shared_cleanup_selects_full_lexical_parents_for_return_and_leave_inside_catch
 }
 
 #[test]
-fn exhausted_unwind_roots_become_a_consumed_resource_fault_and_release_outer_state() {
+fn exhausted_unwind_roots_preserve_the_complete_fault_until_hard_teardown() {
     let p = finally_program(true);
     let registry = support(&p);
     let mut limits = VmLimits::default();
@@ -2259,16 +2294,22 @@ fn exhausted_unwind_roots_become_a_consumed_resource_fault_and_release_outer_sta
     let t = v
         .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();
-    let d = task_finish(&mut v, t);
-    assert_eq!(
-        v.delivery_fault(d).unwrap().unwrap().kind,
-        FaultKind::Resource
-    );
-    assert_eq!(v.delivery_cause(d).unwrap().unwrap().as_int(), Some(41));
-    assert_eq!(v.stats().unwinds, 0);
+    let blocked = loop {
+        match task_slice(&mut v, t) {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::ResourceBlocked(b) => break b,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(blocked.resource, BlockedResource::RootRanges);
+    assert_eq!(v.stats().unwinds, 1);
+    v.cancel_task(t).unwrap();
+    while !matches!(
+        v.run_slice(t, SliceBudget::default(), || 0),
+        Err(VmError::Idle)
+    ) {}
     assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
 }
-
 #[test]
 fn explicit_throw_in_catch_sets_new_source_and_retains_original_value_as_cause() {
     let mut p = fixtures::exception_regions();
@@ -2304,7 +2345,14 @@ fn explicit_throw_in_catch_sets_new_source_and_retains_original_value_as_cause()
     collect(&mut v);
     let f = v.delivery_fault(d).unwrap().unwrap();
     assert_eq!(f.location.pc, Pc(3));
-    assert!(f.has_cause);
+    assert!(
+        v.heap()
+            .fault_causes(f.id)
+            .unwrap()
+            .next(v.heap())
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(1));
     assert_eq!(v.delivery_cause(d).unwrap().unwrap().as_int(), Some(41));
 }
@@ -2324,4 +2372,758 @@ fn dynamic_text_allocation_obeys_the_inherited_effect_mask() {
         v.delivery_fault(d).unwrap().unwrap().kind,
         FaultKind::Effect
     );
+}
+
+fn continue_at(stage: u64, faults: FaultRetention<'_>) -> Continuation<'_> {
+    Continuation {
+        version: 77,
+        stage,
+        values: &[],
+        faults,
+    }
+}
+#[test]
+fn full_native_fault_identity_survives_continue_wait_and_repeated_callbacks_then_host_transfer() {
+    for mode in 0..3 {
+        let mut v = vm(with_callback(fixtures::helper_native(), true));
+        let f = v
+            .start(FunctionId(2), &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let d = task_finish(&mut v, f);
+        let closure = v.delivery_value(d).unwrap();
+        let cr = v
+            .heap_mut()
+            .add_root(OWNER, RootKind::Host, closure)
+            .unwrap();
+        v.discard_delivery(d).unwrap();
+        let task = v
+            .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let mut original = None;
+        let mut callback_count = 0;
+        let delivery = loop {
+            match task_slice(&mut v, task) {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::HostCall(t) => {
+                    let stage = t.continuation.map_or(0, |c| {
+                        assert_eq!(c.version, 77);
+                        c.stage
+                    });
+                    match (t.input, stage) {
+                        (NativeInput::Entry, 0) => v
+                            .respond(
+                                t,
+                                HostResponse::CallScript {
+                                    closure,
+                                    arguments: &[],
+                                    continuation: continue_at(1, FaultRetention::Preserve),
+                                },
+                            )
+                            .unwrap(),
+                        (NativeInput::CallbackFault, 1) => {
+                            let info = v.host_callback_fault(t).unwrap().unwrap();
+                            original = Some(info);
+                            callback_count += 1;
+                            assert_eq!(v.heap().fault_value(info.id).unwrap().as_int(), Some(41));
+                            v.respond(
+                                t,
+                                HostResponse::Continue(continue_at(2, FaultRetention::Preserve)),
+                            )
+                            .unwrap();
+                        }
+                        (NativeInput::Continue { .. }, 2) => {
+                            assert_eq!(
+                                v.host_callback_fault(t).unwrap().unwrap().id,
+                                original.unwrap().id
+                            );
+                            v.respond(t, HostResponse::Pending(t.wait_id())).unwrap();
+                        }
+                        (NativeInput::WaitingReturned, 2) => v
+                            .respond(
+                                t,
+                                HostResponse::CallScript {
+                                    closure,
+                                    arguments: &[],
+                                    continuation: continue_at(3, FaultRetention::Preserve),
+                                },
+                            )
+                            .unwrap(),
+                        (NativeInput::CallbackFault, 3) => {
+                            callback_count += 1;
+                            assert_ne!(
+                                v.host_callback_fault(t).unwrap().unwrap().id,
+                                original.unwrap().id
+                            );
+                            let old = original.unwrap().id;
+                            v.respond(
+                                t,
+                                HostResponse::Continue(continue_at(
+                                    4,
+                                    FaultRetention::Replace(&[old]),
+                                )),
+                            )
+                            .unwrap();
+                        }
+                        (NativeInput::Continue { .. }, 4) => {
+                            let old = original.unwrap().id;
+                            assert_eq!(
+                                v.heap().fault_id(v.host_faults(t).unwrap()[0]).unwrap(),
+                                old
+                            );
+                            let value = v.heap().fault_value(old).unwrap();
+                            v.respond(
+                                t,
+                                match mode {
+                                    0 => HostResponse::ForwardFault(old),
+                                    1 => HostResponse::Error(NewFault::thrown(value)),
+                                    _ => HostResponse::Error(NewFault {
+                                        value,
+                                        code: FaultCode::core(FaultKind::Thrown),
+                                        cause: Some(old),
+                                    }),
+                                },
+                            )
+                            .unwrap();
+                        }
+                        other => panic!("{other:?}"),
+                    }
+                }
+                RunOutcome::Waiting(wait) => {
+                    collect(&mut v);
+                    v.complete(wait, Completion::Ready(Value::int(42))).unwrap();
+                }
+                RunOutcome::Fault(d) => break d,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(callback_count, 2);
+        let info = v.delivery_fault(delivery).unwrap().unwrap();
+        let old = original.unwrap();
+        assert_eq!(info.id == old.id, mode == 0);
+        assert_eq!(
+            info.location.code.function,
+            if mode == 0 {
+                FunctionId(3)
+            } else {
+                FunctionId(1)
+            }
+        );
+        let value_root = v
+            .heap_mut()
+            .add_root(RootOwner(44), RootKind::Host, Value::NULL)
+            .unwrap();
+        v.copy_delivery_value_to_root(delivery, value_root).unwrap();
+        assert_eq!(v.delivery_fault(delivery).unwrap().unwrap().id, info.id);
+        assert!(matches!(
+            v.take_delivery_root(delivery, value_root),
+            Err(VmError::Contract(_))
+        ));
+        let root = v.take_fault_delivery(delivery, RootOwner(45)).unwrap();
+        assert!(v.is_idle());
+        collect(&mut v);
+        assert_eq!(root.info(v.heap()).unwrap().id, info.id);
+        assert_eq!(v.heap().fault_value(root.id()).unwrap().as_int(), Some(41));
+        assert_eq!(
+            v.heap()
+                .fault_program(root.id())
+                .unwrap()
+                .package()
+                .content_version,
+            info.location.code.version
+        );
+        let mut stack = v.heap().fault_stack(root.id()).unwrap();
+        let mut entries = Vec::new();
+        while let Some(e) = stack.next(v.heap()).unwrap() {
+            entries.push(e);
+        }
+        assert_eq!(entries.len(), if mode == 0 { 4 } else { 3 });
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e.kind, StackFrameKind::Native { abi_version: 1, .. }))
+        );
+        let first = v
+            .heap()
+            .fault_causes(root.id())
+            .unwrap()
+            .next(v.heap())
+            .unwrap();
+        assert_eq!(first.is_some(), mode == 2);
+        if let Some(cause) = first {
+            assert_eq!(cause.kind, CauseKind::ExplicitCause);
+            assert_eq!(cause.fault, Some(old.id));
+        }
+        assert!(matches!(
+            v.heap_mut().alloc_record(ObjectKind::FaultEnvelope, &[]),
+            Err(HeapError::WrongKind)
+        ));
+        assert!(matches!(
+            v.heap_mut().set_field(root.id().as_value(), 0, Value::NULL),
+            Err(HeapError::WrongKind)
+        ));
+        let id = root.id();
+        v.heap_mut().release_fault_root(root).unwrap();
+        v.heap_mut().release_root(value_root).unwrap();
+        v.heap_mut().release_root(cr).unwrap();
+        collect(&mut v);
+        assert!(v.heap().fault_info(id).is_err());
+        assert!(v.heap().fault_info(old.id).is_err());
+    }
+}
+#[test]
+fn sequential_catches_reuse_one_activation_and_helpers_observe_only_the_active_chain() {
+    let mut p = fixtures::helper_native();
+    p.constants.extend([Const::Int(0), Const::Int(1000)]);
+    let i = Instruction::new;
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    f.register_count = 5;
+    f.code = vec![
+        i(Opcode::LoadConst, 2, 3, 0),
+        i(Opcode::LoadConst, 3, 4, 0),
+        i(Opcode::LoadConst, 4, 2, 0),
+        i(Opcode::LoadConst, 0, 1, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::Call, 1, 0, 0),
+        i(Opcode::Leave, 7, 0, 0),
+        i(Opcode::Add, 2, 2, 4),
+        i(Opcode::Lt, 0, 2, 3),
+        i(Opcode::BranchBool, 0, 3, 10),
+        i(Opcode::Return, 2, 0, 0),
+    ];
+    let Descriptor::Call(call) = &mut f.descriptors[0] else {
+        panic!()
+    };
+    call.arguments = Arguments::Window(RegWindow {
+        start: Reg(1),
+        len: 1,
+    });
+    f.regions = vec![ExceptionRegion {
+        protected: PcRange {
+            start: Pc(3),
+            end: Pc(5),
+        },
+        catch: Some(CatchRegion {
+            range: PcRange {
+                start: Pc(5),
+                end: Pc(7),
+            },
+            exception: Reg(1),
+        }),
+        finally: None,
+    }];
+    let registry = support(&p);
+    let mut v = Vm::load(
+        verify(p, Limits::default()).unwrap(),
+        registry,
+        VmLimits {
+            max_unwinds: 1,
+            ..VmLimits::default()
+        },
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut calls = 0;
+    let mut last = None;
+    let d = loop {
+        match task_slice(&mut v, task) {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::HostCall(t) => {
+                calls += 1;
+                let info = v.error_info(task).unwrap().unwrap();
+                assert_eq!(info.location.pc, Pc(4));
+                assert_eq!(info.location.code.function, FunctionId(0));
+                assert_ne!(last, Some(info.id));
+                last = Some(info.id);
+                v.respond(t, HostResponse::Ready(Value::int(42))).unwrap();
+                if calls % 50 == 0 {
+                    collect(&mut v);
+                }
+            }
+            RunOutcome::Returned(d) => break d,
+            RunOutcome::ResourceBlocked(_) => collect(&mut v),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(calls, 1000);
+    assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(1000));
+    assert_eq!(v.error_info(task).unwrap(), None);
+    collect(&mut v);
+    assert!(v.heap().fault_info(last.unwrap()).is_err());
+}
+#[test]
+fn fault_capture_is_sliced_and_hard_capacity_resumes_without_reexecuting_throw() {
+    let mut p = fixtures::exception_regions();
+    let f = &mut p.functions[0];
+    f.regions.clear();
+    f.source_map.clear();
+    f.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 0, 0),
+        Instruction::new(Opcode::Throw, 0, 0, 0),
+    ];
+    let registry = support(&p);
+    let mut limits = VmLimits::default();
+    limits.heap.max_objects = 2;
+    let mut v = Vm::load(
+        verify(p, Limits::default()).unwrap(),
+        registry,
+        limits,
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let a = v.heap_mut().alloc_array(&[]).unwrap();
+    let b = v.heap_mut().alloc_array(&[]).unwrap();
+    let ar = v
+        .heap_mut()
+        .add_root(RootOwner(33), RootKind::Host, a)
+        .unwrap();
+    let br = v
+        .heap_mut()
+        .add_root(RootOwner(33), RootKind::Host, b)
+        .unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut quota = SliceBudget {
+        instructions: 1,
+        work: 1,
+        allocation_bytes: 0,
+        deadline_ns: None,
+    };
+    let mut throws = 0;
+    let mut blocks = 0;
+    let mut yields = 0;
+    let d = loop {
+        let out = v.run_slice(task, quota, || 0).unwrap();
+        throws += v.stats().usage.instructions;
+        gc(&mut v);
+        match out {
+            RunOutcome::BudgetYield(u) => {
+                yields += 1;
+                quota.work = (u.work + u.required_work).max(1);
+                quota.allocation_bytes = (u.allocation_bytes + u.required_allocation).max(1);
+            }
+            RunOutcome::ResourceBlocked(blocked) => {
+                blocks += 1;
+                assert_eq!(blocked.resource, BlockedResource::HeapObjects);
+                assert_eq!(blocked.current, 2);
+                assert_eq!(blocked.required, 3);
+                assert_eq!(v.stats().frames, 1);
+                if blocks == 1 {
+                    v.heap_mut().release_root(ar).unwrap();
+                } else {
+                    assert_eq!(blocks, 2);
+                    v.heap_mut().release_root(br).unwrap();
+                }
+                collect(&mut v);
+            }
+            RunOutcome::Fault(d) => break d,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(throws, 2);
+    assert_eq!(blocks, 2);
+    assert!(yields >= 5);
+    let info = v.delivery_fault(d).unwrap().unwrap();
+    assert_eq!(v.delivery_value(d).unwrap().tag(), ValueTag::Null);
+    assert_eq!(
+        v.heap()
+            .fault_stack(info.id)
+            .unwrap()
+            .next(v.heap())
+            .unwrap()
+            .unwrap()
+            .location
+            .pc,
+        Pc(1)
+    );
+}
+#[test]
+fn every_finally_replacement_keeps_the_complete_prior_fault_and_distinct_event() {
+    let mut p = fixtures::exception_regions();
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    let i = Instruction::new;
+    f.code = vec![
+        i(Opcode::LoadConst, 0, 1, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::LoadConst, 0, 2, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::EndFinally, 0, 0, 0),
+        i(Opcode::LoadConst, 0, 0, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::EndFinally, 1, 0, 0),
+        i(Opcode::Return, 0, 0, 0),
+    ];
+    f.regions = vec![
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(2),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(2),
+                end: Pc(5),
+            }),
+        },
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(5),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(5),
+                end: Pc(8),
+            }),
+        },
+    ];
+    let mut v = vm(p);
+    let t = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, t);
+    collect(&mut v);
+    let third = v.delivery_fault(d).unwrap().unwrap();
+    let c3 = v
+        .heap()
+        .fault_causes(third.id)
+        .unwrap()
+        .next(v.heap())
+        .unwrap()
+        .unwrap();
+    let second = c3.fault.unwrap();
+    let c2 = v
+        .heap()
+        .fault_causes(second)
+        .unwrap()
+        .next(v.heap())
+        .unwrap()
+        .unwrap();
+    let first = c2.fault.unwrap();
+    assert_eq!(v.heap().fault_value(first).unwrap().as_int(), Some(41));
+    assert_eq!(v.heap().fault_value(second).unwrap().as_int(), Some(1));
+    assert_eq!(
+        v.heap().fault_value(third.id).unwrap().tag(),
+        ValueTag::Null
+    );
+    assert_eq!(
+        c3.kind,
+        CauseKind::ReplacedExit(ReplacedExit::Throw(second))
+    );
+    assert_eq!(c2.kind, CauseKind::ReplacedExit(ReplacedExit::Throw(first)));
+    assert_ne!(c2.event, c3.event);
+    assert!(
+        v.heap()
+            .fault_causes(first)
+            .unwrap()
+            .next(v.heap())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn one_fault_preserves_both_its_caught_fault_and_the_return_it_replaces() {
+    let mut p = fixtures::exception_regions();
+    let i = Instruction::new;
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    f.register_count = 2;
+    f.code = vec![
+        i(Opcode::LoadConst, 0, 1, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::LoadConst, 1, 2, 0),
+        i(Opcode::Jump, 4, 0, 0),
+        i(Opcode::LoadConst, 1, 2, 0),
+        i(Opcode::Return, 1, 0, 0),
+        i(Opcode::LoadConst, 0, 0, 0),
+        i(Opcode::Throw, 0, 0, 0),
+        i(Opcode::EndFinally, 0, 0, 0),
+        i(Opcode::Return, 1, 0, 0),
+    ];
+    f.regions = vec![
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(4),
+                end: Pc(6),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(6),
+                end: Pc(9),
+            }),
+        },
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(2),
+            },
+            catch: Some(CatchRegion {
+                range: PcRange {
+                    start: Pc(2),
+                    end: Pc(9),
+                },
+                exception: Reg(1),
+            }),
+            finally: None,
+        },
+    ];
+    let mut v = vm(p);
+    let t = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, t);
+    collect(&mut v);
+    let info = v.delivery_fault(d).unwrap().unwrap();
+    let mut causes = v.heap().fault_causes(info.id).unwrap();
+    let replaced = causes.next(v.heap()).unwrap().unwrap();
+    let caught = causes.next(v.heap()).unwrap().unwrap();
+    assert_eq!(replaced.kind, CauseKind::ReplacedExit(ReplacedExit::Return));
+    assert_eq!(replaced.value.as_int(), Some(1));
+    assert_eq!(caught.kind, CauseKind::CaughtFault);
+    assert_eq!(caught.value.as_int(), Some(41));
+    assert_eq!(
+        v.heap()
+            .fault_info(caught.fault.unwrap())
+            .unwrap()
+            .location
+            .pc,
+        Pc(1)
+    );
+    assert!(causes.next(v.heap()).unwrap().is_none());
+}
+#[test]
+fn cooperative_cancel_is_a_complete_catchable_core_error_and_wait_ticket_is_revoked() {
+    let mut p = fixtures::helper_native();
+    let f = &mut p.functions[1];
+    let i = Instruction::new;
+    f.source_map.clear();
+    f.code = vec![
+        i(Opcode::Call, 1, 0, 0),
+        i(Opcode::Leave, 4, 0, 0),
+        i(Opcode::LoadConst, 1, 2, 0),
+        i(Opcode::Return, 1, 0, 0),
+        i(Opcode::Return, 1, 0, 0),
+    ];
+    f.regions = vec![ExceptionRegion {
+        protected: PcRange {
+            start: Pc(0),
+            end: Pc(2),
+        },
+        catch: Some(CatchRegion {
+            range: PcRange {
+                start: Pc(2),
+                end: Pc(4),
+            },
+            exception: Reg(1),
+        }),
+        finally: None,
+    }];
+    let mut v = vm(p);
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let t = task_ticket(&mut v, task);
+    v.respond(t, HostResponse::Pending(t.wait_id())).unwrap();
+    v.cancel_cooperatively(task).unwrap();
+    let d = task_finish(&mut v, task);
+    assert_eq!(v.delivery_fault(d).unwrap(), None);
+    assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(1));
+    assert!(matches!(
+        v.complete(t.wait_id(), Completion::Ready(Value::int(42))),
+        Err(VmError::InvalidWait)
+    ));
+    let mut v = vm(fixtures::helper_native());
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let t = task_ticket(&mut v, task);
+    v.respond(t, HostResponse::Pending(t.wait_id())).unwrap();
+    v.cancel_cooperatively(task).unwrap();
+    let d = task_finish(&mut v, task);
+    let info = v.delivery_fault(d).unwrap().unwrap();
+    let value = v.delivery_value(d).unwrap();
+    assert_eq!(info.kind, FaultKind::Cancelled);
+    let error = v.heap().core_error_info(value).unwrap();
+    assert_eq!(error.code, info.code);
+    assert_eq!(error.message, "cooperative cancellation");
+    assert_eq!(error.details.tag(), ValueTag::Null);
+}
+
+#[test]
+fn native_fault_capacity_retains_pending_source_and_resumes_without_repeating_host_actions() {
+    let p = with_callback(fixtures::helper_native(), true);
+    let registry = support(&p);
+    let mut v = Vm::load(
+        verify(p, Limits::default()).unwrap(),
+        registry,
+        VmLimits {
+            max_native_faults: 1,
+            ..VmLimits::default()
+        },
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let factory = v
+        .start(FunctionId(2), &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, factory);
+    let closure = v.delivery_value(d).unwrap();
+    let root = v
+        .heap_mut()
+        .add_root(OWNER, RootKind::Host, closure)
+        .unwrap();
+    v.discard_delivery(d).unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut first = None;
+    let mut second = None;
+    let mut final_fault = None;
+    let mut entries = 0;
+    let mut waits = 0;
+    let mut callbacks = 0;
+    let mut blocks = 0;
+    let d = loop {
+        match task_slice(&mut v, task) {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::HostCall(t) => {
+                let stage = t.continuation.map_or(0, |c| c.stage);
+                match (t.input, stage) {
+                    (NativeInput::Entry, 0) => {
+                        entries += 1;
+                        v.respond(
+                            t,
+                            HostResponse::CallScript {
+                                closure,
+                                arguments: &[],
+                                continuation: continue_at(1, FaultRetention::Preserve),
+                            },
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::CallbackFault, 1) => {
+                        callbacks += 1;
+                        first = Some(v.host_callback_fault(t).unwrap().unwrap().id);
+                        v.respond(
+                            t,
+                            HostResponse::Continue(continue_at(2, FaultRetention::Preserve)),
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::WaitingFault, 2) => {
+                        // Forwarding an already retained fault needs no extra fault slot.
+                        assert_eq!(
+                            v.host_callback_fault(t).unwrap().unwrap().id,
+                            first.unwrap()
+                        );
+                        assert_eq!(v.host_faults(t).unwrap().len(), 1);
+                        v.respond(
+                            t,
+                            HostResponse::Continue(continue_at(3, FaultRetention::Preserve)),
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::Continue { .. }, 3) => v
+                        .respond(
+                            t,
+                            HostResponse::CallScript {
+                                closure,
+                                arguments: &[],
+                                continuation: continue_at(4, FaultRetention::Preserve),
+                            },
+                        )
+                        .unwrap(),
+                    (NativeInput::CallbackFault, 4) => {
+                        callbacks += 1;
+                        second = Some(v.host_callback_fault(t).unwrap().unwrap().id);
+                        assert_ne!(second, first);
+                        v.respond(
+                            t,
+                            HostResponse::Continue(continue_at(5, FaultRetention::Preserve)),
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::Continue { .. }, 2 | 5) => {
+                        v.respond(t, HostResponse::Pending(t.wait_id())).unwrap()
+                    }
+                    (NativeInput::WaitingFault, 5) => {
+                        let id = v.host_callback_fault(t).unwrap().unwrap().id;
+                        final_fault = Some(id);
+                        assert_ne!(Some(id), second);
+                        let cause = v
+                            .heap()
+                            .fault_causes(id)
+                            .unwrap()
+                            .next(v.heap())
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(cause.kind, CauseKind::ExplicitCause);
+                        assert_eq!(cause.fault, second);
+                        v.respond(
+                            t,
+                            HostResponse::Continue(continue_at(6, FaultRetention::Preserve)),
+                        )
+                        .unwrap();
+                    }
+                    (NativeInput::Continue { .. }, 6) => v
+                        .respond(t, HostResponse::ForwardFault(final_fault.unwrap()))
+                        .unwrap(),
+                    other => panic!("{other:?}"),
+                }
+            }
+            RunOutcome::Waiting(w) => {
+                waits += 1;
+                let result = if waits == 1 {
+                    Completion::ForwardFault(first.unwrap())
+                } else {
+                    Completion::Error(NewFault {
+                        value: Value::int(41),
+                        code: FaultCode::core(FaultKind::Thrown),
+                        cause: second,
+                    })
+                };
+                v.complete(w, result).unwrap();
+                assert!(matches!(
+                    v.complete(w, Completion::Ready(Value::int(42))),
+                    Err(VmError::InvalidWait)
+                ));
+            }
+            RunOutcome::ResourceBlocked(b) => {
+                blocks += 1;
+                assert_eq!((b.current, b.required), (1, 2));
+                let BlockedResource::NativeFaultSlots { frame } = b.resource else {
+                    panic!("{b:?}")
+                };
+                assert_eq!(b.task, task);
+                collect(&mut v);
+                v.replace_native_faults(task, frame, &[]).unwrap();
+                collect(&mut v);
+                if blocks == 1 {
+                    assert!(v.heap().fault_info(first.unwrap()).is_err());
+                } else {
+                    // The partially delivered new fault still roots its explicit cause.
+                    assert!(v.heap().fault_info(second.unwrap()).is_ok());
+                }
+            }
+            RunOutcome::Fault(d) => break d,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!((entries, callbacks, waits, blocks), (1, 2, 2, 2));
+    assert_eq!(
+        v.delivery_fault(d).unwrap().unwrap().id,
+        final_fault.unwrap()
+    );
+    assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(41));
+    v.discard_delivery(d).unwrap();
+    v.heap_mut().release_root(root).unwrap();
+    collect(&mut v);
+    assert!(v.heap().fault_info(final_fault.unwrap()).is_err());
+    assert!(v.heap().fault_info(second.unwrap()).is_err());
 }

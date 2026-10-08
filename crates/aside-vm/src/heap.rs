@@ -30,12 +30,24 @@ pub enum ObjectKind {
     Set,
     Range,
     Iterator,
+    FaultEnvelope,
+    FaultStack,
+    FaultCause,
+    CoreError,
 }
 impl ObjectKind {
     fn values(self) -> bool {
         !matches!(
             self,
-            Self::String | Self::Bytes | Self::TextBuffer | Self::ByteBuffer | Self::WeakRef
+            Self::String
+                | Self::Bytes
+                | Self::TextBuffer
+                | Self::ByteBuffer
+                | Self::WeakRef
+                | Self::FaultEnvelope
+                | Self::FaultStack
+                | Self::FaultCause
+                | Self::CoreError
         )
     }
     fn record(self) -> bool {

@@ -319,6 +319,25 @@ impl FrameSlots {
         }
         self.roots().resolve(range)
     }
+    /// Checks only the logical initialized view; unused null storage stays clear.
+    pub fn borrow_initialized_window(
+        &self,
+        range: RootRangeToken,
+        start: u32,
+        len: u32,
+    ) -> Result<&[Value], HeapError> {
+        let w = self.window(range)?;
+        let end = start
+            .checked_add(len)
+            .filter(|n| *n <= w.len)
+            .ok_or(HeapError::OutOfBounds)?;
+        for i in w.base + start..w.base + end {
+            if !self.initialized(i as usize) {
+                return Err(HeapError::UninitializedSlot);
+            }
+        }
+        Ok(&self.roots().resolve(range)?[start as usize..end as usize])
+    }
     pub fn write(
         &mut self,
         heap: &mut Heap,

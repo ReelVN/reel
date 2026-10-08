@@ -292,6 +292,16 @@ impl Heap {
             .get_mut(key)
             .expect("release record owns a dying slot");
         let bytes = match &mut obj.payload {
+            Payload::Fault(value) if value.release_cursor < 3 => {
+                if p.release_edges == budget.release_edges {
+                    return false;
+                }
+                value.edges[value.release_cursor as usize] = crate::Value::NULL;
+                value.release_cursor += 1;
+                p.release_edges += 1;
+                p.units += 1;
+                return true;
+            }
             Payload::Cell(value) if value.value.is_some() => {
                 if p.release_edges == budget.release_edges {
                     return false;

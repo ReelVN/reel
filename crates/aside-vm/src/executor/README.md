@@ -3,9 +3,8 @@
 The first public interface/state proposal was committed as `40d1b9d`, before the
 executor implementation. Public Rust types are now isolated in [api.rs](api.rs).
 The draft PR is https://github.com/jhq223/reel/pull/23, with the creation-time base
-`task/issue-17-frame-slots` unchanged. The frozen language document is exactly
-`9cfe5ece49a419c13b7f65992f8b68e46ab4ffac`, which clarifies shared-session
-Tasks and accumulating contexts. Integrated dependencies: V02 `cceb151` and B01
+`task/issue-17-frame-slots` unchanged. Language §22/§23 follows the integration
+owner's document head `7322292`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
 `be4f98e`; independent dependency acceptance is coordinated by the integration owner.
 
 This executes verified hand-authored B01 packages. Source compilation/lowering,
@@ -37,7 +36,9 @@ exact issued ticket once. Continue and CallScript produce fresh resume tickets;
 they never issue the original native entry again. Pending requires the scoped
 `ticket.wait_id()` identity. Ready/Error completion consumes only the current
 wait; old, repeated and cross-VM completions fail without committing a result.
-The host can inspect continuation values and callback value/fault metadata.
+The host can inspect continuation values, callback values and complete faults.
+With an active continuation, waiting completion resumes its current stage with
+WaitingReturned/WaitingFault; otherwise it commits the native's terminal result.
 Each resume ticket carries the continuation's version/stage, including callback
 resumes. Effects intersect along calls; NoWait, Init and Derived accumulate as
 independent flags on tickets and callbacks. A native
@@ -45,7 +46,10 @@ that may wait can still return Ready in NoWait; actual Pending faults at the
 original call location. Cleanup calls inherit NoWait dynamically.
 
 Returned/Fault holds a delivery root. `delivery_value` keeps it registered;
-`take_delivery_root` publishes to an existing host root before clearing delivery;
+`take_delivery_root` transfers ordinary success, while `take_fault_delivery`
+transfers the entire fault graph into an explicitly released FaultRoot before
+clearing delivery and freeing the Task slot. `copy_delivery_value_to_root`
+copies the original value while retaining the fault delivery;
 `discard_delivery` releases the result and makes that Task slot reusable. IDs
 include TaskId and heap/epoch/serial; old identities never identify a reused
 slot. Other Tasks may start/run while an earlier Task waits or retains a result. Heap allocations/mutations for host results
@@ -87,19 +91,22 @@ CleanupDestination, consumed_region)`; faults use its `exception_handler`.
 Both use the same full lexical region relationships and strict consumed ancestors.
 The executor has no separate cleanup selector. An inner catch/cleanup inside
 an active finally preserves the outer pending exit. Only an escaping new failure
-supersedes it, retaining the previous exit's value as a direct rooted cause.
-Rethrow preserves the caught source/kind/cause; explicit throw in catch uses the
-new source with the previous caught value as cause. Parameter/default preparation
+supersedes it, appending a typed ReplacedExit with the entire previous fault,
+return value or versioned Leave target. Rethrow preserves the same envelope;
+explicit throw in catch creates a new identity and CaughtFault edge. Parameter/default preparation
 failures go to the caller and never execute unentered callee-body handlers.
-Native binder faults retain their exact FaultKind; callback faults retain their
-source/kind/cause when forwarded by the host. Root/unwind admission exhaustion
-becomes a consumed Resource fault rather than replaying the same phase.
-
-**Remaining exception contract work:** this core exposes FaultInfo (stable kind,
-original location) and a direct cause Value. It does not yet retain the complete
-ErrorEnvelope stack or arbitrarily nested cause metadata described in §14.
-This limitation remains explicit for integration review and is not a claim of
-complete language exception diagnostics or snapshot support.
+Native binder faults retain their exact FaultKind; explicit ForwardFault preserves
+identity, code, origin, stack and causes. Error(NewFault) always creates a new
+fault, including when its value equals a prior fault's value. FaultBuild captures
+one versioned stack entry per charged step before routing/unwinding. Runtime
+language failures use private read-only CoreError values. Causes form a same-Heap
+append-only graph, with event identities and a rooted cycle-aware diagnostic
+cursor. FaultInfo Values retain the graph through normal roots and edges.
+Actual catch departure frees its activation record after publishing propagation
+roots. Native fault slots survive Continue/Pending under explicit Preserve or
+Replace(ids), with an empty replacement marking faults handled. Hard fault,
+catch or unwind capacity returns ResourceBlocked and retains the original
+stage/roots. See [fault ownership and integration dependencies](FAULT-CONTRACT.md).
 
 ## Budget units and atomic boundaries
 

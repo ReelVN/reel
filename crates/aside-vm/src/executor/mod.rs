@@ -3,13 +3,40 @@
 //! Values in frames, continuations and terminal deliveries are held in FrameSlots.
 //! Host entry and continuation-resume tickets are distinct, single-use identities.
 use crate::bytecode::*;
+use crate::fault::{CodeLease, FaultData};
 use crate::root_ranges::{ChargedVec, Reservation};
 use crate::*;
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 mod api;
+mod faults;
 pub use api::*;
 
+#[derive(Clone, Copy)]
+struct FaultSeed {
+    kind: FaultKind,
+    location: Location,
+    fault: Option<FaultId>,
+    explicit: Option<FaultId>,
+    author_value: bool,
+}
+#[derive(Clone, Copy)]
+enum BuildPhase {
+    ErrorValue,
+    Envelope,
+    Stack(u32),
+    Cause,
+    Complete,
+}
+#[derive(Clone, Copy)]
+struct FaultBuild {
+    frame: FrameId,
+    seed: FaultSeed,
+    phase: BuildPhase,
+    implicit: Option<FaultId>,
+    event: u64,
+}
 #[derive(Clone, Copy)]
 enum ReturnTo {
     Delivery,
@@ -79,7 +106,7 @@ enum ScriptPhase {
 #[derive(Clone, Copy)]
 enum ExitReason {
     Return,
-    Throw(FaultInfo),
+    Throw(FaultSeed),
     Leave(Pc),
 }
 #[derive(Clone, Copy)]
@@ -109,6 +136,8 @@ enum NativePhase {
     Continue,
     Callback { count: u32 },
     Resume(NativeInput),
+    CallbackFaultBuild,
+    WaitingFaultBuild,
     Commit(bool),
     Release(bool),
 }
@@ -122,6 +151,7 @@ struct NativeFrame {
     roots: RootRangeToken,
     argument_count: u32,
     continuation_len: u32,
+    continuation_active: bool,
     continuation_version: u64,
     continuation_stage: u64,
     effects: Effects,
@@ -129,8 +159,9 @@ struct NativeFrame {
     owner: RootOwner,
     location: Location,
     ret: ReturnTo,
-    callback_fault: Option<FaultInfo>,
-    pending_fault: Option<FaultInfo>,
+    callback_fault: Option<FaultId>,
+    fault_count: u32,
+    pending_fault: Option<FaultSeed>,
     phase: NativePhase,
 }
 #[derive(Clone, Copy)]
@@ -153,18 +184,20 @@ struct Unwind {
     reason: ExitReason,
     region: RegionId,
     value: RootRangeToken,
+    replacement_event: Option<u64>,
 }
 #[derive(Clone, Copy)]
 struct Terminal {
     id: DeliveryId,
-    fault: Option<FaultInfo>,
+    fault: Option<FaultSeed>,
 }
 
 #[derive(Clone, Copy)]
 struct CaughtFault {
     frame: FrameId,
     region: RegionId,
-    info: FaultInfo,
+    info: FaultSeed,
+    activation: u64,
 }
 /// One shared heap/module set, with bounded independent task state machines.
 struct TaskState {
@@ -181,6 +214,9 @@ struct TaskState {
     root_owner: RootOwner,
     cancel_roots: u32,
     release_external: bool,
+    fault_build: Option<FaultBuild>,
+    blocked: Option<ResourceBlocked>,
+    cooperative_cancel: bool,
 }
 impl TaskState {
     fn new(
@@ -233,14 +269,16 @@ impl TaskState {
             root_owner: RootOwner(u64::MAX),
             cancel_roots: 0,
             release_external: false,
+            fault_build: None,
+            blocked: None,
+            cooperative_cancel: false,
         })
     }
 }
 /// Task selection swaps bounded state owners; all registered windows remain in
 /// the single FrameSlots provider. Field order deallocates before budget refunds.
 pub struct Vm {
-    program: VerifiedProgram,
-    program_charge: Reservation,
+    program: Rc<CodeLease>,
     slots: FrameSlots,
     active: TaskState,
     tasks: ChargedVec<TaskState>,
@@ -255,6 +293,7 @@ pub struct Vm {
     next_id: u64,
     native_entries: u64,
     native_resumes: u64,
+    native_null_publications: u64,
     slices: u64,
     last_usage: SliceUsage,
 }
@@ -275,6 +314,7 @@ impl Vm {
                 .max_arguments
                 .checked_add(limits.max_continuation_values)
                 .and_then(|n| n.checked_add(3))
+                .and_then(|n| n.checked_add(limits.max_native_faults))
                 .is_none_or(|n| n > limits.slots.max_window_len)
             || limits
                 .max_unwinds
@@ -285,6 +325,7 @@ impl Vm {
                 .checked_mul(2)
                 .and_then(|n| n.checked_add(2))
                 .is_none_or(|n| n > limits.heap.max_root_ranges)
+            || limits.max_native_faults == 0
         {
             return Err(VmError::Limit);
         }
@@ -344,12 +385,16 @@ impl Vm {
         }
         let mut heap = Heap::new(epoch, limits.heap)?;
         let usage = heap.budget_usage();
-        let program_charge = Reservation::new(&usage, program.stats().owned_capacity_bytes as u64)?;
+        let program_charge = Reservation::new(
+            &usage,
+            program.stats().owned_capacity_bytes as u64
+                + (std::mem::size_of::<CodeLease>() - std::mem::size_of::<BytecodePackage>()
+                    + 2 * std::mem::size_of::<usize>()) as u64,
+        )?;
         let mut slots = FrameSlots::new(&mut heap, limits.slots)?;
         let control_bytes = std::mem::size_of::<Self>()
             - std::mem::size_of::<Heap>()
-            - std::mem::size_of::<FrameSlots>()
-            - std::mem::size_of::<BytecodePackage>();
+            - std::mem::size_of::<FrameSlots>();
         let control_charge = Reservation::new(&usage, control_bytes as u64)?;
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
         let mut tasks = ChargedVec::new(&usage, limits.max_tasks as usize)?;
@@ -423,8 +468,10 @@ impl Vm {
             }
         }
         Ok(Self {
-            program,
-            program_charge,
+            program: Rc::new(CodeLease {
+                program,
+                charge: program_charge,
+            }),
             slots,
             active,
             tasks,
@@ -440,6 +487,7 @@ impl Vm {
             next_id: 1,
             native_entries: 0,
             native_resumes: 0,
+            native_null_publications: 0,
             slices: 0,
             last_usage: SliceUsage::default(),
         })
@@ -486,11 +534,12 @@ impl Vm {
                     .sum::<usize>()) as u32,
             native_entries: self.native_entries,
             native_resumes: self.native_resumes,
+            native_null_publications: self.native_null_publications,
             slices: self.slices,
             usage: self.last_usage,
             heap: self.heap.stats(),
             slots: self.slots.stats(),
-            program_bytes: self.program_charge.bytes(),
+            program_bytes: self.program.charge.bytes(),
             control_bytes: self.control_charge.bytes(),
         }
     }
@@ -601,7 +650,8 @@ impl Vm {
     }
     fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
         let signature = self.program.package().natives[native.index()].signature;
-        3 + self.limits.max_arguments as u64
+        3 + self.limits.max_native_faults as u64
+            + self.limits.max_arguments as u64
             + self.limits.max_continuation_values as u64
             + count as u64 * 2
             + self.program.package().signatures[signature.index()]
@@ -931,7 +981,9 @@ impl Vm {
         let roots = match self.open(
             s.owner,
             RootKind::NativeContinuation,
-            3 + self.limits.max_continuation_values + self.limits.max_arguments,
+            3 + self.limits.max_continuation_values
+                + self.limits.max_arguments
+                + self.limits.max_native_faults,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -949,6 +1001,7 @@ impl Vm {
             roots,
             argument_count: count,
             continuation_len: 0,
+            continuation_active: false,
             continuation_version: 0,
             continuation_stage: 0,
             effects: Effects(
@@ -966,6 +1019,7 @@ impl Vm {
                 call: s.pc,
             },
             callback_fault: None,
+            fault_count: 0,
             pending_fault: None,
             phase: NativePhase::Copy { source, index: 0 },
         }));
@@ -993,27 +1047,23 @@ impl Vm {
     }
     pub fn host_callback_fault(&self, ticket: HostTicket) -> Result<Option<FaultInfo>, VmError> {
         let n = self.ticket(ticket)?;
-        if !matches!(
-            ticket.input,
-            NativeInput::CallbackReturned | NativeInput::CallbackFault
-        ) {
-            return Err(VmError::InvalidTicket);
-        }
-        Ok(n.callback_fault)
+        n.callback_fault
+            .map(|id| self.heap.fault_info(id).map_err(VmError::from))
+            .transpose()
+    }
+    pub fn host_faults(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
+        let n = self.ticket(ticket)?;
+        self.initialized_prefix(n.roots, self.native_fault_base(), n.fault_count)
     }
     pub fn host_callback_cause(&self, ticket: HostTicket) -> Result<Option<Value>, VmError> {
-        let n = self.ticket(ticket)?;
-        if !matches!(ticket.input, NativeInput::CallbackFault) {
-            return Err(VmError::InvalidTicket);
-        }
-        if n.callback_fault.is_some_and(|f| f.has_cause) {
-            Ok(Some(self.value(
-                n.roots,
-                2 + self.limits.max_continuation_values + self.limits.max_arguments,
-            )?))
-        } else {
-            Ok(None)
-        }
+        let Some(info) = self.host_callback_fault(ticket)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .heap
+            .fault_causes(info.id)?
+            .next(&self.heap)?
+            .map(|c| c.value))
     }
     fn make_ticket(
         &self,
@@ -1069,25 +1119,44 @@ impl Vm {
             .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
         match response {
-            HostResponse::Ready(v) | HostResponse::Error(v) => {
-                let error = matches!(response, HostResponse::Error(_));
-                n.pending_fault = if error {
-                    if ticket.input == NativeInput::CallbackFault
-                        && self.value(n.roots, 0)?.same_bits(v)
-                    {
-                        n.callback_fault
-                    } else {
-                        Some(FaultInfo {
-                            kind: FaultKind::Thrown,
-                            location: n.location,
-                            has_cause: false,
-                        })
-                    }
-                } else {
-                    None
-                };
+            HostResponse::Ready(v) => {
                 self.put(n.roots, 0, v)?;
-                n.phase = NativePhase::Commit(error);
+                n.pending_fault = None;
+                n.phase = NativePhase::Commit(false);
+            }
+            HostResponse::Error(new) => {
+                self.check_new_fault(new)?;
+                self.put(n.roots, 0, new.value)?;
+                self.put(
+                    n.roots,
+                    self.native_pending_slot(),
+                    new.cause.map_or(Value::NULL, FaultId::as_value),
+                )?;
+                n.pending_fault = Some(FaultSeed {
+                    kind: new.code.kind,
+                    location: n.location,
+                    fault: None,
+                    explicit: new.cause,
+                    author_value: true,
+                });
+                n.phase = NativePhase::Commit(true);
+            }
+            HostResponse::ForwardFault(id) => {
+                if !self.native_holds(n, id)? {
+                    return Err(VmError::InvalidFault);
+                };
+                let info = self.heap.fault_info(id)?;
+                let value = self.heap.fault_value(id)?;
+                self.put(n.roots, 0, value)?;
+                self.put(n.roots, self.native_pending_slot(), id.as_value())?;
+                n.pending_fault = Some(FaultSeed {
+                    kind: info.kind,
+                    location: info.location,
+                    fault: Some(id),
+                    explicit: None,
+                    author_value: true,
+                });
+                n.phase = NativePhase::Commit(true);
             }
             HostResponse::Pending(wait) => {
                 if wait != ticket.wait_id() {
@@ -1133,6 +1202,18 @@ impl Vm {
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
         Ok(())
     }
+    pub fn respond_language_error(
+        &mut self,
+        ticket: HostTicket,
+        kind: FaultKind,
+    ) -> Result<(), VmError> {
+        self.select_task(ticket.task)
+            .map_err(|_| VmError::InvalidTicket)?;
+        let mut n = self.ticket(ticket)?;
+        self.native_fault(&mut n, kind)?;
+        *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
+        Ok(())
+    }
     fn save_continuation(
         &mut self,
         n: &mut NativeFrame,
@@ -1140,6 +1221,15 @@ impl Vm {
     ) -> Result<(), VmError> {
         if c.values.len() > self.limits.max_continuation_values as usize {
             return Err(VmError::Limit);
+        }
+        if let FaultRetention::Replace(ids) = c.faults {
+            if ids.len() > self.limits.max_native_faults as usize {
+                return Err(VmError::Limit);
+            };
+            for &id in ids {
+                self.heap.fault_info(id)?;
+                self.heap.root_insertion_barrier(id.as_value())?;
+            }
         }
         for &v in c.values {
             self.heap.root_insertion_barrier(v)?;
@@ -1150,6 +1240,8 @@ impl Vm {
         for i in c.values.len() as u32..n.continuation_len {
             self.put(n.roots, 2 + i, Value::NULL)?;
         }
+        self.retain_native_faults(n, c.faults)?;
+        n.continuation_active = true;
         n.continuation_len = c.values.len() as u32;
         n.continuation_version = c.version;
         n.continuation_stage = c.stage;
@@ -1167,17 +1259,58 @@ impl Vm {
         if !matches!(n.phase,NativePhase::Waiting(w) if w==wait) {
             return Err(VmError::InvalidWait);
         }
-        let (v, error) = match result {
-            Completion::Ready(v) => (v, false),
-            Completion::Error(v) => (v, true),
-        };
-        self.put(n.roots, 0, v)?;
-        n.pending_fault = error.then_some(FaultInfo {
-            kind: FaultKind::Thrown,
-            location: n.location,
-            has_cause: false,
-        });
-        n.phase = NativePhase::Commit(error);
+        match result {
+            Completion::Ready(v) => {
+                self.put(n.roots, 0, v)?;
+                n.pending_fault = None;
+                n.phase = if n.continuation_active {
+                    NativePhase::Resume(NativeInput::WaitingReturned)
+                } else {
+                    NativePhase::Commit(false)
+                };
+            }
+            Completion::Error(new) => {
+                self.check_new_fault(new)?;
+                self.put(n.roots, 0, new.value)?;
+                self.put(
+                    n.roots,
+                    self.native_pending_slot(),
+                    new.cause.map_or(Value::NULL, FaultId::as_value),
+                )?;
+                n.pending_fault = Some(FaultSeed {
+                    kind: new.code.kind,
+                    location: n.location,
+                    fault: None,
+                    explicit: new.cause,
+                    author_value: true,
+                });
+                n.phase = if n.continuation_active {
+                    NativePhase::WaitingFaultBuild
+                } else {
+                    NativePhase::Commit(true)
+                };
+            }
+            Completion::ForwardFault(id) => {
+                if !self.native_holds(n, id)? {
+                    return Err(VmError::InvalidFault);
+                };
+                let info = self.heap.fault_info(id)?;
+                self.put(n.roots, 0, self.heap.fault_value(id)?)?;
+                self.put(n.roots, self.native_pending_slot(), id.as_value())?;
+                n.pending_fault = Some(FaultSeed {
+                    kind: info.kind,
+                    location: info.location,
+                    fault: Some(id),
+                    explicit: None,
+                    author_value: true,
+                });
+                n.phase = if n.continuation_active {
+                    NativePhase::WaitingFaultBuild
+                } else {
+                    NativePhase::Commit(true)
+                };
+            }
+        }
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
         Ok(())
     }
@@ -1186,15 +1319,40 @@ impl Vm {
         self.value(self.task(id.task)?.delivery.unwrap(), 0)
     }
     pub fn delivery_cause(&self, id: DeliveryId) -> Result<Option<Value>, VmError> {
-        let t = self.delivery_check(id)?;
-        if t.fault.is_some_and(|f| f.has_cause) {
-            Ok(Some(self.value(self.task(id.task)?.delivery.unwrap(), 1)?))
-        } else {
-            Ok(None)
-        }
+        let Some(info) = self.delivery_fault(id)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .heap
+            .fault_causes(info.id)?
+            .next(&self.heap)?
+            .map(|c| c.value))
     }
     pub fn delivery_fault(&self, id: DeliveryId) -> Result<Option<FaultInfo>, VmError> {
-        Ok(self.delivery_check(id)?.fault)
+        let t = self.delivery_check(id)?;
+        t.fault
+            .and_then(|s| s.fault)
+            .map(|f| self.heap.fault_info(f).map_err(VmError::from))
+            .transpose()
+    }
+    pub fn take_fault_delivery(
+        &mut self,
+        id: DeliveryId,
+        owner: RootOwner,
+    ) -> Result<FaultRoot, VmError> {
+        let info = self.delivery_fault(id)?.ok_or(VmError::InvalidDelivery)?;
+        let root = self.heap.retain_fault(owner, info.id)?;
+        self.discard_delivery(id)?;
+        Ok(root)
+    }
+    pub fn copy_delivery_value_to_root(
+        &mut self,
+        id: DeliveryId,
+        target: RootToken,
+    ) -> Result<(), VmError> {
+        let value = self.delivery_value(id)?;
+        self.heap.set_root(target, value)?;
+        Ok(())
     }
     fn delivery_check(&self, id: DeliveryId) -> Result<Terminal, VmError> {
         self.task(id.task)
@@ -1204,6 +1362,11 @@ impl Vm {
             .ok_or(VmError::InvalidDelivery)
     }
     pub fn take_delivery_root(&mut self, id: DeliveryId, target: RootToken) -> Result<(), VmError> {
+        if self.delivery_check(id)?.fault.is_some() {
+            return Err(VmError::Contract(
+                "use take_fault_delivery or copy_delivery_value_to_root",
+            ));
+        }
         let v = self.delivery_value(id)?;
         self.heap.set_root(target, v)?;
         self.discard_delivery(id)
@@ -1230,7 +1393,10 @@ impl Vm {
         self.active.cancelling = true;
         self.active.cancel_roots = 0;
         self.active.release_external = external;
-        if self.active.terminal.take().is_some() {
+        self.active.fault_build = None;
+        self.active.blocked = None;
+        self.active.cooperative_cancel = false;
+        if self.active.terminal.take().is_some() || self.active.task_id.is_some() {
             self.clear(self.active.delivery.unwrap(), 0)?;
             self.clear(self.active.delivery.unwrap(), 1)?;
         }
@@ -1308,7 +1474,11 @@ impl Vm {
         result
     }
     fn run(&mut self, m: &mut Meter, now: &mut impl FnMut() -> u64) -> Result<RunOutcome, VmError> {
+        self.active.blocked = None;
         loop {
+            if let Some(blocked) = self.active.blocked {
+                return Ok(RunOutcome::ResourceBlocked(blocked));
+            }
             if let Some(t) = self.active.terminal {
                 return Ok(if t.fault.is_some() {
                     RunOutcome::Fault(t.id)
@@ -1374,6 +1544,40 @@ impl Vm {
                 self.active.task_id = None;
                 return Err(VmError::Idle);
             }
+            if self.active.fault_build.is_some() {
+                if !self.fault_build_step(m)? {
+                    return Ok(RunOutcome::BudgetYield(m.usage));
+                }
+                continue;
+            }
+            if self.active.cooperative_cancel {
+                self.seed_cancellation()?;
+                self.active.cooperative_cancel = false;
+                continue;
+            }
+            if let Some((frame, seed)) = self.unbuilt_fault() {
+                if !m.take(0, self.active.caught.data.len() as u64 + 1, 0) {
+                    return Ok(RunOutcome::BudgetYield(m.usage));
+                }
+                let implicit = if seed.explicit.is_none() {
+                    self.active
+                        .caught
+                        .data
+                        .iter()
+                        .max_by_key(|c| c.activation)
+                        .and_then(|c| c.info.fault)
+                } else {
+                    None
+                };
+                self.active.fault_build = Some(FaultBuild {
+                    frame,
+                    seed,
+                    phase: BuildPhase::ErrorValue,
+                    implicit,
+                    event: self.serial()?,
+                });
+                continue;
+            }
             let Some(f) = self.active.frames.data.last().copied() else {
                 return Err(VmError::Idle);
             };
@@ -1389,6 +1593,19 @@ impl Vm {
                     }
                 }
             }
+        }
+    }
+    fn commit_work(&self, ret: ReturnTo) -> u64 {
+        match ret {
+            ReturnTo::Native { frame } => {
+                match self.index(frame).ok().map(|i| self.active.frames.data[i]) {
+                    Some(Frame::Native(n)) => {
+                        2 * (n.fault_count as u64 + n.continuation_len as u64) + 8
+                    }
+                    _ => 8,
+                }
+            }
+            _ => 2,
         }
     }
     fn release_frame(&mut self, f: Frame) -> Result<(), VmError> {
@@ -1410,20 +1627,25 @@ impl Vm {
         self.put(s.env, 1, Value::NULL)?;
         self.clear(s.env, 2)?;
         s.phase = ScriptPhase::Release {
-            reason: ExitReason::Throw(FaultInfo {
+            reason: ExitReason::Throw(FaultSeed {
+                fault: None,
+                explicit: None,
+                author_value: false,
                 kind,
                 location: self.binding_location(*s),
-                has_cause: false,
             }),
         };
         Ok(())
     }
     fn native_fault(&mut self, n: &mut NativeFrame, kind: FaultKind) -> Result<(), VmError> {
         self.put(n.roots, 0, Value::NULL)?;
-        n.pending_fault = Some(FaultInfo {
+        self.clear(n.roots, self.native_pending_slot())?;
+        n.pending_fault = Some(FaultSeed {
+            fault: None,
+            explicit: None,
+            author_value: false,
             kind,
             location: n.location,
-            has_cause: false,
         });
         n.phase = NativePhase::Commit(true);
         Ok(())
@@ -1601,10 +1823,14 @@ impl Vm {
                             return Ok(false);
                         }
                         self.put(s.env, 1, Value::NULL)?;
+                        self.clear(s.env, 2)?;
                         s.phase = ScriptPhase::Exit {
                             origin: s.pc,
-                            reason: ExitReason::Throw(FaultInfo {
-                                has_cause: false,
+                            reason: ExitReason::Throw(FaultSeed {
+                                fault: None,
+                                explicit: None,
+                                author_value: false,
+
                                 kind: vm_fault(error),
                                 location: self.loc(s, s.pc),
                             }),
@@ -1626,10 +1852,14 @@ impl Vm {
                     Ok(false) => {}
                     Err(kind) => {
                         self.put(s.env, 1, Value::NULL)?;
+                        self.clear(s.env, 2)?;
                         s.phase = ScriptPhase::Exit {
                             origin: s.pc,
-                            reason: ExitReason::Throw(FaultInfo {
-                                has_cause: false,
+                            reason: ExitReason::Throw(FaultSeed {
+                                fault: None,
+                                explicit: None,
+                                author_value: false,
+
                                 kind,
                                 location: self.loc(s, s.pc),
                             }),
@@ -1666,10 +1896,14 @@ impl Vm {
                         }
                         Err(kind) => {
                             self.put(s.env, 1, Value::NULL)?;
+                            self.clear(s.env, 2)?;
                             s.phase = ScriptPhase::Exit {
                                 origin: s.pc,
-                                reason: ExitReason::Throw(FaultInfo {
-                                    has_cause: false,
+                                reason: ExitReason::Throw(FaultSeed {
+                                    fault: None,
+                                    explicit: None,
+                                    author_value: false,
+
                                     kind,
                                     location: self.loc(s, s.pc),
                                 }),
@@ -1684,19 +1918,26 @@ impl Vm {
                 reason,
                 skip,
             } => {
+                let alloc = if self.replacement_needed(s, origin, reason, skip)? {
+                    crate::fault::FAULT_NODE_BYTES
+                } else {
+                    0
+                };
                 if !m.take(
                     0,
-                    self.program.package().functions[s.code.function.index()]
+                    2 * self.program.package().functions[s.code.function.index()]
                         .regions
                         .len() as u64
                         + self.active.caught.data.len() as u64
-                        + 2
+                        + 12
                         + self.release_cost(1),
-                    0,
+                    alloc,
                 ) {
                     return Ok(false);
                 }
-                self.exit_step(&mut s, origin, reason, skip)?;
+                if !self.exit_step(&mut s, origin, reason, skip)? {
+                    return Ok(false);
+                }
             }
             ScriptPhase::Release { reason } => {
                 if !m.take(0, self.active.caught.data.len() as u64, 0) {
@@ -1712,15 +1953,15 @@ impl Vm {
                     self.active.frames.data[top] = Frame::Script(s);
                     return Ok(true);
                 }
-                if !m.take(0, self.release_cost(4), 0) {
+                if !m.take(0, self.release_cost(4) + self.commit_work(s.ret), 0) {
                     return Ok(false);
                 }
                 let value = self.value(s.env, 1)?;
                 let cause = match reason {
-                    ExitReason::Throw(info) if info.has_cause => Some(self.value(s.env, 2)?),
+                    ExitReason::Throw(info) if info.fault.is_some() => Some(self.value(s.env, 2)?),
                     _ => None,
                 };
-                self.commit(
+                if !self.commit(
                     s.ret,
                     value,
                     cause,
@@ -1728,7 +1969,10 @@ impl Vm {
                         ExitReason::Throw(info) => Some(info),
                         _ => None,
                     },
-                )?;
+                )? {
+                    self.active.frames.data[top] = Frame::Script(s);
+                    return Ok(true);
+                }
                 self.release_frame(Frame::Script(s))?;
                 self.active.frames.data.remove(top);
                 return Ok(true);
@@ -2200,39 +2444,16 @@ impl Vm {
             }
             Opcode::Throw => {
                 let v = self.read(*s, r(a))?;
-                let prior = f
-                    .regions
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(id, region)| {
-                        region
-                            .catch
-                            .as_ref()
-                            .filter(|c| c.range.contains(s.pc))
-                            .map(|c| (RegionId(id as u32), c.range.end.0 - c.range.start.0))
-                    })
-                    .min_by_key(|(_, width)| *width)
-                    .map(|(id, _)| id);
-                let prior = prior.filter(|id| {
-                    self.active
-                        .caught
-                        .data
-                        .iter()
-                        .any(|c| c.frame == s.id && c.region == *id)
-                });
-                if let Some(region) = prior {
-                    let previous = self.value(s.env, 3 + region.0 * 2).map_err(vm_fault)?;
-                    self.put(s.env, 2, previous).map_err(vm_fault)?;
-                } else {
-                    self.clear(s.env, 2).map_err(vm_fault)?;
-                }
                 self.put(s.env, 1, v).map_err(vm_fault)?;
+                self.clear(s.env, 2).map_err(vm_fault)?;
                 s.phase = ScriptPhase::Exit {
                     origin: s.pc,
-                    reason: ExitReason::Throw(FaultInfo {
-                        has_cause: prior.is_some(),
+                    reason: ExitReason::Throw(FaultSeed {
                         kind: FaultKind::Thrown,
                         location: self.loc(*s, s.pc),
+                        fault: None,
+                        explicit: None,
+                        author_value: true,
                     }),
                     skip: None,
                 };
@@ -2247,12 +2468,12 @@ impl Vm {
                         r.catch
                             .as_ref()
                             .filter(|c| c.range.contains(s.pc))
-                            .map(|c| (id, c.range.end.0 - c.range.start.0))
+                            .map(|c| (RegionId(id as u32), c.range.end.0 - c.range.start.0))
                     })
-                    .min_by_key(|(_, n)| *n)
-                    .map(|(id, _)| RegionId(id as u32))
+                    .min_by_key(|(_, width)| *width)
+                    .map(|(id, _)| id)
                     .ok_or(FaultKind::InvalidState)?;
-                let info = self
+                let seed = self
                     .active
                     .caught
                     .data
@@ -2260,17 +2481,13 @@ impl Vm {
                     .find(|c| c.frame == s.id && c.region == region)
                     .map(|c| c.info)
                     .ok_or(FaultKind::InvalidState)?;
-                let value = self.value(s.env, 3 + region.0 * 2).map_err(vm_fault)?;
+                let id = seed.fault.ok_or(FaultKind::InvalidState)?;
+                let value = self.heap.fault_value(id).map_err(heap_fault)?;
                 self.put(s.env, 1, value).map_err(vm_fault)?;
-                if info.has_cause {
-                    let cause = self.value(s.env, 4 + region.0 * 2).map_err(vm_fault)?;
-                    self.put(s.env, 2, cause).map_err(vm_fault)?;
-                } else {
-                    self.clear(s.env, 2).map_err(vm_fault)?;
-                }
+                self.put(s.env, 2, id.as_value()).map_err(vm_fault)?;
                 s.phase = ScriptPhase::Exit {
                     origin: s.pc,
-                    reason: ExitReason::Throw(info),
+                    reason: ExitReason::Throw(seed),
                     skip: None,
                 };
                 return Ok(false);
@@ -2301,7 +2518,7 @@ impl Vm {
                 self.slots
                     .write(&mut self.heap, at(s.env, 1), value)
                     .map_err(heap_fault)?;
-                if matches!(u.reason,ExitReason::Throw(info) if info.has_cause) {
+                if matches!(u.reason,ExitReason::Throw(info) if info.fault.is_some()) {
                     let cause = self.value(u.value, 1).map_err(vm_fault)?;
                     self.put(s.env, 2, cause).map_err(vm_fault)?;
                 } else {
@@ -2435,28 +2652,30 @@ impl Vm {
         }
         Ok(())
     }
-    fn handler_resource_fault(
-        &mut self,
-        s: &mut ScriptFrame,
+    fn replacement_needed(
+        &self,
+        s: ScriptFrame,
         origin: Pc,
-        target: Pc,
-        kind: FaultKind,
-    ) -> Result<(), VmError> {
-        let previous = self.value(s.env, 1)?;
-        self.put(s.env, 2, previous)?;
-        self.put(s.env, 1, Value::NULL)?;
-        // This handler cannot publish its retained state. Route the new failure
-        // from its entry so the shared selector proceeds to lexical ancestors.
-        s.phase = ScriptPhase::Exit {
-            origin: target,
-            reason: ExitReason::Throw(FaultInfo {
-                kind,
-                location: self.loc(*s, origin),
-                has_cause: true,
-            }),
-            skip: None,
+        reason: ExitReason,
+        skip: Option<RegionId>,
+    ) -> Result<bool, VmError> {
+        if !matches!(reason, ExitReason::Throw(_)) {
+            return Ok(false);
+        }
+        let Some(u) = self.active.unwinds.data.last().filter(|u| u.frame == s.id) else {
+            return Ok(false);
         };
-        Ok(())
+        let range = self.program.package().functions[s.code.function.index()].regions
+            [u.region.index()]
+        .finally
+        .unwrap();
+        if !range.contains(origin) {
+            return Ok(false);
+        }
+        let handler = self
+            .program
+            .exception_handler(s.code.function, origin, skip)?;
+        Ok(handler.is_none_or(|h| !range.contains(h.pc)))
     }
     fn exit_step(
         &mut self,
@@ -2464,7 +2683,7 @@ impl Vm {
         origin: Pc,
         reason: ExitReason,
         skip: Option<RegionId>,
-    ) -> Result<(), VmError> {
+    ) -> Result<bool, VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         let handler = match reason {
             ExitReason::Throw(_) => {
@@ -2500,20 +2719,71 @@ impl Vm {
                 && !handled_inside
                 && !matches!(reason,ExitReason::Leave(target) if range.contains(target))
             {
-                if let ExitReason::Throw(mut info) = reason {
-                    let previous = self.value(u.value, 0)?;
-                    self.put(s.env, 2, previous)?;
-                    info.has_cause = true;
-                    s.phase = ScriptPhase::Exit {
-                        origin,
-                        reason: ExitReason::Throw(info),
-                        skip,
+                if let ExitReason::Throw(info) = reason {
+                    let id = info
+                        .fault
+                        .ok_or(VmError::Contract("incomplete unwind fault"))?;
+                    let (kind, old_fault, old_value) = match u.reason {
+                        ExitReason::Throw(old) => (
+                            CauseKind::ReplacedExit(ReplacedExit::Throw(
+                                old.fault
+                                    .ok_or(VmError::Contract("incomplete pending fault"))?,
+                            )),
+                            old.fault,
+                            Value::NULL,
+                        ),
+                        ExitReason::Return => (
+                            CauseKind::ReplacedExit(ReplacedExit::Return),
+                            None,
+                            self.value(u.value, 0)?,
+                        ),
+                        ExitReason::Leave(target) => (
+                            CauseKind::ReplacedExit(ReplacedExit::Leave {
+                                code: s.code,
+                                target,
+                            }),
+                            None,
+                            Value::NULL,
+                        ),
                     };
+                    let event = if let Some(e) = u.replacement_event {
+                        e
+                    } else {
+                        let e = self.serial()?;
+                        self.active
+                            .unwinds
+                            .data
+                            .last_mut()
+                            .unwrap()
+                            .replacement_event = Some(e);
+                        e
+                    };
+                    if let Err(e) = self.heap.append_fault_cause(
+                        id,
+                        CauseInfo {
+                            event,
+                            kind,
+                            location: self.loc(*s, origin),
+                            fault: old_fault,
+                            value: old_value,
+                        },
+                        self.program.clone(),
+                    ) {
+                        self.block_heap(e)?;
+                        return Ok(true);
+                    }
                 }
                 self.slots.release(&mut self.heap, u.value)?;
                 self.active.unwinds.data.pop();
-                return Ok(());
+                return Ok(true);
             }
+        }
+        let target = handler.map(|h| h.pc).or(match reason {
+            ExitReason::Leave(target) => Some(target),
+            _ => None,
+        });
+        if self.release_exited_catch(*s, target)? {
+            return Ok(true);
         }
         if let Some(handler) = handler {
             let value = self.value(s.env, 1)?;
@@ -2524,7 +2794,7 @@ impl Vm {
                     };
                     let base = 3 + handler.region.0 * 2;
                     self.put(s.env, base, value)?;
-                    if info.has_cause {
+                    if info.fault.is_some() {
                         let cause = self.value(s.env, 2)?;
                         self.put(s.env, base + 1, cause)?;
                     } else {
@@ -2540,39 +2810,48 @@ impl Vm {
                         self.active.caught.data[index].info = info;
                     } else {
                         if self.active.caught.data.len() == self.limits.max_unwinds as usize {
-                            self.handler_resource_fault(
-                                s,
-                                origin,
-                                handler.pc,
-                                FaultKind::Resource,
-                            )?;
-                            return Ok(());
+                            self.block(
+                                BlockedResource::CatchRecords,
+                                self.active.caught.data.len() as u64,
+                                self.active.caught.data.len() as u64 + 1,
+                            );
+                            return Ok(true);
                         }
+                        let activation = self.serial()?;
                         self.active.caught.data.push(CaughtFault {
                             frame: s.id,
                             region: handler.region,
                             info,
+                            activation,
                         });
                     }
                     self.put(s.regs, handler.exception.unwrap().0, value)?;
+                    self.clear(s.env, 1)?;
+                    self.clear(s.env, 2)?;
                     s.pc = handler.pc;
                     s.phase = ScriptPhase::Body;
                 }
                 HandlerKind::Finally => {
                     if self.active.unwinds.data.len() == self.limits.max_unwinds as usize {
-                        self.handler_resource_fault(s, origin, handler.pc, FaultKind::Resource)?;
-                        return Ok(());
+                        self.block(
+                            BlockedResource::UnwindRecords,
+                            self.active.unwinds.data.len() as u64,
+                            self.active.unwinds.data.len() as u64 + 1,
+                        );
+                        return Ok(true);
                     }
                     let root = match self.open(s.owner, RootKind::Exception, 2) {
                         Ok(r) => r,
                         Err(e) => {
-                            let kind = language_fault(e)?;
-                            self.handler_resource_fault(s, origin, handler.pc, kind)?;
-                            return Ok(());
+                            match e {
+                                VmError::Heap(e) => self.block_heap(e)?,
+                                other => return Err(other),
+                            };
+                            return Ok(true);
                         }
                     };
                     self.put(root, 0, value)?;
-                    if matches!(reason,ExitReason::Throw(info) if info.has_cause) {
+                    if matches!(reason,ExitReason::Throw(info) if info.fault.is_some()) {
                         let cause = self.value(s.env, 2)?;
                         self.put(root, 1, cause)?;
                     }
@@ -2582,7 +2861,10 @@ impl Vm {
                         reason,
                         region: handler.region,
                         value: root,
+                        replacement_event: None,
                     });
+                    self.clear(s.env, 1)?;
+                    self.clear(s.env, 2)?;
                     s.pc = handler.pc;
                     s.phase = ScriptPhase::Body;
                 }
@@ -2596,15 +2878,30 @@ impl Vm {
                 _ => s.phase = ScriptPhase::Release { reason },
             }
         }
-        Ok(())
+        Ok(true)
     }
     fn commit(
         &mut self,
         ret: ReturnTo,
         value: Value,
         cause: Option<Value>,
-        error: Option<FaultInfo>,
-    ) -> Result<(), VmError> {
+        error: Option<FaultSeed>,
+    ) -> Result<bool, VmError> {
+        if let (ReturnTo::Native { frame }, Some(seed)) = (ret, error)
+            && let Some(id) = seed.fault
+        {
+            let Frame::Native(n) = self.active.frames.data[self.index(frame)?] else {
+                return Err(VmError::Contract("callback target"));
+            };
+            if !self.native_holds(n, id)? && n.fault_count == self.limits.max_native_faults {
+                self.block(
+                    BlockedResource::NativeFaultSlots { frame },
+                    n.fault_count as u64,
+                    n.fault_count as u64 + 1,
+                );
+                return Ok(false);
+            }
+        }
         match ret {
             ReturnTo::Delivery => {
                 self.put(self.active.delivery.unwrap(), 0, value)?;
@@ -2669,7 +2966,11 @@ impl Vm {
                 let cause_slot =
                     2 + self.limits.max_continuation_values + self.limits.max_arguments;
                 self.put(n.roots, cause_slot, cause.unwrap_or(Value::NULL))?;
-                n.callback_fault = error;
+                n.callback_fault = error.and_then(|s| s.fault);
+                if let Some(id) = n.callback_fault {
+                    self.push_native_fault(&mut n, id)?;
+                }
+                self.clear(n.roots, self.native_pending_slot())?;
                 n.phase = NativePhase::Resume(if error.is_some() {
                     NativeInput::CallbackFault
                 } else {
@@ -2678,7 +2979,7 @@ impl Vm {
                 self.active.frames.data[i] = Frame::Native(n);
             }
         }
-        Ok(())
+        Ok(true)
     }
     fn native_step(
         &mut self,
@@ -2691,7 +2992,10 @@ impl Vm {
                 if !m.take(0, 1, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
-                let root_len = 3 + self.limits.max_continuation_values + self.limits.max_arguments;
+                let root_len = 3
+                    + self.limits.max_continuation_values
+                    + self.limits.max_arguments
+                    + self.limits.max_native_faults;
                 if index < n.argument_count {
                     match self.argument(source, index) {
                         Ok((name, value)) => {
@@ -2709,6 +3013,7 @@ impl Vm {
                     }
                 } else if index < n.argument_count + root_len {
                     self.put(n.roots, index - n.argument_count, Value::NULL)?;
+                    self.native_null_publications += 1;
                     n.phase = NativePhase::Copy {
                         source,
                         index: index + 1,
@@ -2803,14 +3108,47 @@ impl Vm {
                     Err(e) => {
                         let kind = language_fault(e)?;
                         self.put(n.roots, 0, Value::NULL)?;
-                        n.callback_fault = Some(FaultInfo {
+                        n.pending_fault = Some(FaultSeed {
+                            fault: None,
+                            explicit: None,
+                            author_value: false,
                             kind,
                             location: n.location,
-                            has_cause: false,
                         });
-                        n.phase = NativePhase::Resume(NativeInput::CallbackFault);
+                        n.phase = NativePhase::CallbackFaultBuild;
                     }
                 }
+            }
+            NativePhase::CallbackFaultBuild | NativePhase::WaitingFaultBuild => {
+                if !m.take(
+                    0,
+                    2 * (n.fault_count as u64 + n.continuation_len as u64) + 8,
+                    0,
+                ) {
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                let id = n
+                    .pending_fault
+                    .and_then(|f| f.fault)
+                    .ok_or(VmError::Contract("unbuilt callback fault"))?;
+                if !self.native_holds(n, id)? && n.fault_count == self.limits.max_native_faults {
+                    self.block(
+                        BlockedResource::NativeFaultSlots { frame: n.id },
+                        n.fault_count as u64,
+                        n.fault_count as u64 + 1,
+                    );
+                    return Ok(None);
+                }
+                self.push_native_fault(&mut n, id)?;
+                n.callback_fault = Some(id);
+                n.pending_fault = None;
+                self.clear(n.roots, self.native_pending_slot())?;
+                n.phase =
+                    NativePhase::Resume(if matches!(n.phase, NativePhase::WaitingFaultBuild) {
+                        NativeInput::WaitingFault
+                    } else {
+                        NativeInput::CallbackFault
+                    });
             }
             NativePhase::Commit(error) => {
                 if !m.take(0, 1, 0) {
@@ -2825,10 +3163,14 @@ impl Vm {
                         )
                         .is_err()
                 {
-                    n.pending_fault = Some(FaultInfo {
+                    self.put(n.roots, 0, Value::NULL)?;
+                    self.clear(n.roots, self.native_pending_slot())?;
+                    n.pending_fault = Some(FaultSeed {
+                        fault: None,
+                        explicit: None,
+                        author_value: false,
                         kind: FaultKind::Type,
                         location: n.location,
-                        has_cause: false,
                     });
                     n.phase = NativePhase::Release(true);
                 } else {
@@ -2836,28 +3178,26 @@ impl Vm {
                 }
             }
             NativePhase::Release(error) => {
-                if !m.take(0, self.release_cost(3), 0) {
+                if !m.take(0, self.release_cost(3) + self.commit_work(n.ret), 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 let value = self.value(n.roots, 0)?;
                 let info = if error {
-                    Some(n.pending_fault.unwrap_or(FaultInfo {
+                    Some(n.pending_fault.unwrap_or(FaultSeed {
+                        fault: None,
+                        explicit: None,
+                        author_value: false,
                         kind: FaultKind::Thrown,
                         location: n.location,
-                        has_cause: false,
                     }))
                 } else {
                     None
                 };
-                let cause = if info.is_some_and(|f| f.has_cause) {
-                    Some(self.value(
-                        n.roots,
-                        2 + self.limits.max_continuation_values + self.limits.max_arguments,
-                    )?)
-                } else {
-                    None
-                };
-                self.commit(n.ret, value, cause, info)?;
+                let cause = info.and_then(|seed| seed.fault).map(FaultId::as_value);
+                if !self.commit(n.ret, value, cause, info)? {
+                    self.active.frames.data[top] = Frame::Native(n);
+                    return Ok(None);
+                }
                 self.release_frame(Frame::Native(n))?;
                 self.active.frames.data.remove(top);
                 return Ok(None);

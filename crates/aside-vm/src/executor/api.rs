@@ -45,6 +45,8 @@ pub enum NativeInput {
     Continue { version: u64, stage: u64 },
     CallbackReturned,
     CallbackFault,
+    WaitingReturned,
+    WaitingFault,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ContextFlags {
@@ -98,6 +100,12 @@ pub struct Continuation<'a> {
     pub version: u64,
     pub stage: u64,
     pub values: &'a [Value],
+    pub faults: FaultRetention<'a>,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum FaultRetention<'a> {
+    Preserve,
+    Replace(&'a [FaultId]),
 }
 pub enum HostResponse<'a> {
     Ready(Value),
@@ -108,12 +116,14 @@ pub enum HostResponse<'a> {
         continuation: Continuation<'a>,
     },
     Continue(Continuation<'a>),
-    Error(Value),
+    Error(NewFault),
+    ForwardFault(FaultId),
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Completion {
     Ready(Value),
-    Error(Value),
+    Error(NewFault),
+    ForwardFault(FaultId),
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SliceBudget {
@@ -147,29 +157,44 @@ pub enum RunOutcome {
     HostCall(HostTicket),
     Waiting(WaitId),
     Fault(DeliveryId),
+    ResourceBlocked(ResourceBlocked),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockedResource {
+    HeapObjects,
+    CatchRecords,
+    UnwindRecords,
+    NativeFaultSlots { frame: FrameId },
+    RootRanges,
+    WindowValues,
+    HeapBytes,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceBlocked {
+    pub task: TaskId,
+    pub resource: BlockedResource,
+    pub current: u64,
+    pub required: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum FaultKind {
-    Thrown,
-    Type,
-    Uninitialized,
-    AlreadyInitialized,
-    ReadOnly,
-    DuplicateArgument,
-    MissingArgument,
-    UnknownArgument,
-    Overflow,
-    DivisionByZero,
-    Effect,
-    Resource,
-    InvalidState,
+    Thrown = 0,
+    Type = 1,
+    Uninitialized = 2,
+    AlreadyInitialized = 3,
+    ReadOnly = 4,
+    DuplicateArgument = 5,
+    MissingArgument = 6,
+    UnknownArgument = 7,
+    Overflow = 8,
+    DivisionByZero = 9,
+    Effect = 10,
+    Resource = 11,
+    InvalidState = 12,
+    Cancelled = 13,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FaultInfo {
-    pub has_cause: bool,
-    pub kind: FaultKind,
-    pub location: Location,
-}
+pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
 pub enum VmError {
     Format(bytecode::Error),
@@ -182,6 +207,8 @@ pub enum VmError {
     Idle,
     Limit,
     Contract(&'static str),
+    InvalidFault,
+    Effect,
 }
 impl From<HeapError> for VmError {
     fn from(e: HeapError) -> Self {
@@ -208,6 +235,7 @@ pub struct VmLimits {
     pub max_unwinds: u32,
     pub max_arguments: u32,
     pub max_continuation_values: u32,
+    pub max_native_faults: u32,
 }
 impl Default for VmLimits {
     fn default() -> Self {
@@ -223,6 +251,7 @@ impl Default for VmLimits {
             max_unwinds: 256,
             max_arguments: 256,
             max_continuation_values: 256,
+            max_native_faults: 8,
         }
     }
 }
@@ -232,6 +261,7 @@ pub struct VmStats {
     pub unwinds: u32,
     pub native_entries: u64,
     pub native_resumes: u64,
+    pub native_null_publications: u64,
     pub slices: u64,
     pub usage: SliceUsage,
     pub heap: HeapStats,
@@ -290,3 +320,24 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::Leave,
     Opcode::EndFinally,
 ];
+
+impl FaultKind {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Thrown => "explicit throw",
+            Self::Type => "type contract failed",
+            Self::Uninitialized => "read before initialization",
+            Self::AlreadyInitialized => "binding already initialized",
+            Self::ReadOnly => "read-only binding",
+            Self::DuplicateArgument => "duplicate argument",
+            Self::MissingArgument => "missing argument",
+            Self::UnknownArgument => "unknown argument",
+            Self::Overflow => "integer overflow",
+            Self::DivisionByZero => "division by zero",
+            Self::Effect => "effect constraint",
+            Self::Resource => "resource capacity",
+            Self::InvalidState => "invalid execution state",
+            Self::Cancelled => "cooperative cancellation",
+        }
+    }
+}

@@ -138,6 +138,7 @@ impl Bytes {
 
 pub(crate) enum Payload {
     Cell(crate::cell::CellState),
+    Fault(crate::fault::FaultPayload),
     Values(Values),
     Bytes(Bytes),
     Empty,
@@ -147,6 +148,7 @@ impl Payload {
         match self {
             Self::Cell(v) if cursor == 0 => v.value,
             Self::Values(v) => v.get(cursor),
+            Self::Fault(p) => p.edges.get(cursor as usize).copied(),
             _ => None,
         }
     }
@@ -154,6 +156,7 @@ impl Payload {
         match self {
             Self::Cell(v) => u32::from(v.value.is_some()),
             Self::Values(v) => v.len,
+            Self::Fault(_) => 3,
             Self::Bytes(b) => b.len,
             Self::Empty => 0,
         }

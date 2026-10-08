@@ -154,7 +154,7 @@ fn main() {
         }
     });
     println!(
-        "calls ready=5000 pending=5000 native_entries={} elapsed_us={} call_p50_ns={} call_p95_ns={} call_max_ns={} allocations={} allocated_bytes={} active_ranges={} frames={} peak_shared_bytes={}",
+        "calls ready=5000 pending=5000 native_entries={} elapsed_us={} call_p50_ns={} call_p95_ns={} call_max_ns={} allocations={} allocated_bytes={} active_ranges={} frames={} peak_shared_bytes={} native_null_publications={}",
         calls.stats().native_entries,
         start.elapsed().as_micros(),
         percentile(&mut timings, 50),
@@ -164,7 +164,8 @@ fn main() {
         allocated.bytes_total,
         calls.stats().slots.active_ranges,
         calls.stats().frames,
-        calls.stats().heap.peak_charged_bytes
+        calls.stats().heap.peak_charged_bytes,
+        calls.stats().native_null_publications
     );
     calls
         .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
