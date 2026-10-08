@@ -199,10 +199,56 @@ fn terminal_value_subexpressions_preserve_return_and_short_circuit_edges() {
 #[test]
 fn forward_readonly_cells_and_mutual_recursion_keep_binding_identity() {
     let result = compiled(
-        "fn outer() { fn first() { later } fn a() { b() } fn b() { a() } let later = null; first } fn mutable() { let mut value=0; let next=|| { value += 1; value }; next }",
+        "fn outer() { fn first() { later } fn a() { b() } fn b() { a() } let later = null; first } \
+         fn mutable() { let mut value=0; let next=|| { value += 1; value }; next } \
+         fn initialized_null(){let mut value=null;value} \
+         fn uninitialized_cell(){fn read(){value} read();let mut value=null;read}",
     );
     let p = result.program.package();
     let outer = function(p, "outer");
+    for (name, initialized, cell) in [
+        ("initialized_null", true, false),
+        ("uninitialized_cell", false, true),
+    ] {
+        let f = function(p, name);
+        let binding = f
+            .bindings
+            .iter()
+            .position(|b| p.symbols[b.name.index()] == "value")
+            .unwrap();
+        assert_eq!(
+            matches!(f.bindings[binding].storage, bc::BindingStorage::Cell(_)),
+            cell
+        );
+        let init_pc = f
+            .code
+            .iter()
+            .position(|i| {
+                i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == binding as u32
+            })
+            .unwrap();
+        let first_read_pc = f
+            .code
+            .iter()
+            .position(|i| {
+                if cell {
+                    i.opcode == bc::Opcode::Call as u16
+                } else {
+                    i.opcode == bc::Opcode::BindRead as u16 && i.operands[1] == binding as u32
+                }
+            })
+            .unwrap();
+        assert_eq!(init_pc < first_read_pc, initialized);
+        assert!(f.code.iter().any(|i| {
+            i.opcode
+                == if cell {
+                    bc::Opcode::CellNew as u16
+                } else {
+                    bc::Opcode::Clear as u16
+                }
+                && i.operands[0] == binding as u32
+        }));
+    }
     let later = outer
         .bindings
         .iter()
