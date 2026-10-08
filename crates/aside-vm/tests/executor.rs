@@ -2106,3 +2106,135 @@ fn rethrow_keeps_original_fault_source_through_nested_catches_and_gc() {
     assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(41));
     assert_eq!(v.delivery_fault(d).unwrap().unwrap().location.pc, Pc(1));
 }
+
+fn normal_cleanup_in_handler(in_finally: bool, leave: bool) -> BytecodePackage {
+    let mut p = fixtures::exception_regions();
+    p.constants.push(Const::Int(0));
+    p.modules[0].globals.push(GlobalDef {
+        name: SymbolId(9),
+        ty: TypeId(1),
+        mutable: true,
+        linked_function: None,
+    });
+    let i = Instruction::new;
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    f.register_count = 3;
+    f.descriptors = vec![Descriptor::Global {
+        module: ModuleId(0),
+        global: GlobalId(0),
+    }];
+    f.code = vec![
+        i(Opcode::LoadConst, 0, 3, 0),
+        i(Opcode::GlobalInit, 0, 0, 0),
+        i(Opcode::LoadConst, 1, 2, 0),
+        i(
+            if in_finally {
+                Opcode::Return
+            } else {
+                Opcode::Throw
+            },
+            1,
+            0,
+            0,
+        ),
+        i(Opcode::LoadConst, 0, 1, 0),
+        i(
+            if leave { Opcode::Leave } else { Opcode::Return },
+            if leave { 10 } else { 0 },
+            0,
+            0,
+        ),
+        i(Opcode::GlobalRead, 2, 0, 0),
+        i(Opcode::Add, 2, 2, 1),
+        i(Opcode::GlobalWrite, 2, 0, 0),
+        i(Opcode::EndFinally, 0, 0, 0),
+        i(
+            if in_finally {
+                Opcode::Jump
+            } else {
+                Opcode::Return
+            },
+            if in_finally { 11 } else { 0 },
+            0,
+            0,
+        ),
+        i(Opcode::GlobalRead, 2, 0, 0),
+        i(Opcode::Add, 2, 2, 1),
+        i(Opcode::GlobalWrite, 2, 0, 0),
+        i(Opcode::EndFinally, 1, 0, 0),
+        i(Opcode::GlobalRead, 2, 0, 0),
+        i(Opcode::Return, 2, 0, 0),
+    ];
+    f.regions = vec![
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(4),
+                end: Pc(6),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(6),
+                end: Pc(10),
+            }),
+        },
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(4),
+            },
+            catch: if in_finally {
+                None
+            } else {
+                Some(CatchRegion {
+                    range: PcRange {
+                        start: Pc(4),
+                        end: Pc(11),
+                    },
+                    exception: Reg(2),
+                })
+            },
+            finally: Some(PcRange {
+                start: Pc(if in_finally { 4 } else { 11 }),
+                end: Pc(15),
+            }),
+        },
+    ];
+    let mut observer = f.clone();
+    observer.regions.clear();
+    observer.code = vec![i(Opcode::GlobalRead, 0, 0, 0), i(Opcode::Return, 0, 0, 0)];
+    p.functions.push(observer);
+    p
+}
+#[test]
+fn shared_cleanup_selects_full_lexical_parents_for_return_and_leave_inside_catch_and_finally() {
+    for in_finally in [false, true] {
+        for leave in [false, true] {
+            // The language/verifier forbids Return from finally; Leave still
+            // exercises a cleanup nested in that lexical block.
+            if in_finally && !leave {
+                continue;
+            }
+            let mut v = vm(normal_cleanup_in_handler(in_finally, leave));
+            let task = v
+                .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+                .unwrap();
+            let d = task_finish(&mut v, task);
+            assert_eq!(v.delivery_fault(d).unwrap(), None);
+            assert_eq!(
+                v.delivery_value(d).unwrap().as_int(),
+                Some(if in_finally && leave { 1 } else { 41 })
+            );
+            assert_eq!(v.stats().unwinds, 0);
+            v.discard_delivery(d).unwrap();
+            let task = v
+                .start(FunctionId(1), &[], OWNER, Context::Ordinary)
+                .unwrap();
+            let d = task_finish(&mut v, task);
+            assert_eq!(
+                v.delivery_value(d).unwrap().as_int(),
+                Some(if in_finally && !leave { 1 } else { 2 })
+            );
+        }
+    }
+}

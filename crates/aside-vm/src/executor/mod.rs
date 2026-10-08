@@ -2390,43 +2390,18 @@ impl Vm {
                 self.program
                     .exception_handler(s.code.function, origin, skip)?
             }
-            ExitReason::Return | ExitReason::Leave(_) => {
-                // Replaced by B01's shared exit selector once final head is supplied.
-                let skipped = skip.map(|id| &f.regions[id.index()]);
-                f.regions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, region)| {
-                        let encloses = region.protected.contains(origin)
-                            || region
-                                .catch
-                                .as_ref()
-                                .is_some_and(|c| c.range.contains(origin));
-                        let leaves = match reason {
-                            ExitReason::Leave(target) => {
-                                !region.protected.contains(target)
-                                    && !region
-                                        .catch
-                                        .as_ref()
-                                        .is_some_and(|c| c.range.contains(target))
-                            }
-                            _ => true,
-                        };
-                        let outer = skipped.is_none_or(|consumed| {
-                            region.protected.start <= consumed.protected.start
-                                && region.protected.end >= consumed.protected.end
-                                && region.protected != consumed.protected
-                        });
-                        encloses && leaves && outer && region.finally.is_some()
-                    })
-                    .min_by_key(|(_, r)| r.protected.end.0 - r.protected.start.0)
-                    .map(|(id, r)| HandlerTarget {
-                        region: RegionId(id as u32),
-                        kind: HandlerKind::Finally,
-                        pc: r.finally.unwrap().start,
-                        exception: None,
-                    })
-            }
+            ExitReason::Return => self.program.cleanup_handler(
+                s.code.function,
+                origin,
+                CleanupDestination::Return,
+                skip,
+            )?,
+            ExitReason::Leave(target) => self.program.cleanup_handler(
+                s.code.function,
+                origin,
+                CleanupDestination::Leave(target),
+                skip,
+            )?,
         };
         // A new error/return inside an active finally supersedes that exit. Nested
         // ordinary Leave stays within the outer cleanup and preserves its record.
