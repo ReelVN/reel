@@ -1,9 +1,10 @@
 use crate::{pcm::Converter, *};
+use atomic_refcell::AtomicRefCell;
 use reel_core::{
     result::{RejectCode, RejectReason, Rejected},
     wake::WakeSignal,
 };
-use rtrb::{Consumer, RingBuffer};
+use rtrb::RingBuffer;
 use std::{
     sync::{
         Arc, Mutex,
@@ -12,6 +13,7 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+use sync_wrapper::SyncWrapper;
 use triple_buffer::{Input, Output as SnapshotOutput, TripleBuffer};
 
 const ACTIVE: u8 = 1;
@@ -163,10 +165,23 @@ impl Drop for Notifier {
     }
 }
 
+// Mutable-only access preserves PcmFill: Send without adding a Sync bound.
+// The realtime borrow attempts one CAS and never retries or waits.
+struct FillSlot(AtomicRefCell<SyncWrapper<Option<PcmFill>>>);
+impl FillSlot {
+    fn new() -> Self {
+        Self(AtomicRefCell::new(SyncWrapper::new(None)))
+    }
+    fn discard(&self) {
+        // The caller has closed entry and fenced the callback borrow.
+        let fill = self.0.borrow_mut().get_mut().take();
+        drop(fill);
+    }
+}
+
 pub(crate) struct Callback {
     converter: Converter,
-    fill: Option<PcmFill>,
-    incoming: Consumer<PcmFill>,
+    fill_slot: Arc<FillSlot>,
     pub shared: Arc<Shared>,
     clock: Input<AudioClockObservation>,
     epoch: OutputEpoch,
@@ -176,15 +191,14 @@ pub(crate) struct Callback {
 impl Callback {
     fn new(
         format: AudioFormat,
-        incoming: Consumer<PcmFill>,
+        fill_slot: Arc<FillSlot>,
         shared: Arc<Shared>,
         epoch: OutputEpoch,
         clock: Input<AudioClockObservation>,
     ) -> Self {
         Self {
             converter: Converter::new(format),
-            fill: None,
-            incoming,
+            fill_slot,
             shared,
             clock,
             epoch,
@@ -207,10 +221,11 @@ impl Callback {
             return;
         }
         let frames = data.len() / channels;
-        if self.fill.is_none() {
-            self.fill = self.incoming.pop().ok();
-        }
-        if let Some(fill) = &mut self.fill {
+        let Ok(mut slot) = self.fill_slot.0.try_borrow_mut() else {
+            self.shared.fail(AudioErrorKind::DeviceContract);
+            return;
+        };
+        if let Some(fill) = slot.get_mut() {
             self.converter.render(data, fill);
         } else {
             self.shared.underrun(frames);
@@ -239,8 +254,8 @@ impl Callback {
     }
 }
 
-/// Native lifecycle boundary. Stream destruction must dispose of its callback.
-/// The gate supplies quiescence independently of asynchronous native pause commands.
+/// Native lifecycle boundary. The gate and control-owned slot supply fill
+/// quiescence and disposal independently of native pause or callback lifetime.
 pub(crate) trait Driver {
     type Stream;
     fn capabilities(&self) -> AudioCaps;
@@ -259,6 +274,7 @@ pub(crate) struct DrivenOutput<D: Driver> {
     pub driver: D,
     pub stream: Option<D::Stream>,
     pub shared: Arc<Shared>,
+    fill_slot: Option<Arc<FillSlot>>,
     format: Option<AudioFormat>,
     state: AudioState,
     control_error: Option<AudioError>,
@@ -276,6 +292,7 @@ impl<D: Driver> DrivenOutput<D> {
             driver,
             stream: None,
             shared,
+            fill_slot: None,
             format: None,
             state: AudioState::Stopped,
             control_error: None,
@@ -360,14 +377,20 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         // Each native stream has its own gate/fault latch. Late old errors cannot
         // stop a rebuilt stream or mutate its epoch. Metrics remain output-owned.
         let prepared = Arc::new(Shared::new(self.shared.metrics.clone()));
-        let (mut producer, consumer) = RingBuffer::new(1);
+        let fill_slot = Arc::new(FillSlot::new());
         let (clock_in, clock_out) = TripleBuffer::new(&AudioClockObservation::unavailable(
             epoch,
             format.sample_rate_hz,
         ))
         .split();
-        let callback = Callback::new(format.clone(), consumer, prepared.clone(), epoch, clock_in);
-        // fill has NOT been moved to callback or queue. Early native callbacks are silent.
+        let callback = Callback::new(
+            format.clone(),
+            fill_slot.clone(),
+            prepared.clone(),
+            epoch,
+            clock_in,
+        );
+        // fill has NOT been moved into the slot. Early native callbacks are silent.
         let stream = match self.driver.build(&format, callback) {
             Ok(s) => s,
             Err(e) => return Err(Self::reject(fill, e)),
@@ -376,18 +399,10 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             drop(stream);
             return Err(Self::reject(fill, e));
         }
-        // Native play success is acceptance. An asynchronous error is now status, not rejection.
-        // Sole producer and a fresh capacity-one queue: push is guaranteed to fit.
-        if let Err(rtrb::PushError::Full(fill)) = producer.push(fill) {
-            drop(stream);
-            return Err(Self::reject(
-                fill,
-                AudioError::new(
-                    AudioErrorKind::DeviceContract,
-                    "fill handoff unexpectedly full",
-                ),
-            ));
-        }
+        // Native play success is acceptance. A late native error is now status.
+        // Entry is still closed; the callback cannot borrow while we insert fill.
+        *fill_slot.0.borrow_mut().get_mut() = Some(fill);
+        self.fill_slot = Some(fill_slot);
         self.shared = prepared;
         self.epoch = epoch;
         *self.clock.get_mut().expect("control clock poisoned") = Some(clock_out);
@@ -480,12 +495,16 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
     }
     fn stop(&mut self) -> Result<(), AudioError> {
         self.shared.close_and_wait();
+        if let Some(slot) = self.fill_slot.take() {
+            slot.discard();
+        }
         let prior_error = if self.stream.is_some() {
             self.control_error.clone().or_else(|| self.shared.error())
         } else {
             None
         };
-        // pause may be unsupported; dropping the stream still destroys its callback.
+        // Native pause may fail. Fill is already disposed on the control side;
+        // even a retained native callback now has only an empty CLOSED slot.
         let pause_error = self
             .stream
             .as_ref()
@@ -504,6 +523,9 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
 impl<D: Driver> Drop for DrivenOutput<D> {
     fn drop(&mut self) {
         self.shared.close_and_wait();
+        if let Some(slot) = self.fill_slot.take() {
+            slot.discard();
+        }
         drop(self.stream.take());
     }
 }

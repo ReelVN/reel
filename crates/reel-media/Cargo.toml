@@ -13,6 +13,8 @@ reel-core = { path = "../reel-core" }
 kira = { version = "=0.12.5", default-features = false }
 rtrb = "=0.4.0"
 triple_buffer = "=9.0.0"
+atomic_refcell = "=0.1.13"
+sync_wrapper = "=1.0.2"
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 cpal = { version = "=0.18.1", default-features = false, features = ["realtime"], optional = true }

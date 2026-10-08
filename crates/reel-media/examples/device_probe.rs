@@ -40,6 +40,11 @@ fn main() {
         output.clock_observation()
     );
     println!("stop={:?}", output.stop());
+    assert_eq!(output.status().state, AudioState::Stopped);
+    assert_eq!(
+        output.clock_observation().precision,
+        ClockPrecision::Unavailable
+    );
     let at_stop = calls.load(Ordering::Relaxed);
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert_eq!(calls.load(Ordering::Relaxed), at_stop);

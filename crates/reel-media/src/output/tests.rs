@@ -365,3 +365,118 @@ fn scheduling_denial_is_visible_without_discarding_accepted_fill() {
         .render(&mut pcm, timing());
     assert_eq!(pcm, [0.5; 2]);
 }
+
+// Model a native API retaining its callback after the outer Stream is disposed.
+// The fill must still be destroyed synchronously on the stop caller's thread.
+#[test]
+fn stop_disposes_fill_even_if_native_callback_object_is_retained() {
+    use std::rc::Rc;
+    struct RetainedStream {
+        callback: Option<Callback>,
+        retired: Rc<RefCell<Option<Callback>>>,
+    }
+    impl Drop for RetainedStream {
+        fn drop(&mut self) {
+            *self.retired.borrow_mut() = self.callback.take();
+        }
+    }
+    struct RetainingDriver {
+        offline: OfflineDriver,
+        retired: Rc<RefCell<Option<Callback>>>,
+    }
+    impl Driver for RetainingDriver {
+        type Stream = RetainedStream;
+        fn capabilities(&self) -> AudioCaps {
+            self.offline.capabilities()
+        }
+        fn configure(&mut self, r: &AudioRequest) -> Result<AudioFormat, AudioError> {
+            self.offline.configure(r)
+        }
+        fn build(
+            &mut self,
+            _: &AudioFormat,
+            callback: Callback,
+        ) -> Result<Self::Stream, AudioError> {
+            Ok(RetainedStream {
+                callback: Some(callback),
+                retired: self.retired.clone(),
+            })
+        }
+        fn play(&mut self, _: &Self::Stream) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn pause(&mut self, _: &Self::Stream) -> Result<(), AudioError> {
+            Err(AudioError::new(
+                AudioErrorKind::DeviceFailure,
+                "simulated native pause error",
+            ))
+        }
+        fn verify(&self, f: &AudioFormat) -> Result<(), AudioError> {
+            self.offline.verify(f)
+        }
+    }
+    struct DropThread {
+        expected: std::thread::ThreadId,
+        drops: Arc<AtomicUsize>,
+    }
+    impl Drop for DropThread {
+        fn drop(&mut self) {
+            assert_eq!(std::thread::current().id(), self.expected);
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let retired = Rc::new(RefCell::new(None));
+    let mut output = DrivenOutput::new(
+        RetainingDriver {
+            offline: OfflineDriver { device: device() },
+            retired: retired.clone(),
+        },
+        WakeSignal::new(|| {}),
+    )
+    .unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let owned = DropThread {
+        expected: std::thread::current().id(),
+        drops: drops.clone(),
+    };
+    assert!(
+        output
+            .start(Box::new(move |pcm| {
+                let _hold = &owned;
+                pcm.fill(0.25);
+            }))
+            .is_ok()
+    );
+    let mut pcm = [0.0f32; 2];
+    output
+        .stream
+        .as_mut()
+        .unwrap()
+        .callback
+        .as_mut()
+        .unwrap()
+        .render(&mut pcm, timing());
+    assert_eq!(pcm, [0.25; 2]);
+    assert!(output.stop().is_err());
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(output.status().state, AudioState::Stopped);
+    pcm.fill(42.0);
+    retired
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .render(&mut pcm, timing());
+    assert_eq!(pcm, [0.0; 2]);
+    assert!(
+        retired
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .fill_slot
+            .0
+            .borrow_mut()
+            .get_mut()
+            .is_none()
+    );
+}

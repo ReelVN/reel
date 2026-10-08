@@ -31,6 +31,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73e8ed45f88ed32e6827a96b62d8fd4086d72defc754c5c6bd08470c1aaf648e"
 
 [[package]]
+name = "atomic_refcell"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41e67cd8309bbd06cd603a9e693a784ac2e5d1e955f11286e355089fcab3047c"
+
+[[package]]
 name = "audio_thread_priority"
 version = "0.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,10 +564,12 @@ version = "0.1.0"
 name = "reel-media"
 version = "0.1.0"
 dependencies = [
+ "atomic_refcell",
  "cpal",
  "kira",
  "reel-core",
  "rtrb",
+ "sync_wrapper",
  "triple_buffer",
 ]
 
@@ -670,6 +678,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "sync_wrapper"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 
 [[package]]
 name = "thiserror"
