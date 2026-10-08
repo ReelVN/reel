@@ -1,10 +1,16 @@
 [package]
 name = "aside-vm"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Aside value storage and bounded incremental object tracing"
 
 [dependencies]
 slotmap = "=1.1.1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+allocation-counter = "=0.8.1"

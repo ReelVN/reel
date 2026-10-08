@@ -9,7 +9,7 @@ is maintained by the integration owner.
 ## Public interface draft
 
 - `Value`: private explicit tag, full 64-bit scalar/key payload, and `HeapId`;
-  16 bytes on both tested pointer widths. Copying a value performs no reference
+  16 bytes in native tests and i686 compile-time assertions; 32-bit runtime verification remains pending. Copying a value performs no reference
   counting and does not create a root. Float storage preserves all IEEE bits.
 - `HeapHandle`: full `KeyData::as_ffi()` u64 plus `HeapId` and `SessionEpoch`.
   Checked reimport uses the owning heap, never truncates the generation, and
@@ -51,4 +51,49 @@ use a smaller threshold through the identical deletion path. No upstream source
 is imported and no gc-arena dependency is linked; its mark/barrier/cutoff design
 is an algorithm reference.
 
-Reproduction commands and actual results will be recorded in VALIDATION.md.
+See [VALIDATION.md](VALIDATION.md) for reproducible commands, behavior evidence, measured load results and platform limitations.
+
+HeapId is a process-global u32 allocated with AtomicU32 (no AtomicU64). IDs
+1 through u32::MAX-1 are issued once; exhaustion returns IdentityExhausted
+permanently before wrap. Heap, Value and scoped tokens cannot cross threads.
+
+## Storage and work accounting
+
+Defaults are configurable: 16,384 object slots, 1,024 root slots and a 32 MiB
+charged-byte ceiling. Constructors/individual mutation calls accept at most 256
+Values or 4,096 bytes by default. Allocation returns explicit capacity/resource
+errors rather than extending queues; the host can drive maintenance and retry.
+No method silently executes a whole collection to obtain space.
+
+Cells store their one Value inside the reserved object slot. Other value fields
+use 64-element chunks; text and bytes use 1,024-byte chunks. A chunk is charged
+its 1,024-byte payload plus a conservative 1,024-byte tree metadata reserve.
+The reserve covers Rust 1.90 BTreeMap leaf/internal nodes with u32/Box entries
+(up to 11 entries and 12 child links per node), including transient splits.
+After removing the final chunk, the empty tree node is freed immediately.
+The accounting adapter must be rechecked with toolchain/dependency changes.
+
+`HeapStats` includes actual queue lengths, reserved capacity, payload/pending
+bytes, peaks and cumulative chunk allocations. Fixed slots stay charged when
+vacant, pending or retired. Retired object/root slots reduce reusable capacity.
+Root scan indices and object edge cursors use this preallocated storage. Weak
+work counts allocation-record inspections, including records with no weak field.
+
+Default `GcBudget` allows up to 256 total units per call, with separate caps of
+256 root slots, strong edges, weak inspections, sweep objects and released edges,
+and 16 KiB of released charged bytes. Empty-object/queue completion also costs
+a unit. The host checks its clock between calls; quotas bound work, not a hard
+wall-clock deadline. A byte cap below 2,048 cannot release a chunk and reports
+`blocked`; partial edge teardown still advances separately. New allocations
+append after the weak/sweep snapshot boundary and are left for the next cycle.
+After logical invalidation, lookup fails immediately; pending chunks continue
+to consume the byte ceiling until physically freed. Owner cancellation similarly
+uses a persistent root-slot cursor with a caller-provided slot quota.
+
+No graph destruction follows Rust references recursively, and collection does
+not invoke user/script/native callbacks. Host records contain traced fields only;
+registered adapter behavior and native resource ownership belong to later work.
+Immutable strings/Bytes are available with bounded construction, and large text
+or byte buffers are built by bounded appends. General Unicode editing, table
+key operations, tuple equality/hash, copying continuations and snapshot codecs
+are explicitly outside this storage milestone.
