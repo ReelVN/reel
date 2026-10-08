@@ -1,0 +1,18 @@
+WARNING: w283 (useless-null-coalescing) The expression to the right of the '??' is null.
+testData/static_analyzer/w283.nut:9:21
+
+function fn(x) {
+    return ::y.cc ?? x ?? null
+                     ^--------
+}
+
+
+WARNING: w283 (useless-null-coalescing) The expression to the right of the '??' is null.
+testData/static_analyzer/w283.nut:13:10
+
+local s = null
+local x = ::y ?? s
+          ^-------
+return x
+
+

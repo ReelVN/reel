@@ -1,0 +1,1690 @@
+4.41.0 Copyright (C) 2003-2016 Alberto Demichelis; 2016-2026 Gaijin Games KFT (64 bits)
+PASSED: testData/exec/array_incr_index_bounds.nut
+PASSED: testData/exec/array_methods.nut
+PASSED: testData/exec/async/async_decl_forms.nut
+PASSED: testData/exec/async/async_throw_null_sentinel.nut
+PASSED: testData/exec/async/async_throw_self.nut
+PASSED: testData/exec/async/async_typed.nut
+PASSED: testData/exec/async/async_return_self.nut
+PASSED: testData/exec/async/await_in_expr.nut
+PASSED: testData/exec/async/await_yields_inner_future.nut
+PASSED: testData/exec/async/await_immediate.nut
+PASSED: testData/exec/async/await_pending.nut
+PASSED: testData/exec/async/await_chain_catch_midway.nut
+PASSED: testData/exec/async/async_throw_null_sentinel.nut
+PASSED: testData/exec/async/await_in_loops.nut
+PASSED: testData/exec/async/await_nonfuture.nut
+PASSED: testData/exec/async/await_in_loops.nut
+PASSED: testData/exec/async/future_combinator_unhandled.nut
+PASSED: testData/exec/async/deep_chain_no_stack_growth.nut
+PASSED: testData/exec/async/future_all.nut
+PASSED: testData/exec/async/await_in_loops.nut
+PASSED: testData/exec/async/future_all_reject_reason.nut
+PASSED: testData/exec/async/cascade_resolve.nut
+PASSED: testData/exec/async/future_combinator_self_reject.nut
+PASSED: testData/exec/async/future_fold_waiter_self.nut
+PASSED: testData/exec/async/future_reject_null.nut
+PASSED: testData/exec/async/future_mark_handled.nut
+PASSED: testData/exec/async/future_race.nut
+PASSED: testData/exec/async/future_combinator_args.nut
+PASSED: testData/exec/async/future_reject_basic.nut
+PASSED: testData/exec/async/async_throw_null_sentinel.nut
+PASSED: testData/exec/async/future_combinator_gc.nut
+PASSED: testData/exec/async/future_all_faultfast.nut
+PASSED: testData/exec/async/future_subclass_await.nut
+PASSED: testData/exec/async/gc_subclass_no_payload.nut
+PASSED: testData/exec/async/future_getvalue.nut
+PASSED: testData/exec/async/nested_async.nut
+PASSED: testData/exec/async/future_self_settle.nut
+PASSED: testData/exec/async/locals_caps.nut
+PASSED: testData/exec/async/future_combinator_deep_nesting.nut
+PASSED: testData/exec/async/multiple_waiters.nut
+PASSED: testData/exec/async/locals_await_chain.nut
+PASSED: testData/exec/async/locals_capture.nut
+PASSED: testData/exec/async/resolve_locked_is_noop.nut
+PASSED: testData/exec/async/future_subclass_no_super.nut
+PASSED: testData/exec/async/unhandled_error_cycle.nut
+PASSED: testData/exec/async/unhandled_error.nut
+PASSED: testData/exec/async/never_settle_teardown.nut
+PASSED: testData/exec/async/throw_propagation.nut
+PASSED: testData/exec/async/reject_captures_site.nut
+PASSED: testData/exec/async/task_future_external_settle.nut
+PASSED: testData/exec/async/unhandled_error_await_chain.nut
+PASSED: testData/exec/async/unhandled_error_fork.nut
+PASSED: testData/exec/async/unhandled_handler_routing.nut
+PASSED: testData/exec/async/value_fault_fold_single_no_pollution.nut
+PASSED: testData/exec/async/value_fault_await_chain.nut
+PASSED: testData/exec/async/unhandled_error_negative.nut
+PASSED: testData/exec/async/value_fault_late_await.nut
+PASSED: testData/exec/async/value_fault_gc_survives.nut
+PASSED: testData/exec/async/value_fault_native_callback.nut
+PASSED: testData/exec/async/unhandled_value_fork.nut
+PASSED: testData/exec/async/value_fault_caught_bare.nut
+PASSED: testData/exec/async/unhandled_error_trace.nut
+PASSED: testData/exec/async/value_fault_origin.nut
+PASSED: testData/exec/async/value_fault_null.nut
+PASSED: testData/exec/async/value_fault_trace_no_handler_leak.nut
+PASSED: testData/exec/basics.nut
+PASSED: testData/exec/async/value_fault_rethrow.nut
+PASSED: testData/exec/caught_native_callback_error.nut
+PASSED: testData/exec/class_yield.nut
+PASSED: testData/exec/closure_hoist_typed_default.nut
+PASSED: testData/exec/async/value_fault_native_callback.nut
+PASSED: testData/exec/compare_int_int.nut
+PASSED: testData/exec/compound_assign_and_incr.nut
+PASSED: testData/exec/const_fold.nut
+PASSED: testData/exec/const_in_closures.nut
+PASSED: testData/exec/closure_call.nut
+PASSED: testData/exec/container_callback_arity.nut
+PASSED: testData/exec/closure_hoist_typed_return.nut
+PASSED: testData/exec/coroutines.nut
+PASSED: testData/exec/compare_int_float.nut
+PASSED: testData/exec/deep_loop_variable.nut
+PASSED: testData/exec/async/value_fault_native_callback.nut
+PASSED: testData/exec/destructuring/foreach_capture_shadowed.nut
+PASSED: testData/exec/class_newmember.nut
+PASSED: testData/exec/container_callback_arity.nut
+PASSED: testData/exec/destructuring/foreach_capture_idx_val.nut
+PASSED: testData/exec/destructuring/foreach_capture_destruct_idx.nut
+PASSED: testData/exec/deduplicate_object.nut
+PASSED: testData/exec/destructuring/foreach_destructuring.nut
+PASSED: testData/exec/destructuring/foreach_capture_destruct_idx.nut
+PASSED: testData/exec/destructuring/foreach_destruct_empty_pattern.nut
+PASSED: testData/exec/destructuring/foreach_capture_shadowed.nut
+PASSED: testData/exec/destructuring/foreach_capture_plain_val.nut
+PASSED: testData/exec/destructuring/foreach_destr_default_closure.nut
+PASSED: testData/exec/container_callback_arity.nut
+PASSED: testData/exec/destructuring/foreach_destructuring_branches.nut
+PASSED: testData/exec/destructuring/foreach_capture_idx_val.nut
+PASSED: testData/exec/destructuring/foreach_destructuring.nut
+PASSED: testData/exec/destructuring/foreach_capture_plain_val.nut
+PASSED: testData/exec/destructuring/foreach_destruct_empty_pattern.nut
+PASSED: testData/exec/destructuring/foreach_capture_destruct_idx.nut
+PASSED: testData/exec/destructuring/foreach_destructuring_branches.nut
+PASSED: testData/exec/destructuring/foreach_destr_default_closure.nut
+PASSED: testData/exec/destructuring/foreach_no_capture.nut
+PASSED: testData/exec/destructuring/foreach_capture_shadowed.nut
+PASSED: testData/exec/destructuring/foreach_destructuring_branches.nut
+PASSED: testData/exec/destructuring/function_param_destructuring.nut
+PASSED: testData/exec/destructuring/foreach_destruct_empty_pattern.nut
+PASSED: testData/exec/destructuring/foreach_capture_plain_val.nut
+PASSED: testData/exec/destructuring/foreach_destructuring.nut
+PASSED: testData/exec/destructuring/foreach_no_capture.nut
+PASSED: testData/exec/div64_by_minus_one_opt.nut
+PASSED: testData/exec/destructuring/foreach_destructuring_complex.nut
+PASSED: testData/exec/destructuring/foreach_capture_idx_val.nut
+PASSED: testData/exec/fastcall_errors.nut
+PASSED: testData/exec/fastcall_arity.nut
+PASSED: testData/exec/fallback_get_recursion.nut
+PASSED: testData/exec/div_by_minus_one_opt.nut
+PASSED: testData/exec/div_by_minus_one_vm.nut
+PASSED: testData/exec/destructuring/foreach_destr_default_closure.nut
+PASSED: testData/exec/destructuring/foreach_destructuring_complex.nut
+PASSED: testData/exec/div64_by_minus_one_vm.nut
+PASSED: testData/exec/call_constructor_recursion.nut
+PASSED: testData/exec/fastcall_basic.nut
+PASSED: testData/exec/fastcall_tail.nut
+PASSED: testData/exec/fastcall_shadowing.nut
+PASSED: testData/exec/fastcall_generator.nut
+PASSED: testData/exec/fuzzer_seed_3250.nut
+PASSED: testData/exec/fastcall_stdlib.nut
+PASSED: testData/exec/fastcall_math.nut
+PASSED: testData/exec/fastcall_introspect.nut
+PASSED: testData/exec/forward_let.nut
+PASSED: testData/exec/fuzzer_seed_7200.nut
+PASSED: testData/exec/destructuring/foreach_no_capture.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_1.nut
+PASSED: testData/exec/gen_foreach_traps.nut
+PASSED: testData/exec/import_correct.nut
+PASSED: testData/exec/fuzzer_seed_106.nut
+PASSED: testData/exec/destructuring/foreach_destructuring_complex.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_4.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_3.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_6.nut
+PASSED: testData/exec/for_loop_at_function_start.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_7.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_5.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_no_value.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_8.nut
+PASSED: testData/exec/inexpr_block/test_codeblock_return_in_try.nut
+PASSED: testData/exec/inexpr_block/test_codeblock_try.nut
+PASSED: testData/exec/fuzzer_seed_106.nut
+PASSED: testData/exec/locals_chain.nut
+PASSED: testData/exec/inexpr_block/inexpr_block_2.nut
+PASSED: testData/exec/inexpr_block/test_codeblock.nut
+PASSED: testData/exec/is_frozen.nut
+PASSED: testData/exec/integers.nut
+PASSED: testData/exec/fuzzer_seed_106.nut
+PASSED: testData/exec/metamethod_dispatch.nut
+PASSED: testData/exec/metamethod_error.nut
+PASSED: testData/exec/mod64_by_minus_one_opt.nut
+PASSED: testData/exec/mod64_by_minus_one_vm.nut
+PASSED: testData/exec/inexpr_block/test_codeblock_try.nut
+PASSED: testData/exec/mod_by_minus_one_vm.nut
+PASSED: testData/exec/native_fields.nut
+PASSED: testData/exec/mod_by_minus_one_opt.nut
+PASSED: testData/exec/native_foreach_userdata_delegate.nut
+PASSED: testData/exec/module_unload_reentrant.nut
+PASSED: testData/exec/is_frozen.nut
+PASSED: testData/exec/native_reservestack_outers.nut
+PASSED: testData/exec/native_float_to_int64.nut
+PASSED: testData/exec/native_fields.nut
+PASSED: testData/exec/opt/fuzz_52807_min.nut
+PASSED: testData/exec/native_aliased_decl_string.nut
+PASSED: testData/exec/newthread_native.nut
+PASSED: testData/exec/native_foreach_userdata_delegate.nut
+PASSED: testData/exec/native_sq_cmp_uninit.nut
+PASSED: testData/exec/opt/fuzz_min.nut
+PASSED: testData/exec/opt/opt_reassign_in_scope.nut
+PASSED: testData/exec/is_frozen.nut
+PASSED: testData/exec/opt/modify_local_var.nut
+PASSED: testData/exec/opt/logical_move_probe.nut
+PASSED: testData/exec/native_fields.nut
+PASSED: testData/exec/opt/opt_reassign_chain.nut
+PASSED: testData/exec/opt/opt_reassign_arith.nut
+PASSED: testData/exec/optimizer.nut
+PASSED: testData/exec/opt/opt_reassign_addi.nut
+PASSED: testData/exec/native_foreach_userdata_delegate.nut
+PASSED: testData/exec/inexpr_block/test_codeblock_try.nut
+PASSED: testData/exec/opt/opt_same_reg_fold.nut
+PASSED: testData/exec/runtime_type_check/assign_type_02.nut
+PASSED: testData/exec/ph_optimizer_null_call_1.nut
+PASSED: testData/exec/runtime_type_check/assign_type_01.nut
+PASSED: testData/exec/runtime_type_check/assign_type_03.nut
+PASSED: testData/exec/runtime_error_handling.nut
+PASSED: testData/exec/runtime_type_check/assign_type_04.nut
+PASSED: testData/exec/runtime_type_check/assign_type_05.nut
+PASSED: testData/exec/optimizer_add.nut
+PASSED: testData/exec/ph_optimizer_null_call_2.nut
+PASSED: testData/exec/optimizer_mul.nut
+PASSED: testData/exec/ph_optimizer_null_call_3.nut
+PASSED: testData/exec/parenCallee.nut
+PASSED: testData/exec/runtime_type_check/assign_type_08.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_01.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_02.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_04.nut
+PASSED: testData/exec/runtime_type_check/assign_type_07.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_05.nut
+PASSED: testData/exec/runtime_type_check/assign_type_09.nut
+PASSED: testData/exec/opt/sqf916086.nut
+PASSED: testData/exec/runtime_type_check/assign_type_10.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_03.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_09.nut
+PASSED: testData/exec/spec/class_extend.nut
+PASSED: testData/exec/depth_check.nut
+PASSED: testData/exec/runtime_type_check/assign_type_06.nut
+PASSED: testData/exec/runtime_type_check/return_type.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_06.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_10.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_08.nut
+PASSED: testData/exec/spec/classInher.nut
+PASSED: testData/exec/runtime_type_check/return_wrong_type.nut
+PASSED: testData/exec/spec/clone.nut
+PASSED: testData/exec/spec/closure.nut
+PASSED: testData/exec/spec/class.nut
+PASSED: testData/exec/spec/const_func_freevars.nut
+PASSED: testData/exec/runtime_type_check/assign_wrong_type_07.nut
+PASSED: testData/exec/spec/conditionalFor.nut
+PASSED: testData/exec/spec/constFolding.nut
+PASSED: testData/exec/spec/const.nut
+PASSED: testData/exec/spec/constFoldingCond.nut
+PASSED: testData/exec/spec/const_math_eval.nut
+PASSED: testData/exec/spec/const_with_expr.nut
+PASSED: testData/exec/spec/generators.nut
+PASSED: testData/exec/spec/foreachstmt.nut
+PASSED: testData/exec/spec/class.nut
+PASSED: testData/exec/spec/dowstmt.nut
+PASSED: testData/exec/spec/const_func.nut
+PASSED: testData/exec/spec/func_pure_attr.nut
+PASSED: testData/exec/spec/destruct.nut
+PASSED: testData/exec/spec/delegate_get.nut
+PASSED: testData/exec/spec/hoist_block_scope_global.nut
+PASSED: testData/exec/spec/foreachstmt.nut
+PASSED: testData/exec/spec/ifstmt.nut
+PASSED: testData/exec/spec/hoist_default_param.nut
+PASSED: testData/exec/spec/forstmt.nut
+PASSED: testData/exec/spec/hoist_block_scope.nut
+PASSED: testData/exec/spec/trystmt.nut
+PASSED: testData/exec/spec/foreachstmt.nut
+PASSED: testData/exec/spec/typed_catch_badtype.nut
+PASSED: testData/exec/spec/hoist_foreach_shadow.nut
+PASSED: testData/exec/spec/stringtmplt.nut
+PASSED: testData/exec/spec/sort.nut
+PASSED: testData/exec/spec/class.nut
+PASSED: testData/exec/spec/typed_catch_controlflow.nut
+PASSED: testData/exec/spec/enums.nut
+PASSED: testData/exec/spec/hoist_foreach_shadow.nut
+PASSED: testData/exec/spread.nut
+PASSED: testData/exec/spec/typed_catch_gc.nut
+PASSED: testData/exec/spec/typed_catch_controlflow.nut
+PASSED: testData/exec/spec/whilestmt.nut
+PASSED: testData/exec/spec/hoist_block_scope.nut
+PASSED: testData/exec/spec/typed_catch_hoist_scope.nut
+PASSED: testData/exec/spec/typed_catch_controlflow.nut
+PASSED: testData/exec/spec/sort.nut
+PASSED: testData/exec/staticmemo/no_memo_mutable_args.nut
+PASSED: testData/exec/spec/typed_catch.nut
+PASSED: testData/exec/spec/hoist_foreach_shadow.nut
+PASSED: testData/exec/staticmemo/static_exception.nut
+PASSED: testData/exec/staticmemo/no_memo_mutable_result.nut
+PASSED: testData/exec/spread.nut
+PASSED: testData/exec/staticmemo/static_nested.nut
+PASSED: testData/exec/staticmemo/static_opt.nut
+PASSED: testData/exec/spec/hoist_block_scope.nut
+PASSED: testData/exec/staticmemo/static_freeze.nut
+PASSED: testData/exec/staticmemo/static_loop.nut
+PASSED: testData/exec/staticmemo/static_types.nut
+PASSED: testData/exec/staticmemo/static_assign_itself.nut
+PASSED: testData/exec/staticmemo/static_opt2.nut
+PASSED: testData/exec/spread.nut
+PASSED: testData/exec/staticmemo/static_reset2.nut
+PASSED: testData/exec/staticmemo/static_tables.nut
+PASSED: testData/exec/staticmemo/static_reset1.nut
+PASSED: testData/exec/spec/sort.nut
+PASSED: testData/exec/stdlib/blob_methods.nut
+PASSED: testData/exec/stdlib/copy_content_with_replace.nut
+PASSED: testData/exec/stack_metamethod_locals.nut
+PASSED: testData/exec/stdlib/debug_extras.nut
+PASSED: testData/exec/stdlib/debug.nut
+PASSED: testData/exec/stdlib/blob_methods.nut
+PASSED: testData/exec/stdlib/blob_ctor_get.nut
+PASSED: testData/exec/staticmemo/static_reset_module.nut
+PASSED: testData/exec/stdlib/copy_content_with_replace.nut
+PASSED: testData/exec/stdlib/debug_hook.nut
+PASSED: testData/exec/stack_metamethod_few_args.nut
+PASSED: testData/exec/stdlib/deser_oom.nut
+PASSED: testData/exec/stdlib/debug_introspection.nut
+PASSED: testData/exec/stdlib/blob_ctor_get.nut
+PASSED: testData/exec/stdlib/docstring.nut
+PASSED: testData/exec/stdlib/debug_introspection.nut
+PASSED: testData/exec/stdlib/copy_content_with_replace.nut
+PASSED: testData/exec/stdlib/blob_methods.nut
+PASSED: testData/exec/stdlib/datetime.nut
+PASSED: testData/exec/stdlib/deep_hash.nut
+PASSED: testData/exec/stdlib/file_io.nut
+PASSED: testData/exec/stdlib/math_min_max_clamp.nut
+PASSED: testData/exec/stdlib/delegates.nut
+PASSED: testData/exec/stdlib/debug_hook.nut
+PASSED: testData/exec/stdlib/math_funcs.nut
+PASSED: testData/exec/stdlib/blob_ctor_get.nut
+PASSED: testData/exec/stdlib/math_clamp_edges.nut
+PASSED: testData/exec/stdlib/debug_introspection.nut
+PASSED: testData/exec/stdlib/file_io_readwrite.nut
+PASSED: testData/exec/stdlib/obj_serialization_errors.nut
+PASSED: testData/exec/stdlib/min_max_type_error.nut
+PASSED: testData/exec/stdlib/obj_deserialize_corrupt.nut
+PASSED: testData/exec/stdlib/obj_serialization_class.nut
+PASSED: testData/exec/stdlib/obj_serialization_valid.nut
+PASSED: testData/exec/stdlib/debug_hook.nut
+PASSED: testData/exec/stdlib/obj_serialization_scalars.nut
+PASSED: testData/exec/stdlib/obj_serialization.nut
+PASSED: testData/exec/stdlib/obj_serialization_errors_arg.nut
+PASSED: testData/exec/stdlib/regexp.nut
+PASSED: testData/exec/stdlib/regexp_charclass.nut
+PASSED: testData/exec/stdlib/regexp_corpus.nut
+PASSED: testData/exec/stdlib/regexp_start_offset.nut
+PASSED: testData/exec/stdlib/regexp_word_boundary_empty_capture.nut
+PASSED: testData/exec/stdlib/obj_serialization_scalars.nut
+PASSED: testData/exec/stdlib/obj_serialization.nut
+PASSED: testData/exec/stdlib/string.nut
+PASSED: testData/exec/stdlib/string_format_errors.nut
+PASSED: testData/exec/stdlib/string_escape.nut
+PASSED: testData/exec/stdlib/regexp_corpus.nut
+PASSED: testData/exec/stdlib/obj_serialization_scalars.nut
+PASSED: testData/exec/stdlib/stream_methods.nut
+PASSED: testData/exec/stdlib/swap.nut
+PASSED: testData/exec/stdlib/obj_serialization.nut
+PASSED: testData/exec/stdlib/string.nut
+PASSED: testData/exec/stdlib/string_format.nut
+PASSED: testData/exec/stdlib/swap_stack_check.nut
+PASSED: testData/exec/string_interpolation.nut
+PASSED: testData/exec/string_methods.nut
+PASSED: testData/exec/stdlib/regexp_corpus.nut
+PASSED: testData/exec/stdlib/string.nut
+PASSED: testData/exec/suspend_root_vm.nut
+PASSED: testData/exec/table_zero_param_callback.nut
+PASSED: testData/exec/stdlib/system_errors.nut
+PASSED: testData/exec/sub_int_min.nut
+PASSED: testData/exec/stdlib/system_lib.nut
+PASSED: testData/exec/stack_metamethod.nut
+PASSED: testData/exec/table_methods.nut
+PASSED: testData/exec/table_zero_param_callback.nut
+PASSED: testData/exec/surprise_js_dev.nut
+PASSED: testData/exec/stdlib/regexp_fixed_bugs.nut
+PASSED: testData/exec/table_replace_with_self.nut
+PASSED: testData/exec/test_class_yield_call.nut
+PASSED: testData/exec/string_interpolation_new.nut
+PASSED: testData/exec/table_zero_param_callback.nut
+PASSED: testData/exec/testNullPropagation.nut
+PASSED: testData/exec/tostring_recursion.nut
+PASSED: testData/exec/type_classes/test_inheritance_error.nut
+PASSED: testData/exec/type_classes/test_builtin_constructors.nut
+PASSED: testData/exec/test_shift.nut
+PASSED: testData/exec/table_methods.nut
+PASSED: testData/exec/type_classes/test_builtin_constructors.nut
+PASSED: testData/exec/test_stale_stkbase.nut
+PASSED: testData/exec/type_classes/test_unified_types.nut
+PASSED: testData/exec/throw_null_sentinel.nut
+PASSED: testData/exec/type_hints/var_decl.nut
+PASSED: testData/exec/type_hints/function_types.nut
+PASSED: testData/exec/table_methods.nut
+PASSED: testData/exec/throw_null_sentinel.nut
+PASSED: testData/exec/type_classes/test_builtin_constructors.nut
+PASSED: testData/exec/type_inference/test_call_union_return_ok.nut
+PASSED: testData/exec/type_inference/test_arithmetic_ok.nut
+PASSED: testData/exec/type_inference/test_assignment_chain_ok.nut
+PASSED: testData/exec/type_inference/test_array_literal_ok.nut
+PASSED: testData/exec/type_inference/test_class_literal_ok.nut
+PASSED: testData/exec/type_inference/test_call_result_ok.nut
+PASSED: testData/exec/stdlib/regexp_fixed_bugs.nut
+PASSED: testData/exec/type_inference/test_complex_assign_ok.nut
+PASSED: testData/exec/throw_null_sentinel.nut
+PASSED: testData/exec/type_inference/test_complex_bitwise_ok.nut
+PASSED: testData/exec/type_inference/test_complex_mixed_arithmetic_ok.nut
+PASSED: testData/exec/type_inference/test_complex_call_chain_ok.nut
+PASSED: testData/exec/type_inference/test_complex_logical_ok.nut
+PASSED: testData/exec/type_inference/test_complex_deep_nesting_ok.nut
+PASSED: testData/exec/type_inference/test_comparison_ok.nut
+PASSED: testData/exec/type_inference/test_complex_table_ternary_ok.nut
+PASSED: testData/exec/type_inference/test_complex_nested_ternary_ok.nut
+PASSED: testData/exec/type_inference/test_complex_return_expr_ok.nut
+PASSED: testData/exec/type_inference/test_complex_nullcoalesce_ok.nut
+PASSED: testData/exec/type_inference/test_const_function_ok.nut
+PASSED: testData/exec/type_inference/test_const_array_ok.nut
+PASSED: testData/exec/type_inference/test_const_array4_ok.nut
+PASSED: testData/exec/type_inference/test_complex_pure_chain_ok.nut
+PASSED: testData/exec/tailcall_first_statement.nut
+PASSED: testData/exec/type_inference/test_destructure_array_ok.nut
+PASSED: testData/exec/type_inference/test_const_inline_ok.nut
+PASSED: testData/exec/type_inference/test_const_table_ok.nut
+PASSED: testData/exec/type_inference/test_freeze_ok.nut
+PASSED: testData/exec/type_inference/test_destructure_nested_ok.nut
+PASSED: testData/exec/type_inference/test_destructure_from_function_ok.nut
+PASSED: testData/exec/type_inference/test_destructure_table_ok.nut
+PASSED: testData/exec/type_inference/test_string_concat_ok.nut
+PASSED: testData/exec/type_inference/test_destructure_array_default_ok.nut
+PASSED: testData/exec/type_inference/test_instance_from_class_ok.nut
+PASSED: testData/exec/type_inference/test_function_literal_ok.nut
+PASSED: testData/exec/type_inference/test_return_literal_ok.nut
+PASSED: testData/exec/type_inference/test_literal_ok.nut
+PASSED: testData/exec/type_inference/test_ternary_ok.nut
+PASSED: testData/exec/unicode_escape_errors.nut
+PASSED: testData/exec/valid_syntax/classes.nut
+PASSED: testData/exec/type_inference/test_table_return_ok.nut
+PASSED: testData/exec/type_inference/test_table_literal_ok.nut
+PASSED: testData/exec/valid_syntax/arrays.nut
+PASSED: testData/exec/stdlib/regexp_fixed_bugs.nut
+PASSED: testData/exec/valid_syntax/closures_scope.nut
+PASSED: testData/exec/valid_syntax/arrays.nut
+PASSED: testData/exec/type_inference/test_typeof_ok.nut
+PASSED: testData/exec/valid_syntax/error_handling.nut
+PASSED: testData/exec/valid_syntax/destructuring.nut
+PASSED: testData/exec/valid_syntax/control_flow.nut
+PASSED: testData/exec/valid_syntax/enums_consts.nut
+PASSED: testData/exec/valid_syntax/arrays.nut
+PASSED: testData/exec/valid_syntax/metamethods.nut
+PASSED: testData/exec/valid_syntax/literals.nut
+PASSED: testData/exec/valid_syntax/functions.nut
+PASSED: testData/exec/valid_syntax/generators.nut
+PASSED: testData/exec/valid_syntax/null_safety.nut
+PASSED: testData/exec/valid_syntax/operators.nut
+PASSED: testData/exec/valid_syntax/static_memo.nut
+PASSED: testData/exec/valid_syntax/threads.nut
+PASSED: testData/exec/valid_syntax/tables.nut
+PASSED: testData/exec/valid_syntax/control_flow.nut
+PASSED: testData/exec/valid_syntax/strings.nut
+PASSED: testData/exec/valid_syntax/generators.nut
+PASSED: testData/exec/valid_syntax/misc.nut
+PASSED: testData/exec/valid_syntax/metamethods.nut
+PASSED: testData/exec/weird/assign_to_optional_2.nut
+PASSED: testData/exec/weird/2000_args.nut
+PASSED: testData/exec/weird/assign_to_optional_3.nut
+PASSED: testData/exec/valid_syntax/type_annotations.nut
+PASSED: testData/exec/valid_syntax/variables.nut
+PASSED: testData/exec/weird/assign_to_optional_1.nut
+PASSED: testData/exec/valid_syntax/tables.nut
+PASSED: testData/exec/valid_syntax/generators.nut
+PASSED: testData/exec/valid_syntax/metamethods.nut
+PASSED: testData/exec/weird/many_locals.nut
+PASSED: testData/diagnostics/50k_not.nut
+PASSED: testData/exec/valid_syntax/tables.nut
+PASSED: testData/diagnostics/1000_local_variables.nut
+PASSED: testData/diagnostics/50k_function_calls.nut
+PASSED: testData/diagnostics/50k_access_member.nut
+PASSED: testData/diagnostics/50k_lambdas.nut
+PASSED: testData/exec/weird/many_locals.nut
+PASSED: testData/diagnostics/50k_curly_brackets.nut
+PASSED: testData/exec/valid_syntax/control_flow.nut
+PASSED: testData/exec/stdlib/deep_regex.nut
+PASSED: testData/diagnostics/50k_nested_tables.nut
+PASSED: testData/diagnostics/50r_binop.nut
+PASSED: testData/diagnostics/50k_square_brackets.nut
+PASSED: testData/diagnostics/50k_paren_brackets.nut
+PASSED: testData/exec/stdlib/rawdelete.nut
+PASSED: testData/diagnostics/assign_to_expr2.nut
+PASSED: testData/diagnostics/assign_to_optional_7.nut
+PASSED: testData/diagnostics/async_redundant_await.nut
+PASSED: testData/diagnostics/assign_to_expr.nut
+PASSED: testData/diagnostics/async_constructor_rejected.nut
+PASSED: testData/diagnostics/async_missing_await_param_default.nut
+PASSED: testData/diagnostics/async_metamethod_rejected.nut
+PASSED: testData/diagnostics/async_missing_await_assign.nut
+PASSED: testData/diagnostics/async_missing_await_var.nut
+PASSED: testData/exec/weird/many_locals.nut
+PASSED: testData/diagnostics/async_redundant_await_class_ctor.nut
+PASSED: testData/diagnostics/async_metamethod_in_table_rejected.nut
+PASSED: testData/diagnostics/await_outside_async.nut
+PASSED: testData/diagnostics/async_return_await_ok.nut
+PASSED: testData/diagnostics/async_return_future.nut
+PASSED: testData/diagnostics/binding_assign.nut
+PASSED: testData/diagnostics/base_as_array_pp.nut
+PASSED: testData/diagnostics/async_typed_instance_ok.nut
+PASSED: testData/diagnostics/async_return_instance_annotated_ok.nut
+PASSED: testData/diagnostics/base_as_array_assign.nut
+PASSED: testData/diagnostics/base_pp.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/hex_digits_expected.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/empty_literal.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/hex_numbers_expected.nut
+PASSED: testData/diagnostics/clone_op_allowed.nut.txt
+PASSED: testData/diagnostics/compilation_errors/lex_errors/hex_too_many_digits.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/literal_underflow.nut
+PASSED: testData/diagnostics/clone_op_forbiden.nut.txt
+PASSED: testData/diagnostics/compilation_errors/lex_errors/fp_exp_expected.nut
+PASSED: testData/diagnostics/base_x_pp.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/invalid_token.nut
+PASSED: testData/diagnostics/async_redundant_await_instance_ok.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/trailing_block_comment.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/literal_overflow.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/unexpected_char.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/malformed_number.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/assign_to_binding.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/unrecognised_escape.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/unfinished_string.nut
+PASSED: testData/diagnostics/compilation_errors/lex_errors/octal_not_supported.nut
+
+
+FAIL: testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut
+--Actual------------------
+ERROR: newline in a constant
+testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut:2:8
+
+// EXPECT_ERROR: "newline in a constant"
+let x = "hello
+        ^-----
+"
+
+
+
+--Expected----------------
+ERROR: newline in a constant
+testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut:2:8
+
+// EXPECT_ERROR: "newline in a constant"
+let x = "hello
+        ^------
+"
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/compilation_errors/sema_errors/constant_field_not_found.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/conflicts_with.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/assign_to_expr.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/cannot_delete.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/duplicate_func_attr.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/duplicate_key.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/loop_controller_not_in_loop_continue.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/not_allowed_in_const.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/invalid_enum.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/constant_slot_not_found.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/local_slot_create.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/only_single_variable_declaration.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/same_foreach_kv_names.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/initialization_required.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/loop_controller_not_in_loop_break.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/same_foreach_kv_names.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/inc_dec_not_assignable.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/assign_inside_forbidden.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/space_sep_field_name.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/id_is_not_const.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/unknown_symbol.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/type_differs.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/too_many_locals.nut
+
+
+FAIL: testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut
+--Actual------------------
+ERROR: expected ']'
+testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut:2:30
+
+// EXPECT_ERROR: "expected ']'"
+let a = [1, 2, 3]; let x = a[0
+                              ^
+
+
+
+--Expected----------------
+ERROR: expected ']'
+testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut:2:31
+
+// EXPECT_ERROR: "expected ']'"
+let a = [1, 2, 3]; let x = a[0
+                               ^
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/compiler_internals_forbidden.nut
+PASSED: testData/diagnostics/compilation_errors/sema_errors/uninitialized_binding.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/broken_slot_declaration.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/expected_identifier.nut
+
+
+FAIL: testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut
+--Actual------------------
+ERROR: expected 'expression'
+testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut:2:7
+
+// EXPECT_ERROR: "expected 'expression'"
+let x =
+       ^
+
+
+
+--Expected----------------
+ERROR: expected 'expression'
+testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut:2:8
+
+// EXPECT_ERROR: "expected 'expression'"
+let x =
+        ^
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/end_of_stmt_expected.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/global_consts_only.nut
+
+
+FAIL: testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut
+--Actual------------------
+ERROR: expected '}'
+testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut:2:28
+
+// EXPECT_ERROR: "expected '}'"
+local {a, b = {x = 1, y = 2}
+                            ^
+
+
+
+--Expected----------------
+ERROR: expected '}'
+testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut:2:29
+
+// EXPECT_ERROR: "expected '}'"
+local {a, b = {x = 1, y = 2}
+                             ^
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/compilation_errors/sema_errors/same_foreach_kv_names.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/delete_op_forbidden.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/expected_token_paren.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_arithmetic_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/multiple_docstrings.nut
+
+
+FAIL: testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut
+--Actual------------------
+ERROR: expected 'while'
+testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut:4:1
+
+    local x = 42
+}
+ ^
+
+
+
+--Expected----------------
+ERROR: expected 'while'
+testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut:4:2
+
+    local x = 42
+}
+  ^
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/expected_linenum.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/expected_colnum.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/invalid_type_name.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/scalar_expected.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/unsupported_directive.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/invalid_type_name_suggestion.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/vararg_with_default.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_array_literal.nut
+PASSED: testData/diagnostics/compilation_errors/syntax_errors/root_table_forbidden.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_class_literal.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_assignment_chain.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_array_return.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_comparison_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_call_chain.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_call_union_return.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_deep_nesting.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_array_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_bitwise.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_mega.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_assign_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_mixed_arithmetic.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_call_result_type.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_pure_chain.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_return_expr.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_multifunction.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_nested_ternary.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_nullcoalesce.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_array3.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_array.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_destructure_table_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_array2.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_logical.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_complex_table_ternary.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_function.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_array4.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_function_literal.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_destructure_array_default_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_field_access_unknown.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_literal_int_to_string.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_destructure_complex.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_instance_from_class.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_literal_string_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_inline.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_literal_float_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_freeze_type_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_string_concat_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_const_table.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_slot_access_unknown.nut
+PASSED: testData/diagnostics/const_hides_outer_local_hoisted.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_table_literal.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_return_float_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_table_return.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_table_to_string.nut
+PASSED: testData/diagnostics/const_scope_1.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_ternary_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_typeof_to_int.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_return_literal_mismatch.nut
+PASSED: testData/diagnostics/compilation_errors/type_inference/test_unknown_passthrough.nut
+PASSED: testData/diagnostics/const_hides_outer_local.nut
+PASSED: testData/diagnostics/const_scope_2.nut
+PASSED: testData/diagnostics/continue_in_codeblock_try.nut
+PASSED: testData/diagnostics/delete_forbid_pragma.nut.txt
+PASSED: testData/diagnostics/foreach_destr_typed_default.nut
+PASSED: testData/diagnostics/continue_in_codeblock.nut
+PASSED: testData/diagnostics/enum_hides_outer_local_hoisted.nut
+PASSED: testData/diagnostics/enum_hides_outer_local.nut
+PASSED: testData/diagnostics/float_overflow.nut
+PASSED: testData/diagnostics/destrucuring_var_decl_in_if.nut
+PASSED: testData/diagnostics/float_underflow.nut
+PASSED: testData/diagnostics/forward_let_assign_from_closure.nut
+PASSED: testData/diagnostics/forward_let_duplicate_definition.nut
+PASSED: testData/diagnostics/delete_base.nut
+PASSED: testData/diagnostics/const_scope_3.nut
+PASSED: testData/diagnostics/forward_let_before_definition.nut
+PASSED: testData/diagnostics/forward_let_never_defined.nut
+PASSED: testData/diagnostics/forward_let_call_before_definition.nut
+PASSED: testData/diagnostics/forward_let_nested_scope_use.nut
+PASSED: testData/diagnostics/forward_let_other_scope.nut
+PASSED: testData/diagnostics/import_02.nut
+PASSED: testData/diagnostics/import_05.nut
+
+
+FAIL: testData/diagnostics/import_error.nut
+--Actual------------------
+ERROR: expected 'identifier or *'
+testData/diagnostics/import_error.nut:2:19
+
+// missing import list
+from "file1" import
+                   ^
+
+
+
+--Expected----------------
+ERROR: expected 'identifier or *'
+testData/diagnostics/import_error.nut:2:20
+
+// missing import list
+from "file1" import
+                    ^
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/import_01.nut
+PASSED: testData/diagnostics/hex_overflow.nut
+PASSED: testData/diagnostics/import_06.nut
+PASSED: testData/diagnostics/if_var_decl_init.nut
+
+
+FAIL: testData/diagnostics/import_07.nut
+--Actual------------------
+ERROR: newline in a constant
+testData/diagnostics/import_07.nut:1:7
+
+import "a
+       ^-
+" as a
+
+
+
+--Expected----------------
+ERROR: newline in a constant
+testData/diagnostics/import_07.nut:1:7
+
+import "a
+       ^--
+" as a
+
+
+
+--------------------------
+
+
+
+FAIL: testData/diagnostics/import_04.nut
+--Actual------------------
+ERROR: expected 'identifier'
+testData/diagnostics/import_04.nut:2:0
+
+import "a" as
+
+^
+
+
+
+--Expected----------------
+ERROR: expected 'identifier'
+testData/diagnostics/import_04.nut:2:1
+
+import "a" as
+
+ ^
+
+
+
+--------------------------
+
+PASSED: testData/diagnostics/import_03.nut
+PASSED: testData/diagnostics/integer_overflow.nut
+PASSED: testData/diagnostics/invalid_float_2.nut
+PASSED: testData/diagnostics/integer_overflow_2.nut
+PASSED: testData/diagnostics/interp_str_not_string_2.nut
+PASSED: testData/diagnostics/invalid_float_3.nut
+PASSED: testData/diagnostics/init_with_wrong_type.nut
+PASSED: testData/diagnostics/integer_overflow_int_max.nut
+PASSED: testData/diagnostics/interp_str_not_string.nut
+PASSED: testData/diagnostics/invalid_float_1.nut
+PASSED: testData/diagnostics/interp_str_wrong_template.nut
+PASSED: testData/diagnostics/interp_str_hanging_missed_ccurvy.nut
+PASSED: testData/diagnostics/invalid_type_hint_3.nut
+PASSED: testData/diagnostics/leading_zero_3.nut
+PASSED: testData/diagnostics/letAssign.nut
+PASSED: testData/diagnostics/leading_zero_2.nut
+PASSED: testData/diagnostics/invalid_type_hint_2.nut
+PASSED: testData/diagnostics/leading_zero_1.nut
+PASSED: testData/diagnostics/need_space_after_float.nut
+PASSED: testData/diagnostics/need_space_after_int.nut
+PASSED: testData/diagnostics/need_space_after_hex.nut
+PASSED: testData/diagnostics/invalid_string_interp_1.nut
+PASSED: testData/diagnostics/multiline_comment_col.nut
+PASSED: testData/diagnostics/invalid_type_hint_1.nut
+PASSED: testData/diagnostics/return_type_check_1.nut
+PASSED: testData/diagnostics/space_sep_name_space.nut.txt
+PASSED: testData/diagnostics/space_sep_name.nut.txt
+PASSED: testData/diagnostics/spread_const_non_array.nut
+PASSED: testData/diagnostics/overflow8.nut
+PASSED: testData/diagnostics/many_args_in_function_call.nut
+PASSED: testData/diagnostics/type_hints_01.nut
+PASSED: testData/diagnostics/spread_in_class.nut
+PASSED: testData/diagnostics/single_var_decl_in_if.nut
+PASSED: testData/diagnostics/type_hints_03.nut
+PASSED: testData/diagnostics/type_hints_05.nut
+PASSED: testData/diagnostics/type_hints_02.nut
+PASSED: testData/diagnostics/spread_const_non_table.nut
+PASSED: testData/diagnostics/type_hints_04.nut
+PASSED: testData/diagnostics/too_many_locals2.nut
+PASSED: testData/diagnostics/var_scope_2.nut
+PASSED: testData/diagnostics/var_scope_3.nut
+PASSED: testData/diagnostics/typed_catch_duplicate_type.nut
+PASSED: testData/diagnostics/unfinished_hex.nut
+PASSED: testData/diagnostics/yield_inside_async.nut
+PASSED: testData/diagnostics/typed_catch_catchall_not_last.nut
+PASSED: testData/diagnostics/type_hints_06.nut
+PASSED: testData/ast/optimizations/closureHoisting/classCrossFunc.nut
+PASSED: testData/diagnostics/var_scope_1.nut
+PASSED: testData/ast/optimizations/closureHoisting/classSimple.nut
+PASSED: testData/diagnostics/too_many_locals2.nut
+PASSED: testData/ast/ast_render/all_syntax.nut
+PASSED: testData/ast/optimizations/closureHoisting/constDep.nut
+PASSED: testData/ast/optimizations/closureHoisting/externalSymbol.nut
+PASSED: testData/ast/optimizations/closureHoisting/indirectLocalCapture.nut
+PASSED: testData/ast/optimizations/closureHoisting/deepUnchained.nut
+PASSED: testData/ast/optimizations/closureHoisting/constFunc.nut
+PASSED: testData/ast/optimizations/closureHoisting/manyFuncs.nut
+PASSED: testData/ast/optimizations/closureHoisting/nestedParamShadow.nut
+PASSED: testData/ast/optimizations/closureHoisting/multiDepthCapture.nut
+PASSED: testData/ast/optimizations/closureHoisting/implicitChainedFuncs.nut
+PASSED: testData/ast/optimizations/closureHoisting/implicitChainedFuncs2.nut
+PASSED: testData/ast/optimizations/closureHoisting/paramDefaultCapture.nut
+PASSED: testData/static_analyzer/200_nullc.nut
+PASSED: testData/ast/optimizations/closureHoisting/simple.nut
+PASSED: testData/ast/optimizations/closureHoisting/tooManyLocals.nut
+PASSED: testData/static_analyzer/assign_undeclared_no_crash.nut
+PASSED: testData/ast/ast_render/all_syntax.nut
+PASSED: testData/diagnostics/too_many_locals2.nut
+PASSED: testData/static_analyzer/empty_source.nut
+PASSED: testData/ast/optimizations/closureHoisting/recursion1.nut
+PASSED: testData/static_analyzer/codeblock_expr.nut
+PASSED: testData/diagnostics/too_large_static_memo_expr.nut.txt
+PASSED: testData/ast/optimizations/closureHoisting/simple2.nut
+PASSED: testData/ast/optimizations/closureHoisting/typedDefaultReturnType.nut
+PASSED: testData/static_analyzer/logic_ops_paren.nut
+PASSED: testData/exec/stdlib/rawdelete.nut
+PASSED: testData/static_analyzer/pattern_class_check.nut
+PASSED: testData/ast/ast_render/all_syntax.nut
+PASSED: testData/static_analyzer/function_rt_detect.nut
+PASSED: testData/static_analyzer/module_foo.nut
+PASSED: testData/static_analyzer/nullcheck_ternary.nut
+PASSED: testData/static_analyzer/pattern_effect_from_call.nut
+PASSED: testData/static_analyzer/w200.nut
+PASSED: testData/static_analyzer/template_span.nut
+PASSED: testData/static_analyzer/pattern_param_check.nut
+PASSED: testData/static_analyzer/w190.nut
+PASSED: testData/static_analyzer/pattern_intersected_assignment.nut
+PASSED: testData/static_analyzer/pattern_forloop_merge.nut
+PASSED: testData/static_analyzer/pattern_loop_state.nut
+PASSED: testData/static_analyzer/pattern_lambdas.nut
+PASSED: testData/static_analyzer/w192.nut
+PASSED: testData/static_analyzer/w200_3wcmp.nut
+PASSED: testData/static_analyzer/w200_arith_plus_eq.nut
+PASSED: testData/static_analyzer/w200_arith_deep.nut
+PASSED: testData/static_analyzer/w200_static_memo_expr.nut
+PASSED: testData/static_analyzer/w200_arith.nut
+PASSED: testData/static_analyzer/w206.nut
+PASSED: testData/static_analyzer/w200_stringconcat.nut
+PASSED: testData/static_analyzer/w200_join_branch_narrowing.nut
+PASSED: testData/static_analyzer/w200_special_func_name.nut
+PASSED: testData/static_analyzer/w203.nut
+PASSED: testData/static_analyzer/w205-2.nut
+PASSED: testData/static_analyzer/w206_arith.nut
+PASSED: testData/static_analyzer/w208.nut
+PASSED: testData/static_analyzer/w204.nut
+PASSED: testData/static_analyzer/w205.nut
+PASSED: testData/static_analyzer/w209.nut
+PASSED: testData/static_analyzer/w213_directive.nut
+PASSED: testData/static_analyzer/w212.nut
+PASSED: testData/static_analyzer/w210_complex.nut
+PASSED: testData/static_analyzer/w211.nut
+PASSED: testData/static_analyzer/w213.nut
+PASSED: testData/static_analyzer/w210_deep.nut
+PASSED: testData/static_analyzer/w213_code_block.nut
+PASSED: testData/static_analyzer/w210.nut
+PASSED: testData/static_analyzer/w210_def.nut
+PASSED: testData/static_analyzer/w214_static_memo_expr.nut
+PASSED: testData/static_analyzer/w215_nullc.nut
+PASSED: testData/static_analyzer/w217_break.nut
+PASSED: testData/static_analyzer/w214.nut
+PASSED: testData/static_analyzer/w217_complex.nut
+PASSED: testData/static_analyzer/w216.nut
+PASSED: testData/static_analyzer/w215.nut
+PASSED: testData/static_analyzer/w217_ret.nut
+PASSED: testData/static_analyzer/w217_continue.nut
+PASSED: testData/static_analyzer/w214_spread.nut
+PASSED: testData/static_analyzer/w217_throw.nut
+PASSED: testData/static_analyzer/w222.nut
+PASSED: testData/static_analyzer/w217_cond_cont.nut
+PASSED: testData/static_analyzer/w220.nut
+PASSED: testData/static_analyzer/w223.nut
+PASSED: testData/static_analyzer/w220_deep.nut
+PASSED: testData/static_analyzer/w221_delete.nut
+PASSED: testData/static_analyzer/w222_deep.nut
+PASSED: testData/static_analyzer/w221.nut
+PASSED: testData/static_analyzer/w222_inside_detructure.nut
+PASSED: testData/static_analyzer/w217_cond_cont.nut
+PASSED: testData/static_analyzer/w222_deep.nut
+PASSED: testData/static_analyzer/w224_then.nut
+PASSED: testData/static_analyzer/w223_method_is.nut
+PASSED: testData/static_analyzer/w227.nut
+PASSED: testData/static_analyzer/w225_switch.nut
+PASSED: testData/static_analyzer/w226.nut
+PASSED: testData/static_analyzer/w227_external.nut
+PASSED: testData/static_analyzer/w225.nut
+PASSED: testData/static_analyzer/w227_foreach_destr_shadow.nut
+PASSED: testData/static_analyzer/w217_cond_cont.nut
+PASSED: testData/static_analyzer/w222_deep.nut
+PASSED: testData/static_analyzer/w225_switch.nut
+PASSED: testData/static_analyzer/w226.nut
+PASSED: testData/static_analyzer/w227_let_init_fun.nut
+PASSED: testData/static_analyzer/w227_fn_with_same_param.nut
+PASSED: testData/static_analyzer/w225_empty_stmt.nut
+PASSED: testData/static_analyzer/w228.nut
+PASSED: testData/static_analyzer/w224_while.nut
+PASSED: testData/static_analyzer/w225_switch.nut
+PASSED: testData/static_analyzer/w227_varargs.nut
+PASSED: testData/static_analyzer/w228_4.nut
+PASSED: testData/static_analyzer/w227_table.nut
+PASSED: testData/static_analyzer/w228_trivial.nut
+PASSED: testData/static_analyzer/w226.nut
+PASSED: testData/static_analyzer/w229.nut
+PASSED: testData/static_analyzer/w230_unused_import.nut
+PASSED: testData/static_analyzer/w228_2.nut
+PASSED: testData/static_analyzer/w228_table.nut
+PASSED: testData/static_analyzer/w228_foreach_destr_default_uses.nut
+PASSED: testData/static_analyzer/w228_3.nut
+PASSED: testData/static_analyzer/w231.nut
+PASSED: testData/static_analyzer/w232_cascade.nut
+PASSED: testData/static_analyzer/w232_chained_deparen.nut
+PASSED: testData/static_analyzer/w232_true.nut
+PASSED: testData/static_analyzer/w228_foreach_destr_default_uses.nut
+PASSED: testData/static_analyzer/w232_lambda.nut
+PASSED: testData/static_analyzer/w232_ter.nut
+PASSED: testData/static_analyzer/w232_not.nut
+PASSED: testData/static_analyzer/w232_chained_mixed_deparen.nut
+PASSED: testData/static_analyzer/w233.nut
+PASSED: testData/static_analyzer/w238_idname.nut
+PASSED: testData/static_analyzer/w232_ternary.nut
+PASSED: testData/static_analyzer/w238_heuristic.nut
+PASSED: testData/static_analyzer/w234_outer.nut
+PASSED: testData/static_analyzer/w234.nut
+PASSED: testData/static_analyzer/w235.nut
+PASSED: testData/static_analyzer/w232_false.nut
+PASSED: testData/static_analyzer/w232_chained.nut
+PASSED: testData/static_analyzer/w228_foreach_destr_default_uses.nut
+PASSED: testData/static_analyzer/w244.nut
+PASSED: testData/static_analyzer/w241.nut
+PASSED: testData/static_analyzer/w238_sqconfig.nut
+PASSED: testData/static_analyzer/w236.nut
+PASSED: testData/static_analyzer/w238_isis.nut
+PASSED: testData/static_analyzer/w238_merge.nut
+PASSED: testData/static_analyzer/w239.nut
+PASSED: testData/static_analyzer/w240.nut
+PASSED: testData/static_analyzer/w248.nut
+PASSED: testData/static_analyzer/w248_additional.nut
+PASSED: testData/static_analyzer/w248_assert.nut
+PASSED: testData/static_analyzer/w248_andand.nut
+PASSED: testData/static_analyzer/w248_chain.nut
+PASSED: testData/static_analyzer/w239_sqconfig.nut
+PASSED: testData/static_analyzer/w248_andor.nut
+PASSED: testData/static_analyzer/w241_conditional.nut
+PASSED: testData/static_analyzer/w248_array.nut
+PASSED: testData/static_analyzer/w248_complex2.nut
+PASSED: testData/static_analyzer/w248_additional.nut
+PASSED: testData/static_analyzer/w248_access.nut
+PASSED: testData/static_analyzer/w248_eq_get.nut
+PASSED: testData/static_analyzer/w248_complexcond.nut
+PASSED: testData/static_analyzer/w248_complex_key.nut
+PASSED: testData/static_analyzer/w248_evaled.nut
+PASSED: testData/static_analyzer/w248_not.nut
+PASSED: testData/static_analyzer/w248_in_container.nut
+PASSED: testData/static_analyzer/w248_getfield.nut
+PASSED: testData/static_analyzer/w248_in.nut
+PASSED: testData/static_analyzer/w248_nullc_2.nut
+PASSED: testData/static_analyzer/w248_oror2.nut
+PASSED: testData/static_analyzer/w248_nullc_3.nut
+PASSED: testData/static_analyzer/w248_not.nut
+PASSED: testData/static_analyzer/w248_override.nut
+PASSED: testData/static_analyzer/w250_array.nut
+PASSED: testData/static_analyzer/w248_additional.nut
+PASSED: testData/static_analyzer/w248_special_name_func.nut
+PASSED: testData/static_analyzer/w248_while_cond.nut
+PASSED: testData/static_analyzer/w248_tyopeof2.nut
+PASSED: testData/static_analyzer/w248_terminated_branch1.nut
+PASSED: testData/static_analyzer/w248_tyopeof1.nut
+PASSED: testData/static_analyzer/w248_relative_pred.nut
+PASSED: testData/static_analyzer/w248_not.nut
+PASSED: testData/static_analyzer/w248_type_func.nut
+PASSED: testData/static_analyzer/w255.nut
+PASSED: testData/static_analyzer/w248_terminated_branch1.nut
+PASSED: testData/static_analyzer/w250_container.nut
+PASSED: testData/static_analyzer/w248_tyopeof1.nut
+PASSED: testData/static_analyzer/w248_oror.nut
+PASSED: testData/static_analyzer/w255_spread.nut
+PASSED: testData/static_analyzer/w255_foreach_destr_distinct.nut
+PASSED: testData/static_analyzer/w256.nut
+PASSED: testData/static_analyzer/w248_terminated_branch1.nut
+PASSED: testData/static_analyzer/w254.nut
+PASSED: testData/static_analyzer/w254_notin.nut
+PASSED: testData/static_analyzer/w255_2.nut
+PASSED: testData/static_analyzer/w248_tyopeof1.nut
+PASSED: testData/static_analyzer/w254_instanceof.nut
+PASSED: testData/static_analyzer/w258_2.nut
+PASSED: testData/static_analyzer/w260_local_function.nut
+PASSED: testData/static_analyzer/w258.nut
+PASSED: testData/static_analyzer/w263.nut
+PASSED: testData/static_analyzer/w264.nut
+PASSED: testData/static_analyzer/w259.nut
+PASSED: testData/static_analyzer/w257.nut
+PASSED: testData/static_analyzer/w258_2.nut
+PASSED: testData/static_analyzer/w262.nut
+PASSED: testData/static_analyzer/w255_foreach_destr_distinct.nut
+PASSED: testData/static_analyzer/w260_table_sqconfig.nut
+PASSED: testData/static_analyzer/w266.nut
+PASSED: testData/static_analyzer/w275_all_variants.nut
+PASSED: testData/static_analyzer/w260_table.nut
+PASSED: testData/static_analyzer/w269.nut
+PASSED: testData/static_analyzer/w258_2.nut
+PASSED: testData/static_analyzer/w267.nut
+PASSED: testData/static_analyzer/w270.nut
+PASSED: testData/static_analyzer/w272.nut
+PASSED: testData/static_analyzer/w258.nut
+PASSED: testData/static_analyzer/w255_foreach_destr_distinct.nut
+PASSED: testData/static_analyzer/w275.nut
+PASSED: testData/static_analyzer/w277.nut
+PASSED: testData/static_analyzer/w271.nut
+PASSED: testData/static_analyzer/w279_1.nut
+PASSED: testData/static_analyzer/w279_2.nut
+PASSED: testData/static_analyzer/w280.nut
+PASSED: testData/static_analyzer/w275_complex.nut
+PASSED: testData/static_analyzer/w284.nut
+PASSED: testData/static_analyzer/w283.nut
+PASSED: testData/static_analyzer/w286.nut
+PASSED: testData/static_analyzer/w286_oror_andand.nut
+PASSED: testData/static_analyzer/w281.nut
+PASSED: testData/static_analyzer/w288_destr_default_external.nut
+PASSED: testData/static_analyzer/w286_2.nut
+PASSED: testData/static_analyzer/w288_external_reassign.nut
+PASSED: testData/static_analyzer/w287.nut
+PASSED: testData/static_analyzer/w288_lambdas2.nut
+PASSED: testData/static_analyzer/w288_dp_va.nut
+PASSED: testData/static_analyzer/w288.nut
+PASSED: testData/static_analyzer/w258.nut
+PASSED: testData/static_analyzer/w288_require.nut
+PASSED: testData/static_analyzer/w293.nut
+PASSED: testData/static_analyzer/w288_require_indirect.nut
+PASSED: testData/static_analyzer/w285.nut
+PASSED: testData/static_analyzer/w288_native.nut
+PASSED: testData/static_analyzer/w289.nut
+PASSED: testData/static_analyzer/w291.nut
+PASSED: testData/static_analyzer/w306.nut
+PASSED: testData/static_analyzer/w295.nut
+PASSED: testData/static_analyzer/w305.nut
+PASSED: testData/static_analyzer/w310_require.nut
+PASSED: testData/static_analyzer/w292.nut
+PASSED: testData/static_analyzer/w297.nut
+PASSED: testData/static_analyzer/w309_require.nut
+PASSED: testData/static_analyzer/w319_empty_array_resize.nut
+PASSED: testData/static_analyzer/w308.nut
+PASSED: testData/static_analyzer/w312_require.nut
+PASSED: testData/static_analyzer/w316_spread_const.nut
+PASSED: testData/static_analyzer/w318_merge_empty_table.nut
+PASSED: testData/static_analyzer/w321.nut
+PASSED: testData/static_analyzer/w320.nut
+PASSED: testData/static_analyzer/w321.nut
+PASSED: testData/static_analyzer/w329.nut
+PASSED: testData/static_analyzer/w322.nut
+PASSED: testData/static_analyzer/w323.nut
+PASSED: testData/static_analyzer/w315_multi_statement_line.nut
+PASSED: testData/static_analyzer/w326.nut
+PASSED: testData/static_analyzer/w324.nut
+PASSED: testData/static_analyzer/w325.nut
+PASSED: testData/static_analyzer/w330.nut
+PASSED: testData/static_analyzer/w327.nut
+PASSED: testData/static_analyzer/w321.nut
+PASSED: testData/static_analyzer/w331.nut
+PASSED: testData/static_analyzer/w334.nut
+PASSED: testData/static_analyzer/w333_wildcard_and_named_import.nut
+PASSED: testData/static_analyzer/w320.nut
+PASSED: testData/static_analyzer/w322.nut
+PASSED: testData/static_analyzer/w331_bool.nut
+PASSED: testData/static_analyzer/w332_duplicate_import2.nut
+PASSED: testData/static_analyzer/w333_wildcard_and_named_import_duplicate_star.nut
+PASSED: testData/static_analyzer/w335_mutating_shared_default.nut
+PASSED: testData/static_analyzer/w320.nut
+PASSED: testData/static_analyzer/w337_conditional_arity_mismatch.nut
+PASSED: testData/static_analyzer/w339_access_potentially_empty.nut
+PASSED: testData/static_analyzer/w338_same_args_in_call.nut
+PASSED: testData/static_analyzer/w332_duplicate_import.nut
+PASSED: testData/static_analyzer/w333_wildcard_and_named_import_reverse.nut
+PASSED: testData/types/default_values.nut.txt
+PASSED: testData/static_analyzer/w344_let_function.nut
+PASSED: testData/types/default_values_invalid.nut.txt
+PASSED: testData/types/invalid.nut.txt
+PASSED: testData/static_analyzer/w322.nut
+PASSED: doc/examples/async/future/constructor.nut
+PASSED: doc/examples/async/future/all-basic.nut
+PASSED: testData/types/type_suggestions.nut.txt
+PASSED: testData/static_analyzer/w346_binding_function_name.nut
+PASSED: testData/static_analyzer/w339_access_potentially_empty.nut
+PASSED: doc/examples/async/future/race.nut
+PASSED: doc/examples/async/future/all.nut
+PASSED: doc/examples/async/future/getValue-basic.nut
+PASSED: doc/examples/async/future/getState.nut
+PASSED: doc/examples/async/future/reject.nut
+PASSED: testData/static_analyzer/w339_access_potentially_empty.nut
+PASSED: doc/examples/async/future/getValue.nut
+PASSED: doc/examples/async/future/resolve-basic.nut
+PASSED: testData/types/valid.nut.txt
+PASSED: doc/examples/async/future/race-basic.nut
+PASSED: doc/examples/async/future/resolve.nut
+PASSED: doc/examples/datetime/clock.nut
+PASSED: doc/examples/debug/collectgarbage.nut
+PASSED: doc/examples/datetime/date.nut
+PASSED: doc/examples/debug/doc-basic.nut
+PASSED: testData/exec/stdlib/rawdelete.nut
+PASSED: doc/examples/datetime/time.nut
+PASSED: doc/examples/debug/format_call_stack_string.nut
+PASSED: doc/examples/async/future/markHandled.nut
+PASSED: doc/examples/debug/get_function_decl_string.nut
+PASSED: doc/examples/debug/getlocals.nut
+PASSED: doc/examples/debug/doc.nut
+PASSED: doc/examples/debug/get_stack_top.nut
+PASSED: doc/examples/debug/getbuildinfo.nut
+PASSED: doc/examples/debug/get_function_info_table.nut
+PASSED: doc/examples/debug/getstackinfos.nut
+PASSED: doc/examples/debug/resurrectunreachable-basic.nut
+PASSED: doc/examples/debug/getstackinfos-basic.nut
+PASSED: doc/examples/debug/setdebughook-basic.nut
+PASSED: doc/examples/debug/set_script_watchdog_timeout_msec.nut
+PASSED: doc/examples/debug/getlocals-basic.nut
+PASSED: doc/examples/debug/type_mask_to_string.nut
+PASSED: doc/examples/debug/getbuildinfo.nut
+PASSED: doc/examples/debug/resurrectunreachable.nut
+PASSED: doc/examples/debug/getlocals.nut
+PASSED: doc/examples/globals/array-basic.nut
+PASSED: doc/examples/debug/seterrorhandler-basic.nut
+PASSED: doc/examples/debug/seterrorhandler.nut
+PASSED: doc/examples/globals/__argv.nut
+PASSED: doc/examples/globals/assert-basic.nut
+PASSED: doc/examples/debug/type_mask_to_string-basic.nut
+PASSED: doc/examples/globals/assert.nut
+PASSED: doc/examples/globals/array.nut
+PASSED: doc/examples/debug/getbuildinfo.nut
+PASSED: doc/examples/globals/callee.nut
+PASSED: doc/examples/globals/error.nut
+PASSED: doc/examples/globals/error-basic.nut
+PASSED: doc/examples/globals/errorln.nut
+PASSED: doc/examples/globals/freeze.nut
+PASSED: doc/examples/globals/freeze-basic.nut
+PASSED: doc/examples/debug/getlocals.nut
+PASSED: doc/examples/globals/deduplicate_object.nut
+PASSED: doc/examples/globals/compilestring.nut
+PASSED: doc/examples/globals/getconsttable.nut
+PASSED: doc/examples/debug/setdebughook.nut
+PASSED: doc/examples/globals/getobjflags.nut
+PASSED: doc/examples/globals/println.nut
+PASSED: doc/examples/globals/type.nut
+PASSED: doc/examples/globals/print.nut
+PASSED: doc/examples/globals/suspend-basic.nut
+PASSED: doc/examples/globals/newthread.nut
+PASSED: doc/examples/io/file/close.nut
+PASSED: doc/examples/globals/getroottable.nut
+PASSED: doc/examples/io/file/eos.nut
+PASSED: doc/examples/globals/deduplicate_object-basic.nut
+PASSED: doc/examples/io/file/close-basic.nut
+PASSED: doc/examples/globals/suspend.nut
+PASSED: doc/examples/io/file/constructor.nut
+PASSED: doc/examples/io/file/constructor-basic.nut
+PASSED: doc/examples/io/file/len.nut
+PASSED: doc/examples/io/file/readblob.nut
+PASSED: doc/examples/io/file/flush.nut
+PASSED: doc/examples/io/file/readn.nut
+PASSED: doc/examples/io/file/seek-basic.nut
+PASSED: doc/examples/io/file/writeblob.nut
+PASSED: doc/examples/io/file/readblob-basic.nut
+PASSED: doc/examples/io/file/seek.nut
+PASSED: doc/examples/io/file/readobject.nut
+PASSED: doc/examples/io/file/tell-basic.nut
+PASSED: doc/examples/io/file/tell.nut
+PASSED: doc/examples/io/file/writen.nut
+PASSED: doc/examples/io/file/writen-basic.nut
+PASSED: doc/examples/io/file/writeblob-basic.nut
+PASSED: doc/examples/iostream/blob/flush.nut
+PASSED: doc/examples/iostream/blob/eos.nut
+PASSED: doc/examples/iostream/blob/as_string.nut
+PASSED: doc/examples/io/stderr.nut
+PASSED: doc/examples/io/file/writestring.nut
+PASSED: doc/examples/io/file/writeobject.nut
+PASSED: doc/examples/iostream/blob/readblob-basic.nut
+PASSED: doc/examples/iostream/blob/as_string-basic.nut
+PASSED: doc/examples/iostream/blob/readblob.nut
+PASSED: doc/examples/iostream/blob/constructor.nut
+PASSED: doc/examples/io/stdout.nut
+PASSED: doc/examples/iostream/blob/len.nut
+PASSED: doc/examples/iostream/blob/readn.nut
+PASSED: doc/examples/iostream/blob/readobject.nut
+PASSED: doc/examples/iostream/blob/readn-basic.nut
+PASSED: doc/examples/iostream/blob/eos-basic.nut
+PASSED: doc/examples/iostream/blob/tell.nut
+PASSED: doc/examples/iostream/blob/swap2-basic.nut
+PASSED: doc/examples/iostream/blob/tostring.nut
+PASSED: doc/examples/iostream/blob/resize.nut
+PASSED: doc/examples/iostream/blob/writeblob-basic.nut
+PASSED: doc/examples/iostream/blob/swap4-basic.nut
+PASSED: doc/examples/iostream/blob/seek.nut
+PASSED: doc/examples/iostream/blob/swap2.nut
+PASSED: doc/examples/iostream/blob/writen-basic.nut
+PASSED: doc/examples/iostream/blob/swap4.nut
+PASSED: doc/examples/iostream/blob/seek-basic.nut
+PASSED: doc/examples/iostream/blob/resize-basic.nut
+PASSED: doc/examples/iostream/blob/writeobject.nut
+PASSED: doc/examples/iostream/blob/writestring.nut
+PASSED: doc/examples/iostream/blob/writeblob.nut
+PASSED: doc/examples/iostream/stream/flush.nut
+PASSED: doc/examples/iostream/blob/writen.nut
+PASSED: doc/examples/iostream/casti2f.nut
+PASSED: doc/examples/iostream/stream/eos.nut
+PASSED: doc/examples/iostream/castf2i.nut
+PASSED: doc/examples/iostream/stream/readobject.nut
+PASSED: doc/examples/iostream/stream/readn.nut
+PASSED: doc/examples/iostream/stream/seek.nut
+PASSED: doc/examples/iostream/stream/tell.nut
+PASSED: doc/examples/iostream/stream/readblob.nut
+PASSED: doc/examples/iostream/stream/len.nut
+PASSED: doc/examples/iostream/stream/seek-basic.nut
+PASSED: doc/examples/iostream/stream/readblob-basic.nut
+PASSED: doc/examples/iostream/stream/eos-basic.nut
+PASSED: doc/examples/iostream/stream/writeblob-basic.nut
+PASSED: doc/examples/iostream/stream/writeblob.nut
+PASSED: doc/examples/iostream/stream/writeobject-basic.nut
+PASSED: doc/examples/iostream/stream/readn-basic.nut
+PASSED: doc/examples/iostream/stream/writeobject.nut
+PASSED: doc/examples/iostream/swap4.nut
+PASSED: doc/examples/iostream/swapfloat.nut
+PASSED: doc/examples/math/abs.nut
+PASSED: doc/examples/iostream/stream/writestring.nut
+PASSED: doc/examples/math/asin.nut
+PASSED: doc/examples/math/atan2.nut
+PASSED: doc/examples/math/atan.nut
+PASSED: doc/examples/math/cos.nut
+PASSED: doc/examples/iostream/stream/writen-basic.nut
+PASSED: doc/examples/iostream/stream/writen.nut
+PASSED: doc/examples/iostream/swap2.nut
+PASSED: doc/examples/math/acos.nut
+PASSED: doc/examples/math/exp.nut
+PASSED: doc/examples/math/fabs.nut
+PASSED: doc/examples/math/clamp.nut
+PASSED: doc/examples/math/log.nut
+PASSED: doc/examples/math/hash.nut
+PASSED: doc/examples/math/log10.nut
+PASSED: doc/examples/math/floor.nut
+PASSED: doc/examples/math/ceil.nut
+PASSED: doc/examples/math/min.nut
+PASSED: doc/examples/math/rand.nut
+PASSED: doc/examples/math/srand.nut
+PASSED: doc/examples/math/sqrt.nut
+PASSED: doc/examples/math/tan.nut
+PASSED: doc/examples/math/max.nut
+PASSED: doc/examples/math/pow.nut
+PASSED: doc/examples/pages/coming-from/javascript.nut
+PASSED: doc/examples/math/deep_hash.nut
+PASSED: doc/examples/modules/reset_static_memos.nut
+PASSED: doc/examples/math/round.nut
+PASSED: doc/examples/modules/on_module_unload.nut
+PASSED: doc/examples/modules/get_native_module_names.nut
+PASSED: doc/examples/pages/coming-from/lua.nut
+PASSED: doc/examples/pages/language/annotations-no-coercion.nut
+PASSED: doc/examples/pages/coming-from/python.nut
+PASSED: doc/examples/modules/get_native_module_names-basic.nut
+PASSED: doc/examples/pages/language/annotations-runtime-check.nut
+PASSED: doc/examples/modules/reset_static_memos-basic.nut
+PASSED: doc/examples/pages/coming-from/javascript.nut
+PASSED: doc/examples/math/sin.nut
+PASSED: doc/examples/pages/coming-from/squirrel.nut
+PASSED: doc/examples/pages/language/bindings-const-folding.nut
+PASSED: doc/examples/pages/language/bindings-enums.nut
+PASSED: doc/examples/pages/language/async-fault-propagation.nut
+PASSED: doc/examples/pages/coming-from/javascript.nut
+PASSED: doc/examples/pages/language/bindings-basic.nut
+PASSED: doc/examples/pages/language/annotations-syntax.nut
+PASSED: doc/examples/pages/language/async-mission-briefing.nut
+PASSED: doc/examples/pages/language/bindings-const.nut
+PASSED: doc/examples/pages/language/bindings-forward.nut
+PASSED: doc/examples/pages/language/bindings-let-local.nut
+PASSED: doc/examples/pages/language/classes-basics.nut
+PASSED: doc/examples/pages/language/bindings-scope.nut
+PASSED: doc/examples/pages/language/containers-literals.nut
+PASSED: doc/examples/pages/language/control-flow-for.nut
+PASSED: doc/examples/pages/language/bindings-freeze.nut
+PASSED: doc/examples/pages/language/control-flow-closures.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-string.nut
+PASSED: doc/examples/pages/language/classes-metamethods.nut
+PASSED: doc/examples/pages/language/control-flow-if-basic.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-array.nut
+PASSED: doc/examples/pages/language/containers-basic.nut
+PASSED: doc/examples/pages/language/control-flow-if.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-string.nut
+PASSED: doc/examples/pages/language/control-flow-closures.nut
+PASSED: doc/examples/pages/language/control-flow-switch.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-table.nut
+PASSED: doc/examples/pages/language/containers-slots.nut
+PASSED: doc/examples/pages/language/control-flow-loop-control.nut
+PASSED: doc/examples/pages/language/containers-spread.nut
+PASSED: doc/examples/pages/language/classes-inheritance.nut
+PASSED: doc/examples/pages/language/destructuring-basics.nut
+PASSED: doc/examples/pages/language/control-flow-while.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-array.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-table.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-string.nut
+PASSED: doc/examples/pages/language/destructuring-nested.nut
+PASSED: doc/examples/pages/language/control-flow-closures.nut
+PASSED: doc/examples/pages/language/destructuring-import.nut
+PASSED: doc/examples/pages/language/errors-assert.nut
+PASSED: doc/examples/pages/language/destructuring-hints.nut
+PASSED: doc/examples/pages/language/directives-scope.nut
+PASSED: doc/examples/pages/language/directives-compiler-internals.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-array.nut
+PASSED: doc/examples/pages/language/errors-rethrow.nut
+PASSED: doc/examples/pages/language/errors-paramtype.nut
+PASSED: doc/examples/pages/language/control-flow-foreach-table.nut
+PASSED: doc/examples/pages/language/destructuring-foreach.nut
+PASSED: doc/examples/pages/language/functions-basics.nut
+PASSED: doc/examples/pages/language/errors-native-boundary.nut
+PASSED: doc/examples/pages/language/destructuring-defaults.nut
+PASSED: doc/examples/pages/language/functions-this-basic.nut
+PASSED: doc/examples/pages/language/functions-minimal.nut
+PASSED: doc/examples/pages/language/errors-typedcatch.nut
+PASSED: doc/examples/pages/language/functions-lambdas.nut
+PASSED: doc/examples/pages/language/errors-throw.nut
+PASSED: doc/examples/pages/language/destructuring-foreach.nut
+PASSED: doc/examples/pages/language/lexical-statements.nut
+PASSED: doc/examples/pages/language/functions-this.nut
+PASSED: doc/examples/pages/language/metamethods-call-cloned.nut
+PASSED: doc/examples/pages/language/lexical-numbers.nut
+PASSED: doc/examples/pages/language/lexical-comments.nut
+PASSED: doc/examples/pages/language/generators-wave-spawner.nut
+PASSED: doc/examples/pages/language/metamethods-nexti.nut
+PASSED: doc/examples/pages/language/modules-imports.nut
+PASSED: doc/examples/pages/language/destructuring-foreach.nut
+PASSED: doc/examples/pages/language/metamethods-proxy.nut
+PASSED: doc/examples/pages/language/functions-lambdas.nut
+PASSED: doc/examples/pages/language/lexical-fileline.nut
+PASSED: doc/examples/pages/language/operators-arithmetic.nut
+PASSED: doc/examples/pages/language/metamethods-operands.nut
+PASSED: doc/examples/pages/language/generators-patrol-route.nut
+PASSED: doc/examples/pages/language/operators-membership.nut
+PASSED: doc/examples/pages/language/operators-logical.nut
+PASSED: doc/examples/pages/language/functions-lambdas.nut
+PASSED: doc/examples/pages/language/operators-clone.nut
+PASSED: doc/examples/pages/language/modules-persist.nut
+PASSED: doc/examples/pages/language/operators-compare.nut
+PASSED: doc/examples/pages/language/operators-overloading.nut
+PASSED: doc/examples/pages/language/strings-escapes.nut
+PASSED: doc/examples/pages/language/operators-precedence.nut
+PASSED: doc/examples/pages/language/strings-concat.nut
+PASSED: doc/examples/pages/language/operators-typemethod.nut
+PASSED: doc/examples/pages/language/operators-rawdelete.nut
+PASSED: doc/examples/pages/language/metamethods-nexti.nut
+PASSED: doc/examples/pages/language/operators-static.nut
+PASSED: doc/examples/pages/language/operators-newslot.nut
+PASSED: doc/examples/pages/language/operators-compound.nut
+PASSED: doc/examples/pages/language/strings-verbatim.nut
+PASSED: doc/examples/pages/language/strings-bytes.nut
+PASSED: doc/examples/pages/language/types-truthiness.nut
+PASSED: doc/examples/pages/language/types-precision.nut
+PASSED: doc/examples/pages/language/strings-interpolation.nut
+PASSED: doc/examples/pages/language/types-equality.nut
+PASSED: doc/examples/pages/language/operators-nullsafe.nut
+PASSED: doc/examples/pages/language/types-typeof-classof.nut
+PASSED: doc/examples/pages/language/metamethods-nexti.nut
+PASSED: doc/examples/pages/types/thread-handshake.nut
+PASSED: doc/examples/string/lstrip.nut
+PASSED: doc/examples/pages/language/types-type-vs-typeof.nut
+PASSED: doc/examples/pages/tour.nut
+PASSED: doc/examples/string/escape.nut
+PASSED: doc/examples/string/regexp/capture.nut
+PASSED: doc/examples/string/printf.nut
+PASSED: doc/examples/string/format.nut
+PASSED: doc/examples/string/endswith.nut
+PASSED: doc/examples/string/regexp/subexpcount.nut
+PASSED: doc/examples/string/regexp/capture.nut
+PASSED: doc/examples/string/regexp/constructor.nut
+PASSED: doc/examples/string/rstrip.nut
+PASSED: doc/examples/string/regexp/search.nut
+PASSED: doc/examples/pages/tour.nut
+PASSED: doc/examples/pages/language/types-type-vs-typeof.nut
+PASSED: doc/examples/string/regexp/capture.nut
+PASSED: doc/examples/pages/language/types-type-vs-typeof.nut
+PASSED: doc/examples/pages/tour.nut
+PASSED: doc/examples/string/startswith.nut
+PASSED: doc/examples/system/getenv.nut
+PASSED: doc/examples/string/strip.nut
+PASSED: doc/examples/string/regexp/match.nut
+PASSED: doc/examples/types/array/clear.nut
+PASSED: doc/examples/types/array/clone-basic.nut
+PASSED: doc/examples/string/split_by_chars-basic.nut
+PASSED: doc/examples/types/array/contains.nut
+PASSED: doc/examples/types/array/clone.nut
+PASSED: doc/examples/types/array/apply.nut
+PASSED: doc/examples/types/array/each.nut
+PASSED: doc/examples/types/array/constructor.nut
+PASSED: doc/examples/types/array/indexof.nut
+PASSED: doc/examples/string/split_by_chars.nut
+PASSED: doc/examples/types/array/hasindex.nut
+PASSED: doc/examples/types/array/filter.nut
+PASSED: doc/examples/types/array/append.nut
+PASSED: doc/examples/types/array/findindex.nut
+PASSED: doc/examples/types/array/is_frozen.nut
+PASSED: doc/examples/types/array/each.nut
+PASSED: doc/examples/types/array/hasvalue.nut
+PASSED: doc/examples/types/array/apply.nut
+PASSED: doc/examples/types/array/findvalue.nut
+PASSED: doc/examples/types/array/filter.nut
+PASSED: doc/examples/types/array/is_frozen-basic.nut
+PASSED: doc/examples/types/array/insert.nut
+PASSED: doc/examples/types/array/len.nut
+PASSED: doc/examples/types/array/pop.nut
+PASSED: doc/examples/types/array/extend.nut
+PASSED: doc/examples/types/array/map.nut
+PASSED: doc/examples/types/array/append.nut
+PASSED: doc/examples/types/array/each.nut
+PASSED: doc/examples/types/array/reduce.nut
+PASSED: doc/examples/types/array/apply.nut
+PASSED: doc/examples/types/array/resize.nut
+PASSED: doc/examples/types/array/insert.nut
+PASSED: doc/examples/types/array/filter.nut
+PASSED: doc/examples/types/array/remove.nut
+PASSED: doc/examples/types/array/extend.nut
+PASSED: doc/examples/types/array/append.nut
+PASSED: doc/examples/types/array/slice-basic.nut
+PASSED: doc/examples/types/array/replace_with.nut
+PASSED: doc/examples/types/array/extend.nut
+PASSED: doc/examples/types/array/reduce.nut
+PASSED: doc/examples/types/array/map.nut
+PASSED: doc/examples/types/array/resize.nut
+PASSED: doc/examples/types/array/remove.nut
+PASSED: doc/examples/types/array/insert.nut
+PASSED: doc/examples/types/array/slice.nut
+PASSED: doc/examples/types/array/replace.nut
+PASSED: doc/examples/types/array/replace_with.nut
+PASSED: doc/examples/types/array/reverse.nut
+PASSED: doc/examples/types/array/sort.nut
+PASSED: doc/examples/types/array/resize.nut
+PASSED: doc/examples/types/array/top.nut
+PASSED: doc/examples/types/array/swap.nut
+PASSED: doc/examples/types/array/slice.nut
+PASSED: doc/examples/types/array/remove.nut
+PASSED: doc/examples/types/array/map.nut
+PASSED: doc/examples/types/array/sort.nut
+PASSED: doc/examples/types/array/replace_with.nut
+PASSED: doc/examples/types/array/weakref.nut
+PASSED: doc/examples/types/array/replace.nut
+PASSED: doc/examples/types/array/tostring.nut
+PASSED: doc/examples/types/array/totable.nut
+PASSED: doc/examples/types/bool/clone.nut
+PASSED: doc/examples/types/array/swap.nut
+PASSED: doc/examples/types/array/slice.nut
+PASSED: doc/examples/types/bool/constructor.nut
+PASSED: doc/examples/types/array/reduce.nut
+PASSED: doc/examples/types/bool/tointeger.nut
+PASSED: doc/examples/types/array/reverse.nut
+PASSED: doc/examples/types/bool/tochar.nut
+PASSED: doc/examples/types/array/sort.nut
+PASSED: doc/examples/types/class/acall.nut
+PASSED: doc/examples/types/bool/tostring.nut
+PASSED: doc/examples/types/class/clone.nut
+PASSED: doc/examples/types/bool/tofloat.nut
+PASSED: doc/examples/types/class/__merge.nut
+PASSED: doc/examples/types/class/__update.nut
+PASSED: doc/examples/types/class/call.nut
+PASSED: doc/examples/types/array/reverse.nut
+PASSED: doc/examples/types/array/replace.nut
+PASSED: doc/examples/types/class/getfuncinfos-basic.nut
+PASSED: doc/examples/types/class/getfuncinfos.nut
+PASSED: doc/examples/types/bool/weakref.nut
+PASSED: doc/examples/types/class/getmetamethod.nut
+PASSED: doc/examples/types/class/hasindex.nut
+PASSED: doc/examples/types/class/instance.nut
+PASSED: doc/examples/types/class/instance-basic.nut
+PASSED: doc/examples/types/class/lock.nut
+PASSED: doc/examples/types/array/swap.nut
+PASSED: doc/examples/types/class/pacall.nut
+PASSED: doc/examples/types/class/getbase.nut
+PASSED: doc/examples/types/class/is_frozen.nut
+PASSED: doc/examples/types/class/newmember.nut
+PASSED: doc/examples/types/class/rawin.nut
+PASSED: doc/examples/types/class/pcall-basic.nut
+PASSED: doc/examples/types/classof.nut
+PASSED: doc/examples/types/class/pacall-basic.nut
+PASSED: doc/examples/types/class/rawset.nut
+PASSED: doc/examples/types/class/tostring.nut
+PASSED: doc/examples/types/class/pcall.nut
+PASSED: doc/examples/types/float/tofloat.nut
+PASSED: doc/examples/types/class/lock-basic.nut
+PASSED: doc/examples/types/float/tostring.nut
+PASSED: doc/examples/types/class/weakref.nut
+PASSED: doc/examples/types/float/tointeger.nut
+PASSED: doc/examples/types/float/clone.nut
+PASSED: doc/examples/types/float/tochar.nut
+PASSED: doc/examples/types/function/bindenv.nut
+PASSED: doc/examples/types/function/getfreevar.nut
+PASSED: doc/examples/types/function/call.nut
+PASSED: doc/examples/types/class/rawget.nut
+PASSED: doc/examples/types/function/clone.nut
+PASSED: doc/examples/types/function/pacall.nut
+PASSED: doc/examples/types/function/acall.nut
+PASSED: doc/examples/types/function/pcall.nut
+PASSED: doc/examples/types/float/constructor.nut
+PASSED: doc/examples/types/function/getfuncinfos.nut
+PASSED: doc/examples/types/generator/clone.nut
+PASSED: doc/examples/types/float/weakref.nut
+PASSED: doc/examples/types/function/tostring.nut
+PASSED: doc/examples/types/function/weakref.nut
+PASSED: doc/examples/types/instance/getfuncinfos.nut
+PASSED: doc/examples/types/instance/rawget.nut
+PASSED: doc/examples/types/generator/getstatus.nut
+PASSED: doc/examples/types/instance/getfuncinfos-basic.nut
+PASSED: doc/examples/types/instance/getmetamethod.nut
+PASSED: doc/examples/types/instance/is_frozen.nut
+PASSED: doc/examples/types/instance/getclass.nut
+PASSED: doc/examples/types/generator/weakref.nut
+PASSED: doc/examples/types/instance/clone.nut
+PASSED: doc/examples/types/instance/hasindex.nut
+PASSED: doc/examples/types/instance/swap.nut
+PASSED: doc/examples/types/instance/tostring.nut
+PASSED: doc/examples/types/generator/tostring.nut
+PASSED: doc/examples/types/instance/clone-basic.nut
+PASSED: doc/examples/types/instance/weakref.nut
+PASSED: doc/examples/types/integer/constructor.nut
+PASSED: doc/examples/types/integer/tochar.nut
+PASSED: doc/examples/types/integer/tostring.nut
+PASSED: doc/examples/types/integer/clone.nut
+PASSED: doc/examples/types/integer/tofloat.nut
+PASSED: doc/examples/types/instance/rawin.nut
+PASSED: doc/examples/types/instance/rawset.nut
+PASSED: doc/examples/types/null/constructor.nut
+PASSED: doc/examples/types/string/concat-basic.nut
+PASSED: doc/examples/types/string/constructor.nut
+PASSED: doc/examples/types/integer/weakref.nut
+PASSED: doc/examples/types/string/hash-basic.nut
+PASSED: doc/examples/types/string/clone.nut
+PASSED: doc/examples/types/integer/tointeger.nut
+PASSED: doc/examples/types/string/join.nut
+PASSED: doc/examples/types/string/hash.nut
+PASSED: doc/examples/types/string/contains.nut
+PASSED: doc/examples/types/string/escape.nut
+PASSED: doc/examples/types/string/endswith.nut
+PASSED: doc/examples/types/string/slice.nut
+PASSED: doc/examples/types/string/startswith.nut
+PASSED: doc/examples/types/string/hasindex.nut
+PASSED: doc/examples/types/string/len.nut
+PASSED: doc/examples/types/string/concat.nut
+PASSED: doc/examples/types/string/rstrip.nut
+PASSED: doc/examples/types/string/split.nut
+PASSED: doc/examples/types/string/replace.nut
+PASSED: doc/examples/types/string/subst.nut
+PASSED: doc/examples/types/string/lstrip.nut
+PASSED: doc/examples/types/string/tofloat.nut
+PASSED: doc/examples/types/string/split_by_chars.nut
+PASSED: doc/examples/types/string/split_by_chars-basic.nut
+PASSED: doc/examples/types/table/__merge.nut
+PASSED: doc/examples/types/string/tointeger.nut
+PASSED: doc/examples/types/string/toupper.nut
+PASSED: doc/examples/types/string/tostring.nut
+PASSED: doc/examples/types/table/__update.nut
+PASSED: doc/examples/types/table/clone.nut
+PASSED: doc/examples/types/table/clear.nut
+PASSED: doc/examples/types/string/tolower.nut
+PASSED: doc/examples/types/table/findindex.nut
+PASSED: doc/examples/types/string/indexof.nut
+PASSED: doc/examples/types/string/strip.nut
+PASSED: doc/examples/types/table/filter.nut
+PASSED: doc/examples/types/table/findvalue.nut
+PASSED: doc/examples/types/table/clear-basic.nut
+PASSED: doc/examples/types/table/each.nut
+PASSED: doc/examples/types/table/constructor.nut
+PASSED: doc/examples/types/table/hasindex.nut
+PASSED: doc/examples/types/table/getfuncinfos-basic.nut
+PASSED: doc/examples/types/table/hasvalue.nut
+PASSED: doc/examples/types/table/getfuncinfos.nut
+PASSED: doc/examples/types/string/weakref.nut
+PASSED: doc/examples/types/table/len.nut
+PASSED: doc/examples/types/table/keys.nut
+PASSED: doc/examples/types/table/is_frozen.nut
+PASSED: doc/examples/types/table/each.nut
+PASSED: doc/examples/types/table/rawget.nut
+PASSED: doc/examples/types/table/keys-basic.nut
+PASSED: doc/examples/types/table/each.nut
+PASSED: doc/examples/types/table/topairs-basic.nut
+PASSED: doc/examples/types/table/reduce.nut
+PASSED: doc/examples/types/table/swap.nut
+PASSED: doc/examples/types/table/rawin.nut
+PASSED: doc/examples/types/table/rawdelete.nut
+PASSED: doc/examples/types/table/rawset.nut
+PASSED: doc/examples/types/table/tostring.nut
+PASSED: doc/examples/types/thread/getstackinfos-basic.nut
+PASSED: doc/examples/types/table/topairs.nut
+PASSED: doc/examples/types/table/map.nut
+PASSED: doc/examples/types/table/reduce.nut
+PASSED: doc/examples/types/table/values-basic.nut
+PASSED: doc/examples/types/table/values.nut
+PASSED: doc/examples/types/thread/getstackinfos.nut
+PASSED: doc/examples/types/thread/clone.nut
+PASSED: doc/examples/types/thread/call-basic.nut
+PASSED: doc/examples/types/table/weakref.nut
+PASSED: doc/examples/types/table/replace_with.nut
+PASSED: doc/examples/types/thread/getstatus.nut
+PASSED: doc/examples/types/thread/tostring.nut
+PASSED: doc/examples/types/table/map.nut
+PASSED: doc/examples/types/thread/wakeup.nut
+PASSED: doc/examples/types/table/values-basic.nut
+PASSED: doc/examples/types/table/reduce.nut
+PASSED: doc/examples/types/weakref/clone.nut
+PASSED: doc/examples/types/weakref/constructor.nut
+PASSED: doc/examples/types/thread/wakeup-basic.nut
+PASSED: doc/examples/types/thread/weakref.nut
+PASSED: doc/examples/types/thread/call.nut
+PASSED: doc/examples/types/thread/wakeupthrow.nut
+PASSED: doc/examples/types/weakref/weakref.nut
+PASSED: doc/examples/types/table/map.nut
+PASSED: doc/examples/types/weakref/ref.nut
+PASSED: doc/examples/types/weakref/tostring.nut
+PASSED: doc/examples/types/weakref/ref-basic.nut
+PASSED: doc/examples/types/table/values-basic.nut
+Failed tests: 8

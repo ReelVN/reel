@@ -1,0 +1,12 @@
+test_assertion_weakening_is_rejected (test_integrity.Integrity.test_assertion_weakening_is_rejected) ... ok
+test_comment_tokens_are_not_assertions_or_edit_interiors (test_integrity.Integrity.test_comment_tokens_are_not_assertions_or_edit_interiors) ... ok
+test_every_conversion_and_complete_bidirectional_map (test_integrity.Integrity.test_every_conversion_and_complete_bidirectional_map) ... ok
+test_literal_boundary_and_unicode_bytes (test_integrity.Integrity.test_literal_boundary_and_unicode_bytes) ... ok
+test_raw_bytes_and_original_comparisons (test_integrity.Integrity.test_raw_bytes_and_original_comparisons) ... ok
+test_snapshot_and_fixture_universe (test_integrity.Integrity.test_snapshot_and_fixture_universe) ... ok
+test_source_pin_rejects_changes (test_integrity.Integrity.test_source_pin_rejects_changes) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.490s
+
+OK
