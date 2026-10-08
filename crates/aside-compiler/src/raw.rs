@@ -111,8 +111,10 @@ pub(crate) enum RawToken {
     LineComment,
     #[token("/*")]
     BlockComment,
-    #[regex(r"[_\p{XID_Start}][_\p{XID_Continue}]*")]
+    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
+    #[regex(r"[^\x00-\x7F]")]
+    UnicodeChar,
     #[regex(r"0[xXoObB][0-9A-Za-z_]*|[0-9][0-9_]*(\.[0-9][0-9_]*)?([eE][+-]?[0-9A-Za-z_]*)?")]
     Number,
     #[token("\"")]
@@ -181,6 +183,7 @@ impl RawToken {
             Self::LineComment => SyntaxKind::LineComment,
             Self::BlockComment => SyntaxKind::BlockComment,
             Self::Ident => SyntaxKind::Ident,
+            Self::UnicodeChar => SyntaxKind::ErrorToken,
             Self::Number => SyntaxKind::Number,
             Self::StringStart => SyntaxKind::StringStart,
         }

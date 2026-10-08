@@ -40,7 +40,9 @@ empty-range diagnostics/fixes instead of invented source text. Error recovery
 retains delimiters and continues through following declarations. Logos scans
 ordinary tokens; iterative scanner modes handle nested comments/strings/holes.
 Identifiers are checked with the pinned unicode-ident XID tables (exported
-`UNICODE_VERSION`); no normalization changes the spelling.
+`UNICODE_VERSION`, currently 18.0.0). Identifier scanning uses that table
+for ASCII continuations and non-ASCII scalars, avoiding mismatched regex-table
+versions; no normalization changes the spelling.
 
 Default budgets: 8 MiB source, 1,000,000 tokens, 128 recursive/syntax levels,
 128 diagnostics. Ordinary token emission is capped exactly; one separate error-tail
@@ -65,6 +67,7 @@ cargo run -p aside-compiler --example check -- path/to/file.aside module
 cargo build -p aside-compiler --example frontend_probe --release --locked
 python3 crates/aside-compiler/bench-results/run_probe.py parse
 python3 crates/aside-compiler/bench-results/run_probe.py lex
+python3 crates/aside-compiler/bench-results/run_probe.py named
 ```
 
 `ASIDE_DUMP_TREE=1` prints the actual CST in the check example. Source diagnostics

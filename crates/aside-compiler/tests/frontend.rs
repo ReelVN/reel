@@ -698,3 +698,35 @@ fn chinese_diagnostic_renders_from_the_same_byte_labels() {
     assert!(rendered.contains("中文.aside:1:11"));
     assert!(rendered.contains(source));
 }
+
+#[test]
+fn destructuring_assignment_uses_the_shared_pattern_grammar() {
+    let p = ok(
+        "(a, [b, ...rest]) = source; ({name, score: points = default(), ...other}) = record; [a, {field: b}] = items;",
+        E::Module,
+    );
+    assert_eq!(has(&p, K::AssignExpr), 3);
+    assert!(has(&p, K::TuplePattern) > 0);
+    assert!(has(&p, K::ArrayPattern) > 0);
+    assert!(has(&p, K::ObjectPattern) > 0);
+    assert_eq!(has(&p, K::RestPattern), 2);
+    ok("(a.b) = value; (a[0]) = value;", E::Module);
+    rejects("let x = ((a,b) = source);", E::Module, D::InvalidAssignment);
+    rejects("(...items, x)", E::Expression, D::ExpectedExpression);
+}
+
+#[test]
+fn identifier_rules_use_the_pinned_xid_table_even_when_logos_regex_tables_differ() {
+    assert_eq!(aside_compiler::UNICODE_VERSION, (18, 0, 0));
+    assert!(unicode_ident::is_xid_start('\u{11db0}'));
+    for source in [
+        "let \u{11db0} = 1;",
+        "let ascii\u{11db0}_中 = 1;",
+        "let if中 = 1;",
+        "let a\u{301} = 1;",
+    ] {
+        let p = ok(source, E::Module);
+        ranges(&p, source);
+    }
+    rejects("let \u{301} = 1;", E::Module, D::InvalidCharacter);
+}

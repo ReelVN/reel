@@ -6,7 +6,8 @@ use std::{alloc::System, hint::black_box, time::Instant};
 static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 const UNIT: &str = "// 固定源码：注释与中文\nfn panel(title, children = []) { column(gap: 12) { text(title); for child in children { child; } } }\nlet view = panel(f\"音量：{settings.music}\") { slider(value: bind(settings.music), min: 0, max: 1); };\nlet data = {...base, [key]: (1, 2), items: [...items, 3]};\n";
 fn live(stats: Stats) -> isize {
-    stats.bytes_allocated as isize + stats.bytes_reallocated - stats.bytes_deallocated as isize
+    // stats_alloc includes realloc growth/shrink in allocated/deallocated bytes.
+    stats.bytes_allocated as isize - stats.bytes_deallocated as isize
 }
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "parse".into());

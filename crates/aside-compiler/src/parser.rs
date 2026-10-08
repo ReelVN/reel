@@ -498,8 +498,61 @@ impl Parser<'_> {
         self.leave();
         lhs
     }
+    // Recognize an assignment's structural left side using bounded token
+    // lookahead, then reuse the same pattern production as let/for/match.
+    // Ordinary parenthesized locations (a.b)/(a[i]) remain expressions.
+    fn assignment_pattern_ahead(&self) -> bool {
+        let opening = self.peek();
+        let closing = match opening {
+            K::LParen => K::RParen,
+            K::LBracket => K::RBracket,
+            _ => return false,
+        };
+        let mut tokens = self.tokens[self.cursor..]
+            .iter()
+            .filter(|t| !t.kind.is_trivia());
+        tokens.next();
+        let mut stack = vec![closing];
+        let mut structural = opening == K::LBracket;
+        let mut first = true;
+        for token in tokens.by_ref() {
+            let kind = token.kind;
+            structural |= kind == K::Comma
+                || kind == K::Ellipsis
+                || first && matches!(kind, K::LBrace | K::LBracket | K::RParen);
+            first = false;
+            let close = match kind {
+                K::LParen | K::QuestionParen => Some(K::RParen),
+                K::LBracket | K::QuestionBracket => Some(K::RBracket),
+                K::LBrace => Some(K::RBrace),
+                K::InterpolationStart => Some(K::InterpolationEnd),
+                _ => None,
+            };
+            if let Some(close) = close {
+                if stack.len() >= self.limits.max_depth {
+                    return false;
+                }
+                stack.push(close);
+            } else if matches!(
+                kind,
+                K::RParen | K::RBracket | K::RBrace | K::InterpolationEnd
+            ) {
+                if stack.pop() != Some(kind) {
+                    return false;
+                }
+                if stack.is_empty() {
+                    return structural && tokens.next().is_some_and(|t| t.kind == K::Eq);
+                }
+            }
+        }
+        false
+    }
     fn atom(&mut self, head: bool, value: bool) -> Expr {
         let negative = std::mem::take(&mut self.allow_min);
+        if self.assignment_pattern_ahead() {
+            self.pattern();
+            return Expr::target(K::TuplePattern);
+        }
         match self.peek() {
             K::Ident => {
                 self.start(K::NameExpr);

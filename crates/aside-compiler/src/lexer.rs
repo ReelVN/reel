@@ -193,7 +193,24 @@ impl Scanner<'_> {
                 );
             }
         }
+        // Logos regex tables and unicode-ident may carry different Unicode
+        // releases. Scan non-ASCII identifier scalars using only the pinned
+        // unicode-ident table, including continuations of ASCII prefixes.
+        if kind == K::ErrorToken
+            && self.source[start..self.pos]
+                .chars()
+                .next()
+                .is_some_and(unicode_ident::is_xid_start)
+        {
+            kind = K::Ident;
+        }
         if kind == K::Ident {
+            while let Some(c) = self.source[self.pos..].chars().next() {
+                if c != '_' && !unicode_ident::is_xid_continue(c) {
+                    break;
+                }
+                self.pos += c.len_utf8();
+            }
             let text = &self.source[start..self.pos];
             kind = keyword(text);
             if kind == K::Ident && !valid_identifier(text) {
