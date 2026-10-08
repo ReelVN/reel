@@ -1035,15 +1035,23 @@ impl Vm {
         // Only values actually written by the adapter belong to this view.
         self.initialized_prefix(n.roots, 2, n.continuation_len)
     }
-    pub fn host_callback_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
+    /// Original value of the current callback or continued-wait resume input.
+    pub fn host_resume_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
         let n = self.ticket(ticket)?;
         if !matches!(
             ticket.input,
-            NativeInput::CallbackReturned | NativeInput::CallbackFault
+            NativeInput::CallbackReturned
+                | NativeInput::CallbackFault
+                | NativeInput::WaitingReturned
+                | NativeInput::WaitingFault
         ) {
             return Err(VmError::InvalidTicket);
         }
         self.value(n.roots, 0)
+    }
+    /// Compatibility alias for the unified resume-input getter.
+    pub fn host_callback_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
+        self.host_resume_value(ticket)
     }
     pub fn host_callback_fault(&self, ticket: HostTicket) -> Result<Option<FaultInfo>, VmError> {
         let n = self.ticket(ticket)?;

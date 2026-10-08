@@ -2402,6 +2402,7 @@ fn full_native_fault_identity_survives_continue_wait_and_repeated_callbacks_then
             .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
             .unwrap();
         let mut original = None;
+        let mut pending_ticket = None;
         let mut callback_count = 0;
         let delivery = loop {
             match task_slice(&mut v, task) {
@@ -2438,10 +2439,21 @@ fn full_native_fault_identity_survives_continue_wait_and_repeated_callbacks_then
                                 v.host_callback_fault(t).unwrap().unwrap().id,
                                 original.unwrap().id
                             );
+                            pending_ticket = Some(t);
                             v.respond(t, HostResponse::Pending(t.wait_id())).unwrap();
+                            assert!(matches!(
+                                v.host_resume_value(t),
+                                Err(VmError::InvalidTicket)
+                            ));
                         }
-                        (NativeInput::WaitingReturned, 2) => v
-                            .respond(
+                        (NativeInput::WaitingReturned, 2) => {
+                            assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(42));
+                            assert_eq!(v.host_callback_value(t).unwrap().as_int(), Some(42));
+                            assert!(matches!(
+                                v.host_resume_value(pending_ticket.unwrap()),
+                                Err(VmError::InvalidTicket)
+                            ));
+                            v.respond(
                                 t,
                                 HostResponse::CallScript {
                                     closure,
@@ -2449,7 +2461,8 @@ fn full_native_fault_identity_survives_continue_wait_and_repeated_callbacks_then
                                     continuation: continue_at(3, FaultRetention::Preserve),
                                 },
                             )
-                            .unwrap(),
+                            .unwrap();
+                        }
                         (NativeInput::CallbackFault, 3) => {
                             callback_count += 1;
                             assert_ne!(
@@ -3019,6 +3032,7 @@ fn native_fault_capacity_retains_pending_source_and_resumes_without_repeating_ho
                         .unwrap();
                     }
                     (NativeInput::WaitingFault, 2) => {
+                        assert_eq!(v.host_resume_value(t).unwrap().as_int(), Some(41));
                         // Forwarding an already retained fault needs no extra fault slot.
                         assert_eq!(
                             v.host_callback_fault(t).unwrap().unwrap().id,

@@ -29,7 +29,12 @@ Every node holds an Rc CodeLease with the actual VerifiedProgram and its byte
 reservation. A frame/FaultBuild uses the VM's lease; completed graph nodes keep
 it alive independently of the VM's strong reference. GC drops each node's lease
 after its three traced edges have been released in charged steps. The last
-strong reference releases the program/reservation. Versions are not merely
+strong reference currently releases the entire program/reservation synchronously.
+The live Vm holds its own strong reference, so current public VM GC cannot be
+that last release. Hot reload or independently surviving retired versions must
+add sliced/controlled code retirement; one GC object quota does not bound whole
+package destruction. The private graph lifetime test proves reference release,
+not bounded final-version destruction. Versions are not merely
 integer labels in diagnostics. Live-reload registration remains a separate
 module integration task; this VM currently loads one immutable package version.
 
@@ -63,6 +68,10 @@ identity. Preserve/Replace is explicit on Continue and CallScript. Pending keeps
 both continuation Values and fault slots. Waiting completion with an active
 continuation issues WaitingReturned/WaitingFault at the current version/stage,
 which permits continued algorithm steps; a plain native wait commits directly.
+`host_resume_value(ticket)` reads the original value of CallbackReturned,
+CallbackFault, WaitingReturned or WaitingFault; the old host_callback_value
+name remains an alias. Ticket validation precedes reads, so consumed/replaced
+tickets cannot read a later resume's value.
 Both completion modes consume the wait once. New callback/continued-wait faults
 must be published to a fault slot before releasing their source. Ready publishes
 its result before native teardown releases all retained faults.
