@@ -479,7 +479,15 @@ impl Heap {
         }
         if kind == ObjectKind::Cell {
             self.shade(input[0]);
-            return Ok(self.allocate(kind, Payload::Cell(crate::cell::CellState { value: Some(input[0]), contract: crate::CellContract::untyped_mutable() }), None, 0));
+            return Ok(self.allocate(
+                kind,
+                Payload::Cell(crate::cell::CellState {
+                    value: Some(input[0]),
+                    contract: crate::CellContract::untyped_mutable(),
+                }),
+                None,
+                0,
+            ));
         }
         let chunks = (input.len() as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64);
         self.ensure_bytes(chunks * VALUE_CHUNK_BYTES)?;
@@ -549,14 +557,16 @@ impl Heap {
             return Err(HeapError::WrongKind);
         }
         if let Payload::Cell(cell) = &obj.payload {
-            if position != 0 { return Err(HeapError::OutOfBounds); }
+            if position != 0 {
+                return Err(HeapError::OutOfBounds);
+            }
             return cell.value.ok_or(HeapError::UninitializedCell);
         }
         obj.payload.edge(position).ok_or(HeapError::OutOfBounds)
     }
     fn editable_values(&self, key: HeapKey) -> Result<&Object, HeapError> {
         let obj = self.object(key)?;
-        if !obj.kind.values() || obj.kind == ObjectKind::Tuple {
+        if !obj.kind.values() || matches!(obj.kind, ObjectKind::Tuple | ObjectKind::Closure) {
             return Err(HeapError::WrongKind);
         }
         Ok(obj)
@@ -570,7 +580,9 @@ impl Heap {
     ) -> Result<(), HeapError> {
         let key = self.key(target)?;
         if self.object(key)?.kind == ObjectKind::Cell {
-            if position != 0 { return Err(HeapError::OutOfBounds); }
+            if position != 0 {
+                return Err(HeapError::OutOfBounds);
+            }
             return self.cell_write(target, value);
         }
         let obj = self.editable_values(key)?;

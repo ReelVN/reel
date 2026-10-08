@@ -53,6 +53,8 @@ pub struct HostTicket {
     pub owner: RootOwner,
     pub location: Location,
     pub input: NativeInput,
+    pub context: Context,
+    pub effects: Effects,
 }
 impl HostTicket {
     pub fn wait_id(self) -> WaitId {
@@ -202,6 +204,7 @@ pub struct VmStats {
     pub heap: HeapStats,
     pub slots: FrameSlotsStats,
     pub program_bytes: u64,
+    pub control_bytes: u64,
 }
 
 /// This is the dispatcher support list, never a claim about source compilation.
@@ -301,6 +304,15 @@ enum ScriptPhase {
         binding: u32,
     },
     Body,
+    Equality {
+        dest: Reg,
+        negated: bool,
+    },
+    EqualityCleanup {
+        dest: Reg,
+        negated: bool,
+        result: Result<bool, FaultKind>,
+    },
     Exit {
         origin: Pc,
         reason: ExitReason,
@@ -363,6 +375,7 @@ struct NativeFrame {
     owner: RootOwner,
     location: Location,
     ret: ReturnTo,
+    callback_fault: Option<FaultInfo>,
     phase: NativePhase,
 }
 #[derive(Clone, Copy)]
@@ -401,11 +414,15 @@ pub struct Vm {
     frames: ChargedVec<Frame>,
     unwinds: ChargedVec<Unwind>,
     scratch: ChargedVec<Value>,
+    text_scratch: ChargedVec<u8>,
+    equality_cursors: ChargedVec<u32>,
+    equality_roots: RootRangeToken,
     globals: RootRangeToken,
     constants: RootRangeToken,
     delivery: RootRangeToken,
     heap: Heap,
     limits: VmLimits,
+    control_charge: Reservation,
     next_id: u64,
     terminal: Option<Terminal>,
     cancelling: bool,
@@ -485,6 +502,11 @@ impl Vm {
         let usage = heap.budget_usage();
         let program_charge = Reservation::new(&usage, program.stats().owned_capacity_bytes as u64)?;
         let mut slots = FrameSlots::new(&mut heap, limits.slots)?;
+        let control_bytes = std::mem::size_of::<Self>()
+            - std::mem::size_of::<Heap>()
+            - std::mem::size_of::<FrameSlots>()
+            - std::mem::size_of::<VerifiedProgram>();
+        let control_charge = Reservation::new(&usage, control_bytes as u64)?;
         let frames = ChargedVec::new(&usage, limits.max_frames as usize)?;
         let unwinds = ChargedVec::new(&usage, limits.max_unwinds as usize)?;
         let scratch = ChargedVec::new(
@@ -496,6 +518,14 @@ impl Vm {
                     .max()
                     .unwrap_or(3),
             ) as usize,
+        )?;
+        let text_scratch = ChargedVec::new(&usage, limits.heap.max_mutation_bytes as usize)?;
+        let equality_cursors = ChargedVec::new(&usage, limits.max_unwinds as usize)?;
+        let equality_roots = slots.open(
+            &mut heap,
+            RootOwner(u64::MAX),
+            RootKind::Work,
+            limits.max_unwinds.checked_mul(2).ok_or(VmError::Limit)?,
         )?;
         let constants = slots.open(
             &mut heap,
@@ -558,11 +588,15 @@ impl Vm {
             frames,
             unwinds,
             scratch,
+            text_scratch,
+            equality_cursors,
+            equality_roots,
             globals,
             constants,
             delivery,
             heap,
             limits,
+            control_charge,
             next_id: 1,
             terminal: None,
             cancelling: false,
@@ -601,6 +635,7 @@ impl Vm {
             heap: self.heap.stats(),
             slots: self.slots.stats(),
             program_bytes: self.program_charge.bytes(),
+            control_bytes: self.control_charge.bytes(),
         }
     }
     fn serial(&mut self) -> Result<u64, VmError> {
@@ -609,11 +644,16 @@ impl Vm {
         Ok(id)
     }
     fn index(&self, id: FrameId) -> Result<usize, VmError> {
-        self.frames
-            .data
-            .iter()
-            .position(|f| f.id() == id)
-            .ok_or(VmError::Contract("missing return frame"))
+        // Explicit stack return/argument targets are the current frame or its
+        // immediate caller. No per-register or per-call map/linear search.
+        let len = self.frames.data.len();
+        if len > 0 && self.frames.data[len - 1].id() == id {
+            return Ok(len - 1);
+        }
+        if len > 1 && self.frames.data[len - 2].id() == id {
+            return Ok(len - 2);
+        }
+        Err(VmError::Contract("missing immediate caller"))
     }
     fn loc(&self, s: ScriptFrame, pc: Pc) -> Location {
         Location {
@@ -1006,6 +1046,7 @@ impl Vm {
                 reg: dest,
                 call: s.pc,
             },
+            callback_fault: None,
             phase: NativePhase::Copy { source, index: 0 },
         }));
         Ok(())
@@ -1029,6 +1070,16 @@ impl Vm {
             return Err(VmError::InvalidTicket);
         }
         self.value(n.roots, 0)
+    }
+    pub fn host_callback_fault(&self, ticket: HostTicket) -> Result<Option<FaultInfo>, VmError> {
+        let n = self.ticket(ticket)?;
+        if !matches!(
+            ticket.input,
+            NativeInput::CallbackReturned | NativeInput::CallbackFault
+        ) {
+            return Err(VmError::InvalidTicket);
+        }
+        Ok(n.callback_fault)
     }
     fn ticket(&self, ticket: HostTicket) -> Result<NativeFrame, VmError> {
         if ticket.heap != self.heap.id() || ticket.epoch != self.heap.epoch() || self.cancelling {
@@ -1205,6 +1256,16 @@ impl Vm {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
             if self.cancelling {
+                if !self.equality_cursors.data.is_empty() {
+                    if !m.take(0, 1, 0) {
+                        return Ok(RunOutcome::BudgetYield(m.usage));
+                    }
+                    let depth = self.equality_cursors.data.len() as u32 - 1;
+                    self.clear(self.equality_roots, depth * 2)?;
+                    self.clear(self.equality_roots, depth * 2 + 1)?;
+                    self.equality_cursors.data.pop();
+                    continue;
+                }
                 if let Some(u) = self.unwinds.data.last().copied() {
                     if !m.take(0, self.release_cost(1), 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
@@ -1437,7 +1498,25 @@ impl Vm {
                     .expect("verified spec")
                     .opcode;
                 let [a, b, c] = instruction.operands;
-                let (work, allocation) = self.instruction_cost(s, op, a, b, c)?;
+                let (work, allocation) = match self.instruction_cost(s, op, a, b, c) {
+                    Ok(cost) => cost,
+                    Err(error) => {
+                        if !m.take(1, 1, 0) {
+                            return Ok(false);
+                        }
+                        self.put(s.env, 1, Value::NULL)?;
+                        s.phase = ScriptPhase::Exit {
+                            origin: s.pc,
+                            reason: ExitReason::Throw(FaultInfo {
+                                kind: vm_fault(error),
+                                location: self.loc(s, s.pc),
+                            }),
+                            skip: None,
+                        };
+                        self.frames.data[top] = Frame::Script(s);
+                        return Ok(true);
+                    }
+                };
                 if !m.take(1, work, allocation) {
                     return Ok(false);
                 }
@@ -1458,6 +1537,46 @@ impl Vm {
                             }),
                             skip: None,
                         };
+                    }
+                }
+            }
+            ScriptPhase::Equality { dest, negated } => {
+                if !m.take(0, 1, 0) {
+                    return Ok(false);
+                }
+                self.equality_step(&mut s, dest, negated)?;
+            }
+            ScriptPhase::EqualityCleanup {
+                dest,
+                negated,
+                result,
+            } => {
+                if !m.take(0, 1, 0) {
+                    return Ok(false);
+                }
+                if !self.equality_cursors.data.is_empty() {
+                    let depth = self.equality_cursors.data.len() as u32 - 1;
+                    self.clear(self.equality_roots, depth * 2)?;
+                    self.clear(self.equality_roots, depth * 2 + 1)?;
+                    self.equality_cursors.data.pop();
+                } else {
+                    match result {
+                        Ok(equal) => {
+                            self.put(s.regs, dest.0, Value::bool(equal != negated))?;
+                            s.pc.0 += 1;
+                            s.phase = ScriptPhase::Body;
+                        }
+                        Err(kind) => {
+                            self.put(s.env, 1, Value::NULL)?;
+                            s.phase = ScriptPhase::Exit {
+                                origin: s.pc,
+                                reason: ExitReason::Throw(FaultInfo {
+                                    kind,
+                                    location: self.loc(s, s.pc),
+                                }),
+                                skip: None,
+                            };
+                        }
                     }
                 }
             }
@@ -1510,6 +1629,20 @@ impl Vm {
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
+            Opcode::Add => {
+                let left = self.slots.read(at(s.regs, b))?;
+                let right = self.slots.read(at(s.regs, _c))?;
+                if self.is_text(left, ObjectKind::String) && self.is_text(right, ObjectKind::String)
+                {
+                    let n = self.heap.info(left)?.len as u64 + self.heap.info(right)?.len as u64;
+                    (
+                        n * 3 + 1,
+                        n.div_ceil(BYTE_CHUNK_LEN as u64) * BYTE_CHUNK_BYTES,
+                    )
+                } else {
+                    (1, 0)
+                }
+            }
             Opcode::Call => {
                 let Descriptor::Call(d) = &f.descriptors[b as usize] else {
                     unreachable!()
@@ -1549,7 +1682,18 @@ impl Vm {
                 (self.program.package().modules.len() as u64 + 1, 0)
             }
             Opcode::ArgsNew => (1, 0),
-            Opcode::ArgsPush | Opcode::ArgsNamed => (2, VALUE_CHUNK_BYTES),
+            Opcode::ArgsPush | Opcode::ArgsNamed => {
+                let packed = self.slots.read(at(s.regs, _a))?;
+                let len = self.heap.info(packed)?.len;
+                (
+                    2,
+                    if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
+                        VALUE_CHUNK_BYTES
+                    } else {
+                        0
+                    },
+                )
+            }
             _ => (1, 0),
         })
     }
@@ -1596,7 +1740,7 @@ impl Vm {
                 .clear(&mut self.heap, at(s.regs, a))
                 .map_err(heap_fault)?,
             Opcode::CellNew => {
-                let binding = f.bindings[b as usize].clone();
+                let binding = f.bindings[a as usize].clone();
                 let cell = self
                     .heap
                     .alloc_language_cell(self.contract(
@@ -1605,7 +1749,7 @@ impl Vm {
                         binding.mutable,
                     ))
                     .map_err(heap_fault)?;
-                self.write(*s, r(a), cell)?;
+                self.write(*s, binding.storage.reg(), cell)?;
             }
             Opcode::CellRead => {
                 let cell = self.read(*s, r(b))?;
@@ -1733,9 +1877,32 @@ impl Vm {
             | Opcode::Ge => {
                 let left = self.read(*s, r(b))?;
                 let right = self.read(*s, r(c))?;
-                // Numeric and scalar/identity equality. Structural text/tuple operations
-                // have separate bounded stages and are rejected by this core on use.
-                let v = binary(op, left, right)?;
+                if matches!(op, Opcode::Eq | Opcode::Ne)
+                    && left.tag() == ValueTag::Object
+                    && right.tag() == ValueTag::Object
+                    && matches!(
+                        self.heap.info(left).map_err(heap_fault)?.kind,
+                        ObjectKind::Tuple | ObjectKind::String | ObjectKind::Bytes
+                    )
+                {
+                    self.equality_cursors.data.clear();
+                    self.put(self.equality_roots, 0, left).map_err(vm_fault)?;
+                    self.put(self.equality_roots, 1, right).map_err(vm_fault)?;
+                    self.equality_cursors.data.push(0);
+                    s.phase = ScriptPhase::Equality {
+                        dest: r(a),
+                        negated: op == Opcode::Ne,
+                    };
+                    return Ok(false);
+                }
+                let v = if op == Opcode::Add
+                    && self.is_text(left, ObjectKind::String)
+                    && self.is_text(right, ObjectKind::String)
+                {
+                    self.concat_text(left, right)?
+                } else {
+                    binary(op, left, right)?
+                };
                 self.write(*s, r(a), v)?;
             }
             Opcode::MakeClosure => {
@@ -1783,7 +1950,11 @@ impl Vm {
                 }
                 self.heap
                     .budget_usage()
-                    .ensure(VALUE_CHUNK_BYTES)
+                    .ensure(if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
+                        VALUE_CHUNK_BYTES
+                    } else {
+                        0
+                    })
                     .map_err(heap_fault)?;
                 self.heap
                     .array_push(
@@ -1953,6 +2124,117 @@ impl Vm {
         s.pc.0 += 1;
         Ok(false)
     }
+    fn is_text(&self, v: Value, kind: ObjectKind) -> bool {
+        v.tag() == ValueTag::Object && self.heap.info(v).is_ok_and(|i| i.kind == kind)
+    }
+    fn concat_text(&mut self, left: Value, right: Value) -> Result<Value, FaultKind> {
+        let left_len = self.heap.info(left).map_err(heap_fault)?.len as usize;
+        let right_len = self.heap.info(right).map_err(heap_fault)?.len as usize;
+        let len = left_len.checked_add(right_len).ok_or(FaultKind::Resource)?;
+        if len > self.text_scratch.data.capacity() {
+            return Err(FaultKind::Resource);
+        }
+        self.text_scratch.data.resize(len, 0);
+        self.heap
+            .read_bytes(left, 0, &mut self.text_scratch.data[..left_len])
+            .map_err(heap_fault)?;
+        self.heap
+            .read_bytes(right, 0, &mut self.text_scratch.data[left_len..])
+            .map_err(heap_fault)?;
+        let text =
+            std::str::from_utf8(&self.text_scratch.data).map_err(|_| FaultKind::InvalidState)?;
+        let result = self.heap.alloc_string(text).map_err(heap_fault);
+        self.text_scratch.data.clear();
+        result
+    }
+    fn equality_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        dest: Reg,
+        negated: bool,
+    ) -> Result<(), VmError> {
+        let depth = self.equality_cursors.data.len() as u32 - 1;
+        let offset = self.equality_cursors.data[depth as usize];
+        let left = self.value(self.equality_roots, depth * 2)?;
+        let right = self.value(self.equality_roots, depth * 2 + 1)?;
+        let result = if left.tag() == ValueTag::Object && right.tag() == ValueTag::Object {
+            let l = self.heap.info(left)?;
+            let r = self.heap.info(right)?;
+            if l.kind != r.kind {
+                Some(false)
+            } else {
+                match l.kind {
+                    ObjectKind::String | ObjectKind::Bytes => {
+                        if l.len != r.len {
+                            Some(false)
+                        } else if offset == l.len {
+                            Some(true)
+                        } else {
+                            let mut a = [0];
+                            let mut b = [0];
+                            self.heap.read_bytes(left, offset, &mut a)?;
+                            self.heap.read_bytes(right, offset, &mut b)?;
+                            self.equality_cursors.data[depth as usize] += 1;
+                            if a != b { Some(false) } else { None }
+                        }
+                    }
+                    ObjectKind::Tuple => {
+                        if l.len != r.len {
+                            Some(false)
+                        } else if offset == l.len {
+                            Some(true)
+                        } else {
+                            if self.equality_cursors.data.len() == self.limits.max_unwinds as usize
+                            {
+                                s.phase = ScriptPhase::EqualityCleanup {
+                                    dest,
+                                    negated,
+                                    result: Err(FaultKind::Resource),
+                                };
+                                return Ok(());
+                            }
+                            let a = self.heap.get_field(left, offset)?;
+                            let b = self.heap.get_field(right, offset)?;
+                            self.equality_cursors.data[depth as usize] += 1;
+                            self.put(self.equality_roots, (depth + 1) * 2, a)?;
+                            self.put(self.equality_roots, (depth + 1) * 2 + 1, b)?;
+                            self.equality_cursors.data.push(0);
+                            None
+                        }
+                    }
+                    _ => Some(left.same_bits(right)),
+                }
+            }
+        } else {
+            Some(
+                binary(Opcode::Eq, left, right)
+                    .map_err(|_| VmError::Contract("equality scalar"))?
+                    .as_bool()
+                    .unwrap(),
+            )
+        };
+        if let Some(equal) = result {
+            if !equal {
+                s.phase = ScriptPhase::EqualityCleanup {
+                    dest,
+                    negated,
+                    result: Ok(false),
+                };
+            } else {
+                self.clear(self.equality_roots, depth * 2)?;
+                self.clear(self.equality_roots, depth * 2 + 1)?;
+                self.equality_cursors.data.pop();
+                if self.equality_cursors.data.is_empty() {
+                    s.phase = ScriptPhase::EqualityCleanup {
+                        dest,
+                        negated,
+                        result: Ok(true),
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
     fn exit_step(
         &mut self,
         s: &mut ScriptFrame,
@@ -1978,6 +2260,7 @@ impl Vm {
             }
             self.slots.release(&mut self.heap, u.value)?;
             self.unwinds.data.pop();
+            return Ok(());
         }
         let handler = match reason {
             ExitReason::Throw(_) => {
@@ -2109,6 +2392,7 @@ impl Vm {
                     return Err(VmError::Contract("native callback return target"));
                 };
                 self.put(n.roots, 0, value)?;
+                n.callback_fault = error;
                 n.phase = NativePhase::Resume(if error.is_some() {
                     NativeInput::CallbackFault
                 } else {
@@ -2198,6 +2482,8 @@ impl Vm {
                     owner: n.owner,
                     location: n.location,
                     input,
+                    context: n.context,
+                    effects: n.effects,
                 };
                 if input == NativeInput::Entry {
                     self.native_entries += 1;
