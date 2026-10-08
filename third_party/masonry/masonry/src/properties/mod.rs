@@ -1,4 +1,4 @@
-// Copyright 2026 the Xilem Authors and Reel contributors
+// Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 //! Properties required by selected widgets.
 mod content_color;

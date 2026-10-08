@@ -1,4 +1,4 @@
-// Copyright 2026 the Xilem Authors and Reel contributors
+// Copyright 2018 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 //! Selected upstream real widgets.
 #![expect(

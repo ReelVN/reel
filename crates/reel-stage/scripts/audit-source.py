@@ -17,6 +17,13 @@ for line in manifest.read_text().splitlines():
     source = (args.upstream / name).read_bytes()
     assert hashlib.sha256(source).hexdigest() == digest, f"upstream hash: {name}"
     assert (vendor / name).is_file(), f"missing retained source: {name}"
+    if name.endswith("LICENSE"):
+        assert (vendor / name).read_bytes() == source, f"changed upstream license: {name}"
+    if name.endswith(".rs"):
+        local = (vendor / name).read_text()
+        for header in source.decode().splitlines()[:4]:
+            if header.startswith(("// Copyright", "// SPDX-")):
+                assert header in local, f"missing upstream license header: {name}"
     originals[name] = source
 
 local_source = {"masonry_core/src/app/presented_geometry.rs"}

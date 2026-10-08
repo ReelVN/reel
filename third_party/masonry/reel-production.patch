@@ -420,8 +420,7 @@
 --- a/masonry/src/properties/mod.rs
 +++ b/masonry/src/properties/mod.rs
 @@ -1,40 +1,14 @@
--// Copyright 2025 the Xilem Authors
-+// Copyright 2026 the Xilem Authors and Reel contributors
+ // Copyright 2025 the Xilem Authors
  // SPDX-License-Identifier: Apache-2.0
 -
 -//! Types and logic commonly used across widgets.
@@ -1464,8 +1463,7 @@
 --- a/masonry/src/widgets/mod.rs
 +++ b/masonry/src/widgets/mod.rs
 @@ -1,88 +1,15 @@
--// Copyright 2018 the Xilem Authors and the Druid Authors
-+// Copyright 2026 the Xilem Authors and Reel contributors
+ // Copyright 2018 the Xilem Authors and the Druid Authors
  // SPDX-License-Identifier: Apache-2.0
 -
 -//! Common widgets.
