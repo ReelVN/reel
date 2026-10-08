@@ -18,6 +18,8 @@ pub struct AnalysisLimits {
     pub max_diagnostics: usize,
     pub max_depth: usize,
     pub max_imports: usize,
+    pub max_modules: usize,
+    pub max_total_source_bytes: usize,
 }
 impl Default for AnalysisLimits {
     fn default() -> Self {
@@ -29,6 +31,8 @@ impl Default for AnalysisLimits {
             max_diagnostics: 128,
             max_depth: 128,
             max_imports: 10_000,
+            max_modules: 10_000,
+            max_total_source_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -39,21 +43,31 @@ pub enum AnalysisContext {
     Generator,
     NoWait,
 }
+/// A binding supplied by the real surrounding author scope of a fragment.
+#[derive(Debug, Clone)]
+pub struct EnclosingBinding {
+    pub symbol: ExternalSymbol,
+    pub mutable: bool,
+}
 #[derive(Debug, Clone)]
 pub struct AnalysisOptions {
     pub module: String,
+    pub version: String,
     pub context: AnalysisContext,
     pub limits: AnalysisLimits,
     /// Explicitly supplied host/prelude environment, never an allow-all fallback.
     pub hosts: Vec<ExternalSymbol>,
+    pub enclosing: Vec<EnclosingBinding>,
 }
 impl Default for AnalysisOptions {
     fn default() -> Self {
         Self {
             module: "main".into(),
+            version: "source".into(),
             context: AnalysisContext::Module,
             limits: AnalysisLimits::default(),
             hosts: Vec::new(),
+            enclosing: Vec::new(),
         }
     }
 }
@@ -62,6 +76,7 @@ pub struct Analysis {
     module: Option<AnalyzedModule>,
     pub diagnostics: Vec<Diagnostic>,
     pub exhausted: bool,
+    pub stats: crate::hir::AnalysisStats,
 }
 impl Analysis {
     pub fn is_ok(&self) -> bool {
@@ -95,6 +110,7 @@ pub fn analyze(
             module: None,
             diagnostics: parsed.diagnostics().to_vec(),
             exhausted: parsed.exhausted(),
+            stats: crate::hir::AnalysisStats::default(),
         };
     }
     match project::project(parsed, options.limits) {
@@ -103,6 +119,7 @@ pub fn analyze(
             module: None,
             diagnostics: vec![diagnostic],
             exhausted: true,
+            stats: crate::hir::AnalysisStats::default(),
         },
     }
 }

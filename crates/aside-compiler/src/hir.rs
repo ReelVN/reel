@@ -138,6 +138,7 @@ impl Hir {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Any,
+    Closure,
     Null,
     Bool,
     Int,
@@ -302,10 +303,15 @@ pub struct AnalysisStats {
     pub captures: usize,
     pub work_units: usize,
     pub retained_bytes: usize,
+    pub symbol_bytes: usize,
+    pub capture_bytes: usize,
+    pub imports: usize,
 }
 /// Created only by successful analysis; future lowering must require this wrapper.
 #[derive(Debug, Clone)]
 pub struct AnalyzedModule {
+    pub(crate) canonical_path: String,
+    pub(crate) version: String,
     pub(crate) hir: Hir,
     pub(crate) facts: Vec<NodeFacts>,
     pub(crate) types: Vec<Type>,
@@ -318,6 +324,12 @@ pub struct AnalyzedModule {
     pub(crate) external: Vec<ExternalBinding>,
 }
 impl AnalyzedModule {
+    pub fn canonical_path(&self) -> &str {
+        &self.canonical_path
+    }
+    pub fn version(&self) -> &str {
+        &self.version
+    }
     pub fn hir(&self) -> &Hir {
         &self.hir
     }

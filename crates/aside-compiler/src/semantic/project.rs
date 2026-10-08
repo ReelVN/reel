@@ -1,6 +1,7 @@
 use super::AnalysisLimits;
 use crate::hir::*;
 use crate::{Diagnostic, DiagnosticCode as D, Parse, SyntaxKind as K, SyntaxNode};
+use smallvec::SmallVec;
 use std::collections::HashMap;
 
 pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Diagnostic> {
@@ -45,7 +46,7 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
             elements: 0..0,
             form: Form::Sequence,
         });
-        let mut edges = Vec::new();
+        let mut edges = SmallVec::<[HirElement; 8]>::new();
         for element in syntax.children_with_tokens() {
             match element {
                 rowan::NodeOrToken::Node(node) => edges.push(HirElement::Node(visit(

@@ -1,6 +1,7 @@
 use super::*;
 use crate::hir::*;
 use crate::{DiagnosticCode as D, RelatedRange, SyntaxKind as K, TextRange};
+use smallvec::{SmallVec, smallvec};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::size_of;
 use std::sync::Arc;
@@ -129,6 +130,8 @@ pub(super) fn analyze(
     ];
     let mut b = Binder {
         out: AnalyzedModule {
+            canonical_path: options.module.clone(),
+            version: options.version.clone(),
             hir,
             facts,
             types,
@@ -204,10 +207,29 @@ pub(super) fn analyze(
         }
     }
     b.scope = b.new_scope(Some(ScopeId(0)), ctx.function, span);
+    for binding in &options.enclosing {
+        let name = b.intern_name(&binding.symbol.name);
+        let ty = b.hint(&binding.symbol.ty);
+        if let Some(symbol) = b.declare(Declaration {
+            name,
+            span: TextRange::empty(span.start()),
+            kind: SymbolKind::Local,
+            mutable: binding.mutable,
+            ty,
+            owner: ctx.function,
+            iteration: false,
+        }) {
+            b.initialized[symbol.0 as usize] = true;
+            b.out.symbols[symbol.0 as usize].initialization = Initialization::External;
+            b.external.insert(symbol, Arc::new(binding.symbol.clone()));
+        }
+    }
     b.block(NodeId(0), &ctx, false);
     b.effects();
     b.account();
+    let stats = b.out.stats.clone();
     Analysis {
+        stats,
         module: if b.diagnostics.is_empty() && !b.exhausted {
             Some(b.out)
         } else {
@@ -224,10 +246,10 @@ impl Binder<'_> {
     fn span(&self, n: NodeId) -> TextRange {
         self.out.hir.node(n).span
     }
-    fn children(&self, n: NodeId) -> Vec<NodeId> {
+    fn children(&self, n: NodeId) -> SmallVec<[NodeId; 4]> {
         self.out.hir.children(n).collect()
     }
-    fn tokens(&self, n: NodeId) -> Vec<HirToken> {
+    fn tokens(&self, n: NodeId) -> SmallVec<[HirToken; 4]> {
         self.out.hir.tokens(n).collect()
     }
     fn token(&self, n: NodeId, k: K) -> Option<HirToken> {
@@ -850,6 +872,16 @@ impl Binder<'_> {
         let children = self.children(n);
         let result = match self.kind(n) {
             HirKind::NamedType => {
+                if self
+                    .out
+                    .hir
+                    .tokens(n)
+                    .filter(|t| t.kind == K::Ident)
+                    .count()
+                    > 1
+                {
+                    return self.qualified_type(n, ctx);
+                }
                 let text = self
                     .tokens(n)
                     .iter()
@@ -866,7 +898,11 @@ impl Binder<'_> {
                     "table" | "Map" => TABLE,
                     "Future" => FUTURE,
                     "generator" => GENERATOR,
-                    "closure" => self.intern_type(Type::Callable(Vec::new(), ANY)),
+                    "closure" => self.intern_type(Type::Closure),
+                    "class" => {
+                        let name = self.intern_name("class");
+                        self.intern_type(Type::Named(name))
+                    }
                     _ => {
                         if let Some(t) = self.name(n) {
                             let name = t.name.unwrap();
@@ -958,6 +994,78 @@ impl Binder<'_> {
         };
         self.set_ty(n, result)
     }
+    fn qualified_type(&mut self, n: NodeId, ctx: &Context) -> TypeId {
+        let names = self
+            .tokens(n)
+            .into_iter()
+            .filter_map(|t| t.name)
+            .collect::<Vec<_>>();
+        let Some(s) = names.first().and_then(|&name| self.lookup(name)) else {
+            self.error(D::InvalidType, self.span(n), "unknown type namespace");
+            return ANY;
+        };
+        self.out.facts[n.0 as usize].symbol = Some(s);
+        self.capture(s, self.span(n), ctx);
+        let mut descriptor = self.external.get(&s).cloned();
+        for &name in names.iter().skip(1) {
+            let Some(namespace) = descriptor.as_ref().and_then(|d| d.namespace.clone()) else {
+                self.error(
+                    D::InvalidType,
+                    self.span(n),
+                    "type path requires a namespace",
+                );
+                return ANY;
+            };
+            let mut path = namespace
+                .module
+                .split("::")
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            path.push(self.out.hir.name(name).to_owned());
+            match self.resolver.resolve(&ImportRequest {
+                from: self.options.module.clone(),
+                path,
+                kind: ImportKind::Symbol,
+            }) {
+                Ok(mut result) if result.version == namespace.version => {
+                    descriptor = result.bindings.pop().map(Arc::new)
+                }
+                Ok(_) => {
+                    self.error(
+                        D::ModuleResolution,
+                        self.span(n),
+                        "type namespace version changed",
+                    );
+                    return ANY;
+                }
+                Err(error) => {
+                    self.error(D::ModuleResolution, self.span(n), error.to_string());
+                    return ANY;
+                }
+            }
+        }
+        if let Some(descriptor) = descriptor {
+            let ty = match &descriptor.ty {
+                TypeHint::Named(name) => {
+                    let name = self.intern_name(name);
+                    self.intern_type(Type::Named(name))
+                }
+                TypeHint::Any => ANY,
+                _ => {
+                    self.error(
+                        D::InvalidType,
+                        self.span(n),
+                        "type path does not name a class/native type",
+                    );
+                    ANY
+                }
+            };
+            self.external_nodes.insert(n, descriptor);
+            self.set_ty(n, ty)
+        } else {
+            ANY
+        }
+    }
     // Any/union with any is uncertain, not incompatible. User-defined objects
     // may supply protocols; static rejection is limited to definite primitives.
     fn compatible(&self, actual: TypeId, expected: TypeId) -> bool {
@@ -984,11 +1092,16 @@ impl Binder<'_> {
                         .zip(p)
                         .all(|(a, &b)| self.compatible(self.out.symbols[a.symbol.0 as usize].ty, b))
             }
+            (Type::Function(_) | Type::BoundMethod(_), Type::Closure) => true,
+            (Type::Class(_), Type::Named(name)) if self.out.hir.name(*name) == "class" => true,
             (Type::Named(_) | Type::Instance(_), Type::Named(_) | Type::Instance(_)) => true,
             _ => false,
         }
     }
     fn require(&mut self, n: NodeId, actual: TypeId, expected: TypeId, label: &str) {
+        if expected == ANY {
+            return;
+        }
         if !self.compatible(actual, expected) {
             self.error(
                 D::TypeMismatch,
@@ -1002,16 +1115,16 @@ impl Binder<'_> {
             self.check(n, RuntimeChecks::TYPE);
         }
     }
-    fn pattern_names(&mut self, n: NodeId) -> Vec<PatternName> {
+    fn pattern_names(&mut self, n: NodeId) -> SmallVec<[PatternName; 4]> {
         if !self.budget(n) {
-            return Vec::new();
+            return SmallVec::new();
         }
         match self.kind(n) {
             HirKind::NamePattern | HirKind::RestPattern => self
                 .name(n)
                 .filter(|t| self.out.hir.name(t.name.unwrap()) != "_")
                 .map(|t| {
-                    vec![PatternName {
+                    smallvec![PatternName {
                         node: n,
                         name: t.name.unwrap(),
                         span: t.span,
@@ -1026,7 +1139,7 @@ impl Binder<'_> {
             {
                 self.name(n)
                     .map(|t| {
-                        vec![PatternName {
+                        smallvec![PatternName {
                             node: n,
                             name: t.name.unwrap(),
                             span: t.span,
@@ -1036,7 +1149,7 @@ impl Binder<'_> {
             }
             HirKind::OrPattern => {
                 let branches = self.children(n);
-                let mut result = Vec::new();
+                let mut result = SmallVec::new();
                 let mut expected = None;
                 for branch in branches {
                     let names = self.pattern_names(branch);
@@ -1056,7 +1169,7 @@ impl Binder<'_> {
                 result
             }
             _ => {
-                let mut result = Vec::new();
+                let mut result = SmallVec::new();
                 let mut seen = HashSet::new();
                 for c in self.children(n) {
                     if is_pattern(self.kind(c)) {
@@ -1610,6 +1723,18 @@ impl Binder<'_> {
             HirKind::Member | HirKind::Index => {
                 self.visit(n, ctx);
                 self.check(n, RuntimeChecks::MUTABILITY);
+                if let Form::Index { object, .. } = self.out.hir.node(n).form
+                    && matches!(self.out.types[self.ty(object).0 as usize], Type::Tuple(_))
+                {
+                    self.error(
+                        D::ImmutableBinding,
+                        self.span(n),
+                        "tuple elements cannot be assigned",
+                    );
+                }
+                if ctx.init {
+                    self.check(n, RuntimeChecks::WRITE_EFFECT);
+                }
                 if ctx.derived {
                     self.check(n, RuntimeChecks::WRITE_EFFECT);
                     let object = self.children(n).first().copied();
@@ -1948,7 +2073,7 @@ impl Binder<'_> {
         }
         inner.loops.push((n, label, ctx.finally.len()));
         inner.iteration = true;
-        inner.conditional = true;
+        inner.conditional |= self.kind(n) == HirKind::For;
         let source = children
             .iter()
             .copied()
@@ -2551,9 +2676,13 @@ impl Binder<'_> {
         let mut used = HashSet::new();
         let mut position = 0;
         let rest = params.iter().position(|p| p.3);
+        let named: HashMap<_, _> = params.iter().enumerate().map(|(i, p)| (p.0, i)).collect();
         for (arg, name, ty) in args {
+            if !self.budget(arg) {
+                break;
+            }
             let index = if let Some(name) = name {
-                params.iter().position(|p| p.0 == name)
+                named.get(&name).copied()
             } else {
                 let i = position;
                 position += 1;
@@ -2656,6 +2785,14 @@ impl Binder<'_> {
             captures: self.capture_count,
             work_units: self.work,
             retained_bytes: bytes,
+            symbol_bytes: self.out.symbols.capacity() * size_of::<Symbol>(),
+            capture_bytes: self
+                .out
+                .functions
+                .iter()
+                .map(|f| f.captures.capacity() * size_of::<Capture>())
+                .sum(),
+            imports: self.out.imports.len(),
         };
     }
 }

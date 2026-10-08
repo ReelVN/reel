@@ -116,3 +116,60 @@ fn recursive_namespace_reexports_are_references_not_recursively_copied_trees() {
     let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
     assert!(result.is_ok(), "{:?}", result.diagnostics);
 }
+#[test]
+fn public_destructuring_exports_only_its_own_names() {
+    let inputs = [
+        input(
+            "game::a",
+            "pub let {x}={x:1}; pub let callback=||{let hidden=1;hidden};",
+        ),
+        input("game::b", "use game::a::{x,callback}; callback();"),
+    ];
+    let r = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(r.is_ok(), "{:?}", r.diagnostics);
+    let invalid = [
+        inputs[0].clone(),
+        input("game::b", "use game::a::{hidden};"),
+    ];
+    let r = analyze_project(&invalid, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.diagnostic.code == DiagnosticCode::ModuleResolution)
+    );
+}
+#[test]
+fn project_resource_budgets_are_total_across_modules() {
+    let inputs = [input("a", "let a=1;"), input("b", "let b=1;")];
+    let options = AnalysisOptions {
+        limits: AnalysisLimits {
+            max_symbols: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let r = analyze_project(&inputs, &options, &mut NoModules).unwrap();
+    assert!(r.exhausted);
+    assert!(!r.is_ok());
+    let options = AnalysisOptions {
+        limits: AnalysisLimits {
+            max_total_source_bytes: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let r = analyze_project(&inputs, &options, &mut NoModules).unwrap();
+    assert!(r.exhausted);
+}
+#[test]
+fn qualified_native_or_class_types_follow_resolved_namespace_identity() {
+    let inputs = [
+        input("game::types", "pub class C{}"),
+        input(
+            "game::main",
+            "use game::types as t; fn f(x:t::C){x} let c=t.C(); f(c);",
+        ),
+    ];
+    let r = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(r.is_ok(), "{:?}", r.diagnostics);
+}

@@ -64,7 +64,10 @@ symbol/capture storage and bounded deep/error cases, using Rust 1.96.0.
 Public entry points are `analyze(&Parse, &AnalysisOptions, &mut dyn ModuleResolver)`,
 `analyze_source`, `analyze_module`, and `analyze_project(&[SourceModule], ...)`.
 Options declare the real module/function/generator/NoWait fragment context and
-explicit host symbol descriptors. `MemoryResolver` is a fixture/reference adapter;
+explicit host symbol descriptors and real lexical enclosing bindings. These
+bindings have caller-supplied mutability/types, preserve capture ownership in
+story fragments, and use empty declaration spans because their definitions are
+outside the fragment. `MemoryResolver` is a fixture/reference adapter;
 production resolvers own manifest/path/version policy. `ProjectAnalysis` links
 source exports/reexports using a bounded worklist and retains deterministic SCC
 initialization order. Imported reads keep runtime initialization-cycle checks.
@@ -82,9 +85,25 @@ module trees (legal reexport cycles remain finite).
 
 The initial checkpoint was `9723802`; implementation and source contract tests are
 separate commits. The PR retains base main by owner instruction. Review only the
-incremental changes after L02 `a50f1f7` (PR #9 dependency). No parser edits were needed.
+incremental changes after L02 `a50f1f7` (PR #9 dependency). The only L02 parser fix (separate commit) admits the `class` value category
+in a type atom, as required by §3 value categories / §10 basic type annotations:
+`let value: class = class {};`. No expression/control grammar changed.
 
 Actual source checks include 24 paired author scenes in their documented context,
 10 immutable accepted T01 conversions from `f92dfa2`, and 32 intact assertion
 calls. Quirrel parse/analysis status is separate from `execution=waiting_runtime`.
 Performance measurements and full debug/release validation are reported separately.
+
+Limits are 1,000,000 HIR nodes, 200,000 symbols/captures, 16,000,000 work units,
+10,000 imports/modules, 128 source levels/diagnostics and 32 MiB total project
+source by default; callers may tighten them. Node/work/symbol/capture/import
+budgets are shared across source-project modules. External descriptors/resolvers
+are trusted embedding metadata; dynamic script behavior is still checked at
+runtime. Returned statistics describe semantic arenas, excluding the retained
+CST and allocator bookkeeping. Measured allocator/RSS evidence is separate.
+
+The semantic result preserves canonical module path/version. Temporary child/
+token/pattern vectors use pinned smallvec 1.15.1; output remains packed arenas.
+Signature named lookups, export-name insertion and class-member lookup use maps;
+reexports and wait/dynamic summaries use worklists. There is no repeated global
+AST traversal per call, import edge or capture.

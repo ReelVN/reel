@@ -1,7 +1,7 @@
 //! Source-module linking. Imports are resolved before initialization; legal SCCs
 //! are retained, with initialized-state runtime checks on imported value reads.
 use super::*;
-use crate::hir::{Hir, HirKind as H, NodeId};
+use crate::hir::{Form, Hir, HirKind as H, NameId, NodeId};
 use crate::{DiagnosticCode as D, SyntaxKind as K, TextRange, TextSize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -70,7 +70,13 @@ pub fn analyze_project(
     let mut projected = BTreeMap::new();
     let mut memory = MemoryResolver::default();
     let mut exhausted = false;
-    if inputs.len() > options.limits.max_imports {
+    let diagnostic_limit = options.limits.max_diagnostics.max(1);
+    if inputs.len() > options.limits.max_modules
+        || inputs
+            .iter()
+            .fold(0usize, |total, m| total.saturating_add(m.source.len()))
+            > options.limits.max_total_source_bytes
+    {
         diagnostics.push(ModuleDiagnostic {
             module: options.module.clone(),
             diagnostic: Diagnostic::error(
@@ -86,6 +92,7 @@ pub fn analyze_project(
             exhausted: true,
         });
     }
+    let mut total_nodes = 0usize;
     for input in inputs {
         if projected.contains_key(&input.canonical_path) {
             diagnostics.push(ModuleDiagnostic {
@@ -96,6 +103,7 @@ pub fn analyze_project(
                     "duplicate canonical module path",
                 ),
             });
+            diagnostics.truncate(diagnostic_limit);
             continue;
         }
         let parsed = crate::parse(&input.source)?;
@@ -107,9 +115,16 @@ pub fn analyze_project(
                     diagnostic,
                 }
             }));
+            diagnostics.truncate(diagnostic_limit);
             continue;
         }
-        match super::project::project(&parsed, options.limits) {
+        match super::project::project(
+            &parsed,
+            AnalysisLimits {
+                max_nodes: options.limits.max_nodes.saturating_sub(total_nodes),
+                ..options.limits
+            },
+        ) {
             Err(diagnostic) => {
                 exhausted = true;
                 diagnostics.push(ModuleDiagnostic {
@@ -118,6 +133,7 @@ pub fn analyze_project(
                 });
             }
             Ok(hir) => {
+                total_nodes += hir.nodes.len();
                 memory.insert(ModuleInterface {
                     canonical_path: input.canonical_path.clone(),
                     version: input.version.clone(),
@@ -127,6 +143,7 @@ pub fn analyze_project(
             }
         }
     }
+    diagnostics.truncate(diagnostic_limit);
     // Public reexports form monotone interface equations. Cache import paths
     // once and revisit only users of changed interfaces, including legal cycles.
     let mut requests = BTreeMap::new();
@@ -164,6 +181,16 @@ pub fn analyze_project(
         }
         requests.insert(path.clone(), module_requests);
     }
+    let mut exported_names: BTreeMap<_, BTreeSet<_>> = memory
+        .modules
+        .iter()
+        .map(|(path, module)| {
+            (
+                path.clone(),
+                module.exports.iter().map(|e| e.name.clone()).collect(),
+            )
+        })
+        .collect();
     let mut queue: VecDeque<_> = projected.keys().cloned().collect();
     let mut queued: BTreeSet<_> = projected.keys().cloned().collect();
     let mut work = 0usize;
@@ -187,7 +214,11 @@ pub fn analyze_project(
                     if let Some(alias) = alias {
                         symbol.name = alias.clone();
                     }
-                    if !module.exports.iter().any(|s| s.name == symbol.name) {
+                    if exported_names
+                        .get_mut(&path)
+                        .unwrap()
+                        .insert(symbol.name.clone())
+                    {
                         module.exports.push(symbol);
                         changed = true;
                     }
@@ -218,9 +249,21 @@ pub fn analyze_project(
     let mut modules = Vec::new();
     let mut dependencies = BTreeMap::new();
     if !exhausted {
+        let mut symbols = 0usize;
+        let mut captures = 0usize;
+        let mut imports = 0usize;
         for (path, hir) in projected {
             let local = AnalysisOptions {
                 module: path.clone(),
+                context: AnalysisContext::Module,
+                version: memory.modules[&path].version.clone(),
+                limits: AnalysisLimits {
+                    max_work: options.limits.max_work.saturating_sub(work),
+                    max_symbols: options.limits.max_symbols.saturating_sub(symbols),
+                    max_captures: options.limits.max_captures.saturating_sub(captures),
+                    max_imports: options.limits.max_imports.saturating_sub(imports),
+                    ..options.limits
+                },
                 ..options.clone()
             };
             let result = super::bind::analyze(
@@ -231,6 +274,10 @@ pub fn analyze_project(
                     fallback: resolver,
                 },
             );
+            work = work.saturating_add(result.stats.work_units);
+            symbols += result.stats.symbols;
+            captures += result.stats.captures;
+            imports += result.stats.imports;
             exhausted |= result.exhausted;
             diagnostics.extend(
                 result
@@ -241,6 +288,7 @@ pub fn analyze_project(
                         diagnostic,
                     }),
             );
+            diagnostics.truncate(diagnostic_limit);
             if let Some(module) = result.module {
                 dependencies.insert(
                     path,
@@ -268,6 +316,7 @@ pub fn analyze_project(
 }
 fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
     let mut result = Vec::new();
+    let mut exported = BTreeSet::new();
     for n in hir.children(NodeId(0)) {
         if hir.node(n).kind != H::ModifiedDeclaration || !hir.tokens(n).any(|t| t.kind == K::Pub) {
             continue;
@@ -342,15 +391,14 @@ fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
                     .children(d)
                     .find(|&n| is_type(hir.node(n).kind))
                     .map(|n| type_hint(hir, n));
-                for node in descendants(hir, d) {
-                    if matches!(hir.node(node).kind, H::NamePattern | H::RestPattern)
-                        && let Some(name) = hir.tokens(node).find_map(|t| t.name)
-                        && !result.iter().any(|s| s.name == hir.name(name))
-                    {
-                        result.push(ExternalSymbol::value(
-                            hir.name(name),
-                            annotation.clone().unwrap_or(TypeHint::Any),
-                        ));
+                if let Form::Binding { pattern, .. } = hir.node(d).form {
+                    for name in pattern_names(hir, pattern) {
+                        if exported.insert(name) {
+                            result.push(ExternalSymbol::value(
+                                hir.name(name),
+                                annotation.clone().unwrap_or(TypeHint::Any),
+                            ));
+                        }
                     }
                 }
             }
@@ -359,14 +407,32 @@ fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
     }
     result
 }
-fn descendants(hir: &Hir, n: NodeId) -> Vec<NodeId> {
+fn pattern_names(hir: &Hir, n: NodeId) -> BTreeSet<NameId> {
     let mut stack = vec![n];
-    let mut out = Vec::new();
+    let mut names = BTreeSet::new();
     while let Some(n) = stack.pop() {
-        out.push(n);
-        stack.extend(hir.children(n));
+        match hir.node(n).form {
+            Form::Name { name } => {
+                if let Some(name) = name.name
+                    && hir.name(name) != "_"
+                {
+                    names.insert(name);
+                }
+            }
+            Form::PatternField { key, pattern, .. } => {
+                if let Some(pattern) = pattern {
+                    stack.push(pattern);
+                } else {
+                    names.insert(key.name.unwrap());
+                }
+            }
+            Form::Or { left, .. } => stack.push(left),
+            Form::TypePattern { pattern, .. } => stack.push(pattern),
+            Form::Sequence | Form::Single { .. } => stack.extend(hir.children(n)),
+            _ => (),
+        }
     }
-    out
+    names
 }
 fn is_type(k: H) -> bool {
     matches!(

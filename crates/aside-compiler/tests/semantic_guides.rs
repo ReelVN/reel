@@ -137,44 +137,80 @@ fn all_24_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
             exports: vec![ExternalSymbol::dynamic(name)],
         });
     }
-    for (i, source) in zh.iter().enumerate() {
-        let block = BLOCKS.contains(&i);
-        let options = AnalysisOptions {
-            module: format!("guide::{i}"),
-            context: if block {
-                AnalysisContext::Function
-            } else {
-                AnalysisContext::Module
-            },
-            hosts: CONTEXT
-                .iter()
-                .find(|(scene, _)| *scene == i)
-                .map(|(_, names)| names.iter().map(|&n| ExternalSymbol::dynamic(n)).collect())
-                .unwrap_or_default(),
-            ..Default::default()
-        };
-        let parsed = parse_with_options(
-            source,
-            ParseOptions {
-                entry: if block {
-                    EntryPoint::Block
+    for (i, (chinese, english)) in zh.iter().zip(&en).enumerate() {
+        for (edition, source) in [("zh-CN", chinese), ("en", english)] {
+            let block = BLOCKS.contains(&i);
+            let options = AnalysisOptions {
+                module: format!("guide::{edition}::{i}"),
+                version: "guide-design-1.1".into(),
+                context: if block {
+                    AnalysisContext::Function
                 } else {
-                    EntryPoint::Module
+                    AnalysisContext::Module
                 },
+                hosts: CONTEXT
+                    .iter()
+                    .find(|(scene, _)| *scene == i)
+                    .map(|(_, names)| {
+                        names
+                            .iter()
+                            .filter(|n| PRELUDE.contains(n))
+                            .map(|&n| ExternalSymbol::dynamic(n))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                enclosing: CONTEXT
+                    .iter()
+                    .find(|(scene, _)| *scene == i)
+                    .map(|(_, names)| {
+                        names
+                            .iter()
+                            .filter(|n| !PRELUDE.contains(n))
+                            .map(|&n| EnclosingBinding {
+                                symbol: ExternalSymbol::dynamic(n),
+                                mutable: false,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(
-            parsed.is_ok(),
-            "scene {i} parse: {:?}",
-            parsed.diagnostics()
-        );
-        let result = analyze(&parsed, &options, &mut resolver);
-        assert!(
-            result.is_ok(),
-            "scene {i} analysis: {:?}",
-            result.diagnostics
-        );
+            };
+            let parsed = parse_with_options(
+                source,
+                ParseOptions {
+                    entry: if block {
+                        EntryPoint::Block
+                    } else {
+                        EntryPoint::Module
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                parsed.is_ok(),
+                "scene {i} parse: {:?}",
+                parsed.diagnostics()
+            );
+            let result = analyze(&parsed, &options, &mut resolver);
+            assert!(
+                result.is_ok(),
+                "scene {i} analysis: {:?}",
+                result.diagnostics
+            );
+            if i == 17 {
+                let module = result.module().unwrap();
+                assert!(
+                    module
+                        .functions()
+                        .iter()
+                        .flat_map(|f| &f.captures)
+                        .any(|c| module
+                            .hir()
+                            .name(module.symbols()[c.symbol.0 as usize].name)
+                            == "view")
+                );
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 //! One-time grammar interpretation. Downstream lowering consumes Forms and
 //! packed sequence edges rather than rediscovering operators/roles from tokens.
 use crate::{SyntaxKind as K, hir::*};
+use smallvec::SmallVec;
 pub(super) fn forms(hir: &mut Hir) {
     for index in (0..hir.nodes.len()).rev() {
         let n = NodeId(index as u32);
@@ -8,8 +9,8 @@ pub(super) fn forms(hir: &mut Hir) {
     }
 }
 fn form(hir: &Hir, n: NodeId) -> Form {
-    let children = hir.children(n).collect::<Vec<_>>();
-    let tokens = hir.tokens(n).collect::<Vec<_>>();
+    let children = hir.children(n).collect::<SmallVec<[_; 4]>>();
+    let tokens = hir.tokens(n).collect::<SmallVec<[_; 4]>>();
     let token = |kind| tokens.iter().find(|t| t.kind == kind).copied();
     let name = || token(K::Ident);
     let has = |kind| token(kind).is_some();
@@ -217,7 +218,7 @@ fn form(hir: &Hir, n: NodeId) -> Form {
                 .iter()
                 .copied()
                 .filter(|&c| matches!(hir.node(c).kind, H::Block | H::If))
-                .collect::<Vec<_>>();
+                .collect::<SmallVec<[_; 4]>>();
             Form::Condition {
                 pattern: pattern(),
                 condition,

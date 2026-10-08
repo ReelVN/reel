@@ -372,3 +372,44 @@ fn registered_intrinsics_observable_locations_and_derived_write_effects() {
     let result = run("fn f(){fn bind(x){x} bind(3);}");
     assert!(result.is_ok(), "{:?}", result.diagnostics);
 }
+#[test]
+fn closure_and_class_value_categories_accept_all_legal_signatures() {
+    valid("fn f(x){x} let callable:closure=f; callable(1); let c:class=class{};");
+    rejects("let t=(1,2); t[0]=3;", DiagnosticCode::ImmutableBinding);
+}
+#[test]
+fn async_generator_yield_and_for_await_keep_distinct_function_roles() {
+    let m = valid(
+        "async fn task(p){await p} gen fn values(n){let received=yield n; return received;} fn consume(source){for await item in source{item;}} let pending=task(null); let generator=values(1);",
+    );
+    assert!(m.functions().iter().any(|f| f.kind == FunctionKind::Async));
+    assert!(
+        m.functions()
+            .iter()
+            .any(|f| f.kind == FunctionKind::Generator)
+    );
+    rejects("fn f(){yield 1;}", DiagnosticCode::InvalidControl);
+    rejects("gen fn f(p){await p;}", DiagnosticCode::NoWait);
+    rejects(
+        "gen fn f(){try{}finally{yield 1;}}",
+        DiagnosticCode::InvalidControl,
+    );
+    let r = analyze_source(
+        "let input=yield 1;",
+        ParseOptions {
+            entry: EntryPoint::Block,
+            ..Default::default()
+        },
+        &AnalysisOptions {
+            context: AnalysisContext::Generator,
+            ..Default::default()
+        },
+        &mut NoModules,
+    )
+    .unwrap();
+    assert!(r.is_ok(), "{:?}", r.diagnostics);
+    assert_eq!(
+        r.module().unwrap().functions()[0].kind,
+        FunctionKind::Generator
+    );
+}
