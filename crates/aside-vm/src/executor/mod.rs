@@ -1031,9 +1031,9 @@ impl Vm {
     }
     pub fn host_continuation(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
         let n = self.ticket(ticket)?;
-        // Continuation suffix is explicitly initialized, including unused nulls.
-        let all = self.slots.borrow_initialized(n.roots)?;
-        Ok(&all[2..2 + n.continuation_len as usize])
+        // Open already published physical NULLs with clear initialized bits.
+        // Only values actually written by the adapter belong to this view.
+        self.initialized_prefix(n.roots, 2, n.continuation_len)
     }
     pub fn host_callback_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
         let n = self.ticket(ticket)?;
@@ -2992,10 +2992,6 @@ impl Vm {
                 if !m.take(0, 1, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
-                let root_len = 3
-                    + self.limits.max_continuation_values
-                    + self.limits.max_arguments
-                    + self.limits.max_native_faults;
                 if index < n.argument_count {
                     match self.argument(source, index) {
                         Ok((name, value)) => {
@@ -3011,14 +3007,10 @@ impl Vm {
                             self.native_fault(&mut n, kind)?;
                         }
                     }
-                } else if index < n.argument_count + root_len {
-                    self.put(n.roots, index - n.argument_count, Value::NULL)?;
-                    self.native_null_publications += 1;
-                    n.phase = NativePhase::Copy {
-                        source,
-                        index: index + 1,
-                    };
                 } else {
+                    // FrameSlots::open initialized the complete physical range
+                    // and its bitmap under native_push_cost. Re-publishing each
+                    // unused NULL only satisfied the former whole-window borrow.
                     n.phase = NativePhase::Bind {
                         index: 0,
                         positional: 0,

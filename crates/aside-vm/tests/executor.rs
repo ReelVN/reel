@@ -760,6 +760,7 @@ fn repeated_native_calls_resume_without_frame_pool_allocation_or_range_leak() {
                     .unwrap()
                 {
                     RunOutcome::HostCall(t) => {
+                        assert!(v.host_continuation(t).unwrap().is_empty());
                         v.respond(t, HostResponse::Ready(Value::int(42))).unwrap()
                     }
                     RunOutcome::BudgetYield(_) => {}
@@ -776,6 +777,7 @@ fn repeated_native_calls_resume_without_frame_pool_allocation_or_range_leak() {
     assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
     assert_eq!(v.stats().frames, 0);
     assert_eq!(v.stats().native_entries, 1000);
+    assert_eq!(v.stats().native_null_publications, 0);
 }
 #[test]
 fn slice_deadline_allocation_and_work_limits_preserve_unexecuted_operation() {

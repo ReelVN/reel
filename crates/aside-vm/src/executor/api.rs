@@ -261,6 +261,7 @@ pub struct VmStats {
     pub unwinds: u32,
     pub native_entries: u64,
     pub native_resumes: u64,
+    /// Redundant whole-native-window initialization writes (removed in V03).
     pub native_null_publications: u64,
     pub slices: u64,
     pub usage: SliceUsage,
