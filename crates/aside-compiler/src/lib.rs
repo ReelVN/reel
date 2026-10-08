@@ -1,5 +1,6 @@
 //! Aside 1.1 source frontend. Syntax only: no lowering, bytecode or execution.
 mod diagnostic;
+pub mod hir;
 mod lexer;
 mod parser;
 mod raw;
