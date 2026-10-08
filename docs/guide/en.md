@@ -1,5 +1,5 @@
 # Reel Game Creator Guide
-Design version 1.0 · Development baseline. Implementation status is stated in the guide.
+Design version 1.1 · Development baseline. Implementation status is stated in the guide.
 
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
 
@@ -8,9 +8,9 @@ This guide starts with the scene you want to create and explains how to use Asid
 Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Story code, button events, and utility functions all use the same fn declaration. Components are ordinary functions that return a node or a collection of named nodes.
 
 ## 1 A Minimal Project and Shared Conventions
-A project needs only game.toml, main.aside, and assets/ to get started. Split out directories such as ui/ and story/ as your project grows. The configuration specifies main::main as the entry point and a logical canvas of 1920×1080. reel dev runs source code and reports errors with their file locations; reel build produces bytecode and asset packages; a lightweight player runs the build output. These commands are implementation targets.
+A project needs only game.toml, main.aside, and assets/ to get started. Split out directories such as ui/ and story/ as your project grows. The configuration specifies main::main as the entry point and a logical canvas of 1920×1080. reel dev runs source code and reports errors with their file locations; reel build produces bytecode and asset packages; a lightweight player runs the build output. These commands are implementation targets. build outputs .asb bytecode packages, .rpk asset packages, and release.json. Assets can be packaged by category, and the release player loads them according to the manifest. Story updates and asset updates are built separately.
 game.toml uses entry and title in the [game] table, and width, height, and scale in the [display] table. Set entry to "main::main"; the defaults are width=1920, height=1080, and scale="contain". contain preserves the aspect ratio and leaves empty space at the edges; input coordinates are converted using the same scaling. game:: modules resolve .aside files relative to the directory containing game.toml. File and directory names must be valid module identifiers. External source modules are imported through [modules] mappings from aliases to relative directories; game and reel are reserved aliases.
-use reel::prelude::* imports the names of common nodes, layouts, actions, and services. Authors still build their pages and visual style with their own functions. The game:: prefix resolves modules from the game's source root. All documents consistently use fn, let, let mut, |parameters| closures, and use imports. Except for complete module and function examples, standalone snippets belong inside a running function and reuse variables such as view and mio introduced earlier. Ordinary statements end with semicolons; the final expression in a function can serve as its return value. Object literals use #{field: value}.
+use reel::prelude::* imports the names of common nodes, layouts, actions, and services. Authors still build their pages and visual style with their own functions. The game:: prefix resolves modules from the game's source root. All documents consistently use fn, let, let mut, |parameters| closures, and use imports. Except for complete module and function examples, standalone snippets belong inside a running function and reuse variables such as view and mio introduced earlier. Ordinary statements end with semicolons; the final expression in a function can serve as its return value. Object literals use {field: value}.
 ```aside
 use reel::prelude::*;
 use game::ui::title::title;
@@ -54,7 +54,7 @@ pub fn room_view(dialogue) {
         picture;
         hud;
     };
-    return #{root: root, picture: picture,
+    return {root: root, picture: picture,
              portrait: portrait, cg: cg, hud: hud};
 }
 ```
@@ -70,7 +70,7 @@ fn card(children = []) {
 Properties, layout, and rendering belong to nodes; interaction behavior belongs to controls. Authors can put a character portrait inside a button, place a button in a visual group, or rotate or fade out an entire settings page. The shared node tree determines hierarchy rules. Authors explicitly place overlays within the root node.
 
 ## 3 Story Code Is Ordinary Sequential Code
-Define each character once in a module. Every line of dialogue explicitly names its speaker; use narrator.say for narration. A standalone string is still just a string. say updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
+Define each character once in a module. Each line of dialogue calls the speaker object; narration calls narrator. A standalone string is still just a string. A character call updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
 ```aside
 use reel::prelude::*;
 use game::ui::room::room_view;
@@ -80,10 +80,10 @@ let mio = character("Mio");
 pub fn opening() {
     let view = room_view(game.dialogue);
     stage.replace(view.root);
-    mio.say("先别开灯。看玻璃上那条光。");
-    narrator.say("雨水往下落，光却停在原处。");
+    mio("先别开灯。看玻璃上那条光。");
+    narrator("雨水往下落，光却停在原处。");
     show_cg(view);
-    mio.say("你也看见了吗？");
+    mio("你也看见了吗？");
 }
 ```
 While text is appearing character by character, the first advance reveals the rest of the current text; the next advance finishes the line. Events consumed by controls such as buttons and sliders remain within those controls. Story advancement uses a new input sequence number, so a single click always causes only one advance.
@@ -97,28 +97,33 @@ pub fn dialogue_view(model) {
     }
 }
 ```
-model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the session history. say accepts resource parameters such as voice; voice playback is associated with the current line. Choices also expose a data model. Authors use buttons to call game.choice.select(key), and choose returns the same key.
-Add chapter metadata when you need a route index or an explicit restart point. It gives the function a stable name without changing its calling or waiting behavior.
+game.dialogue.lines is the shared observable list of dialogue lines. speaker_name/text/reveal are read-only convenience projections of the first line in the currently active line group. ADV views commonly use these fields; NVL and speech-bubble views use the complete line list. model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the session history. Character calls accept resource parameters such as voice; voice playback is associated with the current line. Multiple characters speaking at once also share a single advance interaction:
 ```aside
-#[story(id: "chapter01.opening", title: "窗上的光")]
+let eri = character("Eri");
+say([mio.line("你听见了吗？"), eri.line("在窗外。")],
+    mode: "bubbles");
+```
+Speech-bubble and NVL views use list to bind game.dialogue.lines, with current_line_ids distinguishing the current group from accumulated lines. The current group's convenience fields always refer to its first line. Choices also expose a data model. Authors use buttons to call game.choice.select(option_id), and choose returns the corresponding key.
+When you need a route map or chapter restarts, use an ordinary API to register a stable ID and display title for a function. The function still follows the same calling and waiting rules.
+```aside
 fn opening() {
     // 剧情正文。
 }
+story.register("chapter01.opening", opening, title: "窗上的光");
 ```
-An ordinary fn is sufficient for story code. A #[story] chapter entry must be a module-level function with no required parameters. game.start(opening) accepts the same kind of symbolic entry point and submits a new-game request from a UI event. The engine first validates the entry point against the latest published module set, then creates a new session and calls it, initializing global story variables, auto-play, and fast-forward state. Ordinary helper calls retain their original module bindings.
+An ordinary fn is sufficient for story code. A chapter entry registered through story.register must be a module-level function with no required parameters. game.start uses the function's own stable module symbol, so an ordinary new-game entry needs no additional registration. Only route and restart operations that address chapters by ID use the registry. Registration occurs within a module candidate; validation and module publication are committed together. game.start(opening) accepts the same kind of symbolic entry point and submits a new-game request from a UI event. The engine first validates the entry point against the latest published module set, then creates a new session and calls it, initializing global story variables, auto-play, and fast-forward state. Ordinary helper calls retain their original module bindings.
 
 ## 4 Sequencing Changes and Running Them Together
-tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity and returns a control handle. await activity.finished waits for that activity to end while input, audio, and other activities continue.
+tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. By default, run(action) belongs to the current scope, or to the current task's owner when outside a scope. Specify an explicit owner when the activity needs to outlive that boundary.
 An action reads its starting property values when it actually becomes active. In a sequence, a later step reads its starting values after the previous step finishes. Action descriptions are reusable, and every run creates independent progress. run atomically reserves every property that the entire action tree will write. These reservations last until the root activity ends, including future sequence segments, repeat iterations, and periods while paused. A sequence may write the same property in order; parallel branches must have disjoint write sets. A conflict is reported at the call site and leaves existing activities intact. To take over, first stop the old activity. Assigning directly to a reserved property first stops its root activity, then applies the assignment. This rule also applies to properties reserved for future segments. An activity releases all reservations when it ends.
 ```aside
 let entrance = parallel(
     tween(view.portrait, x: 320, duration: 0.5),
     tween(view.hud, opacity: 1, duration: 0.3)
 );
-let activity = run(entrance, owner: view.root);
-await activity.finished;
+await run(entrance);
 ```
-Each activity belongs to an explicit owner. Startup and main-story functions belong to the session; UI callbacks belong to the node that emitted the event. stage.replace ends the old scene and its callbacks, while the session-owned story code that called it continues. Action targets are only validated handles. If any node or effect target is destroyed, the entire root activity ends as Cancelled and releases all property reservations. When an owner is destroyed on the stage, its activities and callback tasks end together. pause suspends progress, resume continues it, and stop leaves the current value in place and causes a wait to return Stopped. Natural completion returns Completed. Resource errors or activity cancellation raise the corresponding error in any waiting task that is still alive, where ordinary try/catch can handle it. If the waiting task's own owner has ended, that task ends immediately. The host releases its resources, and script cleanup code ends with the task.
+Every activity has a defined owner. Startup and main-story functions belong to the session; UI callbacks belong to the node that emitted the event. stage.replace ends the old scene and its callbacks, while the session-owned story code that called it continues. Action targets are only validated handles. If any node or effect target is destroyed, the entire root activity ends as Cancelled and releases all property reservations. When an owner is destroyed on the stage, its activities and callback tasks end together. pause suspends progress, resume continues it, and stop leaves the current value in place and causes a wait to return Stopped. finish brings finite actions to their final values and returns Completed; natural completion also returns Completed. Use stop to end an infinite loop, which has no final completion value of its own. Resource errors or activity cancellation raise the corresponding error in any waiting task that is still alive, where ordinary try/catch can handle it. If the waiting task's own owner has ended, that task ends immediately. The host releases its resources, and script cleanup code ends with the task.
 parallel waits for all finite child actions. If any child action fails, it ends the remaining actions in the group and reports the error; sequence stops subsequent actions on failure. repeat(action, times: 3) repeats a finite number of times; omitting times creates a loop. Continuous loops, such as breathing or falling rain, run separately under scene ownership. Story code waits only for the finite activities it needs.
 ```aside
 let breathing = repeat(sequence(
@@ -126,48 +131,26 @@ let breathing = repeat(sequence(
     tween(view.portrait, opacity: 1.0, duration: 1.4)
 ));
 run(breathing, owner: view.root);
-mio.say("听，雨又大了。");
+mio("听，雨又大了。");
 ```
 The example above demonstrates the rules for composing loops. Actual character breathing can use subtle movement or scaling instead, with the same script structure. Authors wrap common actions in ordinary fn functions that take any node and return an action value. UI and character portraits can share these actions.
 
-## 5 Temporary Full-Screen CGs and Restoring the Scene
-This example fades out the HUD, fades in a CG, waits for the player to view it, and then restores the original room and UI. The original room, character portrait, and component data are preserved throughout. show_cg is an ordinary helper function.
+## 5 Managing Temporary Scenes with Scopes
+scope executes an ordinary closure within the current story call chain. It manages temporary nodes, property overrides, offsets, and activities. Its body can deliver dialogue, wait, and call other functions normally. On exit, it releases only what that scope owns.
 ```aside
 fn show_cg(view) {
-    let before = #{visible: view.hud.visible,
-                   enabled: view.hud.enabled,
-                   opacity: view.hud.opacity,
-                   cg_opacity: view.cg.opacity};
-    let mut current = null;
-    try {
-        view.hud.enabled = false;
-        current = run(parallel(
-            tween(view.hud, opacity: 0, duration: 0.3),
-            tween(view.cg, opacity: 1, duration: 0.6)
-        ), owner: view.root);
-        await current.finished;
-        view.hud.visible = false;
+    scope(body: |s| {
+        s.override(view.hud, visible: false);
+        s.add(view.picture, image("assets/window-cg.png"));
         await game.advance();
-        view.hud.visible = before.visible;
-        current = run(parallel(
-            tween(view.hud, opacity: before.opacity, duration: 0.3),
-            tween(view.cg, opacity: before.cg_opacity, duration: 0.6)
-        ), owner: view.root);
-        await current.finished;
-    } finally {
-        if current != null { current.stop(); }
-        if view.root.alive {
-            view.hud.visible = before.visible;
-            view.hud.enabled = before.enabled;
-            view.hud.opacity = before.opacity;
-            view.cg.opacity = before.cg_opacity;
-        }
-    }
+    });
 }
 ```
-The example records the original values on entry. On normal return or exit through a handleable exception, finally ends any remaining activity and restores those values. finally performs only synchronous cleanup. If the entire scene's owner has ended, the host directly cleans up its tasks and nodes. Each HUD/CG pair runs only one show_cg at a time; the author's modal entry point enforces that scope.
-visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables subtree interaction; opacity controls only visual transparency. Disabling the HUD at the start of the fade makes button behavior during the transition explicit. game.advance waits for new advance input that has not been consumed by a control and belongs to the current main-story interaction.
-Use stage.replace(new_root) for a permanent scene change. For a permanent local replacement, use a container's replace(new_child). Once the old subtree is destroyed, its handles enter an ended state. Temporary overlays preserve the original nodes and suit CGs, maps, photographs, and in-scene control panels.
+Here the HUD is temporarily hidden, and the CG is added at the top of picture. When the player advances, the CG is removed and this visible override is released. The HUD's original bindings and underlying values are preserved throughout. On exit, the latest underlying values become visible, with any other active overrides still in place. Later-created overrides take precedence when nested; ending any layer removes only its own token.
+s.add(parent, node) mounts a temporary subtree, s.override(node, props...) creates an animatable override layer, s.offset(node) creates an independent additive x/y offset, and s.run(action) starts an activity owned by this scope. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
+Normal return, exceptions, and scene exit all trigger synchronous, idempotent host cleanup. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities, and overrides; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
+By default, scope lives with the current task. Use scope(owner: node, body: ...) when it should end with a particular node. If that node ends first, only the scope region is cancelled, and ScopeCancelled is raised at the outer call site. Main-story code that is still alive can catch it outside the scope. Code involving invalid nodes within the region ends, and the host performs cleanup. If the current task itself is cancelled, the entire task ends.
+visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and a container's replace(new_child) for permanent local replacements.
 
 ## 6 Logos, Title Screens, and Local Interaction
 The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
@@ -180,7 +163,7 @@ fn main() {
     stage.replace(logo);
     let playback = logo.play();
     logo.on_click(|event| playback.stop());
-    await playback.finished;
+    await playback;
     stage.replace(title());
 }
 ```
@@ -190,7 +173,7 @@ To add a temporary button during a story, add an ordinary button to the desired 
 let hint = view.hud.add(button("查看照片",
     on_click: |event| photo_panel.open()
 ));
-mio.say("桌上那张照片，你还记得吗？");
+mio("桌上那张照片，你还记得吗？");
 hint.remove();
 ```
 photo_panel is an author-defined component control object. The example only demonstrates a button's lifetime interleaved with the story. Event callbacks are scheduled under their owning nodes. When a modal node opens, the engine consistently handles input isolation for underlying content, focus entry, and focus restoration after closing. A callback that needs to take over the main story submits an entry operation through game; ordinary scene changes can run directly.
@@ -234,10 +217,55 @@ fn picture_button(normal, hovered, pressed, clicked) {
     return control;
 }
 ```
-bind connects an observable property while preserving that property's existing read/write permissions. text can read a read-only property; slider requires a writable property when it writes a value back. derive computes read-only presentation values. A derived function establishes dependencies on the observable properties it reads and may also read immutable captured values. Internal changes to ordinary data retain ordinary language semantics. Observable property changes update only the relevant nodes. During the brief save-capture period, script-derived computations and author-defined presentation updates pause, then resume using the latest state when capture finishes. Ordinary #{...} data records are suitable for passing parameters; use model(#{...}) to create an observable model for application values that change over time. Cyclic dependencies, writes inside derived computations, and waits inside derived computations produce source-level diagnostics.
+bind connects an observable property while preserving that property's existing read/write permissions. text can read a read-only property; slider requires a writable property when it writes a value back. derive computes read-only presentation values. A derived function establishes dependencies on the observable properties it reads and may also read immutable captured values. Internal changes to ordinary data retain ordinary language semantics. Observable property changes update only the relevant nodes. Writing a scalar to a writable bound property writes through to its binding source while preserving the binding. Animation also reserves and writes the ultimate source property, so two nodes bound to the same source reveal the actual write conflict. Explicitly changing the source stops the relevant root activities; passive projection updates are reads. Use scope overrides for temporary animation of read-only derived properties. Rebinding or unbind first ends activities that depend on the old binding; unbind preserves the current effective base value. During the brief save-capture period, script-derived computations and author-defined presentation updates pause, then resume using the latest state when capture finishes. Ordinary {...} data records are suitable for passing parameters; use model({...}) to create an observable model for application values that change over time. Cyclic dependencies, writes inside derived computations, and waits inside derived computations produce source-level diagnostics.
 Authors can use the same approach to wrap consistent fonts, button images, spacing, and animation, then import them as ordinary modules. Visual style is reused through components and parameters; shared property objects can also be organized using ordinary language rules.
 
-## 8 Masks, Effects, and Custom Scene Choreography
+## 8 Styling and Moving Elements Together
+Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
+```aside
+let default_look = {font: "assets/ui.ttf", font_size: 32,
+                    color: "#ffffff", background: "assets/button.png"};
+
+fn menu_button(label, clicked, style = {}) {
+    let look = {...default_look, ...style};
+    button(on_click: clicked) {
+        image(look.background);
+        text(label, font: look.font, font_size: look.font_size,
+             color: look.color);
+    }
+}
+
+menu_button("开始", |event| game.start(opening),
+            style: {color: "#ffd98a", font_size: 36});
+```
+Node properties can be changed directly. Use bind/derive for appearance that should keep following application state or preference changes. Ordinary style records are used during construction. A shared runtime color palette can be stored in a model, with its properties bound to text and images. Authors can draw their components entirely themselves or reuse familiar layout and control behavior.
+To move UI and character portraits together, place them in the same group and apply the action to that group.
+```aside
+let cast = group() {
+    image("assets/mio.png");
+    dialogue_view(game.dialogue);
+};
+stage.replace(cast);
+await run(tween(cast, x: 80, duration: 0.5));
+```
+To add shaking while an element is moving, give its base position and shake independent offsets. The following shake is an author-defined function that returns an ordinary action value. It works with dialogue boxes, character portraits, or any group.
+```aside
+fn shake(offset, strength = 8, step = 0.05, times = 3) {
+    repeat(sequence(
+        tween(offset, x: strength, duration: step),
+        tween(offset, x: -strength, duration: step * 2),
+        tween(offset, x: 0, duration: step)
+    ), times: times)
+}
+
+scope(body: |s| {
+    let offset = s.offset(view.hud);
+    await s.run(shake(offset));
+});
+```
+Adding an offset only to hud shakes only the dialogue UI. It is independent of underlying x/y movement: multiple x/y offsets add together in the parent's coordinate system, leaving the base layout unchanged. Rendering and hit testing both use the composed result. When scope ends, it removes its own offset, leaving the moved base position correct. Rotation and scaling compose in an explicit transform-matrix order and are expressed through separate group nodes; additive x/y offsets do not imply additive rotation.
+
+## 9 Masks, Effects, and Custom Scene Choreography
 Effect values such as mask and blur belong to the same compositing system. An effect group first composites its children, then applies its effects, with group opacity applied once. Clipping defines a geometric region; an image mask defines degrees of visibility. mask.progress ranges from 0 for fully hidden to 1 for fully visible; softness controls edge width. Grayscale values in a black-and-white mask determine the order of revelation.
 ```aside
 let wipe = mask("assets/ink-mask.png", progress: 0, softness: 0.06);
@@ -245,38 +273,36 @@ let reveal = group(effects: [wipe]) {
     image("assets/window-cg.png");
 };
 view.picture.add(reveal);
-let activity = run(tween(wipe, progress: 1, duration: 1.2),
-                   owner: reveal);
-await activity.finished;
+await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
 ```
 Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
 Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.
 
-## 9 Choices and Changing Content
-choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(key). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.
+## 10 Choices and Changing Content
+choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(option_id). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.
 ```aside
 fn choice_view(model) {
     list(items: bind(model.options),
          key: |option| option.id,
          build: |option| {
-             button(on_click: |event| model.select(option.key)) {
+             button(on_click: |event| model.select(option.id)) {
                  text(value: bind(option.label));
              }
          })
 }
 let answer = choose([
-    #{key: "window", label: "走到窗边"},
-    #{key: "door", label: "留在门口"}
+    {key: "window", label: "走到窗边"},
+    {key: "door", label: "留在门口"}
 ]);
 if answer == "window" { by_window(); }
 else { by_door(); }
 ```
-choice_view is mounted in the scene containing the dialogue UI; by_window and by_door are the author's story functions. choose copies the supplied ordinary records into engine-owned, read-only observable rows. The id, key, and label fields can all be read and bound, while input records remain unchanged. The opaque id identifies the current InteractionId/key pair; the list uses option.id to preserve this identity. The next choice uses new ids. game.choice.options is a read-only observable list of these rows, empty by default. It is populated while waiting for a choice and cleared when the choice is complete. Clicks for stale or repeated keys are filtered by interaction identity.
+choice_view is mounted in the scene containing the dialogue UI; by_window and by_door are the author's story functions. choose copies the supplied ordinary records into engine-owned, read-only observable rows. id, key, and label can all be read and bound, while the input records remain unchanged. id is an opaque, stable identifier formed from the current InteractionId and key. The list uses option.id to preserve that identity; the next choice uses new IDs. game.choice.options is a read-only observable list of these rows, empty by default. It is populated while waiting for a choice and cleared when the choice is complete. select accepts option.id, which includes interaction identity, while the value returned to story code is still the application key. Stale or duplicate selections are filtered using that identity.
 A for loop inside ordinary children is appropriate for constructing a scene as it is now. list is for continuously changing lists: items connects to an observable collection, key determines element identity, and build creates a node for a new key. An observable item with the same key retains its identity while its fields update; only removing that key destroys the corresponding subtree. Layout is vertical by default. Virtualized display is governed by the viewport range and reusable measurement results. Duplicate keys produce errors at the corresponding list location. Passing an ordinary array as items constructs fixed content.
 
-## 10 Saves, History, Routes, and Skipping
-saves is an independent service. save(slot_id) returns a SaveRequest, and quick_save() uses the quick-save slot; load(slot_id) and quick_load() return a LoadRequest. Requests expose read-only status, error, and finished members. Use derive or bind to display progress. finished can be awaited; save buttons usually only submit a request and observe its model. Success means the slot has been committed to storage. The save request's own finished can also be awaited: capture occurs at a restorable boundary after the call. The corresponding request in that saved image is restored as a successful result, so the waiting task continues with the following statements. The save call is executed only once. Other in-flight external write requests settle with a catchable OperationInterrupted error when restored across processes; the request corresponding to the current saved image follows the success rule above. A successful load request replaces the session, ending callback tasks owned by the old session while the process-level service continues publishing results.
+## 11 Saves, History, Routes, and Skipping
+saves is an independent service. save(slot_id) returns a SaveRequest, and quick_save() uses the quick-save slot; load(slot_id) and quick_load() return a LoadRequest. Requests expose read-only status and error members. Use derive or bind to display progress. The request itself can be awaited; save buttons usually only submit a request and observe its model. Success means the slot has been committed to storage. A caller can also directly await the save request it submitted: capture occurs at a restorable boundary after the call. The corresponding request in that saved image is restored as a successful result, so the waiting task continues with the following statements. The save call is executed only once. Other in-flight external write requests settle with a catchable OperationInterrupted error when restored across processes; the request corresponding to the current saved image follows the success rule above. A successful load request replaces the session, ending callback tasks owned by the old session while the process-level service continues publishing results.
 saves.slots(page: 1, page_size: 12) returns a SlotPage whose observable items include stable id, occupied, chapter, saved_at, thumbnail, and status fields. saves.delete(slot_id) returns a DeleteRequest; on success, the corresponding summary becomes an empty slot. Page numbers start at 1; page_size and page number determine a fixed set of ordinary slots, while the quick-save slot is separate. Authors build pages with grid, image, text, and button; paging only changes the displayed set.
 ```aside
 let slot_page = saves.slots(page: 1, page_size: 12);
@@ -284,15 +310,41 @@ let save_button = button("保存", on_click: |event| {
     saves.save(slot_page.items[0].id);
 });
 ```
-Save, load, and delete requests share the Queued, Running, Succeeded, and Failed states. Saves additionally expose phase = Capturing or Writing. error contains an explanation on failure and is null on success. finished returns the request result; request failure throws the corresponding error. Slot summaries are replaced only after a successful commit; failure preserves the previous summary.
-game.history is a read-only observable list. Each entry contains id, speaker_name, text, voice, and restore-point information. Put a list inside scroll to display history entries as needed. Loading or rolling back switches the list to the restored session state. Ordinary UI replacements preserve history.
-game.stories.entries is the chapter index, with id, title, and visited fields on each entry; game.stories.links holds explicitly registered from/to connections. The compiler collects entry points from #[story], while game.stories.link(from_id, to_id) registers dynamic connections. Authors represent chapters with buttons and draw connections with path nodes, arranging them manually or with their own layout algorithms.
+Save, load, and delete requests share the Queued, Running, Succeeded, and Failed states. Saves additionally expose phase = Capturing or Writing. error contains an explanation on failure and is null on success. await request returns the request result; request failure throws the corresponding error. Slot summaries are replaced only after a successful commit; failure preserves the previous summary.
+game.history is a read-only observable list. Each entry is a HistoryGroup containing group_id, interaction_id, lines, and restore-point information. lines preserves the characters, content identities, parameters, displayed text, and voices from that moment. Single-line convenience fields project only the group's first line. Put a list inside scroll to display history entries as needed. Loading or rolling back switches the list to the restored session state. Ordinary UI replacements preserve history.
+game.stories.entries is the chapter index, with id, title, and visited fields on each entry; game.stories.links holds explicitly registered from/to connections. Module publication collects entry points from story.register, while game.stories.link(from_id, to_id) registers dynamic connections. Authors represent chapters with buttons and draw connections with path nodes, arranging them manually or with their own layout algorithms.
 game.restart(story_id) uses the current session's fixed main-story module set to rerun the story task from a named chapter entry point. It preserves current story variables and ends the previous main-story task and its interaction; the target function is responsible for constructing its own scene. game.start(entry) creates a fresh session, suitable for a new game. saves.load restores the saved position, variables, and scene. Authors use these distinctions to give route buttons clearly defined actions.
 Hold-to-fast-forward, auto-play, and skipping to a chapter use a shared story-advancement service. game.skip_to(story_id) accelerates execution through normal control flow, stopping at the target chapter entry, a choice, or an unread-content boundary. If the target is unreachable, the story ends normally and the service reports that the target was not reached. game.set_auto(enabled) controls auto-play. Hold-to-fast-forward is driven by the held state of the input layer's skip action; authors can bind keyboard or gamepad input to that action.
 Fast-forward shortens skippable waits for already-read content and finite scene activities, while variable calculations still execute in sequence. Releasing the input, losing focus, opening a menu, starting a new game, or loading a save clears the held state. A tween completes at its final value, finite waits end, and media stops or continues according to its playback policy. Looping activities remain managed by their owner. Author-provided control hints follow the same service state.
 These services provide data and operations; authors compose the appearance of their pages. The signatures listed in this edition are specifications awaiting implementation. Once a feature passes its contract acceptance checks, the guide will mark that section with the implemented version and run commands.
 
-## 11 Extending Your Own Building Blocks
+## 12 Game Variables and Component State
+In the language, let/let mut determines whether a binding can be reassigned, model determines whether properties are observable, and state ownership determines how state is saved and released. Each serves a separate purpose.
+```aside
+let route = state("route", {affection: 0, visited: set()});
+let unlocks = persistent("unlocks", {cg: set()});
+
+route.affection += 1;
+route.visited.add("window");
+unlocks.cg.add("window-cg");
+```
+state(id, defaults) returns named observable state in the current session; the same ID returns the same object. It is saved and restored through saving, loading, and rollback, and recreated from defaults for a new game. Function-local values and closure captures can also be saved with the complete call stack. Named state mainly serves shared game data and stable lookup during hot reload.
+persistent(id, defaults) returns explicitly cross-playthrough observable data, written independently to global storage. Defaults fill only missing fields; repeated access preserves existing progress. Cross-playthrough state stores data values and types with persistent-data adapters. References to session nodes, tasks, or executable closures produce a lifetime-conflict diagnostic at the assignment. Idempotent operations, such as adding to sets, are recommended for unlocks. persistent.flush() can be awaited for a durable commit; the service normally coalesces updates into writes. Cross-session assignment copies data into the persistent graph, and reads return observable aliases within that graph. Any nested mutation marks it dirty. Snapshots record stable global-data identities for those aliases; loading reconnects them to current progress rather than writing back old content.
+model/state copies the default data graph and creates observable properties, preserving internal aliases and cycles in the copy. Nested mutable arrays, table values, Set values, buffers, and registered observable data types all notify through shared mutation hooks; changes made through an internal alias also notify. Session objects assigned later retain their ordinary shared identity and are incorporated into the observable graph. model objects are kept alive by actual references. Temporary component state can be stored in the node's own state slots.
+```aside
+fn settings_panel() {
+    let root = column(key: "settings", gap: 16);
+    let local = root.state("ui", {tab: "audio"});
+    root.add(button("声音", on_click: |event| { local.tab = "audio"; }));
+    root.add(button("阅读", on_click: |event| { local.tab = "reading"; }));
+    // 页面容器的 selected 绑定 local.tab。
+    return root;
+}
+```
+node.state(key, defaults) belongs to that component instance. The same local key is independent across different component instances. After node destruction, the state is reclaimed normally according to reachability. Loading restores the component state; hot reload reuses it through stable node keys and state-slot keys. During ordinary execution, a call checks once and atomically adds missing fields, which the next statement can read. During candidate initialization or reconstruction, reads through the candidate view can see fields pending addition, while the live session continues to see the old values. Additions become externally visible only when the candidate transaction commits; failure preserves the old values. Data-structure upgrades use explicit, versioned migrations.
+settings belongs to the engine's global preference service; restoring a story save reads the current preferences. Changes to application state follow ordinary control flow, and their results are preserved when temporary scope effects end.
+
+## 13 Extending Your Own Building Blocks
 The smallest unit of reuse is an ordinary fn. Functions returning nodes build scenes; functions returning actions choreograph them; ordinary objects expose parts that callers need to manipulate. Named arguments, children, closures, and module imports work together to support this approach.
 ```aside
 fn arrive(node, destination_x, seconds = 0.5) {
@@ -304,8 +356,15 @@ fn arrive(node, destination_x, seconds = 0.5) {
 ```
 The same arrive function can be used for characters, title-screen buttons, or entire groups of text. Changing images, layouts, and action parameters lets authors build their own component libraries. Custom nodes are registered through the host and participate in the same property, input, rendering, and restoration protocols. New language keywords are reserved for rules that ordinary composition genuinely struggles to express and that multiple creative scenarios need.
 
-## 12 Keeping Documentation and Code in Sync
+## 14 Text, Media, and Extension Entry Points
+PlainText represents ordinary text, RichText represents explicit styled structure, and tr(id, fallback, params) creates LocalText. A translation template's structure is parsed first, then parameters are inserted as text; markup characters inside parameters remain literal text. The current dialogue group retains the text and voices from submission, and the next group uses the new language. An NVL page switches after it is cleared; UI and history use the current language immediately. reel loc extracts and updates catalogs and checks for missing translations and parameter issues.
+video is an ordinary node; audio provides tracks, queues, loop regions, filters, and synchronization groups. play returns an awaitable activity, stop leaves it at its current state, and finish is for activities with an endpoint. Tracks and resources are managed by stable identity. Device reconstruction and seek preserve or rebind logical waits; errors have explicit terminal states.
+custom_node can directly register state, measure, record, route, and event implemented in Aside. measure/record are read-only layout/rendering callbacks with execution budgets. route synchronously decides event consumption, capture, and focus, then event runs as an ordinary suspendable task. A minigame node can therefore prevent the same input from advancing the story while still being able to wait for resources in its application callback. New low-level graphics and platform capabilities are registered through native modules.
+Camera, Mesh, Material, and Effect provide perspective stages and programmable effects, with state and resource identities still included in saves. Each backend declares its supported implementations and fallbacks in a capability list. Live2D, system text-to-speech, mobile/Web packaging, and external services are adapter capabilities within the full target scope. Their specific API documentation will provide examples in the same style alongside verified implementations.
+External writes, such as network operations and purchases, use separate operation records and idempotency strategies. Unknown outcomes are queried and verified first; replay is read-only by default. Their lifetimes are explicitly distinguished from those of ordinary rollback-capable game variables. Author-defined components and script libraries can always extend scenes, layouts, choreography, and application logic.
+
+## 15 Keeping Documentation and Code in Sync
 The project lead maintains this guide. Each API is marked as designed or implemented, with its applicable version. Once implemented, examples are extracted as source snippets checked alongside the code: parsing, type and interface checks, and any necessary behavior verification use the same examples. The Chinese and English editions reference the same example files; translation updates are committed with interface changes.
 When an interface, behavior, default, or cancellation rule changes, the same PR updates the implementation, specification, both language editions, and affected examples. Advanced uses still in planning are labeled separately. Users can begin creating with the implemented sections. When composition proves difficult, they can report minimal source code and the intended scene so the project lead can refine the shared interfaces.
 The repository commit containing this guide is its version reference. Feature status is marked by section; interface changes update the Chinese edition, English edition, and shared examples together.
-The core changes from the previous draft are a unified fn declaration, scenes organized as complete node trees, a separation between constructing actions and starting activities, an explicit distinction between temporary overlays and permanent replacements, and fuller definitions of control appearance, derived bindings, and persistent models. These explainable author-facing behaviors in turn constrain the engine design.
+The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.

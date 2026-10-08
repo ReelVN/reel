@@ -1,72 +1,173 @@
-# Aside VM 与语言规范
-设计版本 1.0 · 开发基线，接口实现状态见正文。
+# Aside VM 与完整语言规范
+设计版本 1.1 · 开发基线，接口实现状态见正文。
 
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
-## 一、定位与兼容边界
-Aside 是 Rust 实现的动态嵌入式语言，Reel 是首个宿主。语言、编译器和 VM 不依赖窗口、舞台或媒体。工作区使用 aside-vm 与 aside-compiler，源码扩展名为 .aside。本文规定语言和运行协议；节点、剧情、存档槽位及动画库由引擎与 DSL 文档规定。
-Quirrel 4.41、提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe 是原设计选定的行为参照，开发开始时固定源码、构建选项、测试和许可记录。它用于验证动态对象、闭包、异常、协程等成熟机制，Aside 不宣称源码或字节码兼容。现代语法及本文明确的语义调整优先；对照测试分别标记“保持”“语法转换后保持”“有意改变”，禁止用旧测试通过代替新规则验收。
-保留动态类型、共享引用、class、delegate、metamethod、异常、generator、协作 thread、Future、解构、类型注解和模块。语言不引入 Rust 的所有权标注、借用检查、生命周期、trait 或泛型单态化。首版采用解释执行，不预设 JIT、NaN-boxing 或多线程共享脚本堆。
+## 一 定位与完成标准
 
-## 二、统一语法
-函数统一使用 fn；async 是函数修饰符；剧情标记是宿主元数据，不能另造 story/function/local 等同义声明。普通语句使用分号。换行不插入分号；函数、类和作为语句的控制流块后不用分号。块末无分号的表达式提供块值，省略时为 null。return、break、continue、throw、yield 均以分号结束。
+Aside 是以 Rust 实现的完整动态嵌入式语言，Reel 是首个宿主。它承担剧情、业务状态、自定义 UI、组件、回调、异步流程、扩展脚本与工具逻辑；语言、编译器和 VM 不依赖窗口、媒体或特定舞台。工作区使用 aside-vm、aside-compiler，源码扩展名 .aside。本文定义最终目标语义；开发里程碑只记录实现状态，保持全部目标能力。
+
+Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照和测试资产。固定其源码、构建参数、许可和原断言；Aside 不承诺源码、字节码或全部行为兼容。逐调用默认值、每实例字段初始化、显式 self、强绑定方法、严格 bool、检查整数算术及普通表自身槽的插入/覆盖，均是为作者可预测性选择的有意差异，分别验收。不能为提高兼容率删除断言，也不能因旧语义不同而撤销已经确定的 Aside 规则。
+
+完整目标包含动态值、共享对象与 cell、tuple、集合、文本和可变缓冲、函数与类、模式、模块、异常、迭代器、generator、协作 thread、Future、异步迭代、任务组合、标准库、宿主扩展和作者工具。Rust 的借用/生命周期语法、trait、泛型单态化不是目标；这些机制并非完成上述作者操作的必要条件。脚本堆采用单线程协作执行，跨线程交换拥有数据和稳定身份。执行器先实现解释执行，表示与优化可以演进，任何布局都必须保持完整 int64/float64 语义。
+
+完成条件同时覆盖语言、标准库、扩展契约、调试工具和 Reel 作者场景。只运行一段剧情、只解析全部语法或只通过旧语言测试，都不算完整 Aside。
+
+## 二 语法与求值顺序
+
+函数统一写 fn；async fn 创建任务，gen fn 创建同步生成器。绑定使用 let 与 let mut，闭包写 |x| expression 或 || { statements }，模块导入写 use。普通语句必须以分号结束，不做换行自动插入；函数、类及作为语句的控制流块后不要求分号。块末无分号表达式为块值，否则为 null；return、break、continue、throw、yield 以分号结束。
+
 ```aside
-use reel::{character, narrator, stage};
-use game::ui::{dialogue_view};
+use reel::{character, narrator, story};
 
-fn add(a: int, b: int = 1) -> int {
-    a + b
-}
+fn add(a: int, b: int = 1) -> int { a + b }
 
-#[story(id: "chapter01.opening")]
-pub fn opening() {
+fn opening() {
     let mio = character("Mio");
-    mio.say("先别开灯。");
-    narrator.say("雨水沿着玻璃滑落。");
+    mio("先别开灯。");
+    narrator("雨水沿着玻璃滑落。");
 }
+story.register("chapter01.opening", opening, title: "窗上的光");
 ```
-标识符、字符串和注释采用 UTF-8；注释为 // 与 /* ... */。字符串用双引号，支持转义；插值写 f"音量：{volume}"，花括号字面量写 {{ 与 }}。数组用 [a, b]，动态表用 #{name: "Mio", score: 0}，计算键写 #{[key]: value}。表、参数和导入列表允许末尾逗号。无裸字符串剧情语句；旁白必须调用 narrator.say。宿主可注册属性元数据模式；Reel 的 #[story(id: "chapter01.opening", title: "窗上的光")] 要求 id 为唯一稳定字符串，title 为可选显示标题，未知参数或重复 id 报错。#[story] 仅标注模块级普通 fn；函数无必需参数，默认参数按普通规则求值且保持同步。入口注册记录符号身份，普通函数调用仍使用原闭包与模块版本。
-控制流为 if condition { ... } else { ... }、while condition { ... }、for item in values { ... }，条件不必加括号。for 遍历值；每轮建立新的迭代绑定，循环内创建的闭包捕获本轮 item，不共享最后一轮的槽。键值遍历写 for [key, value] in values.entries()。区间 a..b 不含终点，a..=b 含终点；只接受整数。break 和 continue 指向最近循环。if 可作表达式，作为取值表达式时必须有 else。
 
-## 三、值、绑定与对象
-基本值为 null、bool、64 位有符号 int、64 位 float、不可变 UTF-8 string、array、table、class、instance、closure，以及 generator、thread、Future、weakref 和注册宿主值。容器与实例有稳定身份；赋值和参数传递共享其对象，不隐式深复制。
-let 禁止重新绑定名称；let mut 允许重新绑定。该限制是浅层的，不冻结对象。函数参数默认不可重绑，可写 mut 参数。字段是否可写由对象类型决定。
+标识符、源码、注释和文本使用 UTF-8；标识符采用固定 Unicode 版本的 XID 规则并允许 _，名称按实际字符序列区分。注释为 // 与 /* ... */，块注释可嵌套。字符串使用双引号，支持反斜线、双引号、n/r/t/0 及 u{十六进制标量} 转义，非法标量报错。f"音量：{volume}" 为插值，{{ 与 }} 表示字面花括号。三双引号包围多行文本，保留换行且不自动缩进裁剪；前缀 r 禁用转义，f 启用插值，二者不混用。数组为 [a, b]，对象为 {name: "Mio", [key]: value}，tuple 为 (a, b)。列表允许末尾逗号。
+
+{} 在要求表达式的位置为对象，在 fn、if、循环、try 等要求块的位置为块。|| {...} 是闭包块，返回对象写 || ({name: "Mio"})。存在语法歧义的独立对象表达式必须加括号；解析器不按运行结果猜测。if/while/for/match 头部的最外层关闭尾随 children 调用，使其后的花括号属于控制流；确需尾随调用时用圆括号包住该表达式。对象/数组展开分别写 {...base, score: 1}、[...items, last]，均按源码顺序复制条目/元素，保留内部引用。对象展开只复制自有槽，不复制 delegate，后项覆盖前项。
+
+if condition { ... } else { ... }、while condition { ... }、for pattern in values { ... } 是基本控制流；if 作为取值表达式必须有 else。loop { ... } 为无限循环。break/continue 默认指向最近循环，可通过 label: while ... 与 break label; / continue label; 指定外层循环。循环本身不产生隐式结果。for 每轮创建新绑定，闭包保留本轮值。a..b 不含终点，a..=b 含终点，均产生整数 Range；步长由 range(start, end, step:, inclusive:) 提供，零步长报错，方向与端点不符为空区间，推进溢出在越界前终止。
+
+一般表达式按源码从左到右求值一次；短路、条件和模式有各自明确规则。赋值先计算目标对象与键，再计算右值并写入；复合赋值先计算左值位置一次，再读取、求右值、计算和写入。求值错误不会自动撤销已经发生的普通副作用；有事务语义的宿主接口另行声明。
+
+## 三 值 绑定 相等与数值
+
+值包括 null、bool、int64、float64、不可变 UTF-8 string、不可变 Bytes、tuple、array、table、class、instance、closure、generator、thread、Future、weakref 及注册宿主值。TextBuffer、ByteBuffer、Set、Range、Iterator 等是完整标准类型；它们是否占据独立 Value 标签不影响语言地位。
+
+let 只禁止重绑名称，不冻结对象；let mut 允许重绑。参数默认不可重绑，mut 参数允许重绑。词法作用域允许内层遮蔽；未声明或尚未初始化的名称读取报错。可变捕获由所有闭包和原作用域共享 CellId；不可变捕获可按值保存，所指对象身份继续共享。array/table/instance 等身份对象的赋值和传参不隐式复制。
+
 ```aside
-let state = #{score: 0};
-state.score = 1;             // 合法：修改同一个对象
-let mut selected = "audio";
-selected = "reading";        // 合法：重新绑定名称
-let increase = |amount| { state.score += amount; };
+let state = {score: 0};
+state.score = 1;
 let mut count = 0;
-let next = || { count += 1; count }; // 闭包共享 count 的 cell
+let next = || { count += 1; count };
 ```
-词法作用域允许内层遮蔽；未声明名称报错。捕获可变绑定时所有闭包与原作用域共享 CellId，离开原函数不复制最终值。不可变绑定可按值捕获；其对象身份仍共享。解构支持 let [a, b] = pair; 与 let #{name, score: points} = value;；表缺省字段写 score: points = 0。缺少必需项或数组长度不符报错；首版不引入 tuple。
-表字段访问与字符串键索引等价；= 对表新增或覆盖字段，remove(key) 删除字段。数组越界和不存在的直接字段读取报错；get(key, default: null) 允许明确缺省。实例只允许声明字段。?. 仅处理接收者为 null，?? 仅处理左值为 null；二者均短路。
-条件、!、&&、|| 要求 bool，避免隐式真假转换。数值运算允许 int/float 混合，结果按浮点规则；int 溢出和除零报错。+ 接受数值对或字符串对，不隐式字符串化。标量相等按值，容器相等按身份；跨 int/float 比较按精确数值等价，不能先把大整数截成 float。其余算术、比较、位运算和复合赋值有独立算子测试。类型注解采用 x: int 与 -> int，支持 any、容器类别、注册类型和 T | null；不改变动态存储模型，在可确定时静态报错，否则参数进入和返回时检查。
 
-## 四、函数、类与调用
-闭包写 |x, y| expression 或 || { statements }。fn 声明绑定不可重绑。位置参数必须在命名参数前；fn f(a, b = 1, ...rest) 支持尾部位置变参。callee、位置实参、命名实参、尾随 children 依源码顺序各求值一次，随后绑定签名。重复名、未知名、多余参数和缺失必需项报错。
-默认表达式在每次调用时按参数顺序求值，可引用前面的参数，不可引用后面的参数；因此 children = [] 每次获得新数组。默认表达式不能等待或 yield。调用方实参先全部求值，再执行缺失参数的默认表达式。动态闭包与宿主函数提供同一签名描述，命名调用不能只对内建函数有效。
-class 使用单继承，构造方法为 fn init(self, ...)，方法显式声明首参 self；类调用自动创建实例并调用 init。let/let mut 声明只读/可写字段，字段初始化式每个实例按基类到子类顺序执行一次。未写初始化式的只读字段须在 init 中赋值一次，构造结束前检查。只调用最派生的 init；父初始化用 super.init(...) 显式调用。static let 保存只读类字段，static fn 没有 self。方法取值形成保留接收者的绑定闭包，移作回调仍调用同一对象。只有类方法使用接收者调用约定，表中的普通闭包不自动注入 self；普通函数不继承调用者的隐式 this。
+标量按值相等，array/table/instance/closure/Future 等身份对象按身份相等；tuple 按第五节递归规则相等。bool 不与数字相等。int/float 混合比较按精确数值关系，不能先把大 int 舍入成 float；+0.0、-0.0 与整数 0 相等。NaN 不自等，Infinity/NaN 是合法浮点值，具体 NaN 位型和对象内布局不是语言可观察身份。
+
+条件、!、&&、|| 只接受 bool；逻辑运算短路并返回 bool。?? 仅在左值为 null 时计算右值。?.、?[...]、?(...) 只在接收者为 null 时短路，该段及其后同一可选链不求索引/实参；括号结束链传播。非 null 接收者的缺失字段仍报错，不能吞掉 metamethod 的异常。
+
+int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 / 向零截断；任一操作数为 float 则按 float64 运算。% 是与向零除法一致的 remainder，div_euclid/rem_euclid 提供欧几里得规则。数字除零含浮点 ±0 均报错，其余 float 运算允许产生非有限值；宿主属性可另行要求有限值。+ 只接受数值对或字符串对，字符串化使用 str()/插值。
+
+位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
+
+## 四 对象 集合与键
+
+array 为可变有序序列，索引只接受非负 int，越界报错，不把 float 截断或把负数解释为倒数索引。标准操作包括 len、append、extend、insert、remove、pop、clear、slice、find、稳定 sort、浅 clone 与显式 deep_clone。普通 slice 创建新的外层序列、共享元素引用。
+
+table 为按插入顺序迭代的动态关联对象；点访问等价于字符串键读取。读取先查自有槽，再沿无环 delegate 链查找，最后按第九节执行缺失钩子。普通 table 的 = 总在自身插入或覆盖槽，不修改 delegate；覆盖不改变原位置，删除再插入移到末尾。remove 删除自有槽；set_existing 要求自有槽存在，define 要求自有槽不存在。raw 操作绕过动态钩子。
+
+has_own 只检查自有槽；has_in_chain 只检查自有与 delegate 链的真实槽，不执行 _get；try_get 执行正常读取并返回 (found, value)。get(key, default: null) 只在缺失时返回缺省，存储的 null 是已找到值。keys/values/entries 明确只枚举自有槽，entries 产生 (key, value) tuple。Map 为 table 的标准库命名别名/构造入口，不建立第二套隐含不同的映射语义。
+
+可散列键为 null、bool、int、除 NaN 外的 float、string、Bytes 及递归可散列 tuple。等值键必须同 hash，包括精确相等的 int/float 与正负零；可变对象及含它们的 tuple 不能作为普通键，错误指出元素路径。Set 使用同一键规则与插入顺序，提供 membership、add/remove、union/intersection/difference。IdentityMap/IdentitySet 另行按对象身份存键，适合对象索引；其键为强引用，弱键版本明确命名且不保证枚举稳定。弱集合及 weakref 的保活、失效和快照使用第十八节规则。
+
+内部散列种子及桶布局不对脚本暴露；可持久数据摘要使用规定编码的 digest API。深复制保留新图内部的别名与环，遇不可克隆宿主值报引用路径，不能用 JSON 代替通用复制。deep_equal 是显式、受预算的结构比较库操作，不修改普通 ==。
+
+array/table/Set 的默认迭代器记录结构版本；增删或改变位置使下一次推进报 ConcurrentModification，覆盖已有位置的值不改变结构版本，尚未访问位置可看到新值。稳定遍历使用显式副本。for 体等待时其他任务的修改同样适用，不能把单线程理解成没有交错。容器 schema、顺序、结构版本和游标进入快照。
+
+## 五 tuple 的值语义
+
+(a,b) 是二元 tuple，(a,) 为一元，() 为零元，(a) 为分组。空 tuple 与 null 不同；普通函数无返回值仍返回 null。tuple 数量和位置是值结构，元素表达式从左到右求值一次，原动态类型不被数值统一化。其槽不可重写、增删或通过解构反向修改。
+
 ```aside
-class Counter {
-    let mut value = 0;
-    fn init(self, start = 0) { self.value = start; }
-    fn increment(self, amount = 1) { self.value += amount; }
-}
-let counter = Counter();
-let click = || { counter.increment(); };
+fn measure(node) { (node.width, node.height) }
+let (width, height) = measure(view);
+let items = [];
+let pair = (items, items);
+pair[0].append("shared");
 ```
-继承写 class Child: Parent，父方法用 super.method(...)。delegate 是表的显式查找后备链，set_delegate()/get_delegate() 管理，拒绝形成环；自有槽优先。metamethod 保留统一的 _get、_set、_call、_add、_cmp 等命名契约，缺省操作与递归防护逐项测试。构造、比较、属性访问和其他 metamethod 均是不可挂起边界；不能在运算中偷偷等待外部输入。这些 receiver、字段初始化与赋值规则属于相对 Quirrel 的有意调整。
 
-## 五、模块与诊断
-use reel::{stage, text}; 是分组导入，use game::ui::dialogue::dialogue_view; 是单项导入，use reel::prelude::*; 导入该模块全部公开名字，三者使用同一名字解析规则。game 为项目根命名空间，其他根名来自项目清单的依赖别名；路径只允许标识符段。别名写 use game::ui::{preferences as settings_view};，跨模块导出使用 pub；通配导入不得静默覆盖已有名字，重名必须显式选择或起别名。项目清单指定的启动函数是显式宿主入口，不要求 pub；这不使其他私有符号可被导入。不同时保留 from/import、require 和字符串路径三套作者语法。
-项目源码根目录是 game.toml 所在目录。game:: 后的模块段对应相对目录与 .aside 文件，文件名和目录名必须是合法标识符。单项导入的最后一段始终是导出符号，此前各段组成模块路径：game::ui::dialogue::dialogue_view 从 ui/dialogue.aside 导入 dialogue_view；分组导入的花括号与通配导入的 * 之前均为模块路径。外部源码根通过 game.toml 的 [modules] 表配置别名到相对目录的映射，game 与 reel 为保留别名；reel 由宿主注册，不作为源码目录查找。配置入口 entry = "main::main" 从项目根的 main.aside 选择 main 函数。
-模块实例包含固定版本的导入绑定与私有全局。源码先编译并解析依赖，再按依赖顺序执行顶层初始化；首版拒绝初始化依赖环并显示完整环路。初始化不得等待外部事件。发布单位为不可变 ModuleSet。修改模块时重新构建该模块及所有反向依赖模块的实例和导入绑定，再原子发布；其余内容可共享。旧闭包继续持有旧代码和旧模块集合，普通调用沿原导入绑定执行。候选初始化只允许候选内分配与写入，以及注册为 InitSafe 的宿主操作；修改旧会话、全局设置或外部资源的操作在初始化处报错。候选失败时释放候选对象，现有会话保持原值。
-诊断使用稳定代码、严重性、模块版本、主源码范围、相关范围、调用栈及可选修复建议。文件坐标保留 UTF-8 字节范围与展示行列；中文字符不能造成标注错位。动态调用错误标出实参及签名，等待失败标出 await 和原始失败位置。提供人读输出与结构化输出，不把 Rust panic 或内部地址直接展示给作者。错误分类覆盖语法、名称、类型、参数、只读写入、不可暂停边界、无效句柄、资源配额及恢复适配缺失。
+tuple 是浅层不可变值，例中两项保持同一个 array。赋值、传参及返回不深复制元素。实现可以内联或共享不可变 tuple 存储，但不暴露 tuple 身份；identity_eq 和 weakref 不接受 tuple。tuple 可经由可变对象间接参与环，GC 和快照必须保留这些引用。
 
-## 六、children 与属性绑定
-尾随 children 块是通用调用语法，等价于为名为 children 的参数构造数组，不是隐式闭包，也不按帧重跑。
+同长度 tuple 按顺序用元素普通 == 比较，嵌套 tuple 递归；可变容器/实例元素仍按身份。不同长度不等，tuple 与 array 不等，() != null。包含 NaN 的 tuple 可不自等，不能只因内部存储句柄相同就直接返回 true。相等使用受预算的显式栈，不依赖无限 Rust 递归。
+
+所有元素递归可散列时 tuple 才可作为普通键；长度、顺序与元素 hash 共同参与。可缓存不可变内容的内部 hash，但不得将其当跨进程稳定身份。包含 array、table、instance、closure、Future 或 NaN 时拒绝散列并给出路径。
+
+t[i] 使用从零起的 int 索引，负数及越界报错；t.len() 返回固定长度；slice(range) 返回 tuple；遍历按位置顺序。所有读取和切片继续共享内部对象引用。
+
+let (a,b) = value 只匹配 tuple 且默认精确数量；let [a,b] 只匹配 array。允许嵌套、_ 和一个尾部 ...rest；tuple rest 是 tuple，array rest 是 array。tuple 不用缺省值补不存在的位置，需可选值时显式返回 null，需可变长度时用 array。
+
+多返回值始终是一个 tuple：return (a,b);、yield (a,b); 和 async 返回 tuple 均交付一个值。f(pair) 传一个参数，f(...pair) 才展开位置参数；不会隐式取首项或按表达式所在位置自动扩成多个结果。优化可用多寄存器传递，但动态调用、快照、异常和调试观察必须等价。
+
+## 六 Unicode 文本和可变缓冲
+
+string 为不可变、有效 UTF-8 文本；相等按精确文本序列，不隐式规范化。API 明确区分 byte_len、scalar_count、grapheme_count、bytes()、scalars()、codepoints() 与 graphemes()：bytes 为字节，scalars 为单 Unicode 标量 string，codepoints 为整数，graphemes 为字素 string。普通 string 不提供含糊的 s[i]；使用显式视图或 slice_bytes/slice_scalars/slice_graphemes。
+
+所有范围从零开始，端点规则与 Range 一致；字节切片端点必须在 UTF-8 边界，否则报错。UTF-8 解码默认严格，替换非法输入需显式模式。Unicode 库版本属于包兼容元数据。normalize、大小写转换、trim、find/replace、split/join、parse/format 均定义输入单位、边界和错误；默认大小写转换不依赖进程 locale，本地化规则通过显式 locale 参数选择。字素不是字体布局 cluster，Reel reveal 由文本服务将规定揭示单位映射到稳定排版。
+
+TextBuffer 提供 append、insert_bytes/remove_bytes/replace_bytes、对应字素操作、clear 与 to_string。文本编辑不能产生非法 UTF-8；buffer 是共享身份对象，to_string 产生不受后续编辑影响的不可变值。任何内容改动使其既有文本游标失效。缓冲自身不自动可观察，UI 更新经 model 写回或显式可观察包装。
+
+Bytes 为不可变字节值，按内容相等与散列；ByteBuffer 为共享可变字节序列，支持 0..255 字节访问、范围编辑、显式端序数值读写与编解码。普通 slice/to_bytes 的结果不受后续缓冲编辑影响；需要共享视图时使用明确的 view 类型与版本检查。脚本和 native 都不得把借用裸指针跨重入、扩容或等待保留。快照保存有效内容和别名，不保存裸地址或未用容量。
+
+大型编码、搜索、规范化、替换、hash、equality 与复制都按字节/元素计费；支持分块 continuation，或由明确输入上限保证不可分割调用有界。append 不能仅靠整串复制掩盖平方成本，基准包含长对白、组合字符、ZWJ emoji、二进制 NUL、非法编码和保存后继续编辑。
+
+## 七 模式和分支
+
+模式统一支持名称、_、字面值、tuple、array、对象字段、嵌套、尾部 rest、类型测试和 OR。同一分支名称不得重复，OR 的各侧必须绑定相同名称。对象模式默认只要求列出的自有字段；{name, score: points = 0, ...rest} 在 score 缺失时才求缺省，显式 null 不触发；rest 为其他自有字段的新 table。tuple/array 默认精确长度，通过 rest 明确接收剩余项，不静默丢弃或补 null。
+
+```aside
+let result = match event {
+    {kind: "click", position: (x, y)} if x >= 0 => hit(x, y),
+    {kind: "key", key: "Escape"} => close_panel(),
+    _ => null,
+};
+```
+
+match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，命中后只执行一个分支。guard 不可外部等待；其显式副作用不会因不命中而回滚。动态输入未匹配抛 MatchError，有限已知类型可作穷尽诊断，默认鼓励 _ 分支。if let/while let 使用同一模式规则。
+
+结构匹配只读取真实自有数据槽或注册的纯结构字段，不执行任意 _get、外部操作或等待。匹配失败不是异常；let 解构失败为 PatternMismatch。模式先校验结构与必需项，再按模式书写顺序求缺省，完成后一次建立绑定；失败不创建部分名称。解构赋值只允许已有的可重绑词法名称，先准备所有结果再提交，不能通过任意 setter 假装原子更新。全部模式遍历和临时值受预算且可保存。
+
+## 八 函数 调用与类
+
+块内 fn 声明先建立只读函数绑定，允许自递归和互相递归；捕获普通 let 的初始化状态仍受检查，不得把未初始化值视为 null。命名参数适用于脚本闭包和 native，使用同一签名描述与绑定器。位置参数在命名参数前；fn f(a,b=1,...rest) 支持新建 array 接收尾部位置参数。
+
+callee、所有实参、展开和 children 按源码顺序各求值一次，然后绑定签名；重复名、未知名、多余或缺失参数报错。缺省在每次调用中按参数顺序求值，可引用前面参数，不可引用后面参数；不允许外部等待/yield。实际参数全部先求值，再运行缺省，children=[] 每次独立。f(...sequence) 展开 array/tuple 为位置参数；call(f, positional: [], named: {}) 提供动态完整转发，具名表键须 string，重复与冲突仍报错，不按对象合并覆盖。
+
+class 使用单继承，class Child: Parent。实例有声明字段，let/let mut 表示只读/可写；字段初始化每实例按基类到子类执行。未给初值的只读字段必须由构造过程赋值一次；结束时验证完整，实例状态为 Constructing、Ready 或 Failed，并记录已初始化字段。成功返回 Ready；异常结束标记 Failed。显式发布过的引用仍保持身份，但对 Failed 实例的普通操作报告 ConstructionFailed，诊断/status 查询保留可用；Constructing 中读取未初始化字段报告 UninitializedField。普通已经发生的副作用沿用语言规则，构造失败不伪装成外部事务回滚；快照保存构造状态、字段位图与执行帧。owner/Region 硬撤销或 invoke_sync 预算终止同样由 VM 清理把未完成实例标记 Failed；GC/快照只追踪已初始化槽。全部别名与既有绑定方法读取同一实例状态，方法调用也执行 Failed 检查。构造方法 fn init(self, ...) 显式首参 self；类调用创建实例并调用最近的有效 init，派生类未声明 init 时继承基类构造。声明派生 init 时只调用它，super.init(...) 显式初始化基类，禁止同一基类 init 重复执行。字段初始化不会因 super.init 重跑。
+
+方法调用提供接收者一次；方法取值形成强保留接收者的绑定闭包，普通表中的闭包不自动注入 self，普通函数不继承调用者的隐式 this。super.method 固定从词法基类查找并保留同一个接收者。每次方法取值可以创建新闭包，不保证两次取值身份相等；事件注销依赖 Subscription token。static let/static let mut 与 static fn 属于类，static fn 无 self；只读 static 初始化一次。class 可作为值和局部声明，继承图不得成环，公开字段与方法反射不暴露内部布局。
+
+## 九 delegate 与扩展操作
+
+set_delegate/get_delegate 管理 table 的显式后备链，拒绝环，改变链或槽时更新查找版本。动态成员缓存必须包含布局/查找版本。普通 table 自身槽的插入/覆盖不因存在 delegate 而变为修改父表。
+
+元方法查找使用 raw 规则，不递归触发自身钩子。VM 调用元方法时显式提供 receiver；表中作为钩子的普通闭包也须声明 self，类方法由绑定器注入一次。核心协议为：
+- _get(self,key) 返回 (found: bool,value)，只用于真实槽查找失败；found=false 是缺失，真正异常照常传播。
+- _set(self,key,value) 用于 class/native 显式声明的虚拟属性或代理写入口；普通 table 写自身槽不调用它。没有此入口的 instance 不能写未知字段。
+- _call(self,...args) 是普通动态调用入口，继承当前 Task、owner、RegionId 与效果上下文；普通任务中可以挂起，受限上下文仍按原边界执行。命名参数和 children 依据它的实际签名绑定，receiver 注入一次，signature(callable) 隐去已绑定 self；_iter(self) 返回 Iterator；_tostring(self) 必须返回 string。
+- _add/_sub/_mul/_div/_mod(self,right)、_neg(self) 扩展对应运算；仅在内建类型组合无定义时尝试左操作数钩子，未定义则报错，不再猜测右反射钩子。
+- _cmp(self,right) 返回负/零/正 int，为 < <= > >= 提供比较；不改写 == 的身份/值规则，不成为普通键的可变 hash 来源。
+
+除普通调用入口 _call 外，上述钩子、构造和属性访问不允许外部 Pending，但普通可恢复栈仍可 BudgetYield。递归钩子有调用深度与工作量上限。注册新的 host 操作应使用版本化描述，不靠随意新增同名魔法槽改变既有语法。显式 deep_equal、key extractor 等提供业务比较，无需覆盖全局相等规则。
+
+## 十 模块 类型与反射
+
+use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view; 为单项导入，use reel::prelude::*; 为公开名字通配导入。别名用 as，pub 控制导出，pub use 重导出；命名空间导入使用 use game::ui::dialogue as dialogue;，解析器依据模块/符号声明区分，若两者同名则要求显式分组选择符号。通配不能静默覆盖已有名字。
+
+game.toml 所在目录是源码根；game:: 后的模块段对应目录和 .aside 文件，名称须合法标识符。外部根通过 [modules] 的依赖别名到目录及锁定版本声明；game/reel 保留，reel 由宿主注册。entry="main::main" 选择 main.aside 的 main。启动函数可以私有，这不使其余私有符号可被导入。use 不承担运行时文件加载，包版本选择由清单和锁文件规定。
+
+先链接模块强连通分量的函数/类型符号。SCC 凝聚图按依赖先于使用者的拓扑顺序初始化；同一 SCC 内及互不依赖的并列 SCC 用规范化模块路径稳定排序，再执行顶层表达式。链接不执行 class 字段初始化、extends 求值或任意表达式；未创建完成的 class 不可实例化。读取未初始化绑定报带实际链路的 ModuleInitializationCycle；可链接的函数互相引用不被 import 图的环一概禁止。模块初始化不得外部等待。
+
+模块实例包含固定版本的导入绑定和私有全局。发布单元为不可变 ModuleSet 描述，所指环境中的可变业务值仍按对象语义变化。会话由宿主从确定代码集合创建独立模块环境。修改模块时构建它及全部反向依赖的新实例与导入，再原子发布；其余不可变内容可共享。旧闭包/帧保留旧代码与原绑定，不自动跳入新环境。
+
+候选初始化仅可分配/写候选对象，并调用标为 InitSafe 的宿主操作；禁止修改旧会话、全局设置、外部资源。候选失败释放候选图，活会话不变。Reel story.register(id,entry,title:) 为普通 InitSafe 登记 API，id 为唯一稳定 string，entry 为模块级、零必需参数普通 fn；发布前检查冲突，普通调用仍保留原闭包版本，不以登记替换函数机制。
+
+类型注解支持 any、基础类别、class/native 名称、T|null/union、固定 tuple (T,U)、函数签名。注解不改变动态存储，在能确定时静态诊断，否则参数进入/返回及声明写入时验证。array/table 类别注解不谎称元素永久受保护；强约束容器使用显式 schema 容器构造，每次脚本/native 写入都验证，别名共享同一 schema。不能对普通共享容器检查一次就宣称永久 Array<int>。
+
+type_of、is、signature、members、own_fields 提供一致反射。签名包含参数名、顺序、缺省是否存在、变参、返回契约和效果，不因反射而执行缺省表达式。native 与脚本类型遵循同一描述。反射不泄露原生地址、任意私有环境、恢复 PC 的写权限或绕过字段/schema 的写入口。
+
+## 十一 children 与可观察绑定
+
+尾随 children 块是通用调用语法：立即计算名为 children 的 array 参数，不是隐式闭包、不按帧重跑。块内独立表达式语句产生 Node 时按顺序收集，分号不取消收集；块末 Node 只收集一次。null 忽略，其他值报错。let 初始化与赋值不收集；if/for/while/match/普通语句块继承词法收集位置，控制流整体不再次收集末值。嵌套尾随块建立独立收集器，被调用函数不继承调用者收集器。显式 children 与尾随块不能共存，事件回调必须命名传入。
+
 ```aside
 fn panel(title, children = []) {
     column(gap: 12) {
@@ -75,49 +176,163 @@ fn panel(title, children = []) {
     }
 }
 let view = panel("声音") {
-    text("音乐");
     slider(value: bind(settings.music), min: 0, max: 1);
     text(value: derive(|| f"音量：{settings.music}"));
 };
 ```
-块内独立表达式语句返回的 Node 按顺序收集，分号不取消收集；块末无分号的 Node 表达式也仅收集一次。null 忽略，其他值报错。let 初始化和赋值不收集；if、for、while 及普通语句块继承词法收集位置，但控制流整体不再重复收集其末值。嵌套尾随块建立自己的收集器；被调用函数不继承调用者的收集器。显式 children 实参与尾随块不能共存。
-块立即执行一次，得到完整 children 后调用组件；构造过程不得等待外部事件，预算让出仍可保存临时构造帧。构造函数返回未挂载 Node，挂载和单父规则由宿主验证。闭包参数必须显式命名传入，不能把任意尾随块猜作事件回调。
-bind(model.volume) 是编译器识别的可观察属性位置表达式，生成 PropertyRef；其能力为 Read 或 ReadWrite，由宿主属性定义决定。text 等展示接口接受可读引用，slider 等编辑接口必须要求 ReadWrite；只读引用不能隐式升级。宿主必须为对象注册稳定属性身份、读取、可选写入和版本接口。Reel 的 model(#{...}) 创建默认可写的可观察业务模型；对话文本和控件交互状态可注册为宿主管理的只读属性。普通表字段、临时值与 a + b 不是可观察属性，不能使用 bind。对象和键只在创建引用时求值一次，之后引用同一属性位置；若需随着对象变化重新选择位置，应重建绑定。
-derive(|| expression) 创建只读 DerivedBinding。求值期间记录实际读取的可观察属性，在依赖变化时按版本失效并重算；条件变化后替换依赖集合。禁止写入可观察状态、修改外部对象、启动活动或等待；调用宿主函数还要求其注册为派生安全，违规给出派生源位置。普通数组和局部变量不是自动响应状态；需要持续更新的数据放进宿主属性模型。只读派生不能传给 slider 等要求写入能力的接口。派生依赖环报错，销毁或替换绑定时解除订阅。跨属性通知、约束与提交顺序由宿主实现，VM 不包含 UI 调度器。
 
-## 七、暂停、Future 与协程
-所有普通 fn 在当前 Task 的可恢复调用栈执行，允许 await；是否有任务上下文由调用入口决定。Reel 的入口与 UI 回调均由任务执行。调用 say 等已注册的可暂停宿主函数可以挂起整条普通函数链；这是一项明确的宿主能力，不要求每层 helper 改写为 async。
-async fn 调用立即返回 Future，函数体在后续调度片开始。它创建带 ParentTaskId 的新任务，继承当前显式 OwnerId；普通调用栈返回不取消该任务，所有者结束或显式取消才终止它。丢弃 Future 不等于取消。需要不同生存范围时使用显式 spawn(owner: ..., task: || { ... })。宿主必须提供 owner；无主后台任务不被悄悄创建。
-await 接受统一 Awaitable 协议，Future 与 activity.finished 都适用；不接受普通标量。即使已经完成也在下个可调度步骤继续，避免立即完成与稍后完成产生两套重入规则。完成一次后向所有等待者按登记顺序交付。Fault 在 await 位置抛出；活动 Stopped 返回终态结果，Cancelled 抛出取消错误。所有者撤销任务时停止脚本推进，由宿主释放其订阅与活动。
-Future.resolve(Future) 继承结果并检测自引用链；async 返回 Future 时采用相同规则。任务 Future 只能由任务返回、失败或取消结算，普通手工 Future 才允许显式 resolve/reject。未被观察的失败产生诊断。线程调度均在 VM 所在线程，不等同于 Rust Future 或操作系统线程。
-generator 使用 gen fn，yield value; 只挂起生成器自身，next() 返回 #{done: bool, value: any}；for 可消费生成器。thread 使用标准库 Thread(fn)，call()/resume(value) 驱动其独立脚本栈，suspend(value) 与调用者交换值。二者保留各自状态和异常边界，不混成 async；首版在 generator 或手动 thread 的执行栈中统一禁止外部 Pending，无论来自 await、普通 helper 还是 say 等宿主调用；yield 与 suspend 仍可返回给直接驱动者。其对象和挂起帧仍进入快照。
-try { ... } catch error { ... } finally { ... } 中，catch 与 finally 至少有一个。catch 捕获 throw 和可处理运行错误；正常结束、return、break/continue 离开 try 或异常展开时，均先执行 finally。finally 不得 await、yield、return 或跳出其自身边界；可按预算让出，但动态进入外部等待仍报错。finally 再次抛出异常时替代原结果，并保留原异常作为 cause。活动取消且等待任务仍存活时，await 抛出取消异常，照常经过 catch/finally；任务自己的 owner 撤销时直接终止任务，不运行脚本 finally，宿主按所有权释放资源。异常值、处理中途结果与 finally 展开状态都进入可恢复帧。原生崩溃不转成可恢复脚本异常。不可暂停边界包含同步宿主重入、默认参数、模块初始化、构造、metamethod、派生求值、finally 和 children 构造；能够静态判断时提前报错，动态路径进入等待时仍必须检查。
+children/构造不得外部等待，BudgetYield 时临时构造帧可保存。Node 返回时未挂载，单父和事务挂载由宿主验证。
 
-## 八、VM 与宿主协议
-VM 采用寄存器执行帧、共享函数代码与常量、驻留标识符、可复用参数区。Value 首版使用显式类型标签和数值或代际句柄载荷，64 位目标以 16 字节为布局目标，实际大小由测试确认。对象句柄带代数，不泄露原生指针；跨线程只移交拥有的数据、稳定 ID 或只读缓冲。
-run_slice 接收指令额度、分配额度、时钟检查间隔，返回 Returned、BudgetYield、HostCall、Waiting 或 Fault。BudgetYield 是调度让出，不改变脚本结果。HostCall 包含稳定符号、签名版本、TaskId、OwnerId、源位置和借用参数视图；宿主返回 Ready、Pending 或 ScriptError。Pending 必须退出原生调用，再由 VM 保存操作描述、等待身份、返回槽与后继 PC，不能把 Rust 栈当作续体。同步宿主重入只通过 invoke_sync：它使用受外层限制的指令、分配与时间子预算；嵌套重入继承并扣减最外层同步调用的剩余额度与截止时间，只能收紧，保持同一累计限制，返回值只有 Returned 或 Error，既不返回 Pending，也不返回 BudgetYield。子预算耗尽立即终止本次嵌套调用，向原生调用方返回 NonResumableBudgetExceeded；嵌套脚本的 catch/finally 无法捕获或延长这个终止过程。这是受限同步调用的预算退出规则，普通可恢复任务的 BudgetYield 与 finally 规则保持原定义。每个原生原语仍须有界；可能较长的回调通过退出原生栈后的显式续体执行。
-任务、等待和完成消息带 SessionEpoch、TaskId 与 WaitId；宿主匹配身份后至多交付一次结果，过期结果丢弃。原生可挂起算法必须使用显式分块状态机或后台任务。算法重试只能恢复后继指令，不能重新执行已经生效的调用。宿主注册还声明参数、可暂停性、能力需求以及快照适配版本。
-外部根包含存活任务的寄存器、活动会话与当前发布 ModuleSet 所持模块环境、待交付结果与宿主保留根。对象字段、闭包捕获 cell、容器元素和 cell 的值属于堆内强边，只有从外部根可达时才保活；旧模块缓存为弱索引，旧环境随真实帧、闭包或会话引用存活，它们各自维护引用计数，但绝非独立追踪根。引用计数处理常见寿命，循环对象由有预算的可达性扫描回收；写屏障覆盖新增强边、根变更和弱引用升级。零计数对象先失效，边拆除和释放进入分片队列。维护队列及待释放字节计入堆预算；接近上限先维护并限制分配，不能只声称“增量”而允许无限积压。回收阶段不执行用户回调。
+bind(model.volume) 是编译器识别的可观察属性位置表达式，生成 Read 或 ReadWrite PropertyRef；对象与键只在创建时求值一次，后续固定该位置。宿主注册稳定属性身份、读取、可选写入与版本。普通 table 字段、临时值和 a+b 不可 bind；Reel model({...}) 与 observable collection 提供业务可观察状态。需要选择另一个位置时重建引用。
 
-## 九、编译产物与构建配置
-编译器输出版本化模块包，包含语言版本、包格式版本、宿主 ABI、模块导入导出、函数签名、指令、常量、源码映射及宿主元数据。数字宽度、端序和编码固定，加载布局可与磁盘编码不同。反序列化、索引/寄存器/跳转验证、声明额度检查和宿主符号验证全部通过后才能执行；错误包不得触发越界、无限解码或巨额预分配。
-player 的 Cargo feature source 引入可选编译器；关闭后只加载字节码，依赖树不得保留编译器、文件监视器或 Quirrel 对照运行时。hot-reload 只控制模块替换协议，与 source 独立；精简播放器也能接收外部编译产物。Cargo cfg 决定二进制能力，运行参数选择已包含能力的工作方式，不以运行参数伪装裁剪。
-编译缓存按源码、依赖、语言版本和选项失效。生成代码与运行时闭包实例分离，动态成员缓存绑定对象布局版本，动态命名调用缓存绑定函数版本；旧版本在最后一个帧、闭包或快照引用离开后释放。
+derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取，版本变化后重算并替换条件依赖集合。禁止修改外部对象、可观察状态、启动活动或等待；native 必须 DerivedSafe，传递调用中继续检查。内部临时分配/写入允许，不能把临时引用逃逸成外部可变影响。普通捕获值保持通常共享语义，不因读取自动响应。环报错，替换/销毁解除订阅。可写控件不可接受只读派生，通知/事务提交由宿主负责。
 
-## 十、快照与恢复接口
-VM 只负责可恢复执行状态和对象图；保存请求、屏障、媒体与磁盘原子提交由宿主协调。snapshot_begin 在安全点固定根和逻辑状态，snapshot_step 按对象、边与字节预算复制到独立快照区；期间业务写入暂停，后台结果排队。字符串和大容器也必须能分块复制。
-快照记录模块版本、全部任务和协程、PC、返回槽、异常处理栈、接收者、寄存器与中间值、共享 cell、模块环境、对象共享/环/弱边、Future 结算与等待队列、待交付结果以及原生续体描述。代码、资源描述等真正不可变内容可共享；活动属性与 cell 必须独立记录。绑定保存属性身份或派生闭包，不保存临时通知队列。捕获期间暂停所有脚本派生与属性写回；只有不进入快照的原生控件反馈可继续。
-宿主值必须注册版本化恢复描述；缺少适配时返回到达该对象的引用路径，不静默丢失字段或把值变成 null。设备对象以描述重建，原生函数按注册符号重连。restore 先在隔离堆创建身份，再连接引用和等待关系，完整验证后才公开。缺少代码版本或 ABI 不匹配要求明确迁移；禁止用新代码 PC 猜旧恢复点。存档捕获、恢复提交与热重载提交互斥。进程服务请求由宿主恢复适配器处理：只有当前正在生成持久存档的 SaveRequest，在该独立存档副本中写入成功结果；活会话继续等待实际写入结果，内存回滚快照保持原规则。已结算的请求直接恢复保存的终态与结果。其他尚未结算的外部写请求只在精确进程身份与完成记录匹配时重接，否则以 OperationInterrupted 结算，始终避免重放外部写入。
+## 十二 Task Future 与取消
 
-## 十一、性能与验收
-基准覆盖属性访问、闭包共享 cell、命名调用、字符串、对象创建、宿主调用、长分支、连续 await、深链释放和循环回收，记录时间、分配、峰值内存及最慢不可分割操作。指令预算之外，还计容器元素、复制字节、回收边和分配字节，禁止一次原生容器操作绕过调度预算。每 256 个工作单位内检查一次让出条件是起始配置，真实尾延迟实测决定调整。
-优先做好编译期寄存器/跳转定位、已知调用绑定、缓存和帧复用；不给每次普通调用附带 UI、存档或全局动态扫描。优化前后跑同一行为集。首版不引入增量存档、移动 GC、整套 Rust 类型系统或并发脚本对象图。
-完成条件包括：语法正反例、模块与类型诊断、默认值隔离、对象别名、闭包可变捕获、collector 不重复收集、读写绑定区分、动态不可暂停边界、Future FIFO 与失败传播、协程快照、过期完成消息、多版本代码恢复、异常退出、恶意字节码验证，以及无 source 配置的独立包执行。Quirrel 对照不是兼容口号：每个保持项有来源与测试，每个变化项有新语义与回归用例。
+普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
 
-## 参考与变更说明
-本版相对原设计主动移除旧源码语法与两套 await 规则，并明确默认参数、实例字段、receiver、数值检查和所有者语义。原 Quirrel 文档描述用于比较，不覆盖本文决定；固定提交行为须在开发首步核验。
-Quirrel 项目与测试：https://github.com/GaijinEntertainment/quirrel
-函数与闭包参照：https://quirrel.io/doc/reference/language/functions.html
-类与实例参照：https://quirrel.io/doc/reference/language/classes.html
-async 调度参照：https://quirrel.io/doc/language/async.html
-协作 thread 参照：https://quirrel.io/doc/types/thread/index.html
+async fn 调用立即返回任务 Future，函数体在后续调度片开始；创建带 ParentTaskId 的新任务，继承当前明确 owner。普通调用返回不取消任务，丢弃 Future 不等于取消。spawn(owner:,task:) 指定其他合法所有者，无主后台任务不能被暗中创建。ParentTaskId 供因果追踪，不等于自动强制结构化寿命。
+
+await 接受 Awaitable，不接受普通标量。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处抛出并保留原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
+
+Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果；检测直接和间接 adoption 环。需要把 Future 当普通值返回时包在 tuple/对象中。任务 Future 仅由任务返回/失败/终止结算，手工 Future 才能 resolve/reject；重复结算报 AlreadySettled。未观察失败在已给等待者/处理器一个正常调度机会后产生诊断，后续观察更新记录而不重报。结算与通知均不在生产者调用栈内同步重入用户回调。
+
+task.request_cancel(reason) 为合作请求，在下一个合法安全点注入一次 Cancelled；脚本可捕获并收尾，Future 按实际最终结果结算。owner.revoke 为不可阻止的硬终止，停止其任务，不运行这些脚本 finally；宿主幂等释放拥有的订阅、资源和活动。取消不自动撤销已经写入的共享状态。必要资源清理依赖 Owner/ResourceToken，不能仅靠可能被跳过的 finally。异步 close 必须在 owner 仍有效时显式 await。
+
+TaskGroup 拥有自己创建的子任务。all 返回输入顺序的结果 array；首次失败请求取消其余任务并等其终止，再抛含主/收尾失败的 GroupError。race 交付最先结算项的 (index,result) 或失败，同一调度步骤依完成队列顺序决定，按组策略取消其余自有任务并完成收尾。owner 硬撤销使整组立即失效。wait_any 对外部共享 Future 只解除本次订阅，不能取消其生产者。组、取消请求、待结果和收尾状态均进入快照。
+
+async 正文返回尚未结算的 Future 时进入 Adopting，任务及其结果仍受原 owner 管理。被采用者结算后才结算采用者并终止任务；owner 撤销解除本次 adoption 订阅，取消采用者自己的任务 Future，保留共享被采用者的生产者。取消请求与 adoption 订阅状态进入快照。
+
+## 十三 迭代 generator 与 thread
+
+Iterator.next() 返回 {done: bool,value: any}；done=false 是元素，首次 done=true 可携带最终 return 值，其后稳定返回 {done:true,value:null}。for 不把最终 return 当元素。iter(collection) 创建新游标，由 for 在退出时 close；iter(existing_iterator) 创建借用包装，结束只关闭包装，原游标继续保留推进位置。own_iter(iterator) 显式转移关闭责任。close 幂等，组合迭代器传播其拥有游标的关闭。
+
+gen fn 调用创建生成器，不立即执行正文；next 推进，yield value 只挂起本生成器；yield 同时可作低优先级表达式，例如 let incoming = yield outgoing;，其结果由 send 提供，普通 next 等价发送 null。重入 next/close 报 ReentrantIterator。send(value) 为前一个 yield 表达式提供值，第一次驱动只接受 null；异常使生成器进入 Failed 并向驱动者传播，之后 next 报 GeneratorFailed，close 可幂等释放。主动 close 在挂起点展开同步 finally，禁止继续 yield；owner 强制撤销按任务规则处理。同步生成器及其 helper 不可外部 Pending，但可 BudgetYield，这是同步迭代协议的边界。
+
+AsyncIterator.next() 返回 Awaitable，其结果为同一 step；由 class、async fn 和标准适配器实现完整异步流。for await pattern in source 逐次等待 next，只允许一个 in-flight next，第二次报 ConcurrentNext。提前退出解除当前等待并按所有权执行 close_async；错误保留主失败与收尾失败。手动推进可保留半消费流。同步/异步 map/filter/enumerate/zip/take/collect 均声明惰性、耗尽、关闭、异常及回调效果；需要等待的回调使用异步适配器。
+
+Thread(fn) 是由 call/resume(value) 手动驱动的独立脚本栈，suspend(value) 与驱动者双向交换。状态为 Created、Running、Suspended、Returned、Failed、Closed；重入驱动报错，首次只用 call，返回和异常只交付一次，终态再驱动报 ThreadFinished。close 展开同步 finally 后终止。手动 thread 不接受外部 Pending；需要外部等待的流程使用普通 Task 或 AsyncIterator，不通过手动 Thread 的同步驱动入口，也不保留驱动者 Rust 栈。其 frame、异常、交换值、owner 关联与终态均可保存。
+
+## 十四 异常 退出与资源
+
+try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw 可以抛脚本值，运行时以 ErrorEnvelope 保存原值、稳定 code、源位置和栈；标准库推荐 Error 实例，catch 能读取原值。throw; 只在 catch 中重新抛出当前 envelope，保留原始栈；throw value; 建立本次抛出位置与 cause。
+
+正常结束、return、break/continue、异常展开和合作取消穿过 try 时先执行 finally。finally 不得 await、yield、return 或跳出其自身边界；可按预算让出。finally 再抛出时替代原结果并保留原结果/异常为 cause。异常值、待 return 值及展开位置都是可恢复帧状态。
+
+资源 close/dispose 必须幂等且可检查终态。文件/游标/订阅/native 资源由显式 token 与 owner 管理，GC 不执行用户脚本 finalizer；宿主低层释放同样有预算/队列。脚本清理无法保证硬终止时执行，底层资源释放必须独立保证。临时业务恢复若必须覆盖硬终止，应通过宿主事务/作用域恢复记录实现。原生崩溃和内部一致性破坏不伪装成可恢复脚本异常。
+
+不可外部等待的边界包括同步宿主重入、缺省参数、模块初始化、构造、非 _call 元方法、派生求值、finally、children 和同步 iterator/thread 协议。静态可知时提前诊断，动态调用继续检查；“不可等待”不等于“不可按预算暂停”，invoke_sync 的特殊硬预算规则见下节。
+
+## 十五 VM 与可恢复宿主调用
+
+VM 使用显式调用帧、共享代码/常量、驻留符号、可复用参数区及可恢复中间状态。默认 Value 采用 16 字节显式标签与 64 位载荷，int64/float64 完整内联，堆对象通过完整代际句柄访问。Value 为可复制内部值，复制时由当前执行帧或显式宿主根负责保活。表示隐藏在 VM 私有存储接口后，字节码、快照和 C ABI 使用各自规定的编码。32/64 位目标分别检查大小、对齐、算术及句柄往返。密集数值数据使用连续类型缓冲，避免每个元素支付动态 Value 标签成本。
+
+run_slice 接收指令、分配和时钟检查额度，返回 Returned、BudgetYield、HostCall、Waiting 或 Fault。BudgetYield 不改变语言结果；全部临时根和继续位置都在 VM 状态中。HostCall 携带稳定函数符号、签名版本、TaskId、OwnerId、源位置和借用实参视图。宿主响应 HostCallResult 为 Ready(value)、Pending(wait_descriptor)、CallScript{callee,args,continuation}、Continue{continuation} 或 Error(script_error)。
+
+Pending 必须先退出 native 调用栈，再保存操作描述、等待身份、返回槽和后继 PC。完成结果只恢复操作的后继阶段，不能重跑已经生效的调用。native 异步算法用分块状态机或后台拥有数据任务，不把 Rust Future/栈地址当持久续体。
+
+CallScript 允许 native 算法调用可暂停脚本：宿主退出 Rust 栈，将版本化 continuation 作为显式 native frame 保存，VM 在同一 Task、同一 owner 和效果上下文压入 callback frame。脚本返回或抛出后，恢复该 continuation 并交付 ScriptExit::Returned/Fault；continuation 可继续返回 Ready/Pending/CallScript/Continue/Error。callee 的模块版本、实参、算法阶段、临时对象与返回目的均可追踪和快照，原 native 入口不被重复执行。callback 的 Pending 由整条任务栈自然挂起，不需要新建无关任务。
+
+Continue 保存版本化 native 算法状态，在同一 Task 下一预算片继续执行，无 WaitId、无外部等待，也不重新执行入口。它覆盖编码、hash、复制等无需脚本回调的分块算法，在允许 BudgetYield 的受限上下文同样适用。native frame 的临时根和游标进入快照。
+
+CallScript 不提升权限或取消已有受限上下文；sort 的同步 comparator 仍不能等待，受限 derive 仍不能写外部状态。需要普通可暂停 callback 的宿主操作在签名中明确声明。native frame 的取消/释放由宿主 adapter 幂等完成；脚本 fault 未被 continuation 处理则按原调用链传播。旧 continuation 版本在所有帧/快照引用退出前必须可解析。
+
+允许 native continuation 声明 RegionId 取消屏障和附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。
+
+invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终只返回 Returned 或 Error，不返回 Pending/BudgetYield。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
+
+## 十六 宿主 ABI 能力与标准库
+
+native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。
+
+签名可显式声明 PropertyBagTail：先绑定普通已声明参数，再将余下具名参数按指定目标参数的实际 PropertySchema 验证。描述包含目标参数、允许属性集合/能力、值类型、读写与可动画要求；未知名、只读属性、类型错误和与保留参数冲突均报错。tween(target, x: 80, duration: 0.5) 中 duration 是普通参数，x 按 target 的可动画属性 schema 检查；s.override(node, visible: false) 按 node 的可覆盖属性 schema 检查。普通无此元数据的函数仍拒绝未知名。call(fn,positional:,named:) 使用同一绑定器，脚本包装器通过显式 properties/named 表接收再转发动态属性；普通 fn 只接收自己声明的参数，不会自动捕获任意未知具名项。全程使用同一绑定器。工具能从签名和目标类型生成属性补全。宿主类型声明身份/值语义、字段读写/版本、结构模式可见字段、可观察属性、克隆与迭代行为。脚本与 native 使用同一参数错误和类型诊断，不允许只有内建函数支持命名参数。
+
+借用 Value/字节视图只能在当前 native 调用中使用；保留对象须申请代际 root handle，跨线程只传拥有数据、ID 或真正不可变缓冲。Rust panic 不跨 FFI；native 非法实现视为扩展故障，不声称能恢复任意内存错误。能力检查在操作前完成，InitSafe/DerivedSafe 限制传递到 callback，注册标签不豁免效果检查。
+
+每种可达资源声明 Serializable、Rebuildable、InterruptedOnRestore 或 Unsupported，并提供版本化状态/恢复/取消契约。Unsupported 引发带引用路径的保存失败，不能静默丢弃。设备、窗口和 GPU 句柄按描述重建；native 符号按版本重连，不能仅按相同名字替换旧 continuation。
+
+完整标准库按层提供：
+- core：值/类型/错误、转换、assert、函数转发和反射。
+- math、text、collections、iter：数值、Unicode/格式化、全部集合与同步/异步适配器。
+- buffers、encoding、data：TextBuffer/Bytes/ByteBuffer、严格 UTF-8/端序编解码、结构化数据读写；JSON 明确不保存任意对象图。
+- task：Future/Awaitable、取消、任务组、同步/异步迭代桥接及资源 token。
+- host：能力查询、日志、时钟、RNG、资源/文件/网络等授权模块。Reel 使用可保存逻辑时钟与 seeded RNG；壁钟/系统熵显式调用，回滚不假装重演外部世界。
+
+正则、压缩、网络、文件系统、动态编译等部署模块由能力清单说明依赖；缺失时加载/调用给出明确能力错误，标准核心不暗中依赖 OS。可选 compiler 模块产生同样可验证的模块包，动态源码与函数仍绑定代码版本。模块可选性是宿主部署能力，不是删除基础语言设施的借口。
+
+## 十七 预算 回收与分块算法
+
+指令之外，还统计容器元素、比较/hash 工作、复制字节、回收边和分配字节。每 256 个工作单位检查让出条件为起始配置，实际目标由尾延迟测量调整。native 原语必须有界；长字符串、Unicode、tuple 相等/hash、模式、排序、数据解析与复制均使用可恢复 continuation 或严格输入界限。只统计 CALL 指令不能证明有界。
+
+分块操作必须规定中间状态可见性。sort 使用工作副本，记录来源的完整内容版本；comparator 或其他任务在准备期间修改来源任何位置，提交时报 ConcurrentModification 并保留当前来源，不覆盖并发写入。比较器须提供稳定一致顺序；运行时可诊断检测到的违约，但不会以任意脚本比较器为由破坏容器或内存安全。成功后一次提交排序，失败不写回副本。BudgetYield 时其他任务可运行，算法副本、游标、版本和 callback 状态进入根和快照；绝不重新执行已发生 callback 来恢复。对需要原子结果的其他操作采用同样准备/提交模式，不能因一个字节码操作就宣称其所有内部步骤不可见。
+
+对象存储直接复用固定版本 slotmap 1.1.1，使用独立 HeapKey 类型与完整 64 位不透明键。句柄只在所属堆内有效，宿主长期保留的对象登记 root handle，并携带 HeapId/SessionEpoch。快照使用独立对象编号，恢复时重新分配句柄。普通传递遵循 KeyData 的完整 u64 往返契约。
+
+脚本对象图采用单线程、非移动的增量三色标记清扫。Value 复制和堆内强边由追踪管理，省去逐次引用计数。slotmap 提供存储、槽位复用和安全访问；Aside 实现适配对象种类的根扫描、边遍历游标、写屏障、弱引用处理与清扫状态机。gc-arena 用作成熟算法参照，其 Gc 字段接口与整数句柄图不同。
+
+外部根包括活任务 frame、活动会话、当前发布 ModuleSet 环境、待交付结果、native continuation 与宿主 root handle；分块算法的工作副本及 callback 状态同样属于根。对象字段、cell、集合元素和闭包捕获为堆内强边。旧模块缓存为弱索引；分配表及 GC 工作队列只作管理记录。不可变代码或资源可独立使用 Rust Rc/Arc，其计数与脚本对象图的可达性分开。
+
+GC 步在 VM 安全点执行。标记期间采用强边插入屏障：每次强边写入和根发布，在新值可见前把目标纳入标记；新对象的初始强边及 weakref 升级使用同一入口。根扫描有持久游标，已扫描根的更新也经过屏障。大型容器保存边游标；插入、删除或重排若移动尚未扫描的边，须修正游标或补充标记这些边。全部根、灰队列与屏障工作完成后，在同一安全点进入弱引用判定和清扫。自开始弱引用判定直到本轮清扫结束，weakref 仅可升级本轮已确认存活或本轮新分配的对象；这一阶段切换是统一的存活判定截止点，代际有效本身不足以允许升级。新分配对象标为本轮存活，并纳入下一轮扫描。
+
+根、边、弱引用和清扫均按独立工作额度推进。清扫使用有界分配键队列，每轮记录待处理数量，分片检查并重新排入存活对象；本轮新增对象留给后续轮次，队列记录与对象身份对应，避免重复释放。对象先在逻辑上失效，再分片释放 payload；大型容器拆分释放，缓冲分配/释放记录最大不可分割耗时。标记队列、游标、待释放字节及退休槽位全部计入堆预算。标记入队容量不足时先维护或返回资源错误，保持屏障完整性。设备资源按 Owner 显式撤销，GC 仅处理底层拥有数据的释放；回收时刻与业务确定性分开。
+
+slotmap 的完整版本仍有回绕边界。封装删除时，在完整代数耗尽的槽位保留 Retired 记录，访问拒绝该状态，批量清理保留退休槽位。固定版本的满幅退休阈值为占用版本 0xffffffff，即同一槽位最多 2^31 次生命周期。版本字段识别属于依赖适配代码，升级时核对源码与专项用例；普通句柄保持完整往返。退休槽位计入容量而非活对象数量。验收以缩小代数范围强制覆盖旧句柄、退休、跨堆及恢复后失效，并在每个 GC 步之间修改根与大型容器，验证弱升级和分片清扫。
+
+## 十八 快照 恢复与版本
+
+VM 保存完整可恢复执行状态和对象图，宿主协调请求、舞台/资源屏障及原子磁盘提交。snapshot_begin 在安全点固定根和逻辑状态，snapshot_step 按对象/边/字节预算复制到独立区；业务写入暂停，后台结果排队，长字符串/缓冲/容器也分块。绑定派生与写回在捕获中暂停，非持久原生控件反馈可继续。
+
+快照包括代码/模块/native ABI 版本，全部 Task/generator/thread 的 PC、接收者、返回槽、异常处理/展开、寄存器和中间值，native continuation、CellId、模块环境、对象共享/环/弱边，Future adoption/结算/等待队列、任务组/取消/异步 iterator、待交付结果，tuple 内部引用、缓冲有效内容、集合顺序/结构版本/游标和 schema。绑定保存属性身份与派生闭包，不保存临时通知队列。真正不可变代码/文本/资源可共享，cell、活动属性和可变缓冲必须独立记录。
+
+弱引用只在目标经强路径已进入快照时保存目标关系，否则恢复为已失效；不能因序列化弱边而把目标变强。IdentityMap 保留强键关系与恢复后的对象身份，不按旧原生地址重建。
+
+缺少 native adapter、代码版本或 ABI 时报告精确对象路径/版本并使保存或恢复失败。restore 在隔离堆先分配身份，再连接引用、等待、订阅和 native 描述，完整验证后一次公开；失败保留当前会话。禁止以新代码 PC 猜测旧恢复点。SessionEpoch 在新游戏/加载/回滚更新，TaskId、WaitId 与 native 完成消息匹配 epoch 后至多交付一次，旧结果丢弃。
+
+捕获、恢复提交和热重载提交互斥。发行存档使用匹配游戏包代码；开发存档嵌入无法由固定包取得的全部被引用版本。旧代码/模块/native 版本在最后帧、闭包或快照引用离开后释放。跨版本迁移是显式流程，不默许替换执行中函数。
+
+进程服务请求按 adapter 处理：仅当前正在持久提交的 SaveRequest，在该独立存档副本中记成功，活会话仍等待真实写盘，内存回滚快照不做此归一化。已结算请求恢复既有终态。其他未结算外部写请求只在精确进程/请求身份及完成记录匹配时重接，否则以 OperationInterrupted 结算；始终不盲目重放外部写入。
+
+## 十九 编译包 构建与工具
+
+编译器输出版本化模块包：语言/包/宿主 ABI 版本、导入导出、签名、指令、常量、源码映射、能力与元数据。磁盘数字宽度、端序和编码固定，加载内存布局可不同。执行前验证解码、索引/寄存器/跳转、声明额度、native 符号及能力；恶意包不可导致越界、无界解码或巨量预分配。
+
+Cargo feature source 决定是否包含 aside-compiler；关闭时仍执行完整字节码语言和核心标准库，依赖树不得保留编译器、watcher 或 Quirrel oracle。hot-reload 与 source 独立，精简播放器可接收外部编译包。运行参数只选择已编入能力，不假装实现二进制裁剪。缓存按源码、依赖版本、语言和编译选项失效；动态成员缓存含布局版本，命名调用缓存含函数/签名版本。
+
+工具目标包括 check/build/run、formatter、LSP 名称/类型/签名/命名参数和跨模块导航重命名、测试宿主/断言、字节码检查器、任务/generator 调试与 profiler。native 声明、文档、编辑器提示和 ABI 校验由同一注册元数据生成。调试器显示同步栈、异步因果链、owner、等待来源和版本；watch 默认纯读，不通过检查表达式启动活动或改变游戏。
+
+诊断含稳定 code、严重性、模块版本、主/相关源码范围、调用栈及可选修复。保留 UTF-8 字节范围与展示行列，中文不能错位；动态调用标出签名/实参，await/native continuation 标出等待点与原失败点。提供人读和结构化输出，不向作者泄露内部地址或 Rust panic。覆盖名称/类型/参数/模式、只读写、受限等待/效果、无效句柄、资源额度、代码/恢复缺失及坏包错误。
+
+## 二十 操作与验收覆盖
+
+1. 包装组件：命名/展开/动态转发/children 统一绑定；验证求值一次、默认数组独立、重复参数错误、构造暂停后无重复 Node。
+2. 回调控制器：cell 和强绑定方法保留接收者/模块；验证每轮捕获、订阅 token、引用环回收、owner 销毁后过期完成失效。
+3. 结构结果：tuple 的零/一/多元、精确类型、浅别名、NaN、数值等值键、hash 拒绝路径、rest 与单值多返回；每种边界保存后继续一致。
+4. 游戏集合：顺序、missing/null、schema、修改中迭代、IdentityMap；验证 keyed UI、重复读档、共享模型与环关系。
+5. 文本和缓冲：Unicode 单位、非法编码、字素与字节边界、可变别名、冻结输出、超大编辑和预算；保存后继续编辑不改过去快照。
+6. 模式分支：scrutinee 一次、guard 短路、OR 名称一致、缺省只在缺失时运行、失败无部分绑定、受预算深结构。
+7. 并行流程：Future FIFO/adoption 环、组失败/取消/收尾、wait_any 不取消共享生产者、异步 iterator 单 next、generator close/finally 与 thread 重入。
+8. native 回调：CallScript 在同 Task 挂起/返回/抛错/再次调用，保存算法中间帧；invoke_sync 累计预算不被嵌套重置，不重放副作用。
+9. 保存和恢复：所有值、异常展开、活动等待、缓冲/游标/native continuation、旧 ModuleSet 与恢复错误路径；外部写只执行一次，旧 epoch 完成不生效。
+10. 发行与工具：坏包、缺 ABI/能力、无 source 包、源映射、跨模块导航、任务调试；旧代码直到最后引用后才释放。
+
+每项同时记录行为、时间、分配、峰值内存和最慢不可分割工作。负载覆盖属性/闭包/命名调用、深 tuple、字符串/缓冲、对象创建、宿主往返、长分支、连续 await、native CallScript、深链释放与循环回收。Value 优化在同一语义套件及 32/64 位目标上比较；默认实现和选型依据见下一节。
+
+Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：preserved、syntax_converted、harness_adapted、deliberate_delta、compiler_specific、blocked。转换使用语法/绑定信息及双向源映射，不能全库 regex 改写；未覆盖项不能算通过。Aside 独有语义建立原生正反例和性能/快照用例。实施顺序可以分为内核、通用语言、标准库工具、Reel 集成和规模验证，但本规范全部目标完成前不得把最小闭环称为语言完成。
+
+## 二十一 Value 选型与性能证据
+
+默认采用显式标签，依据是完整 int64 内联、无需窄化对象身份、简单的数值访问，以及当前有界解释执行实验的结果。8 字节 NaN-boxing 在通用 Value 数组容量上更省空间；完整引擎需要同时衡量运行时间、存储、回收和平台成本。
+
+2026-10-08 的实验保存在 tools/value-layout-bench，审查版本为 perf/value-layout-bench 的 91e87ad。三种表示执行同一动态指令流、动态类型检查和宿主调用；两轮各 11 个样本。连续槽 NaN 候选相对显式标签的执行时间，在剧情分支、UI 属性计算、浮点动画中分别约为 1.40、1.75、2.05 倍。该组负载没有范围外整数分配。原始数据、环境、汇编检查和复现命令见实验报告。
+
+这个比较包含实现策略差异：NaN 候选为范围外整数维护引用计数，即使值未装箱，复制和覆盖仍检查 WIDE 标签；显式标签可消去这些检查。宿主属性使用公共原生标量，比较包含编码往返，未覆盖 NaN 布局在 VM 对象字段中的密度收益。正式堆采用追踪回收，因此上述倍率仅属于这组实验实现。小寄存器工作集和虚拟化 x64 测量也没有给出完整 VM、低端设备或 Vita 的性能结果。
+
+该决策使实现拥有明确起点。后续布局优化保留相同语言语义、快照格式和作者 API，以正式 VM 的剧情、UI、动画、对象图和密集数据负载复测。优化验收同时报告延迟分位数、内存峰值、分配与回收成本。
+
+## 参考来源
+- Value 实验：https://github.com/jhq223/reel/pull/2
+- 实验说明：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/TRACE.md
+- 实验结果：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/REPORT.md
+- slotmap 键契约：https://docs.rs/slotmap/1.1.1/slotmap/struct.KeyData.html
+- slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
+- 增量回收参考：https://github.com/kyren/gc-arena
