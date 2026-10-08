@@ -202,3 +202,35 @@ test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
    Compiling linebender_include_doc_path v0.1.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
    Compiling understory_virtual_list v0.1.2
    Compiling masonry v0.4.0 (https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6)
+   Compiling imaging_vello_cpu v0.0.1
+   Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment)
+    Finished `release` profile [optimized + debuginfo] target(s) in 7m 35s
+     Running `tools/masonry-contract-check/target/release/masonry-contract-check`
+groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+groups isolated=true: cached_layers=1 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+presented input: retained frame=1 across skipped/unavailable/error/mismatched/stale/expired outcomes; real slider values=0.25,0.7,1; accepted frame=3 switches coordinates+hover
+drag focus: terminal=["cancel"], capture=None, later value changes=0
+drag release: terminal=["up"], capture=None, later value changes=0
+drag destroy: terminal=["cancel"], capture=None, later value changes=0
+drag disable: terminal=["cancel"], capture=None, later value changes=0
+DPI: physical-to-logical conversion uses accepted scale=1 then scale=2
+button: orphan up=0, paired up=1; author image reflects hover/active; frozen rotation/scale/clip/order/ancestor route survive failed present; acceptance switches all
+singular affine: excluded from snapshot hit/capture
+measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=2296B; pointer ns p50=1736 p95=1944 p99=43796; capture ns p50=675 p95=763 p99=12242
+measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=26352B; pointer p95=7060ns capture p95=142002ns miss_scan p95=1400ns
+measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=200176B; pointer p95=28295ns capture p95=1491787ns miss_scan p95=172430ns
+masonry-contract-check: masonry 0.4.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88
+masonry-contract-check: masonry_core 0.4.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88
+masonry-contract-check: tree_arena 0.2.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88
+masonry-contract-check: imaging 0.0.1 source=registry+https://github.com/rust-lang/crates.io-index
+masonry-contract-check: peniko 0.6.1 source=registry+https://github.com/rust-lang/crates.io-index
+masonry-contract-check: kurbo 0.13.1 source=registry+https://github.com/rust-lang/crates.io-index
+masonry-contract-check: isolated workspace; no active winit/wgpu/masonry_winit; Fontconfig remains a Linux transitive dependency
+experiment: masonry 0.4.0 source=git+https://github.com/linebender/xilem?rev=271a27a6d4a930f7878d404f9014e3c50a3a9b88#271a27a6d4a930f7878d404f9014e3c50a3a9b88
+experiment: masonry_core 0.4.0 source=/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/masonry_core/Cargo.toml
+experiment: tree_arena 0.2.0 source=/workspace/reel-masonry/tools/masonry-contract-check/experiment/upstream/tree_arena/Cargo.toml
+experiment: imaging 0.0.1 source=registry+https://github.com/rust-lang/crates.io-index
+experiment: peniko 0.6.1 source=registry+https://github.com/rust-lang/crates.io-index
+experiment: kurbo 0.13.1 source=registry+https://github.com/rust-lang/crates.io-index
+experiment: isolated workspace; no active winit/wgpu/masonry_winit; Fontconfig remains a Linux transitive dependency

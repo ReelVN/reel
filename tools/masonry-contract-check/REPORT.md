@@ -1,6 +1,6 @@
 # 阶段报告 — 2026-10-08 13:14 UTC
 
-应负责人要求，此轮先保存并推送可读阶段结果。Issue #3 保持开放；生产 fork、release 结论与目标设备验收均未完成。具体源码位置和适配边界见 [README.md](README.md)。
+此轮保存并推送可读阶段结果。收尾时后台 release 与依赖审计也完成，通过完整核对脚本。Issue #3 保持开放；生产 fork 和目标设备验收未完成。具体源码位置和适配边界见 [README.md](README.md)。
 
 ## 已完成和实际观察
 
@@ -12,7 +12,7 @@
 - 实验补丁统一冻结命中、hover、capture 坐标/尺寸、DPI、画序和祖先路由。真实滑条在旧呈现几何中产生 0.25 → 0.7 → 1.0；跳过、表面不可用、错误、错误帧 ID、过期帧和表面代数都不切换视图；匹配的新接受结果才切换坐标和静止 hover。
 - 失焦/销毁/禁用各交付一次 Cancel；正常释放交付一次 Up，捕获清掉，后续移动不再产生值变化。按钮孤立释放不点击、正常配对释放点击一次；真实状态可投影到作者 Image。失败呈现后的父变换、clip 和重排不改输入路径，新接受帧才改变这些行为。
 - 奇异仿射矩阵不进入命中/捕获。只验证单个主鼠标主键、仿射矩形；透视、自定义命中映射、多指针及模态不在已验证集合。
-- 格式检查、未修改上游对照测试与补丁 debug 行为检查已完成并通过。原始输出快照见 [evidence/verification.log](evidence/verification.log)。
+- 格式检查、未修改上游对照、补丁 debug 行为检查、release 运行与依赖审计均已完成并通过。完整原始输出见 [evidence/verification.log](evidence/verification.log)，单独依赖审计见 [evidence/dependencies.log](evidence/dependencies.log)。
 
 ## 真实命令与运行到哪一步
 
@@ -32,23 +32,25 @@ cargo test --locked --manifest-path tools/masonry-contract-check/experiment/Carg
 
 上述生成过程逐一验证 72 个源文件哈希，原始源码闭包 592,487 字节；只有 `masonry_core` 六个文件有实验差异。`tree_arena` 同级路径、继承配置和许可证保留，其他生态没有导入生产仓库。
 
-一条完整核对命令正在后台运行：
+完整核对命令已成功结束（exit 0）：
 
 ```sh
 ./tools/masonry-contract-check/scripts/check.sh --source /tmp/masonry-upstream
 ```
 
-它已执行完格式、原始对照及补丁 debug 检查，当前在 **首次 release 依赖编译**，尚无 release 测量结果。后台 unified exec session 为 **75373**；同一执行环境可用 `write_stdin(session_id=75373, chars="")` 读取完成状态。完整运行日志保留在：
+它执行完格式、原始对照、补丁 debug 检查、release 运行和依赖审计。首次 release 编译用时 7m 35s；原后台 unified exec session **75373** 已收取 exit 0。完整运行日志另保留在：
 
 ```
 /workspace/reel-masonry/tools/masonry-contract-check/target/verification-running.log
 ```
 
-提交中的 `evidence/verification.log` 是交付时快照，后台继续输出到忽略的 target 文件，不会悄悄改变已提交证据。进程若无法保留，可重新运行上述脚本复用 Cargo 缓存；完成后把最终日志复制回 evidence 并更新阶段状态。
+提交中的 `evidence/verification.log` 已复制最终完整日志。重新运行上述脚本可复用 Cargo 缓存。独立依赖审计也成功结束（exit 0）：`python3 tools/masonry-contract-check/scripts/check-deps.py`；两种构建均确认隔离 workspace、统一类型版本且无活跃 winit/wgpu/masonry_winit。
 
 ## 环境与暂时测量
 
-Linux x86_64 / KVM，5 个可用 CPU，Intel Xeon Platinum 8573C，约 17 GiB 内存。Rust 1.96.0 (`ac68faa20`)，dev 无优化。正式 release 测量仍在编译，未作为通过结论。
+Linux x86_64 / KVM，5 个可用 CPU，Intel Xeon Platinum 8573C，约 17 GiB 内存。Rust 1.96.0 (`ac68faa20`)，dev 无优化，release 为优化编译并保留调试信息。
+
+完成的 release 测量（包含诊断 trace，100 次 warm-up）：三节点指针 p50=1,736 ns / p95=1,944 ns / p99=43,796 ns，捕获快照 p95=763 ns；1080p 坐标范围的 32 个真实滑条/34 节点，指针 p95=7,060 ns、捕获快照 p95=142,002 ns、未命中扫描 p95=1,400 ns；256 个真实滑条/258 节点，指针 p95=28,295 ns、捕获快照 p95=1,491,787 ns、未命中扫描 p95=172,430 ns。三节点 payload 下界 2,296 B，258 节点下界 200,176 B。debug/release 状态布局可能不同，仍排除 HashMap 桶与嵌套分配。这些是当前 VM 的实验记录，不能当成设备帧预算验收。
 
 此前实际 debug 运行（包含诊断 trace，100 次 warm-up）：三节点指针 p95=974,195 ns，捕获快照 p95=24,424 ns；1080p 坐标范围的 256 个真实滑条/258 个节点，指针 p95=514,704 ns，捕获快照 p95=3,349,405 ns，未命中扫描 p95=501,152 ns。VM 调度抖动明显；这些只是阶段观察。三节点 payload 下界 2,392 B，258 节点下界 208,432 B，均排除了 HashMap 桶与嵌套状态分配；不是内存峰值或帧预算证明。
 
@@ -82,6 +84,6 @@ PC
 
 ## 下一步与决策边界
 
-先收取后台 release 和依赖核对结果，再补充最终测量与独立默认下载方式验证；clippy、目标设备验证仍未完成。正式接入前需负责人确认最小输入 fork 方案：几何提供器和定向入口、销毁取消，以及生产几何投影/代际身份/预算接口。若采用独立离屏/External 层，另需固定层模式和组/裁剪上下文记录；本实验没有把这项当成已实现。
+默认 codeload 下载方式的独立运行、clippy、目标设备验证仍未完成；本轮生成器实际验证的是固定提交 Git archive 输入路径。正式接入前需负责人确认最小输入 fork 方案：几何提供器和定向入口、销毁取消，以及生产几何投影/代际身份/预算接口。若采用独立离屏/External 层，另需固定层模式和组/裁剪上下文记录；本实验没有把这项当成已实现。
 
 原型克隆完整 WidgetState，不应直接作为生产内存设计。自定义命中、缺失呈现几何的查询结果、作者滑条槽位、输入消费策略与稳定资源身份转换的接口建议均交负责人。根 workspace 和作者指南保持目录隔离。Windows/N100、winit/wgpu、实际 GPU/surface 生命周期及其他目标设备仍待验证。
