@@ -1,0 +1,488 @@
+use super::{Error, ErrorKind};
+
+macro_rules! indices {
+    ($($name:ident),+ $(,)?) => { $(
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
+        pub struct $name(pub u32);
+        impl $name { pub fn index(self) -> usize { self.0 as usize } }
+    )+ };
+}
+indices!(
+    SymbolId,
+    TypeId,
+    ConstId,
+    SignatureId,
+    NativeId,
+    ModuleId,
+    FunctionId,
+    GlobalId,
+    BindingId,
+    CaptureId,
+    DescriptorId,
+    RegionId,
+    SourceId,
+    Reg,
+    Pc
+);
+
+pub const FORMAT_VERSION: u32 = 1;
+pub const LANGUAGE_VERSION: u32 = 1;
+pub const HOST_ABI_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BytecodePackage {
+    pub format_version: u32,
+    pub language_version: u32,
+    pub host_abi_version: u32,
+    pub content_version: u64,
+    pub symbols: Vec<String>,
+    pub types: Vec<TypeDef>,
+    pub constants: Vec<Const>,
+    pub signatures: Vec<Signature>,
+    pub natives: Vec<NativeDef>,
+    pub modules: Vec<ModuleDef>,
+    pub functions: Vec<FunctionDef>,
+    pub capabilities: Vec<SymbolId>,
+    pub sources: Vec<SourceFile>,
+}
+impl Default for BytecodePackage {
+    fn default() -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            language_version: LANGUAGE_VERSION,
+            host_abi_version: HOST_ABI_VERSION,
+            content_version: 1,
+            symbols: Vec::new(),
+            types: Vec::new(),
+            constants: Vec::new(),
+            signatures: Vec::new(),
+            natives: Vec::new(),
+            modules: Vec::new(),
+            functions: Vec::new(),
+            capabilities: Vec::new(),
+            sources: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Const {
+    Null,
+    Bool(bool),
+    Int(i64),
+    FloatBits(u64),
+    Utf8(String),
+    Bytes(Vec<u8>),
+    Tuple(Vec<ConstId>),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinType {
+    Any,
+    Null,
+    Bool,
+    Int,
+    Float,
+    String,
+    Bytes,
+    Array,
+    Table,
+    Tuple,
+    Class,
+    Instance,
+    Closure,
+    Generator,
+    Thread,
+    Future,
+    WeakRef,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeDef {
+    Builtin(BuiltinType),
+    Tuple(Vec<TypeId>),
+    Union(Vec<TypeId>),
+    Function(SignatureId),
+    Named {
+        module: ModuleId,
+        name: SymbolId,
+        version: u64,
+    },
+}
+/// A mask of allowed effects, not a promise that a call will actually wait.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Effects(pub u32);
+impl Effects {
+    pub const ALLOCATE: u32 = 1;
+    pub const WRITE: u32 = 2;
+    pub const HOST: u32 = 4;
+    pub const WAIT: u32 = 8;
+    pub const ALL: Self = Self(15);
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parameter {
+    pub name: SymbolId,
+    pub ty: TypeId,
+    /// Rebinding permission. Passing a parameter always uses ordinary value semantics.
+    pub mutable: bool,
+    pub default: Option<FunctionId>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signature {
+    pub parameters: Vec<Parameter>,
+    pub rest: Option<Parameter>,
+    pub return_type: TypeId,
+    pub effects: Effects,
+    /// Remaining names are validated against the actual target's host schema.
+    pub property_bag_tail: Option<PropertyBagTail>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PropertyBagTail {
+    pub target_parameter: u32,
+    pub capability: Option<SymbolId>,
+    pub require_writable: bool,
+    pub require_animatable: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeDef {
+    pub symbol: SymbolId,
+    pub signature: SignatureId,
+    pub abi_version: u32,
+    pub capabilities: Vec<SymbolId>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalDef {
+    pub name: SymbolId,
+    pub ty: TypeId,
+    pub mutable: bool,
+    pub linked_function: Option<FunctionId>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Import {
+    pub name: SymbolId,
+    pub module: ModuleId,
+    pub export: SymbolId,
+    pub content_version: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Export {
+    pub name: SymbolId,
+    pub global: GlobalId,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleDef {
+    pub path: SymbolId,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
+    pub globals: Vec<GlobalDef>,
+    pub initializer: Option<FunctionId>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionKind {
+    Plain,
+    Async,
+    Generator,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Context {
+    Ordinary,
+    NoWait,
+    Derived,
+    Init,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureKind {
+    Value,
+    Cell,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingStorage {
+    Value(Reg),
+    Cell(Reg),
+}
+impl BindingStorage {
+    pub fn reg(self) -> Reg {
+        match self {
+            Self::Value(r) | Self::Cell(r) => r,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingInitialization {
+    Explicit,
+    Parameter(u32),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BindingDef {
+    pub name: SymbolId,
+    pub ty: TypeId,
+    pub mutable: bool,
+    pub storage: BindingStorage,
+    /// Explicit bindings start uninitialized; BindInit publishes exactly once.
+    /// Parameter bindings are initialized by the binder before body execution.
+    pub initialization: BindingInitialization,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionDef {
+    pub module: ModuleId,
+    pub name: SymbolId,
+    pub kind: FunctionKind,
+    pub signature: SignatureId,
+    pub context: Context,
+    pub captures: Vec<CaptureKind>,
+    pub register_count: u32,
+    pub bindings: Vec<BindingDef>,
+    pub descriptors: Vec<Descriptor>,
+    pub code: Vec<Instruction>,
+    pub regions: Vec<ExceptionRegion>,
+    pub source_map: Vec<SourceMapEntry>,
+}
+/// The in-memory struct happens to be 16 bytes; the wire codec still writes fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Instruction {
+    pub opcode: u16,
+    pub flags: u16,
+    pub operands: [u32; 3],
+}
+impl Instruction {
+    pub const fn new(op: super::Opcode, a: u32, b: u32, c: u32) -> Self {
+        Self {
+            opcode: op as u16,
+            flags: 0,
+            operands: [a, b, c],
+        }
+    }
+    pub fn to_le_bytes(self) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        bytes[..2].copy_from_slice(&self.opcode.to_le_bytes());
+        bytes[2..4].copy_from_slice(&self.flags.to_le_bytes());
+        for (i, value) in self.operands.iter().enumerate() {
+            bytes[4 + i * 4..8 + i * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+    pub fn from_le_bytes(bytes: [u8; 16]) -> Result<Self, Error> {
+        let instruction = Self {
+            opcode: u16::from_le_bytes([bytes[0], bytes[1]]),
+            flags: u16::from_le_bytes([bytes[2], bytes[3]]),
+            operands: std::array::from_fn(|i| {
+                u32::from_le_bytes(bytes[4 + i * 4..8 + i * 4].try_into().expect("fixed field"))
+            }),
+        };
+        let spec = super::instruction_spec(instruction.opcode)
+            .ok_or_else(|| Error::new(ErrorKind::Opcode, "unknown opcode"))?;
+        if instruction.flags & !spec.allowed_flags != 0 {
+            return Err(Error::new(ErrorKind::Flags, "undeclared flags"));
+        }
+        Ok(instruction)
+    }
+}
+const _: () = assert!(std::mem::size_of::<Instruction>() == 16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegWindow {
+    pub start: Reg,
+    pub len: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureSource {
+    Binding(BindingId),
+    Capture(CaptureId),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallTarget {
+    Register(Reg),
+    Function(FunctionId),
+    Native(NativeId),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arguments {
+    Window(RegWindow),
+    Packed(Reg),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedArg {
+    pub name: SymbolId,
+    pub offset: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallDesc {
+    pub target: CallTarget,
+    pub arguments: Arguments,
+    pub names: Vec<NamedArg>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassField {
+    pub name: SymbolId,
+    pub ty: TypeId,
+    pub mutable: bool,
+    pub is_static: bool,
+    pub initializer: Option<FunctionId>,
+    pub captures: Vec<CaptureSource>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassMethod {
+    pub name: SymbolId,
+    pub function: FunctionId,
+    pub is_static: bool,
+    pub captures: Vec<CaptureSource>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassDesc {
+    pub base: Option<Reg>,
+    pub fields: Vec<ClassField>,
+    pub methods: Vec<ClassMethod>,
+}
+/// Pattern nodes form a backwards-referenced DAG; matching uses explicit VM stages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatternNode {
+    Wildcard,
+    Bind {
+        name: SymbolId,
+        output: Reg,
+    },
+    Literal(ConstId),
+    Tuple {
+        items: Vec<u32>,
+        rest: Option<u32>,
+    },
+    Array {
+        items: Vec<u32>,
+        rest: Option<u32>,
+    },
+    Object {
+        fields: Vec<PatternField>,
+        rest: Option<u32>,
+    },
+    Is {
+        node: u32,
+        ty: TypeId,
+    },
+    Or {
+        left: u32,
+        right: u32,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatternField {
+    pub name: SymbolId,
+    pub node: u32,
+    pub default: Option<FunctionId>,
+    pub captures: Vec<CaptureSource>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatternDesc {
+    pub nodes: Vec<PatternNode>,
+    pub root: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Descriptor {
+    Global {
+        module: ModuleId,
+        global: GlobalId,
+    },
+    Closure {
+        function: FunctionId,
+        captures: Vec<CaptureSource>,
+    },
+    Call(CallDesc),
+    Sequence(RegWindow),
+    Table(Vec<[Reg; 2]>),
+    Class(ClassDesc),
+    Super {
+        base: Reg,
+        member: SymbolId,
+    },
+    Property {
+        key: Reg,
+        writable: bool,
+    },
+    Pattern(PatternDesc),
+    Spawn {
+        call: CallDesc,
+        owner: Reg,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DescriptorKind {
+    Global,
+    Closure,
+    Call,
+    Sequence,
+    Table,
+    Class,
+    Super,
+    Property,
+    Pattern,
+    Spawn,
+}
+impl Descriptor {
+    pub fn kind(&self) -> DescriptorKind {
+        match self {
+            Self::Global { .. } => DescriptorKind::Global,
+            Self::Closure { .. } => DescriptorKind::Closure,
+            Self::Call(_) => DescriptorKind::Call,
+            Self::Sequence(_) => DescriptorKind::Sequence,
+            Self::Table(_) => DescriptorKind::Table,
+            Self::Class(_) => DescriptorKind::Class,
+            Self::Super { .. } => DescriptorKind::Super,
+            Self::Property { .. } => DescriptorKind::Property,
+            Self::Pattern(_) => DescriptorKind::Pattern,
+            Self::Spawn { .. } => DescriptorKind::Spawn,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PcRange {
+    pub start: Pc,
+    pub end: Pc,
+}
+impl PcRange {
+    pub fn contains(self, pc: Pc) -> bool {
+        self.start <= pc && pc < self.end
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatchRegion {
+    pub range: PcRange,
+    pub exception: Reg,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExceptionRegion {
+    pub protected: PcRange,
+    pub catch: Option<CatchRegion>,
+    pub finally: Option<PcRange>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFile {
+    pub path: SymbolId,
+    pub text: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub file: SourceId,
+    pub start: u32,
+    pub end: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceMapEntry {
+    pub pc: Pc,
+    pub span: SourceSpan,
+}
+
+/// Dispatcher/host supplied capabilities. Empty opcodes mean no execution support.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeSupport {
+    pub opcodes: Vec<super::Opcode>,
+    pub capabilities: Vec<String>,
+    pub natives: Vec<NativeSupport>,
+}
+#[derive(Clone, Debug)]
+pub struct NativeSupport {
+    pub symbol: String,
+    pub abi_version: u32,
+    /// Exact signature including parameter mutability and effect contract.
+    /// The trusted adapter resolves parameter names and types against this
+    /// program's tables using its independent native registration metadata.
+    /// Copying an untrusted package signature is not registry validation.
+    pub signature: Signature,
+}
