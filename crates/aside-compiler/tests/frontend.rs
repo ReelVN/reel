@@ -780,3 +780,108 @@ fn assignment_targets_keep_nested_calls_indexes_and_collection_receivers() {
         assert_eq!(has(&p, K::GroupExpr), 0, "{source}");
     }
 }
+
+#[test]
+fn assignment_patterns_share_the_full_grammar_across_wrapper_combinations() {
+    let bases = [
+        "(a,b)",
+        "[a,...rest]",
+        "{name, score: points = f((i,j), {x: 0}), ...rest}",
+        "({pair: (a,b), items: [c,...rest]}, d)",
+    ];
+    for base in bases {
+        let variants = [
+            base.to_owned(),
+            format!("{base} is Pair"),
+            format!("{base} is (Pair|null)"),
+            format!("{base} | {base}"),
+            format!("({base} is (Pair|null)) | ({base} is Pair)"),
+        ];
+        for variant in variants {
+            for groups in [1, 2, 4, 7] {
+                let target = format!("{}{}{}", "(".repeat(groups), variant, ")".repeat(groups));
+                let expected = ok(&target, E::Pattern).syntax().children().next().unwrap();
+                let source = format!("{target} = value;");
+                for entry in [E::Module, E::Block] {
+                    let p = ok(&source, entry);
+                    ranges(&p, &source);
+                    let actual = node(&p, K::AssignExpr).children().next().unwrap();
+                    assert_eq!(actual.green(), expected.green(), "{source}: {entry:?}");
+                }
+            }
+        }
+    }
+    // Defaults invoke the same expression/block grammar inside a trial, including
+    // a further structural assignment candidate, without cloning source/tokens.
+    ok(
+        "(({name = || { ((a,b) is Pair) = value; }})) = record;",
+        E::Module,
+    );
+    ok("((a,b) is fn(A)->(B|null)) = pair;", E::Block);
+}
+
+#[test]
+fn failed_pattern_trials_preserve_location_diagnostics_and_recovery() {
+    for target in [
+        "(f(a, b).x)",
+        "(a[(i, j)])",
+        "([1][0])",
+        "({x: 0}.x)",
+        "(((a,b) is Pair).x)",
+        "(((a,b) | (a,b))[i])",
+        "([a,...rest][i])",
+    ] {
+        for entry in [E::Module, E::Block] {
+            let source = format!("{target} = value; let tail = 1;");
+            let p = ok(&source, entry);
+            ranges(&p, &source);
+            let actual = node(&p, K::AssignExpr).children().next().unwrap();
+            assert_eq!(actual.kind(), K::GroupExpr, "{source}");
+            assert_eq!(has(&p, K::TypePattern) + has(&p, K::OrPattern), 0);
+        }
+    }
+    for target in ["(a.b,c)", "[a[0],b]", "([a.b,...rest])", "(f(a,b),c)"] {
+        let source = format!("{target} = value; let tail = 1;");
+        let p = rejects(&source, E::Module, D::InvalidAssignment);
+        ranges(&p, &source);
+        let d = p
+            .diagnostics()
+            .iter()
+            .find(|d| d.code == D::InvalidAssignment)
+            .unwrap();
+        assert_eq!(&source[byte_range(d.range)], "=");
+        assert_eq!(has(&p, K::LetDecl), 1);
+        assert!(!p.diagnostics().iter().any(|d| d.code == D::ExpectedPattern));
+    }
+    let source = "(f(a,b).x) = ; let tail = 1;";
+    let p = at(source, E::Module);
+    assert_eq!(p.diagnostics().len(), 1, "{:?}", p.diagnostics());
+    assert_eq!(&source[byte_range(p.diagnostics()[0].range)], ";");
+    assert_eq!(has(&p, K::LetDecl), 1);
+    ranges(&p, source);
+    for end in 0..=source.len() {
+        let p = at(&source[..end], E::Module);
+        ranges(&p, &source[..end]);
+    }
+}
+
+#[test]
+fn assignment_trials_bound_nested_defaults_and_reuse_completed_groups() {
+    // A wide pattern-compatible expression inside many groups must not rescan
+    // its entire tail once per group or run out of the shared linear budget.
+    let wide = "a,".repeat(10_000);
+    for tail in [";", " = value;"] {
+        let source = format!("{}({wide}){}{tail}", "(".repeat(48), ")".repeat(48));
+        let p = ok(&source, E::Module);
+        ranges(&p, &source);
+    }
+    let mut target = "(a,b) is Pair".to_owned();
+    for _ in 0..500 {
+        target = format!("({{name = || {{ ({target}) = value; }}}})");
+    }
+    let source = format!("{target} = value;");
+    let p = at(&source, E::Module);
+    assert!(p.exhausted());
+    assert!(p.diagnostics().iter().any(|d| d.code == D::BudgetExceeded));
+    ranges(&p, &source);
+}

@@ -29,6 +29,23 @@ invented in the user's source. Budgets cap recursive descent and tree height,
 tokens and diagnostics; input truncation always makes progress or exits. Ordinary
 tokens obey the exact emission limit, with at most one separate error-tail leaf.
 
+Ambiguous assignment targets use a silent, isolated trial of the same pattern,
+type and default-expression productions. Tokens/source are borrowed; caller
+cursor, diagnostics and tree are untouched. Only a complete structural pattern
+followed by `=` selects pattern parsing; sole grouped names remain locations,
+and member/index suffixes use expressions. Tuple/array expression nodes cannot
+serve as a fallback destructuring target containing setters. Type/OR wrapping
+and arbitrary grouping retain the pattern grammar; mutable-name and OR-binding
+eligibility remain binder checks.
+
+All candidates in one parse share at most 16 times the admitted token count in
+trial token advances, including nested default expressions. Completed grammar
+decisions are cached by token position/pipe context (at most two entries per
+position); depth uses the same normalized budget, including the caller depth.
+Trials stop on their first error. Budget exhaustion reports ASR001 at the real
+candidate and preserves the untouched tail; failed trials emit no author-facing
+diagnostics. No second pattern grammar or per-candidate file clone is used.
+
 Diagnostics expose stable code, severity, primary/related half-open byte ranges,
 messages and optional fixes. `to_codespan(file_id)` leaves file/module/version
 identity with the caller. `SourceMap` exposes zero-based line and explicitly

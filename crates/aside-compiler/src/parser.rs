@@ -4,6 +4,10 @@ use crate::{
     SyntaxKind as K, SyntaxNode, TextRange, Token, lex_with_limits,
 };
 use rowan::{Checkpoint, GreenNodeBuilder};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EntryPoint {
@@ -48,9 +52,13 @@ pub fn parse(source: &str) -> Result<Parse, SourceTooLarge> {
 pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, SourceTooLarge> {
     let limits = options.limits.normalized();
     let lexed = lex_with_limits(source, limits)?;
+    let probes = PatternProbes {
+        remaining: Cell::new(lexed.tokens.len().saturating_mul(16)),
+        cache: RefCell::new(HashMap::new()),
+    };
     let mut p = Parser {
         source,
-        tokens: lexed.tokens,
+        tokens: &lexed.tokens,
         diagnostics: lexed.diagnostics,
         cursor: 0,
         builder: GreenNodeBuilder::new(),
@@ -61,6 +69,8 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
         frames: Vec::new(),
         allow_min: false,
         stop_pipe: false,
+        probe: false,
+        probes: &probes,
     };
     p.start(K::Root);
     match options.entry {
@@ -73,7 +83,9 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
         EntryPoint::Expression => {
             p.expr(0, false, true);
         }
-        EntryPoint::Pattern => p.pattern(),
+        EntryPoint::Pattern => {
+            p.pattern();
+        }
         EntryPoint::Type => p.ty(),
     }
     if !p.halted && p.peek() != K::Eof {
@@ -89,7 +101,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
 }
 struct Parser<'a> {
     source: &'a str,
-    tokens: Vec<Token>,
+    tokens: &'a [Token],
     cursor: usize,
     builder: GreenNodeBuilder<'static>,
     diagnostics: Vec<Diagnostic>,
@@ -100,10 +112,23 @@ struct Parser<'a> {
     frames: Vec<Vec<usize>>,
     allow_min: bool,
     stop_pipe: bool,
+    probe: bool,
+    probes: &'a PatternProbes,
+}
+struct PatternProbes {
+    // Shared across every candidate and nested default expression in one parse.
+    // A cache entry is a completed grammar result, never a token-shape guess.
+    remaining: Cell<usize>,
+    cache: RefCell<HashMap<(usize, bool), bool>>,
+}
+#[derive(Clone, Copy, Default)]
+struct PatternShape {
+    kind: Option<K>,
+    destructuring: bool,
 }
 #[derive(Clone, Copy)]
 struct Marker {
-    checkpoint: Checkpoint,
+    checkpoint: Option<Checkpoint>,
     index: usize,
 }
 #[derive(Clone, Copy)]
@@ -136,6 +161,12 @@ impl Expr {
     }
 }
 impl Parser<'_> {
+    fn significant_cursor(&self) -> usize {
+        self.tokens[self.cursor..]
+            .iter()
+            .position(|t| !t.kind.is_trivia())
+            .map_or(self.tokens.len(), |offset| self.cursor + offset)
+    }
     fn nth(&self, n: usize) -> K {
         self.tokens[self.cursor..]
             .iter()
@@ -160,11 +191,15 @@ impl Parser<'_> {
         self.token().map_or("", |t| t.text(self.source))
     }
     fn start(&mut self, kind: K) {
-        self.builder.start_node(kind.raw());
+        if !self.probe {
+            self.builder.start_node(kind.raw());
+        }
         self.frames.push(Vec::new());
     }
     fn finish(&mut self) {
-        self.builder.finish_node();
+        if !self.probe {
+            self.builder.finish_node();
+        }
         let height = self.frames.pop().unwrap().into_iter().max().unwrap_or(0) + 1;
         if let Some(frame) = self.frames.last_mut() {
             frame.push(height);
@@ -176,12 +211,14 @@ impl Parser<'_> {
     fn checkpoint(&mut self) -> Marker {
         self.trivia();
         Marker {
-            checkpoint: self.builder.checkpoint(),
+            checkpoint: (!self.probe).then(|| self.builder.checkpoint()),
             index: self.frames.last().unwrap().len(),
         }
     }
     fn wrap(&mut self, cp: Marker, kind: K) {
-        self.builder.start_node_at(cp.checkpoint, kind.raw());
+        if let Some(checkpoint) = cp.checkpoint {
+            self.builder.start_node_at(checkpoint, kind.raw());
+        }
         let children = self.frames.last_mut().unwrap().split_off(cp.index);
         if children.iter().copied().max().unwrap_or(0) + 1 > self.limits.max_depth && !self.halted {
             self.limit("syntax tree nesting budget exhausted");
@@ -189,14 +226,28 @@ impl Parser<'_> {
         self.frames.push(children);
     }
     fn trivia(&mut self) {
-        while self.cursor < self.tokens.len() && self.tokens[self.cursor].kind.is_trivia() {
+        while self.cursor < self.tokens.len()
+            && self.tokens[self.cursor].kind.is_trivia()
+            && !self.halted
+        {
             self.raw_bump();
         }
     }
     fn raw_bump(&mut self) {
+        if self.probe {
+            let remaining = self.probes.remaining.get();
+            if remaining == 0 {
+                self.halted = true;
+                self.exhausted = true;
+                return;
+            }
+            self.probes.remaining.set(remaining - 1);
+        }
         let token = self.tokens[self.cursor];
-        self.builder
-            .token(token.kind.raw(), token.text(self.source));
+        if !self.probe {
+            self.builder
+                .token(token.kind.raw(), token.text(self.source));
+        }
         self.cursor += 1;
         self.frames.last_mut().unwrap().push(0);
     }
@@ -223,6 +274,11 @@ impl Parser<'_> {
     }
     fn error_at(&mut self, code: D, range: TextRange, message: impl Into<String>) {
         if self.halted {
+            return;
+        }
+        if self.probe {
+            // A failed trial neither recovers nor emits caller diagnostics.
+            self.halted = true;
             return;
         }
         if self.diagnostics.len() + 1 >= self.limits.max_diagnostics {
@@ -498,99 +554,49 @@ impl Parser<'_> {
         self.leave();
         lhs
     }
-    // Recognize an assignment's structural left side using bounded token
-    // lookahead, then reuse the same pattern production as let/for/match.
-    // Ordinary parenthesized locations (a.b)/(a[i]) remain expressions.
-    fn assignment_pattern_ahead(&self) -> bool {
-        // A comma/rest belongs to the delimiter that directly contains it.
-        // Nested structure propagates only through a group's sole child;
-        // receiver/call/index/member tokens make that group an expression.
-        enum Content {
-            Empty,
-            Child(bool),
-            Other,
+    // Speculate with the actual pattern/type/default-expression productions.
+    // The borrowed tokens, isolated cursor and silent sink preserve caller state.
+    // Completed nested grammar results are cached; all trials share a linear
+    // token-work budget, including recursively nested default expressions.
+    fn assignment_pattern_ahead(&mut self) -> bool {
+        if self.halted || !matches!(self.peek(), K::LParen | K::LBracket | K::LBrace) {
+            return false;
         }
-        struct Frame {
-            close: K,
-            direct_structure: bool,
-            content: Content,
+        let key = (self.significant_cursor(), self.stop_pipe);
+        if let Some(&result) = self.probes.cache.borrow().get(&key) {
+            return result;
         }
-        impl Frame {
-            fn new(close: K) -> Self {
-                Self {
-                    close,
-                    direct_structure: false,
-                    content: Content::Empty,
-                }
-            }
-            fn structural(&self) -> bool {
-                match self.close {
-                    K::RBracket | K::RBrace => true,
-                    K::RParen => {
-                        self.direct_structure
-                            || matches!(self.content, Content::Empty | Content::Child(true))
-                    }
-                    _ => false,
-                }
-            }
-            fn child(&mut self, structural: bool) {
-                self.content = match self.content {
-                    Content::Empty => Content::Child(structural),
-                    _ => Content::Other,
-                };
-            }
-        }
-        let closing = match self.peek() {
-            K::LParen => K::RParen,
-            K::LBracket => K::RBracket,
-            _ => return false,
+        let mut trial = Parser {
+            source: self.source,
+            tokens: self.tokens,
+            cursor: self.cursor,
+            builder: GreenNodeBuilder::new(),
+            diagnostics: Vec::new(),
+            limits: self.limits,
+            depth: self.depth,
+            halted: false,
+            exhausted: false,
+            frames: Vec::new(),
+            allow_min: false,
+            stop_pipe: self.stop_pipe,
+            probe: true,
+            probes: self.probes,
         };
-        let mut tokens = self.tokens[self.cursor..]
-            .iter()
-            .filter(|t| !t.kind.is_trivia());
-        tokens.next();
-        let mut stack = vec![Frame::new(closing)];
-        for token in tokens.by_ref() {
-            let kind = token.kind;
-            let close = match kind {
-                K::LParen | K::QuestionParen => Some(K::RParen),
-                K::LBracket | K::QuestionBracket => Some(K::RBracket),
-                K::LBrace => Some(K::RBrace),
-                K::InterpolationStart => Some(K::InterpolationEnd),
-                _ => None,
-            };
-            if let Some(close) = close {
-                if stack.len() >= self.limits.max_depth {
-                    return false;
-                }
-                stack.push(Frame::new(close));
-            } else if matches!(
-                kind,
-                K::RParen | K::RBracket | K::RBrace | K::InterpolationEnd
-            ) {
-                let frame = stack.pop().unwrap();
-                if frame.close != kind {
-                    return false;
-                }
-                let structural = frame.structural();
-                if let Some(parent) = stack.last_mut() {
-                    parent.child(structural);
-                } else {
-                    return structural && tokens.next().is_some_and(|t| t.kind == K::Eq);
-                }
-            } else {
-                let frame = stack.last_mut().unwrap();
-                frame.direct_structure |= matches!(kind, K::Comma | K::Ellipsis);
-                frame.content = Content::Other;
-            }
+        trial.start(K::Root);
+        let shape = trial.pattern();
+        let result = !trial.halted && shape.destructuring && trial.peek() == K::Eq;
+        if trial.exhausted {
+            self.limit("assignment pattern trial budget exhausted");
+        } else {
+            self.probes.cache.borrow_mut().insert(key, result);
         }
-        false
+        result
     }
     fn atom(&mut self, head: bool, value: bool) -> Expr {
         let negative = std::mem::take(&mut self.allow_min);
         if self.assignment_pattern_ahead() {
-            self.pattern();
-            return Expr::target(K::TuplePattern);
+            let shape = self.pattern();
+            return Expr::target(shape.kind.unwrap_or(K::Error));
         }
         match self.peek() {
             K::Ident => {
@@ -752,7 +758,7 @@ impl Parser<'_> {
         self.finish();
         self.stop_pipe = previous_pipe;
         Expr {
-            target,
+            target: kind == K::GroupExpr && target,
             ..Expr::new(kind)
         }
     }
@@ -760,7 +766,6 @@ impl Parser<'_> {
         let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
         self.start(K::ArrayExpr);
         self.bump();
-        let mut target = true;
         while !matches!(self.peek(), K::RBracket | K::Eof) && !self.halted {
             let before = self.cursor;
             let spread = self.peek() == K::Ellipsis;
@@ -768,8 +773,7 @@ impl Parser<'_> {
                 self.start(K::Spread);
                 self.bump();
             }
-            let item = self.expr(0, false, true);
-            target &= item.kind == K::NameExpr || spread && item.target;
+            self.expr(0, false, true);
             if spread {
                 self.finish();
             }
@@ -781,10 +785,7 @@ impl Parser<'_> {
         self.expect(K::RBracket);
         self.finish();
         self.stop_pipe = previous_pipe;
-        Expr {
-            target,
-            ..Expr::new(K::ArrayExpr)
-        }
+        Expr::new(K::ArrayExpr)
     }
     fn object(&mut self) {
         let previous_pipe = std::mem::replace(&mut self.stop_pipe, false);
@@ -1283,34 +1284,61 @@ impl Parser<'_> {
             }
         }
     }
-    fn pattern(&mut self) {
+    fn pattern(&mut self) -> PatternShape {
+        let key = (self.significant_cursor(), self.stop_pipe);
         if !self.enter() {
-            return;
+            return PatternShape::default();
         }
         let cp = self.checkpoint();
-        self.pattern_atom();
+        let mut shape = self.pattern_atom();
         if self.eat(K::Is) {
             self.wrap(cp, K::TypePattern);
             self.type_atom(true);
             self.finish();
+            shape = PatternShape {
+                kind: Some(K::TypePattern),
+                destructuring: true,
+            };
         }
         while self.eat(K::Pipe) && !self.halted {
             self.wrap(cp, K::OrPattern);
             self.pattern();
             self.finish();
+            shape = PatternShape {
+                kind: Some(K::OrPattern),
+                destructuring: true,
+            };
         }
         self.leave();
+        if self.probe
+            && !self.halted
+            && matches!(
+                self.tokens.get(key.0).map(|t| t.kind),
+                Some(K::LParen | K::LBracket | K::LBrace)
+            )
+        {
+            self.probes
+                .cache
+                .borrow_mut()
+                .insert(key, shape.destructuring && self.peek() == K::Eq);
+        }
+        shape
     }
-    fn pattern_atom(&mut self) {
+    fn pattern_atom(&mut self) -> PatternShape {
         match self.peek() {
             K::Ident => {
-                self.start(if self.text() == "_" {
+                let kind = if self.text() == "_" {
                     K::WildcardPattern
                 } else {
                     K::NamePattern
-                });
+                };
+                self.start(kind);
                 self.bump();
                 self.finish();
+                PatternShape {
+                    kind: Some(kind),
+                    destructuring: false,
+                }
             }
             K::Number | K::True | K::False | K::Null | K::Minus | K::StringStart => {
                 self.start(K::LiteralPattern);
@@ -1335,6 +1363,10 @@ impl Parser<'_> {
                     self.error(D::ExpectedPattern, "expected numeric literal after '-'");
                 }
                 self.finish();
+                PatternShape {
+                    kind: Some(K::LiteralPattern),
+                    destructuring: false,
+                }
             }
             K::LParen | K::LBracket => {
                 let tuple = self.peek() == K::LParen;
@@ -1344,6 +1376,7 @@ impl Parser<'_> {
                 let mut rest = false;
                 let mut count = 0;
                 let mut comma = false;
+                let mut child_shape = PatternShape::default();
                 while self.peek() != end && self.peek() != K::Eof && !self.halted {
                     let before = self.cursor;
                     if rest {
@@ -1356,7 +1389,7 @@ impl Parser<'_> {
                         self.expect(K::Ident);
                         self.finish();
                     } else {
-                        self.pattern();
+                        child_shape = self.pattern();
                     }
                     count += 1;
                     if !self.eat(K::Comma) {
@@ -1366,17 +1399,19 @@ impl Parser<'_> {
                     self.progress(before);
                 }
                 self.expect(end);
-                self.wrap(
-                    cp,
-                    if !tuple {
-                        K::ArrayPattern
-                    } else if count == 1 && !comma {
-                        K::GroupPattern
-                    } else {
-                        K::TuplePattern
-                    },
-                );
+                let kind = if !tuple {
+                    K::ArrayPattern
+                } else if count == 1 && !comma {
+                    K::GroupPattern
+                } else {
+                    K::TuplePattern
+                };
+                self.wrap(cp, kind);
                 self.finish();
+                PatternShape {
+                    kind: Some(kind),
+                    destructuring: kind != K::GroupPattern || child_shape.destructuring,
+                }
             }
             K::LBrace => {
                 self.start(K::ObjectPattern);
@@ -1411,6 +1446,10 @@ impl Parser<'_> {
                 }
                 self.expect(K::RBrace);
                 self.finish();
+                PatternShape {
+                    kind: Some(K::ObjectPattern),
+                    destructuring: true,
+                }
             }
             _ => {
                 self.start(K::Error);
@@ -1431,6 +1470,7 @@ impl Parser<'_> {
                     self.bump();
                 }
                 self.finish();
+                PatternShape::default()
             }
         }
     }
@@ -1453,6 +1493,7 @@ fn infix(op: K) -> Option<(u8, u8, K)> {
         _ => return None,
     })
 }
+
 fn is_comparison(op: K) -> bool {
     matches!(
         op,
@@ -1461,4 +1502,66 @@ fn is_comparison(op: K) -> bool {
 }
 fn is_comparison_kind(kind: K) -> bool {
     kind == K::Is
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn trials_isolate_caller_state_and_exhaust_shared_work_without_consuming_it() {
+        for (source, budget, expected, exhausted) in [
+            ("((a,b) is Pair) = value;", 100, true, false),
+            ("(f(a,b).x) = value;", 100, false, false),
+            ("((a,b) is Pair) = value;", 1, false, true),
+        ] {
+            let limits = Limits::default().normalized();
+            let lexed = lex_with_limits(source, limits).unwrap();
+            let probes = PatternProbes {
+                remaining: Cell::new(budget),
+                cache: RefCell::new(HashMap::new()),
+            };
+            let mut parser = Parser {
+                source,
+                tokens: &lexed.tokens,
+                cursor: 0,
+                builder: GreenNodeBuilder::new(),
+                diagnostics: Vec::new(),
+                limits,
+                depth: 0,
+                halted: false,
+                exhausted: false,
+                frames: Vec::new(),
+                allow_min: true,
+                stop_pipe: true,
+                probe: false,
+                probes: &probes,
+            };
+            parser.start(K::Root);
+            let checkpoint = format!("{:?}", parser.builder.checkpoint());
+            assert_eq!(parser.assignment_pattern_ahead(), expected);
+            assert_eq!(parser.cursor, 0);
+            assert_eq!(format!("{:?}", parser.builder.checkpoint()), checkpoint);
+            assert_eq!(parser.frames, vec![Vec::<usize>::new()]);
+            assert_eq!(parser.depth, 0);
+            assert!(parser.allow_min && parser.stop_pipe);
+            assert_eq!(parser.exhausted, exhausted);
+            if exhausted {
+                assert_eq!(probes.remaining.get(), 0);
+                assert_eq!(parser.diagnostics.len(), 1);
+                assert_eq!(parser.diagnostics[0].code, D::BudgetExceeded);
+                assert_eq!(parser.diagnostics[0].range, span(0, 1));
+                assert!(probes.cache.borrow().is_empty());
+            } else {
+                assert!(parser.diagnostics.is_empty());
+                let remaining = probes.remaining.get();
+                assert_eq!(parser.assignment_pattern_ahead(), expected);
+                assert_eq!(probes.remaining.get(), remaining);
+            }
+            parser.remaining();
+            parser.finish();
+            let tree = SyntaxNode::new_root(parser.builder.finish());
+            assert_eq!(tree.text().to_string(), source);
+        }
+    }
 }
