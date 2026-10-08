@@ -66,15 +66,24 @@ pub struct IrModule {
     /// Shared tables and function contracts. Lowered function code is populated by emit.
     pub(crate) package: bc::BytecodePackage,
     pub(crate) functions: Vec<Function>,
-    pub source: bc::SourceId,
-    pub module: bc::ModuleId,
-    pub entry: bc::FunctionId,
+    pub(crate) source: bc::SourceId,
+    pub(crate) module: bc::ModuleId,
+    pub(crate) entry: bc::FunctionId,
     pub(crate) stats: Stats,
     pub(crate) metadata: Metadata,
     pub(crate) options: Options,
     pub(crate) budget: Budget,
 }
 impl IrModule {
+    pub fn source(&self) -> bc::SourceId {
+        self.source
+    }
+    pub fn module(&self) -> bc::ModuleId {
+        self.module
+    }
+    pub fn entry(&self) -> bc::FunctionId {
+        self.entry
+    }
     pub fn tables(&self) -> &bc::BytecodePackage {
         &self.package
     }

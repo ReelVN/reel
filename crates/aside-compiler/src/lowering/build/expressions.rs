@@ -1,13 +1,15 @@
 use super::*;
 
 impl FunctionBuilder<'_, '_> {
-    fn value(&mut self, n: h::NodeId, depth: usize) -> Result<bc::Reg, Error> {
-        self.expr(n, depth)?.ok_or_else(|| {
-            self.l.b.error(
+    fn value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+        let value = self.expr(n, depth)?;
+        if value.is_none() && self.current.is_some() {
+            return Err(self.l.b.error(
                 ErrorKind::Unsupported,
-                "value expression terminates control flow",
-            )
-        })
+                "expression does not produce a value",
+            ));
+        }
+        Ok(value)
     }
     pub(super) fn expr(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
         self.l.b.span = self.span(n);
@@ -97,7 +99,9 @@ impl FunctionBuilder<'_, '_> {
             ) => {
                 let symbol = self.pattern_symbol(pattern)?;
                 if let Some(initializer) = initializer {
-                    let value = self.value(initializer, depth)?;
+                    let Some(value) = self.value(initializer, depth)? else {
+                        return Ok(None);
+                    };
                     if let Some(symbol) = symbol {
                         self.write(symbol, value, true, n)?;
                     }
@@ -162,7 +166,9 @@ impl FunctionBuilder<'_, '_> {
                         ));
                     }
                 };
-                let input = self.value(value, depth)?;
+                let Some(input) = self.value(value, depth)? else {
+                    return Ok(None);
+                };
                 let out = self.temp()?;
                 self.op(opcode, out.0, input.0, 0, n)?;
                 self.release(input)?;
@@ -177,7 +183,9 @@ impl FunctionBuilder<'_, '_> {
                 },
             ) => {
                 if operator.kind == K::Is {
-                    let left = self.value(left, depth)?;
+                    let Some(left) = self.value(left, depth)? else {
+                        return Ok(None);
+                    };
                     let ty = self.l.ty(self.l.m.facts()[right.0 as usize].ty, 0)?;
                     let out = self.temp()?;
                     self.op(bc::Opcode::Is, out.0, left.0, ty.0, n)?;
@@ -193,8 +201,13 @@ impl FunctionBuilder<'_, '_> {
                         "binary operator awaits later lowering",
                     )
                 })?;
-                let left = self.value(left, depth)?;
-                let right = self.value(right, depth)?;
+                let Some(left) = self.value(left, depth)? else {
+                    return Ok(None);
+                };
+                let Some(right) = self.value(right, depth)? else {
+                    self.release(left)?;
+                    return Ok(None);
+                };
                 let out = self.temp()?;
                 self.op(opcode, out.0, left.0, right.0, n)?;
                 self.release(left)?;
@@ -226,7 +239,10 @@ impl FunctionBuilder<'_, '_> {
             ) => {
                 let native = self.l.native(callee)?;
                 let callee_value = if native.is_none() {
-                    Some(self.value(callee, depth)?)
+                    let Some(callee) = self.value(callee, depth)? else {
+                        return Ok(None);
+                    };
+                    Some(callee)
                 } else {
                     None
                 };
@@ -251,7 +267,14 @@ impl FunctionBuilder<'_, '_> {
                                 "spread requires ordered argument builder lowering",
                             ));
                         };
-                        let value = self.value(value, depth)?;
+                        let Some(value) = self.value(value, depth)? else {
+                            self.l.b.release(names);
+                            self.registers.release(window, &mut self.l.b)?;
+                            if let Some(callee) = callee_value {
+                                self.release(callee)?;
+                            }
+                            return Ok(None);
+                        };
                         self.op(bc::Opcode::Move, window.start.0 + i as u32, value.0, 0, arg)?;
                         self.release(value)?;
                         if let Some(name) = name {
@@ -295,7 +318,12 @@ impl FunctionBuilder<'_, '_> {
                     return Err(self.l.b.error(ErrorKind::Unsupported, "author return escaping a default expression requires a shared transfer contract"));
                 }
                 let value = match value {
-                    Some(value) => self.value(value, depth)?,
+                    Some(value) => {
+                        let Some(value) = self.value(value, depth)? else {
+                            return Ok(None);
+                        };
+                        value
+                    }
                     None => self.constant(bc::Const::Null, n)?,
                 };
                 self.terminate(Terminator::Return(value), n)?;
@@ -304,7 +332,9 @@ impl FunctionBuilder<'_, '_> {
             }
             (H::Throw, Form::Transfer { value, .. }) => {
                 if let Some(value) = value {
-                    let value = self.value(value, depth)?;
+                    let Some(value) = self.value(value, depth)? else {
+                        return Ok(None);
+                    };
                     self.terminate(Terminator::Throw(value), n)?;
                     self.release(value)?;
                 } else {
@@ -402,7 +432,9 @@ impl FunctionBuilder<'_, '_> {
         right: h::NodeId,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Error> {
-        let left = self.value(left, depth)?;
+        let Some(left) = self.value(left, depth)? else {
+            return Ok(None);
+        };
         let out = self.temp()?;
         self.op(bc::Opcode::Move, out.0, left.0, 0, n)?;
         let rhs = self.block()?;
@@ -427,7 +459,11 @@ impl FunctionBuilder<'_, '_> {
         self.terminate(term, n)?;
         self.release(left)?;
         self.start(rhs)?;
-        let right = self.value(right, depth)?;
+        let Some(right) = self.value(right, depth)? else {
+            // The short-circuit edge still reaches join with the saved left value.
+            self.start(join)?;
+            return Ok(Some(out));
+        };
         self.op(bc::Opcode::Move, out.0, right.0, 0, n)?;
         self.terminate(
             if operator == K::QuestionQuestion {
@@ -453,7 +489,9 @@ impl FunctionBuilder<'_, '_> {
         no: Option<h::NodeId>,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Error> {
-        let condition = self.value(condition, depth)?;
+        let Some(condition) = self.value(condition, depth)? else {
+            return Ok(None);
+        };
         let out = self.temp()?;
         let yes_block = self.block()?;
         let no_block = self.block()?;
@@ -540,14 +578,22 @@ impl FunctionBuilder<'_, '_> {
             let opcode = binary(operator)
                 .ok_or_else(|| self.l.b.error(ErrorKind::Unsupported, "compound operator"))?;
             let left = self.read(targets.last().expect("assignment target").0, n)?;
-            let right = self.value(rhs, depth)?;
+            let Some(right) = self.value(rhs, depth)? else {
+                self.release(left)?;
+                self.l.b.release(targets);
+                return Ok(());
+            };
             let out = self.temp()?;
             self.op(opcode, out.0, left.0, right.0, n)?;
             self.release(left)?;
             self.release(right)?;
             out
         } else {
-            self.value(rhs, depth)?
+            let Some(value) = self.value(rhs, depth)? else {
+                self.l.b.release(targets);
+                return Ok(());
+            };
+            value
         };
         for &(symbol, target) in targets.iter().rev() {
             self.write(symbol, value, false, target)?;
@@ -569,7 +615,9 @@ impl FunctionBuilder<'_, '_> {
         self.terminate(Terminator::Jump(head), n)?;
         self.start(head)?;
         if let Some(condition) = condition {
-            let value = self.value(condition, depth)?;
+            let Some(value) = self.value(condition, depth)? else {
+                return Ok(());
+            };
             self.terminate(
                 Terminator::BranchBool {
                     value,

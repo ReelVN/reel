@@ -162,6 +162,41 @@ fn branches_short_circuit_and_null_coalescing_have_explicit_edges() {
 }
 
 #[test]
+fn terminal_value_subexpressions_preserve_return_and_short_circuit_edges() {
+    let result = compiled(
+        "fn called(a,b){a+b} \
+         fn in_arg(x){called(a:1,b:if x{return 1;}else{return 2;})} \
+         fn in_let(x){let y=if x{return 1;}else{return 2;}; y} \
+         fn in_eq(x){null==(if x{return 1;}else{return 2;})} \
+         fn in_assign(x){let mut y=0; y+=if x{return 1;}else{return 2;};} \
+         fn in_return(x){return if x{return 1;}else{return 2;};} \
+         fn in_throw(x){throw if x{return 1;}else{return 2;};} \
+         fn in_short(x){x && (if x{return true;}else{false})} \
+         fn in_coalesce(x){x ?? (if x{return 1;}else{return 2;})}",
+    );
+    let p = result.program.package();
+    let in_arg = function(p, "in_arg");
+    assert!(
+        !in_arg
+            .code
+            .iter()
+            .any(|i| i.opcode == bc::Opcode::Call as u16)
+    );
+    let in_eq = function(p, "in_eq");
+    assert!(!in_eq.code.iter().any(|i| i.opcode == bc::Opcode::Eq as u16));
+    for (name, returns) in [("in_short", 2), ("in_coalesce", 3)] {
+        let f = function(p, name);
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| i.opcode == bc::Opcode::Return as u16)
+                .count(),
+            returns
+        );
+    }
+}
+
+#[test]
 fn forward_readonly_cells_and_mutual_recursion_keep_binding_identity() {
     let result = compiled(
         "fn outer() { fn first() { later } fn a() { b() } fn b() { a() } let later = null; first } fn mutable() { let mut value=0; let next=|| { value += 1; value }; next }",
@@ -278,6 +313,14 @@ fn sequential_temporaries_are_reused_and_limits_fail_before_growth() {
             max_blocks: 0,
             ..Default::default()
         },
+        lowering::Limits {
+            max_records: 0,
+            ..Default::default()
+        },
+        lowering::Limits {
+            max_depth: 0,
+            ..Default::default()
+        },
     ] {
         let error = lowering::lower(
             &module,
@@ -291,6 +334,9 @@ fn sequential_temporaries_are_reused_and_limits_fail_before_growth() {
         assert_eq!(error.kind, lowering::ErrorKind::Limit);
         assert!(error.stats.capacity_peak_bytes <= limits.max_capacity_bytes);
         assert!(error.stats.work_units <= limits.max_work);
+        assert!(error.stats.records <= limits.max_records);
+        assert!(error.stats.blocks <= limits.max_blocks);
+        assert!(error.stats.instructions <= limits.max_instructions);
     }
 }
 
@@ -306,6 +352,33 @@ fn unsupported_nodes_report_original_range() {
         assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
         assert_eq!(&source[aside_compiler::byte_range(error.span)], node_text);
     }
+}
+
+#[test]
+fn missing_default_transfer_and_shared_emission_limits_are_located() {
+    let source = "fn f(x=if true{return 1;}else{2}){x}";
+    let module = analyzed(source);
+    let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
+    assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
+    assert_eq!(&source[aside_compiler::byte_range(error.span)], "return 1;");
+    assert!(error.detail.contains("shared transfer contract"));
+
+    let source = "fn f(){1}";
+    let module = analyzed(source);
+    let error = lowering::compile(
+        &module,
+        &Linkage::default(),
+        Options {
+            bytecode_limits: bc::Limits {
+                max_records: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, lowering::ErrorKind::Bytecode);
+    assert_eq!(&source[aside_compiler::byte_range(error.span)], source);
 }
 
 #[test]
