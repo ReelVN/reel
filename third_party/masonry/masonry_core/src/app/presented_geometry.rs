@@ -520,6 +520,7 @@ impl RenderRoot {
     }
     /// Configure bounded reusable pointer routes. Existing over-depth input is suppressed.
     pub fn configure_input_path_storage(&mut self, limit: usize) -> usize {
+        self.widget_arena.nodes.configure_lookup_path_storage(limit);
         self.global_state.max_input_path = limit;
         self.global_state.pointer_route = Vec::with_capacity(limit);
         self.global_state.pointer_hover_spare = Vec::with_capacity(limit);
@@ -546,6 +547,18 @@ impl RenderRoot {
             + s.hovered_path.capacity())
             * size_of::<WidgetId>()
             + 5 * size_of::<Vec<WidgetId>>()
+            + self.widget_arena.nodes.lookup_path_storage_bytes()
+    }
+
+    /// Planned five route arrays plus the independent arena lookup workspace.
+    /// The host reserves this storage before configuring it.
+    pub fn input_path_storage_bytes_for(limit: usize) -> Option<usize> {
+        limit
+            .checked_mul(5 * size_of::<WidgetId>())?
+            .checked_add(5 * size_of::<Vec<WidgetId>>())?
+            .checked_add(
+                tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(limit)?,
+            )
     }
     pub(crate) fn pointer_hit_test(&self, pos: Point, view: GeometryView<'_>) -> Option<WidgetId> {
         match view {

@@ -1970,7 +1970,7 @@
  mod visual_layers;
 --- /dev/null
 +++ b/masonry_core/src/app/presented_geometry.rs
-@@ -0,0 +1,604 @@
+@@ -0,0 +1,617 @@
 +// Copyright 2026 the Xilem Authors and Reel contributors
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -2493,6 +2493,7 @@
 +    }
 +    /// Configure bounded reusable pointer routes. Existing over-depth input is suppressed.
 +    pub fn configure_input_path_storage(&mut self, limit: usize) -> usize {
++        self.widget_arena.nodes.configure_lookup_path_storage(limit);
 +        self.global_state.max_input_path = limit;
 +        self.global_state.pointer_route = Vec::with_capacity(limit);
 +        self.global_state.pointer_hover_spare = Vec::with_capacity(limit);
@@ -2519,6 +2520,18 @@
 +            + s.hovered_path.capacity())
 +            * size_of::<WidgetId>()
 +            + 5 * size_of::<Vec<WidgetId>>()
++            + self.widget_arena.nodes.lookup_path_storage_bytes()
++    }
++
++    /// Planned five route arrays plus the independent arena lookup workspace.
++    /// The host reserves this storage before configuring it.
++    pub fn input_path_storage_bytes_for(limit: usize) -> Option<usize> {
++        limit
++            .checked_mul(5 * size_of::<WidgetId>())?
++            .checked_add(5 * size_of::<Vec<WidgetId>>())?
++            .checked_add(
++                tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(limit)?,
++            )
 +    }
 +    pub(crate) fn pointer_hit_test(&self, pos: Point, view: GeometryView<'_>) -> Option<WidgetId> {
 +        match view {
@@ -4340,9 +4353,310 @@
  name = "tree_arena"
  version = "0.2.0"
  description = "An arena allocated tree."
+@@ -17,8 +18,8 @@
+ 
+ [features]
+ default = ["std", "safe_tree"]
+-# Enable future features which require the standard library.
+-# This feature is provided for forwards compatibility only, and current behaviour is the same whether or not it is enabled.
++# Enable an independently leased preallocated lookup workspace. Without std,
++# lookup uses bounded stack chunks, preserving correctness without allocation.
+ std = []
+ # This crate contains two implementations of a tree for use in masonry, one safe and the other unsafe.
+ # The safe tree is known to work, and serves as the baseline implementation and is used by default.
+--- a/tree_arena/src/lib.rs
++++ b/tree_arena/src/lib.rs
+@@ -17,8 +17,8 @@
+ //!
+ //! The following crate [feature flags](https://doc.rust-lang.org/cargo/reference/features.html#dependency-features) are available:
+ //!
+-//! - `std` (enabled by default): Enable future features which require the standard library.
+-//!   This feature is provided for forwards compatibility only, and current behaviour is the same whether or not it is enabled.
++//! - `std` (enabled by default): Enable an independently leased preallocated lookup
++//!   workspace. Without it, bounded stack chunks preserve lookup correctness.
+ //! - `safe_tree` (enabled by default): Use the safe tree implementation instead of the unsafe one.
+ //!
+ //! This crate is `no_std` compatible; to use it without the standard library, disable default features.
+@@ -31,7 +31,11 @@
+ //! The safe tree contains a root `TreeArena` which owns the root nodes as `Vec<TreeNode<T>>`, and a `parents_map` tracking the parent of every node.
+ //! Each `TreeNode` subsequently owns its own children as `Vec<TreeNode<T>>`. This model of ownership is thus checked by the rust compiler,
+ //! but has the downside of requiring passing through every ancestor node to access the descendant -
+-//! this requires an O(depth) determination of whether the node is a descendant, followed by O(children) time at each level to traverse the path to the child.
++//! lookup walks parent links into a bounded workspace, then iteratively descends
++//! through child hash maps. Paths exceeding workspace capacity repeat the walk
++//! in chunks, using O(depth + depth²/capacity) work and constant call-stack space.
++//! Queries never allocate or grow that workspace. An unavailable workspace lease
++//! or `no_std` uses 32 stack slots instead. Returned handles do not retain a lease.
+ //!
+ //! ## Unsafe Tree
+ //!
+@@ -70,8 +74,8 @@
+ //! |Operation  | Safe         | Unsafe   |
+ //! |   ---     |      ---     |   ---    |
+ //! |Find child | O(Children)  | O(1)     |
+-//! |Descendant | O(Depth)     | O(Depth) |
+-//! |From root  | O(Depth)     | O(1)     |
++//! |Descendant | O(Depth + Depth²/Capacity) | O(Depth) |
++//! |From root  | O(Depth + Depth²/Capacity) | O(1)     |
+ //!
+ //! [Masonry]: https://crates.io/crates/masonry
+ 
+@@ -91,7 +95,7 @@
+ 
+ #[cfg(feature = "std")]
+ // Ensure that we don't compile if you're using the std feature on a platform without `std`
+-extern crate std as _;
++extern crate std;
+ 
+ type NodeId = u64;
+ 
 --- a/tree_arena/src/tree_arena_safe.rs
 +++ b/tree_arena/src/tree_arena_safe.rs
-@@ -340,23 +340,13 @@
+@@ -11,6 +11,86 @@
+ use hashbrown::HashMap;
+ 
+ use crate::NodeId;
++
++// One independently leased workspace per arena. References never retain its
++// contents. Mutex preserves Send/Sync and try_lock avoids blocking/reentrancy;
++// no_std and an unavailable lease use the same bounded stack fallback.
++#[derive(Debug, Default)]
++struct LookupScratch {
++    #[cfg(feature = "std")]
++    slots: std::sync::Mutex<Vec<NodeId>>,
++    #[cfg(feature = "std")]
++    capacity: usize,
++}
++
++impl LookupScratch {
++    fn bytes_for(capacity: usize) -> Option<usize> {
++        #[cfg(feature = "std")]
++        {
++            capacity
++                .checked_mul(size_of::<NodeId>())?
++                .checked_add(size_of::<Self>())
++        }
++        #[cfg(not(feature = "std"))]
++        {
++            let _ = capacity;
++            Some(0)
++        }
++    }
++
++    fn configure(&mut self, capacity: usize) -> usize {
++        #[cfg(feature = "std")]
++        {
++            let slots = self
++                .slots
++                .get_mut()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            *slots = alloc::vec![0; capacity];
++            self.capacity = slots.capacity();
++        }
++        #[cfg(not(feature = "std"))]
++        let _ = capacity;
++        self.bytes()
++    }
++
++    fn bytes(&self) -> usize {
++        #[cfg(feature = "std")]
++        {
++            Self::bytes_for(self.capacity).expect("allocated lookup capacity fits usize")
++        }
++        #[cfg(not(feature = "std"))]
++        {
++            0
++        }
++    }
++}
++
++/// Retain the ancestors closest to `boundary` in a circular bounded buffer.
++/// Return the full number of parent links walked, or None for an absent/outside
++/// node. The caller descends through that chunk and repeats from its new boundary.
++/// A query of relative depth D and C slots visits D + (D-C) + ... parent entries,
++/// and descends through D child entries. It neither allocates nor recurses.
++fn lookup_chunk(
++    parents: &HashMap<NodeId, Option<NodeId>>,
++    id: NodeId,
++    boundary: Option<NodeId>,
++    slots: &mut [NodeId],
++) -> Option<usize> {
++    debug_assert!(
++        !slots.is_empty(),
++        "lookup selects a nonempty leased or stack buffer"
++    );
++    let mut current = Some(id);
++    let mut walked = 0;
++    while current != boundary {
++        let id = current?;
++        let parent = *parents.get(&id)?;
++        slots[walked % slots.len()] = id;
++        walked += 1;
++        current = parent;
++    }
++    Some(walked)
++}
+ 
+ #[derive(Debug)]
+ struct TreeNode<T> {
+@@ -29,6 +109,7 @@
+ pub struct TreeArena<T> {
+     roots: HashMap<NodeId, TreeNode<T>>,
+     parents_map: HashMap<NodeId, Option<NodeId>>,
++    lookup_scratch: LookupScratch,
+ }
+ 
+ /// A reference type giving shared access to an arena item and its children.
+@@ -91,12 +172,14 @@
+ #[derive(Clone, Copy, Debug)]
+ struct ArenaMapRef<'arena> {
+     parents_map: &'arena HashMap<NodeId, Option<NodeId>>,
++    lookup: &'arena LookupScratch,
+ }
+ 
+ /// A mutable reference to the parent father map
+ #[derive(Debug)]
+ struct ArenaMapMut<'arena> {
+     parents_map: &'arena mut HashMap<NodeId, Option<NodeId>>,
++    lookup: &'arena LookupScratch,
+ }
+ 
+ // -- MARK: IMPLS
+@@ -129,6 +212,7 @@
+         Self {
+             roots: HashMap::new(),
+             parents_map: HashMap::new(),
++            lookup_scratch: LookupScratch::default(),
+         }
+     }
+ 
+@@ -140,6 +224,23 @@
+     /// Returns `true` if the arena is empty.
+     pub fn is_empty(&self) -> bool {
+         self.parents_map.is_empty()
++    }
++
++    /// Preallocate an independent lookup workspace outside event dispatch.
++    /// Queries never grow it. Longer paths use repeated bounded chunks, without
++    /// truncation or treating a present node as absent. `no_std` uses 32 stack slots.
++    pub fn configure_lookup_path_storage(&mut self, capacity: usize) -> usize {
++        self.lookup_scratch.configure(capacity)
++    }
++
++    /// Retained workspace header and actual heap capacity, excluding stack slots.
++    pub fn lookup_path_storage_bytes(&self) -> usize {
++        self.lookup_scratch.bytes()
++    }
++
++    /// Planned storage for a configured capacity, before allocating it.
++    pub fn lookup_path_storage_bytes_for(capacity: usize) -> Option<usize> {
++        LookupScratch::bytes_for(capacity)
+     }
+ 
+     /// Returns a handle giving access to the roots of the tree.
+@@ -149,6 +250,7 @@
+             children: &self.roots,
+             parents_map: ArenaMapRef {
+                 parents_map: &self.parents_map,
++                lookup: &self.lookup_scratch,
+             },
+         }
+     }
+@@ -163,6 +265,7 @@
+             children: &mut self.roots,
+             parents_map: ArenaMapMut {
+                 parents_map: &mut self.parents_map,
++                lookup: &self.lookup_scratch,
+             },
+         }
+     }
+@@ -178,7 +281,8 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation (linear when the
++    ///   path fits its configured workspace; 32 slots when no lease is available).
+     /// - O(1) in the unsafe implementation.
+     pub fn find(&self, id: impl Into<NodeId>) -> Option<ArenaRef<'_, T>> {
+         self.roots().find_inner(id.into())
+@@ -190,7 +294,8 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation (linear when the
++    ///   path fits its configured workspace; 32 slots when no lease is available).
+     /// - O(1) in the unsafe implementation.
+     pub fn find_mut(&mut self, id: impl Into<NodeId>) -> Option<ArenaMut<'_, T>> {
+         self.roots_mut().find_mut_inner(id.into())
+@@ -203,10 +308,7 @@
+     ///
+     /// If the id is not in the tree, returns an empty vector.
+     pub fn get_id_path(&self, id: impl Into<NodeId>) -> Vec<NodeId> {
+-        let parents_map = ArenaMapRef {
+-            parents_map: &self.parents_map,
+-        };
+-        parents_map.get_id_path(id.into(), None)
++        self.roots().parents_map.get_id_path(id.into(), None)
+     }
+ 
+     /// Moves the given child (along with all its children) to the new parent.
+@@ -267,7 +369,7 @@
+     fn arena_ref<'arena>(
+         &'arena self,
+         parent_id: Option<NodeId>,
+-        parents_map: &'arena HashMap<NodeId, Option<NodeId>>,
++        parents_map: ArenaMapRef<'arena>,
+     ) -> ArenaRef<'arena, T> {
+         ArenaRef {
+             parent_id,
+@@ -275,7 +377,7 @@
+             children: ArenaRefList {
+                 parent_id: Some(self.id),
+                 children: &self.children,
+-                parents_map: ArenaMapRef { parents_map },
++                parents_map,
+             },
+         }
+     }
+@@ -283,7 +385,7 @@
+     fn arena_mut<'arena>(
+         &'arena mut self,
+         parent_id: Option<NodeId>,
+-        parents_map: &'arena mut HashMap<NodeId, Option<NodeId>>,
++        parents_map: ArenaMapMut<'arena>,
+     ) -> ArenaMut<'arena, T> {
+         ArenaMut {
+             parent_id,
+@@ -291,7 +393,7 @@
+             children: ArenaMutList {
+                 parent_id: Some(self.id),
+                 children: &mut self.children,
+-                parents_map: ArenaMapMut { parents_map },
++                parents_map,
+             },
+         }
+     }
+@@ -323,7 +425,7 @@
+         let id = id.into();
+         self.children
+             .get(&id)
+-            .map(|child| child.arena_ref(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_ref(self.parent_id, self.parents_map))
+     }
+ 
+     /// Finds an arena item among the list's items and their descendants.
+@@ -332,7 +434,7 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation.
+     /// - O(Depth) in the unsafe implementation, when not called from the root.
+     /// - O(1) in the unsafe implementation, when called from the root.
+     pub fn find(self, id: impl Into<NodeId>) -> Option<ArenaRef<'arena, T>> {
+@@ -340,23 +442,34 @@
      }
  
      fn find_inner(self, id: NodeId) -> Option<ArenaRef<'arena, T>> {
@@ -4363,17 +4677,101 @@
 -
 -        let node = node_children.get(&id)?;
 -        Some(node.arena_ref(*parent_id, self.parents_map.parents_map))
-+        let parent_id = *self.parents_map.parents_map.get(&id)?;
-+        if parent_id == self.parent_id {
-+            return self.item(id);
++        #[cfg(feature = "std")]
++        if let Ok(mut slots) = self.parents_map.lookup.slots.try_lock()
++            && !slots.is_empty()
++        {
++            return self.find_with_storage(id, &mut slots);
 +        }
-+        // Walk parents on the call stack, then borrow each direct child. This
-+        // preserves the list's descendant boundary without a temporary path Vec.
-+        self.find_inner(parent_id?)?.children.item(id)
++        self.find_with_storage(id, &mut [0; 32])
++    }
++
++    fn find_with_storage(self, id: NodeId, slots: &mut [NodeId]) -> Option<ArenaRef<'arena, T>> {
++        let parent_id = *self.parents_map.parents_map.get(&id)?;
++        let mut boundary = self.parent_id;
++        let mut children = self.children;
++        loop {
++            let walked = lookup_chunk(self.parents_map.parents_map, id, boundary, slots)?;
++            if walked == 0 {
++                return None;
++            }
++            for offset in 0..walked.min(slots.len()) {
++                let next = slots[(walked - 1 - offset) % slots.len()];
++                let node = children.get(&next)?;
++                if next == id {
++                    return Some(node.arena_ref(parent_id, self.parents_map));
++                }
++                boundary = Some(next);
++                children = &node.children;
++            }
++        }
      }
  }
  
-@@ -550,23 +540,28 @@
+@@ -401,7 +514,7 @@
+         let id = id.into();
+         self.children
+             .get(&id)
+-            .map(|child| child.arena_ref(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_ref(self.parent_id, self.parents_map.reborrow()))
+     }
+ 
+     /// Returns a mutable handle to the element of the list with the given id.
+@@ -409,7 +522,7 @@
+         let id = id.into();
+         self.children
+             .get_mut(&id)
+-            .map(|child| child.arena_mut(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_mut(self.parent_id, self.parents_map.reborrow_mut()))
+     }
+ 
+     /// Returns a shared handle to the element of the list with the given id.
+@@ -420,7 +533,7 @@
+         let id = id.into();
+         self.children
+             .get(&id)
+-            .map(|child| child.arena_ref(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_ref(self.parent_id, self.parents_map.into_ref()))
+     }
+ 
+     /// Returns a mutable handle to the element of the list with the given id.
+@@ -431,7 +544,7 @@
+         let id = id.into();
+         self.children
+             .get_mut(&id)
+-            .map(|child| child.arena_mut(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_mut(self.parent_id, self.parents_map))
+     }
+ 
+     // TODO - Remove the child_id argument once creation of widgets is figured out.
+@@ -470,7 +583,7 @@
+         self.children
+             .get_mut(&child_id)
+             .unwrap()
+-            .arena_mut(self.parent_id, self.parents_map.parents_map)
++            .arena_mut(self.parent_id, self.parents_map.reborrow_mut())
+     }
+ 
+     // TODO - How to handle when a subtree is removed?
+@@ -529,7 +642,7 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation.
+     /// - O(Depth) in the unsafe implementation, when not called from the root.
+     /// - O(1) in the unsafe implementation, when called from the root.
+     pub fn find(&self, id: impl Into<NodeId>) -> Option<ArenaRef<'_, T>> {
+@@ -542,7 +655,7 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation.
+     /// - O(Depth) in the unsafe implementation, when not called from the root.
+     /// - O(1) in the unsafe implementation, when called from the root.
+     pub fn find_mut(self, id: impl Into<NodeId>) -> Option<ArenaMut<'arena, T>> {
+@@ -550,23 +663,38 @@
      }
  
      fn find_mut_inner(self, id: NodeId) -> Option<ArenaMut<'arena, T>> {
@@ -4392,36 +4790,69 @@
 -            node_children = &mut node_children.get_mut(ancestor_id)?.children;
 -        }
 -
-+        fn child_map<'a, T>(
-+            children: &'a mut HashMap<NodeId, TreeNode<T>>,
-+            parents: &HashMap<NodeId, Option<NodeId>>,
-+            boundary: Option<NodeId>,
-+            parent: Option<NodeId>,
-+        ) -> Option<&'a mut HashMap<NodeId, TreeNode<T>>> {
-+            if parent == boundary {
-+                return Some(children);
-+            }
-+            let parent = parent?;
-+            let ancestors = child_map(children, parents, boundary, *parents.get(&parent)?)?;
-+            Some(&mut ancestors.get_mut(&parent)?.children)
-+        }
-+        let parent_id = *self.parents_map.parents_map.get(&id)?;
-+        let node_children = child_map(
-+            self.children,
-+            self.parents_map.parents_map,
-+            self.parent_id,
-+            parent_id,
-+        )?;
-         let node = node_children.get_mut(&id)?;
+-        let node = node_children.get_mut(&id)?;
 -        Some(node.arena_mut(*parent_id, &mut *self.parents_map.parents_map))
-+        Some(node.arena_mut(parent_id, &mut *self.parents_map.parents_map))
++        #[cfg(feature = "std")]
++        if let Ok(mut slots) = self.parents_map.lookup.slots.try_lock()
++            && !slots.is_empty()
++        {
++            return self.find_mut_with_storage(id, &mut slots);
++        }
++        self.find_mut_with_storage(id, &mut [0; 32])
++    }
++
++    fn find_mut_with_storage(
++        self,
++        id: NodeId,
++        slots: &mut [NodeId],
++    ) -> Option<ArenaMut<'arena, T>> {
++        let parent_id = *self.parents_map.parents_map.get(&id)?;
++        let mut boundary = self.parent_id;
++        let mut children = self.children;
++        loop {
++            let walked = lookup_chunk(self.parents_map.parents_map, id, boundary, slots)?;
++            if walked == 0 {
++                return None;
++            }
++            for offset in 0..walked.min(slots.len()) {
++                let next = slots[(walked - 1 - offset) % slots.len()];
++                let node = children.get_mut(&next)?;
++                if next == id {
++                    return Some(node.arena_mut(parent_id, self.parents_map));
++                }
++                boundary = Some(next);
++                children = &mut node.children;
++            }
++        }
      }
  
      /// No-op. Added for parity with unsafe implementation.
-@@ -631,16 +626,60 @@
+@@ -615,11 +743,18 @@
+     }
+ }
+ 
+-impl ArenaMapMut<'_> {
++impl<'arena> ArenaMapMut<'arena> {
++    fn into_ref(self) -> ArenaMapRef<'arena> {
++        ArenaMapRef {
++            parents_map: self.parents_map,
++            lookup: self.lookup,
++        }
++    }
+     /// Returns a shared handle equivalent to this one.
+     fn reborrow(&self) -> ArenaMapRef<'_> {
+         ArenaMapRef {
              parents_map: self.parents_map,
++            lookup: self.lookup,
          }
      }
+ 
+@@ -629,18 +764,176 @@
+     fn reborrow_mut(&mut self) -> ArenaMapMut<'_> {
+         ArenaMapMut {
+             parents_map: self.parents_map,
+-        }
+-    }
 -
 -    /// Returns the path of items from the given item to the root of the tree.
 -    ///
@@ -4435,6 +4866,9 @@
 -        self.reborrow().get_id_path(id, start_id)
 -    }
 -}
++            lookup: self.lookup,
++        }
++    }
 +}
 +
 +#[cfg(test)]
@@ -4491,4 +4925,141 @@
 +        );
 +        assert!(tree.find(3_u64).is_none());
 +    }
++
++    fn chain(capacity: usize) -> TreeArena<u64> {
++        let mut tree = TreeArena::new();
++        tree.configure_lookup_path_storage(capacity);
++        tree.roots_mut().insert(1_u64, 1);
++        for id in 2_u64..=65 {
++            tree.find_mut(id - 1).unwrap().children.insert(id, id);
++        }
++        tree.roots_mut().insert(100_u64, 100);
++        tree
++    }
++
++    #[test]
++    fn segmented_lookup_keeps_deep_scope_and_reparent_remove_correct() {
++        for capacity in [0, 1, 2, 8, 32, 128] {
++            let mut tree = chain(capacity);
++            assert_eq!(tree.find(65_u64).unwrap().item, &65);
++            let earlier = tree.find(17_u64).unwrap();
++            assert_eq!(earlier.children.find(65_u64).unwrap().item, &65);
++            assert_eq!(
++                earlier.item, &17,
++                "a later lookup cannot invalidate a handle"
++            );
++            let branch = tree.find(33_u64).unwrap().children;
++            for outside in [1_u64, 17, 33, 100, 101] {
++                assert!(branch.find(outside).is_none());
++            }
++            for outside in [1_u64, 17, 33, 100, 101] {
++                assert!(
++                    tree.find_mut(33_u64)
++                        .unwrap()
++                        .children
++                        .find_mut(outside)
++                        .is_none()
++                );
++            }
++            *tree.find_mut(65_u64).unwrap().item = 999;
++            tree.reparent(33_u64, 100_u64);
++            assert!(tree.find(17_u64).unwrap().children.find(65_u64).is_none());
++            assert_eq!(
++                tree.find(100_u64)
++                    .unwrap()
++                    .children
++                    .find(65_u64)
++                    .unwrap()
++                    .item,
++                &999
++            );
++            assert_eq!(
++                tree.find_mut(100_u64).unwrap().children.remove(33_u64),
++                Some(33)
++            );
++            assert!(tree.find(65_u64).is_none());
++        }
++    }
++
++    #[cfg(feature = "std")]
++    #[test]
++    fn busy_lookup_workspace_is_never_overwritten_and_traits_are_preserved() {
++        fn send_sync<T: Send + Sync>() {}
++        send_sync::<TreeArena<u64>>();
++        send_sync::<ArenaRef<'static, u64>>();
++        let mut tree = chain(8);
++        {
++            let mut guard = tree.lookup_scratch.slots.try_lock().unwrap();
++            guard.fill(u64::MAX);
++            assert_eq!(tree.find(65_u64).unwrap().item, &65);
++            assert!(guard.iter().all(|id| *id == u64::MAX));
++        }
++        {
++            let roots = tree.roots_mut();
++            let lookup = roots.parents_map.lookup;
++            let mut guard = lookup.slots.try_lock().unwrap();
++            guard.fill(u64::MAX);
++            *roots.find_mut(65_u64).unwrap().item = 123;
++            assert!(guard.iter().all(|id| *id == u64::MAX));
++        }
++        assert_eq!(tree.find(65_u64).unwrap().item, &123);
++        assert_eq!(
++            tree.lookup_path_storage_bytes(),
++            TreeArena::<u64>::lookup_path_storage_bytes_for(8).unwrap()
++        );
++    }
++
++    #[test]
++    fn repeated_parent_work_matches_the_configuration_bound() {
++        for depth in [1_usize, 32, 33, 128, 512, 2048] {
++            let mut parents = HashMap::new();
++            parents.insert(1, None);
++            for id in 2..=depth as u64 {
++                parents.insert(id, Some(id - 1));
++            }
++            for capacity in [1, 32, 128, depth] {
++                let mut slots = alloc::vec![0; capacity];
++                let mut boundary = None;
++                let mut visits = 0;
++                loop {
++                    let walked =
++                        lookup_chunk(&parents, depth as u64, boundary, &mut slots).unwrap();
++                    visits += walked;
++                    if walked <= capacity {
++                        break;
++                    }
++                    boundary = Some(slots[(walked - capacity) % capacity]);
++                }
++                let chunks = depth.div_ceil(capacity);
++                assert_eq!(
++                    visits,
++                    chunks * depth - capacity * chunks * (chunks - 1) / 2
++                );
++            }
++        }
++    }
 +}
+--- a/tree_arena/src/tree_arena_unsafe.rs
++++ b/tree_arena/src/tree_arena_unsafe.rs
+@@ -255,6 +255,21 @@
+         self.data_map.items.is_empty()
+     }
+ 
++    /// API parity with `safe_tree`; flat lookup needs no path workspace.
++    pub fn configure_lookup_path_storage(&mut self, _capacity: usize) -> usize {
++        0
++    }
++
++    /// Flat lookup retains no additional path workspace.
++    pub fn lookup_path_storage_bytes(&self) -> usize {
++        0
++    }
++
++    /// Flat lookup retains no additional path workspace.
++    pub fn lookup_path_storage_bytes_for(_capacity: usize) -> Option<usize> {
++        Some(0)
++    }
++
+     /// Returns a handle whose children are the roots, if any, of the tree.
+     pub fn roots(&self) -> ArenaRefList<'_, T> {
+         ArenaRefList {

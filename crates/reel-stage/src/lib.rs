@@ -120,11 +120,7 @@ impl PresentationBridge {
         epoch: SurfaceEpoch,
         limits: BridgeLimits,
     ) -> Result<Self, RecordError> {
-        let route_bytes = limits
-            .geometry
-            .max_path
-            .checked_mul(5 * size_of::<WidgetId>())
-            .and_then(|v| v.checked_add(5 * size_of::<Vec<WidgetId>>()))
+        let route_bytes = RenderRoot::input_path_storage_bytes_for(limits.geometry.max_path)
             .ok_or(RecordError::BridgeBudget)?;
         let storage_bytes = route_bytes
             .checked_add(

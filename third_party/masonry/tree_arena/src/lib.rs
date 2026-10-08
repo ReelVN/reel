@@ -17,8 +17,8 @@
 //!
 //! The following crate [feature flags](https://doc.rust-lang.org/cargo/reference/features.html#dependency-features) are available:
 //!
-//! - `std` (enabled by default): Enable future features which require the standard library.
-//!   This feature is provided for forwards compatibility only, and current behaviour is the same whether or not it is enabled.
+//! - `std` (enabled by default): Enable an independently leased preallocated lookup
+//!   workspace. Without it, bounded stack chunks preserve lookup correctness.
 //! - `safe_tree` (enabled by default): Use the safe tree implementation instead of the unsafe one.
 //!
 //! This crate is `no_std` compatible; to use it without the standard library, disable default features.
@@ -31,7 +31,11 @@
 //! The safe tree contains a root `TreeArena` which owns the root nodes as `Vec<TreeNode<T>>`, and a `parents_map` tracking the parent of every node.
 //! Each `TreeNode` subsequently owns its own children as `Vec<TreeNode<T>>`. This model of ownership is thus checked by the rust compiler,
 //! but has the downside of requiring passing through every ancestor node to access the descendant -
-//! this requires an O(depth) determination of whether the node is a descendant, followed by O(children) time at each level to traverse the path to the child.
+//! lookup walks parent links into a bounded workspace, then iteratively descends
+//! through child hash maps. Paths exceeding workspace capacity repeat the walk
+//! in chunks, using O(depth + depth²/capacity) work and constant call-stack space.
+//! Queries never allocate or grow that workspace. An unavailable workspace lease
+//! or `no_std` uses 32 stack slots instead. Returned handles do not retain a lease.
 //!
 //! ## Unsafe Tree
 //!
@@ -70,8 +74,8 @@
 //! |Operation  | Safe         | Unsafe   |
 //! |   ---     |      ---     |   ---    |
 //! |Find child | O(Children)  | O(1)     |
-//! |Descendant | O(Depth)     | O(Depth) |
-//! |From root  | O(Depth)     | O(1)     |
+//! |Descendant | O(Depth + Depth²/Capacity) | O(Depth) |
+//! |From root  | O(Depth + Depth²/Capacity) | O(1)     |
 //!
 //! [Masonry]: https://crates.io/crates/masonry
 
@@ -91,7 +95,7 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 // Ensure that we don't compile if you're using the std feature on a platform without `std`
-extern crate std as _;
+extern crate std;
 
 type NodeId = u64;
 

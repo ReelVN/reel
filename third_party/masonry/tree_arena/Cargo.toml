@@ -18,8 +18,8 @@ targets = []
 
 [features]
 default = ["std", "safe_tree"]
-# Enable future features which require the standard library.
-# This feature is provided for forwards compatibility only, and current behaviour is the same whether or not it is enabled.
+# Enable an independently leased preallocated lookup workspace. Without std,
+# lookup uses bounded stack chunks, preserving correctness without allocation.
 std = []
 # This crate contains two implementations of a tree for use in masonry, one safe and the other unsafe.
 # The safe tree is known to work, and serves as the baseline implementation and is used by default.

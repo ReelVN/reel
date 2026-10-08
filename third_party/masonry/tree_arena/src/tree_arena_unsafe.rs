@@ -255,6 +255,21 @@ impl<T> TreeArena<T> {
         self.data_map.items.is_empty()
     }
 
+    /// API parity with `safe_tree`; flat lookup needs no path workspace.
+    pub fn configure_lookup_path_storage(&mut self, _capacity: usize) -> usize {
+        0
+    }
+
+    /// Flat lookup retains no additional path workspace.
+    pub fn lookup_path_storage_bytes(&self) -> usize {
+        0
+    }
+
+    /// Flat lookup retains no additional path workspace.
+    pub fn lookup_path_storage_bytes_for(_capacity: usize) -> Option<usize> {
+        Some(0)
+    }
+
     /// Returns a handle whose children are the roots, if any, of the tree.
     pub fn roots(&self) -> ArenaRefList<'_, T> {
         ArenaRefList {

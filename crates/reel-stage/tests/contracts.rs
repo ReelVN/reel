@@ -168,6 +168,26 @@ use reel_core::identity::{FrameId, SurfaceEpoch};
 use reel_stage::*;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use support::fixture::*;
+
+#[test]
+fn independent_lookup_workspace_is_reserved_before_configuration() {
+    let capacity = support::limits().max_path;
+    let planned = masonry_core::app::RenderRoot::input_path_storage_bytes_for(capacity).unwrap();
+    let mut limits = bridge_limits();
+    limits.max_candidates = 0;
+    limits.max_bridge_bytes = planned as u64;
+    let bridge =
+        PresentationBridge::new(SliderFixture::new().root, SurfaceEpoch(1), limits).unwrap();
+    assert_eq!(bridge.root().input_path_storage_bytes(), planned);
+    assert_eq!(bridge.fixed_storage_bytes(), planned as u64);
+    limits.max_bridge_bytes -= 1;
+    assert!(matches!(
+        PresentationBridge::new(SliderFixture::new().root, SurfaceEpoch(1), limits),
+        Err(RecordError::BridgeBudget)
+    ));
+    assert!(masonry_core::app::RenderRoot::input_path_storage_bytes_for(usize::MAX).is_none());
+}
+
 fn bridge_limits() -> BridgeLimits {
     BridgeLimits {
         geometry: support::limits(),

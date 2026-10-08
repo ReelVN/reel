@@ -47,8 +47,8 @@ public APIs, limits and ownership are in [INTERFACE.md](INTERFACE.md).
   verify no partial route/publication, and recover after releasing leases.
 
 `cargo test --workspace --features reel-core/test-support --locked --
---test-threads=1` passed 12 D01, 23 stage contracts and the real-dispatch allocation
-contract. Direct masonry_core/tree_arena unit checks also passed (5 and 1).
+--test-threads=1` passed 12 D01, 24 stage contracts and the real-dispatch allocation
+contract. Direct masonry_core/tree_arena unit checks also passed (5 and 4).
 The original real
 Button/Slider/Image checks remain: disabled-child ancestor consumption,
 Up/Cancel followed by ancestor deletion, QueryCtx/RawCtx frozen geometry,
@@ -64,6 +64,44 @@ ancestor flags with the selected view, preserving callback invalidations. Disabl
 and stashed Layer interception cannot emit actions from Down in Live or Presented;
 captured cleanup still receives exactly one Cancel. Shared/mutable safe-tree lookups
 no longer allocate ancestor Vecs and preserve descendant scope after reparent/removal.
+
+The recursive lookup introduced in `694b395` has been replaced with bounded path
+storage and iterative descent. `check-tree-depth.py` recreates the exact six review
+probes using TreeArena<u64>: build on a separate 16MiB stack, print BUILT, query on
+the reported small stack, then forget the arena to exclude destruction. It compares
+local git snapshots fbb3c79/2534b9a with current source. Old lookup passes all six,
+2534b9a overflows all six, and current lookup passes all six with zero allocations
+and reallocations (`tree-depth-lookup.log`). The cases are debug find256/find_mut512
+on 64KiB, debug find512/find_mut1024 on 128KiB, and release find1024/find_mut2048 on
+64KiB. Configured depth128 lookup also passes on both stacks in both profiles.
+
+The arena owns an independent std Mutex<Vec<u64>> workspace, preallocated to
+max_path at input configuration. try_lock never blocks; returned handles retain
+no lease, and a held/poisoned/unconfigured workspace uses 32 stack slots. no_std
+also uses that fallback. There is no new recursive lookup or capacity growth,
+and a deep present node remains queryable. Existing event/hover/active routes are
+not overwritten. The workspace keeps the arena's Send/Sync traits and is charged
+with the five routes by the existing Temporary ticket; no D01 interface changes.
+At max_path128 its actual x86_64 overhead is 1,064B, increasing the two-slot
+registry+route measurement from 5,304B to 6,368B.
+
+For relative depth D and available capacity C, q=ceil(D/C) chunks visit exactly
+P=q*D-C*q*(q-1)/2 parent entries, plus one initial parent query and D child lookups.
+Unit tests check this bound. D<=C is linear; a lease fallback uses C=32. For D=2048,
+P is 2,098,176 / 66,560 / 17,408 / 2,048 at C=1 / 32 / 128 / 2048. The isolated
+100-sample release find/find_mut measurements on a 64KiB stack were:
+
+| Capacity / depth | Parent entries P | find p95/max, µs | find_mut p95/max, µs |
+| --- | ---: | ---: | ---: |
+| 1 / 2048 | 2,098,176 | 25,308 / 28,102 | 23,914 / 25,765 |
+| 32 / 2048 | 66,560 | 1,290 / 1,736 | 803 / 953 |
+| 128 / 2048 | 17,408 | 247 / 368 | 247 / 347 |
+| 2048 / 2048 | 2,048 | 70.884 / 137.775 | 64.931 / 165.333 |
+
+At configured D=C=128, p95 was 2.3–2.8µs. These cost observations include the
+allocator instrumentation; tiny buffers deliberately expose repeated-parent cost.
+They do not bound complete Masonry layout/paint/export/drop recursion or guarantee
+all depths on every platform. The approved six lookup cases are the verified scope.
 
 The reverse stash/unstash regressions record a hidden snapshot, then live-unstash
 before a visible candidate is accepted. Presented Layer interception remains
@@ -150,6 +188,13 @@ record+replay p95/max was 2.060/2.351ms, and captured pointer p95/max was
 1.422/29.824µs. Geometry and budget charges were unchanged. This single run does
 not replace the three-run baseline above or constitute a device latency guarantee.
 
+After the nonrecursive lookup correction, `tree-depth-release-tests.log` passes
+24 contracts and all warmed dispatch cases still assert zero allocations and
+reallocations. At 1026 actual nodes uncaptured hit/miss p95 was 5.682/5.552µs;
+export p95/max was 126.622/176.352µs, record+replay p95/max was 2.809/5.128ms,
+and captured pointer p95/max was 1.910/16.301µs. Geometry remains 344,848B and
+snapshot charge remains 361,344B; fixed routes/lookup/registry now charge 6,368B.
+
 ## Reproduction and boundaries
 
 Linux prerequisites: the pinned rust-toolchain, Fontconfig development libraries
@@ -169,6 +214,8 @@ CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path third_party/masonry/
 cargo test -p reel-stage --release --no-default-features --locked --no-run --message-format=json > /tmp/reel-stage-build.jsonl
 python3 crates/reel-stage/scripts/measure.py /tmp/reel-stage-build.jsonl /tmp/reel-stage-release.log
 cargo test -p reel-stage --release --no-default-features --locked --test pointer_allocations -- --test-threads=1 --nocapture
+python3 crates/reel-stage/scripts/check-tree-depth.py --output /tmp/tree-depth-lookup.log
+CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path third_party/masonry/Cargo.toml -p tree_arena --no-default-features --features safe_tree --lib
 cargo tree -p reel-stage --edges normal --locked
 PKG_CONFIG_ALLOW_CROSS=1 cargo check -p reel-stage --lib --no-default-features --locked --target i686-unknown-linux-gnu
 PKG_CONFIG_ALLOW_CROSS=1 cargo build -p reel-stage --lib --no-default-features --locked --target i686-unknown-linux-gnu

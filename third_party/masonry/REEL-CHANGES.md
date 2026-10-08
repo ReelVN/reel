@@ -36,9 +36,16 @@ Production local changes:
   selected snapshot's effective stashing, including parent records. Capture
   acceptance uses the same snapshot visibility check without re-hit-testing its
   geometry; terminal/exit cleanup retains the old binding independently.
-- Safe tree_arena shared/mutable lookups borrow direct children via parent links
-  on the call stack without temporary ancestor Vecs. Scope/reparent/removal unit
-  checks and real whole-dispatch allocation probes cover the changed lookup paths.
+- Safe tree_arena shared/mutable lookups use nonrecursive bounded paths and
+  iterative child borrowing. The independently leased std workspace is configured
+  once; try_lock preserves Send/Sync and prevents overwriting a leased buffer.
+  Unconfigured/busy/no_std lookup uses 32 stack slots. Longer paths repeat chunks
+  without allocations or treating present nodes as missing. Its header and actual
+  capacity join the bridge Temporary ticket before configuration. Unsafe-tree API
+  parity adds only zero-storage reporting methods; the production feature stays safe_tree.
+  The six small-stack old/new/current probes isolate lookup from build/layout/drop.
+  Scope/reparent/removal, held-lease, complexity-bound and real whole-dispatch
+  allocation probes cover the changed lookup paths.
   Frozen bounds/clip reject hit candidates before current eligibility lookup.
 - paint mode is retained, including when only a different cached callback reruns.
 - Local README metadata, minor upstream doc formatting and a mutation callback

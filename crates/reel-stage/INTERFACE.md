@@ -23,8 +23,12 @@ both dependencies before rebasing onto the shared production base.
   Hover/active callbacks may remove the target. Cursor rechecks current liveness;
   invalidated paths remain until a bounded rewrite pass sends exits to surviving
   ancestors. Callback invalidations are retained instead of being overwritten.
-- `configure_input_path_storage(limit)` configures five reusable route arrays;
-  `input_path_storage_bytes()` reports actual capacities. One pointer bubble
+- `configure_input_path_storage(limit)` configures five reusable route arrays
+  and an independent TreeArena lookup workspace of `limit` u64 slots.
+  `input_path_storage_bytes_for(limit) -> Option<usize>` plans the allocation;
+  `input_path_storage_bytes()` reports actual capacities plus workspace headers.
+  The bridge reserves the complete Temporary ticket before configuration.
+  One pointer bubble
   route is built once and also used by the focus check. Hover/active each use
   their own reused array, with old arrays retained through exit notifications.
 - `QueryCtx::get`, `MutateCtx::get_mut`, `get_raw`, `get_raw_mut` and
@@ -33,8 +37,14 @@ both dependencies before rebasing onto the shared production base.
   children. QueryCtx stays Copy. Every own context binds explicit Live or a
   borrowed view plus validated record index before invoking widget code.
   WidgetRef.children enumerates selected topology and filters destroyed nodes.
-- Shared and mutable safe-tree lookup walks parent links on the native call stack
-  and borrows direct children; no per-query ancestor Vec is allocated. Frozen
+- Shared and mutable safe-tree lookup iteratively fills a bounded circular path,
+  then borrows direct children. Queries never allocate, grow or recurse. A
+  try_lock lease protects the independent preallocated workspace and preserves
+  Send/Sync. No lease/empty workspace/no_std uses 32 stack slots; an over-capacity
+  path repeats bounded chunks instead of truncating or reporting a missing node.
+  No route or still-leased path is overwritten. Relative depth D and capacity C
+  cost O(D + D²/C); D<=C takes one parent walk. See the measured bound in README.
+  Frozen
   bounds/clip reject candidates before live eligibility. Layer interception also
   checks current disabled/stashed/liveness and selected snapshot visibility.
   Layer behavior and capture acceptance require the selected record and every
