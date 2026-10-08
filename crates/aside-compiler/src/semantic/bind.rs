@@ -143,9 +143,9 @@ struct Binder<'a> {
     external: HashMap<SymbolId, Arc<ExternalSymbol>>,
     external_nodes: HashMap<NodeId, Arc<ExternalSymbol>>,
     calls: Vec<CallSite>,
-    forbidden_parameters: HashSet<NameId>,
     analyzed_functions: HashSet<FunctionId>,
     signature_ready: HashSet<FunctionId>,
+    default_boundaries: Vec<(FunctionId, SymbolId)>,
     pending_requirements: Vec<PendingRequirement>,
     signatures: HashMap<SignatureKey, Arc<CheckedSignature>>,
     empty_signature: Option<Arc<CheckedSignature>>,
@@ -162,6 +162,24 @@ pub(super) fn analyze(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Analysis {
+    // Admit the seeded name index before cloning/allocating any binding metadata.
+    let admitted = hir.names.len().saturating_add(1);
+    if admitted > options.limits.max_work {
+        return Analysis {
+            module: None,
+            diagnostics: vec![Diagnostic::error(
+                D::BudgetExceeded,
+                hir.node(NodeId(0)).span,
+                "semantic work budget exceeded before name indexing",
+            )],
+            exhausted: true,
+            stats: AnalysisStats {
+                nodes: hir.nodes.len(),
+                work_units: admitted,
+                ..Default::default()
+            },
+        };
+    }
     let names = hir
         .names
         .iter()
@@ -201,6 +219,7 @@ pub(super) fn analyze(
     ];
     let mut b = Binder {
         out: AnalyzedModule {
+            entry_context: options.context,
             canonical_path: options.module.clone(),
             version: options.version.clone(),
             hir,
@@ -230,9 +249,9 @@ pub(super) fn analyze(
         external: HashMap::new(),
         external_nodes: HashMap::new(),
         calls: Vec::new(),
-        forbidden_parameters: HashSet::new(),
         analyzed_functions: HashSet::new(),
         signature_ready: HashSet::new(),
+        default_boundaries: Vec::new(),
         pending_requirements: Vec::new(),
         signatures: HashMap::new(),
         empty_signature: None,
@@ -241,11 +260,14 @@ pub(super) fn analyze(
         class_bases: HashMap::new(),
         derived_functions: HashSet::new(),
         fresh: HashSet::new(),
-        work: 0,
+        work: admitted,
         capture_count: 0,
     };
     b.new_scope(None, None, span);
     for host in &options.hosts {
+        if !b.budget(NodeId(0)) {
+            break;
+        }
         let name = b.intern_name(&host.name);
         let ty = b.hint(&host.ty);
         if let Some(symbol) = b.declare(Declaration {
@@ -277,12 +299,20 @@ pub(super) fn analyze(
         // Fragments are explicitly running author functions without fabricated source offsets.
         let id = b.make_function(NodeId(0), &ctx, Receiver::None);
         ctx.function = Some(id);
+        b.out.functions[id.0 as usize].declared_context = DeclaredContext {
+            no_wait: ctx.no_wait,
+            init: ctx.init,
+            derived: ctx.derived,
+        };
         if options.context == AnalysisContext::Generator {
             b.out.functions[id.0 as usize].kind = FunctionKind::Generator;
         }
     }
     b.scope = b.new_scope(Some(ScopeId(0)), ctx.function, span);
     for binding in &options.enclosing {
+        if !b.budget(NodeId(0)) {
+            break;
+        }
         let name = b.intern_name(&binding.symbol.name);
         let ty = b.hint(&binding.symbol.ty);
         if let Some(symbol) = b.declare(Declaration {
@@ -323,6 +353,11 @@ pub(super) fn analyze(
     }
 }
 impl Binder<'_> {
+    fn resolve(&mut self, request: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
+        self.resolver
+            .resolve(request)
+            .map(ResolvedImport::retain_references)
+    }
     fn kind(&self, n: NodeId) -> HirKind {
         self.out.hir.node(n).kind
     }
@@ -361,17 +396,16 @@ impl Binder<'_> {
         self.charge_work(n, 1)
     }
     fn charge_work(&mut self, n: NodeId, units: usize) -> bool {
+        self.charge_at(self.span(n), units)
+    }
+    fn charge_at(&mut self, span: TextRange, units: usize) -> bool {
         if self.exhausted {
             return false;
         }
         self.work = self.work.saturating_add(units);
         if self.work > self.options.limits.max_work {
             self.exhausted = true;
-            self.error(
-                D::BudgetExceeded,
-                self.span(n),
-                "semantic work budget exceeded",
-            );
+            self.error(D::BudgetExceeded, span, "semantic work budget exceeded");
             return false;
         }
         true
@@ -452,6 +486,9 @@ impl Binder<'_> {
             owner,
             iteration,
         } = declaration;
+        if !self.charge_at(span, 1) {
+            return None;
+        }
         if let Some(&old) = self.maps[self.scope.0 as usize].get(&name) {
             self.error(
                 D::DuplicateBinding,
@@ -503,11 +540,32 @@ impl Binder<'_> {
         self.out.scopes[self.scope.0 as usize].symbols.push(id);
         Some(id)
     }
+    fn nearest_symbol(&self, name: NameId) -> Option<SymbolId> {
+        let mut scope = Some(self.scope);
+        while let Some(id) = scope {
+            if let Some(&symbol) = self.maps[id.0 as usize].get(&name) {
+                return Some(symbol);
+            }
+            scope = self.out.scopes[id.0 as usize].parent;
+        }
+        None
+    }
     fn lookup(&self, name: NameId) -> Option<SymbolId> {
         let mut s = Some(self.scope);
         while let Some(id) = s {
             if let Some(&symbol) = self.maps[id.0 as usize].get(&name) {
-                return Some(symbol);
+                let binding = &self.out.symbols[symbol.0 as usize];
+                let hidden = self.default_boundaries.iter().any(|&(owner, boundary)| {
+                    binding.owner == Some(owner)
+                        && (binding.kind == SymbolKind::Super
+                            || (matches!(
+                                binding.kind,
+                                SymbolKind::Parameter | SymbolKind::Receiver
+                            ) && symbol.0 >= boundary.0))
+                });
+                if !hidden {
+                    return Some(symbol);
+                }
             }
             s = self.out.scopes[id.0 as usize].parent;
         }
@@ -525,6 +583,13 @@ impl Binder<'_> {
     }
     fn predeclare(&mut self, n: NodeId, ctx: &Context) {
         let d = self.unwrap(n);
+        if matches!(
+            self.kind(d),
+            HirKind::Function | HirKind::Let | HirKind::Class
+        ) && !self.budget(d)
+        {
+            return;
+        }
         match self.kind(d) {
             HirKind::Function => {
                 let receiver = Receiver::None;
@@ -595,6 +660,9 @@ impl Binder<'_> {
         }
     }
     fn block(&mut self, n: NodeId, ctx: &Context, new_scope: bool) -> TypeId {
+        if !self.budget(n) {
+            return ANY;
+        }
         let previous = self.scope;
         if new_scope {
             self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
@@ -602,18 +670,37 @@ impl Binder<'_> {
         self.out.facts[n.0 as usize].scope = Some(self.scope);
         let children = self.children(n);
         for &child in &children {
+            if self.exhausted {
+                break;
+            }
             self.predeclare(child, ctx);
         }
         // Imports are linked before visiting initializers, independent of textual order.
         for &child in &children {
+            if self.exhausted {
+                break;
+            }
             let d = self.unwrap(child);
             if self.kind(d) == HirKind::Import {
                 self.import(d, self.modifier(child, K::Pub), ctx);
             }
         }
+        // Prepare every declared contract before visiting any consumer default/body.
+        for &child in &children {
+            if self.exhausted {
+                break;
+            }
+            let d = self.unwrap(child);
+            if self.kind(d) == HirKind::Function {
+                self.prepare_function(d, ctx, Receiver::None);
+            }
+        }
         // Signatures and definition environments are available at block entry,
         // including forward fn references. Ordinary lets remain uninitialized.
         for &child in &children {
+            if self.exhausted {
+                break;
+            }
             let d = self.unwrap(child);
             if self.kind(d) == HirKind::Function {
                 self.function(d, ctx, Receiver::None);
@@ -662,6 +749,7 @@ impl Binder<'_> {
             kind,
             receiver,
             role: FunctionRole::Body,
+            declared_context: DeclaredContext::default(),
             lexical_class: self.class.map(|(c, _)| c),
             parameters: Vec::new(),
             return_type: ANY,
@@ -675,36 +763,25 @@ impl Binder<'_> {
         self.out.facts[n.0 as usize].function = Some(id);
         id
     }
-    fn function(&mut self, n: NodeId, ctx: &Context, receiver: Receiver) -> TypeId {
+    fn prepare_function(&mut self, n: NodeId, ctx: &Context, receiver: Receiver) -> TypeId {
+        if !self.budget(n) {
+            return ANY;
+        }
         let f = self.make_function(n, ctx, receiver);
         self.out.functions[f.0 as usize].receiver = receiver;
         let ty = self.intern_type(Type::Function(f));
-        if !self.analyzed_functions.insert(f) {
+        if self.signature_ready.contains(&f) {
             return self.set_ty(n, ty);
         }
         let previous = self.scope;
         self.scope = self.new_scope(Some(previous), Some(f), self.span(n));
         self.out.facts[n.0 as usize].scope = Some(self.scope);
-        let kind = self.out.functions[f.0 as usize].kind;
-        let method_name = self
-            .name(n)
-            .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
-        let restricted_method = receiver == Receiver::ExplicitSelf
-            && method_name
-                .as_deref()
-                .is_some_and(|s| s == "init" || (s.starts_with('_') && s != "_call"));
-        // Function definitions reset dynamic execution context; constructing a
-        // closure in children/finally does not constrain its eventual body.
-        let mut inner = Context {
-            function: Some(f),
-            generator: kind == FunctionKind::Generator,
-            no_wait: kind == FunctionKind::Generator
-                || restricted_method
-                || self.derived_functions.contains(&n),
-            derived: self.derived_functions.contains(&n),
-            ..Default::default()
+        let inner = self.function_context(f, n, receiver);
+        self.out.functions[f.0 as usize].declared_context = DeclaredContext {
+            no_wait: inner.no_wait,
+            init: inner.init,
+            derived: inner.derived,
         };
-        let old_forbidden = std::mem::take(&mut self.forbidden_parameters);
         let Form::Function {
             parameters,
             result: return_annotation,
@@ -714,10 +791,6 @@ impl Binder<'_> {
             unreachable!()
         };
         let params = parameters.map(|p| self.children(p)).unwrap_or_default();
-        self.forbidden_parameters = params
-            .iter()
-            .filter_map(|&p| self.name(p).and_then(|t| t.name))
-            .collect();
         if receiver == Receiver::ExplicitSelf
             && params
                 .first()
@@ -745,6 +818,9 @@ impl Binder<'_> {
             );
         }
         for (index, p) in params.into_iter().enumerate() {
+            if self.exhausted {
+                break;
+            }
             let Some(token) = self.name(p) else {
                 continue;
             };
@@ -758,16 +834,6 @@ impl Binder<'_> {
                 continue;
             };
             let annotation = annotation.map(|a| self.annotation(a, &inner));
-            let mut default_ctx = inner.clone();
-            default_ctx.default = true;
-            default_ctx.no_wait = true;
-            if let Some(default) = default {
-                let actual = self.visit(default, &default_ctx);
-                if let Some(expected) = annotation {
-                    self.require(default, actual, expected, "parameter default");
-                }
-            }
-            self.forbidden_parameters.remove(&name);
             let mut pty = annotation.unwrap_or(ANY);
             if receiver == Receiver::ExplicitSelf && index == 0 {
                 if let Some((class, _)) = self.class {
@@ -808,7 +874,6 @@ impl Binder<'_> {
                 });
             }
         }
-        self.forbidden_parameters.clear();
         if receiver == Receiver::ExplicitSelf && self.class.is_some_and(|(_, derived)| derived) {
             let name = self.intern_name("super");
             if let Some(s) = self.declare(Declaration {
@@ -828,6 +893,62 @@ impl Binder<'_> {
             self.out.functions[f.0 as usize].return_type = result;
         }
         self.signature_ready.insert(f);
+        self.scope = previous;
+        self.set_ty(n, ty)
+    }
+    fn function_context(&self, f: FunctionId, n: NodeId, receiver: Receiver) -> Context {
+        let kind = self.out.functions[f.0 as usize].kind;
+        let method_name = self.name(n).map(|t| self.out.hir.name(t.name.unwrap()));
+        let restricted_method = receiver == Receiver::ExplicitSelf
+            && method_name.is_some_and(|s| s == "init" || (s.starts_with('_') && s != "_call"));
+        // Function definitions reset dynamic execution context; constructing a
+        // closure in children/finally does not constrain its eventual body.
+        Context {
+            function: Some(f),
+            generator: kind == FunctionKind::Generator,
+            no_wait: kind == FunctionKind::Generator
+                || restricted_method
+                || self.derived_functions.contains(&n),
+            derived: self.derived_functions.contains(&n),
+            ..Default::default()
+        }
+    }
+    fn function(&mut self, n: NodeId, ctx: &Context, receiver: Receiver) -> TypeId {
+        if self.exhausted {
+            return ANY;
+        }
+        let ty = self.prepare_function(n, ctx, receiver);
+        if self.exhausted {
+            return ANY;
+        }
+        let f = self.fn_nodes[&n];
+        if !self.analyzed_functions.insert(f) {
+            return self.set_ty(n, ty);
+        }
+        let previous = self.scope;
+        self.scope = self.out.facts[n.0 as usize]
+            .scope
+            .expect("prepared function scope");
+        let inner = self.function_context(f, n, receiver);
+        for index in 0..self.out.functions[f.0 as usize].parameters.len() {
+            if self.exhausted {
+                break;
+            }
+            let parameter = &self.out.functions[f.0 as usize].parameters[index];
+            let (symbol, default, annotation) =
+                (parameter.symbol, parameter.default, parameter.annotation);
+            if let Some(default) = default {
+                self.default_boundaries.push((f, symbol));
+                let mut default_ctx = inner.clone();
+                default_ctx.default = true;
+                default_ctx.no_wait = true;
+                let actual = self.visit(default, &default_ctx);
+                if let Some(expected) = annotation {
+                    self.require(default, actual, expected, "parameter default");
+                }
+                self.default_boundaries.pop();
+            }
+        }
         let body = self.out.functions[f.0 as usize].body;
         if body != n {
             let result = if self.kind(body) == HirKind::Block {
@@ -841,14 +962,22 @@ impl Binder<'_> {
                 self.require(body, result, expected, "function result");
             }
         }
-        inner.no_wait = false;
-        self.forbidden_parameters = old_forbidden;
         self.scope = previous;
         self.set_ty(n, ty)
     }
     fn read(&mut self, n: NodeId, token: HirToken, ctx: &Context, write: bool) -> TypeId {
         let name = token.name.unwrap();
-        if ctx.default && self.forbidden_parameters.contains(&name) {
+        if ctx.default
+            && self.nearest_symbol(name).is_some_and(|symbol| {
+                let binding = &self.out.symbols[symbol.0 as usize];
+                self.default_boundaries.iter().any(|&(owner, boundary)| {
+                    ctx.function == Some(owner)
+                        && binding.owner == Some(owner)
+                        && matches!(binding.kind, SymbolKind::Parameter | SymbolKind::Receiver)
+                        && symbol.0 >= boundary.0
+                })
+            })
+        {
             self.error(
                 D::InvalidDefault,
                 token.span,
@@ -957,6 +1086,9 @@ impl Binder<'_> {
         }
     }
     fn annotation(&mut self, n: NodeId, ctx: &Context) -> TypeId {
+        if !self.budget(n) {
+            return ANY;
+        }
         let children = self.children(n);
         let result = match self.kind(n) {
             HirKind::NamedType => {
@@ -1073,7 +1205,7 @@ impl Binder<'_> {
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
             path.push(self.out.hir.name(name).to_owned());
-            match self.resolver.resolve(&ImportRequest {
+            match self.resolve(&ImportRequest {
                 from: self.options.module.clone(),
                 path,
                 kind: ImportKind::Symbol,
@@ -1873,7 +2005,7 @@ impl Binder<'_> {
                     path,
                     kind: ImportKind::Symbol,
                 };
-                match self.resolver.resolve(&request) {
+                match self.resolve(&request) {
                     Ok(mut result) if result.version == namespace.version => {
                         if let Some(symbol) = result.bindings.pop() {
                             let ty = self.hint(&symbol.ty);
@@ -2511,6 +2643,9 @@ impl Binder<'_> {
         self.class = Some((n, base.is_some()));
         let mut seen = HashSet::new();
         for &member in children {
+            if !self.budget(member) {
+                break;
+            }
             let d = self.unwrap(member);
             if !matches!(self.kind(d), HirKind::Function | HirKind::Let) {
                 continue;
@@ -2548,6 +2683,26 @@ impl Binder<'_> {
             }
         }
         for &member in children {
+            if self.exhausted {
+                break;
+            }
+            let d = self.unwrap(member);
+            if self.kind(d) == HirKind::Function {
+                self.prepare_function(
+                    d,
+                    ctx,
+                    if self.modifier(member, K::Static) {
+                        Receiver::Static
+                    } else {
+                        Receiver::ExplicitSelf
+                    },
+                );
+            }
+        }
+        for &member in children {
+            if !self.budget(member) {
+                break;
+            }
             let d = self.unwrap(member);
             match self.kind(d) {
                 HirKind::Function => {
@@ -2574,6 +2729,7 @@ impl Binder<'_> {
                         let previous = self.scope;
                         let f = self.make_function(d, ctx, Receiver::None);
                         self.out.functions[f.0 as usize].role = FunctionRole::FieldInitializer;
+                        self.out.functions[f.0 as usize].declared_context.no_wait = true;
                         self.out.functions[f.0 as usize].body = init;
                         self.scope = self.new_scope(Some(previous), Some(f), self.span(d));
                         let c = Context {
@@ -2683,7 +2839,7 @@ impl Binder<'_> {
                 ImportKind::NamespaceOrSymbol
             },
         };
-        match self.resolver.resolve(&request) {
+        match self.resolve(&request) {
             Err(error) => self.error(D::ModuleResolution, self.span(n), error.to_string()),
             Ok(import) => {
                 let mut names = Vec::new();
@@ -2718,6 +2874,9 @@ impl Binder<'_> {
         }
     }
     fn effects(&mut self) {
+        if self.exhausted {
+            return;
+        }
         let mut reverse = vec![Vec::new(); self.out.functions.len()];
         let mut queue = VecDeque::new();
         for (i, f) in self.out.functions.iter().enumerate() {

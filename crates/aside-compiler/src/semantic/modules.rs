@@ -1,5 +1,6 @@
 //! Versioned, injectable module interfaces. No IO or path policy lives here.
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeHint {
@@ -51,15 +52,65 @@ pub struct NamespaceRef {
     pub module: String,
     pub version: String,
 }
+/// Canonical declaration identity supplied by a module resolver or the single
+/// trusted native registry. A namespace references the module with export=None.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolReference {
+    pub module: String,
+    pub version: String,
+    pub export: Option<String>,
+}
+/// Resolution path preserves reexport identities without changing declaration
+/// identity or copying a whole provenance chain for each alias/read.
+#[derive(Debug, Clone)]
+pub struct ResolutionSource {
+    pub reference: Arc<SymbolReference>,
+    pub previous: Option<Arc<ResolutionSource>>,
+}
 #[derive(Debug, Clone)]
 pub struct ExternalSymbol {
     pub name: String,
+    pub reference: Option<Arc<SymbolReference>>,
+    pub resolved_from: Option<Arc<ResolutionSource>>,
     pub ty: TypeHint,
     pub signature: Option<ExternalSignature>,
     pub namespace: Option<NamespaceRef>,
     pub intrinsic: Option<Intrinsic>,
 }
 impl ExternalSymbol {
+    /// Use the exact registration identity; no ABI/capability/default registry
+    /// is synthesized by the analyzer. Missing identity stays explicit as None.
+    pub fn with_reference(mut self, reference: SymbolReference) -> Self {
+        self.reference = Some(Arc::new(reference));
+        self
+    }
+    pub(super) fn resolved_at(&mut self, module: &str, version: &str, namespace: bool) {
+        let reference = SymbolReference {
+            module: module.into(),
+            version: version.into(),
+            export: (!namespace).then(|| self.name.clone()),
+        };
+        if self.reference.is_none() {
+            self.reference = Some(Arc::new(reference.clone()));
+        }
+        if self
+            .resolved_from
+            .as_ref()
+            .is_some_and(|r| *r.reference == reference)
+        {
+            return;
+        }
+        let reference = if self.reference.as_ref().is_some_and(|r| **r == reference) {
+            self.reference.as_ref().unwrap().clone()
+        } else {
+            Arc::new(reference)
+        };
+        self.resolved_from = Some(Arc::new(ResolutionSource {
+            reference,
+            previous: self.resolved_from.take(),
+        }));
+    }
+
     pub fn intrinsic(name: impl Into<String>, kind: Intrinsic) -> Self {
         Self {
             intrinsic: Some(kind),
@@ -69,6 +120,8 @@ impl ExternalSymbol {
     pub fn dynamic(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            reference: None,
+            resolved_from: None,
             ty: TypeHint::Any,
             signature: None,
             namespace: None,
@@ -78,6 +131,8 @@ impl ExternalSymbol {
     pub fn value(name: impl Into<String>, ty: TypeHint) -> Self {
         Self {
             name: name.into(),
+            reference: None,
+            resolved_from: None,
             ty,
             signature: None,
             namespace: None,
@@ -87,6 +142,8 @@ impl ExternalSymbol {
     pub fn function(name: impl Into<String>, signature: ExternalSignature) -> Self {
         Self {
             name: name.into(),
+            reference: None,
+            resolved_from: None,
             ty: TypeHint::Any,
             signature: Some(signature),
             namespace: None,
@@ -119,6 +176,20 @@ pub struct ResolvedImport {
     pub version: String,
     pub bindings: Vec<ExternalSymbol>,
 }
+impl ResolvedImport {
+    pub(super) fn retain_references(mut self) -> Self {
+        for symbol in &mut self.bindings {
+            let namespace = symbol
+                .namespace
+                .as_ref()
+                .is_some_and(|n| n.module == self.module && n.version == self.version)
+                && symbol.resolved_from.is_none()
+                && symbol.reference.as_ref().is_none_or(|r| r.export.is_none());
+            symbol.resolved_at(&self.module, &self.version, namespace);
+        }
+        self
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolveError(pub String);
 impl std::fmt::Display for ResolveError {
@@ -149,7 +220,10 @@ pub struct MemoryResolver {
     pub modules: BTreeMap<String, ModuleInterface>,
 }
 impl MemoryResolver {
-    pub fn insert(&mut self, module: ModuleInterface) {
+    pub fn insert(&mut self, mut module: ModuleInterface) {
+        for symbol in &mut module.exports {
+            symbol.resolved_at(&module.canonical_path, &module.version, false);
+        }
         self.modules.insert(module.canonical_path.clone(), module);
     }
     fn candidates(
@@ -212,6 +286,8 @@ impl ModuleResolver for MemoryResolver {
                     version: m.version.clone(),
                     bindings: vec![ExternalSymbol {
                         name: r.path.last().cloned().unwrap_or_default(),
+                        reference: None,
+                        resolved_from: None,
                         ty: TypeHint::Table,
                         signature: None,
                         intrinsic: None,
@@ -229,6 +305,7 @@ impl ModuleResolver for MemoryResolver {
                     })
                 }),
         }
+        .map(ResolvedImport::retain_references)
         .ok_or_else(|| ResolveError(format!("module or public symbol {full} was not found")))
     }
 }

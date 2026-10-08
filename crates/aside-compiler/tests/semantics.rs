@@ -114,6 +114,56 @@ fn forward_function_signatures_are_independent_of_source_order() {
     );
 }
 #[test]
+fn forward_return_contracts_reach_bodies_defaults_and_locals() {
+    for source in [
+        "fn f()->int{g()} fn g()->bool{true}",
+        "fn g()->bool{true} fn f()->int{g()}",
+        "fn f(x:int=g()){} fn g()->bool{true}",
+        "fn f(){let x:int=g();} fn g()->bool{true}",
+        "fn f()->int{g()} fn g()->bool{f()==0}",
+    ] {
+        rejects(source, DiagnosticCode::TypeMismatch);
+    }
+    valid("fn f()->int{g()} fn g()->int{f()}");
+    valid("fn f(x:int=g())->int{x} fn g()->int{1}");
+    valid("fn f(){let x:int=g();} fn g()->int{1}");
+}
+#[test]
+fn declaration_work_is_admitted_before_symbol_allocation() {
+    let mut source = String::from("fn consumer()->int{last()} ");
+    for i in 0..10_000 {
+        source.push_str(&format!("fn unused_{i}(){{}} "));
+    }
+    source.push_str("fn last()->int{1}");
+    for max_work in [0, 1, 5, 100, 10_004, 10_010, 20_000] {
+        let options = AnalysisOptions {
+            limits: AnalysisLimits {
+                max_work,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = analyze_module(&source, &options, &mut NoModules).unwrap();
+        assert!(result.exhausted);
+        assert!(result.module().is_none());
+        assert!(
+            result.stats.symbols <= max_work,
+            "work={max_work}, stats={:?}",
+            result.stats
+        );
+        if max_work <= 10_004 {
+            assert_eq!(result.stats.symbol_bytes, 0);
+        }
+        // After seeded names, each named declaration admits its own metadata
+        // work and symbol work separately before either allocation.
+        assert!(
+            result.stats.symbols <= max_work.saturating_sub(10_004) / 2,
+            "predeclaration admission: {max_work}, {:?}",
+            result.stats
+        );
+    }
+}
+#[test]
 fn short_circuit_effects_inherit_conditional_execution() {
     let options = AnalysisOptions {
         hosts: vec![ExternalSymbol::function(
@@ -618,5 +668,134 @@ fn async_generator_yield_and_for_await_keep_distinct_function_roles() {
     assert_eq!(
         r.module().unwrap().functions()[0].kind,
         FunctionKind::Generator
+    );
+}
+
+#[test]
+fn contract_preparation_preserves_default_visibility_and_method_order() {
+    rejects("fn f(x=||later,later=1){}", DiagnosticCode::UnknownName);
+    rejects("fn f(x=||x){}", DiagnosticCode::UnknownName);
+    let m = valid("fn owner(){let later=1; fn f(x=||later,later=2){}}");
+    let outer = symbols(&m, "later")[0].0;
+    assert!(
+        m.functions()
+            .iter()
+            .any(|f| f.captures.iter().any(|c| c.symbol == outer))
+    );
+    valid("fn f(mut x=1,y=||{x+=1;x},z=y()){x}");
+    valid("fn f(x=if true {let later=1;later}else{0},later=2){}");
+    rejects(
+        "class C{fn f(self)->int{self.g()} fn g(self)->bool{true}}",
+        DiagnosticCode::TypeMismatch,
+    );
+    valid("class C{fn f(self)->int{self.g()} fn g(self)->int{self.f()}}");
+    valid("class C{} fn f(C:C)->int{1}");
+    rejects("class C{} fn f(C:C)->C{C}", DiagnosticCode::InvalidType);
+}
+
+#[test]
+fn lowering_metadata_retains_entry_and_declared_function_contexts() {
+    let source = "fn plain(){} async fn task(){} gen fn stream(){yield 1;} class C{let field=1; fn init(self){} fn _tostring(self)->string{\"C\"} fn _call(self){}}";
+    let m = valid(source);
+    assert_eq!(m.entry_context(), AnalysisContext::Module);
+    for f in m.functions() {
+        let name = m
+            .hir()
+            .tokens(f.node)
+            .find_map(|t| t.name)
+            .map(|n| m.hir().name(n));
+        let no_wait = f.kind == FunctionKind::Generator
+            || f.role == FunctionRole::FieldInitializer
+            || matches!(name, Some("init" | "_tostring"));
+        assert_eq!(f.declared_context.no_wait, no_wait, "{name:?}");
+        assert!(!f.declared_context.init);
+        assert!(!f.declared_context.derived);
+        assert_eq!(
+            f.declared_context.effect(),
+            if no_wait {
+                CallEffect::NoWait
+            } else {
+                CallEffect::MayWait
+            }
+        );
+    }
+    for context in [
+        AnalysisContext::Function,
+        AnalysisContext::Generator,
+        AnalysisContext::NoWait,
+    ] {
+        let result = analyze_module(
+            "1;",
+            &AnalysisOptions {
+                context,
+                ..Default::default()
+            },
+            &mut NoModules,
+        )
+        .unwrap();
+        let m = result.into_module().unwrap();
+        assert_eq!(m.entry_context(), context);
+        if context == AnalysisContext::Generator {
+            assert!(m.functions()[0].declared_context.no_wait);
+        }
+    }
+    let options = AnalysisOptions {
+        hosts: vec![ExternalSymbol::intrinsic("derive", Intrinsic::Derive)],
+        ..Default::default()
+    };
+    let m = analyze_module("let d=derive(||1);", &options, &mut NoModules)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let derived = m
+        .functions()
+        .iter()
+        .find(|f| f.declared_context.derived)
+        .unwrap();
+    assert!(derived.declared_context.no_wait);
+    let identity = m.symbol_reference(SymbolId(0)).unwrap();
+    assert_eq!(
+        (identity.module, identity.version),
+        (m.canonical_path(), m.version())
+    );
+    assert!(m.symbol_reference(SymbolId(u32::MAX)).is_none());
+}
+
+#[test]
+fn trusted_native_reference_survives_aliases_without_guessed_linkage() {
+    let reference = SymbolReference {
+        module: "reel::trusted".into(),
+        version: "native-abi-v3".into(),
+        export: Some("registered_function_id".into()),
+    };
+    let host = ExternalSymbol::dynamic("native").with_reference(reference.clone());
+    let options = AnalysisOptions {
+        hosts: vec![host, ExternalSymbol::dynamic("unresolved")],
+        ..Default::default()
+    };
+    let m = analyze_module(
+        "let alias=native; alias(); unresolved();",
+        &options,
+        &mut NoModules,
+    )
+    .unwrap()
+    .into_module()
+    .unwrap();
+    let resolved: Vec<_> = m
+        .external_bindings()
+        .iter()
+        .filter(|b| b.descriptor.name == "native")
+        .collect();
+    assert!(!resolved.is_empty());
+    assert!(
+        resolved
+            .iter()
+            .all(|b| b.descriptor.reference.as_deref() == Some(&reference))
+    );
+    assert!(
+        m.external_bindings()
+            .iter()
+            .filter(|b| b.descriptor.name == "unresolved")
+            .all(|b| b.descriptor.reference.is_none())
     );
 }

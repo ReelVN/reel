@@ -99,6 +99,31 @@ fn source_modules_link_public_signatures_reexports_and_namespaces() {
     );
 }
 #[test]
+fn declared_import_return_contracts_match_forward_local_calls() {
+    for source in [
+        "use a::{g}; fn f()->int{g()}",
+        "use a::{g}; fn f(x:int=g()){}",
+        "use a::{g}; fn f(){let x:int=g();}",
+    ] {
+        let inputs = [input("a", "pub fn g()->bool{true}"), input("b", source)];
+        let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.diagnostic.code == DiagnosticCode::TypeMismatch),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+    let inputs = [
+        input("a", "use b::{f}; pub fn g()->int{f()}"),
+        input("b", "use a::{g}; pub fn f()->int{g()}"),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+}
+#[test]
 fn function_scc_and_global_initialization_cycles_keep_runtime_checks() {
     let inputs = [
         input("game::b", "use game::a::{a}; pub fn b(){a()} pub let bv=1;"),
@@ -216,4 +241,104 @@ fn qualified_native_or_class_types_follow_resolved_namespace_identity() {
     ];
     let r = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
     assert!(r.is_ok(), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn namespace_alias_and_reexports_retain_declaration_and_resolution_identity() {
+    let inputs = [
+        input("origin", "pub fn f(x=1)->int{x}"),
+        input(
+            "middle",
+            "pub use origin::{f as forwarded}; pub use origin as original;",
+        ),
+        input(
+            "facade",
+            "pub use middle::{forwarded as renamed}; pub use middle::{original as namespace};",
+        ),
+        input(
+            "user",
+            "use facade as api; use facade::{renamed as local}; let a:int=api.renamed(); let b:int=local(); let c:int=api.namespace.f();",
+        ),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let m = result
+        .modules()
+        .unwrap()
+        .iter()
+        .find(|m| m.canonical_path() == "user")
+        .unwrap();
+    let calls: Vec<_> = m
+        .external_bindings()
+        .iter()
+        .filter(|b| b.descriptor.signature.is_some())
+        .collect();
+    assert!(calls.len() >= 3);
+    for binding in calls {
+        let origin = binding.descriptor.reference.as_ref().unwrap();
+        assert_eq!(
+            (&*origin.module, &*origin.version, origin.export.as_deref()),
+            ("origin", "test-v1", Some("f"))
+        );
+        if binding.descriptor.name == "renamed" {
+            let source = binding.descriptor.resolved_from.as_ref().unwrap();
+            assert_eq!(
+                (
+                    &*source.reference.module,
+                    source.reference.export.as_deref()
+                ),
+                ("facade", Some("renamed"))
+            );
+            let middle = source.previous.as_ref().unwrap();
+            assert_eq!(
+                (
+                    &*middle.reference.module,
+                    middle.reference.export.as_deref()
+                ),
+                ("middle", Some("forwarded"))
+            );
+        }
+    }
+    let ns = m
+        .external_bindings()
+        .iter()
+        .find(|b| b.descriptor.name == "namespace")
+        .unwrap();
+    assert_eq!(ns.descriptor.reference.as_ref().unwrap().module, "origin");
+    assert_eq!(ns.descriptor.reference.as_ref().unwrap().export, None);
+    let source = ns.descriptor.resolved_from.as_ref().unwrap();
+    assert_eq!(source.reference.export.as_deref(), Some("namespace"));
+}
+
+#[test]
+fn injectable_resolver_identity_uses_returned_canonical_module() {
+    struct Resolver;
+    impl ModuleResolver for Resolver {
+        fn resolve(&mut self, _: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
+            Ok(ResolvedImport {
+                module: "canonical::actual".into(),
+                version: "locked-42".into(),
+                bindings: vec![ExternalSymbol::value("item", TypeHint::Int)],
+            })
+        }
+    }
+    let m = analyze_module(
+        "use alias::{item as local}; let x:int=local;",
+        &AnalysisOptions::default(),
+        &mut Resolver,
+    )
+    .unwrap()
+    .into_module()
+    .unwrap();
+    for binding in m.external_bindings() {
+        let reference = binding.descriptor.reference.as_ref().unwrap();
+        assert_eq!(
+            (
+                &*reference.module,
+                &*reference.version,
+                reference.export.as_deref()
+            ),
+            ("canonical::actual", "locked-42", Some("item"))
+        );
+    }
 }

@@ -202,7 +202,7 @@ pub fn analyze_project(
                 fallback: resolver,
             }
             .resolve(request);
-            if let Ok(resolved) = result {
+            if let Ok(resolved) = result.map(ResolvedImport::retain_references) {
                 let module = memory.modules.get_mut(&path).unwrap();
                 for mut symbol in resolved.bindings {
                     if let Some(alias) = alias {
@@ -213,6 +213,7 @@ pub fn analyze_project(
                         .unwrap()
                         .insert(symbol.name.clone())
                     {
+                        symbol.resolved_at(&module.canonical_path, &module.version, false);
                         module.exports.push(symbol);
                         changed = true;
                     }
