@@ -1,3 +1,24 @@
+Current V03 measurements: complete fault semantics + native root optimization
+Semantic implementation: 2842fb4092fa8b1733dd04840c76f169ac3e6342
+Measured baseline: 73467e3; measured optimized implementation: f23014d.
+Full seven-pair comparison: NATIVE-PERFORMANCE.md
+Raw outputs: NATIVE-PERF-SAMPLES.jsonl
+
+10,000 Ready/Pending calls median elapsed_us: 268864 -> 44515
+Redundant NULL publications: 5230000 -> 0
+Numeric/call/GC allocator counts: 0 in every run.
+Peak shared bytes: 7078197 in both variants; FrameSlots bytes: 289024.
+Live-native GC units/descriptors/values: 9837 / 45 / 8766 in both variants.
+Owner cancellation conservative work/slices: 46169 / 4 in both variants.
+Complete-fault validation: 42 unit + 44 executor + 15 FrameSlots + 15 storage + 1 doc test.
+Clippy passed; i686 compilation passed (no linked 32-bit runtime claim).
+These are author self-tests and measurements, not independent acceptance.
+Source lowering, standard-library source binding, missing opcode handlers,
+snapshot/restore and invoke_sync remain follow-up. See FAULT-CONTRACT.md.
+
+Historical incomplete-fault implementation follows, retained as provenance.
+Its exception limitation and 4.37 MB peak no longer describe current code.
+
 V03 shared-session release probe (supersedes the single-task c42c991 run)
 2026-10-08T17:57Z; Linux x86_64, 5 vCPU
 AMD EPYC 9V74 80-Core Processor

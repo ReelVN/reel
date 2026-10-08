@@ -1,0 +1,83 @@
+# Native root initialization comparison
+
+Measured after the complete §23 fault implementation (`2842fb4`), rather than
+comparing the older, incomplete fault semantics against the new implementation.
+Probe instrumentation baseline: `73467e3`; optimized implementation: `f23014d`.
+Both use V02 `cceb151` and B01 `be4f98e`, identical default limits and fixtures.
+2026-10-08T20:00Z, Linux x86_64, AMD EPYC 9V74, 5 allocated vCPU; Rust 1.96.0.
+The development host is not isolated or pinned. These are host timings, not a
+device guarantee. [All fourteen raw outputs](NATIVE-PERF-SAMPLES.jsonl) are kept.
+
+## Cause and change
+
+The former NativePhase::Copy wrote NULL to every root element after copying
+arguments, solely to satisfy a whole-window initialized borrow. V02 open had
+already physically filled the window with NULL and cleared its bitmap before
+publishing its descriptor. Original default width was 515; §23's eight bounded
+fault slots made the measured width 523. Ten thousand calls repeated 5,230,000
+barrier/write/bitmap operations, each with an internal dispatch step.
+
+Host continuation/fault views now validate just their logical initialized span.
+Entry-to-bind omits the redundant NULL loop. Open still clears the entire range
+under the original conservative native construction charge. Real writes keep
+the insertion barrier and initialized bit. Ordinary uninitialized reads fail,
+including holes surrounding the requested span; stale generations still fail.
+No GC scanning, physical root capacity or free-span release work is discounted.
+
+## Seven interleaved pairs
+
+Each process executes a million-iteration numeric loop, then 10,000 calls
+alternating Ready/Pending, a full incremental GC with one native live, and owner
+cancellation. Odd pairs run baseline then optimized; even pairs reverse order.
+The call input/result, adapter, budgets, pool sizes and allocator probe match.
+Each row is a median of seven runs; per-call p50/p95 are medians of the seven
+within-run percentiles, not a pooled percentile.
+
+| Measurement | Baseline | Optimized |
+| --- | ---: | ---: |
+| 10,000 calls total, µs | 268,864 | 44,515 |
+| Call p50, ns | 21,873 | 3,836 |
+| Call p95, ns | 41,603 | 4,056 |
+| Call total min–max, µs | 240,886–290,705 | 39,801–54,190 |
+| Numeric loop total, µs | 355,577 | 366,767 |
+| Numeric total min–max, µs | 340,725–423,690 | 301,781–466,545 |
+| Redundant NULL publications | 5,230,000 | 0 |
+| Call slice work | 831,990,000 | 826,760,000 |
+| Call instructions | 50,000 | 50,000 |
+| Allocations/allocated bytes, numeric + calls + GC | 0 / 0 | 0 / 0 |
+| Peak shared charged bytes, calls | 7,078,197 | 7,078,197 |
+| Idle active root ranges | 34 | 34 |
+| Retained FrameSlots bytes | 289,024 | 289,024 |
+| Live-native GC work / descriptors / Values | 9,837 / 45 / 8,766 | 9,837 / 45 / 8,766 |
+| Live-native GC time, ns | 92,789 | 93,391 |
+| Owner cancellation work / slices | 46,169 / 4 | 46,169 / 4 |
+| Owner cancellation time, ns | 6,449 | 6,700 |
+
+Median call total improves by 83.4% in this load. Numeric timings overlap and
+their +3.1% median variation provides no evidence of a numeric-loop improvement.
+GC and cancellation perform identical counted work; timing differences are host
+variation. Most reported call work is conservative window construction/release
+accounting, including O(max_root_ranges) free-span manipulation, so the removed
+5.23 million real dispatch steps are a small fraction of that conservative sum.
+
+Fault nodes enlarge the preallocated Heap slab. The earlier incomplete-fault
+run charged ~4.37 MB, while both complete-fault variants charge ~7.08 MB. This is
+the explicit memory cost of the inline private graph metadata, independent of
+the NULL-loop optimization. Fault capture itself creates slab objects, consumes
+logical allocation quotas and GC edges, and is not included in this echo load.
+
+## Reproduction
+
+At each named implementation revision, build before timing:
+
+```
+cargo build -p aside-vm --release --example executor_load
+target/release/examples/executor_load
+```
+
+Save the first executable, rebuild the optimized revision and alternate the two
+executables seven times. The raw JSONL records variant, pair number and complete
+stdout. Author self-tests verify real repeated calls allocate zero times, logical
+span reads preserve bitmap errors, and callback/continued waits still preserve
+values, faults, identity and root lifetime with instruction budget 1 and GC.
+This comparison is author evidence; independent V03 execution remains separate.

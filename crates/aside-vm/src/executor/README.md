@@ -168,7 +168,9 @@ Normal exits nested in catch/finally use the shared B01 selector.
 Numeric edges cover exact large int/float comparisons, NaN, negative zero,
 checked overflow and strict bool. Long equality roots persist across work=1/GC.
 
-[RESULTS.txt](RESULTS.txt) records one Linux x86_64 release run, including total
+[RESULTS.txt](RESULTS.txt) links the current seven-pair complete-fault
+[native comparison](NATIVE-PERFORMANCE.md) and retains the earlier historical
+Linux x86_64 release run, including total
 instructions/work, slice and call timing, actual allocator calls/bytes, shared
 peak bytes and cancellation work. Timing varies with the host. The probe's hot
 loop and 10,000 Ready/Pending calls allocate zero times after VM construction.
