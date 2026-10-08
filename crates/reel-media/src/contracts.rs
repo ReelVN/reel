@@ -57,8 +57,19 @@ pub struct AudioConfigRange {
     pub sample_format: SampleFormat,
     pub layout: ChannelLayout,
 }
+/// Presentation capability is independent of generating PCM or reporting latency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioClockCapability {
+    /// Native submission/presentation is not confirmed. No MediaPTS anchor.
+    Unavailable,
+    /// Driver guarantees previous blocks were submitted and provides a latency
+    /// estimate. Used by the controlled offline sink; a future native adapter
+    /// must prove those guarantees before opting in. Never implies Measured.
+    Estimated,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioCaps {
+    pub clock: AudioClockCapability,
     pub configurations: Vec<AudioConfigRange>,
     pub min_pull_frames: u32,
     pub max_pull_frames: u32,
@@ -206,13 +217,21 @@ pub struct AudioStatus {
 pub enum ClockPrecision {
     Measured,
     Estimated,
+    /// Numeric presentation fields are invalid and MUST NOT anchor MediaPTS.
     Unavailable,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioClockObservation {
     pub output_epoch: OutputEpoch,
+    /// Software-generated device frames (including silence), for diagnostics.
+    /// Does not prove native write acceptance or presentation; epoch-scoped.
+    pub generated_frames: u64,
+    /// Frames handed to a driver with submission guarantees. Zero is an invalid
+    /// sentinel for an Unavailable capability, NOT proof that zero frames played.
     pub submitted_frames: u64,
-    /// Conservative observation at monotonic_time, never the end of the new block.
+    /// Usable only when precision != Unavailable and output_epoch is current.
+    /// Zero under Unavailable is an invalid sentinel, NEVER a MediaPTS anchor.
+    /// Prefer presented_frames() so missing capability is represented as None.
     pub estimated_presented_frames: u64,
     pub monotonic_time: MonoTime,
     pub sample_rate_hz: u32,
@@ -222,9 +241,13 @@ pub struct AudioClockObservation {
     pub precision: ClockPrecision,
 }
 impl AudioClockObservation {
+    pub fn presented_frames(&self) -> Option<u64> {
+        (self.precision != ClockPrecision::Unavailable).then_some(self.estimated_presented_frames)
+    }
     pub(crate) fn unavailable(epoch: OutputEpoch, rate: u32) -> Self {
         Self {
             output_epoch: epoch,
+            generated_frames: 0,
             submitted_frames: 0,
             estimated_presented_frames: 0,
             monotonic_time: MonoTime(0),
@@ -235,7 +258,10 @@ impl AudioClockObservation {
         }
     }
 }
-/// Adapter timestamps are in the host's MonoTime domain. None => unavailable.
+/// Driver timing in the host MonoTime domain. Latency alone proves no submission
+/// or presentation. Capability is declared separately; CPAL values are diagnostic.
+/// A future driver with confirmed submission can opt into the existing estimate
+/// path only if its timestamps and preceding blocks satisfy that guarantee.
 #[derive(Clone, Copy, Debug)]
 pub struct CallbackTiming {
     pub now: MonoTime,

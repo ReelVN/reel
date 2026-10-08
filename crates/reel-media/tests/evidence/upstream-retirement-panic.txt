@@ -1,0 +1,38 @@
+Historical pre-fix investigation, 2026-10-08.
+The scheduled source copy added hooks only, preserving upstream retirement semantics.
+Original kira 0.12.5 crate hash: aae7115ef1161313b8f71f49487702a662ab333bd2a47bf69af410b69112a519.
+The current repository regression lives in third_party/kira/src/backend/resources/reel_tests.rs.
+Captured schedule/result lines (compilation warnings omitted):
+
+command: cargo run --offline --locked --manifest-path /tmp/reel-retirement-race-20261008/cases/scheduled/Cargo.toml -- forced
+CARGO_TARGET_DIR=/tmp/reel-retirement-race-20261008/build
+exit=0
+mode=forced native_capacity=1 real_Kira_A_PCM=Report { peak_left: 0.1, peak_right: -0.2 } A=Stopped
+RT: A yielded by drain_filter (arena freed); before unused.push(A)
+CONTROL: play(B) accepted while A publication blocked; reserved_count=1
+RT: published A; installed/finished B; real_Kira_B_PCM=Report { peak_left: 0.3, peak_right: -0.4 }
+CONTROL: no play between B finish and B retirement
+CONFIRMED original panic="unused resource producer is full"; retire_attempts=2 published=1; report=Err(Disconnected)
+
+thread 'real-kira-renderer' (12115) panicked at /tmp/reel-retirement-race-20261008/sources/kira-scheduled/src/backend/resources.rs:60:37:
+unused resource producer is full
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panicking.rs:80:14
+   2: kira::backend::resources::ResourceStorage<T>::remove_and_add::{{closure}}
+             at /tmp/reel-retirement-race-20261008/sources/kira-scheduled/src/backend/resources.rs:60:25
+   3: core::result::Result<T,E>::unwrap_or_else
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/result.rs:1622:23
+   4: kira::backend::resources::ResourceStorage<T>::remove_and_add
+             at /tmp/reel-retirement-race-20261008/sources/kira-scheduled/src/backend/resources.rs:60:6
+   5: kira::track::main::MainTrack::on_start_processing
+             at /tmp/reel-retirement-race-20261008/sources/kira-scheduled/src/track/main.rs:41:15
+   6: kira::backend::resources::mixer::Mixer::on_start_processing
+             at /tmp/reel-retirement-race-20261008/sources/kira-scheduled/src/backend/resources/mixer.rs:71:19
+   7: kira::backend::renderer::Renderer::on_start_processing
+             at /tmp/reel-retirement-race-20261008/sources/kira-scheduled/src/backend/renderer.rs:64:24
+   8: retirement_probe::main::{{closure}}
+             at /tmp/reel-retirement-race-20261008/cases/scheduled/../../harness.rs:51:30
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

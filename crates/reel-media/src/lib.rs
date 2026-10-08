@@ -2,11 +2,15 @@
 #![allow(clippy::result_large_err)]
 
 mod contracts;
+mod maintenance;
 mod mixer;
 mod output;
 mod pcm;
 pub use contracts::*;
-pub use mixer::{DecodedSound, DecodedSoundRequest, KiraMixer, MixerLimits, Playback};
+pub use mixer::{
+    DecodedSound, DecodedSoundRequest, KiraMixer, MAX_DECODED_FRAMES, MixerLimits, Playback,
+    ReclaimProgress,
+};
 pub use output::{OfflineOutput, UnderrunSignal, bounded_pcm_queue};
 pub use pcm::DeviceSample;
 

@@ -13,6 +13,9 @@ for profile in debug release; do
     media_libs=("$probe_target_dir/$profile/deps/"libreel_media-*.rlib)
     core_libs=("$probe_target_dir/$profile/deps/"libreel_core-*.rlib)
     [[ ${#media_libs[@]} == 1 && ${#core_libs[@]} == 1 ]]
-    rustc "${rustc_args[@]}" "$probe_script_dir/pcm_probe.rs" --extern "reel_media=${media_libs[0]}" --extern "reel_core=${core_libs[0]}" -L "dependency=$probe_target_dir/$profile/deps" -o "$probe_target_dir/probe-$profile"
-    "$probe_target_dir/probe-$profile"
+    for probe in pcm reclaim; do
+        rustc "${rustc_args[@]}" "$probe_script_dir/${probe}_probe.rs" --extern "reel_media=${media_libs[0]}" --extern "reel_core=${core_libs[0]}" -L "dependency=$probe_target_dir/$profile/deps" -o "$probe_target_dir/$probe-$profile"
+        printf 'profile=%s probe=%s\n' "$profile" "$probe"
+        "$probe_target_dir/$probe-$profile"
+    done
 done

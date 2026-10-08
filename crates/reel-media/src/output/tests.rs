@@ -28,6 +28,7 @@ struct SyncDriver {
     verify_fail: bool,
     async_fail: bool,
     retired: Option<Arc<Shared>>,
+    clock: AudioClockCapability,
 }
 impl SyncDriver {
     fn new() -> Self {
@@ -39,13 +40,16 @@ impl SyncDriver {
             verify_fail: false,
             async_fail: false,
             retired: None,
+            clock: AudioClockCapability::Estimated,
         }
     }
 }
 impl Driver for SyncDriver {
     type Stream = RefCell<Callback>;
     fn capabilities(&self) -> AudioCaps {
-        self.offline.capabilities()
+        let mut caps = self.offline.capabilities();
+        caps.clock = self.clock;
+        caps
     }
     fn configure(&mut self, r: &AudioRequest) -> Result<AudioFormat, AudioError> {
         self.offline.configure(r)
@@ -478,5 +482,158 @@ fn stop_disposes_fill_even_if_native_callback_object_is_retained() {
             .borrow_mut()
             .get_mut()
             .is_none()
+    );
+}
+
+#[test]
+fn native_generated_then_write_failure_invalidates_epoch_and_freezes_counts() {
+    use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
+    let mut output = output();
+    output.driver.clock = AudioClockCapability::Unavailable; // CPAL's declared capability.
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: 1_024,
+        },
+    );
+    let mut mixer = KiraMixer::new(
+        output.format.as_ref().unwrap(),
+        MixerLimits {
+            max_sounds: 1,
+            internal_buffer_frames: 64,
+        },
+        WakeSignal::new(|| {}),
+    )
+    .unwrap();
+    let (_, ticket) = mixer.reserve_decode_budget(&pool, 1_024, 1);
+    mixer
+        .play(
+            DecodedSound::new(48_000, vec![[0.1, -0.2]; 64], ticket.unwrap())
+                .unwrap()
+                .looping(),
+        )
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fill_calls = calls.clone();
+    let mut real_fill = mixer.take_fill().unwrap();
+    assert!(
+        output
+            .start(Box::new(move |out| {
+                fill_calls.fetch_add(1, Ordering::Relaxed);
+                real_fill(out);
+            }))
+            .is_ok()
+    );
+    assert_eq!(
+        output.capabilities().clock,
+        AudioClockCapability::Unavailable
+    );
+    let epoch = output.status().output_epoch;
+    let mut data = [0.0f32; 512 * 2];
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert!(
+        data.chunks_exact(2)
+            .any(|f| (f[0] - 0.1).abs() < 1e-6 && (f[1] + 0.2).abs() < 1e-6)
+    );
+    let generated = output.clock_observation();
+    assert_eq!(generated.generated_frames, 512);
+    assert_eq!(generated.submitted_frames, 0); // native acceptance unknown, not software generation.
+    assert_eq!(generated.estimated_presented_frames, 0);
+    assert_eq!(generated.presented_frames(), None);
+    assert_eq!(generated.latency_frames, Some(0)); // diagnostic does not make a clock.
+    // CPAL's legal order: render, writei EPIPE before any acceptance, Xrun,
+    // prepare, next callback. The simulated device accepted/presented zero frames.
+    #[cfg(all(
+        feature = "cpal-output",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
+    {
+        assert_eq!(
+            crate::desktop::CPAL_CLOCK_CAPABILITY,
+            AudioClockCapability::Unavailable
+        );
+        crate::desktop::native_error(&output.shared, cpal::ErrorKind::Xrun);
+    }
+    #[cfg(not(all(
+        feature = "cpal-output",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
+    output.shared.native_xrun();
+    let fault = output.clock_observation();
+    assert!(fault.output_epoch.0 > epoch.0);
+    assert_eq!(fault.precision, ClockPrecision::Unavailable);
+    assert_eq!(fault.generated_frames, 0); // old software diagnostics are invalidated too.
+    assert_eq!(fault.presented_frames(), None);
+    assert_eq!(output.status().state, AudioState::Failed);
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert!(data.iter().all(|v| *v == 0.0));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(output.stream.as_ref().unwrap().borrow().generated, 512); // private old counter frozen.
+    assert_eq!(output.clock_observation(), fault);
+    assert_eq!(
+        output.stop().unwrap_err().kind,
+        AudioErrorKind::ReconfigureRequired
+    );
+    drop(mixer);
+    let format = output.configure(AudioRequest::default()).unwrap();
+    let mut rebuilt =
+        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
+    assert!(output.start(rebuilt.take_fill().unwrap()).is_ok());
+    assert!(output.status().output_epoch.0 > fault.output_epoch.0);
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    assert_eq!(output.clock_observation().generated_frames, 512);
+    assert_eq!(output.clock_observation().presented_frames(), None);
+    output.stop().unwrap();
+    println!(
+        "native EPIPE: real Kira generated=512; submitted/presented unknown; epoch {}->{}; closed next callback stays silent/calls=1; software count invalidated; rebuild has fresh diagnostics",
+        epoch.0, fault.output_epoch.0
+    );
+}
+#[test]
+fn native_silent_eagain_before_any_write_never_promotes_software_count_to_clock() {
+    let mut output = output();
+    output.driver.clock = AudioClockCapability::Unavailable;
+    assert!(output.start(Box::new(|pcm| pcm.fill(0.25))).is_ok());
+    let mut data = [0.0f32; 512 * 2];
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    // ALSA writei Err(EAGAIN), frames_written==0 => CPAL returns Ok and silently
+    // discards this generated block. writei Ok(0) is a retry, NOT this branch.
+    output
+        .stream
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .render(&mut data, timing());
+    let observation = output.clock_observation();
+    assert_eq!(observation.generated_frames, 1_024);
+    assert_eq!(observation.submitted_frames, 0);
+    assert_eq!(observation.estimated_presented_frames, 0);
+    assert_eq!(observation.presented_frames(), None);
+    assert_eq!(observation.precision, ClockPrecision::Unavailable);
+    assert_eq!(output.status().underrun_count, 0); // CPAL delivered no error event.
+    output.stop().unwrap();
+    println!(
+        "native EAGAIN with frames_written=0: generated=1024, submitted=unknown, presented=None despite latency=0; no Xrun event needed for safety"
     );
 }

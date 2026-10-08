@@ -36,6 +36,19 @@ fn sample_format(f: cpal::SampleFormat) -> Option<SampleFormat> {
         _ => None,
     }
 }
+pub(crate) const CPAL_CLOCK_CAPABILITY: AudioClockCapability = AudioClockCapability::Unavailable;
+
+pub(crate) fn native_error(shared: &crate::output::Shared, kind: cpal::ErrorKind) {
+    match kind {
+        cpal::ErrorKind::Xrun => shared.native_xrun(),
+        cpal::ErrorKind::RealtimeDenied => shared.realtime_denied(),
+        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::StreamInvalidated => {
+            shared.fail(AudioErrorKind::ReconfigureRequired)
+        }
+        _ => shared.fail(AudioErrorKind::DeviceFailure),
+    }
+}
+
 fn capabilities(device: &cpal::Device) -> Result<AudioCaps, AudioError> {
     let mut configurations = Vec::new();
     for config in device.supported_output_configs().map_err(error)? {
@@ -56,6 +69,7 @@ fn capabilities(device: &cpal::Device) -> Result<AudioCaps, AudioError> {
         });
     }
     Ok(AudioCaps {
+        clock: CPAL_CLOCK_CAPABILITY,
         configurations,
         min_pull_frames: 1,
         max_pull_frames: MAX_PULL_FRAMES,
@@ -89,6 +103,9 @@ impl CpalDriver {
             .build_output_stream::<T, _, _>(
                 config,
                 move |data, info| {
+                    // CPAL invokes us before writei and has no write acknowledgement.
+                    // EAGAIN with frames_written==0 can silently discard this block.
+                    // These timestamps are diagnostic; capability stays Unavailable.
                     let stamp = info.timestamp();
                     let latency_frames = stamp
                         .playback
@@ -116,16 +133,7 @@ impl CpalDriver {
                         },
                     );
                 },
-                move |e| {
-                    match e.kind() {
-                        cpal::ErrorKind::Xrun => shared.underrun(0), // CPAL does not report missing frame count.
-                        cpal::ErrorKind::RealtimeDenied => shared.realtime_denied(), // Advisory only; not a device failure.
-                        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::StreamInvalidated => {
-                            shared.fail(AudioErrorKind::ReconfigureRequired)
-                        }
-                        _ => shared.fail(AudioErrorKind::DeviceFailure),
-                    }
-                },
+                move |e| native_error(&shared, e.kind()),
                 Some(Duration::from_secs(2)),
             )
             .map_err(error)

@@ -22,7 +22,8 @@ fn main() {
         .configure(AudioRequest::default())
         .expect("negotiate known layout");
     println!("negotiated={format:?}");
-    let mut mixer = KiraMixer::new(&format, MixerLimits::default()).unwrap();
+    let mut mixer =
+        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let mut kira_fill = mixer.take_fill().unwrap();

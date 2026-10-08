@@ -59,7 +59,8 @@ fn real_kira_mixes_stereo_then_maps_explicit_71_and_freezes_on_suspend() {
     let (mut output, format) = setup(ChannelLayout::Surround71, SampleFormat::F32, 7);
     assert_eq!(format.mixer_channels, 2);
     assert_eq!(format.device_channel_layout.channels().len(), 8);
-    let mut mixer = KiraMixer::new(&format, MixerLimits::default()).unwrap();
+    let mut mixer =
+        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
     let pool = pool();
     let first = mixer
         .play(sound(&pool, vec![[0.2, -0.1]; 4800]))
@@ -217,7 +218,8 @@ fn bounded_queue_underrun_supplies_silence_counts_missing_frames_and_clock_advan
 #[test]
 fn format_change_invalidates_clock_requires_stop_and_new_kira_at_negotiated_rate() {
     let (mut output, format) = setup(ChannelLayout::Stereo, SampleFormat::F32, 8);
-    let mut mixer = KiraMixer::new(&format, MixerLimits::default()).unwrap();
+    let mut mixer =
+        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
     assert!(output.start(mixer.take_fill().unwrap()).is_ok());
     output.render(&mut [0.0f32; 16], timing(1));
     let epoch = output.status().output_epoch;
@@ -241,7 +243,8 @@ fn format_change_invalidates_clock_requires_stop_and_new_kira_at_negotiated_rate
     assert_eq!(format.sample_rate_hz, 44_100);
     assert_eq!(format.device_sample_format, SampleFormat::I16);
     assert_eq!(format.mixer_channels, 2);
-    let mut rebuilt = KiraMixer::new(&format, MixerLimits::default()).unwrap();
+    let mut rebuilt =
+        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
     assert!(output.start(rebuilt.take_fill().unwrap()).is_ok());
     output.render(&mut [0i16; 8], timing(2));
     assert_eq!(output.clock_observation().sample_rate_hz, 44_100);
@@ -256,6 +259,7 @@ fn kira_full_play_capacity_returns_original_budgeted_request_and_stop_commands_s
             max_sounds: 1,
             internal_buffer_frames: 8,
         },
+        WakeSignal::new(|| {}),
     )
     .unwrap();
     let pool = pool();
@@ -276,6 +280,7 @@ fn kira_full_play_capacity_returns_original_budgeted_request_and_stop_commands_s
     output.render(&mut [0.0f32; 16], timing(2));
     assert!(first.is_stopped());
     output.render(&mut [0.0f32; 16], timing(3)); // moves unused Sound to Kira's bounded control reclamation queue.
+    assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
     assert!(mixer.play(rejected.request).is_ok());
     assert_eq!(pool.usage().tickets, 1);
     output.stop().unwrap();

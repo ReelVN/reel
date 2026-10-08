@@ -8,49 +8,9 @@ use reel_core::{
     wake::WakeSignal,
 };
 use reel_media::*;
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-    time::Instant,
-};
-#[derive(Clone, Copy, Default, Debug)]
-struct Counts {
-    allocations: usize,
-    deallocations: usize,
-    reallocations: usize,
-}
-thread_local! { static ENABLED: Cell<bool> = const { Cell::new(false) }; static COUNTS: Cell<Counts> = const { Cell::new(Counts { allocations: 0, deallocations: 0, reallocations: 0 }) }; }
-fn count(update: impl FnOnce(&mut Counts)) {
-    if ENABLED.try_with(Cell::get).unwrap_or(false) {
-        let _ = COUNTS.try_with(|cell| {
-            let mut counts = cell.get();
-            update(&mut counts);
-            cell.set(counts);
-        });
-    }
-}
-struct Observer;
-#[global_allocator]
-static ALLOCATOR: Observer = Observer;
-// SAFETY: Forward every original valid pointer/Layout to System exactly once.
-unsafe impl GlobalAlloc for Observer {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count(|c| c.allocations += 1);
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        count(|c| c.allocations += 1);
-        unsafe { System.alloc_zeroed(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        count(|c| c.deallocations += 1);
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        count(|c| c.reallocations += 1);
-        unsafe { System.realloc(ptr, layout, size) }
-    }
-}
+use std::time::Instant;
+mod allocation_observer;
+use allocation_observer::{COUNTS, ENABLED};
 fn decoded(pool: &BudgetPool, frame: [f32; 2], frames: usize) -> DecodedSound {
     let pcm = vec![frame; frames];
     let ticket = pool
@@ -58,7 +18,76 @@ fn decoded(pool: &BudgetPool, frame: [f32; 2], frames: usize) -> DecodedSound {
         .unwrap();
     DecodedSound::new(48_000, pcm, ticket).unwrap()
 }
+fn full_unused_queue_remains_allocation_free() {
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 2,
+            max_bytes: 2048,
+        },
+    );
+    let mut output = OfflineOutput::new(
+        AudioDeviceConfig {
+            sample_rate_hz: 48_000,
+            sample_format: SampleFormat::F32,
+            layout: ChannelLayout::Stereo,
+        },
+        WakeSignal::new(|| {}),
+    )
+    .unwrap();
+    let format = output.configure(AudioRequest::default()).unwrap();
+    let mut mixer = KiraMixer::new(
+        &format,
+        MixerLimits {
+            max_sounds: 1,
+            internal_buffer_frames: 64,
+        },
+        WakeSignal::new(|| {}),
+    )
+    .unwrap();
+    let _a = mixer.play(decoded(&pool, [0.1, -0.2], 64)).unwrap();
+    assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+    let mut data = [0.0f32; 512 * 2];
+    let timing = CallbackTiming {
+        now: MonoTime(0),
+        latency_frames: Some(0),
+        uncertainty_frames: None,
+    };
+    for _ in 0..2 {
+        ENABLED.set(true);
+        output.render(&mut data, timing);
+        ENABLED.set(false);
+    }
+    let b = mixer.play(decoded(&pool, [0.3, -0.4], 64)).unwrap(); // NO implicit cleanup.
+    for _ in 0..16 {
+        ENABLED.set(true);
+        output.render(&mut data, timing);
+        ENABLED.set(false);
+    }
+    assert!(b.is_stopped());
+    assert_eq!(pool.usage().tickets, 2); // A unused, B retained in arena.
+    assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
+    ENABLED.set(true);
+    output.render(&mut data, timing);
+    ENABLED.set(false);
+    assert_eq!(mixer.reclaim_unused(1).reclaimed_sounds, 1);
+    assert_eq!(pool.usage().tickets, 0);
+    output.stop().unwrap();
+    let counts = COUNTS.get();
+    assert_eq!(
+        (
+            counts.allocations,
+            counts.reallocations,
+            counts.deallocations
+        ),
+        (0, 0, 0)
+    );
+    println!(
+        "full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_reclaim=1+1"
+    );
+}
 fn main() {
+    full_unused_queue_remains_allocation_free();
     const BLOCKS: usize = 4096;
     const FRAMES: usize = 512;
     let pool = BudgetPool::new(
@@ -85,7 +114,8 @@ fn main() {
             ..AudioRequest::default()
         })
         .unwrap();
-    let mut mixer = KiraMixer::new(&format, MixerLimits::default()).unwrap();
+    let mut mixer =
+        KiraMixer::new(&format, MixerLimits::default(), WakeSignal::new(|| {})).unwrap();
     let first = mixer
         .play(decoded(&pool, [0.8, -0.8], 48_000).looping())
         .ok()

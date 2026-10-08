@@ -94,6 +94,19 @@ impl Shared {
     pub fn underrun(&self, frames: usize) {
         self.metrics.underrun(frames);
     }
+    /// Native discontinuity, distinct from a bounded-queue shortage filled with
+    /// silence. Unknown lost frames invalidate the whole presentation mapping.
+    #[cfg(any(
+        test,
+        all(
+            feature = "cpal-output",
+            any(target_os = "linux", target_os = "windows", target_os = "macos")
+        )
+    ))]
+    pub fn native_xrun(&self) {
+        self.metrics.underrun(0);
+        self.fail(AudioErrorKind::ReconfigureRequired);
+    }
     #[cfg(any(
         test,
         all(
@@ -185,8 +198,9 @@ pub(crate) struct Callback {
     pub shared: Arc<Shared>,
     clock: Input<AudioClockObservation>,
     epoch: OutputEpoch,
-    submitted: u64,
+    generated: u64,
     presented: u64,
+    clock_capability: AudioClockCapability,
 }
 impl Callback {
     fn new(
@@ -195,6 +209,7 @@ impl Callback {
         shared: Arc<Shared>,
         epoch: OutputEpoch,
         clock: Input<AudioClockObservation>,
+        clock_capability: AudioClockCapability,
     ) -> Self {
         Self {
             converter: Converter::new(format),
@@ -202,8 +217,9 @@ impl Callback {
             shared,
             clock,
             epoch,
-            submitted: 0,
+            generated: 0,
             presented: 0,
+            clock_capability,
         }
     }
     pub fn render<T: DeviceSample>(&mut self, data: &mut [T], timing: CallbackTiming) {
@@ -230,26 +246,44 @@ impl Callback {
         } else {
             self.shared.underrun(frames);
         }
-        let before = self.submitted;
-        self.submitted = before.saturating_add(frames as u64);
-        // The new block has not played at callback entry. Account only older submissions.
-        self.presented = timing.latency_frames.map_or(self.presented, |latency| {
-            self.presented
-                .max(before.saturating_sub(u64::from(latency)))
-        });
+        // A concurrent native fault invalidates this epoch. Do not publish new
+        // software counts after noticing it; late old-epoch writes are also
+        // rejected by the control reader's epoch check.
+        if self.shared.fault.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        let before = self.generated;
+        self.generated = before.saturating_add(frames as u64);
+        let submission_known = self.clock_capability == AudioClockCapability::Estimated;
+        let precision = match (submission_known, timing.latency_frames) {
+            (true, Some(latency)) => {
+                // Only a driver that guarantees previous blocks reached its sink
+                // may use generated history as submission history. CPAL never opts in.
+                self.presented = self
+                    .presented
+                    .max(before.saturating_sub(u64::from(latency)));
+                ClockPrecision::Estimated
+            }
+            _ => ClockPrecision::Unavailable,
+        };
         self.clock.write(AudioClockObservation {
             output_epoch: self.epoch,
-            submitted_frames: self.submitted,
-            estimated_presented_frames: self.presented,
+            generated_frames: self.generated,
+            submitted_frames: if submission_known { self.generated } else { 0 },
+            estimated_presented_frames: if precision == ClockPrecision::Unavailable {
+                0
+            } else {
+                self.presented
+            },
             monotonic_time: timing.now,
             sample_rate_hz: self.converter.format.sample_rate_hz,
-            latency_frames: timing.latency_frames,
-            uncertainty_frames: timing.uncertainty_frames,
-            precision: if timing.latency_frames.is_some() {
-                ClockPrecision::Estimated
+            latency_frames: timing.latency_frames, // native latency may still be diagnostic
+            uncertainty_frames: if precision == ClockPrecision::Unavailable {
+                None
             } else {
-                ClockPrecision::Unavailable
+                timing.uncertainty_frames
             },
+            precision,
         });
     }
 }
@@ -389,6 +423,7 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             prepared.clone(),
             epoch,
             clock_in,
+            self.driver.capabilities().clock,
         );
         // fill has NOT been moved into the slot. Early native callbacks are silent.
         let stream = match self.driver.build(&format, callback) {
@@ -537,6 +572,7 @@ impl Driver for OfflineDriver {
     type Stream = Callback;
     fn capabilities(&self) -> AudioCaps {
         AudioCaps {
+            clock: AudioClockCapability::Estimated,
             configurations: vec![AudioConfigRange {
                 min_sample_rate_hz: self.device.sample_rate_hz,
                 max_sample_rate_hz: self.device.sample_rate_hz,

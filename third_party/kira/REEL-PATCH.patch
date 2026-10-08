@@ -1,0 +1,102 @@
+--- a/src/backend/resources.rs
++++ b/src/backend/resources.rs
+@@ -1,3 +1,5 @@
++// Reel modification (2026-10-08): bounded retirement/control reclamation.
++// See REEL-FORK.md and REEL-PATCH.patch for upstream provenance and changes.
+ pub(crate) mod clocks;
+ pub(crate) mod listeners;
+ pub(crate) mod mixer;
+@@ -52,7 +54,13 @@
+ 	}
+ 
+ 	pub fn remove_and_add(&mut self, remove_test: impl FnMut(&T) -> bool) {
+-		for (_, resource) in self.resources.drain_filter(remove_test) {
++		let mut retired = self.resources.drain_filter(remove_test);
++		// Check producer credit before next() frees an arena slot. A consumer
++		// can only add credit. Full queues retain finished resources in the arena.
++		while !self.unused_resource_producer.is_full() {
++			let Some((_, resource)) = retired.next() else { break; };
++			#[cfg(test)]
++			reel_tests::before_unused_push();
+ 			self.unused_resource_producer
+ 				.push(resource)
+ 				.unwrap_or_else(|_| panic!("unused resource producer is full"));
+@@ -204,13 +212,38 @@
+ 			.map_err(|_| ResourceLimitReached)
+ 	}
+ 
++	// Main-track control uses explicit, quota-limited reclamation.
++	pub(crate) fn insert_without_reclamation(&mut self, resource: T) -> Result<Key, ResourceLimitReached> {
++		let key = self.try_reserve()?;
++		self.push_new(key, resource);
++		Ok(key)
++	}
++
+ 	pub fn insert_with_key(&mut self, key: Key, resource: T) {
+ 		self.remove_unused();
++		self.push_new(key, resource);
++	}
++
++	fn push_new(&mut self, key: Key, resource: T) {
+ 		self.new_resource_producer
+ 			.get_mut()
+ 			.expect("new resource producer mutex poisoned")
+ 			.push((key, resource))
+ 			.unwrap_or_else(|_| panic!("new resource producer full"));
++	}
++
++	pub(crate) fn reclaim_unused(&mut self, limit: usize) -> (usize, bool) {
++		let limit = limit.min(self.arena_controller.capacity());
++		let consumer = self.unused_resource_consumer.get_mut()
++			.expect("unused resource consumer mutex poisoned");
++		let mut reclaimed = 0;
++		while reclaimed < limit {
++			let Ok(resource) = consumer.pop() else { return (reclaimed, false); };
++			drop(resource);
++			reclaimed += 1;
++		}
++		// Hitting the quota never claims that concurrent retirement is drained.
++		(reclaimed, true)
+ 	}
+ 
+ 	fn remove_unused(&mut self) {
+@@ -307,3 +340,6 @@
+ 		},
+ 	)
+ }
++
++#[cfg(test)]
++mod reel_tests;
+--- a/src/track/main/handle.rs
++++ b/src/track/main/handle.rs
+@@ -1,3 +1,5 @@
++// Reel modification (2026-10-08): bounded retirement/control reclamation.
++// See REEL-FORK.md and REEL-PATCH.patch for upstream provenance and changes.
+ use crate::{
+ 	Decibels, PlaySoundError, Tween, Value,
+ 	backend::resources::ResourceController,
+@@ -13,6 +15,15 @@
+ }
+ 
+ impl MainTrackHandle {
++	/// Reclaims at most `limit` retired sounds on the calling control thread.
++	/// Returns (reclaimed count, further maintenance required). Reaching the
++	/// limit requires another maintenance turn; observing an empty queue does
++	/// not rule out a retirement publication still in flight. No new sound or
++	/// PCM budget is needed. Playing a main-track sound never reclaims old ones.
++	pub fn reclaim_unused(&mut self, limit: usize) -> (usize, bool) {
++		self.sound_controller.reclaim_unused(limit)
++	}
++
+ 	/// Plays a sound.
+ 	pub fn play<D: SoundData>(
+ 		&mut self,
+@@ -22,7 +33,7 @@
+ 			.into_sound()
+ 			.map_err(PlaySoundError::IntoSoundError)?;
+ 		self.sound_controller
+-			.insert(sound)
++			.insert_without_reclamation(sound)
+ 			.map_err(|_| PlaySoundError::SoundLimitReached)?;
+ 		Ok(handle)
+ 	}

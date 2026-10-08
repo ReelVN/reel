@@ -1,4 +1,6 @@
-# Issue #10 verification record
+# Issue #10 initial verification record (historical)
+
+This records the initial implementation at `71d9d56e009a3891ad1f6e439f3a7b15db1660ea`. The approved Kira fork, explicit reclamation API, current measurements and CPAL Unavailable clock policy supersede its dependency and clock statements; see [RETIREMENT.md](RETIREMENT.md) and the current [README](README.md). The historical CPAL null-sink run below does not establish physical device playback.
 
 Validated 2026-10-08 on Debian 13 x86_64, a KVM container exposing 5 vCPUs of an AMD EPYC 9V74. This is not Windows, N100 or an audio-hardware latency run. `/dev/snd` is absent. Production source and its contracts are in the preceding implementation commits; this file records outcomes, not acceptance by the integration owner.
 
@@ -27,7 +29,7 @@ export PKG_CONFIG_SYSROOT_DIR=/workspace/alsa
 rustup target add x86_64-pc-windows-gnu --toolchain 1.96.0
 ```
 
-Dependencies came from pinned ordinary crates.io packages. Upstream crate sources were inspected in temporary directories and Cargo's registry; none were copied into the repository. No relevant SKILL.md existed under the provided workspace `.agents/skills` or repository `.agents` paths. Read AGENTS.md, the AudioOutput/PCM/lifecycle/clock sections of engine-architecture.md, aside-language.md and the relevant Chinese creator-guide media section before implementation.
+At that initial revision, dependencies came from pinned ordinary crates.io packages and inspected upstream sources were not imported. The later approved minimal Kira fork is recorded separately. No relevant SKILL.md existed under the provided workspace `.agents/skills` or repository `.agents` paths. Read AGENTS.md, the AudioOutput/PCM/lifecycle/clock sections of engine-architecture.md, aside-language.md and the relevant Chinese creator-guide media section before implementation.
 
 ## Contract and build commands
 

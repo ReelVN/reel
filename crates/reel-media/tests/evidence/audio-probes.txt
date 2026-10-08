@@ -1,0 +1,23 @@
+2026-10-08; command: crates/reel-media/tests/support/run_pcm_probe.sh
+Captured probe stdout; routine Cargo compilation output omitted.
+
+profile=debug probe=pcm
+full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_reclaim=1+1
+real_kira blocks=4096 frames_per_block=512 device=8ch/48000Hz/i16 mixer=2ch/f32 samples=[32767,-32768,0,0,0,0,0,0]
+callback alloc=0 realloc=0 dealloc=0 p95_us=368.888 p99_us=523.052 max_us=3335.097 block_deadline_us=10666.667 elapsed_ms=1339.465
+clock epoch=4 submitted=2097152 estimated_presented=2096128 latency=Some(512) uncertainty=Some(0) precision=Estimated
+lifecycle suspended_position=0.680000000 stopped_position=0.690666667 stop_prevents_fill=true; cpu_pcm_budget_peak_bytes=1537024
+profile=debug probe=reclaim
+control_reclaim real_kira_frames=64 actual_pcm_bytes=512 ticket_peak_bytes=1024 samples=16 median_us=0.911 max_us=3.725 quota=1 largest_system_free_bytes=1128; single_destructor_indivisible=true
+control_reclaim real_kira_frames=48000 actual_pcm_bytes=384000 ticket_peak_bytes=768000 samples=16 median_us=19.409 max_us=23.746 quota=1 largest_system_free_bytes=384016; single_destructor_indivisible=true
+control_reclaim real_kira_frames=8388608 actual_pcm_bytes=67108864 ticket_peak_bytes=134217728 samples=16 median_us=1930.895 max_us=2366.473 quota=1 largest_system_free_bytes=67108880; single_destructor_indivisible=true
+profile=release probe=pcm
+full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_reclaim=1+1
+real_kira blocks=4096 frames_per_block=512 device=8ch/48000Hz/i16 mixer=2ch/f32 samples=[32767,-32768,0,0,0,0,0,0]
+callback alloc=0 realloc=0 dealloc=0 p95_us=32.098 p99_us=54.853 max_us=287.815 block_deadline_us=10666.667 elapsed_ms=115.448
+clock epoch=4 submitted=2097152 estimated_presented=2096128 latency=Some(512) uncertainty=Some(0) precision=Estimated
+lifecycle suspended_position=0.680000000 stopped_position=0.690666667 stop_prevents_fill=true; cpu_pcm_budget_peak_bytes=1537024
+profile=release probe=reclaim
+control_reclaim real_kira_frames=64 actual_pcm_bytes=512 ticket_peak_bytes=1024 samples=16 median_us=0.081 max_us=0.841 quota=1 largest_system_free_bytes=1128; single_destructor_indivisible=true
+control_reclaim real_kira_frames=48000 actual_pcm_bytes=384000 ticket_peak_bytes=768000 samples=16 median_us=12.549 max_us=48.193 quota=1 largest_system_free_bytes=384016; single_destructor_indivisible=true
+control_reclaim real_kira_frames=8388608 actual_pcm_bytes=67108864 ticket_peak_bytes=134217728 samples=16 median_us=2160.502 max_us=3025.448 quota=1 largest_system_free_bytes=67108880; single_destructor_indivisible=true
