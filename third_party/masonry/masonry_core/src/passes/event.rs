@@ -3,7 +3,7 @@
 
 use tracing::{info_span, trace};
 
-use crate::app::{RenderRoot, RenderRootSignal};
+use crate::app::{GeometryView, RenderRoot, RenderRootSignal};
 use crate::core::keyboard::{Key, KeyState, NamedKey};
 use crate::core::{
     AccessEvent, EventCtx, Handled, Ime, PointerButtonEvent, PointerEvent, PointerGestureEvent,
@@ -18,6 +18,7 @@ use crate::passes::{enter_span, merge_state_up};
 fn get_pointer_target(
     root: &RenderRoot,
     pointer_pos: Option<LogicalPosition<f64>>,
+    view: GeometryView<'_>,
 ) -> Option<WidgetId> {
     // See the [pointer capture documentation](../doc/06_masonry_concepts.md#pointer-capture).
     if let Some(capture_target) = root.global_state.pointer_capture_target
@@ -28,11 +29,7 @@ fn get_pointer_target(
 
     if let Some(pointer_pos) = pointer_pos {
         let pointer_pos = (pointer_pos.x, pointer_pos.y).into();
-        return root
-            .get_widget(root.root_id())
-            .expect("root widget not in widget tree")
-            .find_widget_under_pointer(pointer_pos)
-            .map(|widget| widget.id());
+        return root.pointer_hit_test(pointer_pos, view);
     }
 
     None
@@ -77,6 +74,8 @@ fn run_event_pass<E>(
     allow_pointer_capture: bool,
     pass_fn: impl FnMut(&mut dyn Widget, &mut EventCtx<'_>, &mut PropertiesMut<'_>, &E),
     trace: bool,
+    view: GeometryView<'_>,
+    route: Option<&[WidgetId]>,
 ) -> Handled {
     let mut pass_fn = pass_fn;
 
@@ -88,15 +87,30 @@ fn run_event_pass<E>(
     }
 
     let original_target = target;
-    let mut target_widget_id = target;
+    let owns_route = route.is_none();
+    let mut buffer = if owns_route {
+        std::mem::take(&mut root.global_state.pointer_route)
+    } else {
+        Vec::new()
+    };
+    if owns_route {
+        buffer.clear();
+        if let Some(id) = target {
+            let _ = root.input_path_into(id, view, &mut buffer);
+        }
+    }
     let mut is_handled = false;
-    while let Some(widget_id) = target_widget_id {
-        let parent_id = root.widget_arena.parent_of(widget_id);
+    for &widget_id in route.unwrap_or(&buffer) {
+        let Some(geometry) = view.bind(widget_id) else {
+            continue;
+        };
+        if !root.has_widget(widget_id) {
+            continue;
+        }
         let mut node = root.widget_arena.get_node_mut(widget_id);
 
         if skip_if_disabled && node.item.state.is_disabled {
             // If the widget is disabled, we skip it and bubble to its parent.
-            target_widget_id = parent_id;
             continue;
         }
 
@@ -107,6 +121,7 @@ fn run_event_pass<E>(
                 .property_arena
                 .get(node.item.state.property_stack_id, widget_type_id);
             let mut ctx = EventCtx {
+                geometry,
                 global_state: &mut root.global_state,
                 widget_state: &mut node.item.state,
                 children: node.children.reborrow_mut(),
@@ -138,15 +153,26 @@ fn run_event_pass<E>(
         }
 
         merge_state_up(&mut root.widget_arena, widget_id);
-        target_widget_id = parent_id;
     }
 
+    if owns_route {
+        buffer.clear();
+        root.global_state.pointer_route = buffer;
+    }
     Handled::from(is_handled)
 }
 
 // --- MARK: POINTER_EVENT
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
 pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEvent) -> Handled {
+    let source = root.global_state.input_geometry_source.clone();
+    run_on_pointer_event_with_view(root, event, source.borrow())
+}
+pub(crate) fn run_on_pointer_event_with_view(
+    root: &mut RenderRoot,
+    event: &PointerEvent,
+    view: GeometryView<'_>,
+) -> Handled {
     let _span = info_span!("dispatch_pointer_event").entered();
 
     trace!(
@@ -154,7 +180,10 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
         pointer_event_short_name(event)
     );
 
-    let event_pos = try_event_position(event).map(|p| p.to_logical(root.global_state.scale_factor));
+    let scale = view.scale(root.global_state.scale_factor);
+    let physical_pos = try_event_position(event);
+    root.global_state.last_pointer_physical = physical_pos;
+    let event_pos = physical_pos.map(|p| p.to_logical(scale));
 
     if event_pos != root.global_state.last_mouse_pos {
         root.global_state.last_mouse_pos = event_pos;
@@ -172,7 +201,7 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
     if root.global_state.inspector_state.is_picking_widget
         && matches!(event, PointerEvent::Down { .. })
     {
-        let target_widget_id = get_pointer_target(root, event_pos);
+        let target_widget_id = get_pointer_target(root, event_pos, view);
         if let Some(target_widget_id) = target_widget_id {
             root.global_state
                 .emit_signal(RenderRootSignal::WidgetSelectedInInspector(
@@ -185,9 +214,25 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
         return Handled::Yes;
     }
 
-    let root_node = root.widget_arena.get_node_mut(root.root_id());
-    let layer_ids = root_node.item.widget.children_ids();
+    let layer_ids: smallvec::SmallVec<[WidgetId; 16]> = match view {
+        GeometryView::Live => root
+            .widget_arena
+            .get_node(root.root_id())
+            .item
+            .widget
+            .children_ids()
+            .into_iter()
+            .collect(),
+        GeometryView::Presented(Some(v)) => v.child_ids(0).collect(),
+        GeometryView::Presented(None) => smallvec::SmallVec::new(),
+    };
     for layer_id in layer_ids {
+        if !root.has_widget(layer_id) {
+            continue;
+        }
+        let Some(geometry) = view.bind(layer_id) else {
+            continue;
+        };
         let mut layer_root = root.widget_arena.get_node_mut(layer_id);
         let layer_type_id = layer_root.item.widget.type_id();
         if let Some(layer) = layer_root.item.widget.as_layer() {
@@ -195,6 +240,7 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
                 .property_arena
                 .get(layer_root.item.state.property_stack_id, layer_type_id);
             let mut ctx = EventCtx {
+                geometry,
                 global_state: &mut root.global_state,
                 widget_state: &mut layer_root.item.state,
                 children: layer_root.children.reborrow_mut(),
@@ -217,9 +263,15 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
         }
     }
 
-    let target_widget_id = get_pointer_target(root, event_pos);
+    let target_widget_id = get_pointer_target(root, event_pos, view);
 
-    if matches!(event, PointerEvent::Down { .. })
+    let mut route = std::mem::take(&mut root.global_state.pointer_route);
+    route.clear();
+    if let Some(id) = target_widget_id {
+        let _ = root.input_path_into(id, view, &mut route);
+    }
+    if !route.is_empty()
+        && matches!(event, PointerEvent::Down { .. })
         && let Some(target_widget_id) = target_widget_id
     {
         // The next tab event will assign focus around this widget.
@@ -228,12 +280,7 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
         // If we click outside of the focused widget, we clear the focus.
         if let Some(focused_widget) = root.global_state.focused_widget {
             // Focused_widget isn't ancestor of target_widget_id
-            if !root
-                .widget_arena
-                .nodes
-                .get_id_path(target_widget_id)
-                .contains(&focused_widget.to_raw())
-            {
+            if !route.contains(&focused_widget) {
                 root.global_state.next_focused_widget = None;
             }
         }
@@ -247,16 +294,26 @@ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEv
         skip_if_disabled,
         matches!(event, PointerEvent::Down { .. }),
         |widget, ctx, props, event| {
+            if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_))
+                && ctx.global_state.pointer_capture_target == Some(ctx.widget_state.id)
+            {
+                ctx.global_state.pointer_capture_terminal_delivered = Some(ctx.widget_state.id);
+            }
             widget.on_pointer_event(ctx, props, event);
         },
         !is_very_frequent(event),
+        view,
+        Some(&route),
     );
+    route.clear();
+    root.global_state.pointer_route = route;
 
     if matches!(event, PointerEvent::Up { .. } | PointerEvent::Cancel(..)) {
         // Automatically release the pointer on pointer up or leave. If a widget holds the capture,
         // it is notified of the pointer event before the capture is released, so it knows it is
         // about to lose the pointer.
         root.global_state.pointer_capture_target = None;
+        root.global_state.pointer_capture_terminal_delivered = None;
     }
 
     if !is_very_frequent(event) {
@@ -313,6 +370,8 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
             widget.on_text_event(ctx, props, event);
         },
         true,
+        GeometryView::Live,
+        None,
     );
 
     if let TextEvent::Keyboard(key) = event {
@@ -378,6 +437,8 @@ pub(crate) fn run_on_access_event_pass(
             widget.on_access_event(ctx, props, event);
         },
         true,
+        GeometryView::Live,
+        None,
     );
 
     // Handle focus events

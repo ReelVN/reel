@@ -36,6 +36,7 @@ fn update_anim_for_widget(
         state.request_anim = false;
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
         let mut ctx = UpdateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state,
             widget_state: state,
             children: children.reborrow_mut(),

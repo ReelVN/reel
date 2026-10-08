@@ -1,0 +1,20 @@
+[package]
+name = "reel-stage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+reel-core = { path = "../reel-core" }
+masonry_core = { path = "../../third_party/masonry/masonry_core", default-features = false }
+
+[dev-dependencies]
+masonry = { path = "../../third_party/masonry/masonry", default-features = false }
+imaging_vello_cpu = "=0.0.1"
+
+[lints]
+workspace = true

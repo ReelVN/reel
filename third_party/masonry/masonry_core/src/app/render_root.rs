@@ -28,9 +28,7 @@ use crate::passes::accessibility::run_accessibility_pass;
 use crate::passes::action::run_action_pass;
 use crate::passes::anim::run_update_anim_pass;
 use crate::passes::compose::run_compose_pass;
-use crate::passes::event::{
-    run_on_access_event_pass, run_on_pointer_event_pass, run_on_text_event_pass,
-};
+use crate::passes::event::{run_on_access_event_pass, run_on_text_event_pass};
 use crate::passes::layout::run_layout_pass;
 use crate::passes::mutate::{mutate_widget, run_mutate_pass};
 use crate::passes::paint::run_paint_pass;
@@ -86,6 +84,12 @@ pub(crate) struct RenderRootState {
 
     /// Last mouse position. Updated by `on_pointer_event` pass, used by other passes.
     pub(crate) last_mouse_pos: Option<LogicalPosition<f64>>,
+    pub(crate) last_pointer_physical: Option<dpi::PhysicalPosition<f64>>,
+    pub(crate) input_geometry_source: super::InputGeometrySource,
+    pub(crate) max_input_path: usize,
+    pub(crate) pointer_route: Vec<WidgetId>,
+    pub(crate) pointer_hover_spare: Vec<WidgetId>,
+    pub(crate) pointer_active_spare: Vec<WidgetId>,
 
     /// Currently focused widget.
     pub(crate) focused_widget: Option<WidgetId>,
@@ -123,6 +127,10 @@ pub(crate) struct RenderRootState {
 
     /// Widget that currently has pointer capture.
     pub(crate) pointer_capture_target: Option<WidgetId>,
+
+    /// Capture whose Up/Cancel callback has begun, before ancestor bubbling completes.
+    /// Keep capture active for the real control's terminal handler, without cancelling twice.
+    pub(crate) pointer_capture_terminal_delivered: Option<WidgetId>,
 
     /// Current cursor icon.
     pub(crate) cursor_icon: CursorIcon,
@@ -175,9 +183,11 @@ pub(crate) struct RenderRootState {
     pub(crate) debug_paint: bool,
 }
 
+type MutateFn = Box<dyn for<'a> FnOnce(WidgetMut<'a, dyn Widget>)>;
+
 pub(crate) struct MutateCallback {
     pub(crate) id: WidgetId,
-    pub(crate) callback: Box<dyn FnOnce(WidgetMut<'_, dyn Widget>)>,
+    pub(crate) callback: MutateFn,
 }
 
 /// Defines how a window's size is determined.
@@ -342,6 +352,12 @@ impl RenderRoot {
                 size_policy,
                 size,
                 last_mouse_pos: None,
+                last_pointer_physical: None,
+                input_geometry_source: super::InputGeometrySource::Live,
+                max_input_path: 128,
+                pointer_route: Vec::with_capacity(128),
+                pointer_hover_spare: Vec::with_capacity(128),
+                pointer_active_spare: Vec::with_capacity(128),
                 focused_widget: None,
                 focused_path: Vec::new(),
                 next_focused_widget: None,
@@ -349,9 +365,10 @@ impl RenderRoot {
                 focus_fallback: None,
                 window_focused: true,
                 scroll_request_targets: Vec::new(),
-                hovered_path: Vec::new(),
-                active_path: Vec::new(),
+                hovered_path: Vec::with_capacity(128),
+                active_path: Vec::with_capacity(128),
                 pointer_capture_target: None,
+                pointer_capture_terminal_delivered: None,
                 cursor_icon: CursorIcon::Default,
                 font_context: FontContext {
                     collection: Collection::new(CollectionOptions {
@@ -547,8 +564,10 @@ impl RenderRoot {
     /// Handles a pointer event.
     pub fn handle_pointer_event(&mut self, event: PointerEvent) -> Handled {
         let _span = info_span!("pointer_event");
-        let handled = run_on_pointer_event_pass(self, &event);
-        run_update_pointer_pass(self);
+        let source = self.global_state.input_geometry_source.clone();
+        let view = source.borrow();
+        let handled = crate::passes::event::run_on_pointer_event_with_view(self, &event, view);
+        crate::passes::update::run_update_pointer_with_view(self, view);
         self.run_rewrite_passes();
 
         handled
@@ -648,6 +667,7 @@ impl RenderRoot {
             .get(state.property_stack_id, widget.type_id());
 
         let ctx = QueryCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state: &self.global_state,
             widget_state: state,
             properties: PropertiesRef {

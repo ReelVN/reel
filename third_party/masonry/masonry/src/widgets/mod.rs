@@ -1,5 +1,10 @@
 // Copyright 2026 the Xilem Authors and Reel contributors
 // SPDX-License-Identifier: Apache-2.0
+//! Selected upstream real widgets.
+#![expect(
+    missing_debug_implementations,
+    reason = "Upstream widgets are not expected to implement Debug"
+)]
 mod button;
 pub use button::*;
 mod image;

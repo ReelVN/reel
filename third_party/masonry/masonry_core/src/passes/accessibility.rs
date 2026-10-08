@@ -44,6 +44,7 @@ fn build_accessibility_tree(
 
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
         let mut ctx = AccessCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state,
             widget_state: state,
             children: children.reborrow_mut(),

@@ -95,7 +95,6 @@ fn paint_widget(
     // TODO - Handle damage regions
     // https://github.com/linebender/xilem/issues/789
 
-    state.paint_layer_mode = PaintLayerMode::Inline;
     if (state.request_pre_paint || state.request_paint || state.request_post_paint) && !is_stashed {
         if trace {
             trace!("Painting widget '{}' {}", widget.short_type_name(), id);
@@ -103,6 +102,7 @@ fn paint_widget(
 
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
         let mut ctx = PaintCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state,
             widget_state: state,
             children: children.reborrow_mut(),

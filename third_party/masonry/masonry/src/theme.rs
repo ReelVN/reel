@@ -5,9 +5,7 @@
 
 #![allow(missing_docs, reason = "Names are self-explanatory.")]
 
-use crate::core::{
-    DefaultProperties, PropertyStack, Selector, StyleProperty, StyleSet,
-};
+use crate::core::{DefaultProperties, PropertyStack, Selector, StyleProperty, StyleSet};
 use crate::layout::{AsUnit, Length};
 use crate::parley::{GenericFamily, LineHeight};
 use crate::peniko::Color;
@@ -124,4 +122,3 @@ pub fn default_text_styles(styles: &mut StyleSet) {
     styles.insert(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.2)));
     styles.insert(GenericFamily::SystemUi.into());
 }
-

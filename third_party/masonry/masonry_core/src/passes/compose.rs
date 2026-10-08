@@ -36,6 +36,7 @@ fn compose_widget(
     state.bounding_box = state.window_transform.transform_rect_bbox(paint_box);
 
     let mut ctx = ComposeCtx {
+        geometry: crate::app::ContextGeometry::Live,
         global_state,
         widget_state: state,
         children: children.reborrow_mut(),

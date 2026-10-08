@@ -56,6 +56,7 @@ macro_rules! impl_context_method {
 /// requires a later pass (for instance, if your widget has a `set_color` method),
 /// you will need to signal that change in the pass (eg [`request_render`](MutateCtx::request_render)).
 pub struct MutateCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) parent_widget_state: Option<&'a mut WidgetState>,
     pub(crate) widget_state: &'a mut WidgetState,
@@ -66,6 +67,7 @@ pub struct MutateCtx<'a> {
 
 /// A context provided to the [`Widget::on_action`] method.
 pub struct ActionCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -78,6 +80,7 @@ pub struct ActionCtx<'a> {
 /// This context is passed to methods of widgets requiring shared, read-only access.
 #[derive(Clone, Copy)]
 pub struct QueryCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a RenderRootState,
     pub(crate) widget_state: &'a WidgetState,
     pub(crate) properties: PropertiesRef<'a>,
@@ -87,6 +90,7 @@ pub struct QueryCtx<'a> {
 
 /// A context given when calling another context's `get_raw_mut()` method.
 pub struct RawCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) parent_widget_state: &'a mut WidgetState,
     pub(crate) widget_state: &'a mut WidgetState,
@@ -96,6 +100,7 @@ pub struct RawCtx<'a> {
 
 /// A context provided to event-handling [`Widget`] methods.
 pub struct EventCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -115,6 +120,7 @@ pub struct RegisterCtx<'a> {
 
 /// A context provided to the [`Widget::update`] method.
 pub struct UpdateCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -124,6 +130,7 @@ pub struct UpdateCtx<'a> {
 
 /// A context provided to [`Widget::measure`] methods.
 pub struct MeasureCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -135,6 +142,7 @@ pub struct MeasureCtx<'a> {
 
 /// A context provided to [`Widget::layout`] methods.
 pub struct LayoutCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -143,6 +151,7 @@ pub struct LayoutCtx<'a> {
 
 /// A context provided to the [`Widget::compose`] method.
 pub struct ComposeCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -151,6 +160,7 @@ pub struct ComposeCtx<'a> {
 
 /// A context passed to [`Widget::paint`] method.
 pub struct PaintCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
@@ -158,11 +168,31 @@ pub struct PaintCtx<'a> {
 
 /// A context passed to [`Widget::accessibility`] method.
 pub struct AccessCtx<'a> {
+    pub(crate) geometry: crate::app::ContextGeometry<'a>,
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
     pub(crate) tree_update: &'a mut TreeUpdate,
 }
+
+impl_context_method!(
+    MutateCtx<'_>,
+    ActionCtx<'_>,
+    QueryCtx<'_>,
+    EventCtx<'_>,
+    UpdateCtx<'_>,
+    RawCtx<'_>,
+    MeasureCtx<'_>,
+    LayoutCtx<'_>,
+    ComposeCtx<'_>,
+    PaintCtx<'_>,
+    AccessCtx<'_>,
+    {
+        fn geometry_state(&self) -> crate::app::GeometryRef<'_> {
+            self.geometry.resolve(self.widget_state)
+        }
+    }
+);
 
 // --- MARK: GETTERS
 // Methods for all context types
@@ -226,7 +256,7 @@ impl_context_method!(
         ///
         /// This transform is applied before `scroll_translation` and `origin`.
         pub fn transform(&self) -> Affine {
-            self.widget_state.transform
+            self.geometry_state().transform()
         }
     }
 );
@@ -294,15 +324,13 @@ impl MutateCtx<'_> {
     pub fn get_mut<'c, Child: Widget + FromDynWidget + ?Sized>(
         &'c mut self,
         child: &'c mut WidgetPod<Child>,
-    ) -> WidgetMut<'c, Child> {
-        let node_mut = self
-            .children
-            .item_mut(child.id())
-            .expect("get_mut: child not found");
+    ) -> Option<WidgetMut<'c, Child>> {
+        let node_mut = self.children.item_mut(child.id())?;
         let child_stack_id = node_mut.item.state.property_stack_id;
         let child_type_id = (*node_mut.item.widget).type_id();
         let child_stack = self.property_arena.get(child_stack_id, child_type_id);
         let child_ctx = MutateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state: self.global_state,
             parent_widget_state: Some(&mut self.widget_state),
             widget_state: &mut node_mut.item.state,
@@ -315,14 +343,15 @@ impl MutateCtx<'_> {
             children: node_mut.children,
             property_arena: self.property_arena,
         };
-        WidgetMut {
+        Some(WidgetMut {
             ctx: child_ctx,
-            widget: Child::from_dyn_mut(&mut *node_mut.item.widget).unwrap(),
-        }
+            widget: Child::from_dyn_mut(&mut *node_mut.item.widget)?,
+        })
     }
 
     pub(crate) fn reborrow_mut(&mut self) -> MutateCtx<'_> {
         MutateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state: self.global_state,
             // We don't don't reborrow `parent_widget_state`. This avoids running
             // `merge_up` in `WidgetMut::Drop` multiple times for the same state.
@@ -342,6 +371,7 @@ impl MutateCtx<'_> {
 
     pub(crate) fn update_mut(&mut self) -> UpdateCtx<'_> {
         UpdateCtx {
+            geometry: self.geometry,
             global_state: self.global_state,
             widget_state: self.widget_state,
             children: self.children.reborrow_mut(),
@@ -363,13 +393,15 @@ impl MutateCtx<'_> {
 // Methods to get a child WidgetRef from a parent.
 impl<'w> QueryCtx<'w> {
     /// Returns a [`WidgetRef`] to a child widget.
-    pub fn get(self, child: WidgetId) -> WidgetRef<'w, dyn Widget> {
-        let child_node = self.children.item(child).expect("get_mut: child not found");
+    pub fn get(self, child: WidgetId) -> Option<WidgetRef<'w, dyn Widget>> {
+        let geometry = self.geometry.child(child)?;
+        let child_node = self.children.item(child)?;
         let child_type_id = (*child_node.item.widget).type_id();
         let child_stack = self
             .property_arena
             .get(child_node.item.state.property_stack_id, child_type_id);
         let child_ctx = QueryCtx {
+            geometry,
             global_state: self.global_state,
             widget_state: &child_node.item.state,
             properties: PropertiesRef {
@@ -381,10 +413,10 @@ impl<'w> QueryCtx<'w> {
             children: child_node.children,
             property_arena: self.property_arena,
         };
-        WidgetRef {
+        Some(WidgetRef {
             ctx: child_ctx,
             widget: &*child_node.item.widget,
-        }
+        })
     }
 }
 
@@ -492,7 +524,7 @@ impl EventCtx<'_> {
     /// Converts the given position from the window's coordinate space
     /// to this widget's content-box coordinate space.
     pub fn local_position(&self, p: PhysicalPosition<f64>) -> Point {
-        let LogicalPosition { x, y } = p.to_logical(self.global_state.scale_factor);
+        let LogicalPosition { x, y } = p.to_logical(self.scale_factor());
         self.to_local(Point { x, y })
     }
 }
@@ -1195,15 +1227,15 @@ impl_context_method!(
         /// Returns the aligned content-box rect of this widget
         /// in this widget's content-box coordinate space.
         pub fn content_box(&self) -> Rect {
-            let translation = self.widget_state.border_box_translation();
-            self.widget_state.content_box() - translation
+            let translation = self.geometry_state().border_box_translation();
+            self.geometry_state().content_box() - translation
         }
 
         /// Returns the aligned border-box rect of this widget
         /// in this widget's content-box coordinate space.
         pub fn border_box(&self) -> Rect {
-            let translation = self.widget_state.border_box_translation();
-            self.widget_state.border_box() - translation
+            let translation = self.geometry_state().border_box_translation();
+            self.geometry_state().border_box() - translation
         }
 
         /// Returns the aligned paint-box rect of this widget
@@ -1211,8 +1243,8 @@ impl_context_method!(
         ///
         /// Covers the area we expect to be invalidated when the widget is painted.
         pub fn paint_box(&self) -> Rect {
-            let translation = self.widget_state.border_box_translation();
-            self.widget_state.paint_box() - translation
+            let translation = self.geometry_state().border_box_translation();
+            self.geometry_state().paint_box() - translation
         }
 
         /// Returns the widget's bounding-box rect in the window's coordinate space.
@@ -1226,19 +1258,17 @@ impl_context_method!(
         ///
         /// [bounding box documentation]: crate::doc::masonry_concepts#bounding-box
         pub fn bounding_box(&self) -> Rect {
-            self.widget_state.bounding_box
+            self.geometry_state().bounding_box()
         }
 
         /// Returns the first baseline relative to the top of the widget's aligned content-box.
         pub fn first_baseline(&self) -> f64 {
-            let border_box_baseline = self.widget_state.aligned_first_baseline();
-            border_box_baseline - self.widget_state.border_box_insets.y0
+            self.geometry_state().first_baseline()
         }
 
         /// Returns the last baseline relative to the top of the widget's aligned content-box.
         pub fn last_baseline(&self) -> f64 {
-            let border_box_baseline = self.widget_state.aligned_last_baseline();
-            border_box_baseline - self.widget_state.border_box_insets.y0
+            self.geometry_state().last_baseline()
         }
 
         /// The clip path of the widget, if any was set.
@@ -1249,8 +1279,10 @@ impl_context_method!(
         /// [`LayoutCtx::set_clip_path`](crate::core::LayoutCtx::set_clip_path).
         pub fn clip_path(&self) -> Option<Rect> {
             // Translate the clip path to the widget's content-box coordinate space.
-            let translation = self.widget_state.border_box_translation();
-            self.widget_state.clip_path.map(|path| path - translation)
+            let translation = self.geometry_state().border_box_translation();
+            self.geometry_state()
+                .clip_path()
+                .map(|path| path - translation)
         }
 
         /// Returns the [`Vec2`] for translating between this widget's
@@ -1259,7 +1291,7 @@ impl_context_method!(
         /// Add this [`Vec2`] to translate from content-box to border-box,
         /// and subtract this [`Vec2`] to translate from border-box to content-box.
         pub fn border_box_translation(&self) -> Vec2 {
-            self.widget_state.border_box_translation()
+            self.geometry_state().border_box_translation()
         }
 
         /// Returns the global transform mapping this widget's content-box coordinate space
@@ -1271,17 +1303,17 @@ impl_context_method!(
         /// Multiply by this to convert from this widget's content-box coordinate space to the window's,
         /// or use the inverse of this transform to go from window's space to this widget's content-box.
         pub fn window_transform(&self) -> Affine {
-            let translation = self.widget_state.border_box_translation();
-            self.widget_state
-                .window_transform
+            let translation = self.geometry_state().border_box_translation();
+            self.geometry_state()
+                .window_transform()
                 .pre_translate(translation)
         }
 
         /// Converts the `point` from the window's coordinate space
         /// to this widget's content-box coordinate space.
         pub fn to_local(&self, point: Point) -> Point {
-            let to_border_box = self.widget_state.window_transform.inverse();
-            let to_content_box = -self.widget_state.border_box_translation();
+            let to_border_box = self.geometry_state().window_transform().inverse();
+            let to_content_box = -self.geometry_state().border_box_translation();
             to_border_box.then_translate(to_content_box) * point
         }
 
@@ -1290,15 +1322,15 @@ impl_context_method!(
         ///
         /// The returned point is relative to the window's content area; it excludes window chrome.
         pub fn to_window(&self, point: Point) -> Point {
-            let translation = self.widget_state.border_box_translation();
-            self.widget_state.window_transform * (point + translation)
+            let translation = self.geometry_state().border_box_translation();
+            self.geometry_state().window_transform() * (point + translation)
         }
 
         /// Returns the DPI scaling factor.
         ///
         /// This can be useful for loading image resources meant for a specific scale.
         pub fn scale_factor(&self) -> f64 {
-            self.global_state.scale_factor
+            self.geometry.scale(self.global_state.scale_factor)
         }
     }
 );
@@ -1417,14 +1449,14 @@ impl_context_method!(
         ///
         /// See [`Widget::accepts_pointer_interaction()`] for details.
         pub fn accepts_pointer_interaction(&self) -> bool {
-            self.widget_state.accepts_pointer_interaction
+            self.geometry_state().accepts_pointer_interaction()
         }
 
         /// Whether children of this widget get pointer events and hovered status.
         ///
         /// See [`Widget::propagates_pointer_interaction()`] for details.
         pub fn propagates_pointer_interaction(&self) -> bool {
-            self.widget_state.propagates_pointer_interaction
+            self.geometry_state().propagates_pointer_interaction()
         }
 
         /// Whether this widget gets text focus.
@@ -1466,8 +1498,11 @@ impl_context_method!(
         ///
         /// [stashed]: crate::doc::masonry_concepts#stashed
         /// [`update_stashed`]: crate::doc::pass_system#update-passes
-        pub fn child_is_stashed(&self, child: &WidgetPod<impl Widget + ?Sized>) -> bool {
-            self.get_child_state(child).is_stashed
+        pub fn child_is_stashed(&self, child: &WidgetPod<impl Widget + ?Sized>) -> Option<bool> {
+            self.geometry.child(child.id())?;
+            self.children
+                .item(child.id())
+                .map(|node| node.item.state.is_stashed)
         }
     }
 );
@@ -1598,13 +1633,54 @@ impl_context_method!(
             fn remove_node(
                 global_state: &mut RenderRootState,
                 parent_state: &mut WidgetState,
+                property_arena: &PropertyArena,
+                view: crate::app::GeometryView<'_>,
                 node: ArenaMut<'_, WidgetArenaNode>,
             ) {
                 let mut children = node.children;
+                let widget_type_id = (*node.item.widget).type_id();
                 let widget = &mut *node.item.widget;
                 let state = &mut node.item.state;
 
-                // TODO - Send event to widget
+                if global_state.pointer_capture_target == Some(state.id)
+                    && global_state.pointer_capture_terminal_delivered != Some(state.id)
+                {
+                    global_state.pointer_capture_terminal_delivered = Some(state.id);
+                    let stack = property_arena.get(state.property_stack_id, widget_type_id);
+                    let mut props = PropertiesMut {
+                        local: &mut node.item.properties,
+                        default_map: property_arena.default_properties.for_widget(widget_type_id),
+                        stack,
+                        class_set: &node.item.class_set,
+                    };
+                    let target = state.id;
+                    if let Some(geometry) = view.bind(target) {
+                        let mut ctx = EventCtx {
+                            geometry,
+                            global_state,
+                            widget_state: state,
+                            children: children.reborrow_mut(),
+                            property_arena,
+                            target,
+                            allow_pointer_capture: false,
+                            is_handled: false,
+                        };
+                        widget.on_pointer_event(
+                            &mut ctx,
+                            &mut props,
+                            &crate::core::PointerEvent::Cancel(crate::core::PointerInfo {
+                                pointer_id: None,
+                                persistent_device_id: None,
+                                pointer_type: crate::core::PointerType::default(),
+                            }),
+                        );
+                    }
+                }
+                if global_state.pointer_capture_target == Some(state.id) {
+                    global_state.pointer_capture_target = None;
+                    global_state.pointer_capture_terminal_delivered = None;
+                    global_state.needs_pointer_pass = true;
+                }
 
                 let parent_name = widget.short_type_name();
                 let parent_id = state.id;
@@ -1615,7 +1691,7 @@ impl_context_method!(
                         );
                     };
 
-                    remove_node(global_state, state, node);
+                    remove_node(global_state, state, property_arena, view, node);
                 }
 
                 // If we remove the focus anchor, its parent becomes the anchor.
@@ -1637,7 +1713,19 @@ impl_context_method!(
                 .children
                 .item_mut(id)
                 .expect("remove_child: child not found");
-            remove_node(self.global_state, self.widget_state, node);
+            let source = self.global_state.input_geometry_source.clone();
+            remove_node(
+                self.global_state,
+                self.widget_state,
+                self.property_arena,
+                match self.geometry {
+                    crate::app::ContextGeometry::Live => source.borrow(),
+                    crate::app::ContextGeometry::Presented { view, .. } => {
+                        crate::app::GeometryView::Presented(Some(view))
+                    }
+                },
+                node,
+            );
 
             let _ = self.children.remove(id).unwrap();
 
@@ -1771,12 +1859,11 @@ impl_context_method!(
         pub fn get_raw<Child: Widget + FromDynWidget + ?Sized>(
             &mut self,
             child: &mut WidgetPod<Child>,
-        ) -> (&Child, RawCtx<'_>) {
-            let node_mut = self
-                .children
-                .item_mut(child.id())
-                .expect("get_mut: child not found");
+        ) -> Option<(&Child, RawCtx<'_>)> {
+            let geometry = self.geometry.child(child.id())?;
+            let node_mut = self.children.item_mut(child.id())?;
             let child_ctx = RawCtx {
+                geometry,
                 global_state: self.global_state,
                 parent_widget_state: self.widget_state,
                 widget_state: &mut node_mut.item.state,
@@ -1786,7 +1873,7 @@ impl_context_method!(
 
             let widget = Child::from_dyn(&*node_mut.item.widget).unwrap();
 
-            (widget, child_ctx)
+            Some((widget, child_ctx))
         }
 
         /// Returns direct mutable reference to the stored child, and a context handle for that child.
@@ -1805,12 +1892,11 @@ impl_context_method!(
         pub fn get_raw_mut<Child: Widget + FromDynWidget + AllowRawMut + ?Sized>(
             &mut self,
             child: &mut WidgetPod<Child>,
-        ) -> (&mut Child, RawCtx<'_>) {
-            let node_mut = self
-                .children
-                .item_mut(child.id())
-                .expect("get_mut: child not found");
+        ) -> Option<(&mut Child, RawCtx<'_>)> {
+            let geometry = self.geometry.child(child.id())?;
+            let node_mut = self.children.item_mut(child.id())?;
             let child_ctx = RawCtx {
+                geometry,
                 global_state: self.global_state,
                 parent_widget_state: self.widget_state,
                 widget_state: &mut node_mut.item.state,
@@ -1820,7 +1906,7 @@ impl_context_method!(
 
             let widget = Child::from_dyn_mut(&mut *node_mut.item.widget).unwrap();
 
-            (widget, child_ctx)
+            Some((widget, child_ctx))
         }
 
         /// Submits an action, which indicates that this widget requires something be handled
@@ -2153,9 +2239,8 @@ impl Drop for RawCtx<'_> {
 impl PaintCtx<'_> {
     /// Controls how this widget subtree is recorded in the current paint pass.
     ///
-    /// This is reset to [`PaintLayerMode::Inline`] at the start of each paint
-    /// pass for the widget. Widgets that want isolated scene layers should set
-    /// this during `pre_paint`, `paint`, or `post_paint` each time they paint.
+    /// The declaration is retained across cached pre/paint/post callbacks.
+    /// Initial mode is Inline; explicitly set Inline to return to ordinary recording.
     pub fn set_paint_layer_mode(&mut self, mode: PaintLayerMode) {
         self.widget_state.paint_layer_mode = mode;
     }

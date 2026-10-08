@@ -214,5 +214,4 @@ impl Widget for Image {
 }
 
 // FIXME - remove cfg?
-#[cfg(not(target_arch = "wasm32"))]
 // --- MARK: TESTS

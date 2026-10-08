@@ -100,8 +100,8 @@ impl LayerStack {
     pub(crate) fn layer_root_mut<'t>(
         this: &'t mut WidgetMut<'_, Self>,
         idx: usize,
-    ) -> WidgetMut<'t, dyn Widget> {
-        let layer = &mut this.widget.layers[idx].root;
+    ) -> Option<WidgetMut<'t, dyn Widget>> {
+        let layer = &mut this.widget.layers.get_mut(idx)?.root;
         this.ctx.get_mut(layer)
     }
 

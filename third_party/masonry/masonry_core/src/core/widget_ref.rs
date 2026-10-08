@@ -6,7 +6,7 @@ use std::ops::Deref;
 use kurbo::Point;
 use smallvec::SmallVec;
 
-use crate::core::{FromDynWidget, PropertiesRef, Property, QueryCtx, Widget, WidgetId};
+use crate::core::{FromDynWidget, Property, QueryCtx, Widget, WidgetId};
 
 /// A rich reference to a [`Widget`].
 ///
@@ -112,44 +112,18 @@ impl<'w, W: Widget + ?Sized> WidgetRef<'w, W> {
 
     /// Returns refs to widget's children.
     pub fn children(&self) -> SmallVec<[WidgetRef<'w, dyn Widget>; 16]> {
-        let parent_id = self.ctx.widget_state.id;
-        self.widget
-            .children_ids()
-            .iter()
-            .map(|&id| {
-                let Some(node_ref) = self.ctx.children.item(id) else {
-                    panic!(
-                        "Error in '{}' #{parent_id}: child #{id} has not been added to tree",
-                        self.widget.short_type_name()
-                    );
-                };
-
-                let children = node_ref.children;
-                let widget = &*node_ref.item.widget;
-                let state = &node_ref.item.state;
-                let properties = &node_ref.item.properties;
-                let class_set = &node_ref.item.class_set;
-                let stack = self
-                    .ctx
-                    .property_arena
-                    .get(state.property_stack_id, widget.type_id());
-
-                let ctx = QueryCtx {
-                    global_state: self.ctx.global_state,
-                    widget_state: state,
-                    properties: PropertiesRef {
-                        local: properties,
-                        default_map: self.ctx.properties.default_map,
-                        stack,
-                        class_set,
-                    },
-                    children,
-                    property_arena: self.ctx.property_arena,
-                };
-
-                WidgetRef { ctx, widget }
-            })
-            .collect()
+        match self.ctx.geometry {
+            crate::app::ContextGeometry::Live => self
+                .widget
+                .children_ids()
+                .into_iter()
+                .filter_map(|id| self.ctx.get(id))
+                .collect(),
+            crate::app::ContextGeometry::Presented { view, index } => view
+                .child_ids(index)
+                .filter_map(|id| self.ctx.get(id))
+                .collect(),
+        }
     }
 }
 

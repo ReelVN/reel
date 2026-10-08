@@ -162,6 +162,7 @@ pub(crate) fn resolve_length(
     // Otherwise fall back to measurement
     let mut children = node.children;
     let mut ctx = MeasureCtx {
+        geometry: crate::app::ContextGeometry::Live,
         global_state,
         widget_state: &mut node.item.state,
         children: children.reborrow_mut(),
@@ -246,6 +247,7 @@ pub(crate) fn resolve_size(
     // Otherwise fall back to measurement
     let mut children = node.children;
     let mut ctx = MeasureCtx {
+        geometry: crate::app::ContextGeometry::Live,
         global_state,
         widget_state: &mut node.item.state,
         children: children.reborrow_mut(),
@@ -415,6 +417,7 @@ pub(crate) fn run_layout_on(
     let content_box_size = padding.size_down(content_box_size);
 
     let mut ctx = LayoutCtx {
+        geometry: crate::app::ContextGeometry::Live,
         global_state,
         widget_state: state,
         children: children.reborrow_mut(),

@@ -4,6 +4,11 @@
 //! Types needed for running a Masonry app.
 
 mod layer_stack;
+mod presented_geometry;
+pub(crate) use presented_geometry::{ContextGeometry, GeometryRef, GeometryView};
+pub use presented_geometry::{
+    GeometryError, GeometryLimits, GeometryRecord, InputGeometrySource, PresentedGeometryView,
+};
 mod render_root;
 mod tracing_backend;
 mod visual_layers;

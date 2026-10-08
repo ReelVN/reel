@@ -13,4 +13,29 @@ reel-stage. No Slider behavior/configuration API is changed by U02.
 
 Local manifest changes: isolated four-crate workspace, selected modules/theme,
 no backend/testing features; exact ordinary dependency versions and root lock.
-Production geometry/context/input changes will be recorded here as implemented.
+The production geometry/context/input changes are listed below.
+
+Production local changes:
+
+- Compact app/presented_geometry.rs exports all registered geometry and topology;
+  no full state clones or ancestor arrays. Explicit source/view/index bindings,
+  bounded reused routes, export scratch accounting and host retention guard.
+  Traversal borrows direct arena children, avoiding temporary per-node safe-tree
+  lookup paths. Registered node/byte bounds are checked before traversal.
+- Context constructors in every pass explicitly select Live or validated borrowed
+  pointer geometry. Optional child lookups and selected WidgetRef.children.
+  Button::child_mut and the internal layer-root lookup propagate Option.
+- Pointer event terminal delivery marker keeps capture active through Up/Cancel;
+  removal delivers one Cancel only when no terminal callback has begun.
+- update.rs diffs old/new paths, retains old view for exits, cancels invalid
+  capture, keeps valid capture and updates the stationary cursor in the new view.
+  Stashed changes now request pointer reconciliation immediately.
+- paint mode is retained, including when only a different cached callback reruns.
+- Local README metadata, minor upstream doc formatting and a mutation callback
+  type alias allow strict direct-crate clippy without suppressing warnings.
+
+Complete local source diff is generated as reel-production.patch against the
+fixed source listed in UPSTREAM-SOURCE.sha256; new files carry their own headers.
+`crates/reel-stage/scripts/audit-source.py` verifies original upstream bytes,
+the retained Rust/manifest closure, absence of nested Git and exact local diff.
+Local README files provide build metadata; they are not imported upstream docs.

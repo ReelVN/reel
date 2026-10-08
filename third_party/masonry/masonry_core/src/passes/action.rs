@@ -31,6 +31,7 @@ fn handle_action(root: &mut RenderRoot, action: &ErasedAction, source: WidgetId)
             let class_set = &node.item.class_set;
 
             let mut ctx = ActionCtx {
+                geometry: crate::app::ContextGeometry::Live,
                 global_state: &mut root.global_state,
                 widget_state: &mut node.item.state,
                 children: node.children.reborrow_mut(),

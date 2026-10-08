@@ -7,13 +7,13 @@ use tracing::{info_span, trace};
 use tree_arena::{ArenaMut, ArenaMutList};
 use ui_events::pointer::PointerType;
 
-use crate::app::{RenderRoot, RenderRootSignal, RenderRootState};
+use crate::app::{GeometryView, RenderRoot, RenderRootSignal, RenderRootState};
 use crate::core::{
     ClassSetDiff, CursorIcon, DefaultProperties, Ime, PointerEvent, PointerInfo, PropertiesMut,
     PropertiesRef, PropertyArena, PropertyCache, QueryCtx, RegisterCtx, TextEvent, Update,
     UpdateCtx, Widget, WidgetArenaNode, WidgetId, WidgetState,
 };
-use crate::passes::event::{run_on_pointer_event_pass, run_on_text_event_pass};
+use crate::passes::event::run_on_text_event_pass;
 use crate::passes::{enter_span, enter_span_if, merge_state_up, recurse_on_children};
 use crate::properties::core_property_changed;
 use crate::util::ParentLinkedList;
@@ -31,19 +31,8 @@ fn get_id_path(root: &RenderRoot, widget_id: Option<WidgetId>) -> Vec<WidgetId> 
         .nodes
         .get_id_path(widget_id)
         .iter()
-        .map(|&id| WidgetId(id.try_into().unwrap()))
+        .map(|id| WidgetId((*id).try_into().unwrap()))
         .collect()
-}
-
-fn is_ancestor_of(root: &RenderRoot, ancestor_id: WidgetId, widget_id: Option<WidgetId>) -> bool {
-    let Some(id) = widget_id else {
-        return false;
-    };
-    root.widget_arena
-        .nodes
-        .get_id_path(id)
-        .iter()
-        .any(|id| *id == ancestor_id.to_raw())
 }
 
 /// Make a dummy [`PointerEvent::Cancel`].
@@ -60,9 +49,8 @@ fn run_targeted_update_pass(
     target: Option<WidgetId>,
     mut pass_fn: impl FnMut(&mut dyn Widget, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>),
 ) {
-    let mut current_id = target;
-    while let Some(widget_id) = current_id {
-        let parent_id = root.widget_arena.parent_of(widget_id);
+    let route = get_id_path(root, target);
+    for widget_id in route {
         let node = root.widget_arena.get_node_mut(widget_id);
 
         let children = node.children;
@@ -75,6 +63,7 @@ fn run_targeted_update_pass(
             .get(state.property_stack_id, widget.type_id());
 
         let mut ctx = UpdateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state: &mut root.global_state,
             widget_state: state,
             children,
@@ -93,7 +82,6 @@ fn run_targeted_update_pass(
         pass_fn(widget, &mut ctx, &mut props);
 
         merge_state_up(&mut root.widget_arena, widget_id);
-        current_id = parent_id;
     }
 }
 
@@ -121,6 +109,60 @@ fn run_single_update_pass(
         .get(state.property_stack_id, widget.type_id());
 
     let mut ctx = UpdateCtx {
+        geometry: crate::app::ContextGeometry::Live,
+        global_state: &mut root.global_state,
+        widget_state: state,
+        children,
+        ancestors: None,
+        property_arena: &root.property_arena,
+    };
+    let mut props = PropertiesMut {
+        local: properties,
+        default_map: root
+            .property_arena
+            .default_properties
+            .for_widget(widget.type_id()),
+        stack,
+        class_set,
+    };
+    pass_fn(widget, &mut ctx, &mut props);
+
+    let mut current_id = Some(target);
+    while let Some(widget_id) = current_id {
+        merge_state_up(&mut root.widget_arena, widget_id);
+        current_id = root.widget_arena.parent_of(widget_id);
+    }
+}
+
+fn run_single_update_with_view(
+    root: &mut RenderRoot,
+    target: Option<WidgetId>,
+    view: GeometryView<'_>,
+    mut pass_fn: impl FnMut(&mut dyn Widget, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>),
+) {
+    let Some(target) = target else {
+        return;
+    };
+    if !root.widget_arena.has(target) {
+        return;
+    }
+
+    let Some(geometry) = view.bind(target) else {
+        return;
+    };
+    let node = root.widget_arena.get_node_mut(target);
+
+    let children = node.children;
+    let widget = &mut *node.item.widget;
+    let state = &mut node.item.state;
+    let properties = &mut node.item.properties;
+    let class_set = &node.item.class_set;
+    let stack = root
+        .property_arena
+        .get(state.property_stack_id, widget.type_id());
+
+    let mut ctx = UpdateCtx {
+        geometry,
         global_state: &mut root.global_state,
         widget_state: state,
         children,
@@ -172,6 +214,7 @@ fn update_widget_tree(
     if state.is_new {
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
         let mut ctx = UpdateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state,
             widget_state: state,
             children: children.reborrow_mut(),
@@ -323,6 +366,7 @@ fn update_disabled_for_widget(
     if disabled != state.is_disabled {
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
         let mut ctx = UpdateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state,
             widget_state: state,
             children: children.reborrow_mut(),
@@ -410,6 +454,7 @@ fn update_stashed_for_widget(
     if stashed != state.is_stashed {
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
         let mut ctx = UpdateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state,
             widget_state: state,
             children: children.reborrow_mut(),
@@ -424,6 +469,7 @@ fn update_stashed_for_widget(
         };
         widget.update(&mut ctx, &mut props, &Update::StashedChanged(stashed));
         state.is_stashed = stashed;
+        global_state.needs_pointer_pass = true;
         state.needs_update_focusable = true;
 
         // Items may have been changed while they were stashed in ways that require a
@@ -823,272 +869,211 @@ pub(crate) fn run_update_scroll_pass(root: &mut RenderRoot) {
 // --- MARK: POINTER
 /// See the [passes documentation](crate::doc::pass_system#update-passes).
 pub(crate) fn run_update_pointer_pass(root: &mut RenderRoot) {
+    let source = root.global_state.input_geometry_source.clone();
+    run_update_pointer_with_view(root, source.borrow());
+}
+
+pub(crate) fn run_update_pointer_with_view(root: &mut RenderRoot, view: GeometryView<'_>) {
     if !root.global_state.needs_pointer_pass {
         return;
     }
+    transition_pointer_geometry(root, view, view);
+}
+
+/// Exit callbacks borrow the old view; entry/cursor callbacks borrow the new one.
+/// Shared ancestors and surviving captures receive no spurious exit/entry pair.
+pub(crate) fn transition_pointer_geometry(
+    root: &mut RenderRoot,
+    old: GeometryView<'_>,
+    new: GeometryView<'_>,
+) {
     let _span = info_span!("update_pointer").entered();
-
     root.global_state.needs_pointer_pass = false;
-
-    let pointer_pos = root
-        .global_state
-        .last_mouse_pos
-        .map(|pos| (pos.x, pos.y).into());
-
-    if root.global_state.inspector_state.is_picking_widget {
-        if let Some(pos) = pointer_pos {
-            root.global_state.inspector_state.hovered_widget = root
-                .get_widget(root.root_id())
-                .expect("root widget not in widget tree")
-                .find_widget_under_pointer(pos)
-                .map(|widget| widget.id());
+    let physical = root.global_state.last_pointer_physical;
+    if let Some(id) = root.global_state.pointer_capture_target
+        && (!root.is_still_interactive(id) || new.bind(id).is_none())
+    {
+        if root.global_state.pointer_capture_terminal_delivered != Some(id) {
+            crate::passes::event::run_on_pointer_event_with_view(
+                root,
+                &dummy_pointer_cancel(),
+                old,
+            );
         }
+        root.global_state.pointer_capture_target = None;
+        root.global_state.pointer_capture_terminal_delivered = None;
+    }
+    root.global_state.last_pointer_physical = physical;
+    let position = physical.map(|p| p.to_logical(new.scale(root.global_state.scale_factor)));
+    root.global_state.last_mouse_pos = position;
+    let pointer_pos = position.map(|p| (p.x, p.y).into());
+    if root.global_state.inspector_state.is_picking_widget {
+        root.global_state.inspector_state.hovered_widget =
+            pointer_pos.and_then(|p| root.pointer_hit_test(p, new));
         root.root_state_mut().needs_paint = true;
         return;
     }
-
-    // Release pointer capture if target can no longer hold it.
-    if let Some(id) = root.global_state.pointer_capture_target
-        && !root.is_still_interactive(id)
-    {
-        // The event pass will set pointer_capture_target to None.
-        run_on_pointer_event_pass(root, &dummy_pointer_cancel());
+    let mut next_active = std::mem::take(&mut root.global_state.pointer_active_spare);
+    next_active.clear();
+    if let Some(id) = root.global_state.pointer_capture_target {
+        let _ = root.input_path_into(id, new, &mut next_active);
     }
-
-    // -- UPDATE ACTIVE --
-    // TODO - There's a lot of duplication between this, UPDATE HOVERED
-    // and UPDATE FOCUS. It would be nice to find ways to de-duplicate it without making
-    // the code overly abstract.
-
-    // "Active path" means the widget which is considered active, and all its parents.
-    let prev_active_path = std::mem::take(&mut root.global_state.active_path);
-    let prev_active_widget = prev_active_path.first().copied();
-    let next_active_widget = root.global_state.pointer_capture_target;
-    let next_active_path = get_id_path(root, next_active_widget);
-
-    // We don't just compare `prev_active_widget` and `next_active_widget` because
-    // they could be the same widget but one of their ancestors could have been reparented.
-    // (assuming we ever implement reparenting)
-    if prev_active_path != next_active_path {
-        let mut active_set = HashSet::new();
-        for widget_id in &next_active_path {
-            active_set.insert(*widget_id);
-        }
-
-        trace!("prev_active_path: {:?}", prev_active_path);
-        trace!("next_active_path: {:?}", next_active_path);
-
-        // This algorithm is written to be resilient to future changes like reparenting and multiple
-        // cursors. In theory it's O(Depth² * CursorCount) in the worst case, which isn't too bad
-        // (cursor count is usually 1 or 2, depth is usually small), but in practice it's virtually
-        // always O(Depth * CursorCount) because we only need to update the active status of the
-        // widgets that changed.
-        // The above assumes that accessing the widget tree is O(1) for simplicity.
-
-        fn update_active_status_of(
-            root: &mut RenderRoot,
-            widget_id: WidgetId,
-            active_set: &HashSet<WidgetId>,
-        ) {
-            run_targeted_update_pass(root, Some(widget_id), |widget, ctx, props| {
-                let has_active = active_set.contains(&ctx.widget_id());
-
-                if ctx.widget_state.has_active != has_active {
-                    widget.update(ctx, props, &Update::ChildActiveChanged(has_active));
-                }
-                ctx.widget_state.has_active = has_active;
-            });
-        }
-
-        // TODO - Add unit test to check items are iterated from the bottom up.
-        for widget_id in prev_active_path.iter().copied() {
-            if root.widget_arena.has(widget_id)
-                && root.widget_arena.get_state_mut(widget_id).has_active
-                    != active_set.contains(&widget_id)
-            {
-                update_active_status_of(root, widget_id, &active_set);
-            }
-        }
-        for widget_id in next_active_path.iter().copied() {
-            if root.widget_arena.has(widget_id)
-                && root.widget_arena.get_state_mut(widget_id).has_active
-                    != active_set.contains(&widget_id)
-            {
-                update_active_status_of(root, widget_id, &active_set);
-            }
-        }
+    next_active.retain(|id| root.has_widget(*id));
+    let mut next_hover = std::mem::take(&mut root.global_state.pointer_hover_spare);
+    next_hover.clear();
+    if let Some(id) = pointer_pos.and_then(|p| root.pointer_hit_test(p, new)) {
+        let _ = root.input_path_into(id, new, &mut next_hover);
     }
-
-    if prev_active_widget != next_active_widget {
-        run_single_update_pass(root, prev_active_widget, |widget, ctx, props| {
-            ctx.widget_state.is_active = false;
-            ctx.widget_state.class_diff.is_active = Some(false);
-            ctx.widget_state.request_update_props = true;
-            ctx.widget_state.needs_update_props = true;
-            widget.update(ctx, props, &Update::ActiveChanged(false));
-        });
-        run_single_update_pass(root, next_active_widget, |widget, ctx, props| {
-            ctx.widget_state.is_active = true;
-            ctx.widget_state.class_diff.is_active = Some(true);
-            ctx.widget_state.request_update_props = true;
-            ctx.widget_state.needs_update_props = true;
-            widget.update(ctx, props, &Update::ActiveChanged(true));
-        });
-    }
-
-    // -- UPDATE HOVERED --
-    let mut next_hovered_widget = if let Some(pos) = pointer_pos {
-        root.get_widget(root.root_id())
-            .expect("root widget not in widget tree")
-            .find_widget_under_pointer(pos)
-            .map(|widget| widget.id())
-    } else {
-        None
-    };
-    // If the pointer is captured, it can either hover its capture target or nothing.
-    if let Some(capture_target) = root.global_state.pointer_capture_target
-        && next_hovered_widget != Some(capture_target)
-    {
-        if is_ancestor_of(root, capture_target, next_hovered_widget) {
-            next_hovered_widget = Some(capture_target);
+    next_hover.retain(|id| root.has_widget(*id));
+    if let Some(capture) = root.global_state.pointer_capture_target {
+        if let Some(index) = next_hover.iter().position(|id| *id == capture) {
+            next_hover.drain(..index);
         } else {
-            next_hovered_widget = None;
+            next_hover.clear();
         }
     }
-    // Check if hovered widget is disabled
-    if let Some(id) = next_hovered_widget
-        && root.widget_arena.get_state(id).is_disabled
+    if next_hover
+        .first()
+        .is_some_and(|id| root.widget_arena.get_state(*id).is_disabled)
     {
-        next_hovered_widget = None;
+        next_hover.clear();
     }
-
-    // "Hovered path" means the widget which is considered hovered, and all its parents.
-    let prev_hovered_path = std::mem::take(&mut root.global_state.hovered_path);
-    let next_hovered_path = get_id_path(root, next_hovered_widget);
-    let prev_hovered_widget = prev_hovered_path.first().copied();
-
-    // We don't just compare `prev_hovered_widget` and `next_hovered_widget`, because
-    // they could be the same widget but one of their ancestors could have been reparented.
-    // (assuming we ever implement reparenting)
-    if prev_hovered_path != next_hovered_path {
-        let mut hovered_set = HashSet::new();
-        for widget_id in &next_hovered_path {
-            hovered_set.insert(*widget_id);
-        }
-
-        trace!("prev_hovered_path: {:?}", prev_hovered_path);
-        trace!("next_hovered_path: {:?}", next_hovered_path);
-
-        // This algorithm is written to be resilient to future changes like reparenting and multiple
-        // cursors. In theory it's O(Depth² * CursorCount) in the worst case, which isn't too bad
-        // (cursor count is usually 1 or 2, depth is usually small), but in practice it's virtually
-        // always O(Depth * CursorCount) because we only need to update the hovered status of the
-        // widgets that changed.
-        // The above assumes that accessing the widget tree is O(1) for simplicity.
-
-        fn update_hovered_status_of(
-            root: &mut RenderRoot,
-            widget_id: WidgetId,
-            hovered_set: &HashSet<WidgetId>,
-        ) {
-            run_targeted_update_pass(root, Some(widget_id), |widget, ctx, props| {
-                let has_hovered = hovered_set.contains(&ctx.widget_id());
-
-                if ctx.widget_state.has_hovered != has_hovered {
-                    widget.update(ctx, props, &Update::ChildHoveredChanged(has_hovered));
+    let mut prev_active = std::mem::take(&mut root.global_state.active_path);
+    let mut prev_hover = std::mem::take(&mut root.global_state.hovered_path);
+    for (&kind, prev, next) in [
+        (true, &prev_active, &next_active),
+        (false, &prev_hover, &next_hover),
+    ]
+    .iter()
+    .map(|(k, p, n)| (k, *p, *n))
+    {
+        for id in prev.iter().copied().filter(|id| !next.contains(id)) {
+            run_single_update_with_view(root, Some(id), old, |widget, ctx, props| {
+                if kind {
+                    ctx.widget_state.has_active = false;
+                    widget.update(ctx, props, &Update::ChildActiveChanged(false));
+                } else {
+                    ctx.widget_state.has_hovered = false;
+                    widget.update(ctx, props, &Update::ChildHoveredChanged(false));
                 }
-                ctx.widget_state.has_hovered = has_hovered;
             });
         }
-
-        // TODO - Add unit test to check items are iterated from the bottom up.
-        for widget_id in prev_hovered_path.iter().copied() {
-            if root.widget_arena.has(widget_id)
-                && root.widget_arena.get_state_mut(widget_id).has_hovered
-                    != hovered_set.contains(&widget_id)
-            {
-                update_hovered_status_of(root, widget_id, &hovered_set);
-            }
-        }
-        for widget_id in next_hovered_path.iter().copied() {
-            if root.widget_arena.has(widget_id)
-                && root.widget_arena.get_state_mut(widget_id).has_hovered
-                    != hovered_set.contains(&widget_id)
-            {
-                update_hovered_status_of(root, widget_id, &hovered_set);
-            }
+    }
+    for (kind, prev, next) in [
+        (true, &prev_active, &next_active),
+        (false, &prev_hover, &next_hover),
+    ] {
+        if prev.first() != next.first() {
+            run_single_update_with_view(root, prev.first().copied(), old, |widget, ctx, props| {
+                if kind {
+                    ctx.widget_state.is_active = false;
+                    ctx.widget_state.class_diff.is_active = Some(false);
+                } else {
+                    ctx.widget_state.is_hovered = false;
+                    ctx.widget_state.class_diff.is_hovered = Some(false);
+                }
+                ctx.widget_state.request_update_props = true;
+                ctx.widget_state.needs_update_props = true;
+                widget.update(
+                    ctx,
+                    props,
+                    &if kind {
+                        Update::ActiveChanged(false)
+                    } else {
+                        Update::HoveredChanged(false)
+                    },
+                );
+            });
         }
     }
-
-    if prev_hovered_widget != next_hovered_widget {
-        run_single_update_pass(root, prev_hovered_widget, |widget, ctx, props| {
-            ctx.widget_state.is_hovered = false;
-            ctx.widget_state.class_diff.is_hovered = Some(false);
-            ctx.widget_state.request_update_props = true;
-            ctx.widget_state.needs_update_props = true;
-            widget.update(ctx, props, &Update::HoveredChanged(false));
-        });
-        run_single_update_pass(root, next_hovered_widget, |widget, ctx, props| {
-            ctx.widget_state.is_hovered = true;
-            ctx.widget_state.class_diff.is_hovered = Some(true);
-            ctx.widget_state.request_update_props = true;
-            ctx.widget_state.needs_update_props = true;
-            widget.update(ctx, props, &Update::HoveredChanged(true));
-        });
+    for (kind, prev, next) in [
+        (true, &prev_active, &next_active),
+        (false, &prev_hover, &next_hover),
+    ] {
+        for id in next.iter().copied().filter(|id| !prev.contains(id)) {
+            run_single_update_with_view(root, Some(id), new, |widget, ctx, props| {
+                if kind {
+                    ctx.widget_state.has_active = true;
+                    widget.update(ctx, props, &Update::ChildActiveChanged(true));
+                } else {
+                    ctx.widget_state.has_hovered = true;
+                    widget.update(ctx, props, &Update::ChildHoveredChanged(true));
+                }
+            });
+        }
+        if prev.first() != next.first() {
+            run_single_update_with_view(root, next.first().copied(), new, |widget, ctx, props| {
+                if kind {
+                    ctx.widget_state.is_active = true;
+                    ctx.widget_state.class_diff.is_active = Some(true);
+                } else {
+                    ctx.widget_state.is_hovered = true;
+                    ctx.widget_state.class_diff.is_hovered = Some(true);
+                }
+                ctx.widget_state.request_update_props = true;
+                ctx.widget_state.needs_update_props = true;
+                widget.update(
+                    ctx,
+                    props,
+                    &if kind {
+                        Update::ActiveChanged(true)
+                    } else {
+                        Update::HoveredChanged(true)
+                    },
+                );
+            });
+        }
     }
-
-    // -- UPDATE CURSOR ICON --
-
-    // If the pointer is captured, its icon always reflects the
-    // capture target, even when not hovered.
     let icon_source = root
         .global_state
         .pointer_capture_target
-        .or(next_hovered_widget);
-
-    let new_icon = if let (Some(icon_source), Some(pos)) = (icon_source, pointer_pos) {
-        let root_node = root.widget_arena.get_node(icon_source);
-        let children = root_node.children;
-        let widget = &*root_node.item.widget;
-        let state = &root_node.item.state;
-        let properties = &root_node.item.properties;
-
-        let stack = root
-            .property_arena
-            .get(state.property_stack_id, widget.type_id());
-        let ctx = QueryCtx {
-            global_state: &root.global_state,
-            widget_state: state,
-            properties: PropertiesRef {
-                local: properties,
-                default_map: root
-                    .property_arena
-                    .default_properties
-                    .for_widget(widget.type_id()),
-                stack,
-                class_set: &root_node.item.class_set,
-            },
-            children,
-            property_arena: &root.property_arena,
-        };
-
-        if state.is_disabled {
-            CursorIcon::Default
+        .or(next_hover.first().copied());
+    let new_icon = if let (Some(id), Some(pos)) = (icon_source, pointer_pos) {
+        if let Some(geometry) = new.bind(id) {
+            let node = root.widget_arena.get_node(id);
+            let widget = &*node.item.widget;
+            let state = &node.item.state;
+            let ctx = QueryCtx {
+                geometry,
+                global_state: &root.global_state,
+                widget_state: state,
+                properties: PropertiesRef {
+                    local: &node.item.properties,
+                    default_map: root
+                        .property_arena
+                        .default_properties
+                        .for_widget(widget.type_id()),
+                    stack: root
+                        .property_arena
+                        .get(state.property_stack_id, widget.type_id()),
+                    class_set: &node.item.class_set,
+                },
+                children: node.children,
+                property_arena: &root.property_arena,
+            };
+            if state.is_disabled {
+                CursorIcon::Default
+            } else {
+                widget.get_cursor(&ctx, pos)
+            }
         } else {
-            widget.get_cursor(&ctx, pos)
+            CursorIcon::Default
         }
     } else {
         CursorIcon::Default
     };
-
     if root.global_state.cursor_icon != new_icon {
         root.global_state
             .emit_signal(RenderRootSignal::SetCursor(new_icon));
     }
-
     root.global_state.cursor_icon = new_icon;
-    root.global_state.hovered_path = next_hovered_path;
-    root.global_state.active_path = next_active_path;
+    root.global_state.active_path = next_active;
+    root.global_state.hovered_path = next_hover;
+    prev_active.clear();
+    prev_hover.clear();
+    root.global_state.pointer_active_spare = prev_active;
+    root.global_state.pointer_hover_spare = prev_hover;
+    root.global_state.needs_pointer_pass = false;
 }
 
 // ----------------
@@ -1131,6 +1116,7 @@ fn update_props_for_widget(
 
                 if new_index != *index || state.property_cache.invalidated {
                     let mut ctx = UpdateCtx {
+                        geometry: crate::app::ContextGeometry::Live,
                         global_state,
                         widget_state: state,
                         children: children.reborrow_mut(),
@@ -1210,6 +1196,7 @@ fn update_fonts_for_widget(
 
     let stack = property_arena.get(state.property_stack_id, widget.type_id());
     let mut ctx = UpdateCtx {
+        geometry: crate::app::ContextGeometry::Live,
         global_state,
         widget_state: state,
         children: children.reborrow_mut(),

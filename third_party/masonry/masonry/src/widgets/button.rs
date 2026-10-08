@@ -82,7 +82,7 @@ impl Button {
     }
 
     /// Returns a mutable reference to the child.
-    pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> WidgetMut<'t, dyn Widget> {
+    pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> Option<WidgetMut<'t, dyn Widget>> {
         this.ctx.get_mut(&mut this.widget.child)
     }
 }

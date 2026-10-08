@@ -32,6 +32,7 @@ pub(crate) fn mutate_widget<R>(
 
     let root_widget = WidgetMut {
         ctx: MutateCtx {
+            geometry: crate::app::ContextGeometry::Live,
             global_state: &mut root.global_state,
             parent_widget_state: None,
             widget_state: state,
