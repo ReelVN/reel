@@ -1,4 +1,18 @@
-Current native-default integration validation at cc55dd2 (B01 57ff60e)
+Current live-work/progress validation at d9032a9 (contract 8dfa3bc; B01 57ff60e)
+59 unit + 55 executor + 15 FrameSlots + 16 storage + 1 doc test passed.
+Clippy all-targets passed; i686 tests/examples compile check passed.
+Exact reported retry grants finish helper returns under live catches with GC=1.
+Call work is unchanged by unused root descriptor capacity (64 vs 4096).
+Partial-window rollback and single-root high-water/hole scans execute in tests.
+Seven current raw runs: LIVE-WORK-PERF-SAMPLES.jsonl
+No-default echo calls: median 43375 us / 10000 calls; p50/p95 medians 3996/4196 ns.
+Numeric million-iteration loop: median 322043 us / 3000004 instructions.
+Numeric/call work: 3000151 / 16670000; numeric/call/GC allocations: 0 every run.
+Peak shared charge: 7143773 bytes; idle root ranges: 34; FrameSlots: 289024 bytes.
+GC units/descriptors/values: 8812/45/8766; cancellation work/slices: 296/1.
+This work accounting correction is not a CPU speedup or independent acceptance claim.
+
+Prior native-default integration validation at cc55dd2 (B01 57ff60e)
 59 unit + 53 executor + 15 FrameSlots + 15 storage + 1 doc test passed.
 Clippy all-targets passed; i686 tests/examples compile check passed.
 All are author self-tests; independent V03 execution remains blocked separately.

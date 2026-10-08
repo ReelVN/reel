@@ -82,7 +82,7 @@ span reads preserve bitmap errors, and callback/continued waits still preserve
 values, faults, identity and root lifetime with instruction budget 1 and GC.
 This comparison is author evidence; independent V03 execution remains separate.
 
-## Current integration check
+## Native-default integration check
 
 Seven additional standalone runs at native-default implementation `cc55dd2`
 (B01 `57ff60e`) repeat the same no-default echo load. This is a regression check,
@@ -103,3 +103,42 @@ These timing fields cover no-default Ready/Pending dispatch. Script/native
 defaults, shared closure callbacks and fault propagation are exercised by the
 author semantic tests; this echo load is not a claim that closure-producing
 defaults allocate zero times.
+
+## Live work and retry progress integration
+
+The owner clarified the budget contract in `8dfa3bc`. Implementation `d9032a9`
+replaces configured descriptor capacity in each call's work estimate with the
+current free-span count and its conservative growth across multiple releases
+or partial-open rollback. Physical window initialization is still charged for
+the entire actual window length; pool storage stays fully capacity-charged.
+Script release charges its unsaved catch scan and successor together, so an
+exact reported retry grant advances one bounded action. A regression executes
+a Pending helper inside a live outer catch with work=1/allocation=0 adaptive
+grants and GC=1, and gets identical call work with descriptor capacities 64 and
+4,096. Another exercises a real partial-window rollback at hard root capacity.
+
+Single-root GC and owner scans now use their actual high-water index, including
+sentinel and released holes, consistent with V02's range-descriptor scan.
+Seven standalone author runs are retained in
+[LIVE-WORK-PERF-SAMPLES.jsonl](LIVE-WORK-PERF-SAMPLES.jsonl):
+
+| Current measurement | Median or invariant |
+| --- | ---: |
+| Million-iteration numeric total, µs | 322,043 (305,890–420,614) |
+| 10,000 Ready/Pending calls total, µs | 43,375 (40,759–52,345) |
+| Within-run call p50/p95 medians, ns | 3,996 / 4,196 |
+| Numeric / call work | 3,000,151 / 16,670,000 |
+| Allocations/allocated bytes, numeric + calls + GC | 0 / 0 |
+| Peak shared charged bytes | 7,143,773 |
+| Idle root ranges / retained FrameSlots bytes | 34 / 289,024 |
+| Live-native GC units / descriptors / Values | 8,812 / 45 / 8,766 |
+| Live-native GC median time, ns | 89,204 |
+| Owner cancellation work / slices | 296 / 1 |
+| Owner cancellation median time, ns | 1,112 |
+
+The work decrease corrects conservative accounting; it is not a CPU speedup
+claim. Call timing ranges overlap the preceding integration runs. The GC
+reduces 1,025 never-used single-root index checks in this load while preserving
+all range and Value scans. Tests with live single roots and released holes
+verify the new scan bound independently of reserved descriptor capacity.
+These runs retain the same no-default echo scope and author-evidence limits.

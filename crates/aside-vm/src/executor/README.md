@@ -4,7 +4,7 @@ The first public interface/state proposal was committed as `40d1b9d`, before the
 executor implementation. Public Rust types are now isolated in [api.rs](api.rs).
 The draft PR is https://github.com/jhq223/reel/pull/23, with the creation-time base
 `task/issue-17-frame-slots` unchanged. Language §22/§23 follows the integration
-owner's document head `65f8ba9`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
+owner's document head `8dfa3bc`; §23 is the sole fault contract. Integrated dependencies: V02 `cceb151` and B01
 `57ff60e`; independent dependency acceptance is coordinated by the integration owner.
 
 This executes verified hand-authored B01 packages. Source compilation/lowering,
@@ -139,10 +139,16 @@ bounded by max_arguments/max_continuation_values; it validates inputs before
 root publication and ticket consumption. Host adapter side effects are outside
 the interpreter's instruction budget.
 
-V02 release's descriptor quota does **not** bound its Vec free-span shifts. Each
-release is conservatively charged `4 * max_root_ranges + 8` work units, including
-binary search/shift/coalescing overhead; cancellation releases only when that
-whole bound fits. Single-root descriptor checks use one unit each. Exception
+V02 release's descriptor quota does **not** bound its Vec free-span shifts.
+For a transaction releasing n windows from f current free spans, the executor
+conservatively charges `n * (4 * (f + n) + 8)` work, including binary search,
+Vec shifts/coalescing and possible span growth between releases. Cancellation
+releases only when that whole bound fits. Window construction separately
+charges actual physical window lengths, current free-list search/removal,
+and growth during partial-construction rollback. Configured descriptor capacity
+remains fully charged as storage and is not substituted for live work.
+Single-root descriptor checks use one unit each through the actual high-water
+index, including sentinel and released holes. Exception
 cleanup discards at most one superseded unwind root per internal step. Slice
 work/allocation reports are conservative dispatch charges, not measured CPU
 cycles; the probe separately measures actual elapsed time and allocator calls.
@@ -150,6 +156,8 @@ Deadlines are checked between stages; a stage's atomic cost remains the stated
 bound. Heap, code capacity, window values/bitmap/metadata, Task/frame/unwind/caught
 vectors, comparison cursor/root storage, capture/text scratch and VM inline control all
 share HeapBudgetUsage. No continuation contains uncharged owned host closures.
+Unsaved catch scanning and its release successor are precharged together;
+granting the reported retry requirement can advance that bounded action.
 
 ## Verification and performance evidence
 
@@ -188,13 +196,14 @@ activations, cooperative cancellation during equality and actual parameter
 preparation phases, native Entry gating, shared default closures, projected
 host argument values after callbacks, and native positional rest.
 
-At code head `cc55dd2`, author validation passed 59 unit, 53 executor, 15
-FrameSlots, 15 storage and one doc test, Clippy with warnings denied, and the
+At code head `d9032a9`, author validation passed 59 unit, 55 executor, 15
+FrameSlots, 16 storage and one doc test, Clippy with warnings denied, and the
 i686 compile check. This is author evidence; independent V03 execution remains
 blocked in the separate acceptance workflow.
 
 [RESULTS.txt](RESULTS.txt) links the seven-pair complete-fault
-[native comparison](NATIVE-PERFORMANCE.md), seven additional current-code runs,
+[native comparison](NATIVE-PERFORMANCE.md), seven additional native-default runs
+and seven current live-work runs,
 and retains the earlier historical
 Linux x86_64 release run, including total
 instructions/work, slice and call timing, actual allocator calls/bytes, shared
