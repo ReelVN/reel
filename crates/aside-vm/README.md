@@ -9,8 +9,9 @@ is maintained by the integration owner.
 ## Public interface draft
 
 - `Value`: private explicit tag, full 64-bit scalar/key payload, and `HeapId`;
-  16 bytes in native tests and i686 compile-time assertions; 32-bit runtime verification remains pending. Copying a value performs no reference
-  counting and does not create a root. Float storage preserves all IEEE bits.
+  16 bytes in native tests and i686 compile-time assertions. 32-bit runtime
+  verification remains pending. Copying a value performs no reference counting
+  and does not create a root. Float storage preserves all IEEE bits.
 - `HeapHandle`: full `KeyData::as_ffi()` u64 plus `HeapId` and `SessionEpoch`.
   Checked reimport uses the owning heap, never truncates the generation, and
   rejects foreign heaps/epochs. A restored session creates a fresh heap identity.
