@@ -217,7 +217,7 @@ Thread(fn) 是由 call/resume(value) 手动驱动的独立脚本栈，suspend(va
 
 try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw 可以抛脚本值，运行时以 ErrorEnvelope 保存原值、稳定 code、源位置和栈；标准库推荐 Error 实例，catch 能读取原值。throw; 只在 catch 中重新抛出当前 envelope，保留原始栈；throw value; 建立本次抛出位置与 cause。
 
-正常结束、return、break/continue、异常展开和合作取消穿过 try 时先执行 finally。finally 不得 await、yield、return 或跳出其自身边界；可按预算让出。finally 再抛出时替代原结果并保留原结果/异常为 cause。异常值、待 return 值及展开位置都是可恢复帧状态。
+正常结束、return、break/continue、异常展开和合作取消穿过 try 时先执行 finally。finally 不得 await、yield、return 或跳出其自身边界；可按预算让出。该词法限制覆盖条件与短路分支；内嵌函数按自己的函数边界分析，实际调用时继承调用者约束。普通 helper 调用可以同步返回，真正进入外部等待时由有效 NoWait 检查处理。finally 再抛出时替代原结果并保留原结果/异常为 cause。异常值、待 return 值及展开位置都是可恢复帧状态。
 
 资源 close/dispose 必须幂等且可检查终态。文件/游标/订阅/native 资源由显式 token 与 owner 管理，GC 不执行用户脚本 finalizer；宿主低层释放同样有预算/队列。脚本清理无法保证硬终止时执行，底层资源释放必须独立保证。临时业务恢复若必须覆盖硬终止，应通过宿主事务/作用域恢复记录实现。原生崩溃和内部一致性破坏不伪装成可恢复脚本异常。
 
@@ -345,6 +345,8 @@ Heap 为每个固定长度根区登记带 HeapId/SessionEpoch 和代际 RangeKey
 仍有效根区缺失 provider 或长度不符是运行时一致性错误，不能按空根跳过。存在外部根区时，原有 gc_step 入口也须接入同一 provider，或明确拒绝缺失 provider 的调用。单值根、全部根区和灰队列处理完才进入统一弱引用截止点。窗口容量、bitmap、帧/续体元数据、描述符、空闲池、退休槽及搬迁双份驻留都计入总字节额度；实际释放后才退账，保留的池容量持续计费。相关接口保持 VM 内部封装，避免绕过屏障直接写槽。
 
 恢复、调用与结果
+一个会话的 Vm 共用 Heap、FrameSlots 和模块实例集，并持有有界的 Task 集合。每个 Task 保存自己的执行栈、异常展开、等待、交付、取消和分步操作状态。调度器在同一 Vm 内选择 Task 执行一片；某个 Task 外部等待时，其他 Task 仍能访问相同全局绑定、对象和闭包 cell。宿主 ticket、等待和交付身份包含 TaskId，结束或撤销任务只释放其自身状态。独立会话由独立 Vm 承载，所有任务元数据共用会话预算。
+函数声明的 Context 给出该函数的限制；有效上下文累计调用链上的 NoWait、Init、Derived 条件，并收窄允许的 effects。任一调用层具有的限制持续生效，返回后恢复调用者上下文。宿主 ticket 携带完整有效约束，CallScript 和普通调用沿用同一规则。
 ScriptFrame 保存 FrameId、固定 CodeRef/ModuleInstanceId、PC、窗口、闭包/接收者、参数绑定阶段、返回目标、效果、owner/region、异常展开与当前操作阶段；NativeFrame 保存版本化续体与其强引用槽。源码错误节点和未解决诊断不进入可执行 lowering。
 run_slice 接收指令、内部工作、分配和时钟额度，返回 Returned、BudgetYield、HostCall、Waiting 或 Fault。长比较、展开、匹配等按明确阶段计费。普通函数、async 和 generator 共用调用绑定规则，由函数种类决定执行/创建任务/创建生成器。
 HostCall 在暴露响应 ticket 前已登记状态和参数根。ticket 含调用序号、native 符号/签名版本、任务/owner 和源位置，响应消费一次；参数只通过短生命周期借用访问。Returned/Fault 的数据继续留在 VM 登记的交付根或拥有型宿主根中，直到转移到另一已登记根或拥有型根句柄，或显式放弃结果；领取裸 Value 本身保持原交付根，避免失去保活。
