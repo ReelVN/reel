@@ -1,5 +1,5 @@
 # Reel 游戏开发指南
-设计版本 1.0 · 已提交独立审查，接口实现状态见正文。
+设计版本 1.0 · 开发基线，接口实现状态见正文。
 
 [English](en.md) · [文档目录 / Documentation index](../README.md)
 
@@ -105,11 +105,11 @@ fn opening() {
     // 剧情正文。
 }
 ```
-普通 fn 即可承载剧情。game.start(opening) 从 UI 事件提交新游戏请求；回调返回后建立新会话，再调用 opening，初始化自动播放和快进状态。
+普通 fn 即可承载剧情。#[story] 的章节入口使用模块级函数且无必需参数。game.start(opening) 接收同样的符号入口，从 UI 事件提交新游戏请求；引擎先在最新已发布模块集合验证入口，再建立新会话调用它，初始化全局剧情变量、自动播放和快进状态。普通 helper 调用保留原模块绑定。
 
 ## 四 时间顺序与同时发生的变化
 tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回控制句柄；await activity.finished 等待活动结束，输入、声音和其他活动继续进行。
-动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。run 在启动前检查同一时刻的属性写入冲突；存在冲突时在调用位置报告，并保持已有活动。需要接管时，作者先停止已有活动再启动新的动作。直接给正被 tween 驱动的属性赋值会停止该 tween，再采用显式赋值。被停止的 tween 返回 Stopped；父 sequence 停止后续动作，parallel 停止同组其他动作，整体返回 Stopped。
+动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。run 原子保留整个动作树会写入的属性，保留持续到根活动结束，包括未来的 sequence 分段、repeat 和暂停期间。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。冲突时在调用位置报告并保持已有活动。需要接管时先停止旧活动。直接给已保留属性赋值会先停止其根活动，再采用赋值；未来分段保留的属性也遵守这个规则。终止的活动释放所有保留。
 ```aside
 let entrance = parallel(
     tween(view.portrait, x: 320, duration: 0.5),
@@ -118,7 +118,7 @@ let entrance = parallel(
 let activity = run(entrance, owner: view.root);
 await activity.finished;
 ```
-一个活动归显式 owner 所有。owner 从舞台销毁时，所属活动与回调任务一并结束。pause 暂停进度，resume 继续，stop 停在当前值并使等待返回 Stopped；自然结束返回 Completed。资源错误或活动取消在仍存活的等待任务中产生对应错误，供普通 try/catch 处理。若等待任务自身的 owner 已结束，该任务直接结束；宿主释放其资源，脚本清理代码也随任务结束。
+一个活动归显式 owner 所有。启动与主剧情函数归会话所有，UI 回调归发出事件的节点所有。stage.replace 结束旧画面及其回调，调用它的会话剧情继续执行。动作目标只是经过验证的句柄；任一节点或效果目标销毁时，整个根活动结束为 Cancelled，释放所有属性保留。owner 从舞台销毁时，所属活动与回调任务一并结束。pause 暂停进度，resume 继续，stop 停在当前值并使等待返回 Stopped；自然结束返回 Completed。资源错误或活动取消在仍存活的等待任务中产生对应错误，供普通 try/catch 处理。若等待任务自身的 owner 已结束，该任务直接结束；宿主释放其资源，脚本清理代码也随任务结束。
 parallel 等待所有有限子动作。任一子动作失败时结束同组剩余子动作，并报告错误；sequence 随失败停止后续动作。repeat(action, times: 3) 有限重复；省略 times 表示循环。持续的呼吸、雨丝等循环单独运行，由画面所有权管理，剧情只等待自己需要的有限活动。
 ```aside
 let breathing = repeat(sequence(
@@ -234,7 +234,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
     return control;
 }
 ```
-bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对读取的可观察属性建立依赖，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。普通 #{...} 数据记录适合传参，持续变化的业务值用 model(#{...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
+bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对读取的可观察属性建立依赖，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。捕获存档的短暂期间，脚本派生与作者外观更新暂停，捕获完成后按最新状态恢复。普通 #{...} 数据记录适合传参，持续变化的业务值用 model(#{...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
 作者可用同样方式封装统一字体、按钮图片、留白和动效，再作为普通模块导入。风格复用来自组件和参数，共用的属性对象也可按普通语言规则组织。
 
 ## 八 遮罩 特效与自定义演出
@@ -258,7 +258,7 @@ choose(options) 接收具有稳定 key 和 label 的选项数组，更新 game.c
 ```aside
 fn choice_view(model) {
     list(items: bind(model.options),
-         key: |option| option.key,
+         key: |option| option.id,
          build: |option| {
              button(on_click: |event| model.select(option.key)) {
                  text(value: bind(option.label));
@@ -272,11 +272,11 @@ let answer = choose([
 if answer == "window" { by_window(); }
 else { by_door(); }
 ```
-choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作者的剧情函数。game.choice.options 是只读可观察列表，默认为空；等待选择时填入选项，选择完成后清空。过期或重复 key 的点击按交互身份过滤。
+choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作者的剧情函数。choose 把传入的普通记录复制成引擎拥有的只读可观察行，id、key 和 label 都可读取并绑定，输入记录保持原值。id 是本次 InteractionId 与 key 形成的不透明稳定标识，列表用 option.id 保持这一身份；下一次选择使用新的 id。game.choice.options 是这些行构成的只读可观察列表，默认为空；等待选择时填入选项，选择完成后清空。过期或重复 key 的点击按交互身份过滤。
 普通 children 中的 for 适合构造当下画面。list 用于持续变化的列表：items 连接可观察集合，key 确定元素身份，build 为新 key 创建节点；同 key 的可观察 item 保持身份并更新字段，移除 key 才销毁对应子树。默认竖排，虚拟显示由 viewport 范围和可复用测量结果控制。重复 key 在对应列表位置报错。普通数组作为 items 时按固定内容构造。
 
 ## 十 存档 历史 路线与跳过
-saves 是独立服务。save(slot_id) 返回 SaveRequest，quick_save() 使用快速槽；load(slot_id) 和 quick_load() 返回 LoadRequest。请求有只读 status、error 和 finished，可用 derive 或 bind 显示进度；finished 可等待，保存按钮通常只提交请求并观察模型。成功意味着槽位已提交到存储。载入请求成功会替换会话，旧会话拥有的回调任务结束，进程级服务继续发布结果。
+saves 是独立服务。save(slot_id) 返回 SaveRequest，quick_save() 使用快速槽；load(slot_id) 和 quick_load() 返回 LoadRequest。请求有只读 status、error 和 finished，可用 derive 或 bind 显示进度；finished 可等待，保存按钮通常只提交请求并观察模型。成功意味着槽位已提交到存储。请求自己的 finished 也可等待：捕获在调用后的可恢复边界进行，这份存档里的对应请求恢复为已成功结果，等待者继续执行后面的语句。保存调用始终只执行一次。其他在途外部写请求跨进程恢复时，以可处理的 OperationInterrupted 错误结算；当前存档对应的请求使用上述成功规则。载入请求成功会替换会话，旧会话拥有的回调任务结束，进程级服务继续发布结果。
 saves.slots(page: 1, page_size: 12) 返回 SlotPage，可观察 items 包含稳定 id、occupied、chapter、saved_at、thumbnail 和 status。saves.delete(slot_id) 返回 DeleteRequest，成功后对应摘要变为空槽。每页页码从 1 开始，page_size 与页码决定固定普通槽位集合；快速槽独立。作者通过 grid、image、text、button 组成页面，翻页只更换显示的集合。
 ```aside
 let slot_page = saves.slots(page: 1, page_size: 12);
@@ -287,7 +287,7 @@ let save_button = button("保存", on_click: |event| {
 保存、读档和删除请求共用 Queued、Running、Succeeded、Failed 状态；保存额外公开 phase = Capturing 或 Writing。error 在失败时包含说明，成功时为 null。finished 返回请求结果；请求失败抛出对应错误。槽位摘要只在成功提交后替换，失败保留原摘要。
 game.history 是只读可观察列表，每条包含 id、speaker_name、text、voice 与恢复点信息。用 scroll 包含 list 即可按需显示历史条目；读档或回滚时列表切换到恢复的会话状态。普通 UI 更换保持历史。
 game.stories.entries 为章节索引，条目有 id、title、visited；game.stories.links 保存显式登记的 from/to 连接。编译器从 #[story] 收集入口，动态连接由 game.stories.link(from_id, to_id) 登记。作者用按钮代表章节、路径节点画连接，布局可手排或由自己的算法计算。
-game.restart(story_id) 从命名章节入口重新执行当前会话的剧情任务，保留当前剧情变量，结束旧主剧情任务及其交互；目标函数负责构造自己的画面。game.start(entry) 创建全新会话，适合新游戏。saves.load 恢复保存的位置、变量和画面。作者据此给路线按钮选择含义清楚的操作。
+game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命名章节入口重新执行剧情任务，保留当前剧情变量，结束旧主剧情任务及其交互；目标函数负责构造自己的画面。game.start(entry) 创建全新会话，适合新游戏。saves.load 恢复保存的位置、变量和画面。作者据此给路线按钮选择含义清楚的操作。
 按住快进、自动播放、分段跳过使用统一的剧情推进服务。game.skip_to(story_id) 以正常控制流加速执行，抵达目标章节入口、选项或未读边界时停止；目标不可达时按正常剧情结束，并报告目标未抵达。game.set_auto(enabled) 控制自动播放。按住快进由输入层的 skip 动作保持状态驱动，作者可以将键盘或手柄绑定到该动作。
 快进缩短可跳过的已读等待和有限演出，变量计算仍按顺序执行；松开、失焦、打开菜单、新游戏和读档清除按住状态。tween 完成到终值，有限等待结束，媒体按播放策略停止或继续；循环活动仍由 owner 管理。作者显示的控制提示跟随同一服务状态。
 这些服务提供数据与操作，页面的外观由作者组合。本版列出的签名属于待实现规范；对应功能达到契约验收后，指南为该节标注已实现版本与运行命令。
