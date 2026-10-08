@@ -44,7 +44,8 @@ pub struct Value {
     payload: u64,
     heap: HeapId,
     tag: ValueTag,
-    // Prevent crossing threads, including into another thread-local HeapId domain.
+    // Keep Values in the heap's single-threaded execution domain.
+    // HeapId allocation itself is process-global.
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 

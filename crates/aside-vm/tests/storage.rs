@@ -241,6 +241,47 @@ fn container_reordering_and_root_changes_between_every_single_step_preserve_edge
 }
 
 #[test]
+fn array_swap_alone_preserves_an_unscanned_child_moved_behind_the_cursor() {
+    let mut h = heap(8);
+    let child = h.alloc_cell(Value::int(42)).unwrap();
+    let array = h.alloc_array(&[Value::NULL, child]).unwrap();
+    let _array_root = root(&mut h, array);
+    h.begin_collection().unwrap();
+
+    // Only the array is rooted; root scanning must not visit its child yet.
+    let slots = h.root_slots();
+    let roots = h.gc_step(GcBudget {
+        roots: slots,
+        edges: 0,
+        units: slots,
+        ..tiny()
+    });
+    assert_eq!(roots.roots, slots);
+    assert_eq!(roots.edges, 0);
+    assert_eq!(h.stats().gray_len, 1);
+
+    // Visit only array[0] (null). The cursor is now 1, and array[1]'s sole
+    // child is still white. No root update, weak upgrade or pop/push can shade it.
+    let first_edge = h.gc_step(tiny());
+    assert_eq!(first_edge.edges, 1);
+    assert_eq!(h.phase(), GcPhase::Mark);
+    assert_eq!(h.stats().gray_len, 1);
+    h.array_swap(array, 0, 1).unwrap();
+
+    // The remaining array scan sees only null at index 1. The swap barrier
+    // must preserve the child now behind the cursor at index 0.
+    finish(&mut h, tiny());
+    assert!(h.get_field(array, 0).unwrap().same_bits(child));
+    assert_eq!(
+        h.get_field(child, 0)
+            .expect("unscanned child moved behind the cursor must survive")
+            .as_int(),
+        Some(42)
+    );
+    assert_eq!(h.stats().live_objects, 2);
+}
+
+#[test]
 fn initial_edges_insertions_and_weak_upgrades_during_marking_are_shaded() {
     let mut h = heap(32);
     let a = h.alloc_array(&[Value::NULL]).unwrap();

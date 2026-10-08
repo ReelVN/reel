@@ -154,3 +154,29 @@ rustc --target i686-unknown-linux-gnu --crate-type lib --edition 2024 \
   --extern aside_vm=/workspace/aside-target/i686-unknown-linux-gnu/debug/libaside_vm.rlib \
   /tmp/aside-layout32.rs -o /tmp/libaside_layout32.rlib
 ```
+
+## Focused swap-barrier check (review follow-up)
+
+`array_swap_alone_preserves_an_unscanned_child_moved_behind_the_cursor` roots
+only `[null, child]`. After root scanning, one edge unit visits index 0; the
+sole child remains white at unscanned index 1. A single swap moves it to index
+0 behind the cursor. No root changes, weak upgrades or pop/push operations occur.
+After collection, the array still points to the child and its stored integer 42
+remains readable.
+
+The negative control temporarily removed only the two `self.barrier(...)`
+calls inside `array_swap`. Both profiles then failed at the final child-read
+assertion with `unscanned child moved behind the cursor must survive:
+InvalidHandle`. The production method was restored byte-for-byte before the
+positive checks below and was not changed in the submitted commit.
+
+| Command (same environment as above) | Barriers disabled | Production restored |
+| --- | --- | --- |
+| `cargo test -p aside-vm --test storage array_swap_alone_preserves_an_unscanned_child_moved_behind_the_cursor -- --exact` | Exit 101, expected child-survival assertion failure | Exit 0 |
+| `cargo test -p aside-vm --release --test storage array_swap_alone_preserves_an_unscanned_child_moved_behind_the_cursor -- --exact` | Exit 101, same assertion failure | Exit 0 |
+| `cargo fmt --all -- --check` | — | Exit 0 |
+| `cargo clippy -p aside-vm --all-targets -- -D warnings` | — | Exit 0 |
+
+The PhantomData comment now states that Values remain in the heap's
+single-threaded execution domain while HeapId allocation is process-global.
+No fixed load or timing run was repeated for this focused verification change.
