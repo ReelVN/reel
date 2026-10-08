@@ -52,6 +52,8 @@ pub enum Unwind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemanticRule {
     Ordinary,
+    /// Reading a binding/cell/global requires its independent initialized state.
+    BindingRead,
     /// One-time initialization, validating the BindingDef type contract.
     BindingInit,
     /// Type, initialized state and mutable permission apply to all aliases.
@@ -108,7 +110,7 @@ instructions! {
     BindInit = 0x0004 => [BindingInit, ReadReg, Unused], Next, true, None;
     BindRead = 0x0005 => [WriteReg, BindingRead, Unused], Next, true, None;
     BindWrite = 0x0006 => [BindingWrite, ReadReg, Unused], Next, true, None;
-    CellNew = 0x0007 => [WriteReg, Binding, Unused], Next, true, None;
+    CellNew = 0x0007 => [Binding, Unused, Unused], Next, true, None;
     CellRead = 0x0008 => [WriteReg, ReadReg, Unused], Next, true, None;
     CellWrite = 0x0009 => [ReadReg, ReadReg, Unused], Next, true, None;
     CaptureRead = 0x000a => [WriteReg, Capture, Unused], Next, true, None;
@@ -188,6 +190,7 @@ pub fn instruction_spec(opcode: u16) -> Option<&'static InstructionSpec> {
 }
 const fn semantic_rule(op: Opcode) -> SemanticRule {
     match op {
+        Opcode::BindRead | Opcode::CellRead | Opcode::GlobalRead => SemanticRule::BindingRead,
         Opcode::BindInit | Opcode::GlobalInit => SemanticRule::BindingInit,
         Opcode::BindWrite | Opcode::CellWrite | Opcode::GlobalWrite => SemanticRule::BindingWrite,
         Opcode::CellNew => SemanticRule::CellContract,
@@ -204,59 +207,109 @@ const fn semantic_rule(op: Opcode) -> SemanticRule {
 }
 
 impl InstructionSpec {
-    /// Shared register contract for verifier, lowering analyses and dispatcher.
-    /// Windows are visited in order without allocating temporary register lists.
+    /// Unmetered adapter for already trusted analyses. Verification uses the
+    /// budgeted form, which charges known lengths before traversing a window.
     pub fn visit_registers(
         &self,
         f: &FunctionDef,
         i: &Instruction,
+        visit: impl FnMut(Reg, Access),
+    ) -> Result<(), Error> {
+        self.visit_registers_budgeted(f, i, |_| Ok(()), visit)
+    }
+    pub fn visit_registers_budgeted(
+        &self,
+        f: &FunctionDef,
+        i: &Instruction,
+        mut charge: impl FnMut(u64) -> Result<(), Error>,
         mut visit: impl FnMut(Reg, Access),
     ) -> Result<(), Error> {
+        let mut visitor = RegisterVisitor {
+            charge: &mut charge,
+            visit: &mut visit,
+        };
+        visitor.work(3)?;
         for (kind, operand) in self.operands.iter().zip(i.operands) {
             match kind {
-                ReadReg => visit(Reg(operand), Access::Read),
-                WriteReg => visit(Reg(operand), Access::Write),
-                ReadWriteReg => visit(Reg(operand), Access::ReadWrite),
+                Binding => {
+                    let binding = f
+                        .bindings
+                        .get(operand as usize)
+                        .ok_or_else(|| Error::new(ErrorKind::Index, "cell binding contract"))?;
+                    visitor.emit(binding.storage.reg(), Access::Write)?;
+                }
+                ReadReg => visitor.emit(Reg(operand), Access::Read)?,
+                WriteReg => visitor.emit(Reg(operand), Access::Write)?,
+                ReadWriteReg => visitor.emit(Reg(operand), Access::ReadWrite)?,
                 BindingRead | BindingWrite | BindingInit => {
-                    let b = f
+                    let binding = f
                         .bindings
                         .get(operand as usize)
                         .ok_or_else(|| Error::new(ErrorKind::Index, "binding"))?;
-                    let access = match (kind, b.storage) {
+                    let access = match (kind, binding.storage) {
                         (BindingRead, _) | (_, BindingStorage::Cell(_)) => Access::Read,
                         _ => Access::Write,
                     };
-                    visit(b.storage.reg(), access);
+                    visitor.emit(binding.storage.reg(), access)?;
                 }
-                Descriptor(_) => {
-                    let d = f
-                        .descriptors
-                        .get(operand as usize)
-                        .ok_or_else(|| Error::new(ErrorKind::Index, "descriptor"))?;
-                    d.visit_registers(f, &mut visit)?;
-                }
+                Descriptor(_) => f
+                    .descriptors
+                    .get(operand as usize)
+                    .ok_or_else(|| Error::new(ErrorKind::Index, "descriptor"))?
+                    .visit_registers(f, &mut visitor)?,
                 _ => {}
             }
         }
         Ok(())
     }
 }
-impl CallDesc {
-    fn visit_registers(&self, visit: &mut impl FnMut(Reg, Access)) {
-        if let CallTarget::Register(reg) = self.target {
-            visit(reg, Access::Read);
+struct RegisterVisitor<'a> {
+    charge: &'a mut dyn FnMut(u64) -> Result<(), Error>,
+    visit: &'a mut dyn FnMut(Reg, Access),
+}
+impl RegisterVisitor<'_> {
+    fn work(&mut self, units: u64) -> Result<(), Error> {
+        (self.charge)(units)
+    }
+    fn emit(&mut self, reg: Reg, access: Access) -> Result<(), Error> {
+        self.work(1)?;
+        (self.visit)(reg, access);
+        Ok(())
+    }
+    fn window(&mut self, window: RegWindow) -> Result<(), Error> {
+        let end = window
+            .start
+            .0
+            .checked_add(window.len)
+            .ok_or_else(|| Error::new(ErrorKind::Window, "register window overflow"))?;
+        self.work(window.len as u64)?;
+        for reg in window.start.0..end {
+            (self.visit)(Reg(reg), Access::Read);
         }
-        match self.arguments {
-            Arguments::Window(w) => visit_window(w, visit),
-            Arguments::Packed(reg) => visit(reg, Access::Read),
+        Ok(())
+    }
+    fn captures(&mut self, f: &FunctionDef, captures: &[CaptureSource]) -> Result<(), Error> {
+        self.work(captures.len() as u64)?;
+        for source in captures {
+            if let CaptureSource::Binding(id) = source {
+                let binding = f
+                    .bindings
+                    .get(id.index())
+                    .ok_or_else(|| Error::new(ErrorKind::Index, "capture binding"))?;
+                self.emit(binding.storage.reg(), Access::Read)?;
+            }
         }
+        Ok(())
     }
 }
-fn visit_window(w: RegWindow, visit: &mut impl FnMut(Reg, Access)) {
-    // The verifier checks addition and bounds before invoking this accessor.
-    for offset in 0..w.len {
-        if let Some(r) = w.start.0.checked_add(offset) {
-            visit(Reg(r), Access::Read);
+impl CallDesc {
+    fn visit_registers(&self, visitor: &mut RegisterVisitor<'_>) -> Result<(), Error> {
+        if let CallTarget::Register(reg) = self.target {
+            visitor.emit(reg, Access::Read)?;
+        }
+        match self.arguments {
+            Arguments::Window(window) => visitor.window(window),
+            Arguments::Packed(reg) => visitor.emit(reg, Access::Read),
         }
     }
 }
@@ -264,70 +317,51 @@ impl super::Descriptor {
     fn visit_registers(
         &self,
         f: &FunctionDef,
-        visit: &mut impl FnMut(Reg, Access),
+        visitor: &mut RegisterVisitor<'_>,
     ) -> Result<(), Error> {
         match self {
-            Self::Closure { captures, .. } => {
-                for source in captures {
-                    if let CaptureSource::Binding(b) = source {
-                        let b = f
-                            .bindings
-                            .get(b.index())
-                            .ok_or_else(|| Error::new(ErrorKind::Index, "capture binding"))?;
-                        visit(b.storage.reg(), Access::Read);
-                    }
-                }
-            }
-            Self::Call(c) => c.visit_registers(visit),
-            Self::Sequence(w) => visit_window(*w, visit),
+            Self::Closure { captures, .. } => visitor.captures(f, captures)?,
+            Self::Call(call) => call.visit_registers(visitor)?,
+            Self::Sequence(window) => visitor.window(*window)?,
             Self::Table(pairs) => {
+                visitor.work(pairs.len() as u64)?;
                 for pair in pairs {
-                    for r in pair {
-                        visit(*r, Access::Read);
+                    for reg in pair {
+                        visitor.emit(*reg, Access::Read)?;
                     }
                 }
             }
-            Self::Class(c) => {
-                if let Some(r) = c.base {
-                    visit(r, Access::Read);
+            Self::Class(class) => {
+                if let Some(base) = class.base {
+                    visitor.emit(base, Access::Read)?;
                 }
-                for source in c
-                    .fields
-                    .iter()
-                    .flat_map(|x| &x.captures)
-                    .chain(c.methods.iter().flat_map(|x| &x.captures))
-                {
-                    if let CaptureSource::Binding(id) = source {
-                        let b = f
-                            .bindings
-                            .get(id.index())
-                            .ok_or_else(|| Error::new(ErrorKind::Index, "class capture binding"))?;
-                        visit(b.storage.reg(), Access::Read);
-                    }
+                visitor.work((class.fields.len() + class.methods.len()) as u64)?;
+                for field in &class.fields {
+                    visitor.captures(f, &field.captures)?;
+                }
+                for method in &class.methods {
+                    visitor.captures(f, &method.captures)?;
                 }
             }
-            Self::Super { base, .. } => visit(*base, Access::Read),
-            Self::Property { key, .. } => visit(*key, Access::Read),
-            Self::Pattern(p) => {
-                for node in &p.nodes {
+            Self::Super { base, .. } => visitor.emit(*base, Access::Read)?,
+            Self::Property { key, .. } => visitor.emit(*key, Access::Read)?,
+            Self::Pattern(pattern) => {
+                visitor.work(pattern.nodes.len() as u64)?;
+                for node in &pattern.nodes {
                     if let PatternNode::Bind { output, .. } = node {
-                        visit(*output, Access::ConditionalWrite);
+                        visitor.emit(*output, Access::ConditionalWrite)?;
                     }
                     if let PatternNode::Object { fields, .. } = node {
-                        for source in fields.iter().flat_map(|f| &f.captures) {
-                            if let CaptureSource::Binding(id) = source {
-                                let binding = f.bindings.get(id.index()).ok_or_else(|| {
-                                    Error::new(ErrorKind::Index, "pattern default capture")
-                                })?;
-                                visit(binding.storage.reg(), Access::Read);
-                            }
+                        visitor.work(fields.len() as u64)?;
+                        for field in fields {
+                            visitor.captures(f, &field.captures)?;
                         }
                     }
                 }
             }
             Self::Spawn { call, owner } => {
-                visit(*owner, Access::Read);
-                call.visit_registers(visit);
+                visitor.emit(*owner, Access::Read)?;
+                call.visit_registers(visitor)?;
             }
             Self::Global { .. } => {}
         }

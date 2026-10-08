@@ -20,7 +20,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 0004 | BindInit | b,x | next (one-time initialization) | yes | - |
 | 0005 | BindRead | d,b | next | yes | - |
 | 0006 | BindWrite | b,x | next (runtime mutable check) | yes | - |
-| 0007 | CellNew | d,b | next (allocate uninitialized cell with BindingDef contract) | yes | - |
+| 0007 | CellNew | b | next (allocate uninitialized cell with BindingDef contract) | yes | - |
 | 0008 | CellRead | d,x | next | yes | - |
 | 0009 | CellWrite | x,y | next | yes | - |
 | 000a | CaptureRead | d,c | next (returns value/cell as declared) | yes | - |
@@ -92,8 +92,16 @@ Constants: 0 Null, 1 Bool, 2 Int64, 3 Float64Bits, 4 Utf8, 5 Bytes, 6 Tuple. Typ
 
 Signature additionally carries optional PropertyBagTail (target parameter, schema capability, writable/animatable requirements). Unknown names in this mode reach the actual target schema after ordinary parameters bind. Class field initializers/methods and pattern defaults carry capture-source mappings, preserving local lexical semantics. Ordinary structural types are backwards-referenced DAGs; a function-type/signature cycle is rejected, while Named types permit recursive class identity.
 
-CellNew associates the complete BindingDef with an uninitialized cell; BindInit publishes its initial value once. BindWrite and CellWrite both validate initialized state, declared type and mutable permission on the same shared cell. Match declares ConditionalWrite outputs; failed matching never initializes them. ArgsNamed/ArgsNamedSpread preserve repeated names and complete subsequent argument evaluation; the final call binder diagnoses conflicts. Calls copy argument values before committing an overlapping destination and inherit the active effect/wait context.
+CellNew(BindingId) resolves the destination Cell register from BindingDef and associates the complete BindingDef with an uninitialized cell; BindInit publishes its initial value once. BindWrite and CellWrite both validate initialized state, declared type and mutable permission on the same shared cell. Match declares ConditionalWrite outputs; failed matching never initializes them. ArgsNamed/ArgsNamedSpread preserve repeated names and complete subsequent argument evaluation; the final call binder diagnoses conflicts. Calls copy argument values before committing an overlapping destination and inherit the active effect/wait context.
 
 Normal Jump/Branch/fallthrough cannot enter catch/finally or bypass cleanup on protected/catch exit. Leave records the destination and runs innermost cleanup; Return/Throw use the same unwind state. exception_handler resolves fault edges: protected code targets its catch (or finally), a catch fault skips that catch and first runs its finally, a finally fault skips that same finally and reaches outer handlers. EndFinally requires the matching active unwind record (static terminator validation plus runtime check). New cleanup faults replace pending results with cause chaining.
 
 `InstructionSpec::semantic_rule`, `unwind`, `visit_registers` and `VerifiedProgram::exception_handler` are shared integration APIs; dispatchers must preserve these contracts. Static verification is separate from actual runtime support: use `VerifiedProgram::load(bytes, limits, support)` at execution load. NativeSupport signatures are trusted adapter snapshots whose names/types have been independently resolved against this package’s tables; copying package declarations does not verify a host registry.
+
+Cell type references retain the owning package content version and definition module along with TypeId; the runtime stores that fixed reference with the cell. GC release Option state is separate from the language initialization bit. Capturing a cell reads only its handle, never the uninitialized content. The runtime suite must distinguish initialized null from unset initialization, reject second BindInit and readonly CellWrite, and reject or route ordinary set_field(Cell) through the same checked write path.
+
+The unwind cursor is a consumed RegionId with strict-ancestor semantics, validated against the original instruction PC of this unwind. Once an outer region has been consumed, its inner regions cannot become targets again. Protected/catch/finally blocks belonging to one region must share a lexical parent: if any block lies inside another region’s block, all of them must lie inside that same block. Nested Leave inside finally is legal while its destination remains inside that finally.
+
+NativeSupport includes required_capabilities from the trusted host registry. Every trusted requirement must be authorized by RuntimeSupport and declared by both the package and its native record. Removing untrusted capability declarations cannot grant access. Snapshot generation must use the independent registry, never copy package declarations to manufacture support.
+
+Use visit_registers_budgeted at untrusted boundaries: it precharges register windows, capture arrays, class lists and pattern metadata before traversal, and can interrupt scalar visits. Verification also charges scratch lengths before allocation/fill and bulk pattern-stack extensions before copying. The unmetered visit_registers adapter is for previously trusted analysis.

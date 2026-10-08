@@ -3,6 +3,31 @@ use super::*;
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
 const FIXTURES: &[Fixture] = &[
     (
+        "initialized-null-cell",
+        fixtures::initialized_null_cell,
+        include_bytes!("testdata/initialized-null-cell.ab"),
+    ),
+    (
+        "uninitialized-cell-read",
+        fixtures::uninitialized_cell_read,
+        include_bytes!("testdata/uninitialized-cell-read.ab"),
+    ),
+    (
+        "second-cell-initialization",
+        fixtures::second_cell_initialization,
+        include_bytes!("testdata/second-cell-initialization.ab"),
+    ),
+    (
+        "readonly-cell-write",
+        fixtures::readonly_cell_write,
+        include_bytes!("testdata/readonly-cell-write.ab"),
+    ),
+    (
+        "forward-readonly-cell",
+        fixtures::forward_readonly_cell,
+        include_bytes!("testdata/forward-readonly-cell.ab"),
+    ),
+    (
         "helper-native",
         fixtures::helper_native,
         include_bytes!("testdata/helper-native.ab"),
@@ -316,8 +341,8 @@ fn cell_and_default_capture_contracts_cannot_be_forged() {
     });
     bad(p, ErrorKind::Signature);
     let mut p = fixtures::cell_closures();
-    p.functions[0].code[1].operands[0] = 2;
-    bad(p, ErrorKind::Capture);
+    p.functions[0].code[1].operands[0] = 99;
+    bad(p, ErrorKind::Index);
     let mut p = fixtures::helper_native();
     p.functions[1].bindings[0].initialization = BindingInitialization::Parameter(99);
     bad(p, ErrorKind::Signature);
@@ -460,7 +485,19 @@ fn runtime_must_explicitly_support_all_opcodes_natives_and_capabilities() {
         natives: vec![NativeSupport {
             symbol: "host::echo".into(),
             abi_version: 1,
-            signature: p.package().signatures[0].clone(),
+            signature: Signature {
+                parameters: vec![Parameter {
+                    name: SymbolId(4),
+                    ty: TypeId(1),
+                    mutable: false,
+                    default: None,
+                }],
+                rest: None,
+                return_type: TypeId(1),
+                effects: Effects::ALL,
+                property_bag_tail: None,
+            },
+            required_capabilities: vec!["host.echo".into()],
         }],
     };
     p.require_runtime(&runtime).unwrap();
@@ -802,4 +839,380 @@ fn hostile_field_mutations_never_panic_or_publish_invalid_programs() {
             }
         }
     }
+}
+#[test]
+fn forward_readonly_cell_carries_initialization_and_write_contract() {
+    let p = verify(fixtures::forward_readonly_cell(), limits()).unwrap();
+    let f = &p.package().functions[0];
+    assert_eq!(
+        f.bindings[0].initialization,
+        BindingInitialization::Explicit
+    );
+    assert!(!f.bindings[0].mutable);
+    assert_eq!(f.code[0], Instruction::new(Opcode::CellNew, 0, 0, 0));
+    assert_eq!(f.code[1].opcode, Opcode::MakeClosure as u16);
+    assert_eq!(f.code[3].opcode, Opcode::BindInit as u16);
+    assert_eq!(
+        Opcode::CellNew.spec().operands,
+        [
+            OperandKind::Binding,
+            OperandKind::Unused,
+            OperandKind::Unused
+        ]
+    );
+    assert_eq!(
+        Opcode::CellRead.spec().semantic_rule,
+        SemanticRule::BindingRead
+    );
+    assert_eq!(
+        Opcode::CellWrite.spec().semantic_rule,
+        SemanticRule::BindingWrite
+    );
+    let mut register_access = Vec::new();
+    Opcode::CellNew
+        .spec()
+        .visit_registers(f, &f.code[0], |r, a| register_access.push((r, a)))
+        .unwrap();
+    assert_eq!(
+        register_access,
+        vec![(Reg(1), Access::Write)],
+        "allocating an uninitialized cell reads no value slot"
+    );
+}
+#[test]
+fn modules_structural_types_rest_schema_and_lexical_initializers_roundtrip() {
+    let mut p = gallery(Opcode::MakeClass);
+    let module_path = SymbolId(p.symbols.len() as u32);
+    p.symbols.push("game::imports".into());
+    p.modules[0].globals[0].mutable = false;
+    p.modules[0].globals[0].linked_function = Some(FunctionId(1));
+    p.modules[0].exports.push(Export {
+        name: SymbolId(9),
+        global: GlobalId(0),
+    });
+    p.modules.push(ModuleDef {
+        path: module_path,
+        imports: vec![Import {
+            name: SymbolId(9),
+            module: ModuleId(0),
+            export: SymbolId(9),
+            content_version: p.content_version,
+        }],
+        exports: vec![],
+        globals: vec![],
+        initializer: Some(FunctionId(3)),
+    });
+    p.types.extend([
+        TypeDef::Tuple(vec![TypeId(1)]),
+        TypeDef::Union(vec![TypeId(0), TypeId(1)]),
+        TypeDef::Function(SignatureId(0)),
+        TypeDef::Named {
+            module: ModuleId(1),
+            name: SymbolId(12),
+            version: p.content_version,
+        },
+    ]);
+    p.signatures[0].rest = Some(Parameter {
+        name: SymbolId(13),
+        ty: TypeId(0),
+        mutable: true,
+        default: None,
+    });
+    p.signatures[0].property_bag_tail = Some(PropertyBagTail {
+        target_parameter: 0,
+        capability: Some(SymbolId(5)),
+        require_writable: true,
+        require_animatable: true,
+    });
+    let mut init_signature = p.signatures[1].clone();
+    init_signature.effects = Effects(Effects::ALLOCATE);
+    p.signatures.push(init_signature.clone());
+    p.signatures.push(init_signature);
+    let mut lexical = p.functions[1].clone();
+    lexical.signature = SignatureId(2);
+    lexical.context = Context::NoWait;
+    lexical.captures = vec![CaptureKind::Value];
+    lexical.bindings.clear();
+    lexical.descriptors.clear();
+    lexical.source_map.clear();
+    lexical.code = vec![
+        Instruction::new(Opcode::CaptureRead, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    p.functions.push(lexical);
+    let mut module_init = p.functions[2].clone();
+    module_init.module = ModuleId(1);
+    module_init.signature = SignatureId(3);
+    module_init.context = Context::Init;
+    module_init.captures.clear();
+    module_init.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    p.functions.push(module_init);
+    if let Descriptor::Class(class) = &mut p.functions[0].descriptors[5] {
+        class.fields[0].initializer = Some(FunctionId(2));
+        class.fields[0].captures = vec![CaptureSource::Capture(CaptureId(0))];
+        class.methods[0].function = FunctionId(2);
+        class.methods[0].captures = vec![CaptureSource::Capture(CaptureId(0))];
+    }
+    if let Descriptor::Pattern(pattern) = &mut p.functions[0].descriptors[8]
+        && let PatternNode::Object { fields, .. } = &mut pattern.nodes[5]
+    {
+        fields[0].default = Some(FunctionId(2));
+        fields[0].captures = vec![CaptureSource::Capture(CaptureId(0))];
+    }
+    let bytes = encode(&p, limits()).unwrap();
+    assert_eq!(
+        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        &p
+    );
+    let mut wrong = p.clone();
+    wrong.modules[1].imports[0].content_version = 2;
+    bad(wrong, ErrorKind::Version);
+    let mut wrong = p.clone();
+    wrong.signatures[0]
+        .property_bag_tail
+        .as_mut()
+        .unwrap()
+        .target_parameter = 99;
+    bad(wrong, ErrorKind::Signature);
+    p.types.push(TypeDef::Function(SignatureId(2)));
+    p.signatures[2].return_type = TypeId(6);
+    bad(p, ErrorKind::Signature);
+}
+#[test]
+fn nested_try_can_leave_inside_finally_but_cannot_escape_it() {
+    let mut p = fixtures::exception_regions();
+    let f = &mut p.functions[0];
+    f.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 0, 0),
+        Instruction::new(Opcode::Leave, 6, 0, 0),
+        Instruction::new(Opcode::LoadConst, 0, 1, 0),
+        Instruction::new(Opcode::Leave, 5, 0, 0),
+        Instruction::new(Opcode::Leave, 5, 0, 0),
+        Instruction::new(Opcode::EndFinally, 0, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    f.regions = vec![
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(2),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(2),
+                end: Pc(6),
+            }),
+        },
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(2),
+                end: Pc(4),
+            },
+            catch: Some(CatchRegion {
+                range: PcRange {
+                    start: Pc(4),
+                    end: Pc(5),
+                },
+                exception: Reg(1),
+            }),
+            finally: None,
+        },
+    ];
+    verify(p.clone(), limits()).unwrap();
+    p.functions[0].code[3].operands[0] = 6;
+    bad(p, ErrorKind::ControlFlow);
+}
+#[test]
+fn small_encoded_packages_cannot_spend_large_declared_window_work() {
+    let mut p = gallery(Opcode::MakeArray);
+    p.functions[0].register_count = 1_000_000_000;
+    p.functions[0].descriptors[3] = Descriptor::Sequence(RegWindow {
+        start: Reg(0),
+        len: 1_000_000_000,
+    });
+    let bytes = super::codec::encode_unverified(&p);
+    assert!(bytes.len() < 2048);
+    let small = Limits {
+        max_registers: 1_000_000_000,
+        max_work: 20_000,
+        ..limits()
+    };
+    let began = std::time::Instant::now();
+    assert_eq!(
+        VerifiedProgram::decode(&bytes, small).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(2),
+        "declared window traversal preceded work rejection"
+    );
+    let mut spent = 0;
+    let mut visited = 0;
+    let result = Opcode::MakeArray.spec().visit_registers_budgeted(
+        &p.functions[0],
+        &p.functions[0].code[0],
+        |units| {
+            spent += units;
+            if spent > 10 {
+                Err(Error::new(ErrorKind::Limit, "test work"))
+            } else {
+                Ok(())
+            }
+        },
+        |_, _| visited += 1,
+    );
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Limit);
+    assert_eq!(
+        visited, 1,
+        "only direct destination is visited before window precharge"
+    );
+}
+#[test]
+fn unwind_cursor_moves_strictly_outward_across_two_finally_layers() {
+    let mut p = fixtures::exception_regions();
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    f.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 1, 0),
+        Instruction::new(Opcode::Throw, 0, 0, 0),
+        Instruction::new(Opcode::LoadConst, 1, 0, 0),
+        Instruction::new(Opcode::EndFinally, 0, 0, 0),
+        Instruction::new(Opcode::LoadConst, 1, 0, 0),
+        Instruction::new(Opcode::EndFinally, 1, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ];
+    f.regions = vec![
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(2),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(2),
+                end: Pc(4),
+            }),
+        },
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(4),
+            },
+            catch: None,
+            finally: Some(PcRange {
+                start: Pc(4),
+                end: Pc(6),
+            }),
+        },
+    ];
+    let bytes = encode(&p, limits()).unwrap();
+    let p = VerifiedProgram::decode(&bytes, limits()).unwrap();
+    let inner = p
+        .exception_handler(FunctionId(0), Pc(1), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(inner.region, RegionId(0));
+    let outer = p
+        .exception_handler(FunctionId(0), Pc(1), Some(inner.region))
+        .unwrap()
+        .unwrap();
+    assert_eq!(outer.region, RegionId(1));
+    assert_eq!(
+        p.exception_handler(FunctionId(0), Pc(1), Some(outer.region))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        p.exception_handler(FunctionId(0), Pc(4), Some(inner.region))
+            .unwrap_err()
+            .kind,
+        ErrorKind::Region
+    );
+}
+#[test]
+fn protected_and_handler_blocks_cannot_have_different_lexical_parents() {
+    let mut p = fixtures::exception_regions();
+    let f = &mut p.functions[0];
+    f.source_map.clear();
+    f.code = vec![
+        Instruction::new(Opcode::Jump, 2, 0, 0),
+        Instruction::new(Opcode::Throw, 0, 0, 0),
+        Instruction::new(Opcode::Leave, 4, 0, 0),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+        Instruction::new(Opcode::LoadConst, 0, 0, 0),
+        Instruction::new(Opcode::Throw, 0, 0, 0),
+    ];
+    f.regions = vec![
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(3),
+            },
+            catch: Some(CatchRegion {
+                range: PcRange {
+                    start: Pc(3),
+                    end: Pc(4),
+                },
+                exception: Reg(1),
+            }),
+            finally: None,
+        },
+        ExceptionRegion {
+            protected: PcRange {
+                start: Pc(4),
+                end: Pc(6),
+            },
+            catch: Some(CatchRegion {
+                range: PcRange {
+                    start: Pc(1),
+                    end: Pc(2),
+                },
+                exception: Reg(1),
+            }),
+            finally: None,
+        },
+    ];
+    bad(p, ErrorKind::Region);
+}
+#[test]
+fn native_requirements_cannot_be_erased_from_untrusted_package_metadata() {
+    let mut package = fixtures::helper_native();
+    package.capabilities.clear();
+    package.natives[0].capabilities.clear();
+    let program = verify(package, limits()).unwrap();
+    let mut trusted = RuntimeSupport {
+        opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
+        capabilities: vec![],
+        natives: vec![NativeSupport {
+            symbol: "host::echo".into(),
+            abi_version: 1,
+            required_capabilities: vec!["host.echo".into()],
+            signature: Signature {
+                parameters: vec![Parameter {
+                    name: SymbolId(4),
+                    ty: TypeId(1),
+                    mutable: false,
+                    default: None,
+                }],
+                rest: None,
+                return_type: TypeId(1),
+                effects: Effects::ALL,
+                property_bag_tail: None,
+            },
+        }],
+    };
+    assert_eq!(
+        program.require_runtime(&trusted).unwrap_err().kind,
+        ErrorKind::Capability
+    );
+    trusted.capabilities.push("host.echo".into());
+    assert_eq!(
+        program.require_runtime(&trusted).unwrap_err().kind,
+        ErrorKind::Capability
+    );
+    let correct = verify(fixtures::helper_native(), limits()).unwrap();
+    correct.require_runtime(&trusted).unwrap();
 }
