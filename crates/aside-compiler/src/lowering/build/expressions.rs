@@ -291,6 +291,9 @@ impl FunctionBuilder<'_, '_> {
                 Ok(Some(out))
             }
             (H::Return, Form::Transfer { value, .. }) => {
+                if matches!(self.ir.origin, Origin::Default { .. }) {
+                    return Err(self.l.b.error(ErrorKind::Unsupported, "author return escaping a default expression requires a shared transfer contract"));
+                }
                 let value = match value {
                     Some(value) => self.value(value, depth)?,
                     None => self.constant(bc::Const::Null, n)?,

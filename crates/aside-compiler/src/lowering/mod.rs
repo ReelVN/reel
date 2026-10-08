@@ -125,11 +125,51 @@ pub struct Compilation {
 #[derive(Debug)]
 pub struct Metadata {
     pub entry_context: crate::semantic::AnalysisContext,
-    pub declared_contexts: Vec<hir::DeclaredContext>,
+    pub functions: Vec<FunctionMetadata>,
     pub canonical_path: String,
     pub source_version: String,
     pub imports: Vec<hir::Import>,
     pub external_bindings: Vec<hir::ExternalBinding>,
+    pub bindings: Vec<BindingIdentity>,
+    pub globals: Vec<GlobalIdentity>,
+    pub natives: Vec<NativeIdentity>,
+    pub symbol_count: u32,
+    pub source_span: TextRange,
+    pub(crate) capacity_bytes: usize,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionMetadata {
+    /// Indexed by the source HIR FunctionId, excluding emitted default thunks.
+    pub output: bc::FunctionId,
+    pub declared_context: hir::DeclaredContext,
+    pub known_wait: bool,
+    pub dynamic_calls: bool,
+}
+#[derive(Debug, Clone)]
+pub struct NativeIdentity {
+    pub target: ExternalTarget,
+    pub native: bc::NativeId,
+    pub reference: std::sync::Arc<crate::semantic::SymbolReference>,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct BindingIdentity {
+    pub function: bc::FunctionId,
+    pub binding: bc::BindingId,
+    pub source: hir::SymbolId,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct GlobalIdentity {
+    pub global: bc::GlobalId,
+    pub source: hir::SymbolId,
+}
+impl Metadata {
+    pub fn symbol_reference(&self, slot: hir::SymbolId) -> Option<hir::LocalSymbolRef<'_>> {
+        (slot.0 < self.symbol_count).then_some(hir::LocalSymbolRef {
+            module: &self.canonical_path,
+            version: &self.source_version,
+            slot,
+        })
+    }
 }
 impl IrModule {
     /// Consumes the IR, relocates block edges/regions and runs the shared verifier.

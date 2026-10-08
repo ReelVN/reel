@@ -17,9 +17,25 @@ pub(super) fn lower<'a>(
 ) -> Result<IrModule, Error> {
     let mut b = Budget::new(options.limits);
     b.span = m.hir().node(h::NodeId(0)).span;
+    if m.hir().source.len() > options.bytecode_limits.max_string_bytes as usize {
+        return Err(b.error(
+            ErrorKind::Limit,
+            "source text exceeds the shared bytecode string-byte limit",
+        ));
+    }
     preflight(m, links, &mut b)?;
+    b.span = m.hir().node(h::NodeId(0)).span;
     let mut package = if let Some(seed) = links.package {
         let stats = seed.stats();
+        let records = usize::try_from(stats.records)
+            .map_err(|_| b.error(ErrorKind::Limit, "trusted linkage record count overflow"))?;
+        if records > b.limits.max_records.min(u32::MAX as usize) {
+            return Err(b.error(
+                ErrorKind::Limit,
+                "trusted linkage exceeds lowering record budget",
+            ));
+        }
+        b.stats.records = records;
         b.work(stats.records + stats.encoded_bytes as u64)?;
         // Clone admission happens before any clone allocation. Vec/String clones
         // retain at most their input capacities; this is a conservative seed charge.
@@ -28,6 +44,12 @@ pub(super) fn lower<'a>(
     } else {
         bc::BytecodePackage::default()
     };
+    if links.package.is_some() && package.content_version != options.content_version {
+        return Err(b.error(
+            ErrorKind::LinkContract,
+            "trusted linkage package must use the requested fixed content version",
+        ));
+    }
     package.content_version = options.content_version;
     let mut names = Vec::new();
     if let Some(seed) = links.package {
@@ -59,6 +81,12 @@ pub(super) fn lower<'a>(
         let id = match seed {
             Some(id) => id,
             None => {
+                if name.len() > options.bytecode_limits.max_string_bytes as usize {
+                    return Err(b.error(
+                        ErrorKind::Limit,
+                        "symbol text exceeds the shared bytecode string-byte limit",
+                    ));
+                }
                 let id = bc::SymbolId(package.symbols.len() as u32);
                 let text = b.string(name)?;
                 b.push(&mut package.symbols, text)?;
@@ -83,6 +111,8 @@ pub(super) fn lower<'a>(
         defaults: Vec::new(),
         owned: Vec::new(),
         functions: Vec::new(),
+        binding_identities: Vec::new(),
+        native_identities: Vec::new(),
         source: bc::SourceId(0),
         module: bc::ModuleId(0),
     };
@@ -164,6 +194,7 @@ pub(super) fn lower<'a>(
     lower.b.push(&mut lower.package.modules, module)?;
     lower.prepare_functions()?;
     lower.check_links()?;
+    lower.check_imports()?;
     let entry = if m.entry_context() == crate::semantic::AnalysisContext::Function {
         let id = m
             .functions()
@@ -201,8 +232,20 @@ pub(super) fn lower<'a>(
     }
     lower.b.release(lower.type_cache);
     lower.b.release(lower.contracts);
+    let mut global_identities = Vec::new();
+    lower.b.work(lower.globals.len() as u64)?;
+    for (i, &global) in lower.globals.iter().enumerate() {
+        if let Some(global) = global {
+            lower.b.push(
+                &mut global_identities,
+                super::GlobalIdentity {
+                    global,
+                    source: h::SymbolId(i as u32),
+                },
+            )?;
+        }
+    }
     lower.b.release(lower.globals);
-    lower.b.release(lower.outputs);
     for values in lower.defaults.drain(..) {
         lower.b.release(values);
     }
@@ -212,6 +255,7 @@ pub(super) fn lower<'a>(
     }
     lower.b.release(lower.owned);
     lower.b.release(lower.names);
+    let metadata_before = lower.b.stats.capacity_bytes;
     let canonical_path = lower.b.string(m.canonical_path())?;
     let source_version = lower.b.string(m.version())?;
     let mut imports = Vec::new();
@@ -239,19 +283,40 @@ pub(super) fn lower<'a>(
         .b
         .reserve(&mut external_bindings, m.external_bindings().len())?;
     external_bindings.extend_from_slice(m.external_bindings());
-    let mut declared_contexts = Vec::new();
+    let mut function_metadata = Vec::new();
     lower.b.work(m.functions().len() as u64)?;
     lower
         .b
-        .reserve(&mut declared_contexts, m.functions().len())?;
-    declared_contexts.extend(m.functions().iter().map(|f| f.declared_context));
+        .reserve(&mut function_metadata, m.functions().len())?;
+    function_metadata.extend(m.functions().iter().enumerate().map(|(i, f)| {
+        super::FunctionMetadata {
+            output: lower.outputs[i],
+            declared_context: f.declared_context,
+            known_wait: f.known_wait,
+            dynamic_calls: f.dynamic_calls,
+        }
+    }));
+    let outputs_capacity = lower.outputs.capacity() * std::mem::size_of::<bc::FunctionId>();
+    lower.b.release(lower.outputs);
+    let metadata_capacity = lower.b.stats.capacity_bytes - metadata_before
+        + outputs_capacity
+        + lower.binding_identities.capacity() * std::mem::size_of::<super::BindingIdentity>()
+        + global_identities.capacity() * std::mem::size_of::<super::GlobalIdentity>();
+    let metadata_capacity = metadata_capacity
+        + lower.native_identities.capacity() * std::mem::size_of::<super::NativeIdentity>();
     let metadata = Metadata {
         entry_context: m.entry_context(),
-        declared_contexts,
+        functions: function_metadata,
         canonical_path,
         source_version,
         imports,
         external_bindings,
+        bindings: lower.binding_identities,
+        globals: global_identities,
+        natives: lower.native_identities,
+        symbol_count: m.symbols().len() as u32,
+        source_span: m.hir().node(h::NodeId(0)).span,
+        capacity_bytes: metadata_capacity,
     };
     Ok(IrModule {
         package: lower.package,
@@ -321,6 +386,8 @@ struct Lowerer<'a> {
     defaults: Vec<Vec<Option<bc::FunctionId>>>,
     owned: Vec<Vec<h::SymbolId>>,
     functions: Vec<Function>,
+    binding_identities: Vec<super::BindingIdentity>,
+    native_identities: Vec<super::NativeIdentity>,
     source: bc::SourceId,
     module: bc::ModuleId,
 }
@@ -735,6 +802,19 @@ impl Lowerer<'_> {
                     ));
                 }
             }
+            self.b.push(
+                &mut self.native_identities,
+                super::NativeIdentity {
+                    target: link.target,
+                    native: link.native,
+                    reference: external
+                        .descriptor
+                        .reference
+                        .as_ref()
+                        .expect("checked native identity")
+                        .clone(),
+                },
+            )?;
         }
         Ok(())
     }
@@ -763,6 +843,75 @@ impl Lowerer<'_> {
             }
         }
         Ok(result)
+    }
+    fn check_imports(&mut self) -> Result<(), Error> {
+        for import in self.m.imports() {
+            self.b.span = self.m.hir().node(import.node).span;
+            self.b.work(import.names.len() as u64)?;
+            for &(_, symbol) in &import.names {
+                self.b.work(self.m.external_bindings().len() as u64)?;
+                let external = self
+                    .m
+                    .external_bindings()
+                    .iter()
+                    .find(|e| e.symbol == Some(symbol))
+                    .ok_or_else(|| {
+                        self.b.error(
+                            ErrorKind::InvalidIr,
+                            "import lacks retained external identity",
+                        )
+                    })?;
+                self.b.work(self.links.natives.len() as u64)?;
+                let mut linked = self
+                    .links
+                    .natives
+                    .iter()
+                    .any(|link| link.target == ExternalTarget::Symbol(symbol));
+                if let Some(namespace) = &external.descriptor.namespace {
+                    for link in self.links.natives {
+                        let ExternalTarget::Node(node) = link.target else {
+                            continue;
+                        };
+                        self.b.work(self.m.external_bindings().len() as u64)?;
+                        let resolved = self
+                            .m
+                            .external_bindings()
+                            .iter()
+                            .find(|e| e.node == Some(node))
+                            .expect("native node link checked above");
+                        let mut reference = resolved.descriptor.resolved_from.as_deref();
+                        let mut depth = 0;
+                        while let Some(source) = reference {
+                            self.b.work(1)?;
+                            depth += 1;
+                            if depth > self.b.limits.max_depth.min(128) {
+                                return Err(self.b.error(
+                                    ErrorKind::Limit,
+                                    "native resolution provenance depth exceeded",
+                                ));
+                            }
+                            if self
+                                .b
+                                .compare(&source.reference.module, &namespace.module)?
+                                .is_eq()
+                                && self
+                                    .b
+                                    .compare(&source.reference.version, &namespace.version)?
+                                    .is_eq()
+                            {
+                                linked = true;
+                                break;
+                            }
+                            reference = source.previous.as_deref();
+                        }
+                    }
+                }
+                if !linked {
+                    return Err(self.b.error(ErrorKind::MissingLink,"import requires trusted native linkage; full script module initialization is deferred"));
+                }
+            }
+        }
+        Ok(())
     }
     fn build_function(&mut self, output: bc::FunctionId, origin: Origin) -> Result<(), Error> {
         let node = match origin {
@@ -1060,6 +1209,12 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
                 self.op(bc::Opcode::CellRead, out.0, out.0, 0, n)?;
             }
         } else {
+            if self.l.native(n)?.is_some() {
+                return Err(self.l.b.error(
+                    ErrorKind::Unsupported,
+                    "native function values await the shared callable representation",
+                ));
+            }
             return Err(self.l.b.error(ErrorKind::MissingLink, "external value is not a linked script binding; native values await unified callable support"));
         }
         Ok(out)
@@ -1200,6 +1355,17 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             .max_function_registers
             .max(self.registers.high);
         self.registers.finish(&mut self.l.b);
+        self.l.b.work(self.locals.len() as u64)?;
+        for &(source, binding) in &self.locals {
+            self.l.b.push(
+                &mut self.l.binding_identities,
+                super::BindingIdentity {
+                    function: self.ir.output,
+                    binding,
+                    source,
+                },
+            )?;
+        }
         self.l.b.release(self.locals);
         self.l.b.release(self.captures);
         self.l.b.release(self.loops);
@@ -1286,6 +1452,16 @@ fn hint_matches(
 }
 
 fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Result<(), Error> {
+    b.work(m.symbols().len() as u64)?;
+    for symbol in m.symbols() {
+        if symbol.owner.is_none() && symbol.per_iteration {
+            b.span = symbol.declaration;
+            return Err(b.error(
+                ErrorKind::Unsupported,
+                "module-scope iteration bindings require full module initialization lowering",
+            ));
+        }
+    }
     b.work(m.hir().nodes.len() as u64)?;
     for (i, node) in m.hir().nodes.iter().enumerate() {
         b.span = node.span;

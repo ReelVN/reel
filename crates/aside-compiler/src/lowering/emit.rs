@@ -110,14 +110,25 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Error> {
         b.release_bytes(regions_capacity);
     }
     b.release(ir.functions);
-    b.span = crate::TextRange::empty(crate::TextSize::from(0));
-    let program = bc::verify(ir.package, ir.options.bytecode_limits).map_err(|e| {
+    b.span = ir.metadata.source_span;
+    let mut validation_limits = ir.options.bytecode_limits;
+    validation_limits.max_allocation_bytes = validation_limits.max_allocation_bytes.min(
+        b.limits
+            .max_capacity_bytes
+            .saturating_sub(ir.metadata.capacity_bytes),
+    );
+    let program = bc::verify(ir.package, validation_limits).map_err(|e| {
         let mut error = b.error(ErrorKind::Bytecode, e.to_string());
         if let Some(source) = e.source {
             error.span = crate::TextRange::new(source.start.into(), source.end.into());
         }
         error
     })?;
+    b.stats.capacity_peak_bytes = b.stats.capacity_peak_bytes.max(
+        b.stats
+            .capacity_bytes
+            .saturating_add(program.stats().validation_scratch_peak),
+    );
     Ok(Compilation {
         program,
         stats: b.stats,

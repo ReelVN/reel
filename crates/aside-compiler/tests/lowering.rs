@@ -120,6 +120,25 @@ fn dynamic_calls_have_contiguous_windows_and_preserve_live_values() {
         })
         .collect();
     assert_eq!(spans, ["one()", "two()", "one()", "take(two(), b: one())"]);
+    let saved_left = f.code[pcs[0]].operands[0];
+    let add_pc = f
+        .code
+        .iter()
+        .rposition(|i| i.opcode == bc::Opcode::Add as u16)
+        .unwrap();
+    assert_eq!(f.code[add_pc].operands[1], saved_left);
+    for i in &f.code[pcs[0] + 1..add_pc] {
+        bc::instruction_spec(i.opcode)
+            .unwrap()
+            .visit_registers(f, i, |reg, access| {
+                assert!(
+                    !(reg.0 == saved_left
+                        && matches!(access, bc::Access::Write | bc::Access::ReadWrite)),
+                    "live left operand overwritten across a call"
+                );
+            })
+            .unwrap();
+    }
 }
 
 #[test]
@@ -367,7 +386,7 @@ fn inferred_function_types_do_not_become_structural_author_contracts() {
 }
 
 #[test]
-fn parameter_cell_defaults_use_body_prefix_and_definition_captures_in_ir() {
+fn parameter_cell_defaults_use_body_prefix_and_definition_captures() {
     let module = analyzed(
         "fn outer() { let mut captured=1; fn f(mut x=2, y=if true { x+=captured; || { x+=1; x } } else { ||x }) { y(); x } f }",
     );
@@ -380,12 +399,47 @@ fn parameter_cell_defaults_use_body_prefix_and_definition_captures_in_ir() {
     assert_eq!(default.bindings[0], f.bindings[0]);
     assert_eq!(default.captures, f.captures);
     assert_eq!(default.module, f.module);
+    let body_identity = ir
+        .metadata()
+        .bindings
+        .iter()
+        .find(|i| {
+            i.function
+                == p.functions
+                    .iter()
+                    .position(|a| std::ptr::eq(a, f))
+                    .map(|i| bc::FunctionId(i as u32))
+                    .unwrap()
+                && i.binding == bc::BindingId(0)
+        })
+        .unwrap();
+    let default_identity = ir
+        .metadata()
+        .bindings
+        .iter()
+        .find(|i| i.function == s.parameters[1].default.unwrap() && i.binding == bc::BindingId(0))
+        .unwrap();
+    assert_eq!(body_identity.source, default_identity.source);
+    assert_eq!(
+        ir.metadata()
+            .symbol_reference(body_identity.source)
+            .unwrap(),
+        module.symbol_reference(body_identity.source).unwrap()
+    );
     assert!(ir.functions().iter().any(|f| matches!(
         f.origin,
         lowering::ir::Origin::Default { parameter: 1, .. }
     ) && f.output == s.parameters[1].default.unwrap()));
-    // B01's parameter Cell verifier update is a pending dependency. This test
-    // checks IR identity only until that exact update is merged.
+    let result = ir.emit().unwrap();
+    let encoded = bc::encode(result.program.package(), bc::Limits::default()).unwrap();
+    let decoded = bc::decode(&encoded, bc::Limits::default()).unwrap();
+    bc::verify(decoded, bc::Limits::default()).unwrap();
+    let f = function(result.program.package(), "f");
+    assert!(
+        !f.code
+            .iter()
+            .any(|i| i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == 0)
+    );
 }
 
 fn native_seed() -> bc::VerifiedProgram {
@@ -554,6 +608,47 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     )
     .unwrap_err();
     assert_eq!(wrong.kind, lowering::ErrorKind::LinkContract);
+    let mut missing_default = seed.package().clone();
+    missing_default.signatures[1].parameters[0].default = None;
+    let missing_default = bc::verify(missing_default, bc::Limits::default()).unwrap();
+    let mismatch = lowering::compile(
+        &module,
+        &Linkage {
+            package: Some(&missing_default),
+            natives: &native_links,
+        },
+        Options::default(),
+    )
+    .unwrap_err();
+    assert_eq!(mismatch.kind, lowering::ErrorKind::LinkContract);
+
+    let value_analysis = analyze_module(
+        "fn f() { let value=host; value() }",
+        &options,
+        &mut NoModules,
+    )
+    .unwrap()
+    .into_module()
+    .unwrap();
+    let value_symbol = value_analysis
+        .external_bindings()
+        .iter()
+        .find_map(|e| e.symbol)
+        .unwrap();
+    let value_links = [lowering::NativeLink {
+        target: lowering::ExternalTarget::Symbol(value_symbol),
+        ..native_links[0]
+    }];
+    let value = lowering::compile(
+        &value_analysis,
+        &Linkage {
+            package: Some(&seed),
+            natives: &value_links,
+        },
+        Options::default(),
+    )
+    .unwrap_err();
+    assert_eq!(value.kind, lowering::ErrorKind::Unsupported);
 }
 
 #[test]
@@ -569,6 +664,45 @@ fn cleanup_aware_loop_edges_stay_in_their_lexical_regions() {
             .count()
             >= 2
     );
+}
+
+#[test]
+fn imported_script_bindings_fail_instead_of_skipping_module_initialization() {
+    use aside_compiler::semantic::{ExternalSymbol, MemoryResolver, ModuleInterface, TypeHint};
+    let mut resolver = MemoryResolver::default();
+    resolver.insert(ModuleInterface {
+        canonical_path: "game::dependency".into(),
+        version: "revision-2".into(),
+        exports: vec![ExternalSymbol::value("value", TypeHint::Int)],
+    });
+    let source = "use game::dependency::{value}; fn f(){1}";
+    let m = analyze_module(source, &AnalysisOptions::default(), &mut resolver)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let error = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap_err();
+    assert_eq!(error.kind, lowering::ErrorKind::MissingLink);
+    assert_eq!(
+        &source[aside_compiler::byte_range(error.span)],
+        "use game::dependency::{value};"
+    );
+}
+
+#[test]
+fn mutable_prefix_write_without_a_closure_and_readonly_captured_prefix_roundtrip() {
+    let result = compiled(
+        "fn mutate(mut x=1,y=if true {x+=1;x} else {0}) { x } fn readonly(x=1,y=||x) { y() }",
+    );
+    let f = function(result.program.package(), "mutate");
+    assert_eq!(f.bindings[0].storage, bc::BindingStorage::Cell(bc::Reg(0)));
+    let f = function(result.program.package(), "readonly");
+    let p = &result.program.package().signatures[f.signature.index()].parameters;
+    let default = &result.program.package().functions[p[1].default.unwrap().index()];
+    assert_eq!(default.bindings[0].storage, f.bindings[0].storage);
+    assert!(matches!(
+        f.bindings[0].storage,
+        bc::BindingStorage::Value(bc::Reg(0))
+    ));
 }
 
 /// Definite initialization of temporary registers over the actual shared CFG.
