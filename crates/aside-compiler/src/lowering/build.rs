@@ -39,7 +39,7 @@ pub(super) fn lower<'a>(
         b.work(stats.records + stats.encoded_bytes as u64)?;
         // Clone admission happens before any clone allocation. Vec/String clones
         // retain at most their input capacities; this is a conservative seed charge.
-        b.capacity(stats.owned_capacity_bytes)?;
+        b.capacity(stats.owned_capacity_bytes - stats.derived_capacity_bytes)?;
         seed.package().clone()
     } else {
         bc::BytecodePackage::default()

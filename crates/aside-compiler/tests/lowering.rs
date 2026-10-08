@@ -705,6 +705,235 @@ fn mutable_prefix_write_without_a_closure_and_readonly_captured_prefix_roundtrip
     ));
 }
 
+#[test]
+fn native_default_prefix_cells_and_fast_value_slots_come_from_shared_verifier() {
+    use aside_compiler::semantic::{
+        CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
+    };
+    let reference = SymbolReference {
+        module: "registry::host".into(),
+        version: "v1".into(),
+        export: Some("parameter_defaults".into()),
+    };
+    let parameter = |name: &str, mutable, default, rest| ExternalParameter {
+        name: name.into(),
+        ty: if rest { TypeHint::Any } else { TypeHint::Int },
+        mutable,
+        default,
+        rest,
+    };
+    let host = ExternalSymbol::function(
+        "host",
+        ExternalSignature {
+            parameters: vec![
+                parameter("x", true, false, false),
+                parameter("y", false, true, false),
+                parameter("z", true, true, false),
+                parameter("rest", true, false, true),
+            ],
+            result: TypeHint::Any,
+            effect: CallEffect::MayWait,
+            init_safe: Some(true),
+            derived_safe: Some(false),
+        },
+    )
+    .with_reference(reference.clone());
+    let analysis = analyze_module(
+        "fn f(){host(41)}",
+        &AnalysisOptions {
+            hosts: vec![host],
+            ..Default::default()
+        },
+        &mut NoModules,
+    )
+    .unwrap()
+    .into_module()
+    .unwrap();
+    let symbol = analysis
+        .external_bindings()
+        .iter()
+        .find_map(|e| e.symbol)
+        .unwrap();
+    let seed = bc::verify(
+        bc::fixtures::native_parameter_defaults(),
+        bc::Limits::default(),
+    )
+    .unwrap();
+    let links = [lowering::NativeLink {
+        target: lowering::ExternalTarget::Symbol(symbol),
+        native: bc::NativeId(0),
+        reference: &reference,
+    }];
+    let result = lowering::compile(
+        &analysis,
+        &Linkage {
+            package: Some(&seed),
+            natives: &links,
+        },
+        Options::default(),
+    )
+    .unwrap();
+    assert!(
+        result
+            .program
+            .native_parameters_need_cells(bc::NativeId(0))
+            .unwrap()
+    );
+    for i in 0..4 {
+        assert_eq!(
+            result
+                .program
+                .native_parameter_storage(bc::NativeId(0), i)
+                .unwrap(),
+            seed.native_parameter_storage(bc::NativeId(0), i).unwrap()
+        );
+    }
+    assert_eq!(
+        result
+            .program
+            .native_parameter_storage(bc::NativeId(0), 0)
+            .unwrap(),
+        bc::BindingStorage::Cell(bc::Reg(0))
+    );
+    assert_eq!(
+        result
+            .program
+            .native_parameter_storage(bc::NativeId(0), 1)
+            .unwrap(),
+        bc::BindingStorage::Cell(bc::Reg(1))
+    );
+    assert_eq!(
+        result
+            .program
+            .native_parameter_storage(bc::NativeId(0), 2)
+            .unwrap(),
+        bc::BindingStorage::Value(bc::Reg(2))
+    );
+    assert_eq!(
+        result
+            .program
+            .native_parameter_storage(bc::NativeId(0), 3)
+            .unwrap(),
+        bc::BindingStorage::Value(bc::Reg(3))
+    );
+    assert!(result.program.stats().derived_capacity_bytes > 0);
+    assert_eq!(result.metadata.natives[0].reference.as_ref(), &reference);
+    let bytes = bc::encode(result.program.package(), bc::Limits::default()).unwrap();
+    let decoded = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
+    assert_eq!(
+        decoded
+            .native_parameter_storage(bc::NativeId(0), 0)
+            .unwrap(),
+        bc::BindingStorage::Cell(bc::Reg(0))
+    );
+}
+
+#[test]
+fn qualified_native_import_retains_namespace_and_registration_identity() {
+    use aside_compiler::semantic::{
+        CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, MemoryResolver,
+        ModuleInterface, SymbolReference, TypeHint,
+    };
+    let reference = SymbolReference {
+        module: "registry::test".into(),
+        version: "native-v19".into(),
+        export: Some("run".into()),
+    };
+    let native = ExternalSymbol::function(
+        "run",
+        ExternalSignature {
+            parameters: vec![ExternalParameter {
+                name: "a".into(),
+                ty: TypeHint::Int,
+                mutable: false,
+                default: true,
+                rest: false,
+            }],
+            result: TypeHint::Int,
+            effect: CallEffect::NoWait,
+            init_safe: Some(true),
+            derived_safe: Some(false),
+        },
+    )
+    .with_reference(reference.clone());
+    let mut resolver = MemoryResolver::default();
+    resolver.insert(ModuleInterface {
+        canonical_path: "reg::exports".into(),
+        version: "metadata-2".into(),
+        exports: vec![native],
+    });
+    let source = "use reg::exports as native; fn f(){native.run()}";
+    let analysis = analyze_module(source, &AnalysisOptions::default(), &mut resolver).unwrap();
+    assert!(analysis.is_ok(), "{:?}", analysis.diagnostics);
+    let module = analysis.into_module().unwrap();
+    let node = module
+        .external_bindings()
+        .iter()
+        .find_map(|e| {
+            e.node
+                .filter(|&node| module.hir().node(node).kind == hir::HirKind::Member)
+        })
+        .unwrap();
+    let links = [lowering::NativeLink {
+        target: lowering::ExternalTarget::Node(node),
+        native: bc::NativeId(0),
+        reference: &reference,
+    }];
+    let seed = native_seed();
+    let result = lowering::compile(
+        &module,
+        &Linkage {
+            package: Some(&seed),
+            natives: &links,
+        },
+        Options::default(),
+    )
+    .unwrap();
+    let namespace = result
+        .metadata
+        .external_bindings
+        .iter()
+        .find(|e| e.descriptor.namespace.is_some())
+        .unwrap();
+    assert!(
+        namespace
+            .descriptor
+            .reference
+            .as_ref()
+            .unwrap()
+            .export
+            .is_none()
+    );
+    assert_eq!(result.metadata.imports[0].module, "reg::exports");
+    assert_eq!(result.metadata.imports[0].version, "metadata-2");
+    assert_eq!(result.metadata.natives[0].reference.as_ref(), &reference);
+    let f = function(result.program.package(), "f");
+    assert!(f.descriptors.iter().any(
+        |d| matches!(d,bc::Descriptor::Call(c) if c.target==bc::CallTarget::Native(bc::NativeId(0)))
+    ));
+}
+
+#[test]
+fn output_string_admission_happens_before_source_copy() {
+    let source = "fn f(){\"a long string\"}";
+    let module = analyzed(source);
+    let error = lowering::lower(
+        &module,
+        &Linkage::default(),
+        Options {
+            bytecode_limits: bc::Limits {
+                max_string_bytes: 8,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, lowering::ErrorKind::Limit);
+    assert_eq!(error.stats.capacity_bytes, 0);
+    assert_eq!(error.span, module.hir().node(hir::NodeId(0)).span);
+}
+
 /// Definite initialization of temporary registers over the actual shared CFG.
 /// Fixed binding slots have independent runtime initialization checks, so an
 /// intentional forward BindRead remains valid compiler output.

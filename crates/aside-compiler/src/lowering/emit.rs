@@ -124,11 +124,17 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Error> {
         }
         error
     })?;
-    b.stats.capacity_peak_bytes = b.stats.capacity_peak_bytes.max(
-        b.stats
-            .capacity_bytes
-            .saturating_add(program.stats().validation_scratch_peak),
-    );
+    let stats = program.stats();
+    // The shared verifier reports the final package and derived cache capacities.
+    // Replace conservative seed-clone admission with actual retained allocation;
+    // metadata owns only new Vec/String storage, while descriptors retain Arcs.
+    b.stats.capacity_bytes = stats.owned_capacity_bytes
+        - std::mem::size_of::<bc::BytecodePackage>()
+        + ir.metadata.capacity_bytes;
+    b.stats.capacity_peak_bytes = b
+        .stats
+        .capacity_peak_bytes
+        .max(b.stats.capacity_bytes - stats.derived_capacity_bytes + stats.validation_scratch_peak);
     Ok(Compilation {
         program,
         stats: b.stats,
