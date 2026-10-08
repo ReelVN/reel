@@ -3864,3 +3864,145 @@ fn native_arguments_are_reprojected_after_default_closure_callbacks_and_continue
     assert!(v.heap().cell_info(cell.unwrap()).is_err());
     assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
 }
+
+#[test]
+fn reported_retry_grants_finish_helper_returns_under_a_live_catch_independent_of_unused_capacity() {
+    let mut measured = Vec::new();
+    for (roots, ranges) in [(16, 64), (4096, 4096)] {
+        let mut p = fixtures::helper_native();
+        let f = &mut p.functions[0];
+        f.source_map.clear();
+        let i = Instruction::new;
+        f.code = vec![
+            i(Opcode::LoadConst, 0, 1, 0),
+            i(Opcode::Throw, 0, 0, 0),
+            i(Opcode::Call, 1, 0, 0),
+            i(Opcode::Leave, 4, 0, 0),
+            i(Opcode::Return, 1, 0, 0),
+        ];
+        f.regions = vec![ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(2),
+            },
+            catch: Some(CatchRegion {
+                range: PcRange {
+                    start: Pc(2),
+                    end: Pc(4),
+                },
+                exception: Reg(0),
+            }),
+            finally: None,
+        }];
+        let mut limits = VmLimits::default();
+        limits.heap.max_roots = roots;
+        limits.heap.max_root_ranges = ranges;
+        let mut v = Vm::load(
+            verify(p, Limits::default()).unwrap(),
+            support(&fixtures::helper_native()),
+            limits,
+            SessionEpoch(4),
+        )
+        .unwrap();
+        let t = v
+            .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+            .unwrap();
+        let mut quota = SliceBudget {
+            instructions: 1,
+            work: 1,
+            allocation_bytes: 0,
+            deadline_ns: None,
+        };
+        let mut work = 0;
+        let mut delivery = None;
+        for _ in 0..1000 {
+            let out = v.run_slice(t, quota, || 0).unwrap();
+            work += v.stats().usage.work;
+            gc(&mut v);
+            match out {
+                RunOutcome::BudgetYield(u) => {
+                    // Grant exactly the reported action, without paying earlier
+                    // unsaved work again via u.work + u.required_work.
+                    quota.work = u.required_work.max(1);
+                    quota.allocation_bytes = u.required_allocation;
+                }
+                RunOutcome::HostCall(ticket) => {
+                    assert!(v.error_info(t).unwrap().is_some());
+                    v.respond(ticket, HostResponse::Pending(ticket.wait_id()))
+                        .unwrap();
+                }
+                RunOutcome::Waiting(wait) => {
+                    v.complete(wait, Completion::Ready(Value::int(42))).unwrap()
+                }
+                RunOutcome::Returned(d) => {
+                    delivery = Some(d);
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let d = delivery.expect("reported grants must finish the live-catch helper return");
+        assert_eq!(v.delivery_value(d).unwrap().as_int(), Some(42));
+        assert_eq!(v.stats().native_entries, 1);
+        assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+        v.discard_delivery(d).unwrap();
+        measured.push(work);
+    }
+    assert_eq!(
+        measured[0], measured[1],
+        "unused descriptor capacity is not call work"
+    );
+}
+
+#[test]
+fn adaptive_call_precharge_covers_partial_window_rollback() {
+    let p = fixtures::helper_native();
+    let mut limits = VmLimits {
+        max_tasks: 1,
+        ..VmLimits::default()
+    };
+    // Four pooled roots + four caller roots + one successful child open;
+    // the second child open fails and must release the first before faulting.
+    limits.heap.max_root_ranges = 9;
+    let mut v = Vm::load(
+        verify(p.clone(), Limits::default()).unwrap(),
+        support(&p),
+        limits,
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let t = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let mut quota = SliceBudget {
+        instructions: 1,
+        work: 1,
+        allocation_bytes: 0,
+        deadline_ns: None,
+    };
+    let mut delivery = None;
+    for _ in 0..1000 {
+        let out = v.run_slice(t, quota, || 0).unwrap();
+        gc(&mut v);
+        match out {
+            RunOutcome::BudgetYield(u) => {
+                quota.work = u.required_work.max(1);
+                quota.allocation_bytes = u.required_allocation;
+            }
+            RunOutcome::Fault(d) => {
+                delivery = Some(d);
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    let d = delivery.expect("partial construction rollback must finish under reported grants");
+    let info = v.delivery_fault(d).unwrap().unwrap();
+    assert_eq!(info.kind, FaultKind::Resource);
+    assert_eq!(info.location.pc, Pc(1));
+    assert_eq!(v.stats().native_entries, 0);
+    assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+    v.discard_delivery(d).unwrap();
+    collect(&mut v);
+    assert_eq!(v.heap().stats().live_objects, 0);
+}

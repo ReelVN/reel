@@ -123,7 +123,7 @@ impl Heap {
             match self.gc.phase {
                 GcPhase::Idle => break,
                 GcPhase::Mark => {
-                    if self.gc.root_cursor < self.root_index.len() {
+                    if self.gc.root_cursor < self.root_scan_len {
                         if p.roots == budget.roots {
                             p.blocked = true;
                             break;

@@ -714,37 +714,44 @@ impl Vm {
             .open(&mut self.heap, self.active.root_owner, kind, len)?)
     }
     fn release_cost(&self, count: u64) -> u64 {
-        count * (4 * self.limits.heap.max_root_ranges as u64 + 8)
+        // Each release can add one span before binary search and up to three
+        // Vec shifts/coalesces. Include growth across this entire transaction.
+        count * (4 * (self.slots.stats().free_spans as u64 + count) + 8)
+    }
+    fn window_push_cost(&self, windows: u64, values: u64) -> u64 {
+        let spans = self.slots.stats().free_spans as u64;
+        let rollback = windows - 1;
+        // Open scans/removes from the current free list, physically fills each
+        // Value and clears its bit. A later failure can roll back earlier opens;
+        // those releases can grow the free list even when success would not.
+        2 * values + windows * (2 * spans + 8) + rollback * (4 * (spans + rollback) + 8)
     }
     fn script_push_cost(&self, function: FunctionId, count: u32) -> u64 {
         let f = &self.program.package().functions[function.index()];
-        f.register_count as u64
+        let values = f.register_count as u64
             + 3
             + 2 * f.regions.len() as u64
             + count as u64 * 2
             + self.program.package().signatures[f.signature.index()]
                 .parameters
-                .len() as u64
-            + self.release_cost(4)
+                .len() as u64;
+        self.window_push_cost(4, values) + 1
     }
     fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
         let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
         let cells = self.program.native_parameters_need_cells(native).unwrap();
-        let extra = if cells {
-            sig.parameters.len() as u64 + u64::from(sig.rest.is_some()) + self.release_cost(1)
-        } else {
-            0
-        };
-        3 + self.limits.max_native_faults as u64
+        let parameters = sig.parameters.len() as u64 + u64::from(sig.rest.is_some());
+        let values = 3
+            + self.limits.max_native_faults as u64
             + self.limits.max_arguments as u64
             + self.limits.max_continuation_values as u64
             + count as u64 * 2
+            + parameters * (1 + u64::from(cells));
+        self.window_push_cost(3 + u64::from(cells), values)
             + sig.parameters.len() as u64
-            + u64::from(sig.rest.is_some())
-            + extra
             + self.native_layout_work()
-            + self.release_cost(3)
+            + 3
     }
     // All construction inputs are explicit so failed root publication rolls back
     // as one transaction before a frame becomes visible.
@@ -2101,21 +2108,24 @@ impl Vm {
                 }
             }
             ScriptPhase::Release { reason } => {
-                if !m.take(0, self.active.caught.data.len() as u64, 0) {
+                let caught = self.active.caught.data.len() as u64;
+                let index = self.active.caught.data.iter().position(|c| c.frame == s.id);
+                let next = if index.is_some() {
+                    caught + 2
+                } else {
+                    self.release_cost(4) + self.commit_work(s.ret)
+                };
+                // The scan is not a saved stage. Charge it with its successor
+                // so the reported retry grant can complete this bounded action.
+                if !m.take(0, caught + next, 0) {
                     return Ok(false);
                 }
-                if let Some(index) = self.active.caught.data.iter().position(|c| c.frame == s.id) {
-                    if !m.take(0, self.active.caught.data.len() as u64 + 2, 0) {
-                        return Ok(false);
-                    }
+                if let Some(index) = index {
                     let record = self.active.caught.data.remove(index);
                     self.clear(s.env, 3 + record.region.0 * 2)?;
                     self.clear(s.env, 4 + record.region.0 * 2)?;
                     self.active.frames.data[top] = Frame::Script(s);
                     return Ok(true);
-                }
-                if !m.take(0, self.release_cost(4) + self.commit_work(s.ret), 0) {
-                    return Ok(false);
                 }
                 let value = self.value(s.env, 1)?;
                 let cause = match reason {

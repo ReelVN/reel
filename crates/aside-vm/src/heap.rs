@@ -229,6 +229,7 @@ pub struct Heap {
     pub(crate) objects: Slots<HeapKey, Object>,
     roots: Slots<RootKey, Root>,
     pub(crate) root_index: Vec<Option<RootKey>>,
+    pub(crate) root_scan_len: usize,
     pub(crate) ranges: Slots<RangeKey, RangeDescriptor>,
     pub(crate) range_index: Vec<Option<RangeKey>>,
     pub(crate) range_scan_len: usize,
@@ -299,6 +300,7 @@ impl Heap {
             objects: Slots::new(limits.max_objects as usize, retirement),
             roots: Slots::new(limits.max_roots as usize, retirement),
             root_index: vec![None; limits.max_roots as usize + 1],
+            root_scan_len: 0,
             ranges: Slots::new(limits.max_root_ranges as usize, retirement),
             range_index: vec![None; limits.max_root_ranges as usize + 1],
             range_scan_len: 0,
@@ -821,6 +823,7 @@ impl Heap {
         self.barrier(value)?;
         let key = self.roots.insert(Root { value, owner, kind });
         self.root_index[index(key)] = Some(key);
+        self.root_scan_len = self.root_scan_len.max(index(key) + 1);
         Ok(RootToken {
             heap: self.id,
             epoch: self.epoch,
@@ -862,7 +865,7 @@ impl Heap {
         let mut released = 0;
         let end = (*cursor as usize)
             .saturating_add(slots as usize)
-            .min(self.root_index.len());
+            .min(self.root_scan_len);
         while (*cursor as usize) < end {
             let position = *cursor as usize;
             if let Some(key) = self.root_index[position]
@@ -876,8 +879,10 @@ impl Heap {
         }
         released
     }
+    /// Descriptor high-water bound, including sentinel and released holes.
+    /// Reserved capacity that has never been used is not a scan position.
     pub fn root_slots(&self) -> u32 {
-        self.root_index.len() as u32
+        self.root_scan_len as u32
     }
     pub(crate) fn scan_root(&mut self, position: usize) {
         if let Some(value) = self.root_index[position]
