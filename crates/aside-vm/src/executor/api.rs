@@ -259,6 +259,7 @@ impl Default for VmLimits {
 pub struct VmStats {
     pub frames: u32,
     pub unwinds: u32,
+    pub comparison_depth: u32,
     pub native_entries: u64,
     pub native_resumes: u64,
     /// Redundant whole-native-window initialization writes (removed in V03).

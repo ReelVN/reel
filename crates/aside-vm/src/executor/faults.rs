@@ -25,8 +25,11 @@ impl Vm {
         }
         Ok(())
     }
-    pub(super) fn native_holds(&self, n: NativeFrame, id: FaultId) -> Result<bool, VmError> {
-        self.heap.fault_info(id)?;
+    pub(super) fn native_fault_slot_holds(
+        &self,
+        n: NativeFrame,
+        id: FaultId,
+    ) -> Result<bool, VmError> {
         for i in 0..n.fault_count {
             if self
                 .heap
@@ -35,6 +38,13 @@ impl Vm {
             {
                 return Ok(true);
             }
+        }
+        Ok(false)
+    }
+    pub(super) fn native_holds(&self, n: NativeFrame, id: FaultId) -> Result<bool, VmError> {
+        self.heap.fault_info(id)?;
+        if self.native_fault_slot_holds(n, id)? {
+            return Ok(true);
         }
         for i in 0..n.continuation_len {
             if self.value(n.roots, 2 + i)?.same_bits(id.as_value()) {
@@ -48,7 +58,7 @@ impl Vm {
         n: &mut NativeFrame,
         id: FaultId,
     ) -> Result<(), VmError> {
-        if self.native_holds(*n, id)? {
+        if self.native_fault_slot_holds(*n, id)? {
             return Ok(());
         }
         if n.fault_count == self.limits.max_native_faults {
@@ -139,6 +149,17 @@ impl Vm {
         let top = self.active.frames.data.len() - 1;
         match self.active.frames.data[top] {
             Frame::Script(mut s) => {
+                let preparing = matches!(
+                    s.phase,
+                    ScriptPhase::Copy { .. }
+                        | ScriptPhase::Bind { .. }
+                        | ScriptPhase::Defaults { .. }
+                        | ScriptPhase::Install { .. }
+                );
+                self.active.abort_equality |= matches!(
+                    s.phase,
+                    ScriptPhase::Equality { .. } | ScriptPhase::EqualityCleanup { .. }
+                );
                 let explicit = match s.phase {
                     ScriptPhase::Exit {
                         reason: ExitReason::Throw(seed),
@@ -155,16 +176,25 @@ impl Vm {
                 } else {
                     self.clear(s.env, 2)?;
                 }
-                s.phase = ScriptPhase::Exit {
-                    origin: s.pc,
-                    reason: ExitReason::Throw(FaultSeed {
-                        kind: FaultKind::Cancelled,
-                        location: self.loc(s, s.pc),
-                        fault: None,
-                        explicit,
-                        author_value: false,
-                    }),
-                    skip: None,
+                let reason = ExitReason::Throw(FaultSeed {
+                    kind: FaultKind::Cancelled,
+                    location: if preparing {
+                        self.binding_location(s)
+                    } else {
+                        self.loc(s, s.pc)
+                    },
+                    fault: None,
+                    explicit,
+                    author_value: false,
+                });
+                s.phase = if preparing {
+                    ScriptPhase::Release { reason }
+                } else {
+                    ScriptPhase::Exit {
+                        origin: s.pc,
+                        reason,
+                        skip: None,
+                    }
                 };
                 self.active.frames.data[top] = Frame::Script(s);
             }

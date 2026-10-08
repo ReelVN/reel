@@ -3143,3 +3143,217 @@ fn native_fault_capacity_retains_pending_source_and_resumes_without_repeating_ho
     assert!(v.heap().fault_info(final_fault.unwrap()).is_err());
     assert!(v.heap().fault_info(second.unwrap()).is_err());
 }
+
+#[test]
+fn continued_wait_delivery_gets_its_own_fault_slot_before_continuation_values_are_replaced() {
+    let mut v = vm(with_callback(fixtures::helper_native(), true));
+    let factory = v
+        .start(FunctionId(2), &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let d = task_finish(&mut v, factory);
+    let closure = v.delivery_value(d).unwrap();
+    let root = v
+        .heap_mut()
+        .add_root(OWNER, RootKind::Host, closure)
+        .unwrap();
+    v.discard_delivery(d).unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let entry = task_ticket(&mut v, task);
+    v.respond(
+        entry,
+        HostResponse::CallScript {
+            closure,
+            arguments: &[],
+            continuation: continue_at(1, FaultRetention::Preserve),
+        },
+    )
+    .unwrap();
+    let callback = task_ticket(&mut v, task);
+    let id = v.host_callback_fault(callback).unwrap().unwrap().id;
+    v.respond(
+        callback,
+        HostResponse::Continue(Continuation {
+            values: &[id.as_value()],
+            faults: FaultRetention::Replace(&[]),
+            ..continue_at(2, FaultRetention::Preserve)
+        }),
+    )
+    .unwrap();
+    let cont = task_ticket(&mut v, task);
+    assert!(v.host_faults(cont).unwrap().is_empty());
+    assert_eq!(v.host_continuation(cont).unwrap().len(), 1);
+    assert_eq!(
+        v.heap()
+            .fault_id(v.host_continuation(cont).unwrap()[0])
+            .unwrap(),
+        id
+    );
+    v.respond(cont, HostResponse::Pending(cont.wait_id()))
+        .unwrap();
+    v.complete(cont.wait_id(), Completion::ForwardFault(id))
+        .unwrap();
+    let wait = task_ticket(&mut v, task);
+    assert_eq!(wait.input, NativeInput::WaitingFault);
+    assert_eq!(v.host_resume_value(wait).unwrap().as_int(), Some(41));
+    assert_eq!(v.host_faults(wait).unwrap().len(), 1);
+    assert_eq!(
+        v.heap().fault_id(v.host_faults(wait).unwrap()[0]).unwrap(),
+        id
+    );
+    v.respond(
+        wait,
+        HostResponse::Continue(continue_at(3, FaultRetention::Preserve)),
+    )
+    .unwrap();
+    let cont = task_ticket(&mut v, task);
+    assert!(v.host_continuation(cont).unwrap().is_empty());
+    collect(&mut v);
+    assert_eq!(v.host_callback_fault(cont).unwrap().unwrap().id, id);
+    assert_eq!(v.heap().fault_value(id).unwrap().as_int(), Some(41));
+    v.respond(cont, HostResponse::ForwardFault(id)).unwrap();
+    let d = task_finish(&mut v, task);
+    assert_eq!(v.delivery_fault(d).unwrap().unwrap().id, id);
+    assert_eq!(v.stats().native_entries, 1);
+    v.discard_delivery(d).unwrap();
+    v.heap_mut().release_root(root).unwrap();
+    collect(&mut v);
+    assert!(v.heap().fault_info(id).is_err());
+}
+
+#[test]
+fn cooperative_cancel_aborts_deep_equality_and_cleanup_without_retaining_work_roots() {
+    for caught in [false, true] {
+        for cleanup in [false, true] {
+            let mut p = binary_program(Opcode::Eq);
+            if caught {
+                let f = &mut p.functions[0];
+                f.register_count = 4;
+                f.code[1] = Instruction::new(Opcode::Leave, 3, 0, 0);
+                f.code.push(Instruction::new(Opcode::Return, 3, 0, 0));
+                f.code.push(Instruction::new(Opcode::Return, 2, 0, 0));
+                f.regions = vec![ExceptionRegion {
+                    protected: PcRange {
+                        start: Pc(0),
+                        end: Pc(2),
+                    },
+                    catch: Some(CatchRegion {
+                        range: PcRange {
+                            start: Pc(2),
+                            end: Pc(3),
+                        },
+                        exception: Reg(3),
+                    }),
+                    finally: None,
+                }];
+            }
+            let mut v = vm(p);
+            let mut a = v.heap_mut().alloc_string("a").unwrap();
+            let mut b = v.heap_mut().alloc_string("b").unwrap();
+            let leaf = a;
+            for _ in 0..12 {
+                a = v.heap_mut().alloc_tuple(&[a]).unwrap();
+                b = v.heap_mut().alloc_tuple(&[b]).unwrap();
+            }
+            let task = v
+                .start(fixtures::ENTRY, &[a, b], OWNER, Context::Ordinary)
+                .unwrap();
+            let mut work = 1;
+            loop {
+                let out = v
+                    .run_slice(
+                        task,
+                        SliceBudget {
+                            instructions: 1,
+                            work,
+                            ..SliceBudget::default()
+                        },
+                        || 0,
+                    )
+                    .unwrap();
+                gc(&mut v);
+                assert!(matches!(out, RunOutcome::BudgetYield(_)));
+                if v.stats().comparison_depth == 13 {
+                    break;
+                }
+                let RunOutcome::BudgetYield(u) = out else {
+                    unreachable!()
+                };
+                work = u.required_work.max(1);
+            }
+            if cleanup {
+                let out = v
+                    .run_slice(
+                        task,
+                        SliceBudget {
+                            instructions: 1,
+                            work: 1,
+                            ..SliceBudget::default()
+                        },
+                        || 0,
+                    )
+                    .unwrap();
+                assert!(matches!(out, RunOutcome::BudgetYield(_)));
+                assert_eq!(v.stats().comparison_depth, 13);
+            }
+            v.cancel_cooperatively(task).unwrap();
+            let mut work = 1;
+            let mut allocation_bytes = 0;
+            let d = loop {
+                let out = v
+                    .run_slice(
+                        task,
+                        SliceBudget {
+                            instructions: 1,
+                            work,
+                            allocation_bytes,
+                            ..SliceBudget::default()
+                        },
+                        || 0,
+                    )
+                    .unwrap();
+                gc(&mut v);
+                match out {
+                    RunOutcome::BudgetYield(u) => {
+                        work = u.required_work.max(1);
+                        allocation_bytes = u.required_allocation;
+                    }
+                    RunOutcome::Returned(d) if caught => break d,
+                    RunOutcome::Fault(d) if !caught => break d,
+                    other => panic!("{other:?}"),
+                }
+            };
+            assert_eq!(
+                v.heap()
+                    .core_error_info(v.delivery_value(d).unwrap())
+                    .unwrap()
+                    .code
+                    .kind,
+                FaultKind::Cancelled
+            );
+            assert_eq!(v.stats().comparison_depth, 0);
+            v.discard_delivery(d).unwrap();
+            collect(&mut v);
+            assert!(v.heap().info(a).is_err());
+            assert!(v.heap().info(b).is_err());
+            assert!(v.heap().info(leaf).is_err());
+            assert!(v.is_idle());
+        }
+    }
+}
+
+#[test]
+fn cooperative_cancel_during_entry_preparation_never_enters_its_body_handler() {
+    let mut v = vm(fixtures::exception_regions());
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    v.cancel_cooperatively(task).unwrap();
+    let d = task_finish(&mut v, task);
+    assert_eq!(
+        v.delivery_fault(d).unwrap().unwrap().kind,
+        FaultKind::Cancelled
+    );
+    assert_eq!(v.stats().usage.instructions, 0);
+}

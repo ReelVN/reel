@@ -217,6 +217,7 @@ struct TaskState {
     fault_build: Option<FaultBuild>,
     blocked: Option<ResourceBlocked>,
     cooperative_cancel: bool,
+    abort_equality: bool,
 }
 impl TaskState {
     fn new(
@@ -272,6 +273,7 @@ impl TaskState {
             fault_build: None,
             blocked: None,
             cooperative_cancel: false,
+            abort_equality: false,
         })
     }
 }
@@ -531,6 +533,13 @@ impl Vm {
                     .data
                     .iter()
                     .map(|t| t.unwinds.data.len())
+                    .sum::<usize>()) as u32,
+            comparison_depth: (self.active.equality_cursors.data.len()
+                + self
+                    .tasks
+                    .data
+                    .iter()
+                    .map(|t| t.equality_cursors.data.len())
                     .sum::<usize>()) as u32,
             native_entries: self.native_entries,
             native_resumes: self.native_resumes,
@@ -1404,6 +1413,7 @@ impl Vm {
         self.active.fault_build = None;
         self.active.blocked = None;
         self.active.cooperative_cancel = false;
+        self.active.abort_equality = false;
         if self.active.terminal.take().is_some() || self.active.task_id.is_some() {
             self.clear(self.active.delivery.unwrap(), 0)?;
             self.clear(self.active.delivery.unwrap(), 1)?;
@@ -1558,7 +1568,24 @@ impl Vm {
                 }
                 continue;
             }
+            if self.active.abort_equality {
+                if !m.take(0, 3, 0) {
+                    return Ok(RunOutcome::BudgetYield(m.usage));
+                }
+                if !self.active.equality_cursors.data.is_empty() {
+                    let depth = self.active.equality_cursors.data.len() as u32 - 1;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
+                    self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
+                    self.active.equality_cursors.data.pop();
+                } else {
+                    self.active.abort_equality = false;
+                }
+                continue;
+            }
             if self.active.cooperative_cancel {
+                if !m.take(0, 3, 0) {
+                    return Ok(RunOutcome::BudgetYield(m.usage));
+                }
                 self.seed_cancellation()?;
                 self.active.cooperative_cancel = false;
                 continue;
@@ -2901,7 +2928,9 @@ impl Vm {
             let Frame::Native(n) = self.active.frames.data[self.index(frame)?] else {
                 return Err(VmError::Contract("callback target"));
             };
-            if !self.native_holds(n, id)? && n.fault_count == self.limits.max_native_faults {
+            if !self.native_fault_slot_holds(n, id)?
+                && n.fault_count == self.limits.max_native_faults
+            {
                 self.block(
                     BlockedResource::NativeFaultSlots { frame },
                     n.fault_count as u64,
@@ -3131,7 +3160,9 @@ impl Vm {
                     .pending_fault
                     .and_then(|f| f.fault)
                     .ok_or(VmError::Contract("unbuilt callback fault"))?;
-                if !self.native_holds(n, id)? && n.fault_count == self.limits.max_native_faults {
+                if !self.native_fault_slot_holds(n, id)?
+                    && n.fault_count == self.limits.max_native_faults
+                {
                     self.block(
                         BlockedResource::NativeFaultSlots { frame: n.id },
                         n.fault_count as u64,
