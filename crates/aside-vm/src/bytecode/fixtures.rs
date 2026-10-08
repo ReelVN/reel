@@ -611,3 +611,129 @@ pub fn parameter_cell_default() -> BytecodePackage {
     p.functions = vec![main, owner, default, read];
     p
 }
+
+/// A native signature derives x/y as Cell from its script defaults; z/rest
+/// stay Value because no later default receives them. Expected bound values
+/// are (x=43, y=42, z=42, rest=[]). No native execution is claimed here.
+pub fn native_parameter_defaults() -> BytecodePackage {
+    let mut p = base();
+    p.symbols.extend([
+        "y".into(),
+        "z".into(),
+        "default_y".into(),
+        "default_z".into(),
+        "rest".into(),
+        "host::parameter_defaults".into(),
+        "host.parameter_defaults".into(),
+    ]);
+    p.sources[0].text = "host::parameter_defaults(41)\n".into();
+    let x = parameter(4, 1, true);
+    let mut y = parameter(14, 1, false);
+    y.default = Some(FunctionId(1));
+    let mut z = parameter(15, 1, true);
+    z.default = Some(FunctionId(2));
+    let mut native_signature = signature(vec![x.clone(), y.clone(), z], 0, Effects::ALL);
+    native_signature.rest = Some(parameter(18, 0, true));
+    let mut y_input = y;
+    y_input.default = None;
+    p.signatures = vec![
+        signature(vec![], 0, Effects::ALL),
+        native_signature,
+        signature(vec![x.clone()], 1, Effects(Effects::WRITE)),
+        signature(
+            vec![x, y_input],
+            1,
+            Effects(Effects::WRITE | Effects::ALLOCATE),
+        ),
+        signature(vec![], 1, Effects(0)),
+    ];
+    p.capabilities = vec![SymbolId(20)];
+    p.natives = vec![NativeDef {
+        symbol: SymbolId(19),
+        signature: SignatureId(1),
+        abi_version: 1,
+        capabilities: vec![SymbolId(20)],
+    }];
+    let binding = |name, mutable, i| BindingDef {
+        name: SymbolId(name),
+        ty: TypeId(1),
+        mutable,
+        storage: BindingStorage::Cell(Reg(i)),
+        initialization: BindingInitialization::Parameter(i),
+    };
+    let mut main = function(
+        1,
+        0,
+        2,
+        vec![
+            instruction(Opcode::LoadConst, 0, 1, 0),
+            instruction(Opcode::Call, 1, 0, 0),
+            instruction(Opcode::Return, 1, 0, 0),
+        ],
+    );
+    main.descriptors = vec![Descriptor::Call(CallDesc {
+        target: CallTarget::Native(NativeId(0)),
+        arguments: Arguments::Window(RegWindow {
+            start: Reg(0),
+            len: 1,
+        }),
+        names: vec![],
+    })];
+    let mut default_y = function(
+        16,
+        2,
+        4,
+        vec![
+            instruction(Opcode::BindRead, 1, 0, 0),
+            instruction(Opcode::LoadConst, 2, 2, 0),
+            instruction(Opcode::Add, 3, 1, 2),
+            instruction(Opcode::BindWrite, 0, 3, 0),
+            instruction(Opcode::Return, 3, 0, 0),
+        ],
+    );
+    default_y.context = Context::NoWait;
+    default_y.bindings = vec![binding(4, true, 0)];
+    let mut default_z = function(
+        17,
+        3,
+        5,
+        vec![
+            instruction(Opcode::BindRead, 2, 0, 0),
+            instruction(Opcode::LoadConst, 3, 2, 0),
+            instruction(Opcode::Add, 4, 2, 3),
+            instruction(Opcode::BindWrite, 0, 4, 0),
+            instruction(Opcode::MakeClosure, 2, 0, 0),
+            instruction(Opcode::Call, 3, 1, 0),
+            instruction(Opcode::Return, 3, 0, 0),
+        ],
+    );
+    default_z.context = Context::NoWait;
+    default_z.bindings = vec![binding(4, true, 0), binding(14, false, 1)];
+    default_z.descriptors = vec![
+        Descriptor::Closure {
+            function: FunctionId(3),
+            captures: vec![CaptureSource::Binding(BindingId(1))],
+        },
+        Descriptor::Call(CallDesc {
+            target: CallTarget::Register(Reg(2)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(0),
+                len: 0,
+            }),
+            names: vec![],
+        }),
+    ];
+    let mut read = function(
+        11,
+        4,
+        2,
+        vec![
+            instruction(Opcode::CaptureRead, 0, 0, 0),
+            instruction(Opcode::CellRead, 1, 0, 0),
+            instruction(Opcode::Return, 1, 0, 0),
+        ],
+    );
+    read.captures = vec![CaptureKind::Cell];
+    p.functions = vec![main, default_y, default_z, read];
+    p
+}

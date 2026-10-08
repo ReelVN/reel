@@ -6,8 +6,10 @@ use std::hash::BuildHasher;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackageStats {
     pub encoded_bytes: usize,
-    /// Includes inline package data and retained Vec/String capacity, not len alone.
+    /// Includes inline package data and all retained package/derived capacities.
     pub owned_capacity_bytes: usize,
+    /// Retained verifier-derived metadata, already included in owned_capacity_bytes.
+    pub derived_capacity_bytes: usize,
     pub instruction_bytes: usize,
     pub records: u64,
     pub declared_registers: u64,
@@ -38,6 +40,8 @@ pub struct VerifiedProgram {
     package: BytecodePackage,
     stats: PackageStats,
     limits: Limits,
+    /// Sorted (signature, parameter) pairs; only Cell parameters are retained.
+    native_parameter_cells: Vec<(u32, u32)>,
 }
 impl VerifiedProgram {
     pub fn package(&self) -> &BytecodePackage {
@@ -45,6 +49,43 @@ impl VerifiedProgram {
     }
     pub fn stats(&self) -> PackageStats {
         self.stats
+    }
+    /// Validated canonical native storage, derived once from all default prefixes.
+    /// Rest and parameters outside every default prefix are ordinary Value slots.
+    /// These are binder slots, never a reference-call ABI for author arguments.
+    pub fn native_parameter_storage(
+        &self,
+        native: NativeId,
+        parameter: u32,
+    ) -> Result<BindingStorage, Error> {
+        let native = get(&self.package.natives, native.0, "native parameter layout")?;
+        let signature = &self.package.signatures[native.signature.index()];
+        check(
+            (parameter as usize)
+                < signature.parameters.len() + usize::from(signature.rest.is_some()),
+            ErrorKind::Index,
+            "native parameter layout index",
+        )?;
+        Ok(
+            if self
+                .native_parameter_cells
+                .binary_search(&(native.signature.0, parameter))
+                .is_ok()
+            {
+                BindingStorage::Cell(Reg(parameter))
+            } else {
+                BindingStorage::Value(Reg(parameter))
+            },
+        )
+    }
+    /// False selects the ordinary native binder's no-Cell path. Borrowing these
+    /// immutable tables allocates nothing; execution accounts its own query work.
+    pub fn native_parameters_need_cells(&self, native: NativeId) -> Result<bool, Error> {
+        let native = get(&self.package.natives, native.0, "native parameter layout")?;
+        Ok(self
+            .native_parameter_cells
+            .binary_search_by_key(&native.signature.0, |&(signature, _)| signature)
+            .is_ok())
     }
     pub fn source_at(&self, function: FunctionId, pc: Pc) -> Option<SourceSpan> {
         let f = self.package.functions.get(function.index())?;
@@ -207,11 +248,12 @@ impl VerifiedProgram {
     }
 }
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
-    let stats = validate(&package, limits)?;
+    let (stats, native_parameter_cells) = validate_program(&package, limits)?;
     Ok(VerifiedProgram {
         package,
         stats,
         limits,
+        native_parameter_cells,
     })
 }
 struct Budget {
@@ -451,6 +493,12 @@ fn version(p: &BytecodePackage) -> Result<(), Error> {
 }
 
 pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageStats, Error> {
+    validate_program(p, limits).map(|(stats, _)| stats)
+}
+fn validate_program(
+    p: &BytecodePackage,
+    limits: Limits,
+) -> Result<(PackageStats, Vec<(u32, u32)>), Error> {
     version(p)?;
     let (encoded, owned, records) = super::codec::measure(p, limits)?;
     check(
@@ -726,16 +774,109 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
             .ok_or_else(|| Error::new(ErrorKind::Limit, "instruction byte count"))?;
         registers += f.register_count as u64;
     }
+    let native_parameter_cells = native_parameter_cells(p, &parameter_layouts, &mut b)?;
     parameter_layouts.release(&mut b);
-    Ok(PackageStats {
-        encoded_bytes: encoded,
-        owned_capacity_bytes: owned,
-        instruction_bytes,
-        records,
-        declared_registers: registers,
-        validation_work: b.work,
-        validation_scratch_peak: b.peak,
-    })
+    let derived_capacity_bytes =
+        native_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>();
+    Ok((
+        PackageStats {
+            encoded_bytes: encoded,
+            owned_capacity_bytes: owned + derived_capacity_bytes,
+            derived_capacity_bytes,
+            instruction_bytes,
+            records,
+            declared_registers: registers,
+            validation_work: b.work,
+            validation_scratch_peak: b.peak,
+        },
+        native_parameter_cells,
+    ))
+}
+
+/// Derive once per native signature, retaining only canonical Cell slots.
+fn native_parameter_cells(
+    p: &BytecodePackage,
+    layouts: &ParameterLayouts,
+    b: &mut Budget,
+) -> Result<Vec<(u32, u32)>, Error> {
+    if p.natives.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Native declarations may share signatures. Normalize once, avoiding a
+    // native_count * default_count * prefix_count derivation or retained map.
+    let mut signatures = sorted_keys(p.natives.iter().map(|n| n.signature.0), 1, b)?;
+    b.work(signatures.len() as u64)?;
+    signatures.dedup();
+    let last_prefix = |signature: u32, b: &mut Budget| -> Result<_, Error> {
+        let parameters = &p.signatures[signature as usize].parameters;
+        b.work(parameters.len() as u64)?;
+        Ok(parameters
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, parameter)| parameter.default.map(|id| (i, id))))
+    };
+    let mut count = 0usize;
+    b.work(signatures.len() as u64)?;
+    for &signature in &signatures {
+        if let Some((end, source)) = last_prefix(signature, b)? {
+            b.work(end as u64)?;
+            for (i, parameter) in p.signatures[signature as usize].parameters[..end]
+                .iter()
+                .enumerate()
+            {
+                let cell = layouts.cell(source.index(), i as u32, b)?;
+                check(
+                    !parameter.mutable || cell,
+                    ErrorKind::Signature,
+                    "mutable native default prefix requires a parameter cell",
+                )
+                .map_err(|mut e| {
+                    e.function = Some(source);
+                    e
+                })?;
+                count += usize::from(cell);
+            }
+        }
+    }
+    let mut cells = b.vec(count)?;
+    b.work(signatures.len() as u64)?;
+    for &signature in &signatures {
+        let Some((end, source)) = last_prefix(signature, b)? else {
+            continue;
+        };
+        let parameters = &p.signatures[signature as usize].parameters;
+        b.work(parameters.len() as u64)?;
+        for (i, parameter) in parameters.iter().enumerate() {
+            if let Some(default) = parameter.default {
+                b.work(i as u64)?;
+                for index in 0..i {
+                    let expected = layouts.cell(source.index(), index as u32, b)?;
+                    let actual = layouts.cell(default.index(), index as u32, b)?;
+                    check(
+                        actual == expected,
+                        ErrorKind::Signature,
+                        "contradictory native default prefix storage",
+                    )
+                    .map_err(|mut e| {
+                        e.function = Some(default);
+                        e
+                    })?;
+                }
+            }
+        }
+        // All relevant thunks now match. The last/longest prefix is equivalent
+        // to taking each readonly slot from its first relevant thunk, and lets
+        // us retain only Cells rather than a dense Value/Cell prefix table.
+        b.work(end as u64)?;
+        for index in 0..end {
+            if layouts.cell(source.index(), index as u32, b)? {
+                cells.push((signature, index as u32));
+            }
+        }
+    }
+    b.release(signatures);
+    Ok(cells)
 }
 
 /// Sparse declarations only: missing Parameter records retain ordinary Value
@@ -1997,6 +2138,73 @@ mod bounded_index_tests {
             ErrorKind::Limit
         );
         assert_eq!(small.work, 3);
+        layouts.release(&mut b);
+    }
+
+    #[test]
+    fn native_layout_capacity_is_retained_and_prechecked_with_live_parameter_scratch() {
+        let p = fixtures::native_parameter_defaults();
+        let limits = Limits::default();
+        let (_, owned, _) = super::super::codec::measure(&p, limits).unwrap();
+        let mut b = Budget::new(limits, owned);
+        let layouts = ParameterLayouts::build(&p, &mut b).unwrap();
+        let layout_bytes = b.scratch;
+        let allocation = allocation_counter::measure(|| {
+            let cells = native_parameter_cells(&p, &layouts, &mut b).unwrap();
+            assert_eq!(cells, [(1, 0), (1, 1)]);
+            assert_eq!(cells.capacity() * std::mem::size_of::<(u32, u32)>(), 16);
+            assert_eq!(b.scratch, layout_bytes + 16);
+            b.release(cells);
+        });
+        assert_eq!(allocation.bytes_max, 20); // signature u32 index + two Cell pairs
+        assert_eq!(allocation.bytes_current, 0);
+        assert_eq!(b.peak, layout_bytes + 20);
+        let mut small = Budget::new(
+            Limits {
+                max_allocation_bytes: owned + layout_bytes + 19,
+                ..limits
+            },
+            owned,
+        );
+        let small_layouts = ParameterLayouts::build(&p, &mut small).unwrap();
+        assert_eq!(
+            native_parameter_cells(&p, &small_layouts, &mut small)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(small.peak, layout_bytes + 4); // failed before reserving Cell rows
+        layouts.release(&mut b);
+        assert_eq!(b.scratch, 0);
+    }
+
+    #[test]
+    fn native_layout_work_limit_precedes_prefix_lookup_and_allocation() {
+        let p = fixtures::native_parameter_defaults();
+        let limits = Limits::default();
+        let (_, owned, _) = super::super::codec::measure(&p, limits).unwrap();
+        let mut b = Budget::new(limits, owned);
+        let layouts = ParameterLayouts::build(&p, &mut b).unwrap();
+        let mut small = Budget::new(
+            Limits {
+                max_work: 9,
+                ..limits
+            },
+            owned,
+        );
+        let allocation = allocation_counter::measure(|| {
+            assert_eq!(
+                native_parameter_cells(&p, &layouts, &mut small)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Limit
+            );
+        });
+        assert_eq!(small.peak, 4); // only bounded signature normalization
+        assert_eq!(
+            allocation.bytes_max,
+            4 + "verification work limit".len() as u64
+        );
         layouts.release(&mut b);
     }
 }
