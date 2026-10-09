@@ -1,0 +1,90 @@
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+   Compiling masonry v0.4.0 (/workspace/reel/third_party/masonry/masonry)
+   Compiling reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+    Finished `release` profile [optimized] target(s) in 9.03s
+     Running unittests src/lib.rs (target/release/deps/reel_stage-58057caaaf4985ed)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contracts.rs (target/release/deps/contracts-a270aa52cecafbab)
+
+running 23 tests
+test accepting_frozen_hidden_target_or_ancestor_cancels_old_visible_capture_once ... ok
+test actual_bridge_record_and_input_measurements ... production bridge 1080p controls=32 actual_nodes=34 geometry_bytes=11536 export_scratch_peak_bytes=256 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 12160, peak_bytes: 24320 }; record+replay p95=34084ns max=47191ns export p95=1900ns max=4495ns pointer p95=1362ns max=21817ns
+production bridge 1080p controls=256 actual_nodes=258 geometry_bytes=86800 export_scratch_peak_bytes=2048 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 91008, peak_bytes: 182016 }; record+replay p95=532253ns max=811331ns export p95=20082ns max=103775ns pointer p95=1413ns max=17679ns
+production bridge 1080p controls=1024 actual_nodes=1026 geometry_bytes=344848 export_scratch_peak_bytes=8192 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 361344, peak_bytes: 722688 }; record+replay p95=2060402ns max=2350986ns export p95=117144ns max=154465ns pointer p95=1422ns max=29824ns
+ok
+test callback_deletion_in_live_and_presented_hover_and_active ... ok
+test hover_ancestor_removes_target_before_cursor ... ok
+test live_stashing_and_missing_new_view_cancel_alive_capture_once ... ok
+test missing_children_and_frozen_widgetref_order_include_stashed ... ok
+test production_input_measurements ... measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=1120B; pointer ns p50=1269 p95=1324 p99=1360; capture ns p50=235 p95=250 p99=286
+measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=11536B; pointer p95=1438ns capture p95=1679ns miss_scan p95=155ns
+measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=86800B; pointer p95=1494ns capture p95=12148ns miss_scan p95=642ns
+ok
+test raw_mut_missing_and_animation_live_with_complete_geometry_getters ... ok
+test real_record_gate_first_frame_failures_identity_order_clear_and_epoch ... ok
+test retired_candidate_keys_keep_identity_allocations_bounded_and_charged ... ok
+test snapshot_keeps_one_maximum_ticket_until_last_view_drops ... ok
+test snapshot_node_path_capacity_and_lease_recovery ... budget actual_nodes=3 payload_bytes=1120 snapshot_limit_bytes=1376: full_candidate_reject=470ns retained_lease_reject=142ns release_then_record=2802ns; final_usage=BudgetUsage { tickets: 0, bytes: 0, peak_bytes: 1200 }
+ok
+test support::checks::ancestor_removes_child_after_terminal_delivery ... ancestor removal button/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal button/up presented=true: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=true: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=true: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=true: terminal=["cancel"], capture=None, button clicks=0
+ok
+test support::checks::base_layer_transform_boundary ... base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+ok
+test support::checks::disabled_child_bubbles_to_consuming_parent ... disabled child presented=false: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+disabled child presented=true: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+ok
+test support::checks::real_upstream_groups ... groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+isolated fragment 0: (group,clip) (0, 0) -> (2, 3), commands=["PushClip", "PushGroup", "PushClip", "PushGroup", "PushClip", "PushClip", "Draw", "PopClip"]
+isolated fragment 1: (group,clip) (2, 3) -> (2, 3), commands=["PushClip", "Draw", "PopClip"]
+isolated fragment 2: (group,clip) (2, 3) -> (0, 0), commands=["PopClip", "PopGroup", "PopClip", "PopGroup", "PopClip"]
+groups isolated=true: cached_layers=3 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+ok
+test support::presentation::actual_button_topology_and_skin ... button: orphan up=0, paired up=1; author image reflects hover/active; frozen rotation/scale/clip/order/ancestor route survive failed present; acceptance switches all
+ok
+test support::presentation::actual_slider_cancellation ... drag focus: terminal=["cancel"], capture=None, later value changes=0
+drag release: terminal=["up"], capture=None, later value changes=0
+drag destroy: terminal=["cancel"], capture=None, later value changes=0
+drag disable: terminal=["cancel"], capture=None, later value changes=0
+ok
+test support::presentation::actual_slider_dpi ... DPI: physical-to-logical conversion uses accepted scale=1 then scale=2
+ok
+test support::presentation::actual_slider_frozen_input ... presented input: retained frame=1 across skipped/unavailable/error/mismatched/stale/expired outcomes; real slider values=0.25,0.7,1; accepted frame=3 switches coordinates+hover
+ok
+test support::presentation::cursor_update_and_raw_share_selected_geometry ... geometry queries: real QueryCtx cursor, pointer UpdateCtx and EventCtx.get_raw use frame 1 until accepted frame 2; ordinary QueryCtx/MutateCtx RawCtx remain live
+ok
+test support::presentation::singular_transform_is_not_hittable ... singular affine: excluded from snapshot hit/capture
+ok
+test view_change_notifies_only_differences_and_uses_old_exit_geometry ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/pointer_allocations.rs (target/release/deps/pointer_allocations-820ea71eb16f2257)
+
+running 1 test
+test real_uncaptured_pointer_dispatch_allocations ... real dispatch kind=first-child-hit controls=32 actual_nodes=34 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=1160ns max=1212ns
+real dispatch kind=wide-miss controls=32 actual_nodes=34 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=663ns max=674ns
+real dispatch kind=first-child-hit controls=256 actual_nodes=258 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=2060ns max=2144ns
+real dispatch kind=wide-miss controls=256 actual_nodes=258 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=1597ns max=1632ns
+real dispatch kind=first-child-hit controls=1024 actual_nodes=1026 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=5065ns max=28078ns
+real dispatch kind=wide-miss controls=1024 actual_nodes=1026 events=100 allocations=0 reallocations=0 allocated_bytes=0 p95=4917ns max=4949ns
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests reel_stage
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

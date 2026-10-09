@@ -1,0 +1,7 @@
+   Compiling tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena)
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+   Compiling reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.03s
+
+Object verification from current reel-stage rlib:
+/tmp/reel-stage-tree-depth-i686.o: ELF 32-bit LSB relocatable, Intel i386, version 1 (SYSV), with debug_info, not stripped

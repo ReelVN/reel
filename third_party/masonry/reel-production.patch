@@ -1,0 +1,5065 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,31 +1,6 @@
+ [workspace]
+ resolver = "2"
+-members = [
+-    "xilem",
+-    "xilem_core",
+-    "xilem_masonry",
+-    "masonry",
+-    "masonry_core",
+-    "masonry_imaging",
+-    "masonry_testing",
+-    "masonry_winit",
+-
+-    "xilem_web",
+-    "xilem_web/web_examples/counter",
+-    "xilem_web/web_examples/counter_custom_element",
+-    "xilem_web/web_examples/elm",
+-    "xilem_web/web_examples/fetch",
+-    "xilem_web/web_examples/todomvc",
+-    "xilem_web/web_examples/mathml_svg",
+-    "xilem_web/web_examples/raw_dom_access",
+-    "xilem_web/web_examples/spawn_tasks",
+-    "xilem_web/web_examples/svgtoy",
+-    "xilem_web/web_examples/svgdraw",
+-    "xilem_web/web_examples/open_and_save_file",
+-    "tree_arena",
+-    "placehero",
+-    "include_doc_path",
+-]
++members = ["masonry_core", "tree_arena", "masonry", "include_doc_path"]
+ 
+ [workspace.package]
+ # Xilem version, also used by other packages which want to mimic Xilem's version.
+@@ -42,60 +17,29 @@
+ repository = "https://github.com/linebender/xilem"
+ 
+ [workspace.dependencies]
++masonry_core = { version = "=0.4.0", path = "masonry_core", default-features = false }
++tree_arena = { version = "=0.2.0", path = "tree_arena" }
++include_doc_path = { version = "=0.1.0", path = "include_doc_path", package = "linebender_include_doc_path" }
+ 
+-masonry = { version = "0.4.0", path = "masonry", default-features = false }
+-masonry_core = { version = "0.4.0", path = "masonry_core", default-features = false }
+-masonry_imaging = { version = "0.4.0", path = "masonry_imaging", default-features = false }
+-masonry_testing = { version = "0.4.0", path = "masonry_testing", default-features = false }
+-masonry_winit = { version = "0.4.0", path = "masonry_winit", default-features = false }
+-xilem_core = { version = "0.4.0", path = "xilem_core" }
+-xilem_masonry = { version = "0.4.0", path = "xilem_masonry" }
+-xilem = { version = "0.4.0", path = "xilem", default-features = false }
+-tree_arena = { version = "0.2.0", path = "tree_arena" }
+-include_doc_path = { version = "0.1.0", path = "include_doc_path", package = "linebender_include_doc_path" }
+-
+-anymore = "1.0.0"
+-imaging = "0.0.1"
+-imaging_wgpu = { version = "0.0.1", features = ["wgpu-28"] }
+-imaging_skia = { version = "0.0.1", features = ["gpu"] }
+-imaging_vello = "0.0.1"
+-imaging_vello_hybrid = "0.0.1"
+-imaging_vello_cpu = "0.0.1"
+-vello = { version = "0.8.0", default-features = false, features = ["wgpu"] }
+-wgpu = "28.0.0"
+-kurbo = "0.13.1"
+-parley = { version = "0.8.0", features = ["accesskit"] }
++anymore = "=1.0.0"
++imaging = "=0.0.1"
++kurbo = "=0.13.1"
++parley = { version = "=0.8.0", features = ["accesskit"] }
+ # TODO: Use no_std correctly in Xilem Web.
+-peniko = "0.6.1"
+-winit = "0.30.13"
+-tracing = { version = "0.1.44", default-features = false }
+-tracing-wasm = "0.2.1"
+-console_error_panic_hook = "0.1.7"
++peniko = "=0.6.1"
++tracing = { version = "=0.1.44", default-features = false }
++tracing-wasm = "=0.2.1"
++console_error_panic_hook = "=0.1.7"
+ # Remove "std" when that's fixed upstream
+-ui-events = { version = "0.3.0", default-features = false, features = ["kurbo"] }
+-ui-events-winit = { version = "0.3.0", default-features = false }
+-smallvec = "1.15.1"
+-hashbrown = { version = "0.17.0", default-features = false, features = ["default-hasher"] }
+-dpi = "0.1.2"
+-image = { version = "0.25.10", default-features = false }
+-resvg = "0.47.0"
+-usvg = "0.47.0"
+-web-time = "1.1.0"
+-bitflags = "2.11.0"
+-accesskit = "0.24.0"
+-accesskit_winit = { version = "0.32.2", default-features = false, features = [
+-    "accesskit_unix",
+-    "tokio",
+-    "rwh_06",
+-] }
+-accesskit_consumer = "0.35.0"
+-time = "0.3.47"
+-reqwest = { version = "0.12.28", default-features = false, features = [
+-    # We use rustls as Android doesn't ship with openssl
+-    # and this is likely to be easiest to get working.
+-    "rustls-tls",
+-] }
+-divan = "0.1.21"
++ui-events = { version = "=0.3.0", default-features = false, features = ["kurbo"] }
++smallvec = "=1.15.1"
++hashbrown = { version = "=0.17.0", default-features = false, features = ["default-hasher"] }
++dpi = "=0.1.2"
++image = { version = "=0.25.10", default-features = false }
++resvg = "=0.47.0"
++web-time = "=1.1.0"
++accesskit = "=0.24.0"
++time = "=0.3.47"
+ 
+ [workspace.lints]
+ # unsafe code is not allowed in Xilem or Masonry
+--- a/include_doc_path/Cargo.toml
++++ b/include_doc_path/Cargo.toml
+@@ -1,4 +1,5 @@
+ [package]
++readme = "README.md"
+ name = "linebender_include_doc_path"
+ version = "0.1.0"
+ description = "Helper macro for linking to files in docs.rs."
+@@ -13,5 +14,5 @@
+ proc-macro = true
+ 
+ [dependencies]
+-proc-macro2 = "1.0.106"
+-quote = "1.0.45"
++proc-macro2 = "=1.0.106"
++quote = "=1.0.45"
+--- a/masonry/Cargo.toml
++++ b/masonry/Cargo.toml
+@@ -1,4 +1,5 @@
+ [package]
++readme = "README.md"
+ name = "masonry"
+ version.workspace = true # We mimic Xilem's version
+ description = "Traits and types of the Masonry toolkit."
+@@ -17,47 +18,15 @@
+ targets = []
+ 
+ [features]
+-default = ["masonry_core/default", "imaging_vello"]
+-imaging_vello = ["masonry_winit/imaging_vello"]
+-imaging_vello_hybrid = ["masonry_winit/imaging_vello_hybrid"]
+-imaging_skia = ["masonry_winit/imaging_skia"]
++default = []
+ tracy = ["masonry_core/tracy"]
+-testing = ["dep:masonry_testing"]
+ 
+ [dependencies]
+ accesskit.workspace = true
+ masonry_core.workspace = true
+-masonry_testing = { workspace = true, optional = true, default-features = false }
+ smallvec.workspace = true
+ tracing = { workspace = true, features = ["default"] }
+ include_doc_path.workspace = true
+-resvg.workspace = true
+-understory_virtual_list = "0.1.2"
+-
+-[dev-dependencies]
+-accesskit_consumer.workspace = true
+-divan.workspace = true
+-float-cmp = { version = "0.10.0", features = ["std"], default-features = false }
+-image = { workspace = true, features = ["png"] }
+-insta = { version = "1.46.3" }
+-masonry_testing = { workspace = true, default-features = false }
+-masonry_winit = { workspace = true, default-features = false }
+-
+-# Make wgpu use tracing for its spans.
+-profiling = { version = "1.0.17", features = ["profile-with-tracing"] }
+ 
+ [lints]
+ workspace = true
+-
+-[[bench]]
+-name = "widget_list"
+-# We use divan's harness instead of the default one.
+-harness = false
+-# Ensures the benchmark is ran included when running bare `cargo test`.
+-test = true
+-
+-[[example]]
+-name = "calc_masonry"
+-# This actually enables scraping for all examples, not just this one.
+-# However it is possible to set doc-scrape-examples to false for other specific examples.
+-doc-scrape-examples = true
+--- a/masonry/src/lib.rs
++++ b/masonry/src/lib.rs
+@@ -1,226 +1,11 @@
+ // Copyright 2018 the Xilem Authors and the Druid Authors
+ // SPDX-License-Identifier: Apache-2.0
+-
+-// After you edit the crate's doc comment, run this command, then check README.md for any missing links
+-// cargo rdme --workspace-project=masonry
+-
+-#![doc(
+-    html_logo_url = "https://raw.githubusercontent.com/linebender/xilem/main/docs/assets/masonry-logo.svg"
+-)]
+-
+-//! Masonry is a foundational framework for building GUI libraries in Rust.
+-//!
+-//! The developers of Masonry are developing [Xilem][], a reactive UI library built on top of Masonry.
+-//! Masonry's API is geared towards creating GUI libraries; if you are creating an application, we recommend also considering Xilem.
+-//!
+-//! Masonry gives you a platform-independent manager, which owns and maintains a widget tree.
+-//! It also gives you tools to inspect that widget tree at runtime, write unit tests on it, and generally have an easier time debugging and maintaining your app.
+-//!
+-//! The framework is not opinionated about what your user-facing abstraction will be: you can implement immediate-mode GUI, the Elm architecture, functional reactive GUI, etc., on top of Masonry.
+-//!
+-//! It *is* opinionated about its internals: things like text focus, pointer interactions and accessibility events are often handled in a centralized way.
+-//!
+-//! Masonry is built on top of:
+-//!
+-//! - [Imaging][imaging] (by default [Vello][vello] and [wgpu][wgpu] for 2D graphics.
+-//! - [Parley][parley] for the text stack.
+-//! - [AccessKit][accesskit] for plugging into accessibility APIs.
+-//!
+-//! Masonry can be used with any windowing library which allows the window content to be rendered using `wgpu`.
+-//! There are currently two backends for using Masonry to create operating system windows:
+-//!
+-//! - [Masonry Winit][masonry_winit] for most platforms.
+-//! - `masonry_android_view` for Android. This can currently be found in the [Android View repository](https://github.com/rust-mobile/android-view),
+-//!   and is not yet generally usable.
+-//!
+-//! <!-- TODO: Document that Masonry is a set of baseline widgets and properties built on Masonry core, which can also be used completely independently -->
+-//!
+-//! # Example
+-//!
+-//! The to-do-list example looks like this, using Masonry Winit as the backend:
+-//!
+-//! ```rust
+-//! use masonry::core::{ErasedAction, NewWidget, PropertySet, Widget, WidgetId, WidgetTag};
+-//! use masonry::dpi::LogicalSize;
+-//! use masonry::layout::Length;
+-//! use masonry::peniko::color::AlphaColor;
+-//! use masonry::properties::Padding;
+-//! use masonry::theme::default_property_set;
+-//! use masonry::widgets::{Button, ButtonPress, Flex, Label, Portal, TextAction, TextArea, TextInput};
+-//! use masonry_winit::app::{AppDriver, DriverCtx, NewWindow, WindowId};
+-//! use masonry_winit::winit::window::Window;
+-//!
+-//! const TEXT_INPUT_TAG: WidgetTag<TextInput> = WidgetTag::named("text-input");
+-//! const LIST_TAG: WidgetTag<Flex> = WidgetTag::named("list");
+-//! const WIDGET_SPACING: Length = Length::const_px(5.0);
+-//!
+-//! struct Driver {
+-//!     next_task: String,
+-//!     window_id: WindowId,
+-//! }
+-//!
+-//! impl AppDriver for Driver {
+-//!     fn on_action(
+-//!         &mut self,
+-//!         window_id: WindowId,
+-//!         ctx: &mut DriverCtx<'_>,
+-//!         _widget_id: WidgetId,
+-//!         action: ErasedAction,
+-//!     ) {
+-//!         debug_assert_eq!(window_id, self.window_id, "unknown window");
+-//!
+-//!         if action.is::<ButtonPress>() {
+-//!             let render_root = ctx.render_root(window_id);
+-//!
+-//!             render_root.edit_widget_with_tag(TEXT_INPUT_TAG, |mut text_input| {
+-//!                 let mut text_area = TextInput::text_mut(&mut text_input);
+-//!                 TextArea::reset_text(&mut text_area, "");
+-//!             });
+-//!             render_root.edit_widget_with_tag(LIST_TAG, |mut list| {
+-//!                 let child = Label::new(self.next_task.clone()).prepare();
+-//!                 Flex::add_fixed(&mut list, child);
+-//!             });
+-//!         } else if action.is::<TextAction>() {
+-//!             let action = action.downcast::<TextAction>().unwrap();
+-//!             match *action {
+-//!                 TextAction::Changed(new_text) => {
+-//!                     self.next_task = new_text.clone();
+-//!                 }
+-//!                 TextAction::Entered(_) => {}
+-//!                 TextAction::Cancelled => {}
+-//!             }
+-//!         }
+-//!     }
+-//! }
+-//!
+-//! /// Return initial to-do-list without items.
+-//! pub fn make_widget_tree() -> NewWidget<impl Widget> {
+-//!     let text_input = NewWidget::new(
+-//!         TextInput::new("").with_placeholder("ex: 'Do the dishes', 'File my taxes', ..."),
+-//!     )
+-//!     .with_tag(TEXT_INPUT_TAG);
+-//!     let button = NewWidget::new(Button::with_text("Add task"));
+-//!
+-//!     let list = Flex::column()
+-//!         .with_fixed(
+-//!             NewWidget::new(Flex::row().with(text_input, 1.0).with_fixed(button))
+-//!                 .with_props(PropertySet::new().with(Padding::all(WIDGET_SPACING))),
+-//!         )
+-//!         .with_fixed_spacer(WIDGET_SPACING);
+-//!
+-//!     NewWidget::new(Portal::new(NewWidget::new(list).with_tag(LIST_TAG)))
+-//! }
+-//!
+-//! fn main() {
+-//!     let window_size = LogicalSize::new(400.0, 400.0);
+-//!     let window_attributes = Window::default_attributes()
+-//!         .with_title("To-do list")
+-//!         .with_resizable(true)
+-//!         .with_min_inner_size(window_size);
+-//!     let driver = Driver {
+-//!         next_task: String::new(),
+-//!         window_id: WindowId::next(),
+-//!     };
+-//!     # make_widget_tree();
+-//!     # return;
+-//!
+-//!     let event_loop = masonry_winit::app::EventLoop::with_user_event()
+-//!         .build()
+-//!         .unwrap();
+-//!     masonry_winit::app::run_with(
+-//!         event_loop,
+-//!         vec![
+-//!             NewWindow::new_with_id(
+-//!                 driver.window_id,
+-//!                 window_attributes,
+-//!                 make_widget_tree().erased(),
+-//!             )
+-//!             .with_base_color(AlphaColor::from_rgb8(2, 6, 23)),
+-//!         ],
+-//!         driver,
+-//!         default_property_set(),
+-//!     )
+-//!     .unwrap();
+-//! }
+-//! ```
+-//!
+-//! Running this will open a window that looks like this:
+-//!
+-//! ![Screenshot of the to-do-list example][to-do-screenshot]
+-//!
+-//! # Feature flags
+-//!
+-//! The following crate [feature flags](https://doc.rust-lang.org/cargo/reference/features.html#dependency-features) are available:
+-//!
+-//! - `default`: Enables the default features of [Masonry Core][masonry_core], [Masonry Testing][masonry_testing]
+-//!   (if enabled via the `testing` feature).
+-//! - `tracy`: Enables creating output for the [Tracy](https://github.com/wolfpld/tracy) profiler using [`tracing-tracy`][tracing_tracy].
+-//!   This can be used by installing Tracy and connecting to a Masonry with this feature enabled.
+-//! - `testing`: Re-exports the test harness from [Masonry Testing][masonry_testing].
+-//!
+-//! # Debugging features
+-//!
+-//! Masonry apps currently ship with several debugging features built in:
+-//!
+-//! - A rudimentary widget inspector - toggled by the F11 key.
+-//! - A debug mode painting widget layout rectangles - toggled by the F12 key.
+-//! - Optional automatic registration of a [tracing] subscriber, which outputs to the console and to a file in the dev profile.
+-//!
+-//! If you want to use your own subscriber, simply set it before starting masonry - in this case masonry will not set a subscriber.
+-//!
+-//! [masonry_winit]: https://crates.io/crates/masonry_winit
+-//! [Xilem]: https://github.com/linebender/xilem/tree/main/xilem
+-//! [masonry_testing]: https://docs.rs/masonry_testing/latest/masonry_testing/
+-//! [tracing_tracy]: https://crates.io/crates/tracing-tracy
+-//! [vello]: https://crates.io/crates/vello
+-//! [wgpu]: https://crates.io/crates/wgpu
+-#![cfg_attr(
+-    not(docsrs),
+-    doc = "\n**Warning: This documentation is meant to be read on docs.rs. Screenshots may fail to load otherwise.**\n\n"
+-)]
+-// Screenshot generated in the unit test for the `to_do_list` example.
+-#![doc = concat!(
+-    "[to-do-screenshot]: ",
+-    include_doc_path::include_doc_path!("screenshots/example_to_do_list_initial.png")
+-)]
+-//!
+-
+-// LINEBENDER LINT SET - lib.rs - v3
+-// See https://linebender.org/wiki/canonical-lints/
+-// These lints shouldn't apply to examples or tests.
+-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+-// These lints shouldn't apply to examples.
+-#![warn(clippy::print_stdout, clippy::print_stderr)]
+-// Targeting e.g. 32-bit means structs containing usize can give false positives for 64-bit.
+-#![cfg_attr(target_pointer_width = "64", warn(clippy::trivially_copy_pass_by_ref))]
+-// END LINEBENDER LINT SET
+-#![cfg_attr(docsrs, feature(doc_cfg))]
+-#![cfg_attr(
+-    test,
+-    expect(
+-        unused_crate_dependencies,
+-        reason = "False-positive with dev-dependencies only used in examples"
+-    )
+-)]
+-// TODO: Remove any items listed as "Deferred"
+-#![expect(clippy::cast_possible_truncation, reason = "Deferred: Noisy")]
+-#![expect(clippy::single_match, reason = "General policy not decided")]
+-
+-// TODO - re-add #[doc(hidden)]
+-pub mod doc;
+-
+-#[cfg(test)]
+-mod tests;
+-
+-pub mod layers;
++//! Reel's selected upstream Button, Image, Label and Slider build closure.
+ pub mod properties;
+ pub mod theme;
+ pub mod widgets;
+-
+ pub use accesskit;
+ pub use masonry_core::imaging;
+ pub use masonry_core::palette;
+ pub use masonry_core::{app, core, dpi, kurbo, layout, parley, peniko, ui_events, util};
+-#[cfg(any(feature = "testing", test))]
+-pub use masonry_testing as testing;
+ pub use parley::{Alignment as TextAlign, AlignmentOptions as TextAlignOptions};
+--- a/masonry/src/properties/mod.rs
++++ b/masonry/src/properties/mod.rs
+@@ -1,40 +1,14 @@
+ // Copyright 2025 the Xilem Authors
+ // SPDX-License-Identifier: Apache-2.0
+-
+-//! Types and logic commonly used across widgets.
+-//!
+-//! See [properties documentation](crate::doc::widget_properties) for details.
+-
+-mod animation;
+-mod checkmark;
++//! Properties required by selected widgets.
+ mod content_color;
+-mod gap;
++pub use content_color::*;
++mod object_fit;
++pub use object_fit::*;
++mod slider;
++pub use slider::*;
+ mod line_breaking;
+-mod object_fit;
+-mod placeholder_color;
+-mod portal;
+-mod progress_bar;
+-mod scroll_bar;
+-mod selection;
+-mod slider;
+-mod step_input;
++pub use line_breaking::*;
+ mod track;
+-
+-pub mod types;
+-
+-pub use animation::*;
+-pub use checkmark::*;
+-pub use content_color::*;
+-pub use gap::*;
+-pub use line_breaking::*;
+-pub use object_fit::*;
+-pub use placeholder_color::*;
+-pub use portal::*;
+-pub use progress_bar::*;
+-pub use scroll_bar::*;
+-pub use selection::*;
+-pub use slider::*;
+-pub use step_input::*;
++pub use masonry_core::properties::*;
+ pub use track::*;
+-
+-pub use masonry_core::properties::*;
+--- a/masonry/src/theme.rs
++++ b/masonry/src/theme.rs
+@@ -5,11 +5,8 @@
+ 
+ #![allow(missing_docs, reason = "Names are self-explanatory.")]
+ 
+-use crate::core::{
+-    DefaultProperties, PropertySet, PropertyStack, Selector, StyleProperty, StyleSet,
+-};
++use crate::core::{DefaultProperties, PropertyStack, Selector, StyleProperty, StyleSet};
+ use crate::layout::{AsUnit, Length};
+-use crate::palette::css::DIM_GRAY;
+ use crate::parley::{GenericFamily, LineHeight};
+ use crate::peniko::Color;
+ 
+@@ -57,22 +54,6 @@
+ 
+ pub fn default_property_set() -> DefaultProperties {
+     let mut properties = DefaultProperties::new();
+-
+-    // Badge
+-    properties.insert::<Badge, _>(Padding::from_vh(3.px(), 5.px()));
+-    properties.insert::<Badge, _>(CornerRadius { radius: 999.px() });
+-    properties.insert::<Badge, _>(BorderWidth { width: 0.px() });
+-    properties.insert::<Badge, _>(Background::Color(ACCENT_COLOR));
+-    properties.insert::<Badge, _>(BorderColor { color: ZYNC_700 });
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            Background::Color(ZYNC_800),
+-        );
+-        properties.insert_stack::<Badge>(stack);
+-    }
+-
+     // Button
+     properties.insert::<Button, _>(Padding::from_vh(6.px(), 16.px()));
+     properties.insert::<Button, _>(CornerRadius { radius: 6.px() });
+@@ -102,201 +83,6 @@
+         properties.insert_stack::<Button>(stack);
+     }
+ 
+-    // Checkbox
+-    properties.insert::<Checkbox, _>(CornerRadius { radius: 4.px() });
+-    properties.insert::<Checkbox, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-    properties.insert::<Checkbox, _>(Background::Color(ZYNC_800));
+-    properties.insert::<Checkbox, _>(BorderColor { color: ZYNC_700 });
+-    properties.insert::<Checkbox, _>(CheckmarkStrokeWidth { width: 2.0 });
+-    properties.insert::<Checkbox, _>(CheckmarkColor { color: TEXT_COLOR });
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_hovered(true),
+-            BorderColor { color: ZYNC_500 },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_focused(true),
+-            BorderColor { color: FOCUS_COLOR },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_active(true),
+-            Background::Color(ZYNC_700),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            PropertySet::new()
+-                .with(Background::Color(Color::BLACK))
+-                .with(CheckmarkColor {
+-                    color: DISABLED_TEXT_COLOR,
+-                }),
+-        );
+-        properties.insert_stack::<Checkbox>(stack);
+-    }
+-
+-    // DisclosureButton
+-    properties.insert::<DisclosureButton, _>(ContentColor::new(DIM_GRAY));
+-    properties.insert::<DisclosureButton, _>(Dimensions::fixed(
+-        Length::const_px(16.),
+-        Length::const_px(16.),
+-    ));
+-    properties.insert::<DisclosureButton, _>(Padding::all(4.px()));
+-
+-    // Divider
+-    properties.insert::<Divider, _>(ContentColor::new(ZYNC_500));
+-
+-    // Switch
+-    properties.insert::<Switch, _>(CornerRadius { radius: 10.px() }); // Full pill shape
+-    properties.insert::<Switch, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-    properties.insert::<Switch, _>(Background::Color(ZYNC_700));
+-    properties.insert::<Switch, _>(BorderColor { color: ZYNC_700 });
+-    properties.insert::<Switch, _>(ThumbColor(Color::WHITE));
+-    properties.insert::<Switch, _>(ThumbRadius(8.px()));
+-    properties.insert::<Switch, _>(TrackThickness(20.px()));
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_hovered(true),
+-            BorderColor { color: ZYNC_500 },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_focused(true),
+-            BorderColor { color: FOCUS_COLOR },
+-        );
+-        stack.push_layer(
+-            Selector::classes(&["#toggled"]),
+-            Background::Color(ACCENT_COLOR),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_active(true),
+-            Background::Color(ZYNC_600),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            Background::Color(Color::BLACK),
+-        );
+-        properties.insert_stack::<Switch>(stack);
+-    }
+-
+-    // FIXME
+-    use crate::widgets::Selector as SelectorButton;
+-
+-    // Selector
+-    properties.insert::<SelectorButton, _>(Padding::from_vh(6.px(), 16.px()));
+-    properties.insert::<SelectorButton, _>(CornerRadius { radius: 2.px() });
+-    properties.insert::<SelectorButton, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-
+-    properties.insert::<SelectorButton, _>(Background::Color(ZYNC_800));
+-    properties.insert::<SelectorButton, _>(BorderColor { color: ZYNC_700 });
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_active(true),
+-            Background::Color(ZYNC_700),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            Background::Color(Color::BLACK),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_hovered(true),
+-            BorderColor { color: ZYNC_500 },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_focused(true),
+-            BorderColor { color: FOCUS_COLOR },
+-        );
+-        properties.insert_stack::<SelectorButton>(stack);
+-    }
+-
+-    // SelectorItem
+-    properties.insert::<SelectorItem, _>(Padding::from_vh(6.px(), 16.px()));
+-    properties.insert::<SelectorItem, _>(Background::Color(ZYNC_900));
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_active(true),
+-            Background::Color(ZYNC_800),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            Background::Color(Color::BLACK),
+-        );
+-        properties.insert_stack::<SelectorItem>(stack);
+-    }
+-
+-    // Flex
+-    properties.insert::<Flex, _>(Gap::new(DEFAULT_GAP));
+-
+-    // Grid
+-    properties.insert::<Grid, _>(Gap::ZERO);
+-
+-    // TextInput
+-    properties.insert::<TextInput, _>(Padding::from_vh(6.px(), 12.px()));
+-    properties.insert::<TextInput, _>(CornerRadius { radius: 4.px() });
+-    properties.insert::<TextInput, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-    properties.insert::<TextInput, _>(BorderColor { color: ZYNC_600 });
+-    properties.insert::<TextInput, _>(PlaceholderColor::new(PLACEHOLDER_COLOR));
+-    properties.insert::<TextInput, _>(CaretColor { color: TEXT_COLOR });
+-    properties.insert::<TextInput, _>(SelectionColor {
+-        color: ACCENT_COLOR,
+-    });
+-    properties.insert::<TextInput, _>(Background::Color(TEXT_BACKGROUND_COLOR));
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::classes(&["#unfocused"]),
+-            SelectionColor {
+-                color: DISABLED_TEXT_COLOR,
+-            },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_focused(true),
+-            BorderColor { color: FOCUS_COLOR },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            Background::Color(TEXT_BACKGROUND_COLOR),
+-        );
+-        properties.insert_stack::<TextInput>(stack);
+-    }
+-
+-    // TextArea
+-    properties.insert::<TextArea<false>, _>(ContentColor::new(TEXT_COLOR));
+-    properties.insert::<TextArea<false>, _>(CaretColor { color: TEXT_COLOR });
+-    properties.insert::<TextArea<false>, _>(SelectionColor {
+-        color: ACCENT_COLOR,
+-    });
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            ContentColor::new(DISABLED_TEXT_COLOR),
+-        );
+-        properties.insert_stack::<TextArea<false>>(stack);
+-    }
+-    properties.insert::<TextArea<true>, _>(ContentColor::new(TEXT_COLOR));
+-    properties.insert::<TextArea<true>, _>(CaretColor { color: TEXT_COLOR });
+-    properties.insert::<TextArea<true>, _>(SelectionColor {
+-        color: ACCENT_COLOR,
+-    });
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            ContentColor::new(DISABLED_TEXT_COLOR),
+-        );
+-        properties.insert_stack::<TextArea<true>>(stack);
+-    }
+-
+     // Label
+     properties.insert::<Label, _>(ContentColor::new(TEXT_COLOR));
+     {
+@@ -306,48 +92,6 @@
+             ContentColor::new(DISABLED_TEXT_COLOR),
+         );
+         properties.insert_stack::<Label>(stack);
+-    }
+-
+-    // ProgressBar
+-    properties.insert::<ProgressBar, _>(CornerRadius { radius: 2.px() });
+-    properties.insert::<ProgressBar, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-
+-    properties.insert::<ProgressBar, _>(Background::Color(ZYNC_900));
+-    properties.insert::<ProgressBar, _>(BorderColor { color: ZYNC_800 });
+-    properties.insert::<ProgressBar, _>(BarColor(ACCENT_COLOR));
+-
+-    // RadioButton
+-    properties.insert::<RadioButton, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-
+-    properties.insert::<RadioButton, _>(Background::Color(ZYNC_800));
+-    properties.insert::<RadioButton, _>(BorderColor { color: ZYNC_700 });
+-    properties.insert::<RadioButton, _>(CheckmarkColor { color: TEXT_COLOR });
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_active(true),
+-            Background::Color(ZYNC_700),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_hovered(true),
+-            BorderColor { color: ZYNC_500 },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_focused(true),
+-            BorderColor { color: FOCUS_COLOR },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            (
+-                CheckmarkColor::new(DISABLED_TEXT_COLOR),
+-                Background::Color(Color::BLACK),
+-            ),
+-        );
+-        properties.insert_stack::<RadioButton>(stack);
+     }
+ 
+     // Slider
+@@ -371,78 +115,10 @@
+         properties.insert_stack::<Slider>(stack);
+     }
+ 
+-    // Spinner
+-    properties.insert::<Spinner, _>(TrackColor {
+-        active: TEXT_COLOR,
+-        inactive: Color::TRANSPARENT,
+-    });
+-    properties.insert::<Spinner, _>(TrackThickness(8.px()));
+-    properties.insert::<Spinner, _>(AnimationDuration { seconds: 1.2 });
+-
+-    // StepInput
+-    default_step_input_style::<u8>(&mut properties);
+-    default_step_input_style::<i8>(&mut properties);
+-    default_step_input_style::<u16>(&mut properties);
+-    default_step_input_style::<i16>(&mut properties);
+-    default_step_input_style::<u32>(&mut properties);
+-    default_step_input_style::<i32>(&mut properties);
+-    default_step_input_style::<u64>(&mut properties);
+-    default_step_input_style::<i64>(&mut properties);
+-    default_step_input_style::<usize>(&mut properties);
+-    default_step_input_style::<isize>(&mut properties);
+-    default_step_input_style::<f32>(&mut properties);
+-    default_step_input_style::<f64>(&mut properties);
+-
+     properties
+ }
+-
+ /// Applies the default text styles for Masonry into `styles`.
+ pub fn default_text_styles(styles: &mut StyleSet) {
+     styles.insert(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.2)));
+     styles.insert(GenericFamily::SystemUi.into());
+ }
+-
+-fn default_step_input_style<T: Steppable>(properties: &mut DefaultProperties) {
+-    properties.insert::<StepInput<T>, _>(Padding::from_vh(6.px(), 0.px()));
+-    properties.insert::<StepInput<T>, _>(CornerRadius { radius: 6.px() });
+-    properties.insert::<StepInput<T>, _>(BorderWidth {
+-        width: BORDER_WIDTH,
+-    });
+-
+-    properties.insert::<StepInput<T>, _>(ContentColor::new(TEXT_COLOR));
+-    properties.insert::<StepInput<T>, _>(Background::Color(ZYNC_800));
+-    properties.insert::<StepInput<T>, _>(BorderColor { color: ZYNC_700 });
+-
+-    {
+-        let mut stack = PropertyStack::new();
+-        stack.push_layer(
+-            Selector::new().with_disabled(true),
+-            (
+-                ContentColor::new(DISABLED_TEXT_COLOR),
+-                Background::Color(Color::BLACK),
+-            ),
+-        );
+-        stack.push_layer(
+-            Selector::new().with_hovered(true),
+-            BorderColor { color: ZYNC_500 },
+-        );
+-        stack.push_layer(
+-            Selector::new().with_focused(true),
+-            BorderColor { color: FOCUS_COLOR },
+-        );
+-
+-        properties.insert_stack::<StepInput<T>>(stack);
+-    }
+-}
+-
+-/// Set of default properties used in unit tests.
+-///
+-/// This lets us change default properties without having to reset all screenshots every time.
+-/// This should still be kept relatively close to `default_property_set()` so that screenshots look like end user apps.
+-#[cfg(test)]
+-pub(crate) fn test_property_set() -> DefaultProperties {
+-    #[allow(unused_mut, reason = "Sometimes we don't have anything to change")]
+-    let mut properties = default_property_set();
+-
+-    properties
+-}
+--- a/masonry/src/widgets/button.rs
++++ b/masonry/src/widgets/button.rs
+@@ -82,7 +82,7 @@
+     }
+ 
+     /// Returns a mutable reference to the child.
+-    pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> WidgetMut<'t, dyn Widget> {
++    pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> Option<WidgetMut<'t, dyn Widget>> {
+         this.ctx.get_mut(&mut this.widget.child)
+     }
+ }
+@@ -257,258 +257,3 @@
+ }
+ 
+ // --- MARK: TESTS
+-#[cfg(test)]
+-mod tests {
+-    use masonry_core::core::WidgetTag;
+-    use masonry_testing::{TestHarnessParams, assert_failing_render_snapshot};
+-    use std::assert_matches;
+-
+-    use super::*;
+-    use crate::core::{CollectionWidget, PointerButton, PropertySet, StyleProperty};
+-    use crate::layout::AsUnit;
+-    use crate::properties::{
+-        BorderColor, BorderWidth, BoxShadow, ContentColor, CornerRadius, Gap, Padding,
+-    };
+-    use crate::testing::{TestHarness, assert_render_snapshot};
+-    use crate::theme::{ACCENT_COLOR, test_property_set};
+-    use crate::widgets::{Flex, Grid, GridParams, Label, SizedBox};
+-
+-    #[test]
+-    fn simple_button() {
+-        let widget = NewWidget::new(Button::with_text("Hello"));
+-
+-        let params =
+-            TestHarnessParams::size_and_padding((100, 40), TestHarnessParams::ROOT_PADDING);
+-        let mut harness = TestHarness::create_with(test_property_set(), widget, params);
+-        let button_id = harness.root_id();
+-
+-        assert_render_snapshot!(harness, "button_hello");
+-
+-        assert!(harness.pop_action_erased().is_none());
+-
+-        harness.mouse_click_on(button_id, Some(PointerButton::Primary));
+-        assert_eq!(
+-            harness.pop_action::<ButtonPress>(),
+-            Some((
+-                ButtonPress {
+-                    button: Some(PointerButton::Primary)
+-                },
+-                button_id
+-            ))
+-        );
+-
+-        // Check that Tab focuses on the widget
+-        harness.focus_on(None);
+-        harness.press_tab_key(false);
+-        assert_eq!(harness.focused_widget().map(|w| w.id()), Some(button_id));
+-
+-        harness.process_text_event(TextEvent::key_down(Key::Character(" ".into())));
+-        harness.process_text_event(TextEvent::key_up(Key::Character(" ".into())));
+-        assert_eq!(
+-            harness.pop_action(),
+-            Some((ButtonPress { button: None }, button_id))
+-        );
+-    }
+-
+-    #[test]
+-    fn mouse_down_requests_focus() {
+-        let widget = NewWidget::new(Button::with_text("Hello"));
+-        let mut harness = TestHarness::create(test_property_set(), widget);
+-        let button_id = harness.root_id();
+-
+-        harness.focus_on(None);
+-        harness.mouse_move_to(button_id);
+-        harness.mouse_button_press(None);
+-
+-        assert_eq!(harness.focused_widget_id(), Some(button_id));
+-    }
+-
+-    #[test]
+-    fn edit_button() {
+-        let image_1 = {
+-            let label = Label::new("The quick brown fox jumps over the lazy dog")
+-                .with_style(StyleProperty::FontSize(20.0));
+-            let label = NewWidget::new(label)
+-                .with_props(PropertySet::new().with(ContentColor::new(ACCENT_COLOR)));
+-
+-            let button = NewWidget::new(Button::new(label));
+-
+-            let mut harness = TestHarness::create_with_size(test_property_set(), button, (50, 50));
+-
+-            harness.render()
+-        };
+-
+-        let image_2 = {
+-            let button = NewWidget::new(Button::with_text("Hello world"));
+-
+-            let mut harness = TestHarness::create_with_size(test_property_set(), button, (50, 50));
+-
+-            harness.edit_root_widget(|mut button| {
+-                let mut label = Button::child_mut(&mut button);
+-                let mut label = label.downcast();
+-
+-                Label::set_text(&mut label, "The quick brown fox jumps over the lazy dog");
+-
+-                label.insert_prop(ContentColor::new(ACCENT_COLOR));
+-                Label::insert_style(&mut label, StyleProperty::FontSize(20.0));
+-            });
+-
+-            harness.render()
+-        };
+-
+-        // We don't use assert_eq because we don't want rich assert
+-        assert!(image_1 == image_2);
+-    }
+-
+-    #[test]
+-    fn set_properties() {
+-        let red = crate::palette::css::RED;
+-        let button = NewWidget::new(Button::with_text("Some random text"));
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), button, (200, 80));
+-
+-        harness.edit_root_widget(|mut button| {
+-            button.insert_prop(BorderColor { color: red });
+-            button.insert_prop(BorderWidth { width: 5.px() });
+-            button.insert_prop(CornerRadius { radius: 20.px() });
+-            button.insert_prop(Padding::from_vh(3.px(), 8.px()));
+-
+-            let mut label = Button::child_mut(&mut button);
+-            label.insert_prop(ContentColor::new(red));
+-        });
+-
+-        assert_render_snapshot!(harness, "button_set_properties");
+-    }
+-
+-    #[test]
+-    fn with_shadows() {
+-        use crate::palette::css::ORANGE;
+-
+-        let grid = Grid::with_dimensions(2, 2)
+-            .with(Button::with_text("A").prepare(), GridParams::pos(0, 0))
+-            .with(Button::with_text("B").prepare(), GridParams::pos(1, 0))
+-            .with(Button::with_text("C").prepare(), GridParams::pos(0, 1))
+-            .with(Button::with_text("D").prepare(), GridParams::pos(1, 1));
+-        let root_widget = NewWidget::new(grid).with_props(
+-            PropertySet::new()
+-                .with(Padding::all(20.px()))
+-                .with(Gap::new(40.px())),
+-        );
+-
+-        let test_params = TestHarnessParams::default().with_size((300, 300));
+-        let mut harness = TestHarness::create_with(test_property_set(), root_widget, test_params);
+-
+-        harness.edit_root_widget(|mut grid| {
+-            {
+-                let mut button = Grid::get_mut(&mut grid, 0);
+-                let mut button = button.downcast::<Button>();
+-                button.insert_prop(BoxShadow::new(ORANGE, (10., 10.)));
+-            }
+-
+-            {
+-                let mut button = Grid::get_mut(&mut grid, 1);
+-                let mut button = button.downcast::<Button>();
+-                button.insert_prop(BoxShadow::new(ORANGE, (-10., 10.)).blur(5.px()));
+-            }
+-
+-            {
+-                let mut button = Grid::get_mut(&mut grid, 2);
+-                let mut button = button.downcast::<Button>();
+-                button.insert_prop(BoxShadow::new(ORANGE, (-10., -10.)).blur(0.px()));
+-            }
+-
+-            {
+-                let mut button = Grid::get_mut(&mut grid, 3);
+-                let mut button = button.downcast::<Button>();
+-                button.insert_prop(BoxShadow::new(ORANGE, (0., 0.)).blur(5.px()));
+-            }
+-        });
+-
+-        assert_render_snapshot!(harness, "button_shadows");
+-
+-        // Check that slightly changing the blur radius makes the screenshot test fail.
+-        harness.edit_root_widget(|mut grid| {
+-            // Copy-pasted from second case above.
+-            {
+-                let mut button = Grid::get_mut(&mut grid, 1);
+-                let mut button = button.downcast::<Button>();
+-                button.insert_prop(BoxShadow::new(ORANGE, (-10., 10.)).blur(2.5.px()));
+-            }
+-        });
+-        assert_failing_render_snapshot!(harness, "button_shadows");
+-    }
+-
+-    /// We document that several other non-interactive widgets in Masonry can be correctly used as children in buttons.
+-    ///
+-    /// We validate that each of these actually are correctly supported.
+-    fn validate_noninteractive_child<W: Widget>(child: NewWidget<W>) {
+-        let child_id = child.id();
+-        let mut button = Button::new(child).prepare();
+-        button.properties.insert(Padding::all(10.px()));
+-        let button_id = button.id();
+-        let mut harness = TestHarness::create(test_property_set(), button);
+-
+-        harness.mouse_move_to_unchecked(child_id);
+-        let button = harness.get_widget_with_id(button_id);
+-        assert!(
+-            button.ctx().is_hovered(),
+-            "The child shouldn't prevent hover."
+-        );
+-        harness.mouse_button_press(None);
+-        let button = harness.get_widget_with_id(button_id);
+-        assert!(
+-            button.ctx().is_pointer_capture_target(),
+-            "A non-interactive child shouldn't prevent pointer capture."
+-        );
+-        harness.mouse_button_release(None);
+-        let (_, event_id) = harness
+-            .pop_action::<<Button as Widget>::Action>()
+-            .expect("There should be an action.");
+-        assert_eq!(
+-            event_id, button_id,
+-            "The event should come from the button."
+-        );
+-    }
+-
+-    #[test]
+-    fn label_child() {
+-        let child = Label::new("Some text").prepare();
+-        validate_noninteractive_child(child);
+-    }
+-
+-    #[test]
+-    fn sized_box_child() {
+-        let child = SizedBox::empty().width(50.px()).height(50.px()).prepare();
+-        validate_noninteractive_child(child);
+-    }
+-
+-    #[test]
+-    fn flex_child() {
+-        let child = Flex::row()
+-            .with_fixed(Label::new("Some text").prepare())
+-            .prepare();
+-        validate_noninteractive_child(child);
+-    }
+-    // We could imagine more involved tests, e.g. a button with an icon
+-    // or a with a keyboard shortcut indicator.
+-
+-    #[test]
+-    fn textless_button() {
+-        let tag = WidgetTag::unique();
+-        let button = Button::with_text("").prepare().with_tag(tag);
+-        let parent = Flex::row().with(button, 0.).prepare();
+-
+-        let params =
+-            TestHarnessParams::size_and_padding((100, 40), TestHarnessParams::ROOT_PADDING);
+-        let mut harness = TestHarness::create_with(test_property_set(), parent, params);
+-        let button_id = harness.get_widget(tag).id();
+-
+-        assert_render_snapshot!(harness, "button_no_text");
+-
+-        harness.mouse_click_on(button_id, Some(PointerButton::Primary));
+-        assert_matches!(
+-            harness.pop_action::<ButtonPress>(),
+-            Some((ButtonPress { .. }, ..))
+-        );
+-    }
+-}
+--- a/masonry/src/widgets/image.rs
++++ b/masonry/src/widgets/image.rs
+@@ -214,159 +214,4 @@
+ }
+ 
+ // FIXME - remove cfg?
+-#[cfg(not(target_arch = "wasm32"))]
+ // --- MARK: TESTS
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::core::NewWidget;
+-    use crate::peniko::{ImageAlphaType, ImageData, ImageFormat};
+-    use crate::testing::{TestHarness, assert_render_snapshot};
+-    use crate::theme::test_property_set;
+-
+-    /// Painting an empty image shouldn't crash.
+-    #[test]
+-    fn empty_paint() {
+-        // TODO - Blob::empty() function?
+-        // TODO: Does Vello promise this is supported?
+-        let image_data = ImageData {
+-            data: Vec::new().into(),
+-            format: ImageFormat::Rgba8,
+-            alpha_type: ImageAlphaType::Alpha,
+-            width: 0,
+-            height: 0,
+-        };
+-
+-        let image_widget = NewWidget::new(Image::new(image_data));
+-        let mut harness = TestHarness::create(test_property_set(), image_widget);
+-        let _ = harness.render();
+-    }
+-
+-    #[test]
+-    fn tall_paint() {
+-        let image_data = ImageData {
+-            // This could have a more concise chain, but previously used versions either
+-            // had unreadable formatting or used `rustfmt::skip`, which broke formatting
+-            // across large parts of the file.
+-            data: [
+-                [255, 255, 255, 255],
+-                [000, 000, 000, 255],
+-                [000, 000, 000, 255],
+-                [255, 255, 255, 255],
+-            ]
+-            .into_iter()
+-            .flatten()
+-            .collect::<Vec<_>>()
+-            .into(),
+-            format: ImageFormat::Rgba8,
+-            alpha_type: ImageAlphaType::Alpha,
+-            width: 2,
+-            height: 2,
+-        };
+-        let image_widget = NewWidget::new(Image::new(image_data));
+-
+-        let mut harness =
+-            TestHarness::create_with_size(test_property_set(), image_widget, (40, 60));
+-        assert_render_snapshot!(harness, "image_tall_paint");
+-    }
+-
+-    #[test]
+-    fn edit_image() {
+-        let image_data = ImageData {
+-            data: vec![255; 4 * 8 * 8].into(),
+-            format: ImageFormat::Rgba8,
+-            alpha_type: ImageAlphaType::Alpha,
+-            width: 8,
+-            height: 8,
+-        };
+-
+-        let render_1 = {
+-            let image_widget = NewWidget::new(Image::new(image_data.clone()));
+-
+-            let mut harness =
+-                TestHarness::create_with_size(test_property_set(), image_widget, (40, 60));
+-
+-            harness.render()
+-        };
+-
+-        let render_2 = {
+-            let other_image_data = ImageData {
+-                data: vec![10; 4 * 8 * 8].into(),
+-                format: ImageFormat::Rgba8,
+-                alpha_type: ImageAlphaType::Alpha,
+-                width: 8,
+-                height: 8,
+-            };
+-            let image_widget = NewWidget::new(Image::new(other_image_data));
+-
+-            let mut harness =
+-                TestHarness::create_with_size(test_property_set(), image_widget, (40, 60));
+-
+-            harness.edit_root_widget(|mut image| {
+-                Image::set_image_data(&mut image, image_data);
+-            });
+-
+-            harness.render()
+-        };
+-
+-        // TODO - Use Kompari instead
+-        // We don't use assert_eq because we don't want rich assert
+-        assert!(render_1 == render_2);
+-    }
+-
+-    #[test]
+-    fn layout() {
+-        let image_data = ImageData {
+-            data: vec![255; 4 * 8 * 8].into(),
+-            format: ImageFormat::Rgba8,
+-            alpha_type: ImageAlphaType::Alpha,
+-            width: 8,
+-            height: 8,
+-        };
+-        let image_widget = NewWidget::new(Image::new(image_data.clone()));
+-        let mut harness =
+-            TestHarness::create_with_size(test_property_set(), image_widget, (100, 50));
+-
+-        // Contain.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::Contain);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_contain");
+-
+-        // Cover.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::Cover);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_cover");
+-
+-        // FitHeight.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::FitHeight);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_fitheight");
+-
+-        // FitWidth.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::FitWidth);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_fitwidth");
+-
+-        // None.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::None);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_none");
+-
+-        // ScaleDown.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::ScaleDown);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_scaledown");
+-
+-        // Stretch.
+-        harness.edit_root_widget(|mut image| {
+-            image.insert_prop(ObjectFit::Stretch);
+-        });
+-        assert_render_snapshot!(harness, "image_layout_stretch");
+-    }
+-}
+--- a/masonry/src/widgets/label.rs
++++ b/masonry/src/widgets/label.rs
+@@ -669,189 +669,3 @@
+ }
+ 
+ // --- MARK: TESTS
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::core::{NewWidget, PropertySet};
+-    use crate::layout::{AsUnit, Dim};
+-    use crate::parley::style::GenericFamily;
+-    use crate::parley::{FontFamily, FontFamilyName, StyleProperty};
+-    use crate::properties::Dimensions;
+-    use crate::properties::Gap;
+-    use crate::properties::types::CrossAxisAlignment;
+-    use crate::testing::{TestHarness, assert_render_snapshot};
+-    use crate::theme::{ACCENT_COLOR, test_property_set};
+-    use crate::widgets::{Flex, SizedBox};
+-
+-    #[test]
+-    fn simple_label() {
+-        let label = Label::new("Hello").prepare();
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), label, (100, 40));
+-
+-        assert_render_snapshot!(harness, "label_hello");
+-    }
+-
+-    #[test]
+-    fn styled_label() {
+-        let label = Label::new("The quick brown fox jumps over the lazy dog")
+-            .with_style(FontFamily::Single(FontFamilyName::Generic(
+-                GenericFamily::Monospace,
+-            )))
+-            .with_style(StyleProperty::FontSize(20.0))
+-            .with_text_alignment(TextAlign::Center)
+-            .prepare()
+-            .with_props(
+-                PropertySet::new()
+-                    .with(ContentColor::new(ACCENT_COLOR))
+-                    .with(LineBreaking::WordWrap),
+-            );
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), label, (200, 200));
+-
+-        assert_render_snapshot!(harness, "label_styled_label");
+-    }
+-
+-    #[test]
+-    fn underline_label() {
+-        let label = Label::new("Emphasis")
+-            .with_style(StyleProperty::Underline(true))
+-            .prepare()
+-            .with_props(PropertySet::new().with(LineBreaking::WordWrap));
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), label, (100, 40));
+-
+-        assert_render_snapshot!(harness, "label_underline_label");
+-    }
+-    #[test]
+-    fn strikethrough_label() {
+-        let label = Label::new("Tpyo")
+-            .with_style(StyleProperty::Strikethrough(true))
+-            .with_style(StyleProperty::StrikethroughSize(Some(4.)))
+-            .prepare()
+-            .with_props(PropertySet::new().with(LineBreaking::WordWrap));
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), label, (100, 40));
+-
+-        assert_render_snapshot!(harness, "label_strikethrough_label");
+-    }
+-
+-    #[test]
+-    /// A label's text alignment should be respected, regardless of
+-    /// its parent's alignment plans for it, if the label has stretched width.
+-    fn label_text_alignment_flex() {
+-        fn base_label(text_alignment: TextAlign) -> NewWidget<Label> {
+-            Label::new("Hello")
+-                .with_style(StyleProperty::FontSize(20.0))
+-                .with_text_alignment(text_alignment)
+-                .prepare()
+-                .with_props(Dimensions::width(Dim::Stretch))
+-        }
+-        let label1 = base_label(TextAlign::Start);
+-        let label2 = base_label(TextAlign::Center);
+-        let label3 = base_label(TextAlign::End);
+-        let label4 = base_label(TextAlign::Start);
+-        let label5 = base_label(TextAlign::Center);
+-        let label6 = base_label(TextAlign::End);
+-        let flex = Flex::column()
+-            .with(label1, CrossAxisAlignment::Start)
+-            .with(label2, CrossAxisAlignment::Start)
+-            .with(label3, CrossAxisAlignment::Start)
+-            .with(label4, CrossAxisAlignment::Center)
+-            .with(label5, CrossAxisAlignment::Center)
+-            .with(label6, CrossAxisAlignment::Center);
+-        let flex = NewWidget::new(flex).with_props(Gap::ZERO);
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), flex, (200, 200));
+-
+-        assert_render_snapshot!(harness, "label_label_alignment_flex");
+-    }
+-
+-    #[test]
+-    fn line_break_modes() {
+-        let widget = Flex::column()
+-            .with_spacer(1.0)
+-            .with_fixed(
+-                SizedBox::new(
+-                    Label::new("The quick brown fox jumps over the lazy dog")
+-                        .prepare()
+-                        .with_props(PropertySet::new().with(LineBreaking::WordWrap)),
+-                )
+-                .width(180.px())
+-                .prepare(),
+-            )
+-            .with_fixed_spacer(20.px())
+-            .with_fixed(
+-                SizedBox::new(
+-                    Label::new("The quick brown fox jumps over the lazy dog")
+-                        .prepare()
+-                        .with_props(PropertySet::new().with(LineBreaking::Clip)),
+-                )
+-                .width(180.px())
+-                .prepare(),
+-            )
+-            .with_fixed_spacer(20.px())
+-            .with_fixed(
+-                SizedBox::new(
+-                    Label::new("The quick brown fox jumps over the lazy dog")
+-                        .prepare()
+-                        .with_props(PropertySet::new().with(LineBreaking::Overflow)),
+-                )
+-                .width(180.px())
+-                .prepare(),
+-            )
+-            .with_spacer(1.0)
+-            .prepare();
+-
+-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 200));
+-
+-        assert_render_snapshot!(harness, "label_line_break_modes");
+-    }
+-
+-    #[test]
+-    fn edit_label() {
+-        let image_1 = {
+-            let label = Label::new("The quick brown fox jumps over the lazy dog")
+-                .with_style(FontFamily::Single(FontFamilyName::Generic(
+-                    GenericFamily::Monospace,
+-                )))
+-                .with_style(StyleProperty::FontSize(20.0))
+-                .with_text_alignment(TextAlign::Center)
+-                .prepare()
+-                .with_props(
+-                    PropertySet::new()
+-                        .with(ContentColor::new(ACCENT_COLOR))
+-                        .with(LineBreaking::WordWrap),
+-                );
+-
+-            let mut harness = TestHarness::create_with_size(test_property_set(), label, (50, 50));
+-
+-            harness.render()
+-        };
+-
+-        let image_2 = {
+-            let label = Label::new("Hello world")
+-                .with_style(StyleProperty::FontSize(40.0))
+-                .prepare();
+-
+-            let mut harness = TestHarness::create_with_size(test_property_set(), label, (50, 50));
+-
+-            harness.edit_root_widget(|mut label| {
+-                label.insert_prop(ContentColor::new(ACCENT_COLOR));
+-                label.insert_prop(LineBreaking::WordWrap);
+-                Label::set_text(&mut label, "The quick brown fox jumps over the lazy dog");
+-                Label::insert_style(
+-                    &mut label,
+-                    FontFamily::Single(FontFamilyName::Generic(GenericFamily::Monospace)),
+-                );
+-                Label::insert_style(&mut label, StyleProperty::FontSize(20.0));
+-                Label::set_text_alignment(&mut label, TextAlign::Center);
+-            });
+-
+-            harness.render()
+-        };
+-
+-        // We don't use assert_eq because we don't want rich assert
+-        assert!(image_1 == image_2);
+-    }
+-}
+--- a/masonry/src/widgets/mod.rs
++++ b/masonry/src/widgets/mod.rs
+@@ -1,88 +1,15 @@
+ // Copyright 2018 the Xilem Authors and the Druid Authors
+ // SPDX-License-Identifier: Apache-2.0
+-
+-//! Common widgets.
+-
++//! Selected upstream real widgets.
+ #![expect(
+     missing_debug_implementations,
+-    reason = "Widgets are not expected to implement Debug"
++    reason = "Upstream widgets are not expected to implement Debug"
+ )]
+-
+-mod align;
+-mod badge;
+-mod badged;
+ mod button;
+-mod canvas;
+-mod checkbox;
+-mod collapse_panel;
+-mod disclosure_button;
+-mod divider;
+-mod flex;
+-mod grid;
++pub use button::*;
+ mod image;
+-mod indexed_stack;
++pub use image::*;
+ mod label;
+-mod pagination;
+-mod passthrough;
+-mod portal;
+-mod progress_bar;
+-mod prose;
+-mod radio_button;
+-mod radio_group;
+-mod resize_observer;
+-mod scroll_bar;
+-mod selector;
+-mod selector_item;
+-mod sized_box;
++pub use label::*;
+ mod slider;
+-mod spinner;
+-mod split;
+-mod step_input;
+-mod svg;
+-mod switch;
+-mod text_area;
+-mod text_input;
+-mod variable_label;
+-mod virtual_scroll;
+-mod zstack;
+-
+-// TODO - Split off widgets and other exports?
+-// (e.g. actions, param types)
+-
+-pub use self::align::*;
+-pub use self::badge::*;
+-pub use self::badged::*;
+-pub use self::button::*;
+-pub use self::canvas::*;
+-pub use self::checkbox::*;
+-pub use self::collapse_panel::*;
+-pub use self::disclosure_button::*;
+-pub use self::divider::*;
+-pub use self::flex::*;
+-pub use self::grid::*;
+-pub use self::image::*;
+-pub use self::indexed_stack::*;
+-pub use self::label::*;
+-pub use self::pagination::*;
+-pub use self::passthrough::*;
+-pub use self::portal::*;
+-pub use self::progress_bar::*;
+-pub use self::prose::*;
+-pub use self::radio_button::*;
+-pub use self::radio_group::*;
+-pub use self::resize_observer::*;
+-pub use self::scroll_bar::*;
+-pub use self::selector::*;
+-pub use self::selector_item::*;
+-pub use self::sized_box::*;
+-pub use self::slider::*;
+-pub use self::spinner::*;
+-pub use self::split::*;
+-pub use self::step_input::*;
+-pub use self::svg::*;
+-pub use self::switch::*;
+-pub use self::text_area::*;
+-pub use self::text_input::*;
+-pub use self::variable_label::*;
+-pub use self::virtual_scroll::*;
+-pub use self::zstack::*;
++pub use slider::*;
+--- a/masonry/src/widgets/slider.rs
++++ b/masonry/src/widgets/slider.rs
+@@ -472,78 +472,3 @@
+ }
+ 
+ // --- MARK: TESTS
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::core::TextEvent;
+-    use crate::kurbo::Point;
+-    use crate::testing::{TestHarness, assert_render_snapshot};
+-    use crate::theme::test_property_set;
+-
+-    #[test]
+-    fn slider_initial_state() {
+-        let widget = Slider::new(0.0, 100.0, 25.0).prepare();
+-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 32));
+-
+-        assert_render_snapshot!(harness, "slider_initial_state");
+-    }
+-
+-    #[test]
+-    fn slider_drag_interaction() {
+-        let widget = Slider::new(0.0, 100.0, 25.0).prepare();
+-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 32));
+-        let slider_id = harness.root_id();
+-
+-        assert_render_snapshot!(harness, "slider_drag_initial_at_25");
+-
+-        // 1. Move the mouse to the thumb position (25%) BEFORE clicking.
+-        harness.mouse_move(Point::new(50.0, 16.0));
+-
+-        // 2. Press the mouse button.
+-        // This should not emit an action because the value does not change.
+-        harness.mouse_button_press(None);
+-        assert!(harness.pop_action::<SliderMoved>().is_none());
+-
+-        // 3. Move to the new position (75%).
+-        harness.mouse_move(Point::new(150.0, 16.0));
+-
+-        assert_eq!(
+-            harness.pop_action::<SliderMoved>(),
+-            Some((SliderMoved { value: 75.0 }, slider_id))
+-        );
+-        assert_render_snapshot!(harness, "slider_drag_to_75");
+-
+-        // Release the mouse
+-        harness.mouse_button_release(None);
+-        assert_render_snapshot!(harness, "slider_drag_released_at_75");
+-    }
+-
+-    #[test]
+-    fn slider_keyboard_interaction() {
+-        let widget = Slider::new(0.0, 100.0, 50.0).with_step(10.0).prepare();
+-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 32));
+-        let slider_id = harness.root_id();
+-
+-        harness.focus_on(Some(slider_id));
+-        assert_render_snapshot!(harness, "slider_keyboard_focused");
+-
+-        harness.process_text_event(TextEvent::key_down(Key::Named(NamedKey::ArrowRight)));
+-        harness.process_text_event(TextEvent::key_up(Key::Named(NamedKey::ArrowRight)));
+-
+-        assert_eq!(
+-            harness.pop_action::<SliderMoved>(),
+-            Some((SliderMoved { value: 60.0 }, slider_id))
+-        );
+-        assert_render_snapshot!(harness, "slider_keyboard_moved");
+-    }
+-
+-    #[test]
+-    fn slider_disabled_state() {
+-        let mut widget = Slider::new(0.0, 100.0, 50.0).prepare();
+-        widget.options.disabled = true;
+-        let mut harness = TestHarness::create_with_size(test_property_set(), widget, (200, 32));
+-
+-        assert_render_snapshot!(harness, "slider_disabled");
+-        assert!(harness.pop_action::<SliderMoved>().is_none());
+-    }
+-}
+--- a/masonry_core/Cargo.toml
++++ b/masonry_core/Cargo.toml
+@@ -1,4 +1,5 @@
+ [package]
++readme = "README.md"
+ name = "masonry_core"
+ version.workspace = true # We mimic Xilem's version
+ description = "Traits and types of the Masonry toolkit."
+@@ -23,9 +24,9 @@
+ 
+ [dependencies]
+ accesskit.workspace = true
+-anymap3 = "1.0.1"
++anymap3 = "=1.0.1"
+ anymore.workspace = true
+-cursor-icon = "1.2.0"
++cursor-icon = "=1.2.0"
+ dpi.workspace = true
+ imaging.workspace = true
+ kurbo.workspace = true
+@@ -33,9 +34,9 @@
+ peniko.workspace = true
+ smallvec.workspace = true
+ tracing = { workspace = true, features = ["default"] }
+-tracing-core = { version = "0.1.36", default-features = false }
+-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "time"] }
+-tracing-tracy = { version = "0.11.4", optional = true }
++tracing-core = { version = "=0.1.36", default-features = false }
++tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "time"] }
++tracing-tracy = { version = "=0.11.4", optional = true }
+ tree_arena.workspace = true
+ ui-events.workspace = true
+ 
+@@ -48,15 +49,15 @@
+ web-time.workspace = true
+ 
+ [dev-dependencies]
+-float-cmp = { version = "0.10.0", features = ["std"], default-features = false }
++float-cmp = { version = "=0.10.0", features = ["std"], default-features = false }
+ image = { workspace = true, features = ["png"] }
+-insta = { version = "1.46.3" }
++insta = { version = "=1.46.3" }
+ 
+ # Make wgpu use tracing for its spans.
+-profiling = { version = "1.0.17", features = ["profile-with-tracing"] }
++profiling = { version = "=1.0.17", features = ["profile-with-tracing"] }
+ 
+ [target.'cfg(target_os = "android")'.dependencies]
+-tracing_android_trace = "0.1.1"
++tracing_android_trace = "=0.1.1"
+ 
+ [lints]
+ workspace = true
+--- a/masonry_core/src/app/layer_stack.rs
++++ b/masonry_core/src/app/layer_stack.rs
+@@ -100,8 +100,8 @@
+     pub(crate) fn layer_root_mut<'t>(
+         this: &'t mut WidgetMut<'_, Self>,
+         idx: usize,
+-    ) -> WidgetMut<'t, dyn Widget> {
+-        let layer = &mut this.widget.layers[idx].root;
++    ) -> Option<WidgetMut<'t, dyn Widget>> {
++        let layer = &mut this.widget.layers.get_mut(idx)?.root;
+         this.ctx.get_mut(layer)
+     }
+ 
+@@ -246,3 +246,249 @@
+         trace_span!("LayerStack", id = id.trace())
+     }
+ }
++
++#[cfg(test)]
++mod input_tests {
++    use super::*;
++    use crate::app::{
++        GeometryLimits, InputGeometrySource, RenderRoot, RenderRootOptions, RenderRootSignal,
++        WindowSizePolicy,
++    };
++    use crate::core::*;
++    use dpi::PhysicalSize;
++    use std::{
++        cell::{Cell, RefCell},
++        rc::Rc,
++        sync::Arc,
++    };
++
++    #[derive(Debug)]
++    struct Probe {
++        hooks: Rc<Cell<usize>>,
++        cancels: Rc<Cell<usize>>,
++    }
++    impl Widget for Probe {
++        type Action = u8;
++        fn register_children(&mut self, _: &mut RegisterCtx<'_>) {}
++        fn measure(
++            &mut self,
++            _: &mut MeasureCtx<'_>,
++            _: &PropertiesRef<'_>,
++            _: Axis,
++            _: LenReq,
++            _: Option<Length>,
++        ) -> Length {
++            Length::px(100.)
++        }
++        fn layout(&mut self, _: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, _: Size) {}
++        fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
++        fn accessibility_role(&self) -> Role {
++            Role::GenericContainer
++        }
++        fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
++        fn children_ids(&self) -> ChildrenIds {
++            ChildrenIds::new()
++        }
++        fn as_layer(&mut self) -> Option<&mut dyn Layer> {
++            Some(self)
++        }
++        fn on_pointer_event(
++            &mut self,
++            ctx: &mut EventCtx<'_>,
++            _: &mut PropertiesMut<'_>,
++            event: &PointerEvent,
++        ) {
++            match event {
++                PointerEvent::Down(_) => ctx.capture_pointer(),
++                PointerEvent::Cancel(_) => {
++                    assert!(
++                        ctx.is_pointer_capture_target(),
++                        "cleanup handler retains capture"
++                    );
++                    self.cancels.set(self.cancels.get() + 1);
++                }
++                _ => {}
++            }
++        }
++    }
++    impl Layer for Probe {
++        fn capture_pointer_event(
++            &mut self,
++            ctx: &mut EventCtx<'_>,
++            _: &mut PropertiesMut<'_>,
++            event: &PointerEvent,
++        ) {
++            if matches!(event, PointerEvent::Down(_)) {
++                self.hooks.set(self.hooks.get() + 1);
++                ctx.submit_action::<Self::Action>(1);
++            }
++        }
++    }
++    fn down() -> PointerEvent {
++        PointerEvent::Down(PointerButtonEvent {
++            pointer: PointerInfo {
++                pointer_id: Some(PointerId::PRIMARY),
++                persistent_device_id: None,
++                pointer_type: PointerType::Mouse,
++            },
++            state: PointerState {
++                position: dpi::PhysicalPosition::new(20., 20.),
++                ..Default::default()
++            },
++            button: Some(PointerButton::Primary),
++        })
++    }
++    #[test]
++    fn layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup() {
++        for presented in [false, true] {
++            for stashed in [false, true] {
++                let hooks = Rc::new(Cell::new(0));
++                let cancels = Rc::new(Cell::new(0));
++                let signals = Rc::new(RefCell::new(vec![]));
++                let sink = signals.clone();
++                let widget = Probe {
++                    hooks: hooks.clone(),
++                    cancels: cancels.clone(),
++                }
++                .prepare();
++                let layer = widget.id();
++                let mut root = RenderRoot::new(
++                    widget,
++                    move |s| sink.borrow_mut().push(s),
++                    RenderRootOptions {
++                        default_properties: Arc::new(DefaultProperties::new()),
++                        use_system_fonts: false,
++                        size_policy: WindowSizePolicy::User,
++                        size: PhysicalSize::new(100, 100),
++                        scale_factor: 1.,
++                        test_font: None,
++                    },
++                );
++                let (_, geometry) = root
++                    .record_presented_geometry(GeometryLimits {
++                        max_nodes: 8,
++                        max_bytes: 4096,
++                        max_path: 8,
++                    })
++                    .unwrap();
++                if presented {
++                    root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
++                        geometry,
++                    ))));
++                }
++                root.handle_pointer_event(down());
++                assert_eq!(hooks.get(), 1);
++                assert_eq!(root.pointer_capture_target(), Some(layer));
++                hooks.set(0);
++                if stashed {
++                    root.edit_widget(root.root_id(), |mut w| {
++                        let mut stack = w.downcast::<LayerStack>();
++                        stack
++                            .ctx
++                            .set_stashed(&mut stack.widget.layers[0].root, true);
++                    });
++                } else {
++                    root.edit_widget(layer, |mut w| w.ctx.set_disabled(true));
++                }
++                assert_eq!(cancels.get(), 1);
++                assert_eq!(root.pointer_capture_target(), None);
++                signals.borrow_mut().clear();
++                root.handle_pointer_event(down());
++                assert_eq!(
++                    hooks.get(),
++                    0,
++                    "ineligible layer hook: presented={presented} stashed={stashed}"
++                );
++                assert!(
++                    !signals
++                        .borrow()
++                        .iter()
++                        .any(|s| matches!(s, RenderRootSignal::Action(..)))
++                );
++                assert_eq!(cancels.get(), 1);
++            }
++        }
++    }
++
++    #[test]
++    fn layer_hooks_wait_for_visible_presented_record_after_live_unstash() {
++        for presented in [false, true] {
++            let hooks = Rc::new(Cell::new(0));
++            let cancels = Rc::new(Cell::new(0));
++            let signals = Rc::new(RefCell::new(vec![]));
++            let sink = signals.clone();
++            let widget = Probe {
++                hooks: hooks.clone(),
++                cancels: cancels.clone(),
++            }
++            .prepare();
++            let layer = widget.id();
++            let mut root = RenderRoot::new(
++                widget,
++                move |s| sink.borrow_mut().push(s),
++                RenderRootOptions {
++                    default_properties: Arc::new(DefaultProperties::new()),
++                    use_system_fonts: false,
++                    size_policy: WindowSizePolicy::User,
++                    size: PhysicalSize::new(100, 100),
++                    scale_factor: 1.,
++                    test_font: None,
++                },
++            );
++            let limits = GeometryLimits {
++                max_nodes: 8,
++                max_bytes: 4096,
++                max_path: 8,
++            };
++            root.record_presented_geometry(limits).unwrap();
++            let stash = |root: &mut RenderRoot, stashed| {
++                root.edit_widget(root.root_id(), |mut w| {
++                    let mut stack = w.downcast::<LayerStack>();
++                    stack
++                        .ctx
++                        .set_stashed(&mut stack.widget.layers[0].root, stashed);
++                });
++            };
++            stash(&mut root, true);
++            let (_, hidden) = root.record_presented_geometry(limits).unwrap();
++            assert!(hidden.get(layer).unwrap().is_stashed);
++            assert_ne!(hidden.hit_test((20., 20.).into()), Some(layer));
++            if presented {
++                root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
++                    hidden,
++                ))));
++            }
++            stash(&mut root, false);
++            signals.borrow_mut().clear();
++            root.handle_pointer_event(down());
++            assert_eq!(
++                hooks.get(),
++                usize::from(!presented),
++                "live unstash cannot enable a hidden presented layer"
++            );
++            assert_eq!(root.pointer_capture_target(), (!presented).then_some(layer));
++            assert_eq!(
++                signals
++                    .borrow()
++                    .iter()
++                    .filter(|s| matches!(s, RenderRootSignal::Action(..)))
++                    .count(),
++                usize::from(!presented)
++            );
++            if presented {
++                let (_, visible) = root.record_presented_geometry(limits).unwrap();
++                root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
++                    visible,
++                ))));
++                root.handle_pointer_event(down());
++                assert_eq!(hooks.get(), 1);
++                assert_eq!(root.pointer_capture_target(), Some(layer));
++            }
++            stash(&mut root, true);
++            assert_eq!(cancels.get(), 1);
++            assert_eq!(root.pointer_capture_target(), None);
++            root.handle_pointer_event(down());
++            assert_eq!(cancels.get(), 1);
++        }
++    }
++}
+--- a/masonry_core/src/app/mod.rs
++++ b/masonry_core/src/app/mod.rs
+@@ -4,6 +4,11 @@
+ //! Types needed for running a Masonry app.
+ 
+ mod layer_stack;
++mod presented_geometry;
++pub(crate) use presented_geometry::{ContextGeometry, GeometryRef, GeometryView};
++pub use presented_geometry::{
++    GeometryError, GeometryLimits, GeometryRecord, InputGeometrySource, PresentedGeometryView,
++};
+ mod render_root;
+ mod tracing_backend;
+ mod visual_layers;
+--- /dev/null
++++ b/masonry_core/src/app/presented_geometry.rs
+@@ -0,0 +1,617 @@
++// Copyright 2026 the Xilem Authors and Reel contributors
++// SPDX-License-Identifier: Apache-2.0
++
++//! Compact immutable geometry. Identity, acceptance and resource budgets belong to the host.
++use super::{RenderRoot, VisualLayerPlan};
++use crate::core::{WidgetArenaNode, WidgetId, WidgetState};
++use kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
++use std::sync::Arc;
++
++/// Explicit pointer input policy. Presented(None) intentionally has no hits.
++#[derive(Clone, Debug)]
++pub enum InputGeometrySource {
++    /// Ordinary Masonry geometry and widget hit callbacks.
++    Live,
++    /// Last accepted host frame, or no accepted frame yet.
++    Presented(Option<Arc<PresentedGeometryView>>),
++}
++impl InputGeometrySource {
++    pub(crate) fn borrow(&self) -> GeometryView<'_> {
++        match self {
++            Self::Live => GeometryView::Live,
++            Self::Presented(v) => GeometryView::Presented(v.as_deref()),
++        }
++    }
++}
++/// Bounds applied before snapshot allocation/publication.
++#[derive(Clone, Copy, Debug)]
++pub struct GeometryLimits {
++    /// Maximum registered nodes, including stashed nodes.
++    pub max_nodes: usize,
++    /// Maximum export allocation peak: snapshot capacities plus temporary child IDs.
++    pub max_bytes: usize,
++    /// Maximum root-to-leaf path length.
++    pub max_path: usize,
++}
++/// A refused export does not change the input view.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum GeometryError {
++    /// Registered node capacity exhausted.
++    Nodes,
++    /// Snapshot bytes exhausted or arithmetic overflow.
++    Bytes,
++    /// Path capacity exhausted.
++    Path,
++}
++/// All geometry for one registered node, in border-box coordinates unless named otherwise.
++#[derive(Clone, Debug)]
++pub struct GeometryRecord {
++    /// Runtime widget identity.
++    pub id: WidgetId,
++    /// Parent record index, absent for root.
++    pub parent: Option<usize>,
++    /// Range in the frame's child index array, in painter order.
++    pub children: std::ops::Range<usize>,
++    /// Aligned border-box dimensions.
++    pub size: Size,
++    /// Border and padding insets.
++    pub border_box_insets: Insets,
++    /// Paint overflow insets.
++    pub paint_box_insets: Insets,
++    /// Widget's explicit local affine transform.
++    pub transform: Affine,
++    /// Border-box to window affine transform.
++    pub window_transform: Affine,
++    /// Window-space subtree bounds.
++    pub bounding_box: Rect,
++    /// Resolved first content baseline (no NaN default remains).
++    pub first_baseline: f64,
++    /// Resolved last content baseline.
++    pub last_baseline: f64,
++    /// Border-box clip.
++    pub clip_path: Option<Rect>,
++    /// Frozen default hit policy.
++    pub accepts_pointer_interaction: bool,
++    /// Frozen child traversal policy.
++    pub propagates_pointer_interaction: bool,
++    /// Visibility at record time. Current stashed state is checked separately.
++    pub is_stashed: bool,
++}
++impl GeometryRecord {
++    fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
++        Self {
++            id: s.id,
++            parent,
++            children,
++            size: s.border_box().size(),
++            border_box_insets: s.border_box_insets,
++            paint_box_insets: s.paint_box_insets,
++            transform: s.transform,
++            window_transform: s.window_transform,
++            bounding_box: s.bounding_box,
++            first_baseline: s.aligned_first_baseline() - s.border_box_insets.y0,
++            last_baseline: s.aligned_last_baseline() - s.border_box_insets.y0,
++            clip_path: s.clip_path,
++            accepts_pointer_interaction: s.accepts_pointer_interaction,
++            propagates_pointer_interaction: s.propagates_pointer_interaction,
++            is_stashed: s.is_stashed,
++        }
++    }
++}
++/// Complete immutable compact projection. No `WidgetState` or per-node path is retained.
++#[derive(Debug)]
++pub struct PresentedGeometryView {
++    records: Vec<GeometryRecord>,
++    children: Vec<usize>,
++    ids: Vec<(WidgetId, usize)>,
++    scale_factor: f64,
++    root: usize,
++    max_depth: usize,
++    retention_guard: Option<Arc<dyn std::fmt::Debug + Send + Sync>>,
++    scratch_peak_bytes: usize,
++}
++impl PresentedGeometryView {
++    /// Attach host accounting to the view itself, so every Arc lease retains its charge.
++    /// Masonry does not interpret this guard or depend on the host budget implementation.
++    pub fn with_retention_guard(mut self, guard: Arc<dyn std::fmt::Debug + Send + Sync>) -> Self {
++        if self.retention_guard.is_none() {
++            self.retention_guard = Some(guard);
++        }
++        self
++    }
++    /// Registered node count.
++    pub fn len(&self) -> usize {
++        self.records.len()
++    }
++    /// Whether this frame has no records.
++    pub fn is_empty(&self) -> bool {
++        self.records.is_empty()
++    }
++    /// Retained allocation capacities plus view header (Arc allocation overhead is host-owned).
++    pub fn retained_bytes(&self) -> usize {
++        size_of::<Self>()
++            + self.records.capacity() * size_of::<GeometryRecord>()
++            + self.children.capacity() * size_of::<usize>()
++            + self.ids.capacity() * size_of::<(WidgetId, usize)>()
++    }
++    /// Peak temporary child-ID heap storage during export (native call stack is separate).
++    pub fn scratch_peak_bytes(&self) -> usize {
++        self.scratch_peak_bytes
++    }
++    /// DPI used by this record.
++    pub fn scale_factor(&self) -> f64 {
++        self.scale_factor
++    }
++    /// Root identity.
++    pub fn root_id(&self) -> WidgetId {
++        self.records[self.root].id
++    }
++    /// Maximum retained path depth.
++    pub fn max_depth(&self) -> usize {
++        self.max_depth
++    }
++    /// Complete contiguous records, including stashed nodes.
++    pub fn records(&self) -> &[GeometryRecord] {
++        &self.records
++    }
++    /// Resolve an identity without falling back to live geometry.
++    pub fn get(&self, id: WidgetId) -> Option<&GeometryRecord> {
++        self.index(id).map(|i| &self.records[i])
++    }
++    fn index(&self, id: WidgetId) -> Option<usize> {
++        self.ids
++            .binary_search_by_key(&id.to_raw(), |e| e.0.to_raw())
++            .ok()
++            .map(|i| self.ids[i].1)
++    }
++    pub(crate) fn child_ids(&self, index: usize) -> impl Iterator<Item = WidgetId> + '_ {
++        self.children[self.records[index].children.clone()]
++            .iter()
++            .map(|i| self.records[*i].id)
++    }
++    /// Fill one caller-owned route in target-to-root order. Never allocate or partially route.
++    pub fn path_into(
++        &self,
++        id: WidgetId,
++        path: &mut Vec<WidgetId>,
++        limit: usize,
++    ) -> Result<(), GeometryError> {
++        path.clear();
++        let mut index = self.index(id);
++        while let Some(i) = index {
++            if path.len() >= limit || path.len() >= path.capacity() {
++                path.clear();
++                return Err(GeometryError::Path);
++            }
++            path.push(self.records[i].id);
++            index = self.records[i].parent;
++        }
++        Ok(())
++    }
++    /// Rectangular/affine frozen hit policy. No current geometry is consulted.
++    pub fn hit_test(&self, pos: Point) -> Option<WidgetId> {
++        self.hit_test_filtered(pos, |_| true)
++    }
++    pub(crate) fn hit_test_filtered(
++        &self,
++        pos: Point,
++        eligible: impl Fn(WidgetId) -> bool,
++    ) -> Option<WidgetId> {
++        fn hit(
++            v: &PresentedGeometryView,
++            i: usize,
++            p: Point,
++            eligible: &impl Fn(WidgetId) -> bool,
++        ) -> Option<WidgetId> {
++            let s = &v.records[i];
++            let t = s.window_transform;
++            if s.is_stashed
++                || !s.bounding_box.contains(p)
++                || !t.as_coeffs().iter().all(|v| v.is_finite())
++                || !t.determinant().is_finite()
++                || t.determinant() == 0.
++            {
++                return None;
++            }
++            let local = t.inverse() * p;
++            if !local.x.is_finite()
++                || !local.y.is_finite()
++                || s.clip_path.is_some_and(|c| !c.contains(local))
++            {
++                return None;
++            }
++            // Frozen bounds/clip reject misses before any current-state query.
++            if !eligible(s.id) {
++                return None;
++            }
++            if s.propagates_pointer_interaction {
++                for child in v.children[s.children.clone()].iter().rev() {
++                    if let Some(id) = hit(v, *child, p, eligible) {
++                        return Some(id);
++                    }
++                }
++            }
++            (s.accepts_pointer_interaction && s.size.to_rect().contains(local)).then_some(s.id)
++        }
++        hit(self, self.root, pos, &eligible)
++    }
++}
++/// Fixed borrowed selection for a dispatch (never stored in `RenderRootState`).
++#[derive(Clone, Copy)]
++pub(crate) enum GeometryView<'a> {
++    Live,
++    Presented(Option<&'a PresentedGeometryView>),
++}
++/// A validated own-record binding. Missing records cannot construct a context.
++#[derive(Clone, Copy)]
++pub(crate) enum ContextGeometry<'a> {
++    Live,
++    Presented {
++        view: &'a PresentedGeometryView,
++        index: usize,
++    },
++}
++impl<'a> GeometryView<'a> {
++    pub(crate) fn bind(self, id: WidgetId) -> Option<ContextGeometry<'a>> {
++        match self {
++            Self::Live => Some(ContextGeometry::Live),
++            Self::Presented(v) => {
++                let v = v?;
++                Some(ContextGeometry::Presented {
++                    view: v,
++                    index: v.index(id)?,
++                })
++            }
++        }
++    }
++    /// Bind behavior only if the selected record and its ancestors are visible.
++    /// Current eligibility is checked separately. Cleanup uses `bind` so hidden
++    /// records can still supply the old geometry for terminal/exit callbacks.
++    pub(crate) fn bind_visible(self, id: WidgetId) -> Option<ContextGeometry<'a>> {
++        let geometry = self.bind(id)?;
++        if let ContextGeometry::Presented { view, index } = geometry {
++            let mut ancestor = Some(index);
++            while let Some(index) = ancestor {
++                let record = &view.records[index];
++                if record.is_stashed {
++                    return None;
++                }
++                ancestor = record.parent;
++            }
++        }
++        Some(geometry)
++    }
++    pub(crate) fn scale(self, live: f64) -> f64 {
++        match self {
++            Self::Presented(Some(v)) => v.scale_factor,
++            _ => live,
++        }
++    }
++}
++impl<'a> ContextGeometry<'a> {
++    pub(crate) fn child(self, id: WidgetId) -> Option<Self> {
++        match self {
++            Self::Live => Some(Self::Live),
++            Self::Presented { view, index } => {
++                let child = view.index(id)?;
++                view.children[view.records[index].children.clone()]
++                    .contains(&child)
++                    .then_some(Self::Presented { view, index: child })
++            }
++        }
++    }
++    pub(crate) fn resolve<'b>(self, live: &'b WidgetState) -> GeometryRef<'b>
++    where
++        'a: 'b,
++    {
++        match self {
++            Self::Live => GeometryRef::Live(live),
++            Self::Presented { view, index } => GeometryRef::Presented(&view.records[index]),
++        }
++    }
++    pub(crate) fn scale(self, live: f64) -> f64 {
++        match self {
++            Self::Live => live,
++            Self::Presented { view, .. } => view.scale_factor,
++        }
++    }
++}
++pub(crate) enum GeometryRef<'a> {
++    Live(&'a WidgetState),
++    Presented(&'a GeometryRecord),
++}
++macro_rules! field {
++    ($name:ident,$ty:ty) => {
++        pub(crate) fn $name(&self) -> $ty {
++            match self {
++                Self::Live(s) => s.$name,
++                Self::Presented(s) => s.$name,
++            }
++        }
++    };
++}
++impl GeometryRef<'_> {
++    field!(accepts_pointer_interaction, bool);
++    field!(propagates_pointer_interaction, bool);
++    field!(transform, Affine);
++    field!(window_transform, Affine);
++    field!(bounding_box, Rect);
++    field!(clip_path, Option<Rect>);
++    field!(border_box_insets, Insets);
++    pub(crate) fn border_box(&self) -> Rect {
++        match self {
++            Self::Live(s) => s.border_box(),
++            Self::Presented(s) => s.size.to_rect(),
++        }
++    }
++    pub(crate) fn content_box(&self) -> Rect {
++        if let Self::Live(s) = self {
++            return s.content_box();
++        }
++        let r = self.border_box();
++        let i = self.border_box_insets();
++        let x = r.x0 + i.x0;
++        let y = r.y0 + i.y0;
++        Rect::new(x, y, (r.x1 - i.x1).max(x), (r.y1 - i.y1).max(y))
++    }
++    pub(crate) fn paint_box(&self) -> Rect {
++        self.border_box()
++            + match self {
++                Self::Live(s) => s.paint_box_insets,
++                Self::Presented(s) => s.paint_box_insets,
++            }
++    }
++    pub(crate) fn border_box_translation(&self) -> Vec2 {
++        let i = self.border_box_insets();
++        Vec2::new(i.x0, i.y0)
++    }
++    pub(crate) fn first_baseline(&self) -> f64 {
++        match self {
++            Self::Live(s) => s.aligned_first_baseline() - s.border_box_insets.y0,
++            Self::Presented(s) => s.first_baseline,
++        }
++    }
++    pub(crate) fn last_baseline(&self) -> f64 {
++        match self {
++            Self::Live(s) => s.aligned_last_baseline() - s.border_box_insets.y0,
++            Self::Presented(s) => s.last_baseline,
++        }
++    }
++}
++impl RenderRoot {
++    /// Export after compose/record. Limits are checked before allocation, including stashed nodes.
++    pub fn capture_presented_geometry(
++        &self,
++        limits: GeometryLimits,
++    ) -> Result<PresentedGeometryView, GeometryError> {
++        // Reject an oversized registered tree before invoking children_ids(), which
++        // may itself create temporary SmallVec heap storage for a wide container.
++        let registered = self.widget_arena.nodes.len();
++        if registered > limits.max_nodes {
++            return Err(GeometryError::Nodes);
++        }
++        if PresentedGeometryView::bytes_for_nodes(registered)
++            .is_none_or(|bytes| bytes > limits.max_bytes)
++        {
++            return Err(GeometryError::Bytes);
++        }
++        fn count(
++            node: tree_arena::ArenaRef<'_, WidgetArenaNode>,
++            depth: usize,
++            n: &mut usize,
++            max: &mut usize,
++            l: GeometryLimits,
++            heap_live: usize,
++            peak: &mut usize,
++        ) -> Result<(), GeometryError> {
++            if depth > l.max_path {
++                return Err(GeometryError::Path);
++            }
++            *n += 1;
++            *max = (*max).max(depth);
++            if *n > l.max_nodes {
++                return Err(GeometryError::Nodes);
++            }
++            if PresentedGeometryView::bytes_for_nodes(*n).is_none_or(|bytes| bytes > l.max_bytes) {
++                return Err(GeometryError::Bytes);
++            }
++            let children = node.item.widget.children_ids();
++            let heap = if children.spilled() {
++                children.capacity() * size_of::<WidgetId>()
++            } else {
++                0
++            };
++            let live = heap_live.checked_add(heap).ok_or(GeometryError::Bytes)?;
++            *peak = (*peak).max(live);
++            if live > l.max_bytes {
++                return Err(GeometryError::Bytes);
++            }
++            for child in children {
++                count(
++                    node.children.item(child).expect("registered direct child"),
++                    depth + 1,
++                    n,
++                    max,
++                    l,
++                    live,
++                    peak,
++                )?;
++            }
++            Ok(())
++        }
++        let mut n = 0;
++        let mut max = 0;
++        let mut peak = 0;
++        let root_node = self
++            .widget_arena
++            .nodes
++            .roots()
++            .item(self.root_id())
++            .expect("registered root");
++        // Traverse borrowed direct children, avoiding TreeArena::find's temporary
++        // ancestor Vec at every node in the upstream safe-tree implementation.
++        count(root_node, 1, &mut n, &mut max, limits, 0, &mut peak)?;
++        if PresentedGeometryView::bytes_for_nodes(n)
++            .and_then(|b| b.checked_add(peak))
++            .is_none_or(|b| b > limits.max_bytes)
++        {
++            return Err(GeometryError::Bytes);
++        }
++        let mut view = PresentedGeometryView {
++            records: Vec::with_capacity(n),
++            children: Vec::with_capacity(n - 1),
++            ids: Vec::with_capacity(n),
++            scale_factor: self.global_state.scale_factor,
++            root: 0,
++            max_depth: max,
++            retention_guard: None,
++            scratch_peak_bytes: peak,
++        };
++        fn visit(
++            node: tree_arena::ArenaRef<'_, WidgetArenaNode>,
++            parent: Option<usize>,
++            v: &mut PresentedGeometryView,
++        ) -> usize {
++            let id = node.item.state.id;
++            let children = node.item.widget.children_ids();
++            let index = v.records.len();
++            let start = v.children.len();
++            let end = start + children.len();
++            v.children.resize(end, 0);
++            v.records.push(GeometryRecord::project(
++                &node.item.state,
++                parent,
++                start..end,
++            ));
++            v.ids.push((id, index));
++            for (slot, child) in (start..end).zip(children) {
++                let i = visit(
++                    node.children.item(child).expect("registered direct child"),
++                    Some(index),
++                    v,
++                );
++                v.children[slot] = i;
++            }
++            index
++        }
++        visit(root_node, None, &mut view);
++        view.ids.sort_unstable_by_key(|e| e.0.to_raw());
++        Ok(view)
++    }
++    /// Actual rewrite/layout/compose/paint and matching geometry in a single operation.
++    pub fn record_presented_geometry(
++        &mut self,
++        limits: GeometryLimits,
++    ) -> Result<(VisualLayerPlan, PresentedGeometryView), GeometryError> {
++        let (plan, _accessibility) = self.redraw();
++        let geometry = self.capture_presented_geometry(limits)?;
++        Ok((plan, geometry))
++    }
++    /// Current explicit input source.
++    pub fn input_geometry_source(&self) -> &InputGeometrySource {
++        &self.global_state.input_geometry_source
++    }
++    /// Switch views with old-view exits and then new-view entries. Host controls acceptance.
++    pub fn set_input_geometry_source(&mut self, source: InputGeometrySource) {
++        let old = self.global_state.input_geometry_source.clone();
++        crate::passes::update::transition_pointer_geometry(self, old.borrow(), source.borrow());
++        self.global_state.input_geometry_source = source;
++        self.run_rewrite_passes();
++    }
++    /// Configure bounded reusable pointer routes. Existing over-depth input is suppressed.
++    pub fn configure_input_path_storage(&mut self, limit: usize) -> usize {
++        self.widget_arena.nodes.configure_lookup_path_storage(limit);
++        self.global_state.max_input_path = limit;
++        self.global_state.pointer_route = Vec::with_capacity(limit);
++        self.global_state.pointer_hover_spare = Vec::with_capacity(limit);
++        self.global_state.pointer_active_spare = Vec::with_capacity(limit);
++        // This setup is used after clearing pointer state at the bridge boundary.
++        // Preserve any standalone caller's existing paths, with bounded requested capacity.
++        for path in [
++            &mut self.global_state.hovered_path,
++            &mut self.global_state.active_path,
++        ] {
++            let mut replacement = Vec::with_capacity(limit.max(path.len()));
++            replacement.extend_from_slice(path);
++            *path = replacement;
++        }
++        self.input_path_storage_bytes()
++    }
++    /// Actual retained capacities of the five reusable pointer route arrays.
++    pub fn input_path_storage_bytes(&self) -> usize {
++        let s = &self.global_state;
++        (s.pointer_route.capacity()
++            + s.pointer_active_spare.capacity()
++            + s.pointer_hover_spare.capacity()
++            + s.active_path.capacity()
++            + s.hovered_path.capacity())
++            * size_of::<WidgetId>()
++            + 5 * size_of::<Vec<WidgetId>>()
++            + self.widget_arena.nodes.lookup_path_storage_bytes()
++    }
++
++    /// Planned five route arrays plus the independent arena lookup workspace.
++    /// The host reserves this storage before configuring it.
++    pub fn input_path_storage_bytes_for(limit: usize) -> Option<usize> {
++        limit
++            .checked_mul(5 * size_of::<WidgetId>())?
++            .checked_add(5 * size_of::<Vec<WidgetId>>())?
++            .checked_add(
++                tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(limit)?,
++            )
++    }
++    pub(crate) fn pointer_hit_test(&self, pos: Point, view: GeometryView<'_>) -> Option<WidgetId> {
++        match view {
++            GeometryView::Presented(Some(v)) => v.hit_test_filtered(pos, |id| {
++                self.widget_arena
++                    .nodes
++                    .find(id)
++                    .is_some_and(|n| !n.item.state.is_stashed)
++            }),
++            GeometryView::Presented(None) => None,
++            GeometryView::Live => self
++                .get_widget(self.root_id())
++                .and_then(|w| w.find_widget_under_pointer(pos))
++                .map(|w| w.id()),
++        }
++    }
++    pub(crate) fn input_path_into(
++        &self,
++        id: WidgetId,
++        view: GeometryView<'_>,
++        path: &mut Vec<WidgetId>,
++    ) -> Result<(), GeometryError> {
++        match view {
++            GeometryView::Presented(Some(v)) => {
++                v.path_into(id, path, self.global_state.max_input_path)
++            }
++            GeometryView::Presented(None) => {
++                path.clear();
++                Ok(())
++            }
++            GeometryView::Live => {
++                path.clear();
++                let mut current = Some(id);
++                while let Some(i) = current {
++                    if path.len() >= self.global_state.max_input_path
++                        || path.len() >= path.capacity()
++                    {
++                        path.clear();
++                        return Err(GeometryError::Path);
++                    }
++                    path.push(i);
++                    current = self.widget_arena.parent_of(i);
++                }
++                Ok(())
++            }
++        }
++    }
++}
++impl PresentedGeometryView {
++    /// Exact requested vector storage plus header for n nodes.
++    pub fn bytes_for_nodes(n: usize) -> Option<usize> {
++        n.checked_mul(size_of::<GeometryRecord>() + size_of::<(WidgetId, usize)>())?
++            .checked_add(n.saturating_sub(1).checked_mul(size_of::<usize>())?)?
++            .checked_add(size_of::<Self>())
++    }
++}
+--- a/masonry_core/src/app/render_root.rs
++++ b/masonry_core/src/app/render_root.rs
+@@ -28,9 +28,7 @@
+ use crate::passes::action::run_action_pass;
+ use crate::passes::anim::run_update_anim_pass;
+ use crate::passes::compose::run_compose_pass;
+-use crate::passes::event::{
+-    run_on_access_event_pass, run_on_pointer_event_pass, run_on_text_event_pass,
+-};
++use crate::passes::event::{run_on_access_event_pass, run_on_text_event_pass};
+ use crate::passes::layout::run_layout_pass;
+ use crate::passes::mutate::{mutate_widget, run_mutate_pass};
+ use crate::passes::paint::run_paint_pass;
+@@ -86,6 +84,12 @@
+ 
+     /// Last mouse position. Updated by `on_pointer_event` pass, used by other passes.
+     pub(crate) last_mouse_pos: Option<LogicalPosition<f64>>,
++    pub(crate) last_pointer_physical: Option<dpi::PhysicalPosition<f64>>,
++    pub(crate) input_geometry_source: super::InputGeometrySource,
++    pub(crate) max_input_path: usize,
++    pub(crate) pointer_route: Vec<WidgetId>,
++    pub(crate) pointer_hover_spare: Vec<WidgetId>,
++    pub(crate) pointer_active_spare: Vec<WidgetId>,
+ 
+     /// Currently focused widget.
+     pub(crate) focused_widget: Option<WidgetId>,
+@@ -124,6 +128,10 @@
+     /// Widget that currently has pointer capture.
+     pub(crate) pointer_capture_target: Option<WidgetId>,
+ 
++    /// Capture whose Up/Cancel callback has begun, before ancestor bubbling completes.
++    /// Keep capture active for the real control's terminal handler, without cancelling twice.
++    pub(crate) pointer_capture_terminal_delivered: Option<WidgetId>,
++
+     /// Current cursor icon.
+     pub(crate) cursor_icon: CursorIcon,
+ 
+@@ -175,9 +183,11 @@
+     pub(crate) debug_paint: bool,
+ }
+ 
++type MutateFn = Box<dyn for<'a> FnOnce(WidgetMut<'a, dyn Widget>)>;
++
+ pub(crate) struct MutateCallback {
+     pub(crate) id: WidgetId,
+-    pub(crate) callback: Box<dyn FnOnce(WidgetMut<'_, dyn Widget>)>,
++    pub(crate) callback: MutateFn,
+ }
+ 
+ /// Defines how a window's size is determined.
+@@ -342,6 +352,12 @@
+                 size_policy,
+                 size,
+                 last_mouse_pos: None,
++                last_pointer_physical: None,
++                input_geometry_source: super::InputGeometrySource::Live,
++                max_input_path: 128,
++                pointer_route: Vec::with_capacity(128),
++                pointer_hover_spare: Vec::with_capacity(128),
++                pointer_active_spare: Vec::with_capacity(128),
+                 focused_widget: None,
+                 focused_path: Vec::new(),
+                 next_focused_widget: None,
+@@ -349,9 +365,10 @@
+                 focus_fallback: None,
+                 window_focused: true,
+                 scroll_request_targets: Vec::new(),
+-                hovered_path: Vec::new(),
+-                active_path: Vec::new(),
++                hovered_path: Vec::with_capacity(128),
++                active_path: Vec::with_capacity(128),
+                 pointer_capture_target: None,
++                pointer_capture_terminal_delivered: None,
+                 cursor_icon: CursorIcon::Default,
+                 font_context: FontContext {
+                     collection: Collection::new(CollectionOptions {
+@@ -547,8 +564,10 @@
+     /// Handles a pointer event.
+     pub fn handle_pointer_event(&mut self, event: PointerEvent) -> Handled {
+         let _span = info_span!("pointer_event");
+-        let handled = run_on_pointer_event_pass(self, &event);
+-        run_update_pointer_pass(self);
++        let source = self.global_state.input_geometry_source.clone();
++        let view = source.borrow();
++        let handled = crate::passes::event::run_on_pointer_event_with_view(self, &event, view);
++        crate::passes::update::run_update_pointer_with_view(self, view);
+         self.run_rewrite_passes();
+ 
+         handled
+@@ -648,6 +667,7 @@
+             .get(state.property_stack_id, widget.type_id());
+ 
+         let ctx = QueryCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state: &self.global_state,
+             widget_state: state,
+             properties: PropertiesRef {
+--- a/masonry_core/src/core/class_set.rs
++++ b/masonry_core/src/core/class_set.rs
+@@ -14,7 +14,7 @@
+ }
+ 
+ /// A series of changes that need to be applied to a [`ClassSet`] during the next
+-/// update_props pass.
++/// `update_props` pass.
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+ pub(crate) struct ClassSetDiff {
+     // TODO - Use Hashmap of enums instead?
+--- a/masonry_core/src/core/contexts.rs
++++ b/masonry_core/src/core/contexts.rs
+@@ -56,6 +56,7 @@
+ /// requires a later pass (for instance, if your widget has a `set_color` method),
+ /// you will need to signal that change in the pass (eg [`request_render`](MutateCtx::request_render)).
+ pub struct MutateCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) parent_widget_state: Option<&'a mut WidgetState>,
+     pub(crate) widget_state: &'a mut WidgetState,
+@@ -66,6 +67,7 @@
+ 
+ /// A context provided to the [`Widget::on_action`] method.
+ pub struct ActionCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -78,6 +80,7 @@
+ /// This context is passed to methods of widgets requiring shared, read-only access.
+ #[derive(Clone, Copy)]
+ pub struct QueryCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a RenderRootState,
+     pub(crate) widget_state: &'a WidgetState,
+     pub(crate) properties: PropertiesRef<'a>,
+@@ -87,6 +90,7 @@
+ 
+ /// A context given when calling another context's `get_raw_mut()` method.
+ pub struct RawCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) parent_widget_state: &'a mut WidgetState,
+     pub(crate) widget_state: &'a mut WidgetState,
+@@ -96,6 +100,7 @@
+ 
+ /// A context provided to event-handling [`Widget`] methods.
+ pub struct EventCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -115,6 +120,7 @@
+ 
+ /// A context provided to the [`Widget::update`] method.
+ pub struct UpdateCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -124,6 +130,7 @@
+ 
+ /// A context provided to [`Widget::measure`] methods.
+ pub struct MeasureCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -135,6 +142,7 @@
+ 
+ /// A context provided to [`Widget::layout`] methods.
+ pub struct LayoutCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -143,6 +151,7 @@
+ 
+ /// A context provided to the [`Widget::compose`] method.
+ pub struct ComposeCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -151,6 +160,7 @@
+ 
+ /// A context passed to [`Widget::paint`] method.
+ pub struct PaintCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+@@ -158,11 +168,31 @@
+ 
+ /// A context passed to [`Widget::accessibility`] method.
+ pub struct AccessCtx<'a> {
++    pub(crate) geometry: crate::app::ContextGeometry<'a>,
+     pub(crate) global_state: &'a mut RenderRootState,
+     pub(crate) widget_state: &'a mut WidgetState,
+     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+     pub(crate) tree_update: &'a mut TreeUpdate,
+ }
++
++impl_context_method!(
++    MutateCtx<'_>,
++    ActionCtx<'_>,
++    QueryCtx<'_>,
++    EventCtx<'_>,
++    UpdateCtx<'_>,
++    RawCtx<'_>,
++    MeasureCtx<'_>,
++    LayoutCtx<'_>,
++    ComposeCtx<'_>,
++    PaintCtx<'_>,
++    AccessCtx<'_>,
++    {
++        fn geometry_state(&self) -> crate::app::GeometryRef<'_> {
++            self.geometry.resolve(self.widget_state)
++        }
++    }
++);
+ 
+ // --- MARK: GETTERS
+ // Methods for all context types
+@@ -226,7 +256,7 @@
+         ///
+         /// This transform is applied before `scroll_translation` and `origin`.
+         pub fn transform(&self) -> Affine {
+-            self.widget_state.transform
++            self.geometry_state().transform()
+         }
+     }
+ );
+@@ -294,15 +324,13 @@
+     pub fn get_mut<'c, Child: Widget + FromDynWidget + ?Sized>(
+         &'c mut self,
+         child: &'c mut WidgetPod<Child>,
+-    ) -> WidgetMut<'c, Child> {
+-        let node_mut = self
+-            .children
+-            .item_mut(child.id())
+-            .expect("get_mut: child not found");
++    ) -> Option<WidgetMut<'c, Child>> {
++        let node_mut = self.children.item_mut(child.id())?;
+         let child_stack_id = node_mut.item.state.property_stack_id;
+         let child_type_id = (*node_mut.item.widget).type_id();
+         let child_stack = self.property_arena.get(child_stack_id, child_type_id);
+         let child_ctx = MutateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state: self.global_state,
+             parent_widget_state: Some(&mut self.widget_state),
+             widget_state: &mut node_mut.item.state,
+@@ -315,14 +343,15 @@
+             children: node_mut.children,
+             property_arena: self.property_arena,
+         };
+-        WidgetMut {
++        Some(WidgetMut {
+             ctx: child_ctx,
+-            widget: Child::from_dyn_mut(&mut *node_mut.item.widget).unwrap(),
+-        }
++            widget: Child::from_dyn_mut(&mut *node_mut.item.widget)?,
++        })
+     }
+ 
+     pub(crate) fn reborrow_mut(&mut self) -> MutateCtx<'_> {
+         MutateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state: self.global_state,
+             // We don't don't reborrow `parent_widget_state`. This avoids running
+             // `merge_up` in `WidgetMut::Drop` multiple times for the same state.
+@@ -342,6 +371,7 @@
+ 
+     pub(crate) fn update_mut(&mut self) -> UpdateCtx<'_> {
+         UpdateCtx {
++            geometry: self.geometry,
+             global_state: self.global_state,
+             widget_state: self.widget_state,
+             children: self.children.reborrow_mut(),
+@@ -363,13 +393,15 @@
+ // Methods to get a child WidgetRef from a parent.
+ impl<'w> QueryCtx<'w> {
+     /// Returns a [`WidgetRef`] to a child widget.
+-    pub fn get(self, child: WidgetId) -> WidgetRef<'w, dyn Widget> {
+-        let child_node = self.children.item(child).expect("get_mut: child not found");
++    pub fn get(self, child: WidgetId) -> Option<WidgetRef<'w, dyn Widget>> {
++        let geometry = self.geometry.child(child)?;
++        let child_node = self.children.item(child)?;
+         let child_type_id = (*child_node.item.widget).type_id();
+         let child_stack = self
+             .property_arena
+             .get(child_node.item.state.property_stack_id, child_type_id);
+         let child_ctx = QueryCtx {
++            geometry,
+             global_state: self.global_state,
+             widget_state: &child_node.item.state,
+             properties: PropertiesRef {
+@@ -381,10 +413,10 @@
+             children: child_node.children,
+             property_arena: self.property_arena,
+         };
+-        WidgetRef {
++        Some(WidgetRef {
+             ctx: child_ctx,
+             widget: &*child_node.item.widget,
+-        }
++        })
+     }
+ }
+ 
+@@ -492,7 +524,7 @@
+     /// Converts the given position from the window's coordinate space
+     /// to this widget's content-box coordinate space.
+     pub fn local_position(&self, p: PhysicalPosition<f64>) -> Point {
+-        let LogicalPosition { x, y } = p.to_logical(self.global_state.scale_factor);
++        let LogicalPosition { x, y } = p.to_logical(self.scale_factor());
+         self.to_local(Point { x, y })
+     }
+ }
+@@ -1195,15 +1227,15 @@
+         /// Returns the aligned content-box rect of this widget
+         /// in this widget's content-box coordinate space.
+         pub fn content_box(&self) -> Rect {
+-            let translation = self.widget_state.border_box_translation();
+-            self.widget_state.content_box() - translation
++            let translation = self.geometry_state().border_box_translation();
++            self.geometry_state().content_box() - translation
+         }
+ 
+         /// Returns the aligned border-box rect of this widget
+         /// in this widget's content-box coordinate space.
+         pub fn border_box(&self) -> Rect {
+-            let translation = self.widget_state.border_box_translation();
+-            self.widget_state.border_box() - translation
++            let translation = self.geometry_state().border_box_translation();
++            self.geometry_state().border_box() - translation
+         }
+ 
+         /// Returns the aligned paint-box rect of this widget
+@@ -1211,8 +1243,8 @@
+         ///
+         /// Covers the area we expect to be invalidated when the widget is painted.
+         pub fn paint_box(&self) -> Rect {
+-            let translation = self.widget_state.border_box_translation();
+-            self.widget_state.paint_box() - translation
++            let translation = self.geometry_state().border_box_translation();
++            self.geometry_state().paint_box() - translation
+         }
+ 
+         /// Returns the widget's bounding-box rect in the window's coordinate space.
+@@ -1226,19 +1258,17 @@
+         ///
+         /// [bounding box documentation]: crate::doc::masonry_concepts#bounding-box
+         pub fn bounding_box(&self) -> Rect {
+-            self.widget_state.bounding_box
++            self.geometry_state().bounding_box()
+         }
+ 
+         /// Returns the first baseline relative to the top of the widget's aligned content-box.
+         pub fn first_baseline(&self) -> f64 {
+-            let border_box_baseline = self.widget_state.aligned_first_baseline();
+-            border_box_baseline - self.widget_state.border_box_insets.y0
++            self.geometry_state().first_baseline()
+         }
+ 
+         /// Returns the last baseline relative to the top of the widget's aligned content-box.
+         pub fn last_baseline(&self) -> f64 {
+-            let border_box_baseline = self.widget_state.aligned_last_baseline();
+-            border_box_baseline - self.widget_state.border_box_insets.y0
++            self.geometry_state().last_baseline()
+         }
+ 
+         /// The clip path of the widget, if any was set.
+@@ -1249,8 +1279,10 @@
+         /// [`LayoutCtx::set_clip_path`](crate::core::LayoutCtx::set_clip_path).
+         pub fn clip_path(&self) -> Option<Rect> {
+             // Translate the clip path to the widget's content-box coordinate space.
+-            let translation = self.widget_state.border_box_translation();
+-            self.widget_state.clip_path.map(|path| path - translation)
++            let translation = self.geometry_state().border_box_translation();
++            self.geometry_state()
++                .clip_path()
++                .map(|path| path - translation)
+         }
+ 
+         /// Returns the [`Vec2`] for translating between this widget's
+@@ -1259,7 +1291,7 @@
+         /// Add this [`Vec2`] to translate from content-box to border-box,
+         /// and subtract this [`Vec2`] to translate from border-box to content-box.
+         pub fn border_box_translation(&self) -> Vec2 {
+-            self.widget_state.border_box_translation()
++            self.geometry_state().border_box_translation()
+         }
+ 
+         /// Returns the global transform mapping this widget's content-box coordinate space
+@@ -1271,17 +1303,17 @@
+         /// Multiply by this to convert from this widget's content-box coordinate space to the window's,
+         /// or use the inverse of this transform to go from window's space to this widget's content-box.
+         pub fn window_transform(&self) -> Affine {
+-            let translation = self.widget_state.border_box_translation();
+-            self.widget_state
+-                .window_transform
++            let translation = self.geometry_state().border_box_translation();
++            self.geometry_state()
++                .window_transform()
+                 .pre_translate(translation)
+         }
+ 
+         /// Converts the `point` from the window's coordinate space
+         /// to this widget's content-box coordinate space.
+         pub fn to_local(&self, point: Point) -> Point {
+-            let to_border_box = self.widget_state.window_transform.inverse();
+-            let to_content_box = -self.widget_state.border_box_translation();
++            let to_border_box = self.geometry_state().window_transform().inverse();
++            let to_content_box = -self.geometry_state().border_box_translation();
+             to_border_box.then_translate(to_content_box) * point
+         }
+ 
+@@ -1290,15 +1322,15 @@
+         ///
+         /// The returned point is relative to the window's content area; it excludes window chrome.
+         pub fn to_window(&self, point: Point) -> Point {
+-            let translation = self.widget_state.border_box_translation();
+-            self.widget_state.window_transform * (point + translation)
++            let translation = self.geometry_state().border_box_translation();
++            self.geometry_state().window_transform() * (point + translation)
+         }
+ 
+         /// Returns the DPI scaling factor.
+         ///
+         /// This can be useful for loading image resources meant for a specific scale.
+         pub fn scale_factor(&self) -> f64 {
+-            self.global_state.scale_factor
++            self.geometry.scale(self.global_state.scale_factor)
+         }
+     }
+ );
+@@ -1417,14 +1449,14 @@
+         ///
+         /// See [`Widget::accepts_pointer_interaction()`] for details.
+         pub fn accepts_pointer_interaction(&self) -> bool {
+-            self.widget_state.accepts_pointer_interaction
++            self.geometry_state().accepts_pointer_interaction()
+         }
+ 
+         /// Whether children of this widget get pointer events and hovered status.
+         ///
+         /// See [`Widget::propagates_pointer_interaction()`] for details.
+         pub fn propagates_pointer_interaction(&self) -> bool {
+-            self.widget_state.propagates_pointer_interaction
++            self.geometry_state().propagates_pointer_interaction()
+         }
+ 
+         /// Whether this widget gets text focus.
+@@ -1466,8 +1498,11 @@
+         ///
+         /// [stashed]: crate::doc::masonry_concepts#stashed
+         /// [`update_stashed`]: crate::doc::pass_system#update-passes
+-        pub fn child_is_stashed(&self, child: &WidgetPod<impl Widget + ?Sized>) -> bool {
+-            self.get_child_state(child).is_stashed
++        pub fn child_is_stashed(&self, child: &WidgetPod<impl Widget + ?Sized>) -> Option<bool> {
++            self.geometry.child(child.id())?;
++            self.children
++                .item(child.id())
++                .map(|node| node.item.state.is_stashed)
+         }
+     }
+ );
+@@ -1598,13 +1633,54 @@
+             fn remove_node(
+                 global_state: &mut RenderRootState,
+                 parent_state: &mut WidgetState,
++                property_arena: &PropertyArena,
++                view: crate::app::GeometryView<'_>,
+                 node: ArenaMut<'_, WidgetArenaNode>,
+             ) {
+                 let mut children = node.children;
++                let widget_type_id = (*node.item.widget).type_id();
+                 let widget = &mut *node.item.widget;
+                 let state = &mut node.item.state;
+ 
+-                // TODO - Send event to widget
++                if global_state.pointer_capture_target == Some(state.id)
++                    && global_state.pointer_capture_terminal_delivered != Some(state.id)
++                {
++                    global_state.pointer_capture_terminal_delivered = Some(state.id);
++                    let stack = property_arena.get(state.property_stack_id, widget_type_id);
++                    let mut props = PropertiesMut {
++                        local: &mut node.item.properties,
++                        default_map: property_arena.default_properties.for_widget(widget_type_id),
++                        stack,
++                        class_set: &node.item.class_set,
++                    };
++                    let target = state.id;
++                    if let Some(geometry) = view.bind(target) {
++                        let mut ctx = EventCtx {
++                            geometry,
++                            global_state,
++                            widget_state: state,
++                            children: children.reborrow_mut(),
++                            property_arena,
++                            target,
++                            allow_pointer_capture: false,
++                            is_handled: false,
++                        };
++                        widget.on_pointer_event(
++                            &mut ctx,
++                            &mut props,
++                            &crate::core::PointerEvent::Cancel(crate::core::PointerInfo {
++                                pointer_id: None,
++                                persistent_device_id: None,
++                                pointer_type: crate::core::PointerType::default(),
++                            }),
++                        );
++                    }
++                }
++                if global_state.pointer_capture_target == Some(state.id) {
++                    global_state.pointer_capture_target = None;
++                    global_state.pointer_capture_terminal_delivered = None;
++                    global_state.needs_pointer_pass = true;
++                }
+ 
+                 let parent_name = widget.short_type_name();
+                 let parent_id = state.id;
+@@ -1615,7 +1691,7 @@
+                         );
+                     };
+ 
+-                    remove_node(global_state, state, node);
++                    remove_node(global_state, state, property_arena, view, node);
+                 }
+ 
+                 // If we remove the focus anchor, its parent becomes the anchor.
+@@ -1637,7 +1713,19 @@
+                 .children
+                 .item_mut(id)
+                 .expect("remove_child: child not found");
+-            remove_node(self.global_state, self.widget_state, node);
++            let source = self.global_state.input_geometry_source.clone();
++            remove_node(
++                self.global_state,
++                self.widget_state,
++                self.property_arena,
++                match self.geometry {
++                    crate::app::ContextGeometry::Live => source.borrow(),
++                    crate::app::ContextGeometry::Presented { view, .. } => {
++                        crate::app::GeometryView::Presented(Some(view))
++                    }
++                },
++                node,
++            );
+ 
+             let _ = self.children.remove(id).unwrap();
+ 
+@@ -1771,12 +1859,11 @@
+         pub fn get_raw<Child: Widget + FromDynWidget + ?Sized>(
+             &mut self,
+             child: &mut WidgetPod<Child>,
+-        ) -> (&Child, RawCtx<'_>) {
+-            let node_mut = self
+-                .children
+-                .item_mut(child.id())
+-                .expect("get_mut: child not found");
++        ) -> Option<(&Child, RawCtx<'_>)> {
++            let geometry = self.geometry.child(child.id())?;
++            let node_mut = self.children.item_mut(child.id())?;
+             let child_ctx = RawCtx {
++                geometry,
+                 global_state: self.global_state,
+                 parent_widget_state: self.widget_state,
+                 widget_state: &mut node_mut.item.state,
+@@ -1786,7 +1873,7 @@
+ 
+             let widget = Child::from_dyn(&*node_mut.item.widget).unwrap();
+ 
+-            (widget, child_ctx)
++            Some((widget, child_ctx))
+         }
+ 
+         /// Returns direct mutable reference to the stored child, and a context handle for that child.
+@@ -1805,12 +1892,11 @@
+         pub fn get_raw_mut<Child: Widget + FromDynWidget + AllowRawMut + ?Sized>(
+             &mut self,
+             child: &mut WidgetPod<Child>,
+-        ) -> (&mut Child, RawCtx<'_>) {
+-            let node_mut = self
+-                .children
+-                .item_mut(child.id())
+-                .expect("get_mut: child not found");
++        ) -> Option<(&mut Child, RawCtx<'_>)> {
++            let geometry = self.geometry.child(child.id())?;
++            let node_mut = self.children.item_mut(child.id())?;
+             let child_ctx = RawCtx {
++                geometry,
+                 global_state: self.global_state,
+                 parent_widget_state: self.widget_state,
+                 widget_state: &mut node_mut.item.state,
+@@ -1820,7 +1906,7 @@
+ 
+             let widget = Child::from_dyn_mut(&mut *node_mut.item.widget).unwrap();
+ 
+-            (widget, child_ctx)
++            Some((widget, child_ctx))
+         }
+ 
+         /// Submits an action, which indicates that this widget requires something be handled
+@@ -2153,9 +2239,8 @@
+ impl PaintCtx<'_> {
+     /// Controls how this widget subtree is recorded in the current paint pass.
+     ///
+-    /// This is reset to [`PaintLayerMode::Inline`] at the start of each paint
+-    /// pass for the widget. Widgets that want isolated scene layers should set
+-    /// this during `pre_paint`, `paint`, or `post_paint` each time they paint.
++    /// The declaration is retained across cached pre/paint/post callbacks.
++    /// Initial mode is Inline; explicitly set Inline to return to ordinary recording.
+     pub fn set_paint_layer_mode(&mut self, mode: PaintLayerMode) {
+         self.widget_state.paint_layer_mode = mode;
+     }
+--- a/masonry_core/src/core/widget.rs
++++ b/masonry_core/src/core/widget.rs
+@@ -601,7 +601,9 @@
+         // Assumes `Self::children_ids` is in increasing "z-order", picking the last child in case
+         // of overlapping children.
+         for child_id in widget.children_ids().iter().rev() {
+-            let child_ref = ctx.get(*child_id);
++            let Some(child_ref) = ctx.get(*child_id) else {
++                continue;
++            };
+             if let Some(child) = child_ref
+                 .widget
+                 .find_widget_under_pointer(child_ref.ctx, pos)
+--- a/masonry_core/src/core/widget_ref.rs
++++ b/masonry_core/src/core/widget_ref.rs
+@@ -6,7 +6,7 @@
+ use kurbo::Point;
+ use smallvec::SmallVec;
+ 
+-use crate::core::{FromDynWidget, PropertiesRef, Property, QueryCtx, Widget, WidgetId};
++use crate::core::{FromDynWidget, Property, QueryCtx, Widget, WidgetId};
+ 
+ /// A rich reference to a [`Widget`].
+ ///
+@@ -112,44 +112,18 @@
+ 
+     /// Returns refs to widget's children.
+     pub fn children(&self) -> SmallVec<[WidgetRef<'w, dyn Widget>; 16]> {
+-        let parent_id = self.ctx.widget_state.id;
+-        self.widget
+-            .children_ids()
+-            .iter()
+-            .map(|&id| {
+-                let Some(node_ref) = self.ctx.children.item(id) else {
+-                    panic!(
+-                        "Error in '{}' #{parent_id}: child #{id} has not been added to tree",
+-                        self.widget.short_type_name()
+-                    );
+-                };
+-
+-                let children = node_ref.children;
+-                let widget = &*node_ref.item.widget;
+-                let state = &node_ref.item.state;
+-                let properties = &node_ref.item.properties;
+-                let class_set = &node_ref.item.class_set;
+-                let stack = self
+-                    .ctx
+-                    .property_arena
+-                    .get(state.property_stack_id, widget.type_id());
+-
+-                let ctx = QueryCtx {
+-                    global_state: self.ctx.global_state,
+-                    widget_state: state,
+-                    properties: PropertiesRef {
+-                        local: properties,
+-                        default_map: self.ctx.properties.default_map,
+-                        stack,
+-                        class_set,
+-                    },
+-                    children,
+-                    property_arena: self.ctx.property_arena,
+-                };
+-
+-                WidgetRef { ctx, widget }
+-            })
+-            .collect()
++        match self.ctx.geometry {
++            crate::app::ContextGeometry::Live => self
++                .widget
++                .children_ids()
++                .into_iter()
++                .filter_map(|id| self.ctx.get(id))
++                .collect(),
++            crate::app::ContextGeometry::Presented { view, index } => view
++                .child_ids(index)
++                .filter_map(|id| self.ctx.get(id))
++                .collect(),
++        }
+     }
+ }
+ 
+--- a/masonry_core/src/doc/masonry_concepts.md
++++ b/masonry_core/src/doc/masonry_concepts.md
+@@ -290,7 +290,7 @@
+ They should not be relied upon to check code correctness, but are meant to help you catch implementation errors early on during development.
+ 
+ 
+-## BiDi handling
++## `BiDi` handling
+ 
+ Masonry currently doesn't have any special-case behavior for RTL (right-to-left) and vertical writing modes.
+ 
+--- a/masonry_core/src/doc/pass_system.md
++++ b/masonry_core/src/doc/pass_system.md
+@@ -28,9 +28,9 @@
+ When a user interacts with the application in some way, like a mouse click, Masonry runs an **event pass** over the tree.
+ There are three types of event passes:
+ 
+-- **on_pointer_event:** covers positional events from the mouse and other pointing devices (pen, stylus, touchpad, etc).
+-- **on_text_event:** text input events like keyboard presses, IME, clipboard paste, etc.
+-- **on_access_event:** events from the OS's accessibility API.
++- **`on_pointer_event`:** covers positional events from the mouse and other pointing devices (pen, stylus, touchpad, etc).
++- **`on_text_event`:** text input events like keyboard presses, IME, clipboard paste, etc.
++- **`on_access_event`:** events from the OS's accessibility API.
+ 
+ When an event occurs, the application selects the widget targeted by the event.
+ For pointer events, this is either the widget under the pointer or the widget with pointer capture.
+@@ -42,7 +42,7 @@
+ 
+ ### Animation pass
+ 
+-The **update_anim** pass runs an animation frame, which occurs at set intervals if the widget tree includes animated widgets.
++The **`update_anim`** pass runs an animation frame, which occurs at set intervals if the widget tree includes animated widgets.
+ 
+ It runs in depth-first preorder on all animated widgets in the tree.
+ 
+@@ -55,28 +55,28 @@
+ To address these invalidations, Masonry runs a set of **rewrite passes** over the tree, in the following order:
+ 
+ - **mutate:** Runs callbacks with mutable access to the tree.
+-- **update_widget_tree:** Updates the tree when widgets are added or removed.
+-- **update_disabled:** Updates the disabled status of widgets.
+-- **update_stashed:** Updates the stashed status of widgets.
+-- **update_focusable:** Updates whether widgets have focusable children. (Internal-only, doesn't call widget methods.)
+-- **update_focus:** Updates the focused status of widgets.
++- **`update_widget_tree`:** Updates the tree when widgets are added or removed.
++- **`update_disabled`:** Updates the disabled status of widgets.
++- **`update_stashed`:** Updates the stashed status of widgets.
++- **`update_focusable`:** Updates whether widgets have focusable children. (Internal-only, doesn't call widget methods.)
++- **`update_focus`:** Updates the focused status of widgets.
+ - **layout:** Computes the layout of the widget tree.
+-- **update_scrolls:** Updates the scroll positions of widgets.
++- **`update_scrolls`:** Updates the scroll positions of widgets.
+ - **compose:** Assigns transforms to widgets.
+-- **update_pointer:** Updates the hovered status of widgets and the current cursor icon.
+-- **update_props:** Apply changes to computed properties when classes change.
++- **`update_pointer`:** Updates the hovered status of widgets and the current cursor icon.
++- **`update_props`:** Apply changes to computed properties when classes change.
+ 
+ The layout pass may call [`Widget::measure`] any number of times, including zero.
+ It may then call [`Widget::layout`].
+ The compose pass will call [`Widget::compose`] on widgets that requested compose.
+ Running [`Widget::layout`] also requests [`Widget::compose`] for that widget.
+-The update_xxx passes call the widgets' update method.
++The `update_xxx` passes call the widgets' update method.
+ 
+ By default, each of these passes completes without doing any work, unless pass-dependent invalidation flags are set.
+ Each pass can generally request work for later passes; for instance, the mutate pass can invalidate the layout of a widget, in which case the layout pass will run on that widget and its children and parents.
+ 
+ Passes may also request work for *previous* passes, in which case all rewrite passes are run again in sequence.
+-For instance, the update_pointer pass may change a widget's size, requiring another layout pass.
++For instance, the `update_pointer` pass may change a widget's size, requiring another layout pass.
+ 
+ To avoid infinite loops in those cases, the number of reruns has a static limit.
+ If passes are still requested past that limit, they're delayed to a later frame.
+--- a/masonry_core/src/passes/accessibility.rs
++++ b/masonry_core/src/passes/accessibility.rs
+@@ -44,6 +44,7 @@
+ 
+         let stack = property_arena.get(state.property_stack_id, widget.type_id());
+         let mut ctx = AccessCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state,
+             widget_state: state,
+             children: children.reborrow_mut(),
+--- a/masonry_core/src/passes/action.rs
++++ b/masonry_core/src/passes/action.rs
+@@ -31,6 +31,7 @@
+             let class_set = &node.item.class_set;
+ 
+             let mut ctx = ActionCtx {
++                geometry: crate::app::ContextGeometry::Live,
+                 global_state: &mut root.global_state,
+                 widget_state: &mut node.item.state,
+                 children: node.children.reborrow_mut(),
+--- a/masonry_core/src/passes/anim.rs
++++ b/masonry_core/src/passes/anim.rs
+@@ -36,6 +36,7 @@
+         state.request_anim = false;
+         let stack = property_arena.get(state.property_stack_id, widget.type_id());
+         let mut ctx = UpdateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state,
+             widget_state: state,
+             children: children.reborrow_mut(),
+--- a/masonry_core/src/passes/compose.rs
++++ b/masonry_core/src/passes/compose.rs
+@@ -36,6 +36,7 @@
+     state.bounding_box = state.window_transform.transform_rect_bbox(paint_box);
+ 
+     let mut ctx = ComposeCtx {
++        geometry: crate::app::ContextGeometry::Live,
+         global_state,
+         widget_state: state,
+         children: children.reborrow_mut(),
+--- a/masonry_core/src/passes/event.rs
++++ b/masonry_core/src/passes/event.rs
+@@ -3,7 +3,7 @@
+ 
+ use tracing::{info_span, trace};
+ 
+-use crate::app::{RenderRoot, RenderRootSignal};
++use crate::app::{GeometryView, RenderRoot, RenderRootSignal};
+ use crate::core::keyboard::{Key, KeyState, NamedKey};
+ use crate::core::{
+     AccessEvent, EventCtx, Handled, Ime, PointerButtonEvent, PointerEvent, PointerGestureEvent,
+@@ -18,6 +18,7 @@
+ fn get_pointer_target(
+     root: &RenderRoot,
+     pointer_pos: Option<LogicalPosition<f64>>,
++    view: GeometryView<'_>,
+ ) -> Option<WidgetId> {
+     // See the [pointer capture documentation](../doc/06_masonry_concepts.md#pointer-capture).
+     if let Some(capture_target) = root.global_state.pointer_capture_target
+@@ -28,11 +29,7 @@
+ 
+     if let Some(pointer_pos) = pointer_pos {
+         let pointer_pos = (pointer_pos.x, pointer_pos.y).into();
+-        return root
+-            .get_widget(root.root_id())
+-            .expect("root widget not in widget tree")
+-            .find_widget_under_pointer(pointer_pos)
+-            .map(|widget| widget.id());
++        return root.pointer_hit_test(pointer_pos, view);
+     }
+ 
+     None
+@@ -77,6 +74,8 @@
+     allow_pointer_capture: bool,
+     pass_fn: impl FnMut(&mut dyn Widget, &mut EventCtx<'_>, &mut PropertiesMut<'_>, &E),
+     trace: bool,
++    view: GeometryView<'_>,
++    route: Option<&[WidgetId]>,
+ ) -> Handled {
+     let mut pass_fn = pass_fn;
+ 
+@@ -88,15 +87,30 @@
+     }
+ 
+     let original_target = target;
+-    let mut target_widget_id = target;
++    let owns_route = route.is_none();
++    let mut buffer = if owns_route {
++        std::mem::take(&mut root.global_state.pointer_route)
++    } else {
++        Vec::new()
++    };
++    if owns_route {
++        buffer.clear();
++        if let Some(id) = target {
++            let _ = root.input_path_into(id, view, &mut buffer);
++        }
++    }
+     let mut is_handled = false;
+-    while let Some(widget_id) = target_widget_id {
+-        let parent_id = root.widget_arena.parent_of(widget_id);
++    for &widget_id in route.unwrap_or(&buffer) {
++        let Some(geometry) = view.bind(widget_id) else {
++            continue;
++        };
++        if !root.has_widget(widget_id) {
++            continue;
++        }
+         let mut node = root.widget_arena.get_node_mut(widget_id);
+ 
+         if skip_if_disabled && node.item.state.is_disabled {
+             // If the widget is disabled, we skip it and bubble to its parent.
+-            target_widget_id = parent_id;
+             continue;
+         }
+ 
+@@ -107,6 +121,7 @@
+                 .property_arena
+                 .get(node.item.state.property_stack_id, widget_type_id);
+             let mut ctx = EventCtx {
++                geometry,
+                 global_state: &mut root.global_state,
+                 widget_state: &mut node.item.state,
+                 children: node.children.reborrow_mut(),
+@@ -138,15 +153,26 @@
+         }
+ 
+         merge_state_up(&mut root.widget_arena, widget_id);
+-        target_widget_id = parent_id;
+-    }
+-
++    }
++
++    if owns_route {
++        buffer.clear();
++        root.global_state.pointer_route = buffer;
++    }
+     Handled::from(is_handled)
+ }
+ 
+ // --- MARK: POINTER_EVENT
+ /// See the [passes documentation](crate::doc::pass_system#event-passes).
+ pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEvent) -> Handled {
++    let source = root.global_state.input_geometry_source.clone();
++    run_on_pointer_event_with_view(root, event, source.borrow())
++}
++pub(crate) fn run_on_pointer_event_with_view(
++    root: &mut RenderRoot,
++    event: &PointerEvent,
++    view: GeometryView<'_>,
++) -> Handled {
+     let _span = info_span!("dispatch_pointer_event").entered();
+ 
+     trace!(
+@@ -154,7 +180,10 @@
+         pointer_event_short_name(event)
+     );
+ 
+-    let event_pos = try_event_position(event).map(|p| p.to_logical(root.global_state.scale_factor));
++    let scale = view.scale(root.global_state.scale_factor);
++    let physical_pos = try_event_position(event);
++    root.global_state.last_pointer_physical = physical_pos;
++    let event_pos = physical_pos.map(|p| p.to_logical(scale));
+ 
+     if event_pos != root.global_state.last_mouse_pos {
+         root.global_state.last_mouse_pos = event_pos;
+@@ -172,7 +201,7 @@
+     if root.global_state.inspector_state.is_picking_widget
+         && matches!(event, PointerEvent::Down { .. })
+     {
+-        let target_widget_id = get_pointer_target(root, event_pos);
++        let target_widget_id = get_pointer_target(root, event_pos, view);
+         if let Some(target_widget_id) = target_widget_id {
+             root.global_state
+                 .emit_signal(RenderRootSignal::WidgetSelectedInInspector(
+@@ -185,9 +214,27 @@
+         return Handled::Yes;
+     }
+ 
+-    let root_node = root.widget_arena.get_node_mut(root.root_id());
+-    let layer_ids = root_node.item.widget.children_ids();
++    let layer_ids: smallvec::SmallVec<[WidgetId; 16]> = match view {
++        GeometryView::Live => root
++            .widget_arena
++            .get_node(root.root_id())
++            .item
++            .widget
++            .children_ids()
++            .into_iter()
++            .collect(),
++        GeometryView::Presented(Some(v)) => v.child_ids(0).collect(),
++        GeometryView::Presented(None) => smallvec::SmallVec::new(),
++    };
+     for layer_id in layer_ids {
++        // Layer interception is input behavior, not terminal capture cleanup.
++        // Cancel for the captured widget is dispatched separately below.
++        if !root.is_still_interactive(layer_id) {
++            continue;
++        }
++        let Some(geometry) = view.bind_visible(layer_id) else {
++            continue;
++        };
+         let mut layer_root = root.widget_arena.get_node_mut(layer_id);
+         let layer_type_id = layer_root.item.widget.type_id();
+         if let Some(layer) = layer_root.item.widget.as_layer() {
+@@ -195,6 +242,7 @@
+                 .property_arena
+                 .get(layer_root.item.state.property_stack_id, layer_type_id);
+             let mut ctx = EventCtx {
++                geometry,
+                 global_state: &mut root.global_state,
+                 widget_state: &mut layer_root.item.state,
+                 children: layer_root.children.reborrow_mut(),
+@@ -217,9 +265,15 @@
+         }
+     }
+ 
+-    let target_widget_id = get_pointer_target(root, event_pos);
+-
+-    if matches!(event, PointerEvent::Down { .. })
++    let target_widget_id = get_pointer_target(root, event_pos, view);
++
++    let mut route = std::mem::take(&mut root.global_state.pointer_route);
++    route.clear();
++    if let Some(id) = target_widget_id {
++        let _ = root.input_path_into(id, view, &mut route);
++    }
++    if !route.is_empty()
++        && matches!(event, PointerEvent::Down { .. })
+         && let Some(target_widget_id) = target_widget_id
+     {
+         // The next tab event will assign focus around this widget.
+@@ -228,12 +282,7 @@
+         // If we click outside of the focused widget, we clear the focus.
+         if let Some(focused_widget) = root.global_state.focused_widget {
+             // Focused_widget isn't ancestor of target_widget_id
+-            if !root
+-                .widget_arena
+-                .nodes
+-                .get_id_path(target_widget_id)
+-                .contains(&focused_widget.to_raw())
+-            {
++            if !route.contains(&focused_widget) {
+                 root.global_state.next_focused_widget = None;
+             }
+         }
+@@ -247,16 +296,26 @@
+         skip_if_disabled,
+         matches!(event, PointerEvent::Down { .. }),
+         |widget, ctx, props, event| {
++            if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_))
++                && ctx.global_state.pointer_capture_target == Some(ctx.widget_state.id)
++            {
++                ctx.global_state.pointer_capture_terminal_delivered = Some(ctx.widget_state.id);
++            }
+             widget.on_pointer_event(ctx, props, event);
+         },
+         !is_very_frequent(event),
+-    );
++        view,
++        Some(&route),
++    );
++    route.clear();
++    root.global_state.pointer_route = route;
+ 
+     if matches!(event, PointerEvent::Up { .. } | PointerEvent::Cancel(..)) {
+         // Automatically release the pointer on pointer up or leave. If a widget holds the capture,
+         // it is notified of the pointer event before the capture is released, so it knows it is
+         // about to lose the pointer.
+         root.global_state.pointer_capture_target = None;
++        root.global_state.pointer_capture_terminal_delivered = None;
+     }
+ 
+     if !is_very_frequent(event) {
+@@ -313,6 +372,8 @@
+             widget.on_text_event(ctx, props, event);
+         },
+         true,
++        GeometryView::Live,
++        None,
+     );
+ 
+     if let TextEvent::Keyboard(key) = event {
+@@ -378,6 +439,8 @@
+             widget.on_access_event(ctx, props, event);
+         },
+         true,
++        GeometryView::Live,
++        None,
+     );
+ 
+     // Handle focus events
+--- a/masonry_core/src/passes/layout.rs
++++ b/masonry_core/src/passes/layout.rs
+@@ -162,6 +162,7 @@
+     // Otherwise fall back to measurement
+     let mut children = node.children;
+     let mut ctx = MeasureCtx {
++        geometry: crate::app::ContextGeometry::Live,
+         global_state,
+         widget_state: &mut node.item.state,
+         children: children.reborrow_mut(),
+@@ -246,6 +247,7 @@
+     // Otherwise fall back to measurement
+     let mut children = node.children;
+     let mut ctx = MeasureCtx {
++        geometry: crate::app::ContextGeometry::Live,
+         global_state,
+         widget_state: &mut node.item.state,
+         children: children.reborrow_mut(),
+@@ -415,6 +417,7 @@
+     let content_box_size = padding.size_down(content_box_size);
+ 
+     let mut ctx = LayoutCtx {
++        geometry: crate::app::ContextGeometry::Live,
+         global_state,
+         widget_state: state,
+         children: children.reborrow_mut(),
+--- a/masonry_core/src/passes/mutate.rs
++++ b/masonry_core/src/passes/mutate.rs
+@@ -32,6 +32,7 @@
+ 
+     let root_widget = WidgetMut {
+         ctx: MutateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state: &mut root.global_state,
+             parent_widget_state: None,
+             widget_state: state,
+--- a/masonry_core/src/passes/paint.rs
++++ b/masonry_core/src/passes/paint.rs
+@@ -95,7 +95,6 @@
+     // TODO - Handle damage regions
+     // https://github.com/linebender/xilem/issues/789
+ 
+-    state.paint_layer_mode = PaintLayerMode::Inline;
+     if (state.request_pre_paint || state.request_paint || state.request_post_paint) && !is_stashed {
+         if trace {
+             trace!("Painting widget '{}' {}", widget.short_type_name(), id);
+@@ -103,6 +102,7 @@
+ 
+         let stack = property_arena.get(state.property_stack_id, widget.type_id());
+         let mut ctx = PaintCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state,
+             widget_state: state,
+             children: children.reborrow_mut(),
+--- a/masonry_core/src/passes/update.rs
++++ b/masonry_core/src/passes/update.rs
+@@ -7,13 +7,13 @@
+ use tree_arena::{ArenaMut, ArenaMutList};
+ use ui_events::pointer::PointerType;
+ 
+-use crate::app::{RenderRoot, RenderRootSignal, RenderRootState};
++use crate::app::{GeometryView, RenderRoot, RenderRootSignal, RenderRootState};
+ use crate::core::{
+     ClassSetDiff, CursorIcon, DefaultProperties, Ime, PointerEvent, PointerInfo, PropertiesMut,
+     PropertiesRef, PropertyArena, PropertyCache, QueryCtx, RegisterCtx, TextEvent, Update,
+     UpdateCtx, Widget, WidgetArenaNode, WidgetId, WidgetState,
+ };
+-use crate::passes::event::{run_on_pointer_event_pass, run_on_text_event_pass};
++use crate::passes::event::run_on_text_event_pass;
+ use crate::passes::{enter_span, enter_span_if, merge_state_up, recurse_on_children};
+ use crate::properties::core_property_changed;
+ use crate::util::ParentLinkedList;
+@@ -31,19 +31,8 @@
+         .nodes
+         .get_id_path(widget_id)
+         .iter()
+-        .map(|&id| WidgetId(id.try_into().unwrap()))
++        .map(|id| WidgetId((*id).try_into().unwrap()))
+         .collect()
+-}
+-
+-fn is_ancestor_of(root: &RenderRoot, ancestor_id: WidgetId, widget_id: Option<WidgetId>) -> bool {
+-    let Some(id) = widget_id else {
+-        return false;
+-    };
+-    root.widget_arena
+-        .nodes
+-        .get_id_path(id)
+-        .iter()
+-        .any(|id| *id == ancestor_id.to_raw())
+ }
+ 
+ /// Make a dummy [`PointerEvent::Cancel`].
+@@ -60,9 +49,8 @@
+     target: Option<WidgetId>,
+     mut pass_fn: impl FnMut(&mut dyn Widget, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>),
+ ) {
+-    let mut current_id = target;
+-    while let Some(widget_id) = current_id {
+-        let parent_id = root.widget_arena.parent_of(widget_id);
++    let route = get_id_path(root, target);
++    for widget_id in route {
+         let node = root.widget_arena.get_node_mut(widget_id);
+ 
+         let children = node.children;
+@@ -75,6 +63,7 @@
+             .get(state.property_stack_id, widget.type_id());
+ 
+         let mut ctx = UpdateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state: &mut root.global_state,
+             widget_state: state,
+             children,
+@@ -93,7 +82,6 @@
+         pass_fn(widget, &mut ctx, &mut props);
+ 
+         merge_state_up(&mut root.widget_arena, widget_id);
+-        current_id = parent_id;
+     }
+ }
+ 
+@@ -121,6 +109,7 @@
+         .get(state.property_stack_id, widget.type_id());
+ 
+     let mut ctx = UpdateCtx {
++        geometry: crate::app::ContextGeometry::Live,
+         global_state: &mut root.global_state,
+         widget_state: state,
+         children,
+@@ -145,6 +134,59 @@
+     }
+ }
+ 
++fn run_single_update_with_view(
++    root: &mut RenderRoot,
++    target: Option<WidgetId>,
++    view: GeometryView<'_>,
++    mut pass_fn: impl FnMut(&mut dyn Widget, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>),
++) {
++    let Some(target) = target else {
++        return;
++    };
++    if !root.widget_arena.has(target) {
++        return;
++    }
++
++    let Some(geometry) = view.bind(target) else {
++        return;
++    };
++    let node = root.widget_arena.get_node_mut(target);
++
++    let children = node.children;
++    let widget = &mut *node.item.widget;
++    let state = &mut node.item.state;
++    let properties = &mut node.item.properties;
++    let class_set = &node.item.class_set;
++    let stack = root
++        .property_arena
++        .get(state.property_stack_id, widget.type_id());
++
++    let mut ctx = UpdateCtx {
++        geometry,
++        global_state: &mut root.global_state,
++        widget_state: state,
++        children,
++        ancestors: None,
++        property_arena: &root.property_arena,
++    };
++    let mut props = PropertiesMut {
++        local: properties,
++        default_map: root
++            .property_arena
++            .default_properties
++            .for_widget(widget.type_id()),
++        stack,
++        class_set,
++    };
++    pass_fn(widget, &mut ctx, &mut props);
++
++    let mut current_id = Some(target);
++    while let Some(widget_id) = current_id {
++        merge_state_up(&mut root.widget_arena, widget_id);
++        current_id = root.widget_arena.parent_of(widget_id);
++    }
++}
++
+ // --- MARK: TREE
+ fn update_widget_tree(
+     global_state: &mut RenderRootState,
+@@ -172,6 +214,7 @@
+     if state.is_new {
+         let stack = property_arena.get(state.property_stack_id, widget.type_id());
+         let mut ctx = UpdateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state,
+             widget_state: state,
+             children: children.reborrow_mut(),
+@@ -323,6 +366,7 @@
+     if disabled != state.is_disabled {
+         let stack = property_arena.get(state.property_stack_id, widget.type_id());
+         let mut ctx = UpdateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state,
+             widget_state: state,
+             children: children.reborrow_mut(),
+@@ -410,6 +454,7 @@
+     if stashed != state.is_stashed {
+         let stack = property_arena.get(state.property_stack_id, widget.type_id());
+         let mut ctx = UpdateCtx {
++            geometry: crate::app::ContextGeometry::Live,
+             global_state,
+             widget_state: state,
+             children: children.reborrow_mut(),
+@@ -424,6 +469,7 @@
+         };
+         widget.update(&mut ctx, &mut props, &Update::StashedChanged(stashed));
+         state.is_stashed = stashed;
++        global_state.needs_pointer_pass = true;
+         state.needs_update_focusable = true;
+ 
+         // Items may have been changed while they were stashed in ways that require a
+@@ -823,272 +869,219 @@
+ // --- MARK: POINTER
+ /// See the [passes documentation](crate::doc::pass_system#update-passes).
+ pub(crate) fn run_update_pointer_pass(root: &mut RenderRoot) {
++    let source = root.global_state.input_geometry_source.clone();
++    run_update_pointer_with_view(root, source.borrow());
++}
++
++pub(crate) fn run_update_pointer_with_view(root: &mut RenderRoot, view: GeometryView<'_>) {
+     if !root.global_state.needs_pointer_pass {
+         return;
+     }
++    transition_pointer_geometry(root, view, view);
++}
++
++/// Exit callbacks borrow the old view; entry/cursor callbacks borrow the new one.
++/// Shared ancestors and surviving captures receive no spurious exit/entry pair.
++pub(crate) fn transition_pointer_geometry(
++    root: &mut RenderRoot,
++    old: GeometryView<'_>,
++    new: GeometryView<'_>,
++) {
+     let _span = info_span!("update_pointer").entered();
+-
+     root.global_state.needs_pointer_pass = false;
+-
+-    let pointer_pos = root
+-        .global_state
+-        .last_mouse_pos
+-        .map(|pos| (pos.x, pos.y).into());
+-
++    let physical = root.global_state.last_pointer_physical;
++    if let Some(id) = root.global_state.pointer_capture_target
++        && (!root.is_still_interactive(id) || new.bind_visible(id).is_none())
++    {
++        if root.global_state.pointer_capture_terminal_delivered != Some(id) {
++            crate::passes::event::run_on_pointer_event_with_view(
++                root,
++                &dummy_pointer_cancel(),
++                old,
++            );
++        }
++        root.global_state.pointer_capture_target = None;
++        root.global_state.pointer_capture_terminal_delivered = None;
++    }
++    root.global_state.last_pointer_physical = physical;
++    let position = physical.map(|p| p.to_logical(new.scale(root.global_state.scale_factor)));
++    root.global_state.last_mouse_pos = position;
++    let pointer_pos = position.map(|p| (p.x, p.y).into());
+     if root.global_state.inspector_state.is_picking_widget {
+-        if let Some(pos) = pointer_pos {
+-            root.global_state.inspector_state.hovered_widget = root
+-                .get_widget(root.root_id())
+-                .expect("root widget not in widget tree")
+-                .find_widget_under_pointer(pos)
+-                .map(|widget| widget.id());
+-        }
++        root.global_state.inspector_state.hovered_widget =
++            pointer_pos.and_then(|p| root.pointer_hit_test(p, new));
+         root.root_state_mut().needs_paint = true;
+         return;
+     }
+-
+-    // Release pointer capture if target can no longer hold it.
+-    if let Some(id) = root.global_state.pointer_capture_target
+-        && !root.is_still_interactive(id)
++    let mut next_active = std::mem::take(&mut root.global_state.pointer_active_spare);
++    next_active.clear();
++    if let Some(id) = root.global_state.pointer_capture_target {
++        let _ = root.input_path_into(id, new, &mut next_active);
++    }
++    next_active.retain(|id| root.has_widget(*id));
++    let mut next_hover = std::mem::take(&mut root.global_state.pointer_hover_spare);
++    next_hover.clear();
++    if let Some(id) = pointer_pos.and_then(|p| root.pointer_hit_test(p, new)) {
++        let _ = root.input_path_into(id, new, &mut next_hover);
++    }
++    next_hover.retain(|id| root.has_widget(*id));
++    if let Some(capture) = root.global_state.pointer_capture_target {
++        if let Some(index) = next_hover.iter().position(|id| *id == capture) {
++            next_hover.drain(..index);
++        } else {
++            next_hover.clear();
++        }
++    }
++    if next_hover
++        .first()
++        .is_some_and(|id| root.widget_arena.get_state(*id).is_disabled)
+     {
+-        // The event pass will set pointer_capture_target to None.
+-        run_on_pointer_event_pass(root, &dummy_pointer_cancel());
+-    }
+-
+-    // -- UPDATE ACTIVE --
+-    // TODO - There's a lot of duplication between this, UPDATE HOVERED
+-    // and UPDATE FOCUS. It would be nice to find ways to de-duplicate it without making
+-    // the code overly abstract.
+-
+-    // "Active path" means the widget which is considered active, and all its parents.
+-    let prev_active_path = std::mem::take(&mut root.global_state.active_path);
+-    let prev_active_widget = prev_active_path.first().copied();
+-    let next_active_widget = root.global_state.pointer_capture_target;
+-    let next_active_path = get_id_path(root, next_active_widget);
+-
+-    // We don't just compare `prev_active_widget` and `next_active_widget` because
+-    // they could be the same widget but one of their ancestors could have been reparented.
+-    // (assuming we ever implement reparenting)
+-    if prev_active_path != next_active_path {
+-        let mut active_set = HashSet::new();
+-        for widget_id in &next_active_path {
+-            active_set.insert(*widget_id);
+-        }
+-
+-        trace!("prev_active_path: {:?}", prev_active_path);
+-        trace!("next_active_path: {:?}", next_active_path);
+-
+-        // This algorithm is written to be resilient to future changes like reparenting and multiple
+-        // cursors. In theory it's O(Depth² * CursorCount) in the worst case, which isn't too bad
+-        // (cursor count is usually 1 or 2, depth is usually small), but in practice it's virtually
+-        // always O(Depth * CursorCount) because we only need to update the active status of the
+-        // widgets that changed.
+-        // The above assumes that accessing the widget tree is O(1) for simplicity.
+-
+-        fn update_active_status_of(
+-            root: &mut RenderRoot,
+-            widget_id: WidgetId,
+-            active_set: &HashSet<WidgetId>,
+-        ) {
+-            run_targeted_update_pass(root, Some(widget_id), |widget, ctx, props| {
+-                let has_active = active_set.contains(&ctx.widget_id());
+-
+-                if ctx.widget_state.has_active != has_active {
+-                    widget.update(ctx, props, &Update::ChildActiveChanged(has_active));
++        next_hover.clear();
++    }
++    let mut prev_active = std::mem::take(&mut root.global_state.active_path);
++    let mut prev_hover = std::mem::take(&mut root.global_state.hovered_path);
++    for (&kind, prev, next) in [
++        (true, &prev_active, &next_active),
++        (false, &prev_hover, &next_hover),
++    ]
++    .iter()
++    .map(|(k, p, n)| (k, *p, *n))
++    {
++        for id in prev.iter().copied().filter(|id| !next.contains(id)) {
++            run_single_update_with_view(root, Some(id), old, |widget, ctx, props| {
++                if kind {
++                    ctx.widget_state.has_active = false;
++                    widget.update(ctx, props, &Update::ChildActiveChanged(false));
++                } else {
++                    ctx.widget_state.has_hovered = false;
++                    widget.update(ctx, props, &Update::ChildHoveredChanged(false));
+                 }
+-                ctx.widget_state.has_active = has_active;
+             });
+         }
+-
+-        // TODO - Add unit test to check items are iterated from the bottom up.
+-        for widget_id in prev_active_path.iter().copied() {
+-            if root.widget_arena.has(widget_id)
+-                && root.widget_arena.get_state_mut(widget_id).has_active
+-                    != active_set.contains(&widget_id)
+-            {
+-                update_active_status_of(root, widget_id, &active_set);
+-            }
+-        }
+-        for widget_id in next_active_path.iter().copied() {
+-            if root.widget_arena.has(widget_id)
+-                && root.widget_arena.get_state_mut(widget_id).has_active
+-                    != active_set.contains(&widget_id)
+-            {
+-                update_active_status_of(root, widget_id, &active_set);
+-            }
+-        }
+-    }
+-
+-    if prev_active_widget != next_active_widget {
+-        run_single_update_pass(root, prev_active_widget, |widget, ctx, props| {
+-            ctx.widget_state.is_active = false;
+-            ctx.widget_state.class_diff.is_active = Some(false);
+-            ctx.widget_state.request_update_props = true;
+-            ctx.widget_state.needs_update_props = true;
+-            widget.update(ctx, props, &Update::ActiveChanged(false));
+-        });
+-        run_single_update_pass(root, next_active_widget, |widget, ctx, props| {
+-            ctx.widget_state.is_active = true;
+-            ctx.widget_state.class_diff.is_active = Some(true);
+-            ctx.widget_state.request_update_props = true;
+-            ctx.widget_state.needs_update_props = true;
+-            widget.update(ctx, props, &Update::ActiveChanged(true));
+-        });
+-    }
+-
+-    // -- UPDATE HOVERED --
+-    let mut next_hovered_widget = if let Some(pos) = pointer_pos {
+-        root.get_widget(root.root_id())
+-            .expect("root widget not in widget tree")
+-            .find_widget_under_pointer(pos)
+-            .map(|widget| widget.id())
+-    } else {
+-        None
+-    };
+-    // If the pointer is captured, it can either hover its capture target or nothing.
+-    if let Some(capture_target) = root.global_state.pointer_capture_target
+-        && next_hovered_widget != Some(capture_target)
+-    {
+-        if is_ancestor_of(root, capture_target, next_hovered_widget) {
+-            next_hovered_widget = Some(capture_target);
+-        } else {
+-            next_hovered_widget = None;
+-        }
+-    }
+-    // Check if hovered widget is disabled
+-    if let Some(id) = next_hovered_widget
+-        && root.widget_arena.get_state(id).is_disabled
+-    {
+-        next_hovered_widget = None;
+-    }
+-
+-    // "Hovered path" means the widget which is considered hovered, and all its parents.
+-    let prev_hovered_path = std::mem::take(&mut root.global_state.hovered_path);
+-    let next_hovered_path = get_id_path(root, next_hovered_widget);
+-    let prev_hovered_widget = prev_hovered_path.first().copied();
+-
+-    // We don't just compare `prev_hovered_widget` and `next_hovered_widget`, because
+-    // they could be the same widget but one of their ancestors could have been reparented.
+-    // (assuming we ever implement reparenting)
+-    if prev_hovered_path != next_hovered_path {
+-        let mut hovered_set = HashSet::new();
+-        for widget_id in &next_hovered_path {
+-            hovered_set.insert(*widget_id);
+-        }
+-
+-        trace!("prev_hovered_path: {:?}", prev_hovered_path);
+-        trace!("next_hovered_path: {:?}", next_hovered_path);
+-
+-        // This algorithm is written to be resilient to future changes like reparenting and multiple
+-        // cursors. In theory it's O(Depth² * CursorCount) in the worst case, which isn't too bad
+-        // (cursor count is usually 1 or 2, depth is usually small), but in practice it's virtually
+-        // always O(Depth * CursorCount) because we only need to update the hovered status of the
+-        // widgets that changed.
+-        // The above assumes that accessing the widget tree is O(1) for simplicity.
+-
+-        fn update_hovered_status_of(
+-            root: &mut RenderRoot,
+-            widget_id: WidgetId,
+-            hovered_set: &HashSet<WidgetId>,
+-        ) {
+-            run_targeted_update_pass(root, Some(widget_id), |widget, ctx, props| {
+-                let has_hovered = hovered_set.contains(&ctx.widget_id());
+-
+-                if ctx.widget_state.has_hovered != has_hovered {
+-                    widget.update(ctx, props, &Update::ChildHoveredChanged(has_hovered));
++    }
++    for (kind, prev, next) in [
++        (true, &prev_active, &next_active),
++        (false, &prev_hover, &next_hover),
++    ] {
++        if prev.first() != next.first() {
++            run_single_update_with_view(root, prev.first().copied(), old, |widget, ctx, props| {
++                if kind {
++                    ctx.widget_state.is_active = false;
++                    ctx.widget_state.class_diff.is_active = Some(false);
++                } else {
++                    ctx.widget_state.is_hovered = false;
++                    ctx.widget_state.class_diff.is_hovered = Some(false);
+                 }
+-                ctx.widget_state.has_hovered = has_hovered;
++                ctx.widget_state.request_update_props = true;
++                ctx.widget_state.needs_update_props = true;
++                widget.update(
++                    ctx,
++                    props,
++                    &if kind {
++                        Update::ActiveChanged(false)
++                    } else {
++                        Update::HoveredChanged(false)
++                    },
++                );
+             });
+         }
+-
+-        // TODO - Add unit test to check items are iterated from the bottom up.
+-        for widget_id in prev_hovered_path.iter().copied() {
+-            if root.widget_arena.has(widget_id)
+-                && root.widget_arena.get_state_mut(widget_id).has_hovered
+-                    != hovered_set.contains(&widget_id)
+-            {
+-                update_hovered_status_of(root, widget_id, &hovered_set);
+-            }
+-        }
+-        for widget_id in next_hovered_path.iter().copied() {
+-            if root.widget_arena.has(widget_id)
+-                && root.widget_arena.get_state_mut(widget_id).has_hovered
+-                    != hovered_set.contains(&widget_id)
+-            {
+-                update_hovered_status_of(root, widget_id, &hovered_set);
+-            }
+-        }
+-    }
+-
+-    if prev_hovered_widget != next_hovered_widget {
+-        run_single_update_pass(root, prev_hovered_widget, |widget, ctx, props| {
+-            ctx.widget_state.is_hovered = false;
+-            ctx.widget_state.class_diff.is_hovered = Some(false);
+-            ctx.widget_state.request_update_props = true;
+-            ctx.widget_state.needs_update_props = true;
+-            widget.update(ctx, props, &Update::HoveredChanged(false));
+-        });
+-        run_single_update_pass(root, next_hovered_widget, |widget, ctx, props| {
+-            ctx.widget_state.is_hovered = true;
+-            ctx.widget_state.class_diff.is_hovered = Some(true);
+-            ctx.widget_state.request_update_props = true;
+-            ctx.widget_state.needs_update_props = true;
+-            widget.update(ctx, props, &Update::HoveredChanged(true));
+-        });
+-    }
+-
+-    // -- UPDATE CURSOR ICON --
+-
+-    // If the pointer is captured, its icon always reflects the
+-    // capture target, even when not hovered.
++    }
++    for (kind, prev, next) in [
++        (true, &prev_active, &next_active),
++        (false, &prev_hover, &next_hover),
++    ] {
++        for id in next.iter().copied().filter(|id| !prev.contains(id)) {
++            run_single_update_with_view(root, Some(id), new, |widget, ctx, props| {
++                if kind {
++                    ctx.widget_state.has_active = true;
++                    widget.update(ctx, props, &Update::ChildActiveChanged(true));
++                } else {
++                    ctx.widget_state.has_hovered = true;
++                    widget.update(ctx, props, &Update::ChildHoveredChanged(true));
++                }
++            });
++        }
++        if prev.first() != next.first() {
++            run_single_update_with_view(root, next.first().copied(), new, |widget, ctx, props| {
++                if kind {
++                    ctx.widget_state.is_active = true;
++                    ctx.widget_state.class_diff.is_active = Some(true);
++                } else {
++                    ctx.widget_state.is_hovered = true;
++                    ctx.widget_state.class_diff.is_hovered = Some(true);
++                }
++                ctx.widget_state.request_update_props = true;
++                ctx.widget_state.needs_update_props = true;
++                widget.update(
++                    ctx,
++                    props,
++                    &if kind {
++                        Update::ActiveChanged(true)
++                    } else {
++                        Update::HoveredChanged(true)
++                    },
++                );
++            });
++        }
++    }
++    // Notifications can delete a target or release capture. Retain the path until
++    // the next pointer pass can send exits to surviving ancestors, and preserve
++    // invalidations raised by callbacks rather than overwriting them at the end.
++    root.global_state.needs_pointer_pass |= next_hover
++        .first()
++        .is_some_and(|id| !root.is_still_interactive(*id))
++        || next_active.first().copied() != root.global_state.pointer_capture_target;
+     let icon_source = root
+         .global_state
+         .pointer_capture_target
+-        .or(next_hovered_widget);
+-
+-    let new_icon = if let (Some(icon_source), Some(pos)) = (icon_source, pointer_pos) {
+-        let root_node = root.widget_arena.get_node(icon_source);
+-        let children = root_node.children;
+-        let widget = &*root_node.item.widget;
+-        let state = &root_node.item.state;
+-        let properties = &root_node.item.properties;
+-
+-        let stack = root
+-            .property_arena
+-            .get(state.property_stack_id, widget.type_id());
+-        let ctx = QueryCtx {
+-            global_state: &root.global_state,
+-            widget_state: state,
+-            properties: PropertiesRef {
+-                local: properties,
+-                default_map: root
+-                    .property_arena
+-                    .default_properties
+-                    .for_widget(widget.type_id()),
+-                stack,
+-                class_set: &root_node.item.class_set,
+-            },
+-            children,
+-            property_arena: &root.property_arena,
+-        };
+-
+-        if state.is_disabled {
++        .or(next_hover.first().copied());
++    let new_icon = if let (Some(id), Some(pos)) = (icon_source, pointer_pos) {
++        if let Some(geometry) = new.bind(id)
++            && let Some(node) = root.widget_arena.nodes.find(id)
++            && !node.item.state.is_stashed
++        {
++            let widget = &*node.item.widget;
++            let state = &node.item.state;
++            let ctx = QueryCtx {
++                geometry,
++                global_state: &root.global_state,
++                widget_state: state,
++                properties: PropertiesRef {
++                    local: &node.item.properties,
++                    default_map: root
++                        .property_arena
++                        .default_properties
++                        .for_widget(widget.type_id()),
++                    stack: root
++                        .property_arena
++                        .get(state.property_stack_id, widget.type_id()),
++                    class_set: &node.item.class_set,
++                },
++                children: node.children,
++                property_arena: &root.property_arena,
++            };
++            if state.is_disabled {
++                CursorIcon::Default
++            } else {
++                widget.get_cursor(&ctx, pos)
++            }
++        } else {
+             CursorIcon::Default
+-        } else {
+-            widget.get_cursor(&ctx, pos)
+         }
+     } else {
+         CursorIcon::Default
+     };
+-
+     if root.global_state.cursor_icon != new_icon {
+         root.global_state
+             .emit_signal(RenderRootSignal::SetCursor(new_icon));
+     }
+-
+     root.global_state.cursor_icon = new_icon;
+-    root.global_state.hovered_path = next_hovered_path;
+-    root.global_state.active_path = next_active_path;
++    root.global_state.active_path = next_active;
++    root.global_state.hovered_path = next_hover;
++    prev_active.clear();
++    prev_hover.clear();
++    root.global_state.pointer_active_spare = prev_active;
++    root.global_state.pointer_hover_spare = prev_hover;
+ }
+ 
+ // ----------------
+@@ -1131,6 +1124,7 @@
+ 
+                 if new_index != *index || state.property_cache.invalidated {
+                     let mut ctx = UpdateCtx {
++                        geometry: crate::app::ContextGeometry::Live,
+                         global_state,
+                         widget_state: state,
+                         children: children.reborrow_mut(),
+@@ -1210,6 +1204,7 @@
+ 
+     let stack = property_arena.get(state.property_stack_id, widget.type_id());
+     let mut ctx = UpdateCtx {
++        geometry: crate::app::ContextGeometry::Live,
+         global_state,
+         widget_state: state,
+         children: children.reborrow_mut(),
+--- a/tree_arena/Cargo.toml
++++ b/tree_arena/Cargo.toml
+@@ -1,4 +1,5 @@
+ [package]
++readme = "README.md"
+ name = "tree_arena"
+ version = "0.2.0"
+ description = "An arena allocated tree."
+@@ -17,8 +18,8 @@
+ 
+ [features]
+ default = ["std", "safe_tree"]
+-# Enable future features which require the standard library.
+-# This feature is provided for forwards compatibility only, and current behaviour is the same whether or not it is enabled.
++# Enable an independently leased preallocated lookup workspace. Without std,
++# lookup uses bounded stack chunks, preserving correctness without allocation.
+ std = []
+ # This crate contains two implementations of a tree for use in masonry, one safe and the other unsafe.
+ # The safe tree is known to work, and serves as the baseline implementation and is used by default.
+--- a/tree_arena/src/lib.rs
++++ b/tree_arena/src/lib.rs
+@@ -17,8 +17,8 @@
+ //!
+ //! The following crate [feature flags](https://doc.rust-lang.org/cargo/reference/features.html#dependency-features) are available:
+ //!
+-//! - `std` (enabled by default): Enable future features which require the standard library.
+-//!   This feature is provided for forwards compatibility only, and current behaviour is the same whether or not it is enabled.
++//! - `std` (enabled by default): Enable an independently leased preallocated lookup
++//!   workspace. Without it, bounded stack chunks preserve lookup correctness.
+ //! - `safe_tree` (enabled by default): Use the safe tree implementation instead of the unsafe one.
+ //!
+ //! This crate is `no_std` compatible; to use it without the standard library, disable default features.
+@@ -31,7 +31,11 @@
+ //! The safe tree contains a root `TreeArena` which owns the root nodes as `Vec<TreeNode<T>>`, and a `parents_map` tracking the parent of every node.
+ //! Each `TreeNode` subsequently owns its own children as `Vec<TreeNode<T>>`. This model of ownership is thus checked by the rust compiler,
+ //! but has the downside of requiring passing through every ancestor node to access the descendant -
+-//! this requires an O(depth) determination of whether the node is a descendant, followed by O(children) time at each level to traverse the path to the child.
++//! lookup walks parent links into a bounded workspace, then iteratively descends
++//! through child hash maps. Paths exceeding workspace capacity repeat the walk
++//! in chunks, using O(depth + depth²/capacity) work and constant call-stack space.
++//! Queries never allocate or grow that workspace. An unavailable workspace lease
++//! or `no_std` uses 32 stack slots instead. Returned handles do not retain a lease.
+ //!
+ //! ## Unsafe Tree
+ //!
+@@ -70,8 +74,8 @@
+ //! |Operation  | Safe         | Unsafe   |
+ //! |   ---     |      ---     |   ---    |
+ //! |Find child | O(Children)  | O(1)     |
+-//! |Descendant | O(Depth)     | O(Depth) |
+-//! |From root  | O(Depth)     | O(1)     |
++//! |Descendant | O(Depth + Depth²/Capacity) | O(Depth) |
++//! |From root  | O(Depth + Depth²/Capacity) | O(1)     |
+ //!
+ //! [Masonry]: https://crates.io/crates/masonry
+ 
+@@ -91,7 +95,7 @@
+ 
+ #[cfg(feature = "std")]
+ // Ensure that we don't compile if you're using the std feature on a platform without `std`
+-extern crate std as _;
++extern crate std;
+ 
+ type NodeId = u64;
+ 
+--- a/tree_arena/src/tree_arena_safe.rs
++++ b/tree_arena/src/tree_arena_safe.rs
+@@ -11,6 +11,86 @@
+ use hashbrown::HashMap;
+ 
+ use crate::NodeId;
++
++// One independently leased workspace per arena. References never retain its
++// contents. Mutex preserves Send/Sync and try_lock avoids blocking/reentrancy;
++// no_std and an unavailable lease use the same bounded stack fallback.
++#[derive(Debug, Default)]
++struct LookupScratch {
++    #[cfg(feature = "std")]
++    slots: std::sync::Mutex<Vec<NodeId>>,
++    #[cfg(feature = "std")]
++    capacity: usize,
++}
++
++impl LookupScratch {
++    fn bytes_for(capacity: usize) -> Option<usize> {
++        #[cfg(feature = "std")]
++        {
++            capacity
++                .checked_mul(size_of::<NodeId>())?
++                .checked_add(size_of::<Self>())
++        }
++        #[cfg(not(feature = "std"))]
++        {
++            let _ = capacity;
++            Some(0)
++        }
++    }
++
++    fn configure(&mut self, capacity: usize) -> usize {
++        #[cfg(feature = "std")]
++        {
++            let slots = self
++                .slots
++                .get_mut()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            *slots = alloc::vec![0; capacity];
++            self.capacity = slots.capacity();
++        }
++        #[cfg(not(feature = "std"))]
++        let _ = capacity;
++        self.bytes()
++    }
++
++    fn bytes(&self) -> usize {
++        #[cfg(feature = "std")]
++        {
++            Self::bytes_for(self.capacity).expect("allocated lookup capacity fits usize")
++        }
++        #[cfg(not(feature = "std"))]
++        {
++            0
++        }
++    }
++}
++
++/// Retain the ancestors closest to `boundary` in a circular bounded buffer.
++/// Return the full number of parent links walked, or None for an absent/outside
++/// node. The caller descends through that chunk and repeats from its new boundary.
++/// A query of relative depth D and C slots visits D + (D-C) + ... parent entries,
++/// and descends through D child entries. It neither allocates nor recurses.
++fn lookup_chunk(
++    parents: &HashMap<NodeId, Option<NodeId>>,
++    id: NodeId,
++    boundary: Option<NodeId>,
++    slots: &mut [NodeId],
++) -> Option<usize> {
++    debug_assert!(
++        !slots.is_empty(),
++        "lookup selects a nonempty leased or stack buffer"
++    );
++    let mut current = Some(id);
++    let mut walked = 0;
++    while current != boundary {
++        let id = current?;
++        let parent = *parents.get(&id)?;
++        slots[walked % slots.len()] = id;
++        walked += 1;
++        current = parent;
++    }
++    Some(walked)
++}
+ 
+ #[derive(Debug)]
+ struct TreeNode<T> {
+@@ -29,6 +109,7 @@
+ pub struct TreeArena<T> {
+     roots: HashMap<NodeId, TreeNode<T>>,
+     parents_map: HashMap<NodeId, Option<NodeId>>,
++    lookup_scratch: LookupScratch,
+ }
+ 
+ /// A reference type giving shared access to an arena item and its children.
+@@ -91,12 +172,14 @@
+ #[derive(Clone, Copy, Debug)]
+ struct ArenaMapRef<'arena> {
+     parents_map: &'arena HashMap<NodeId, Option<NodeId>>,
++    lookup: &'arena LookupScratch,
+ }
+ 
+ /// A mutable reference to the parent father map
+ #[derive(Debug)]
+ struct ArenaMapMut<'arena> {
+     parents_map: &'arena mut HashMap<NodeId, Option<NodeId>>,
++    lookup: &'arena LookupScratch,
+ }
+ 
+ // -- MARK: IMPLS
+@@ -129,6 +212,7 @@
+         Self {
+             roots: HashMap::new(),
+             parents_map: HashMap::new(),
++            lookup_scratch: LookupScratch::default(),
+         }
+     }
+ 
+@@ -140,6 +224,23 @@
+     /// Returns `true` if the arena is empty.
+     pub fn is_empty(&self) -> bool {
+         self.parents_map.is_empty()
++    }
++
++    /// Preallocate an independent lookup workspace outside event dispatch.
++    /// Queries never grow it. Longer paths use repeated bounded chunks, without
++    /// truncation or treating a present node as absent. `no_std` uses 32 stack slots.
++    pub fn configure_lookup_path_storage(&mut self, capacity: usize) -> usize {
++        self.lookup_scratch.configure(capacity)
++    }
++
++    /// Retained workspace header and actual heap capacity, excluding stack slots.
++    pub fn lookup_path_storage_bytes(&self) -> usize {
++        self.lookup_scratch.bytes()
++    }
++
++    /// Planned storage for a configured capacity, before allocating it.
++    pub fn lookup_path_storage_bytes_for(capacity: usize) -> Option<usize> {
++        LookupScratch::bytes_for(capacity)
+     }
+ 
+     /// Returns a handle giving access to the roots of the tree.
+@@ -149,6 +250,7 @@
+             children: &self.roots,
+             parents_map: ArenaMapRef {
+                 parents_map: &self.parents_map,
++                lookup: &self.lookup_scratch,
+             },
+         }
+     }
+@@ -163,6 +265,7 @@
+             children: &mut self.roots,
+             parents_map: ArenaMapMut {
+                 parents_map: &mut self.parents_map,
++                lookup: &self.lookup_scratch,
+             },
+         }
+     }
+@@ -178,7 +281,8 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation (linear when the
++    ///   path fits its configured workspace; 32 slots when no lease is available).
+     /// - O(1) in the unsafe implementation.
+     pub fn find(&self, id: impl Into<NodeId>) -> Option<ArenaRef<'_, T>> {
+         self.roots().find_inner(id.into())
+@@ -190,7 +294,8 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation (linear when the
++    ///   path fits its configured workspace; 32 slots when no lease is available).
+     /// - O(1) in the unsafe implementation.
+     pub fn find_mut(&mut self, id: impl Into<NodeId>) -> Option<ArenaMut<'_, T>> {
+         self.roots_mut().find_mut_inner(id.into())
+@@ -203,10 +308,7 @@
+     ///
+     /// If the id is not in the tree, returns an empty vector.
+     pub fn get_id_path(&self, id: impl Into<NodeId>) -> Vec<NodeId> {
+-        let parents_map = ArenaMapRef {
+-            parents_map: &self.parents_map,
+-        };
+-        parents_map.get_id_path(id.into(), None)
++        self.roots().parents_map.get_id_path(id.into(), None)
+     }
+ 
+     /// Moves the given child (along with all its children) to the new parent.
+@@ -267,7 +369,7 @@
+     fn arena_ref<'arena>(
+         &'arena self,
+         parent_id: Option<NodeId>,
+-        parents_map: &'arena HashMap<NodeId, Option<NodeId>>,
++        parents_map: ArenaMapRef<'arena>,
+     ) -> ArenaRef<'arena, T> {
+         ArenaRef {
+             parent_id,
+@@ -275,7 +377,7 @@
+             children: ArenaRefList {
+                 parent_id: Some(self.id),
+                 children: &self.children,
+-                parents_map: ArenaMapRef { parents_map },
++                parents_map,
+             },
+         }
+     }
+@@ -283,7 +385,7 @@
+     fn arena_mut<'arena>(
+         &'arena mut self,
+         parent_id: Option<NodeId>,
+-        parents_map: &'arena mut HashMap<NodeId, Option<NodeId>>,
++        parents_map: ArenaMapMut<'arena>,
+     ) -> ArenaMut<'arena, T> {
+         ArenaMut {
+             parent_id,
+@@ -291,7 +393,7 @@
+             children: ArenaMutList {
+                 parent_id: Some(self.id),
+                 children: &mut self.children,
+-                parents_map: ArenaMapMut { parents_map },
++                parents_map,
+             },
+         }
+     }
+@@ -323,7 +425,7 @@
+         let id = id.into();
+         self.children
+             .get(&id)
+-            .map(|child| child.arena_ref(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_ref(self.parent_id, self.parents_map))
+     }
+ 
+     /// Finds an arena item among the list's items and their descendants.
+@@ -332,7 +434,7 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation.
+     /// - O(Depth) in the unsafe implementation, when not called from the root.
+     /// - O(1) in the unsafe implementation, when called from the root.
+     pub fn find(self, id: impl Into<NodeId>) -> Option<ArenaRef<'arena, T>> {
+@@ -340,23 +442,34 @@
+     }
+ 
+     fn find_inner(self, id: NodeId) -> Option<ArenaRef<'arena, T>> {
+-        let parent_id = self.parents_map.parents_map.get(&id)?;
+-
+-        let id_path = if let Some(parent_id) = parent_id {
+-            self.parents_map.get_id_path(*parent_id, self.parent_id)
+-        } else {
+-            Vec::new()
+-        };
+-
+-        let mut id_path = id_path.as_slice();
+-        let mut node_children = self.children;
+-        while let Some((ancestor_id, new_id_path)) = id_path.split_last() {
+-            id_path = new_id_path;
+-            node_children = &node_children.get(ancestor_id)?.children;
+-        }
+-
+-        let node = node_children.get(&id)?;
+-        Some(node.arena_ref(*parent_id, self.parents_map.parents_map))
++        #[cfg(feature = "std")]
++        if let Ok(mut slots) = self.parents_map.lookup.slots.try_lock()
++            && !slots.is_empty()
++        {
++            return self.find_with_storage(id, &mut slots);
++        }
++        self.find_with_storage(id, &mut [0; 32])
++    }
++
++    fn find_with_storage(self, id: NodeId, slots: &mut [NodeId]) -> Option<ArenaRef<'arena, T>> {
++        let parent_id = *self.parents_map.parents_map.get(&id)?;
++        let mut boundary = self.parent_id;
++        let mut children = self.children;
++        loop {
++            let walked = lookup_chunk(self.parents_map.parents_map, id, boundary, slots)?;
++            if walked == 0 {
++                return None;
++            }
++            for offset in 0..walked.min(slots.len()) {
++                let next = slots[(walked - 1 - offset) % slots.len()];
++                let node = children.get(&next)?;
++                if next == id {
++                    return Some(node.arena_ref(parent_id, self.parents_map));
++                }
++                boundary = Some(next);
++                children = &node.children;
++            }
++        }
+     }
+ }
+ 
+@@ -401,7 +514,7 @@
+         let id = id.into();
+         self.children
+             .get(&id)
+-            .map(|child| child.arena_ref(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_ref(self.parent_id, self.parents_map.reborrow()))
+     }
+ 
+     /// Returns a mutable handle to the element of the list with the given id.
+@@ -409,7 +522,7 @@
+         let id = id.into();
+         self.children
+             .get_mut(&id)
+-            .map(|child| child.arena_mut(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_mut(self.parent_id, self.parents_map.reborrow_mut()))
+     }
+ 
+     /// Returns a shared handle to the element of the list with the given id.
+@@ -420,7 +533,7 @@
+         let id = id.into();
+         self.children
+             .get(&id)
+-            .map(|child| child.arena_ref(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_ref(self.parent_id, self.parents_map.into_ref()))
+     }
+ 
+     /// Returns a mutable handle to the element of the list with the given id.
+@@ -431,7 +544,7 @@
+         let id = id.into();
+         self.children
+             .get_mut(&id)
+-            .map(|child| child.arena_mut(self.parent_id, self.parents_map.parents_map))
++            .map(|child| child.arena_mut(self.parent_id, self.parents_map))
+     }
+ 
+     // TODO - Remove the child_id argument once creation of widgets is figured out.
+@@ -470,7 +583,7 @@
+         self.children
+             .get_mut(&child_id)
+             .unwrap()
+-            .arena_mut(self.parent_id, self.parents_map.parents_map)
++            .arena_mut(self.parent_id, self.parents_map.reborrow_mut())
+     }
+ 
+     // TODO - How to handle when a subtree is removed?
+@@ -529,7 +642,7 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation.
+     /// - O(Depth) in the unsafe implementation, when not called from the root.
+     /// - O(1) in the unsafe implementation, when called from the root.
+     pub fn find(&self, id: impl Into<NodeId>) -> Option<ArenaRef<'_, T>> {
+@@ -542,7 +655,7 @@
+     ///
+     /// # Complexity
+     ///
+-    /// - O(Depth) in the safe implementation.
++    /// - O(Depth + Depth²/Capacity) in the safe implementation.
+     /// - O(Depth) in the unsafe implementation, when not called from the root.
+     /// - O(1) in the unsafe implementation, when called from the root.
+     pub fn find_mut(self, id: impl Into<NodeId>) -> Option<ArenaMut<'arena, T>> {
+@@ -550,23 +663,38 @@
+     }
+ 
+     fn find_mut_inner(self, id: NodeId) -> Option<ArenaMut<'arena, T>> {
+-        let parent_id = self.parents_map.parents_map.get(&id)?;
+-
+-        let id_path = if let Some(parent_id) = parent_id {
+-            self.parents_map.get_id_path(*parent_id, self.parent_id)
+-        } else {
+-            Vec::new()
+-        };
+-
+-        let mut id_path = id_path.as_slice();
+-        let mut node_children: &'arena mut _ = &mut *self.children;
+-        while let Some((ancestor_id, new_id_path)) = id_path.split_last() {
+-            id_path = new_id_path;
+-            node_children = &mut node_children.get_mut(ancestor_id)?.children;
+-        }
+-
+-        let node = node_children.get_mut(&id)?;
+-        Some(node.arena_mut(*parent_id, &mut *self.parents_map.parents_map))
++        #[cfg(feature = "std")]
++        if let Ok(mut slots) = self.parents_map.lookup.slots.try_lock()
++            && !slots.is_empty()
++        {
++            return self.find_mut_with_storage(id, &mut slots);
++        }
++        self.find_mut_with_storage(id, &mut [0; 32])
++    }
++
++    fn find_mut_with_storage(
++        self,
++        id: NodeId,
++        slots: &mut [NodeId],
++    ) -> Option<ArenaMut<'arena, T>> {
++        let parent_id = *self.parents_map.parents_map.get(&id)?;
++        let mut boundary = self.parent_id;
++        let mut children = self.children;
++        loop {
++            let walked = lookup_chunk(self.parents_map.parents_map, id, boundary, slots)?;
++            if walked == 0 {
++                return None;
++            }
++            for offset in 0..walked.min(slots.len()) {
++                let next = slots[(walked - 1 - offset) % slots.len()];
++                let node = children.get_mut(&next)?;
++                if next == id {
++                    return Some(node.arena_mut(parent_id, self.parents_map));
++                }
++                boundary = Some(next);
++                children = &mut node.children;
++            }
++        }
+     }
+ 
+     /// No-op. Added for parity with unsafe implementation.
+@@ -615,11 +743,18 @@
+     }
+ }
+ 
+-impl ArenaMapMut<'_> {
++impl<'arena> ArenaMapMut<'arena> {
++    fn into_ref(self) -> ArenaMapRef<'arena> {
++        ArenaMapRef {
++            parents_map: self.parents_map,
++            lookup: self.lookup,
++        }
++    }
+     /// Returns a shared handle equivalent to this one.
+     fn reborrow(&self) -> ArenaMapRef<'_> {
+         ArenaMapRef {
+             parents_map: self.parents_map,
++            lookup: self.lookup,
+         }
+     }
+ 
+@@ -629,18 +764,176 @@
+     fn reborrow_mut(&mut self) -> ArenaMapMut<'_> {
+         ArenaMapMut {
+             parents_map: self.parents_map,
+-        }
+-    }
+-
+-    /// Returns the path of items from the given item to the root of the tree.
+-    ///
+-    /// The path is in order from the bottom to the top, starting at the given item and ending at
+-    /// the root.
+-    ///
+-    /// If `start_id` is Some, the path ends just before that id instead; `start_id` is not included.
+-    ///
+-    /// If there is no path from `start_id` to id, returns an empty vector.
+-    fn get_id_path(&self, id: NodeId, start_id: Option<NodeId>) -> Vec<NodeId> {
+-        self.reborrow().get_id_path(id, start_id)
+-    }
+-}
++            lookup: self.lookup,
++        }
++    }
++}
++
++#[cfg(test)]
++mod read_lookup_tests {
++    use super::*;
++    #[test]
++    fn read_lookup_preserves_scope_after_reparent_and_removal() {
++        let mut tree = TreeArena::new();
++        {
++            let mut roots = tree.roots_mut();
++            let mut root = roots.insert(1_u64, "root");
++            root.children
++                .insert(2_u64, "branch")
++                .children
++                .insert(3_u64, "leaf");
++            root.children.insert(4_u64, "sibling");
++        }
++        tree.roots_mut().insert(9_u64, "other root");
++        assert_eq!(tree.find(3_u64).unwrap().item, &"leaf");
++        let branch = tree.find(2_u64).unwrap().children;
++        assert!(branch.find(3_u64).is_some());
++        for outside in [1_u64, 2, 4, 9, 99] {
++            assert!(
++                branch.find(outside).is_none(),
++                "outside child scope: {outside}"
++            );
++        }
++        for outside in [1_u64, 2, 4, 9, 99] {
++            assert!(
++                tree.find_mut(2_u64)
++                    .unwrap()
++                    .children
++                    .find_mut(outside)
++                    .is_none(),
++                "outside mutable child scope: {outside}"
++            );
++        }
++        *tree
++            .find_mut(2_u64)
++            .unwrap()
++            .children
++            .find_mut(3_u64)
++            .unwrap()
++            .item = "changed leaf";
++        tree.reparent(3_u64, 4_u64);
++        assert!(tree.find(2_u64).unwrap().children.find(3_u64).is_none());
++        assert_eq!(
++            tree.find(4_u64).unwrap().children.find(3_u64).unwrap().item,
++            &"changed leaf"
++        );
++        assert_eq!(
++            tree.find_mut(4_u64).unwrap().children.remove(3_u64),
++            Some("changed leaf")
++        );
++        assert!(tree.find(3_u64).is_none());
++    }
++
++    fn chain(capacity: usize) -> TreeArena<u64> {
++        let mut tree = TreeArena::new();
++        tree.configure_lookup_path_storage(capacity);
++        tree.roots_mut().insert(1_u64, 1);
++        for id in 2_u64..=65 {
++            tree.find_mut(id - 1).unwrap().children.insert(id, id);
++        }
++        tree.roots_mut().insert(100_u64, 100);
++        tree
++    }
++
++    #[test]
++    fn segmented_lookup_keeps_deep_scope_and_reparent_remove_correct() {
++        for capacity in [0, 1, 2, 8, 32, 128] {
++            let mut tree = chain(capacity);
++            assert_eq!(tree.find(65_u64).unwrap().item, &65);
++            let earlier = tree.find(17_u64).unwrap();
++            assert_eq!(earlier.children.find(65_u64).unwrap().item, &65);
++            assert_eq!(
++                earlier.item, &17,
++                "a later lookup cannot invalidate a handle"
++            );
++            let branch = tree.find(33_u64).unwrap().children;
++            for outside in [1_u64, 17, 33, 100, 101] {
++                assert!(branch.find(outside).is_none());
++            }
++            for outside in [1_u64, 17, 33, 100, 101] {
++                assert!(
++                    tree.find_mut(33_u64)
++                        .unwrap()
++                        .children
++                        .find_mut(outside)
++                        .is_none()
++                );
++            }
++            *tree.find_mut(65_u64).unwrap().item = 999;
++            tree.reparent(33_u64, 100_u64);
++            assert!(tree.find(17_u64).unwrap().children.find(65_u64).is_none());
++            assert_eq!(
++                tree.find(100_u64)
++                    .unwrap()
++                    .children
++                    .find(65_u64)
++                    .unwrap()
++                    .item,
++                &999
++            );
++            assert_eq!(
++                tree.find_mut(100_u64).unwrap().children.remove(33_u64),
++                Some(33)
++            );
++            assert!(tree.find(65_u64).is_none());
++        }
++    }
++
++    #[cfg(feature = "std")]
++    #[test]
++    fn busy_lookup_workspace_is_never_overwritten_and_traits_are_preserved() {
++        fn send_sync<T: Send + Sync>() {}
++        send_sync::<TreeArena<u64>>();
++        send_sync::<ArenaRef<'static, u64>>();
++        let mut tree = chain(8);
++        {
++            let mut guard = tree.lookup_scratch.slots.try_lock().unwrap();
++            guard.fill(u64::MAX);
++            assert_eq!(tree.find(65_u64).unwrap().item, &65);
++            assert!(guard.iter().all(|id| *id == u64::MAX));
++        }
++        {
++            let roots = tree.roots_mut();
++            let lookup = roots.parents_map.lookup;
++            let mut guard = lookup.slots.try_lock().unwrap();
++            guard.fill(u64::MAX);
++            *roots.find_mut(65_u64).unwrap().item = 123;
++            assert!(guard.iter().all(|id| *id == u64::MAX));
++        }
++        assert_eq!(tree.find(65_u64).unwrap().item, &123);
++        assert_eq!(
++            tree.lookup_path_storage_bytes(),
++            TreeArena::<u64>::lookup_path_storage_bytes_for(8).unwrap()
++        );
++    }
++
++    #[test]
++    fn repeated_parent_work_matches_the_configuration_bound() {
++        for depth in [1_usize, 32, 33, 128, 512, 2048] {
++            let mut parents = HashMap::new();
++            parents.insert(1, None);
++            for id in 2..=depth as u64 {
++                parents.insert(id, Some(id - 1));
++            }
++            for capacity in [1, 32, 128, depth] {
++                let mut slots = alloc::vec![0; capacity];
++                let mut boundary = None;
++                let mut visits = 0;
++                loop {
++                    let walked =
++                        lookup_chunk(&parents, depth as u64, boundary, &mut slots).unwrap();
++                    visits += walked;
++                    if walked <= capacity {
++                        break;
++                    }
++                    boundary = Some(slots[(walked - capacity) % capacity]);
++                }
++                let chunks = depth.div_ceil(capacity);
++                assert_eq!(
++                    visits,
++                    chunks * depth - capacity * chunks * (chunks - 1) / 2
++                );
++            }
++        }
++    }
++}
+--- a/tree_arena/src/tree_arena_unsafe.rs
++++ b/tree_arena/src/tree_arena_unsafe.rs
+@@ -255,6 +255,21 @@
+         self.data_map.items.is_empty()
+     }
+ 
++    /// API parity with `safe_tree`; flat lookup needs no path workspace.
++    pub fn configure_lookup_path_storage(&mut self, _capacity: usize) -> usize {
++        0
++    }
++
++    /// Flat lookup retains no additional path workspace.
++    pub fn lookup_path_storage_bytes(&self) -> usize {
++        0
++    }
++
++    /// Flat lookup retains no additional path workspace.
++    pub fn lookup_path_storage_bytes_for(_capacity: usize) -> Option<usize> {
++        Some(0)
++    }
++
+     /// Returns a handle whose children are the roots, if any, of the tree.
+     pub fn roots(&self) -> ArenaRefList<'_, T> {
+         ArenaRefList {

@@ -1,0 +1,112 @@
+{
+  "frontend_repository": "https://github.com/jhq223/reel",
+  "frontend_commit": "fc418d9a26ebf5f0dfdbde2d6c25670e78c94926",
+  "probe_sha256": "44a2374c6e4cac7d863b0c740e70cddee9c92fe9e39236975a305678752b3745",
+  "cargo_lock_sha256": "b972055b312750f504ef4d0a63ec63b559bc1383b142147ed43e91cc4db6491a",
+  "toolchain": "cargo 1.96.0 (30a34c682 2026-05-25)",
+  "probe_exit_code": 0,
+  "binding_checked": false,
+  "semantics_executed": false,
+  "fixtures": {
+    "converted/doc/examples/pages/language/errors-rethrow.aside": {
+      "status": "parse_ok",
+      "source_sha256": "adf2709fb1d0f908cd3180e0ac4c5323cf95571afdd2ace19da3eabe9e3ec0fe",
+      "original": "doc/examples/pages/language/errors-rethrow.nut",
+      "bytes": 606,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/doc/examples/pages/language/functions-minimal.aside": {
+      "status": "parse_ok",
+      "source_sha256": "c5d2920f1a70f3486ccdb0833aa8bc664e48dcda37feae0ca47bea66e49e09fb",
+      "original": "doc/examples/pages/language/functions-minimal.nut",
+      "bytes": 518,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/doc/examples/types/array/len.aside": {
+      "status": "parse_ok",
+      "source_sha256": "93f10b212e672d21266a374dc599ffab08ea226b98df016deef696e539ac875d",
+      "original": "doc/examples/types/array/len.nut",
+      "bytes": 366,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/doc/examples/types/table/rawin.aside": {
+      "status": "parse_ok",
+      "source_sha256": "cdcc0abc6a563cf00097f90f461f75251d5477b3efc4000ee69f6b459b56d018",
+      "original": "doc/examples/types/table/rawin.nut",
+      "bytes": 538,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/testData/exec/basics.aside": {
+      "status": "parse_ok",
+      "source_sha256": "7df7a2db4a8007f1d51c69e39cc701307d5a2d6b32d44c73c8544f69251f8e0c",
+      "original": "testData/exec/basics.nut",
+      "bytes": 470,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/testData/exec/for_loop_at_function_start.aside": {
+      "status": "parse_ok",
+      "source_sha256": "ea02ac1541e6d83a2022de13880c564f2e41a3a439095c73ed25293114182f5f",
+      "original": "testData/exec/for_loop_at_function_start.nut",
+      "bytes": 731,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/testData/exec/locals_chain.aside": {
+      "status": "parse_ok",
+      "source_sha256": "2ed505c0f9691dd5adfeacfafbe6cc125951ce5c62350e52474395c358936592",
+      "original": "testData/exec/locals_chain.nut",
+      "bytes": 374,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/testData/exec/optimizer_mul.aside": {
+      "status": "parse_ok",
+      "source_sha256": "7b6a13827a5dc4d8a66c9df0f0117fc3d5d53a28022e6b6814004b80cda41e46",
+      "original": "testData/exec/optimizer_mul.nut",
+      "bytes": 334,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/testData/exec/valid_syntax/closures_scope.aside": {
+      "status": "parse_ok",
+      "source_sha256": "927c98d55ff2c89424fcad282bfa67f7de88595891ff79e7d45fd7a0411b3c39",
+      "original": "testData/exec/valid_syntax/closures_scope.nut",
+      "bytes": 2199,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    },
+    "converted/testData/exec/valid_syntax/error_handling.aside": {
+      "status": "parse_ok",
+      "source_sha256": "d347dc7be4828e479c4860a794ef9be4f5adab52e5ea8a424422324353fdcd1f",
+      "original": "testData/exec/valid_syntax/error_handling.nut",
+      "bytes": 2096,
+      "diagnostic_count": 0,
+      "exhausted": false,
+      "diagnostics": [],
+      "aside_execution": "waiting_runtime"
+    }
+  }
+}

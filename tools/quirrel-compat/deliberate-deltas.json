@@ -1,0 +1,84 @@
+[
+  {
+    "id": "per_call_defaults",
+    "spec": "docs/aside-language.md §8",
+    "upstream_fixtures": ["testData/exec/spec/hoist_default_param.nut", "testData/exec/closure_hoist_typed_default.nut"],
+    "quirrel": "Defaults and their type checks occur at closure creation; allocated defaults stay with that closure.",
+    "aside": "Evaluate missing defaults at each call, in parameter order, after all actual arguments; new []/{} on each call. Earlier parameters are visible; later parameters and external waiting are forbidden.",
+    "handling": "Retain upstream creation-time assertions/output. Add separate Aside native positive/negative cases; never silently reuse the old golden.",
+    "required_aside_cases": ["default array independence across calls", "actual arguments before default effects", "previous-parameter reference", "reject later-parameter reference and waiting default", "typed default failure at call"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "explicit_self_and_binding",
+    "spec": "docs/aside-language.md §8–9",
+    "upstream_fixtures": ["doc/examples/pages/language/functions-this-basic.nut", "doc/examples/pages/language/functions-this.nut", "testData/exec/table_zero_param_callback.nut"],
+    "quirrel": "Implicit this depends on call context; detached table functions can be rebound using bindenv.",
+    "aside": "Methods declare self explicitly; method values strongly retain their receiver. Table closures receive no implicit self. Metamethod signatures explicitly include the receiver exactly once.",
+    "handling": "Class method and ordinary table closure conversions require separate binding review, not global this-to-self replacement.",
+    "required_aside_cases": ["detached bound method keeps receiver", "ordinary table closure has no injected argument", "self injected exactly once", "subscription removal uses token rather than closure identity"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "per_instance_fields",
+    "spec": "docs/aside-language.md §8",
+    "upstream_fixtures": ["testData/exec/valid_syntax/classes.nut"],
+    "upstream_oracle_status": "missing_mutable_default_aliasing_oracle",
+    "upstream_fixture_scope": "Related scalar-field class syntax/inheritance coverage only. classes.nut has no assertion comparing mutable field defaults across two instances and does not establish shared-default aliasing or per-instance allocation behavior.",
+    "quirrel": "Class field declarations can carry shared mutable default objects.",
+    "aside": "Initialize fields per instance, base to derived; constructor/failed-instance state and readonly initialization are explicit.",
+    "handling": "No corresponding original mutable-default aliasing oracle is identified in this baseline. Keep classes.nut, its original results and goldens intact as related class coverage only; add a covering upstream oracle or separate Aside native cases before claiming differential coverage of per-instance field allocation.",
+    "required_aside_cases": ["two instances have independent field arrays", "base-to-derived evaluation order", "super.init does not repeat field initialization", "Failed instance aliases reject ordinary operations"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "strict_bool",
+    "spec": "docs/aside-language.md §3",
+    "upstream_fixtures": ["doc/examples/pages/language/operators-logical.nut"],
+    "quirrel": "null/false/zero are falsy; other values may be truthy. && and || can return an operand.",
+    "aside": "Conditions, !, && and || require bool; short-circuit logical operators return bool. ?? tests only null.",
+    "handling": "Do not add truthiness casts to make these original expectations appear compatible.",
+    "required_aside_cases": ["reject int, null, string and container conditions", "bool-only short circuit without RHS effects", "zero/false are preserved by ??"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "checked_numbers",
+    "spec": "docs/aside-language.md §3",
+    "upstream_fixtures": ["testData/exec/integers.nut", "testData/exec/test_shift.nut"],
+    "quirrel": "Unsigned-looking hex constants can encode signed wrapped values; shift tests include negative direction reversal. Default CMake SQFloat is float32.",
+    "aside": "Full int64/float64; checked arithmetic, MIN/-1 and numeric zero division errors; shifts only 0..63. Mixed comparison is exact, not prior int-to-float rounding.",
+    "handling": "Keep wrapping, negative-shift and float32 oracles in the original suite. The selected optimizer_mul case has only representable int64 values.",
+    "required_aside_cases": ["MAX+1, MIN-1, multiplication, negation and MIN/-1 overflow", "int and float ±0 division errors", "reject shift -1 and 64", "exact large-int/float comparison", "NaN non-reflexivity and signed-zero equality"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "own_slot_writes",
+    "spec": "docs/aside-language.md §4/9",
+    "upstream_fixtures": ["doc/examples/pages/language/operators-newslot.nut", "doc/examples/types/table/rawset.nut", "testData/exec/valid_syntax/tables.nut"],
+    "quirrel": "Plain = requires an existing slot; <-/rawset add slots. Table functions may use implicit this.",
+    "aside": "Plain table = inserts/overwrites its own slot, never writes a delegate; define/set_existing explicitly constrain existence. Ordinary table writes do not call _set.",
+    "handling": "Do not preserve old missing-slot throws under ordinary assignment. The converted rawin scenario has no delegate/hooks and maps only own membership to has_own.",
+    "required_aside_cases": ["insert with =", "delegate shadowing without parent mutation", "overwrite retains order; remove/reinsert moves to end", "has_own distinguishes missing and stored null", "_get returns (found,value) and real exceptions propagate"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "unicode_text",
+    "spec": "docs/aside-language.md §6",
+    "upstream_fixtures": ["doc/examples/pages/language/control-flow-foreach-string.nut", "testData/exec/valid_syntax/strings.nut", "doc/examples/pages/language/lexical-numbers.nut"],
+    "quirrel": "String iteration/indexing exposes byte/character integer codes; character literals are integers.",
+    "aside": "Immutable valid UTF-8; no ambiguous string[i]. Explicit bytes/scalars/codepoints/graphemes and boundary-checked slicing. Shared mutable TextBuffer and ByteBuffer have explicit freezing/view behavior.",
+    "handling": "Do not mechanically turn char literals into strings or claim byte iteration proves Unicode semantics.",
+    "required_aside_cases": ["combining characters and ZWJ graphemes", "invalid UTF-8 and boundary rejection", "explicit NUL handling", "buffer aliasing and independent frozen output", "text cursor invalidation after edits"],
+    "status": "waiting_runtime"
+  },
+  {
+    "id": "tuple_native_gap",
+    "spec": "docs/aside-language.md §5/7",
+    "upstream_fixtures": [],
+    "quirrel": "No corresponding native tuple value-semantic oracle in this reference snapshot.",
+    "aside": "Tuple is a shallow immutable value, distinct from array/null; exact recursive ordinary equality/hash, fixed arity destructuring and one-value multiple return.",
+    "handling": "Requires native Aside cases. It cannot be counted as covered by converted array/destructuring fixtures.",
+    "required_aside_cases": ["(), (x,), (x,y) and () != null", "identity of aliased mutable elements", "NaN tuple not self-equal", "equal numeric keys share hash", "reject nested mutable/NaN key with element path", "tuple rest and exact arity", "f(pair) vs f(...pair) and return (a,b)"],
+    "status": "waiting_runtime"
+  }
+]
