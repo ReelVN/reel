@@ -532,7 +532,15 @@ fn resolved_native_members_keep_trusted_linkage_and_reject_function_values() {
         ],
     });
     let seed = native_seed();
-    for expression in ["native.run()", "(native.run)()"] {
+    for expression in [
+        "native.run()",
+        "(native.run)()",
+        "((native.run))()",
+        "native.run(a:1)",
+        "(native.run)(a:1)",
+        "((native.run))(a:1)",
+        "(((native.run)))(a:1)",
+    ] {
         let source = format!("use reg::exports as native;fn f(){{{expression}}}");
         let m = analyze_module(&source, &AnalysisOptions::default(), &mut resolver)
             .unwrap()
@@ -551,24 +559,43 @@ fn resolved_native_members_keep_trusted_linkage_and_reject_function_values() {
             native: bc::NativeId(0),
             reference: &reference,
         };
-        let c = lowering::compile(
-            &m,
-            &Linkage {
-                package: Some(&seed),
-                natives: &[link],
-            },
-            Options::default(),
-        )
-        .unwrap();
-        assert_eq!(c.program.package().natives[0], seed.package().natives[0]);
-        let f = function(c.program.package(), "f");
+        let native_links = [link];
+        let linkage = Linkage {
+            package: Some(&seed),
+            natives: &native_links,
+        };
+        let c = lowering::compile(&m, &linkage, Options::default()).unwrap();
+        let p = c.program.package();
+        assert_eq!(p.natives[0], seed.package().natives[0]);
+        assert_eq!(p.functions[0], seed.package().functions[0]);
+        assert_eq!(
+            p.signatures[1].parameters[0].default,
+            Some(bc::FunctionId(0))
+        );
+        let f = function(p, "f");
         assert!(pcs(f, bc::Opcode::MemberGet).is_empty());
-        let call = pcs(f, bc::Opcode::Call)[0];
-        assert!(matches!(&f.descriptors[f.code[call].operands[1] as usize],
-            bc::Descriptor::Call(c) if c.target == bc::CallTarget::Native(bc::NativeId(0))));
+        let call_pcs = pcs(f, bc::Opcode::Call);
+        assert_eq!(call_pcs.len(), 1);
+        let pc = call_pcs[0];
+        assert_eq!(text(p, f, pc), expression);
+        let bc::Descriptor::Call(call) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+            panic!("missing native call descriptor");
+        };
+        assert_eq!(call.target, bc::CallTarget::Native(bc::NativeId(0)));
+        let bc::Arguments::Window(window) = call.arguments else {
+            panic!("native call arguments must use an ordered window");
+        };
+        let named = expression.ends_with("(a:1)");
+        assert_eq!(window.len, u32::from(named));
+        assert_eq!(call.names.len(), usize::from(named));
+        if named {
+            assert_eq!(call.names[0].offset, 0);
+            assert_eq!(p.symbols[call.names[0].name.index()], "a");
+        }
         let error = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap_err();
         assert_eq!(error.kind, lowering::ErrorKind::MissingLink);
         assert_eq!(&source[byte_range(error.span)], "native.run");
+        assert_eq!(error.stats.capacity_bytes, 0);
         let wrong_reference = SymbolReference {
             version: "wrong-version".into(),
             ..reference.clone()
@@ -586,12 +613,109 @@ fn resolved_native_members_keep_trusted_linkage_and_reject_function_values() {
         )
         .unwrap_err();
         assert_eq!(error.kind, lowering::ErrorKind::LinkContract);
+        assert_eq!(&source[byte_range(error.span)], "native.run");
+        if expression.starts_with('(') {
+            let group = m.hir().node(node).parent.unwrap();
+            assert_eq!(m.hir().node(group).kind, hir::HirKind::Group);
+            assert!(m.external_bindings().iter().any(|e| e.node == Some(group)));
+            let error = lowering::lower(
+                &m,
+                &Linkage {
+                    package: Some(&seed),
+                    natives: &[lowering::NativeLink {
+                        target: lowering::ExternalTarget::Node(group),
+                        ..link
+                    }],
+                },
+                Options::default(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, lowering::ErrorKind::MissingLink);
+            assert_eq!(&source[byte_range(error.span)], "native.run");
+            assert_eq!(error.stats.capacity_bytes, 0);
+        }
+        if expression == "(((native.run)))(a:1)" {
+            let error = lowering::lower(
+                &m,
+                &linkage,
+                Options {
+                    limits: lowering::Limits {
+                        max_depth: 4,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, lowering::ErrorKind::Limit);
+            assert!(error.detail.contains("qualified callee depth"));
+            assert_eq!(&source[byte_range(error.span)], "native.run");
+            assert_eq!(error.stats.capacity_bytes, 0);
+            let work = lowering::lower(
+                &m,
+                &linkage,
+                Options {
+                    limits: lowering::Limits {
+                        max_work: error.stats.work_units - 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(work.kind, lowering::ErrorKind::Limit);
+            assert!(work.detail.contains("work budget"));
+            assert_eq!(&source[byte_range(work.span)], "native.run");
+            assert_eq!(work.stats.capacity_bytes, 0);
+            let stats = lowering::lower(&m, &linkage, Options::default())
+                .unwrap()
+                .stats();
+            for limits in [
+                lowering::Limits {
+                    max_work: stats.work_units - 1,
+                    ..Default::default()
+                },
+                lowering::Limits {
+                    max_capacity_bytes: stats.capacity_peak_bytes - 1,
+                    ..Default::default()
+                },
+            ] {
+                let error = lowering::lower(
+                    &m,
+                    &linkage,
+                    Options {
+                        limits,
+                        ..Default::default()
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(error.kind, lowering::ErrorKind::Limit);
+            }
+            lowering::lower(
+                &m,
+                &linkage,
+                Options {
+                    limits: lowering::Limits {
+                        max_work: stats.work_units,
+                        max_capacity_bytes: stats.capacity_peak_bytes,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
     }
     for expression in [
         "native.run",
         "native.run=1;",
         "native.run.x",
         "native.run?.x",
+        "((native.run))",
+        "(((native.run)))=1;",
+        "((native.run))+=1;",
+        "let alias=((native.run));alias();",
+        "((native.run)).x()",
     ] {
         let source = format!("use reg::exports as native;fn f(){{{expression}}}");
         let m = analyze_module(&source, &AnalysisOptions::default(), &mut resolver)
