@@ -9,6 +9,8 @@ owner's document head `8dfa3bc`; §23 is the sole fault contract. Integrated dep
 
 This executes verified hand-authored B01 packages. Source compilation/lowering,
 creator-guide snippets and production source execution are **not** claimed.
+The three source findings on review head `4fef7b6` are corrected at `2501e9b`;
+see [review changes and author evidence](REVIEW-FIXES.md).
 
 ## Public ownership and scheduling
 
@@ -41,6 +43,10 @@ author-value view, projected again before every resume ticket after callbacks.
 Natives without defaults retain their direct Value path. A cached layout that
 needs no Cell allocates no Cell environment, including read-only Value prefixes.
 Native rest constructs an array of tail positional values.
+Default frames retain their FunctionDef's lexical module for locals, captures
+and diagnostics; shared parameter contracts separately retain the preparing
+binder's module. Native has-cells flags are derived once at load into a charged
+O(1) lookup table, so cost admission performs no binary layout search.
 
 HostCall arguments borrow a contiguous rooted window. Respond consumes the
 exact issued ticket once. Continue and CallScript produce fresh resume tickets;
@@ -157,7 +163,8 @@ bound. Heap, code capacity, window values/bitmap/metadata, Task/frame/unwind/cau
 vectors, comparison cursor/root storage, capture/text scratch and VM inline control all
 share HeapBudgetUsage. No continuation contains uncharged owned host closures.
 Unsaved catch scanning and its release successor are precharged together;
-granting the reported retry requirement can advance that bounded action.
+the bound is computed from O(1) metadata before any predicate check. Granting
+the reported retry requirement can advance that bounded action.
 
 ## Verification and performance evidence
 
@@ -196,14 +203,18 @@ activations, cooperative cancellation during equality and actual parameter
 preparation phases, native Entry gating, shared default closures, projected
 host argument values after callbacks, and native positional rest.
 
-At code head `d9032a9`, author validation passed 59 unit, 55 executor, 15
+At code head `2501e9b`, author validation passed 63 unit, 55 executor, 15
 FrameSlots, 16 storage and one doc test, Clippy with warnings denied, and the
 i686 compile check. This is author evidence; independent V03 execution remains
 blocked in the separate acceptance workflow.
+Private review regressions directly count rejected Release predicates and
+runtime native query invocations, and execute Value-only fault diagnostics and
+shared/local Cell captures across native default module boundaries.
 
 [RESULTS.txt](RESULTS.txt) links the seven-pair complete-fault
 [native comparison](NATIVE-PERFORMANCE.md), seven additional native-default runs
 and seven current live-work runs,
+plus seven review-fix regression runs,
 and retains the earlier historical
 Linux x86_64 release run, including total
 instructions/work, slice and call timing, actual allocator calls/bytes, shared

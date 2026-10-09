@@ -1,4 +1,20 @@
-Current live-work/progress validation at d9032a9 (contract 8dfa3bc; B01 57ff60e)
+Current source-review fixes at 2501e9b (review base 4fef7b6; same dependencies)
+63 unit + 55 executor + 15 FrameSlots + 16 storage + 1 doc test passed.
+All four review regressions passed; Clippy all-targets and i686 compile passed.
+Rejected Release grants inspect zero catch predicates; exact retry releases helper.
+Native has-cells admission uses a charged O(1) cache; rejected parameter grants
+invoke zero layout queries, and exact retry queries once and advances.
+Cross-module defaults retain lexical diagnostics/local Cells/captures separately
+from prepared shared parameter Cell ownership. One Entry and GC reclamation pass.
+Seven current raw runs: REVIEW-FIX-PERF-SAMPLES.jsonl
+Call median: 41949 us / 10000 calls; p50/p95 medians 3906/4086 ns.
+Numeric median: 315506 us / 3000004 instructions. Numeric/call/GC allocation: 0.
+Peak shared bytes: 7143814; idle ranges: 34; FrameSlots bytes: 289024.
+Call work: 16670000; GC units/descriptors/values: 8812/45/8766; cancel: 296 work/1 slice.
+These are authorized author checks, not replacement for blocked independent V03 execution.
+Precise scope and remaining limits: REVIEW-FIXES.md
+
+Prior live-work/progress validation at d9032a9 (contract 8dfa3bc; B01 57ff60e)
 59 unit + 55 executor + 15 FrameSlots + 16 storage + 1 doc test passed.
 Clippy all-targets passed; i686 tests/examples compile check passed.
 Exact reported retry grants finish helper returns under live catches with GC=1.

@@ -142,3 +142,17 @@ reduces 1,025 never-used single-root index checks in this load while preserving
 all range and Value scans. Tests with live single roots and released holes
 verify the new scan bound independently of reserved descriptor capacity.
 These runs retain the same no-default echo scope and author-evidence limits.
+
+## Review fix regression
+
+Seven standalone runs at `2501e9b` retain the same no-default load. Call median
+is 41,949 µs (41,317–43,801); numeric median is 315,506 µs (312,378–363,558).
+Within-run call p50/p95 medians are 3,906/4,086 ns. Numeric/call/GC allocator
+calls and bytes remain zero; call work stays 16,670,000, GC stays
+8,812 / 45 / 8,766, and cancellation stays 296 work in one slice. Peak shared
+charge becomes 7,143,814 bytes: the fixed native has-cells table and its inline
+owner add 41 production bytes in this one-native fixture. FrameSlots/root
+residency is unchanged. This is a regression check, not a new matched timing
+comparison; the new default/module cases are covered by author semantic tests.
+See [review scope](REVIEW-FIXES.md) and
+[seven raw outputs](REVIEW-FIX-PERF-SAMPLES.jsonl).
