@@ -17,23 +17,23 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 - reel-core：平台无关的资源/请求身份、预算/结果类型、AssetIo、Clock 与 WorkExecutor 契约；只含共享数据和基础服务接口。
 - aside-vm：语言值、对象、调用帧、模块与执行接口。
 - aside-compiler：解析、分析、字节码及源码定位，依赖 VM 公共格式。
-- reel-stage：逻辑节点、属性、事务、事件映射与 Masonry 适配。
+- reel-ui：控件、布局、属性、交互与舞台桥接。core/app/layout/properties/widgets/theme 管理 UI 基础，bridge/frame/resources 管理呈现接受、可移植帧与资源租约；passes/tree_arena 为私有实现。
 - reel-render：后端接口、资源上传、缓存与分组合成，读取 stage 提交结果。
 - reel-media：Kira 适配和播放控制，视频作为可选模块。
 - reel-engine：会话、剧情任务、宿主绑定、资源与持久化协调。
 - reel-player：平台适配、窗口与事件循环，组装引擎、渲染和媒体输出。
 - reel-cli：检查、开发运行和构建，调用编译器与播放器库入口。
 依赖箭头固定为 stage→core，render→stage/core，media→core，engine→aside-vm/stage/media/core，player→engine/render/core，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
-通用依赖直接使用锁定版本，不复制进仓库。Parley、winit、wgpu、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理。已确认需要修改的 Masonry 和 Kira 使用固定源码快照；其余依赖继续锁定引用。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。Masonry 的呈现几何与统一绘制适配使用仓库内分支，范围由实际调用闭包确定。Kira 0.12.5 的本地修改集中在退休 Sound 的有界纯移动接口和退休队列容量检查，支持后台 PCM 释放；其内部 atomic-arena 继续使用普通依赖。
+通用依赖直接使用锁定版本，不复制进仓库。Parley、winit、wgpu、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理。需修改的代码从明确来源借用后在仓库内维护；其余依赖继续锁定引用。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。借用的 Masonry 控件、布局与呈现几何代码整合到 reel-ui 后由 Reel 自主修改和维护，不以维持上游包图、同步或贡献为目标。Kira 0.12.5 的本地修改集中在退休 Sound 的有界纯移动接口和退休队列容量检查，支持后台 PCM 释放；其内部 atomic-arena 继续使用普通依赖。
 third_party/quirrel 保存 Quirrel 4.41 的固定源码与对应测试快照，基线为 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，用于规范核对与差分测试。它属于开发工具，不链接进发行播放器；Aside 编译器与 VM 是工作区自己的 Rust 实现。[6]
-Masonry 既定核对基线为 271a27a6d4a930f7878d404f9014e3c50a3a9b88。生产适配与验收范围见第十五节。[5] 长期维护的 Masonry crates 放入 crates/{masonry,masonry_core,tree_arena,include_doc_path}，统一继承根 workspace 并保留各包上游版本、lint 边界和构建资源；来源哈希与修改说明位于 crates/masonry。通过工作区 path 依赖接入，统一同名库的来源并检查依赖树，避免意外同时链接仓库内版本与上游版本。
-仓库内第三方源码采用固定快照，不递归保留嵌套 .git。每份快照记录上游地址、提交、版本、导入日期与本地修改，保留并核对许可证及版权声明；更新时可追溯差异。当前源码快照包括 Quirrel 行为对照、Masonry 生产适配所需 crates 和 Kira 0.12.5。Kira 保留对应上游许可证、精确版本的格式配置与两文件补丁，升级时反向核对未修改源码；音频清理线程和预算策略留在 reel-media 适配层。
+UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88。[5] 当前仅维护 crates/reel-ui 一个 UI crate，版本跟随 Reel workspace；原 masonry、masonry_core、tree_arena、reel-stage 的实现按职责合为内部模块，不保留兼容转发包。安全树为私有模块，文档截图直接引用，不再保留 include_doc_path 宏包。许可、版权及必要来源说明保留；不要求与上游目录、版本或源码哈希持续一致。reel-render/reel-player 分别承担后端与平台组装，UI 不反向依赖它们。
+仓库内第三方源码采用固定快照，不递归保留嵌套 .git。每份快照记录上游地址、提交、版本、导入日期与本地修改，保留并核对许可证及版权声明；更新时可追溯差异。Quirrel 行为对照和 Kira 0.12.5 仍保留各自适用的来源记录。reel-ui 已是 Reel 自维护的借用代码，历史来源不再约束当前模块组织。Kira 当前保留原始许可证、导入版本的格式配置与已批准的修改记录；这些来源记录不构成向上游同步或贡献的承诺；音频清理线程和预算策略留在 reel-media 适配层。
 播放器的 source 能力选择性引入编译器；精简版本只加载字节码。hot-reload 只开启模块替换协议，可接收外部编译产物。编译器、监视器和对照运行时留在开发侧，精简构建检查实际依赖树。[7]
 
 ## 三 平台接口与移植边界
-窗口和渲染分别选择，默认组合为 WinitHost 与 WgpuBackend。reel-player/platform 定义 PlatformHost，reel-render 定义 RenderBackend，reel-media 定义 AudioOutput；AssetIo、Clock、WorkExecutor 在 reel-core 中定义。player 组装适配器并转换输入，engine 与 stage 不反向依赖 player。Masonry 控件与布局适配同默认窗口外壳分开；这是需要验证的隔离目标，不能假定上游已经完全平台中立。
+窗口和渲染分别选择，默认组合为 WinitHost 与 WgpuBackend。reel-player/platform 定义 PlatformHost，reel-render 定义 RenderBackend，reel-media 定义 AudioOutput；AssetIo、Clock、WorkExecutor 在 reel-core 中定义。player 组装适配器并转换输入，engine 与 reel-ui 不反向依赖 player。UI 控件与布局同窗口外壳和 GPU 后端分开，以依赖检查和限定构建验证隔离。
 原生窗口或固定显示目标的创建、表面来源协商与销毁留在具体 player 组装代码，不进入公共 trait。可借用或包装原始句柄，但有效期必须覆盖表面使用期；先停止提交并释放表面，再销毁显示目标。winit 事件、wgpu 设备与纹理、Vita 原生句柄都不得进入会话、RenderFrame 或 DSL。每个后端负责上传、格式转换、离屏目标、设备重建和完成后回收，不能仅替换最终绘制函数。
-Cargo features 决定编入哪些适配器，运行参数只在已编入且能力匹配的组合中选择。游戏包声明必需能力；缺失时报错，有声明的低质量后备才可降级。Masonry 与默认外壳、Kira 与默认输出的目标依赖都要检查，关闭桌面 feature 后不能仍被传递依赖强制引入。不建设动态插件系统或通用平台框架。
+Cargo features 决定编入哪些适配器，运行参数只在已编入且能力匹配的组合中选择。游戏包声明必需能力；缺失时报错，有声明的低质量后备才可降级。reel-ui 与默认外壳、Kira 与默认输出的目标依赖都要检查，关闭桌面 feature 后不能仍被传递依赖强制引入。不建设动态插件系统或通用平台框架。
 以下 Rust 签名规定模块边界，自定义类型是引擎自有数据；不统一要求 Send + Sync，只约束实际跨线程的数据。下文给出类型的最低字段与结果语义，D01 完成对应定义与契约测试。
 ```rust
 pub trait PlatformHost {
@@ -128,21 +128,21 @@ WorkRequest 是图像解码、快照编码、包验证等有限工作描述，�
 所有队列同时限制数量和字节。拒绝返回原请求及原因，不丢数据、不暗中改为同步执行。完成消息拥有自身数据，包含请求身份、所有者或会话代数，最多一个终态。业务取消先撤销对应等待/订阅，再请求底层取消；结果路由始终核对等待仍有效及 Scope 匹配。服务尚未结算时取消产生唯一 Cancelled；已结算且排队的终态保持原结果，交付后只用于额度与进程账本结算，已取消业务保持终止。这样已发生的保存提交仍有准确记录，旧读取或工作结果也无法重新唤醒已取消任务。poll/drain 每次最多写入 limit 个事件，调用方预分配容量。IO 读取与保存各自保留容量；完成消息通过两路轮转等有限等待策略交付，持续读取也须让已完成的保存及时出队。
 ## 桌面与 PS Vita 目标
 首批桌面目标是 Windows、Linux、macOS，各组合完成构建和行为验证后才列为支持。移动端与 Web 需要另外适配生命周期、输入、媒体与存储。PS Vita 是未来移植目标，当前接口不代表已经可运行。
-Rust 的 armv7-sony-vita-newlibeabihf 目标为 Tier 3，依赖 VitaSDK，标准库部分支持且无预编译标准库；VitaSDK 是开源 homebrew 工具链。[10] 因此先验证锁定工具链和完整依赖树，不从 target 存在推导 Masonry、Parley、Kira 等已兼容。
+Rust 的 armv7-sony-vita-newlibeabihf 目标为 Tier 3，依赖 VitaSDK，标准库部分支持且无预编译标准库；VitaSDK 是开源 homebrew 工具链。[10] 因此先验证锁定工具链和完整依赖树，不从 target 存在推导 reel-ui、Parley、Kira 等已兼容。
 Vita 的 GXM 有专门纹理布局、内存映射与同步要求，GPU 预算需按不同内存区域实测。[11][12] 音频提交可能阻塞，应由专用路径处理，输出适配器按实际端口把 f32 转换为所需 PCM，转换缓冲预分配。[13] 32 位构建不保存指针或 usize 布局；长度转换、stride×height 与对象索引做溢出检查，不假定 AtomicU64 可用。桌面 N100 的帧时间和资源预算不直接用于 Vita。
 
 ## 四 线程与帧调度
-主线程拥有窗口、舞台、Masonry 和 GPU 提交。VM 在主线程按预算执行，避免细粒度跨线程调用。默认桌面把读取、解码和存档编码交给工作线程，其他平台依所选 IO 与执行器契约推进；音频由独立输出路径保障。后台队列同时限制任务数和数据字节数，当前可见资源优先于预取。
+主线程拥有窗口、舞台、UI 和 GPU 提交。VM 在主线程按预算执行，避免细粒度跨线程调用。默认桌面把读取、解码和存档编码交给工作线程，其他平台依所选 IO 与执行器契约推进；音频由独立输出路径保障。后台队列同时限制任务数和数据字节数，当前可见资源优先于预取。
 每帧固定执行：输入分发；预算内脚本与后台完成消息；动画采样；状态提交；必要布局与排版；命中几何与绘制计划更新；呈现。布局属性动画参加本帧布局，纯变换与透明度只影响合成和命中。静止画面等待输入、计时器或资源事件，活动动画才持续请求新帧。
 输入采用最后一次被呈现系统接受的帧几何，收到 PresentAccepted 才替换快照。单次输入固定使用同一份快照；获取表面、提交或呈现失败、过期，以及 Skipped 或表面不可用时都保留原快照。该规则不承诺屏幕已经扫描显示。命中后核验当前节点代际与交互有效性，已销毁节点不再接收事件。一次输入最多推进一次剧情。
-Masonry 适配层是唯一交互分发入口。它使用冻结的 PresentedGeometryView 进行定向分发，该视图包含 NodeId/WidgetId 映射、局部尺寸、逆变换、裁剪、层序和祖先路径。按下、释放、hover、捕获坐标及 EventCtx 的几何查询都读取本次输入选定的视图，保持同一依据。当前上游按 widget_arena 的现有布局命中；D01 必须实现快照几何提供器与定向事件入口，必要时在仓库内修改这一入口，禁止随后又按当前布局二次命中。已销毁或禁用节点由当前有效性检查过滤。控件先处理并消费输入，剩余推进事件才进入剧情。按钮配对按下和释放，滑条捕获拖动指针。模态容器隔离下方指针、焦点、键盘和剧情快捷键，并释放作用域外的捕获与快进保持；失焦清除捕获与按键保持。
+reel-ui 的交互分发层是唯一控件输入入口。它使用冻结的 PresentedGeometryView 进行定向分发，该视图包含 NodeId/WidgetId 映射、局部尺寸、逆变换、裁剪、层序和祖先路径。按下、释放、hover、捕获坐标及 EventCtx 的几何查询都读取本次输入选定的视图，保持同一依据。定向事件入口按冻结几何分发，禁止随后又按 widget_arena 的当前布局二次命中。已销毁或禁用节点由当前有效性检查过滤。控件先处理并消费输入，剩余推进事件才进入剧情。按钮配对按下和释放，滑条捕获拖动指针。模态容器隔离下方指针、焦点、键盘和剧情快捷键，并释放作用域外的捕获与快进保持；失焦清除捕获与按键保持。
 
 ## 五 统一舞台与合成
-StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声明属性与寿命。Masonry 负责对应控件的布局、焦点、捕获、输入法、可访问性和临时交互状态；复合控件内部节点保持私有。两者通过 NodeId 到 WidgetId 映射连接。业务值和控件瞬态不得成为两份互相覆盖的状态。
+StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声明属性与寿命。reel-ui 的控件模块负责对应控件的布局、焦点、捕获、输入法、可访问性和临时交互状态；复合控件内部节点保持私有。两者通过 NodeId 到 WidgetId 映射连接。业务值和控件瞬态不得成为两份互相覆盖的状态。
 脚本变更与控件动作进入有序 StageTransaction，支持创建、移除、挂载、脱离、替换场景、属性修改、绑定和订阅。提交前统一验证身份、单父与无环约束；失败保留原舞台，成功后才释放旧场景。属性存储是唯一权威，同一事务同一属性采用最后一次有效写入，范围约束先执行，随后静默更新投影。属性绑定保留被引用属性的读写权限，slider 写回需要可写属性；只读派生绑定跟踪实际读取的可观察属性；派生函数不得写入或等待，循环依赖给出源码诊断。
 节点内容与交互行为分开。图片可以具备按钮行为，容器可以整体变换；按钮外观读取 hover、pressed、focused、disabled 等状态，滑条提供轨道与滑块槽位。作者组件与内建组件使用同一舞台能力，具体调用形式见 DSL 文档。节点移除注销绑定、订阅并取消所属任务与活动；隐藏保留身份，脱离必须由显式所有者接管。visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用子树交互。两者使捕获失效时统一释放捕获；opacity=0 不自动禁用输入。
 仿射变换、裁剪和命中使用同一几何，命中经逆变换计算。非线性视觉变形默认采用作者指定的逻辑命中区，扩展映射另行提供。适配必须验证变换后控件的捕获、焦点与命中一致性。
-便携的 RenderFrame、Mesh、Material 与绘制命令定义于 reel-stage，基础资源身份定义于 reel-core；stage 从不反向依赖 render。RenderFrame 包含帧号、画布与输出尺寸、资源引用以及有层次的绘制计划。计划保留 BeginGroup、EndGroup、裁剪、组透明度和效果参数。组内绘制连续，子节点排序受组边界约束；跨组覆盖由显式 overlay 容器表达。组透明度对合成结果应用一次，效果外扩计入离屏范围，再遵守对应裁剪语义。
+便携的 RenderFrame 与绘制命令定义于 reel-ui::frame，帧资源由 reel-ui::resources 管理，基础资源身份定义于 reel-core；UI 从不反向依赖 render。Mesh、Material 等扩展类型按既定功能范围逐步实现。RenderFrame 包含帧号、画布与输出尺寸、资源引用以及有层次的绘制计划。计划保留 BeginGroup、EndGroup、裁剪、组透明度和效果参数。组内绘制连续，子节点排序受组边界约束；跨组覆盖由显式 overlay 容器表达。组透明度对合成结果应用一次，效果外扩计入离屏范围，再遵守对应裁剪语义。
 普通容器直接合成，遮罩与后处理按需使用离屏目标。先实现相邻兼容绘制合批、排版与字形缓存、离屏目标复用；逐字显示复用完整文本排版，只改变显现范围。属性变化区分布局、内容、合成和命中；淡化不使排版失效，资源版本变化传播到依赖缓存。GPU 资源在实际使用结束后释放。低端模式可降低效果分辨率和采样数，逻辑坐标保持一致。
 
 可写绑定的标量写入与 tween 均沿引用链写入最终源 PropertyId，保留绑定。run 解析并保留真实源身份；被动投影只读取结果，外部源写入按统一规则停止根活动。只读派生属性拒绝直接写入，可用独立 override 层作演出。binding replacement/unbind 先停止依赖旧链的活动；unbind 固定当前基础值。override token 拥有独立属性存储，也遵循读写能力与保留规则。
@@ -174,7 +174,7 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 存档在所有可修改持久状态的任务停在合法指令或等待边界，且舞台、绑定和资源切换已提交后捕获。保存、读档提交与热重载提交互斥。保存接口立即返回请求，进度由服务模型提供；发起保存的任务返回或停在普通可恢复指令/等待边界后即可捕获，因而允许等待自己的 SaveRequest。当前存档副本内将该请求及其 Future 记为 Succeeded；活会话保持实际写入状态，只有可靠提交完成才成功。读取这份已提交存档时，恢复请求从已保存的后继指令继续，等待者在下一调度步按登记顺序收到成功，保存调用执行一次。此规范化只作用于被持久提交的该存档副本，既不修改活会话，也不适用于内存回滚快照。已结算的进程请求直接恢复保存的终态与结果。其他尚未结算的进程写请求只有匹配精确进程和请求身份及完成记录才重接，否则结算 OperationInterrupted 并保留可处理错误，避免重新写入外部目标。
 快照包含引用模块版本、全部存活任务及其调用帧与恢复位置、返回槽、异常状态、寄存器与中间值、闭包和共享 cell、全局对象图、待交付结果、当前交互、组件数据、舞台逻辑状态、时钟、随机数及媒体描述。generator、thread 与其他可等待对象按语言定义保存。对象 ID 保留共享、环、弱引用和类关系；脚本回调及捕获进入同一对象图。
 设备句柄通过资源描述重建。每种可达宿主值必须有版本化恢复描述；缺失时报告对象路径，保存失败且保留原槽位。系统服务恢复为同一服务身份。读取在隔离候选会话中先创建身份、再连接引用与订阅，成功后一次切换；失败保留当前会话。
-捕获先固定会话时钟、根与媒体逻辑状态，再暂停业务写入，按对象与边游标分片复制到独立快照。长字符串与容器也应分块。窗口、输入采集和 Masonry 的非持久原生反馈继续运行；业务回调与有副作用的绑定写回按序排队；derive 失效与只反映最终瞬态的外观重算可合并，完成捕获后按最新状态重新计算。后台结果排队。连续移动按指针合并，按下、释放、取消保留次序。队列接近容量时提前终止本次捕获并恢复业务处理，保存请求报告 CaptureBusy，原存档保留；仍发生输入溢出则发布 InputReset，释放全部捕获与按住状态并丢弃该溢出批次，避免卡住按钮或快进。队列内事件保留会话和节点身份，恢复后重新验证。后台只接收已完成的纯数据快照，负责压缩与写盘。
+捕获先固定会话时钟、根与媒体逻辑状态，再暂停业务写入，按对象与边游标分片复制到独立快照。长字符串与容器也应分块。窗口、输入采集和 UI 的非持久原生反馈继续运行；业务回调与有副作用的绑定写回按序排队；derive 失效与只反映最终瞬态的外观重算可合并，完成捕获后按最新状态重新计算。后台结果排队。连续移动按指针合并，按下、释放、取消保留次序。队列接近容量时提前终止本次捕获并恢复业务处理，保存请求报告 CaptureBusy，原存档保留；仍发生输入溢出则发布 InputReset，释放全部捕获与按住状态并丢弃该溢出批次，避免卡住按钮或快进。队列内事件保留会话和节点身份，恢复后重新验证。后台只接收已完成的纯数据快照，负责压缩与写盘。
 资源读取按描述重发，动画按逻辑时间继续，音乐按资源和位置恢复，当前语音从该句开头重播，一次性音效保持已结束。外部写入使用结果记录与回滚边界，不能随读档盲目重放。
 槽位文件统一保存摘要、缩略图和完整快照，桌面默认在必要同步后原子替换，其他平台遵守 AssetIo 已验证的等价持久提交策略；同槽请求按序提交，只有对应存储级别提交成功才报告完成。失败保留旧文件。捕获后的写盘由进程级保存服务持有，切场景不取消它。平台同步与替换行为必须实际验证。自动保存可合并，显式请求保留顺序；待捕获请求数量与估算字节数有上限。
 全局设置、已读和解锁记录独立于剧情快照。恢复设置绑定时以当前全局设置为准。回滚先使用完整交互快照和共享不可变资源，默认历史预算起点为 32 MiB，超限移除最旧快照；活动 cell、属性和等待状态必须独立复制。增量记录等真实成本明确后再做。
@@ -245,17 +245,17 @@ Runtime 按 SessionId/Epoch 路由结果，活动会话只是其中一个。回�
 每阶段必验：静止场景无无效脚本、布局和呈现；单滑条不更新无关布局；纯音量变化只通知音频；单节点淡化复用排版。开发运行和 release 都测体验，优化由同一工作负载的前后数据证明。
 
 ## 十四 开发顺序与验收
-D01 固定公共协议、版本规则与验收样本，验证独立窗口与渲染接口、表面生命周期及能力选择；再验证 Masonry 分组绘制、变换命中和控件外观接入。队列按本文规则实现，D01 固定各目标默认容量并覆盖满载情况。
+D01 固定公共协议、版本规则与验收样本，验证独立窗口与渲染接口、表面生命周期及能力选择；再验证 UI 分组绘制、变换命中和控件外观接入。队列按本文规则实现，D01 固定各目标默认容量并覆盖满载情况。
 L01 实现语言最小闭环及宿主调用。S01 并行完成舞台事务、图片按钮、滑条、tab 和模态输入。R01 完成组透明度、裁剪、遮罩与缓存失效。M01 并行完成 Kira、资源取消和预算实测。以上共享 D01。
 E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P01 完成对象图快照、跨进程读档、多槽和有限回滚。H01 在既有状态表示上加入热重载。完整语言与标准库按独立能力清单持续推进，属于最终验收，不能把语言最小闭环称为语言完成。
 验收采用最小宿主夹具和针对性 UI 片段，不要求制作完整可玩流程。NullPlatform、记录型渲染器、假时钟和内存 IO 验证无隐式设备、时间或文件系统依赖；关闭 winit/wgpu 后检查核心及传递依赖。用例覆盖单次输入消费、配对按下与释放、拖动失焦、模态隔离、嵌套合成、保存后切场景、读档后旧结果、重载已有回调及节点销毁后的异步完成。音频、恢复与帧预算分别提供可重复的负载和观察值。协作执行器测单步最大耗时、满队列、取消与过期完成；表面丢失及挂起恢复测时钟和资源身份。Vita 承诺前先做 32 位交叉构建，再依次验证启动、输入、图片/字形、音频、可靠保存与效果，不承诺未经实测的帧率。
 每个代理任务写明目标、允许目录、冻结的接口版本、已有代码、禁止扩大的范围、行为场景与性能预算。Issue 按可验收成果组织，PR 保持独立可审查；提交包含实际改动、相关用例、运行命令、观察结果与未解决项。不得以测试数量、模拟成功或完成报告代替实际契约验证。接口或依赖变更先提交设计修改，经负责人确认后继续。负责人亲自审输入、所有权、保存、音频和平台关键路径，重跑关键验证并处理跨模块冲突。性能计数器从第一阶段建立，协议变更同步三份设计。各后端的构建、设备和尾延迟验证属于对应实现任务。代码与文档以同一能力清单记录结果。
 
-## 十五 Masonry 生产适配合同
-本节规定生产适配的实现边界。隔离实验已验证真实控件与 CPU 记录路径；生产源码接入、后端设备和下列新增接口按各自用例验收。固定上游要求 Rust 1.96，工作区采用 1.96.0 工具链。
+## 十五 UI 模块与呈现桥接合同
+本节规定 reel-ui 的模块与行为边界。UI 结构整合不改变已验收的控件、CPU 帧记录、呈现几何和资源契约；后端与设备仍按各自用例验收。工作区采用 Rust 1.96.0 工具链。
 
 呈现几何与上下文
-Masonry 导出几何、选择输入源并分发事件；FrameId、surface epoch、呈现接受门、预算和 NodeId↔WidgetId 的代际映射归 Reel。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。
+reel-ui::app/core 导出几何、选择输入源并分发事件；bridge 管理 FrameId、surface epoch、呈现接受门和 NodeId↔WidgetId 的代际映射，沿用 reel-core 的共享预算。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。
 几何快照包含全部登记节点，包括 stashed 节点。采用连续记录与 children 索引数组，每节点保存 WidgetId、parent 索引、children 范围、对齐 border-box 尺寸、border/paint insets、局部变换、border-box 到 window 变换、window 子树 bounds、已解析 content baselines、border-box 坐标的 clip 和 frozen 命中标志（content-box getter 只转换一次）。整帧保存 DPI、根及 id 索引。布局缓存、属性、action 和完整 WidgetState 留在当前运行时。路径沿 parent links 在有上限的复用缓冲中生成一次，整次事件借用；内存与构建成本计入候选帧预算。
 每次真实指针分发固定一个 view，命中、捕获、祖先路由、hover、cursor 和所有输入上下文共用它。Context 借用 view 与已验证记录索引，QueryCtx 保持可复制；每个 context 无需克隆 Arc。自身几何 getter 的前置条件由构造入口保证。查询缺失或已销毁子节点时，QueryCtx::get、get_raw/get_raw_mut 等入口返回 Option/Result；Presented 缺失记录保持缺失，既不回退 Live，也不按当前控件几何重新命中。WidgetRef::children 依据所选拓扑枚举并过滤已销毁节点。布局、动画、普通 mutation 以及非指针状态更新显式使用 Live。
 实现必须逐一迁移 event.rs、update.rs、contexts.rs、widget_ref.rs、render_root.rs、anim.rs 的 context 构造入口及其实际调用方；旧实验六文件范围只是原型范围。当前存活、stashed、disabled 状态继续即时生效；disabled 命中保留祖先消费路径，自身行为跳过。捕获失效与普通命中的 disabled 处理分别判断。
@@ -264,19 +264,19 @@ Masonry 导出几何、选择输入源并分发事件；FrameId、surface epoch�
 统一记录流
 默认记录路径直接访问 VisualLayerPlan 的完整有序片段（§16）。Reel 导出在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 与源身份一起映射。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。replay-to-Scene 仅保留为显式调用的结构/CPU 参考。
 独立片段是画序分段，消费时按原顺序组成完整流。使用稳定层边界时，paint_layer_mode 为 retained 声明：初始 Inline，缓存回调未执行时保留，显式设置 Inline 才恢复普通模式；其他 pre/paint/post 回调执行时，保留未重声明的层模式。
-外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。R01 的 fork 已替换原先缺少作用域的 post-children placeholder；Reel 始终只有这一条画序来源，具体外部设备实现另行验收。
+外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。R01 实现已替换原先缺少作用域的 post-children placeholder；Reel 始终只有这一条画序来源，具体外部设备实现另行验收。
 
 作者滑条
 复用 Slider 的指针、键盘与 AccessKit 行为。slider.rs 提供只读规范化值/范围/步长、静默投影更新及变化标记，并让原 Widget 回调与作者包装器共用同一行为入口。Reel 包装器拥有轨道/滑块节点，替换全部默认绘制阶段，明确登记自身属性与默认值；装饰节点由控件统一处理命中和焦点。
 SliderInputProjection 保存所选帧的 a/b、axis/direction、min/max/step、步进锚点及配置版本。中心与指针逆映射共用同一几何 helper；范围与步长配置通过统一规范化，范围改变而值未变也更新外观和可访问性。退化几何产生空的指针映射，避免除零；无效配置在提交前报告。
 业务 value 由 Reel 当前模型管理，外部更新即时生效，旧帧显示值只用于绘制。指针按冻结投影产生绝对值，键盘/AccessKit 增减从当前业务值开始。配置版本仅随 range/step、axis/direction、端点策略等显式交互配置改变；普通布局尺寸、父级变换、动画与 value 更新保持版本。配置已变而对应帧尚未接受时，控件保留祖先消费，暂不执行旧投影行为；已有捕获沿失效路径交付一次 Cancel。新配置帧接受后恢复。
-源码导入范围根据上述实际调用闭包确定，至少审查 masonry_core、tree_arena 与受影响的 masonry widgets 及构建资源，保留上游来源/许可证，普通依赖继续锁定引用。生产验收覆盖首帧/清空、缺失子查询、路径变更、单次终止、绘制组跨片段、外部内容作用域，以及图片滑条与业务绑定的同一数值/几何。
+源码按职责组织为 reel-ui 内部模块，控件基础、树、呈现桥接不再拆成独立包。保留原始许可和必要版权/来源说明，普通外部依赖继续锁定引用；验证以当前行为、单一类型来源和依赖边界为依据，不做上游目录或补丁重放门槛。生产验收覆盖首帧/清空、缺失子查询、路径变更、单次终止、绘制组跨片段、外部内容作用域，以及图片滑条与业务绑定的同一数值/几何。
 
 ## 十六 可移植绘制帧与默认光栅后端
 
 ### 帧与导出
 
-reel-stage 定义 RenderFrame，保存帧身份、SurfaceEpoch、逻辑/输出尺寸、确定画序、分组、裁剪、外部内容、诊断上下文和资源引用。绘制数据复用 kurbo/Peniko 的几何与画刷描述；字体记录直接使用 Parley 已计算的 glyph ID、位置、字号、字体集合索引及 variation 坐标。渲染器接收这些结果，排版仍由原有文本系统负责。
+reel-ui::frame 定义 RenderFrame，保存帧身份、SurfaceEpoch、逻辑/输出尺寸、确定画序、分组、裁剪、外部内容、诊断上下文和资源引用。绘制数据复用 kurbo/Peniko 的几何与画刷描述；字体记录直接使用 Parley 已计算的 glyph ID、位置、字号、字体集合索引及 variation 坐标。渲染器接收这些结果，排版仍由原有文本系统负责。
 
 导出直接访问 VisualLayerPlan 的有序片段与 imaging Scene 的公开 command/clip/group/mask/draw/context 数据。Scene 内的 ID 只在所属源 Scene 中有意义，映射键包含源 Scene 身份及局部 ID；若变换烘焙进数据，还需区分重放实例。mask 定义优先保持局部坐标，使用处携带变换，通过有界映射转成帧内索引。多个片段共用连续的 group/clip/context 状态，mask 子流使用独立验证栈。imaging 对 clip/group 深度分别验证；可移植记录同时保留独立逻辑栈及原画序。跨片段的正常嵌套完整支持；交叉结束的 clip/group 寿命缺少已定义的像素语义，导出以带位置的 UnsupportedRecord 明确拒绝该模式，避免按另一种栈规则猜测结果。IsolatedScene 表示记录边界，其本身不额外产生透明组。默认生产路径省去先展平为第二份 Scene 的复制，replay-to-Scene 保留作结构参考。
 
@@ -288,7 +288,7 @@ RecordedSource 移入同次真实 VisualLayerPlan、几何和候选身份。Fram
 
 图片、字体和外部内容先在有界资源登记表中建立 ResourceVersion 与拥有型租约。复用 reel-core 的 AssetKey、ContentVersion，紧凑运行时句柄包含登记表代数及完整槽身份。源 Blob ID 只作为查找线索，登记时同时核对内容对象/版本，避免把碰撞身份当成相同内容。内容版本在资源准备阶段固定，导出只查表；缺少登记给出具体资源需求，由准备工作完成后重新构建候选。
 
-登记表持有共享不可变数据，帧保存资源引用/租约，上传和在途提交各自取得其所需拥有权。同一图片或字体在多次绘制中复用数据。缓冲、索引表、候选副本、等待上传、图形在途与退休空间均计费；物理释放完成后退账。retire 停止取得新租约并移除登记表自己的保留；已有租约仍可用于提交，包括暂停构建、完整帧和已接受上传。全部租约释放且最后一次图形使用完成之后才归还实际存储，槽复用更新完整代数。导出的硬字节/工作额度约束新增帧、映射与登记存储。源 Scene 私有表容量、未被 command 引用的 mask 与共享 Blob 的底层分配属于生产者记录/缓存，公共 command visitor 只提供内容访问。R01 对这些源驻留分别测量 record、暂停构建、完成和取消时的实际分配/进程峰值及源清理耗时，明确标识源租约保留期；不以命令长度冒充精确源分配账本。后续需要源计划硬上限或分片析构时，增加真正的上游 owned-parts/drain/storage 接口后验证。
+登记表持有共享不可变数据，帧保存资源引用/租约，上传和在途提交各自取得其所需拥有权。同一图片或字体在多次绘制中复用数据。缓冲、索引表、候选副本、等待上传、图形在途与退休空间均计费；物理释放完成后退账。retire 停止取得新租约并移除登记表自己的保留；已有租约仍可用于提交，包括暂停构建、完整帧和已接受上传。全部租约释放且最后一次图形使用完成之后才归还实际存储，槽复用更新完整代数。导出的硬字节/工作额度约束新增帧、映射与登记存储。源 Scene 私有表容量、未被 command 引用的 mask 与共享 Blob 的底层分配属于生产者记录/缓存，公共 command visitor 只提供内容访问。R01 对这些源驻留分别测量 record、暂停构建、完成和取消时的实际分配/进程峰值及源清理耗时，明确标识源租约保留期；不以命令长度冒充精确源分配账本。后续需要源计划硬上限或分片析构时，增加真正的 owned-parts/drain/storage 接口后验证。
 
 等待上传字节额度累计约束全部未完成批次的 payload 容量票据，与上传加驻留总额度独立检查；拒绝返回原批次。选定无强租约的资源槽后，先释放登记表自己的过期弱描述符票据再预留替代项，外部弱别名继续保留相应责任。
 
@@ -296,9 +296,9 @@ reel-render 定义后端及上传/呈现/完成/退休接口，读取 stage/core
 
 ### 外部内容与坐标
 
-Masonry 外部层保留宿主不透明 token、拥有 WidgetId、内容局部 bounds 与 content-to-layer 变换。真实顺序固定为 pre-paint → own clip → external paint → children → pop clip → post-paint。外部 paint 前结束当前记录片段，继承已打开的组和裁剪；其后子节点继续同一顺序流。跳过缓存回调时保留上次声明的外部模式/token，显式切回 Inline 才恢复普通内容。
+UI 外部层保留宿主不透明 token、拥有 WidgetId、内容局部 bounds 与 content-to-layer 变换。真实顺序固定为 pre-paint → own clip → external paint → children → pop clip → post-paint。外部 paint 前结束当前记录片段，继承已打开的组和裁剪；其后子节点继续同一顺序流。跳过缓存回调时保留上次声明的外部模式/token，显式切回 Inline 才恢复普通内容。
 
-基底层与其他层使用一致的 layer-local-to-window 约定，绘制与 PresentedGeometryView 使用同次变换。内容坐标包含 border-box 的相应平移，clip 使用明确的 border-box 坐标。有限但奇异的变换可以保留视觉几何，输入逆映射返回空；导出转换使用显式上下文和前向变换，避免强制求逆。前向累计使用 Masonry 的完整 compose_local_transform，包含 layout origin 和 scroll translation；几何记录中单独的 transform 字段仅是其组成部分。非有限变换在变更提交/导出时给出定位错误。消除已知基底层变换偏差并通过像素/命中对应检查后，替换 U02 的临时 UnsupportedRootTransform 边界。
+基底层与其他层使用一致的 layer-local-to-window 约定，绘制与 PresentedGeometryView 使用同次变换。内容坐标包含 border-box 的相应平移，clip 使用明确的 border-box 坐标。有限但奇异的变换可以保留视觉几何，输入逆映射返回空；导出转换使用显式上下文和前向变换，避免强制求逆。前向累计使用 UI 的完整 compose_local_transform，包含 layout origin 和 scroll translation；几何记录中单独的 transform 字段仅是其组成部分。非有限变换在变更提交/导出时给出定位错误。消除已知基底层变换偏差并通过像素/命中对应检查后，替换 U02 的临时 UnsupportedRootTransform 边界。
 
 paint/append 边界另存连续命令的实际绘制者范围，普通 Inline 子控件的命令和定位错误不能以片段边界 owner 代替；范围游标在已计费的命令提交/片段推进时只访问相邻范围，初始化以固定一次索引读取得首个 owner；下一命令的映射预付款发生 Work 失败时也报告该命令的实际 owner，诊断不做未计费扫描或延后查找，payload 暂停继续保留相同来源。生成的 clip、调试框和检查器绘制也保存实际 owner。调试 bounding_box 已在窗口坐标中，使用 identity 片段；baseline 前向累计到窗口坐标，跨片段保持打开的作用域，不对奇异变换求逆。
 
@@ -322,7 +322,7 @@ Vello 0.8 的编码/渐变与 blend 路径采用 sRGB，imaging_vello 0.0.1 对 
 
 R01 固定帧、资源租约、可恢复导出和外部内容顺序，保留 U02 的真实接受/输入回归。后续 wgpu 实施在同一合同上验证实际像素、alpha/亮度 mask、嵌套透明组、crossfade、字形与图片缓存、resize/挂起/设备丢失以及上传/回收边界。每份结果区分源码审查、CPU/null 和具体图形设备；完整帧、导出、光栅、合成、提交与物理完成分开计时。
 
-R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-stage/R01-INTERFACE.md)，真实 Masonry、U02 回归与导出/驻留/清理测量见 [R01-REPORT](../crates/reel-stage/R01-REPORT.md)。自有图片/字体以 core OwnedBytes 将全 capacity 票据绑定到 Blob 底层，生产者缓存别名继续保留该账目；公开 API 导入的不透明源分配仍归生产者单独计量。输出、映射与登记表有硬额度，源 Scene 私有容量不由 command 长度推算。逐元素复制、映射和容量信用可跨 step 推进；实际容量分配与源 Drop 仍是原子操作，分别报告耗时。已知几何外延包含按冻结 DPI 计算的 AA；有限值运算溢出、本地 mask 的采样外延、Gaussian cutoff、字形轮廓与滤镜未知外延明确记为 Unbounded 并要求后端按真实输出目标裁限。记录型 PresentAccepted 是模拟接口结果，null 明确 Skipped，均不代表设备像素或 GPU 性能通过。
+R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)，真实控件、U02 回归与导出/驻留/清理测量见 [R01-REPORT](../crates/reel-ui/R01-REPORT.md)。自有图片/字体以 core OwnedBytes 将全 capacity 票据绑定到 Blob 底层，生产者缓存别名继续保留该账目；公开 API 导入的不透明源分配仍归生产者单独计量。输出、映射与登记表有硬额度，源 Scene 私有容量不由 command 长度推算。逐元素复制、映射和容量信用可跨 step 推进；实际容量分配与源 Drop 仍是原子操作，分别报告耗时。已知几何外延包含按冻结 DPI 计算的 AA；有限值运算溢出、本地 mask 的采样外延、Gaussian cutoff、字形轮廓与滤镜未知外延明确记为 Unbounded 并要求后端按真实输出目标裁限。记录型 PresentAccepted 是模拟接口结果，null 明确 Skipped，均不代表设备像素或 GPU 性能通过。
 
 主要依据：
 - imaging 0.0.1 公开记录：https://github.com/forest-rs/imaging/blob/eea0e47503fdab1c4159a939797ba74acab19876/imaging/src/record.rs
