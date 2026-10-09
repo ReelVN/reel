@@ -107,8 +107,8 @@ StageGraph owns NodeId allocation, generations and author-node mappings (§6).
 D01 identity.rs supplies FrameId/SurfaceEpoch, not an author NodeId type. U02
 uses non-reused Masonry WidgetIds for the private widget tree; it introduces no
 parallel NodeId allocator or StageGraph. R01 adds prepared resource versions,
-bounded frame export and ExternalDraw. Author Slider/DSL and GPU/device support
-remain separate tasks. Bridge tickets cover geometry and fixed routes/registry;
+bounded frame export and ExternalDraw. Author Slider/DSL remain separate tasks; native GPU/window implementations
+live in reel-render/player. Bridge tickets cover geometry and fixed routes/registry;
 R01 independently accounts output/resource/backend ownership and measures opaque
 producer Scene/cache residency.
 
