@@ -137,7 +137,7 @@ validates the same artifact/inventory before timing `/bin/true`.
 
 Combined tested source: `e8383148d42a51e7c21aa794751cec7c5b620a60`.
 The same Linux/Rust/font/software Vulkan environment described above was used.
-Raw commands, logs, Rust supporting programs and the complete 27-check result list
+Raw commands, logs, Rust supporting programs and the complete 26-check result list
 are ignored under `target/reel-artifacts/issue-34/composed-main-3962819/`.
 Later changes only record these results.
 
