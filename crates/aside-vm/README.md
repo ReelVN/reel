@@ -1,8 +1,11 @@
-# Aside storage (L01 and V02)
+# Aside storage, root ranges and bytecode (L01, V02 and B01)
 
-This crate implements Value storage, an object heap, explicit roots, and one
-incremental tracing collector. It does not implement the parser, bytecode
-execution, language collection operations, native adapters, or snapshot format.
+This crate implements Value storage, an object heap, explicit roots, continuous
+root ranges, one incremental tracing collector, and the B01 shared bytecode
+format, codec, verifier and disassembler. See [B01](src/bytecode/README.md) for
+program loading and validation boundaries. It does not implement the parser,
+bytecode execution, language collection operations, native adapters, or snapshot
+format on this main-branch baseline.
 Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
 is maintained by the integration owner.
 
