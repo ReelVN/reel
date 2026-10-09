@@ -1,0 +1,12 @@
+Command: /workspace/.reel-cargo/bin/cargo test -p reel-core -p reel-stage -p reel-render --release --features reel-core/test-support --locked -- --test-threads=1 --nocapture
+Log: release-tests.log; exit=0
+Command: /workspace/.reel-cargo/bin/cargo clippy --workspace --all-targets --features reel-core/test-support --locked -- -D warnings
+Log: clippy.log; exit=0
+Command: /workspace/.reel-cargo/bin/cargo fmt --all --check
+Log: fmt.log; exit=0
+Command: python3 crates/reel-stage/scripts/audit-source.py /tmp/xilem-271a27a6d4a930f7878d404f9014e3c50a3a9b88
+Log: source-audit.log; exit=0
+Command: /workspace/.reel-cargo/bin/cargo test -p reel-stage --test r01 actual_parley_label_glyphs_are_copied_without_reshaping --locked -- --ignored --test-threads=1 --nocapture
+Log: parley-debug.log; exit=0
+Command: /workspace/.reel-cargo/bin/cargo test -p reel-stage --release --test r01 actual_parley_label_glyphs_are_copied_without_reshaping --locked -- --ignored --test-threads=1 --nocapture
+Log: parley-release.log; exit=0

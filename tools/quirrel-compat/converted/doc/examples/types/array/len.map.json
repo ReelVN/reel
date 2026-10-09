@@ -1,0 +1,32 @@
+{
+  "source": "doc/examples/types/array/len.nut",
+  "source_sha256": "a171ec52e452866871cf8a827cb531868e8b9c50079ecc56f2fe6835638a5fd7",
+  "aside_sha256": "93f10b212e672d21266a374dc599ffab08ea226b98df016deef696e539ac875d",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
+  "segments": [
+    {
+      "original": [
+        0,
+        0
+      ],
+      "aside": [
+        0,
+        223
+      ],
+      "kind": "generated_header"
+    },
+    {
+      "original": [
+        0,
+        143
+      ],
+      "aside": [
+        223,
+        366
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": []
+}

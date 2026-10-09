@@ -1,0 +1,14 @@
+source: https://codeload.github.com/linebender/xilem/tar.gz/271a27a6d4a930f7878d404f9014e3c50a3a9b88
+checking file masonry_core/src/app/mod.rs
+checking file masonry_core/src/app/presented_geometry.rs
+checking file masonry_core/src/app/render_root.rs
+checking file masonry_core/src/core/contexts.rs
+checking file masonry_core/src/passes/event.rs
+checking file masonry_core/src/passes/update.rs
+patching file masonry_core/src/app/mod.rs
+patching file masonry_core/src/app/presented_geometry.rs
+patching file masonry_core/src/app/render_root.rs
+patching file masonry_core/src/core/contexts.rs
+patching file masonry_core/src/passes/event.rs
+patching file masonry_core/src/passes/update.rs
+fixed source verified: 72 files, 592487 bytes; patch applied to masonry_core only

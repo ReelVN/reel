@@ -1,0 +1,9 @@
+WARNING: w254 (bool-passed-to-strange) Boolean passed to 'instanceof' operator.
+testData/static_analyzer/w254_instanceof.nut:6:4
+
+local x = 10
+if (x instanceof !"weapModSlotName")
+    ^------------------------------
+  return null
+
+

@@ -32,11 +32,11 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 标识符、源码、注释和文本使用 UTF-8；标识符采用固定 Unicode 版本的 XID 规则并允许 _，名称按实际字符序列区分。注释为 // 与 /* ... */，块注释可嵌套。字符串使用双引号，支持反斜线、双引号、n/r/t/0 及 u{十六进制标量} 转义，非法标量报错。f"音量：{volume}" 为插值，{{ 与 }} 表示字面花括号。三双引号包围多行文本，保留换行且不自动缩进裁剪；前缀 r 禁用转义，f 启用插值，二者不混用。数组为 [a, b]，对象为 {name: "Mio", [key]: value}，tuple 为 (a, b)。列表允许末尾逗号。
 
-{} 在要求表达式的位置为对象，在 fn、if、循环、try 等要求块的位置为块。|| {...} 是闭包块，返回对象写 || ({name: "Mio"})。存在语法歧义的独立对象表达式必须加括号；解析器不按运行结果猜测。if/while/for/match 头部的最外层关闭尾随 children 调用，使其后的花括号属于控制流；确需尾随调用时用圆括号包住该表达式。对象/数组展开分别写 {...base, score: 1}、[...items, last]，均按源码顺序复制条目/元素，保留内部引用。对象展开只复制自有槽，不复制 delegate，后项覆盖前项。
+{} 在要求表达式的位置为对象，在 fn、if、循环、try 等要求块的位置为块。|| {...} 是闭包块，返回对象写 || ({name: "Mio"})。match 分支结果位置的最外层裸 {...} 同样是块，末尾表达式提供分支值；对象结果写 _ => ({name: value})。闭包参数类型中的 union 使用括号，如 |x: (A|null)| body；参数列表最外层的 | 固定为结束符。存在语法歧义的独立对象表达式必须加括号；解析器不按运行结果猜测。if/while/for/match 头部及 class 的基类表达式最外层关闭尾随 children 调用，使其后的花括号属于控制流；确需尾随调用时用圆括号包住该表达式。对象/数组展开分别写 {...base, score: 1}、[...items, last]，均按源码顺序复制条目/元素，保留内部引用。对象展开只复制自有槽，不复制 delegate，后项覆盖前项。
 
 if condition { ... } else { ... }、while condition { ... }、for pattern in values { ... } 是基本控制流；if 作为取值表达式必须有 else。loop { ... } 为无限循环。break/continue 默认指向最近循环，可通过 label: while ... 与 break label; / continue label; 指定外层循环。循环本身不产生隐式结果。for 每轮创建新绑定，闭包保留本轮值。a..b 不含终点，a..=b 含终点，均产生整数 Range；步长由 range(start, end, step:, inclusive:) 提供，零步长报错，方向与端点不符为空区间，推进溢出在越界前终止。
 
-一般表达式按源码从左到右求值一次；短路、条件和模式有各自明确规则。赋值先计算目标对象与键，再计算右值并写入；复合赋值先计算左值位置一次，再读取、求右值、计算和写入。求值错误不会自动撤销已经发生的普通副作用；有事务语义的宿主接口另行声明。
+一般表达式按源码从左到右求值一次；短路、条件和模式有各自明确规则。赋值先计算目标对象与键，再计算右值并写入；复合赋值先计算左值位置一次，再读取、求右值、计算和写入。赋值链 a = b = value; 作为一条语句，先从左到右确定所有目标位置，末尾 value 求值一次，再按从内到外的顺序写入。整条链无表达式结果；算术、参数、let 初值等取值位置使用赋值会诊断。每个解构目标按自身的原子准备/提交规则写入，整条链沿用普通副作用规则。求值错误不会自动撤销已经发生的普通副作用；有事务语义的宿主接口另行声明。
 
 ## 三 值 绑定 相等与数值
 
@@ -57,7 +57,7 @@ let next = || { count += 1; count };
 
 int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 / 向零截断；任一操作数为 float 则按 float64 运算。% 是与向零除法一致的 remainder，div_euclid/rem_euclid 提供欧几里得规则。数字除零含浮点 ±0 均报错，其余 float 运算允许产生非有限值；宿主属性可另行要求有限值。+ 只接受数值对或字符串对，字符串化使用 str()/插值。
 
-位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
+位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，yield，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
 
 ## 四 对象 集合与键
 
@@ -111,7 +111,7 @@ Bytes 为不可变字节值，按内容相等与散列；ByteBuffer 为共享可
 
 ## 七 模式和分支
 
-模式统一支持名称、_、字面值、tuple、array、对象字段、嵌套、尾部 rest、类型测试和 OR。同一分支名称不得重复，OR 的各侧必须绑定相同名称。对象模式默认只要求列出的自有字段；{name, score: points = 0, ...rest} 在 score 缺失时才求缺省，显式 null 不触发；rest 为其他自有字段的新 table。tuple/array 默认精确长度，通过 rest 明确接收剩余项，不静默丢弃或补 null。
+模式统一支持名称、_、字面值、tuple、array、对象字段、嵌套、尾部 rest、类型测试和 OR。类型测试写 pattern is Type，OR 写 left | right，is 结合更紧；类型测试中的 union 用括号明确，如 value is (A|null)。() 是零元 tuple 模式，单项圆括号是模式分组，含逗号是一元或多元 tuple 模式。同一分支名称不得重复，OR 的各侧必须绑定相同名称。对象模式默认只要求列出的自有字段；{name, score: points = 0, ...rest} 在 score 缺失时才求缺省，显式 null 不触发；rest 为其他自有字段的新 table。tuple/array 默认精确长度，通过 rest 明确接收剩余项，不静默丢弃或补 null。
 
 ```aside
 let result = match event {
@@ -129,9 +129,9 @@ match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，�
 
 块内 fn 声明先建立只读函数绑定，允许自递归和互相递归；捕获普通 let 的初始化状态仍受检查，不得把未初始化值视为 null。命名参数适用于脚本闭包和 native，使用同一签名描述与绑定器。位置参数在命名参数前；fn f(a,b=1,...rest) 支持新建 array 接收尾部位置参数。
 
-callee、所有实参、展开和 children 按源码顺序各求值一次，然后绑定签名；重复名、未知名、多余或缺失参数报错。缺省在每次调用中按参数顺序求值，可引用前面参数，不可引用后面参数；不允许外部等待/yield。实际参数全部先求值，再运行缺省，children=[] 每次独立。f(...sequence) 展开 array/tuple 为位置参数；call(f, positional: [], named: {}) 提供动态完整转发，具名表键须 string，重复与冲突仍报错，不按对象合并覆盖。
+callee、所有实参、展开和 children 按源码顺序各求值一次，然后绑定签名；重复名、未知名、多余或缺失参数报错。缺省在每次调用中按参数顺序求值，可引用前面参数，不可引用后面参数；不允许外部等待/yield。缺省的块表达式以块尾值产生参数结果；显式 return 的词法范围从普通函数体开始，缺省边界内的 return 给出 InvalidDefault 诊断，即使位于条件或短路分支也一样。缺省内定义的嵌套函数按自己的函数边界正常 return。break/continue 仅作用于缺省内部建立的循环，throw 沿参数准备规则传播。实际参数全部先求值，再运行缺省，children=[] 每次独立。f(...sequence) 展开 array/tuple 为位置参数；call(f, positional: [], named: {}) 提供动态完整转发，具名表键须 string，重复与冲突仍报错，不按对象合并覆盖。
 
-class 使用单继承，class Child: Parent。实例有声明字段，let/let mut 表示只读/可写；字段初始化每实例按基类到子类执行。未给初值的只读字段必须由构造过程赋值一次；结束时验证完整，实例状态为 Constructing、Ready 或 Failed，并记录已初始化字段。成功返回 Ready；异常结束标记 Failed。显式发布过的引用仍保持身份，但对 Failed 实例的普通操作报告 ConstructionFailed，诊断/status 查询保留可用；Constructing 中读取未初始化字段报告 UninitializedField。普通已经发生的副作用沿用语言规则，构造失败不伪装成外部事务回滚；快照保存构造状态、字段位图与执行帧。owner/Region 硬撤销或 invoke_sync 预算终止同样由 VM 清理把未完成实例标记 Failed；GC/快照只追踪已初始化槽。全部别名与既有绑定方法读取同一实例状态，方法调用也执行 Failed 检查。构造方法 fn init(self, ...) 显式首参 self；类调用创建实例并调用最近的有效 init，派生类未声明 init 时继承基类构造。声明派生 init 时只调用它，super.init(...) 显式初始化基类，禁止同一基类 init 重复执行。字段初始化不会因 super.init 重跑。
+class 使用单继承，命名声明写 class Child: Parent { ... }；匿名类表达式写 class { ... } 或 class: Parent { ... }。命名声明建立词法绑定，该绑定可直接作为类值使用；匿名类表达式创建并返回新的类对象。实例有声明字段，let/let mut 表示只读/可写；字段初始化每实例按基类到子类执行。未给初值的只读字段必须由构造过程赋值一次；结束时验证完整，实例状态为 Constructing、Ready 或 Failed，并记录已初始化字段。成功返回 Ready；异常结束标记 Failed。显式发布过的引用仍保持身份，但对 Failed 实例的普通操作报告 ConstructionFailed，诊断/status 查询保留可用；Constructing 中读取未初始化字段报告 UninitializedField。普通已经发生的副作用沿用语言规则，构造失败不伪装成外部事务回滚；快照保存构造状态、字段位图与执行帧。owner/Region 硬撤销或 invoke_sync 预算终止同样由 VM 清理把未完成实例标记 Failed；GC/快照只追踪已初始化槽。全部别名与既有绑定方法读取同一实例状态，方法调用也执行 Failed 检查。构造方法 fn init(self, ...) 显式首参 self；类调用创建实例并调用最近的有效 init，派生类未声明 init 时继承基类构造。声明派生 init 时只调用它，super.init(...) 显式初始化基类，禁止同一基类 init 重复执行。字段初始化不会因 super.init 重跑。
 
 方法调用提供接收者一次；方法取值形成强保留接收者的绑定闭包，普通表中的闭包不自动注入 self，普通函数不继承调用者的隐式 this。super.method 固定从词法基类查找并保留同一个接收者。每次方法取值可以创建新闭包，不保证两次取值身份相等；事件注销依赖 Subscription token。static let/static let mut 与 static fn 属于类，static fn 无 self；只读 static 初始化一次。class 可作为值和局部声明，继承图不得成环，公开字段与方法反射不暴露内部布局。
 
@@ -160,7 +160,7 @@ game.toml 所在目录是源码根；game:: 后的模块段对应目录和 .asid
 
 候选初始化仅可分配/写候选对象，并调用标为 InitSafe 的宿主操作；禁止修改旧会话、全局设置、外部资源。候选失败释放候选图，活会话不变。Reel story.register(id,entry,title:) 为普通 InitSafe 登记 API，id 为唯一稳定 string，entry 为模块级、零必需参数普通 fn；发布前检查冲突，普通调用仍保留原闭包版本，不以登记替换函数机制。
 
-类型注解支持 any、基础类别、class/native 名称、T|null/union、固定 tuple (T,U)、函数签名。注解不改变动态存储，在能确定时静态诊断，否则参数进入/返回及声明写入时验证。array/table 类别注解不谎称元素永久受保护；强约束容器使用显式 schema 容器构造，每次脚本/native 写入都验证，别名共享同一 schema。不能对普通共享容器检查一次就宣称永久 Array<int>。
+类型注解支持 any、基础类别、class/native 名称、T|null/union、固定 tuple (T,U)、函数签名。函数类型写 fn(T,U) -> R，箭头右结合，返回类型可为 union；函数类型本身参与 union 写 (fn(T) -> R)|null。() 为零元 tuple 类型，单类型圆括号作分组，含逗号为一元或多元 tuple 类型。注解不改变动态存储，在能确定时静态诊断，否则参数进入/返回及声明写入时验证。array/table 类别注解不谎称元素永久受保护；强约束容器使用显式 schema 容器构造，每次脚本/native 写入都验证，别名共享同一 schema。不能对普通共享容器检查一次就宣称永久 Array<int>。
 
 type_of、is、signature、members、own_fields 提供一致反射。签名包含参数名、顺序、缺省是否存在、变参、返回契约和效果，不因反射而执行缺省表达式。native 与脚本类型遵循同一描述。反射不泄露原生地址、任意私有环境、恢复 PC 的写权限或绕过字段/schema 的写入口。
 
@@ -193,7 +193,7 @@ derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取�
 
 async fn 调用立即返回任务 Future，函数体在后续调度片开始；创建带 ParentTaskId 的新任务，继承当前明确 owner。普通调用返回不取消任务，丢弃 Future 不等于取消。spawn(owner:,task:) 指定其他合法所有者，无主后台任务不能被暗中创建。ParentTaskId 供因果追踪，不等于自动强制结构化寿命。
 
-await 接受 Awaitable，不接受普通标量。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处抛出并保留原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
+await 接受 Awaitable，不接受普通标量。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
 
 Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果；检测直接和间接 adoption 环。需要把 Future 当普通值返回时包在 tuple/对象中。任务 Future 仅由任务返回/失败/终止结算，手工 Future 才能 resolve/reject；重复结算报 AlreadySettled。未观察失败在已给等待者/处理器一个正常调度机会后产生诊断，后续观察更新记录而不重报。结算与通知均不在生产者调用栈内同步重入用户回调。
 
@@ -207,7 +207,7 @@ async 正文返回尚未结算的 Future 时进入 Adopting，任务及其结果
 
 Iterator.next() 返回 {done: bool,value: any}；done=false 是元素，首次 done=true 可携带最终 return 值，其后稳定返回 {done:true,value:null}。for 不把最终 return 当元素。iter(collection) 创建新游标，由 for 在退出时 close；iter(existing_iterator) 创建借用包装，结束只关闭包装，原游标继续保留推进位置。own_iter(iterator) 显式转移关闭责任。close 幂等，组合迭代器传播其拥有游标的关闭。
 
-gen fn 调用创建生成器，不立即执行正文；next 推进，yield value 只挂起本生成器；yield 同时可作低优先级表达式，例如 let incoming = yield outgoing;，其结果由 send 提供，普通 next 等价发送 null。重入 next/close 报 ReentrantIterator。send(value) 为前一个 yield 表达式提供值，第一次驱动只接受 null；异常使生成器进入 Failed 并向驱动者传播，之后 next 报 GeneratorFailed，close 可幂等释放。主动 close 在挂起点展开同步 finally，禁止继续 yield；owner 强制撤销按任务规则处理。同步生成器及其 helper 不可外部 Pending，但可 BudgetYield，这是同步迭代协议的边界。
+gen fn 调用创建生成器，不立即执行正文；next 推进，yield value 只挂起本生成器；yield 同时可作低优先级表达式，例如 let incoming = yield outgoing;，其结果由 send 提供，普通 next 等价发送 null。yield 的操作数包含普通二元与区间表达式，结合力高于赋值、低于区间；yield; 交付 null。yield a = b 按无效赋值目标诊断，let incoming = yield outgoing + 1 则先形成被交付值。重入 next/close 报 ReentrantIterator。send(value) 为前一个 yield 表达式提供值，第一次驱动只接受 null；异常使生成器进入 Failed 并向驱动者传播，之后 next 报 GeneratorFailed，close 可幂等释放。主动 close 在挂起点展开同步 finally，禁止继续 yield；owner 强制撤销按任务规则处理。同步生成器及其 helper 不可外部 Pending，但可 BudgetYield，这是同步迭代协议的边界。
 
 AsyncIterator.next() 返回 Awaitable，其结果为同一 step；由 class、async fn 和标准适配器实现完整异步流。for await pattern in source 逐次等待 next，只允许一个 in-flight next，第二次报 ConcurrentNext。提前退出解除当前等待并按所有权执行 close_async；错误保留主失败与收尾失败。手动推进可保留半消费流。同步/异步 map/filter/enumerate/zip/take/collect 均声明惰性、耗尽、关闭、异常及回调效果；需要等待的回调使用异步适配器。
 
@@ -217,7 +217,7 @@ Thread(fn) 是由 call/resume(value) 手动驱动的独立脚本栈，suspend(va
 
 try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw 可以抛脚本值，运行时以 ErrorEnvelope 保存原值、稳定 code、源位置和栈；标准库推荐 Error 实例，catch 能读取原值。throw; 只在 catch 中重新抛出当前 envelope，保留原始栈；throw value; 建立本次抛出位置与 cause。
 
-正常结束、return、break/continue、异常展开和合作取消穿过 try 时先执行 finally。finally 不得 await、yield、return 或跳出其自身边界；可按预算让出。finally 再抛出时替代原结果并保留原结果/异常为 cause。异常值、待 return 值及展开位置都是可恢复帧状态。
+正常结束、return、break/continue、异常展开和合作取消穿过 try 时先执行 finally。finally 不得 await、yield、return 或跳出其自身边界；可按预算让出。该词法限制覆盖条件与短路分支；内嵌函数按自己的函数边界分析，实际调用时继承调用者约束。普通 helper 调用可以同步返回，真正进入外部等待时由有效 NoWait 检查处理。finally 再抛出时替代原结果并保留原结果/异常为 cause。异常值、待 return 值及展开位置都是可恢复帧状态。
 
 资源 close/dispose 必须幂等且可检查终态。文件/游标/订阅/native 资源由显式 token 与 owner 管理，GC 不执行用户脚本 finalizer；宿主低层释放同样有预算/队列。脚本清理无法保证硬终止时执行，底层资源释放必须独立保证。临时业务恢复若必须覆盖硬终止，应通过宿主事务/作用域恢复记录实现。原生崩溃和内部一致性破坏不伪装成可恢复脚本异常。
 
@@ -227,11 +227,11 @@ try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw
 
 VM 使用显式调用帧、共享代码/常量、驻留符号、可复用参数区及可恢复中间状态。默认 Value 采用 16 字节显式标签与 64 位载荷，int64/float64 完整内联，堆对象通过完整代际句柄访问。Value 为可复制内部值，复制时由当前执行帧或显式宿主根负责保活。表示隐藏在 VM 私有存储接口后，字节码、快照和 C ABI 使用各自规定的编码。32/64 位目标分别检查大小、对齐、算术及句柄往返。密集数值数据使用连续类型缓冲，避免每个元素支付动态 Value 标签成本。
 
-run_slice 接收指令、分配和时钟检查额度，返回 Returned、BudgetYield、HostCall、Waiting 或 Fault。BudgetYield 不改变语言结果；全部临时根和继续位置都在 VM 状态中。HostCall 携带稳定函数符号、签名版本、TaskId、OwnerId、源位置和借用实参视图。宿主响应 HostCallResult 为 Ready(value)、Pending(wait_descriptor)、CallScript{callee,args,continuation}、Continue{continuation} 或 Error(script_error)。
+run_slice 接收指令、分配和时钟检查额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 表示建立完整故障记录所需的硬容量不足，其保留、恢复与取消规则见第二十三节。BudgetYield 不改变语言结果；全部临时根和继续位置都在 VM 状态中。HostCall 携带稳定函数符号、签名版本、TaskId、OwnerId、源位置和借用实参视图。宿主响应 HostCallResult 为 Ready(value)、Pending(wait_descriptor)、CallScript{callee,args,continuation}、Continue{continuation} 、Error(NewFault) 或 ForwardFault(fault_id)。Error 创建本次故障；ForwardFault 传播已保留的完整故障，具体契约见第二十三节。
 
 Pending 必须先退出 native 调用栈，再保存操作描述、等待身份、返回槽和后继 PC。完成结果只恢复操作的后继阶段，不能重跑已经生效的调用。native 异步算法用分块状态机或后台拥有数据任务，不把 Rust Future/栈地址当持久续体。
 
-CallScript 允许 native 算法调用可暂停脚本：宿主退出 Rust 栈，将版本化 continuation 作为显式 native frame 保存，VM 在同一 Task、同一 owner 和效果上下文压入 callback frame。脚本返回或抛出后，恢复该 continuation 并交付 ScriptExit::Returned/Fault；continuation 可继续返回 Ready/Pending/CallScript/Continue/Error。callee 的模块版本、实参、算法阶段、临时对象与返回目的均可追踪和快照，原 native 入口不被重复执行。callback 的 Pending 由整条任务栈自然挂起，不需要新建无关任务。
+CallScript 允许 native 算法调用可暂停脚本：宿主退出 Rust 栈，将版本化 continuation 作为显式 native frame 保存，VM 在同一 Task、同一 owner 和效果上下文压入 callback frame。脚本返回或抛出后，恢复该 continuation 并交付 ScriptExit::Returned/Fault；continuation 可继续返回 Ready/Pending/CallScript/Continue/Error/ForwardFault。callee 的模块版本、实参、算法阶段、临时对象与返回目的均可追踪和快照，原 native 入口不被重复执行。callback 的 Pending 由整条任务栈自然挂起，不需要新建无关任务。
 
 Continue 保存版本化 native 算法状态，在同一 Task 下一预算片继续执行，无 WaitId、无外部等待，也不重新执行入口。它覆盖编码、hash、复制等无需脚本回调的分块算法，在允许 BudgetYield 的受限上下文同样适用。native frame 的临时根和游标进入快照。
 
@@ -239,7 +239,7 @@ CallScript 不提升权限或取消已有受限上下文；sort 的同步 compar
 
 允许 native continuation 声明 RegionId 取消屏障和附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。
 
-invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终只返回 Returned 或 Error，不返回 Pending/BudgetYield。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
+invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终返回 Returned、Error 或明确的同步控制失败；完整调用在本次同步边界内结束。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
 
 ## 十六 宿主 ABI 能力与标准库
 
@@ -288,7 +288,7 @@ VM 保存完整可恢复执行状态和对象图，宿主协调请求、舞台/�
 
 缺少 native adapter、代码版本或 ABI 时报告精确对象路径/版本并使保存或恢复失败。restore 在隔离堆先分配身份，再连接引用、等待、订阅和 native 描述，完整验证后一次公开；失败保留当前会话。禁止以新代码 PC 猜测旧恢复点。SessionEpoch 在新游戏/加载/回滚更新，TaskId、WaitId 与 native 完成消息匹配 epoch 后至多交付一次，旧结果丢弃。
 
-捕获、恢复提交和热重载提交互斥。发行存档使用匹配游戏包代码；开发存档嵌入无法由固定包取得的全部被引用版本。旧代码/模块/native 版本在最后帧、闭包或快照引用离开后释放。跨版本迁移是显式流程，不默许替换执行中函数。
+捕获、恢复提交和热重载提交互斥。发行存档使用匹配游戏包代码；开发存档嵌入无法由固定包取得的全部被引用版本。旧代码/模块/native/源码映射版本在最后强版本引用离开后释放；持有者包括帧、闭包、快照、故障栈/原因节点、FaultInfo/FaultRoot 和进行中的 FaultBuild。跨版本迁移是显式流程，不默许替换执行中函数。
 
 进程服务请求按 adapter 处理：仅当前正在持久提交的 SaveRequest，在该独立存档副本中记成功，活会话仍等待真实写盘，内存回滚快照不做此归一化。已结算请求恢复既有终态。其他未结算外部写请求只在精确进程/请求身份及完成记录匹配时重接，否则以 OperationInterrupted 结算；始终不盲目重放外部写入。
 
@@ -329,6 +329,103 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 
 该决策使实现拥有明确起点。后续布局优化保留相同语言语义、快照格式和作者 API，以正式 VM 的剧情、UI、动画、对象图和密集数据负载复测。优化验收同时报告延迟分位数、内存峰值、分配与回收成本。
 
+## 二十二 字节码与执行器的实现合同
+公共格式位于 aside-vm::bytecode，只包含程序数据、验证和反汇编；aside-compiler 单向依赖它，格式模块不引用 Rowan、parser 或 Reel。下列合同承载完整语言目标，各实现任务分别记录已运行的指令与行为。
+
+程序与验证
+BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Signature 保存参数名称/顺序/类型/可变性、缺省表达式入口、rest、返回契约和效果；缺省仍在每次调用时运行，并继承被调用闭包的定义处词法捕获和 ModuleInstance；前序参数作为额外输入。捕获分析包含缺省表达式。
+每次调用按参数顺序建立本次独立绑定，前序参数在后续缺省表达式开始前完成初始化。缺省表达式对前序参数的读写、其中产生的闭包与函数正文共享同一个词法绑定。需要共享可变身份的参数在这一步建立 Cell，正文入口复用它；捕获分析和 lowering 同时考虑缺省中的读写与闭包。已经初始化且身份无关的只读前缀可按值传递。全部调用实参仍先按源码顺序求值，再开始参数绑定。
+
+缺省函数由参数描述中的 default 入口选择。编译器为表达式/块尾结果生成的 Return 结束该缺省入口；源码中的显式 return 继续受缺省词法边界约束。只有 VM 内部的缺省前缀调用路径可以传递前序参数 Cell 身份；普通 CallTarget/Arguments 始终传递作者值并建立新的调用绑定。同一个缺省 FunctionDef 作为普通函数调用时也遵守普通规则。验证器允许 Parameter(i) 使用 Value(Reg(i)) 或 Cell(Reg(i))，并逐对核对被调用函数与其缺省入口的前缀名称、类型、可变性、存储布局及捕获布局。内部前缀路径验证真实 Cell 的初始化、内容和契约，Cell 句柄保持内部表示。缺省入口与正文共享的是本次调用绑定，定义处捕获仍来自被调用闭包的词法环境。
+脚本和 native 统一要求：出现在任何后续缺省前缀中的可变参数使用 Cell。NativeDef 复用现有 Signature；验证器按最后一个缺省入口的前缀推导规范布局，核对其余缺省入口的一致性。只读前缀可为 Value 或 Cell，所有相关入口采用同一选择；完全不属于缺省前缀的参数保持 Value。VerifiedProgram 以共享签名的紧凑只读布局保存结果，构建/核对先计工作量，持有容量进入包账本。每次调用读取这份结果，避免重新扫描全部 thunk。native 缺省入口保持无脚本词法捕获的现有约束，前序参数的共享绑定通过内部前缀路径传递。
+
+native 使用同一个顺序准备规则。只有全部缺省与类型检查成功后才公开 native Entry。共享 Cell 环境与宿主实参数组分开：ticket 对外暴露已经绑定的作者值，隐藏 Cell 句柄留在内部；CallScript 等后续阶段使相关 Cell 变化时，发布恢复 ticket 前重新投影连续实参视图。原始 native 入口只调用一次。无缺省的 native 保持 Value 快路径，避免为此功能分配额外 Cell 或环境窗口。
+
+参数准备的 Cell 建立、类型检查、前缀转交、缺省结果写回与正文进入均有明确阶段；先发布目标根再清来源，预算暂停与 GC 保持身份。准备失败从原调用点传播，函数正文的 handler 此时尚未进入。逐阶段操作按工作与分配额度计费。
+Const 使用完整 int64、float64 位编码、UTF-8、Bytes 与规定的不可变结构。磁盘格式使用小端整数和 u32 索引；PC 表示指令序号。版本 1 每条指令为 16 字节：u16 opcode、u16 flags、三个 u32 操作数，未声明 flags 为零；复杂操作引用有类型的描述表。常量/符号/函数/模块/寄存器/PC 分别使用不同索引类型。编码器逐字段写入，运行时 Value、HeapId、root token 和 Rust 内存布局不进入包。
+执行器只接收字段私有的 VerifiedProgram。解码/验证先核对长度与总量限制再分配，检查所有索引、窗口、跳转、捕获、签名/缺省入口、异常与清理区域、控制流及 native 版本/能力。未知 opcode 或缺少所需能力给出定位错误；动态类型、初始化状态、只读写和效果仍在运行时检查。包加载和不可变代码另有容量账本。
+指令规格表统一规定操作数、读写寄存器、分支、可抛错/可暂停与描述表引用，并由 encoder、decoder、verifier、disassembler 和 dispatcher 共同引用。指令族覆盖值/绑定、cell/全局、数值与严格 bool 控制流、闭包/调用/返回、集合/类/成员、模式/迭代、异常/finally、yield/await 与任务；children 和属性引用按既定语义降为通用操作及描述。编译器和执行器使用同一份规格，禁止各自猜测编号和操作数含义。
+
+连续帧与可扫描根区
+热寄存器保存在 VM 拥有的连续 FrameSlots 窗口，按 base+Reg 访问；它们不进入 BTreeMap 集合，也不按每个寄存器分配对象或 RootToken。帧使用可复用且受容量约束的窗口；语言未初始化状态用独立 bitmap 表示，null 保持普通值含义。
+Heap 为每个固定长度根区登记带 HeapId/SessionEpoch 和代际 RangeKey 的 RootRangeToken，只保存 owner/kind/长度和游标。每次 GC 步临时借用 VM 的 RootRanges 查询切片，Heap 不保存地址或长期借用。寄存器、实参、native 临时值、异常和交付结果均有根区。长期宿主保留继续使用单值根。
+根区先建立全 null 的有效槽位，登记与 provider 映射在对 GC 可见前一起发布，随后逐项经插入屏障发布真实值。结束根区时先注销，再释放窗口。每次覆盖、移动、参数复制和结果交付均先屏障再写入；目标根先发布，来源根后清除。根扫描以描述符槽位、generation 和元素偏移推进，空洞/描述符/单个Value分别计工作量；槽位复用时重置旧游标。物理搬迁仅在安全点更新映射，保持逻辑身份、长度与顺序；短期借用结束后才能搬迁或重入。
+仍有效根区缺失 provider 或长度不符是运行时一致性错误，不能按空根跳过。存在外部根区时，原有 gc_step 入口也须接入同一 provider，或明确拒绝缺失 provider 的调用。单值根、全部根区和灰队列处理完才进入统一弱引用截止点。窗口容量、bitmap、帧/续体元数据、描述符、空闲池、退休槽及搬迁双份驻留都计入总字节额度；实际释放后才退账，保留的池容量持续计费。相关接口保持 VM 内部封装，避免绕过屏障直接写槽。
+
+恢复、调用与结果
+一个会话的 Vm 共用 Heap、FrameSlots 和模块实例集，并持有有界的 Task 集合。每个 Task 保存自己的执行栈、异常展开、等待、交付、取消和分步操作状态。调度器在同一 Vm 内选择 Task 执行一片；某个 Task 外部等待时，其他 Task 仍能访问相同全局绑定、对象和闭包 cell。宿主 ticket、等待和交付身份包含 TaskId，结束或撤销任务只释放其自身状态。独立会话由独立 Vm 承载，所有任务元数据共用会话预算。
+函数声明的 Context 给出该函数的限制；有效上下文累计调用链上的 NoWait、Init、Derived 条件，并收窄允许的 effects。任一调用层具有的限制持续生效，返回后恢复调用者上下文。宿主 ticket 携带完整有效约束，CallScript 和普通调用沿用同一规则。
+ScriptFrame 保存 FrameId、固定 CodeRef/ModuleInstanceId、PC、窗口、闭包/接收者、参数绑定阶段、返回目标、效果、owner/region、异常展开与当前操作阶段；NativeFrame 保存版本化续体与其强引用槽。源码错误节点和未解决诊断不进入可执行 lowering。
+函数声明的限制与实际调用链的有效限制分别表示。现有公开分析入口生成的声明上下文可由 Ordinary/NoWait/Init/Derived 表达；同时处于 Init 与 Derived 的执行限制由 VM 的累计标志保留，不能因某个声明标签而丢失。未来分析入口若产生新的合法声明组合，先扩展共享格式和所有消费者再开放该入口。
+AnalyzedModule 保留分析入口上下文、各函数的种类/声明效果，以及稳定的符号和模块身份。lowering 从这些明确事实生成 FunctionDef Context 与签名；调用链的有效限制由运行时继续累计。导入与命名空间成员解析保留声明所属模块和导出身份，重导出另记其解析来源。宿主链接输入来自同一可信 native 注册元数据，提供稳定符号/版本、ABI、能力、效果和默认实现；语义层保存引用身份，包构建按链接输入核对并生成 NativeDef。缺少或冲突的链接信息给出定位诊断。
+run_slice 接收指令、内部工作、分配和时钟额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 表示建立完整故障记录所需的硬容量不足，其保留、恢复与取消规则见第二十三节。长比较、展开、匹配等按明确阶段计费。普通函数、async 和 generator 共用调用绑定规则，由函数种类决定执行/创建任务/创建生成器。
+HostCall 在暴露响应 ticket 前已登记状态和参数根。ticket 含调用序号、native 符号/签名版本、任务/owner 和源位置，响应消费一次；参数只通过短生命周期借用访问。Returned/Fault 的数据继续留在 VM 登记的交付根或拥有型宿主根中，直到转移到另一已登记根或拥有型根句柄，或显式放弃结果；领取裸 Value 本身保持原交付根，避免失去保活。
+Ready 先发布结果再提交返回槽并进入后继；Pending 保存等待描述和后继阶段；CallScript 先保留 NativeFrame 再在同任务压入 callback；Continue 保存算法阶段在下一片继续；Error 从原调用点展开。发出、等待、提交、完成是可保存的不同阶段，恢复不得重跑已生效 native 入口。快照使用逻辑 ID 和代码版本，恢复时重新分配对象与根区，不序列化运行时 token。
+捕获 cell 共用现有 Cell 对象种类。对象保存初始化状态、固定可变性和带代码/模块版本的类型契约。CellNew(binding) 根据绑定描述创建未初始化对象，并将句柄写入指定寄存器；BindInit 在类型检查与屏障后完成一次初始化。CellRead/BindRead 校验初始化，CellWrite/BindWrite 校验已初始化、可变性和类型。普通字段写入也服从这份契约。Cell 模式捕获句柄时保留共享状态，读取发生在函数真正执行时；前向只读捕获也可使用 Cell，确定已初始化的只读捕获可按值保存。null 是合法的已初始化内容。状态与契约随 GC、闭包和快照保留。
+绑定描述保存类型、可变性和初始化约束，共享 cell 写入遵守同一契约。Match 的输出仅在匹配成功时初始化。MemberGet 对类方法形成绑定接收者，表中的普通闭包保持普通函数。
+赋值位置与实参保持源码求值顺序。全部实际参数完成求值后才按签名绑定；有序参数容器保留重复名称，最终绑定阶段报告冲突。无展开普通调用使用连续参数窗口；展开在其源码位置捕获元素，随后参数的副作用不能反向改变先前展开。可变捕获使用共享 cell，每轮循环的绑定独立；不会保存可移动窗口的地址作为 upvalue。
+
+异常区域与清理
+保护区、catch 和 finally 的普通控制流边均由验证器核对。Jump、Branch 与自然落空进入 handler 的包会被拒绝；正常离开保护区或 catch 使用 Leave，return/throw 由统一展开器执行清理。catch 内抛出的新异常交给外层处理器，finally 内的新异常继续向外展开；每个 EndFinally 与当前活动展开记录匹配。清理中的普通调用继承禁止等待上下文。共享格式的坏包用例覆盖显式跳转、自然落空和异常边。
+
+贯通验收
+共享格式、验证器和手写包先固定；lowering 与 dispatcher 随后并行使用它们。源码验收必须真实经过解析、名称/捕获分析、寄存器 IR、字节码验证和执行：普通 helper 内的 native Ready/Pending 均得到同一结果；指令预算设为 1 时仍保持结果和副作用次数。native 入口只调用一次，重复/旧 epoch 完成被拒绝；暂停参数只由帧保活，期间完成 GC 后仍有效，任务与结果释放后可回收。
+CallScript/Continue 验收多次恢复、callback fault 和受限上下文；帧压入/弹出、已扫描寄存器改写、根区复用与搬迁在每个 GC 步之间验证。Quirrel 转换断言接入相同源码链路，语法通过和执行通过分列。快照 round-trip、完整标准库、类/模块、生成器和异步语义各自按既定规范验收；单条源码执行成功只记录为执行链路贯通。
+
+## 二十三 完整故障记录与生命周期
+
+本节规定实现目标。执行器的实现和独立验证进度在对应任务中记录。
+
+### 作者可见的行为
+
+catch 绑定原抛值。字符串、整数、null 和对象都保持原有值语义；对象继续指向原对象。throw; 在当前函数词法上最内层活动 catch 中重抛同一故障，保留身份、错误码、原位置和原始调用栈。throw value; 创建新的故障，即使 value 与先前抛值相同，也有新的位置和调用栈。
+
+core.error_info() 返回当前实际执行调用链上最近的活动 catch 的 FaultInfo；没有活动 catch 时返回 null。普通 helper 和同 Task 的 native callback 沿用调用链，新的 async Task 使用自己的上下文。throw; 的词法规则保持不变，helper 需要显式 throw value 或由宿主转发。catch 的活动期从处理器入口开始，到实际离开其范围结束；进入同一区域的 finally 后，该 catch 已退出。挂起的 generator、其他 Task 和已结束 catch 均不参与查询。
+
+FaultInfo 是同一堆中的可追踪只读视图，保存它即可保留完整故障，普通变量释放后随对象图回收。视图公开 value、code、origin、stack 和带种类的 causes；value 所引用的作者对象仍遵守自身可变性。查询依赖当前执行上下文，声明为诊断读取效果，派生纯计算中给出效果诊断。运行时产生的语言错误使用 core.Error 值，含固定 code、message 和只读 details；作者可以抛任意值。Envelope 的稳定 code 来自版本化注册表，作者表中的同名字段保持普通数据。
+
+新故障默认关联同一实际调用链中最近活动 catch 的完整故障。native 显式提供 cause 时以它替代这条隐式 catch 关系；finally 替代退出产生的关系另行保留。跨 Task 的原因通过明确的任务/等待传播记录连接。
+
+### 同一堆中的故障图
+
+ErrorEnvelope、分块调用栈与原因节点使用现有 Heap 的私有对象种类。FaultId 封装完整 HeapHandle；通用字段写入与对象构造入口维护这些内部种类的封装。复制 ID 本身沿用普通句柄的保活规则，访问时核对堆、epoch、代际和对象种类。一个已登记的故障根能够保住原值、调用栈、原因及对应代码版本。
+
+建立完成后，故障身份、原值、code、origin 和原始 stack 固定。原因关系由 VM 追加，已有节点保持原内容；FaultInfo 显示当前已追加的关系。关系具有明确种类：
+- CaughtFault：建立新故障时关联的活动 catch。
+- ExplicitCause：native 或显式包装关联的原故障。
+- AwaitedFault：本次 await 交付关联的生产者完整故障与稳定等待 activation。
+- ReplacedExit：finally 真正替代的退出，保存替代位置及 Throw(FaultId)、Return(Value)、Leave(CodeRef, target) 或 Close(kind, logical_id, activation)。Close 区分 generator/thread。合作取消按既有规则注入可捕获的 Cancelled，因此其退出保留完整 Throw(FaultId)；owner/region 的硬撤销遵循既有硬终止规则。
+
+同一故障可以同时保留 catch 原因与被替代的 Return。原有原因始终保留。每次展开事件具有稳定身份，按预算暂停后继续只追加一次。重抛和显式转发可以形成共享引用或回边；诊断游标记录已访问身份并输出引用关系，GC、快照和诊断均以显式游标遍历。原始栈只捕获一次。失败的 await 为每个实际等待者建立独立 envelope：value/code 来自生产者故障，origin/stack 来自消费者的 await 位置和调用链，AwaitedFault 指向生产者完整故障。生产者记录保持原状，因此多个等待者拥有各自的传播链。Future adoption 传递故障身份，实际 await 交付时才包装。稳定等待 activation、交付/FaultBuild 阶段与已建立的包装身份一起保存；生产者故障保留到完整包装根发布，分片或恢复后只建立一次；之后再次 await 使用新的 activation。若 await 位于活动 catch 内，其 catch 原因也按通用规则保留。包装使用同一 FaultBuild 和容量规则。
+
+异常路由使用当前抛出/重抛/调用处的 PC 和已消费区域；原始故障位置用于诊断。finally 内被其内部 catch 处理的错误保持外层 pending exit。错误真正逃出 finally 时，先把完整旧退出发布到原因图，再清除旧展开根。
+
+### native、交付与 catch 根
+
+宿主响应明确区分 Error(NewFault { value, code, cause }) 与 ForwardFault(FaultId)。前者建立新故障；后者传播当前 native 持有的完整故障，从原调用位置展开。原值的位比较仅用于值语义，故障转发由显式身份决定。
+
+NativeFrame 持有有界故障槽，与 continuation values 一起记账、扫描和保存。CallbackFault 先进入这些槽，再释放 callback 帧。Continue 和 Pending 默认保留故障槽；后续任何阶段都可读取它们。再次 CallScript 前，将仍需保留的故障移入明确的续体槽，或显式标记已处理。保留策略使用 Preserve 或 Replace(ids)，空集合表示已处理。Ready 在发布结果后释放剩余故障；Error/ForwardFault 先发布目标故障根，再释放来源。取消按同一分步清理规则释放全部槽。
+
+delivery_value 读取原值时保留原交付。delivery_fault 返回完整视图。take_fault_delivery 将整个 envelope 转移到寿命独立于该 Task 的宿主根，成功后才释放交付和 Task 槽。返回的 FaultRoot 表示拥有的保留关系，必须显式释放。只复制原值的接口使用 copy_delivery_value_to_root，原故障交付保持到显式 discard。统一领取接口也可以返回带 Returned/Fault 标签的拥有型结果。
+
+每个 catch 保留记录包含 FrameId、RegionId 与本次 activation。控制转移先发布重抛、cause 和 pending exit 所需的目标根，再删除实际退出的 catch 记录，最后提交 PC 或帧释放。仍包围目标位置的外层 catch 继续保留。普通 helper 调用维持父帧的活动 catch。作者已复制到变量或闭包的原值由正常对象图保活。容量按同时活动的 catch/展开记录计数，顺序执行独立 catch 可复用空间。
+
+### 捕栈、预算与硬容量
+
+FaultBuild 是 Task 的显式可恢复阶段。它先保留原值、原故障与 pending exit，再分块捕获版本化栈；对应帧在记录完成前继续保留。其他 Task 可以运行。完成后才向 catch、native 或交付公开完整故障。每条栈记录包含固定代码/模块/源码映射版本、函数、PC 和帧类别；native 边界包含 ABI、续体版本/阶段和原调用位置。记录持有真实的代码版本寿命，局部变量仍由原执行状态负责保活。
+
+栈块、原因节点、游标、代码版本、native 槽、退休空间和释放队列均计入相应容量账本。根和边先经过屏障再发布，来源随后清除。捕栈、原因追加、扫描及释放均按工作额度分步。预算不足返回 BudgetYield 和所需工作量，恢复沿用阶段，已经生效的 throw/native 动作只执行一次。
+
+普通资源错误在能够建立完整记录时成为可捕获的 core.Error。若建立故障本身遇到硬容量限制，返回 ResourceBlocked { task, resource, current, required } 给宿主；这项通知使用 Task 预留的控制状态，保留已有根、帧和构建游标。宿主可以执行回收/释放、在许可范围提高额度后恢复同一阶段，或取消该 Task。required 给出下一步推进所需的已知最低额度。故障尚未完整时维持阻塞状态，所有已产生副作用保持原状态。真实进程级分配失败仍服从平台分配失败策略。
+
+invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBlocked 时终止本次同步重入，向宿主报告资源失败，并按有界释放流程清理状态；它返回拥有型成功/故障或明确的控制失败，保留已发生的副作用。常规可恢复任务使用 run_slice。
+
+### 保存与验收
+
+快照保存完整故障图及共享/回边、code 注册表版本、固定代码/源码映射/native 版本、活动 catch、pending exit 与路由 PC、消费区域和 finally 阶段、FaultBuild 游标、native 故障槽和未领取交付。每次追加的事件身份一并保存。恢复先建立新对象身份再连接图；旧 HeapId、FaultId 和根 token 继续失效。缺失所需版本时给出精确失败位置。
+
+验收覆盖：相同原值的新 throw 与显式转发；CallbackFault 经 Continue、Pending 和再次 CallScript 后传播；领取完整故障后结束 Task 并进行 GC；多层 finally 替代原因；退出内层 catch 后重抛外层；顺序 catch 次数远超同时活动容量；逐片捕栈、硬容量阻塞及恢复；快照恢复期间原因只记录一次。这些用例的源码检查、作者自测和独立运行分别记录。
+
 ## 参考来源
 - Value 实验：https://github.com/jhq223/reel/pull/2
 - 实验说明：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/TRACE.md
@@ -336,3 +433,4 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 - slotmap 键契约：https://docs.rs/slotmap/1.1.1/slotmap/struct.KeyData.html
 - slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
 - 增量回收参考：https://github.com/kyren/gc-arena
+
