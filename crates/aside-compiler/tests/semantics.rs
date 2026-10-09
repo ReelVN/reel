@@ -1,5 +1,7 @@
 use aside_compiler::{hir::*, semantic::*, *};
 
+#[path = "semantics/call_arguments.rs"]
+mod call_arguments;
 #[path = "semantics/initializer_locals.rs"]
 mod initializer_locals;
 fn analyze_code(source: &str) -> Analysis {

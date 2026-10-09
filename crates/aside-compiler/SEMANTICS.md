@@ -256,3 +256,15 @@ bytecode Return. This semantic-analysis check does not execute lowering or the V
 L04 lowering is described separately in [LOWERING.md](LOWERING.md).
 Historical verification commands/results are preserved in the
 [default-return boundary log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/semantic/default-return-boundary.txt).
+
+## L09 call-spread/rest consistency
+
+Call spread accepts array/tuple; known disjoint types diagnose while unknown
+sources retain runtime checks. Unknown length never reserves a static argument
+slot. Rest's annotation constrains the whole newly created outer array and
+known incompatible annotations reject. Rest is positional-only: its declaration
+name is excluded from named supply, including a collision with PropertyBagTail.
+Other ordinary tail-bag behavior remains unchanged. ExternalSignature does not
+yet project PropertyBagTail; this increment does not expand that interface.
+Static signature checks do not execute defaults or establish runtime capture,
+version conflict, allocation or error-order behavior.

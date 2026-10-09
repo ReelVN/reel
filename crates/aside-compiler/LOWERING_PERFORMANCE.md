@@ -431,3 +431,24 @@ cargo test -p aside-compiler --test lowering optional_chains --release --locked
 No source/bytecode evaluator, V03 or execution simulator was used. Runtime side
 effects, hooks, binding, GC and restoration remain unverified. Logs and generated
 IR/bytecode/disassembly belong under ignored target/reel-artifacts.
+
+## 2026-10-09 call spread/rest (L09)
+
+Author evidence at 511b966093864ca841302c15f016e2c988dd70fe, Issue #46 / PR #47,
+reports compiler/B01 debug/release checks, fmt and strict clippy passing.
+The fixed matrix admits exact lower limits of work 2866, peak capacity 7270
+bytes, 159 records, 7 blocks, 40 instructions and 8 maximum function registers;
+after emit, work is 3036 and the other bounds remain unchanged. Each of the six
+individual bounds rejects with a source location when reduced by one.
+
+Eighteen fresh-process probes matched both IR and final retained allocation
+ledgers against actual allocator residency. At 1000 spread calls, maximum
+function registers are 5 and retained bytes 689580; at 1000 rest/default/capture
+functions, each uses at most 7 registers and total retained bytes are 4323439.
+A 300-call sequence reuses registers, and 300 actual arguments do not require a
+large contiguous argument window on the Packed path. Reproduction commands and
+independent acceptance are recorded in PR #47; generated logs remain ignored
+under target/reel-artifacts/issue46.
+
+These are compilation capacity/structure results, not runtime spread/rest
+allocation, throughput, aliasing, version-conflict, GC or restore evidence.
