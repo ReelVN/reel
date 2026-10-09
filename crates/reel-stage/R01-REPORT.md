@@ -16,7 +16,115 @@ full forward origin/scroll transforms. [R01-INTERFACE.md](R01-INTERFACE.md)
 specifies ownership, quotas, cancellation and the portable profile;
 [reel-render/README.md](../reel-render/README.md) specifies backend consumers.
 
-## Behavior evidence
+## Review repairs on PR #27 (2026-10-09)
+
+All five Issue #25 findings were reproduced against `73589e9` with actual
+Masonry records and the public consumers: every new check failed as expected.
+[Before-fix output](evidence/r01-review/before-fixes.log) records the admitted
+second 4-byte upload in a 4-byte queue, `Bytes` on an expired one-descriptor slot,
+Inline child ownership assigned to its ancestor, double-transformed debug bounds,
+and loss of eligibility after the last frame's render completion.
+
+The repairs are confined to stage/render and the existing licensed Masonry paint
+closure. Aggregate queued payload-capacity tickets now have their own upload
+limit, independent of retained residency; rejection preserves the original batch
+and tickets. Completed, failed and cancelled uploads restore queue capacity.
+Slot reuse releases the registry's expired descriptor before replacement
+reservation; external weak aliases still keep their own ticket and can correctly
+prevent replacement until they drop. Inline paint command ranges preserve actual
+owners for normal draws, invalid strokes/transforms and missing images, including
+paused payload work. Debug bounds use window-space identity fragments, with
+forward baselines and continuous scopes; translated/scaled and finite singular
+roots with child scrolling match the same frozen geometry.
+
+`PresentationNotice::new` replaces struct literals, with read-only accessors.
+An Accepted notice independently owns qualification and matching geometry until
+resolve or final notice drop, without keeping frame commands/resources. The
+public consumer regression submits, creates/clones a notice, drops the caller
+frame, completes rendering (output pool usage is zero), then accepts the exact
+geometry. Last unresolved notice drop cancels; epoch changes remain stale.
+Ordinary keys do not extend qualification or resurrect cancellation. Build
+constructor/step/finish failure and cancel/drop explicitly invalidate qualification,
+even with an outstanding notice. U02 identity, ordering, first-frame, capture,
+clear and epoch gates remain intact. No upload/build completion accepts input.
+
+Final debug and release runs pass 12 core, 24 unchanged U02 behavioral contracts,
+the zero-allocation pointer-dispatch contract, 13 R01 cases and six render cases.
+Real Parley independently passes both profiles with one run / 14 original glyphs.
+Workspace and selected masonry_core/tree_arena strict all-target Clippy, both fmt
+checks and direct core debug/release checks pass. [Debug](evidence/r01-review/debug-tests.log),
+[release](evidence/r01-review/release-tests.log), [final commands](evidence/r01-review/final-checks.log),
+[Clippy](evidence/r01-review/clippy.log), [Masonry Clippy](evidence/r01-review/masonry-clippy.log),
+[Parley debug](evidence/r01-review/parley-debug.log),
+[Parley release](evidence/r01-review/parley-release.log),
+[Masonry debug](evidence/r01-review/masonry-debug.log) and
+[Masonry release](evidence/r01-review/masonry-release.log) retain the outputs.
+The [source audit](evidence/r01-review/source-audit.log) verifies the same 94 fixed
+upstream files and one existing local source, with a regenerated 212,652-byte
+production diff. [Normal](evidence/r01-review/normal-dependencies.log) and
+[feature](evidence/r01-review/feature-dependencies.log) trees retain the same
+single-source dependency boundaries. Both guide editions and the latest full
+architecture were updated together; their Aside snippets remain identical.
+
+Final isolated release probes use the original workloads, slicing, allocator
+instrumentation and 20 warm samples per process, two processes per workload.
+Full export includes setup, every step, finish and source cleanup:
+
+| Final observed wall time | 512 rectangles | 16 × (move + 2,048 lines) |
+| --- | ---: | ---: |
+| Cold real record | 0.356–0.499 ms | 1.418–2.352 ms |
+| Cold complete export | 0.521–0.604 ms | 3.305–3.698 ms |
+| Warm complete build p50 | 0.374–0.376 ms | 2.539–2.687 ms |
+| Warm complete build p95 | 0.423–0.429 ms | 2.644–2.804 ms |
+| Warm complete build maximum | 0.424–0.445 ms | 2.762–2.963 ms |
+| Maximum step in cold probe | 33.434–43.703 µs | 72.361–148.654 µs |
+| Finish/source cleanup | 18.239–24.022 µs | 3.180–3.924 µs |
+| Paused cancellation | 2.570–2.759 µs | 2.314–2.584 µs |
+| Isolated source Drop, cache retained | 2.538–2.553 µs | 2.011–2.165 µs |
+| Producer/cache Drop | 40.338–48.662 µs | 8.935–11.978 µs |
+
+Complete export still allocates 11 / 27 times, requests 303,640 / 1,857,816 bytes
+and performs zero reallocations, using 258 / 901 steps. Record allocates 15 / 47
+times and requests 552,308 / 3,696,372 bytes (+312 versus the initial baseline).
+Measured live record/paused/complete residency increases by 216 bytes; immutable
+frame and cache-retained phases increase by 24 bytes. Actual live requested-byte
+peaks in these phase observations are 1,141,976 / 7,414,232; after source release
+856,328 / 5,558,536; after cancellation 561,440 / 3,709,472; after cache Drop 712.
+Source Drop releases 277,192 / 1,847,240 bytes in eight / 24 deallocations.
+Frame accounting remains 304,800 / 1,858,976 against its continuous 16MiB ticket.
+
+[Rectangle process 1](evidence/r01-review/residency-rect-1.log),
+[process 2](evidence/r01-review/residency-rect-2.log),
+[path process 1](evidence/r01-review/residency-path-1.log) and
+[process 2](evidence/r01-review/residency-path-2.log) contain full allocator,
+record→paused→finish/cancel and cleanup observations. Maximum reported phase
+VmHWM is 4,040–4,048 / 10,232–10,240 KiB. Child `getrusage` peaks are
+9,856–9,984 KiB and the [launch control](evidence/r01-review/rss-launch-control.log)
+is 9,984 KiB, preserving the launch-floor limitation. These remain phase/OS
+observations, not an exact continuous allocator peak or a hard source quota.
+A preliminary probe before the last cancellation-path repair had wider timing
+variation: rectangle p95 0.864–1.215ms, path p95 2.706–3.074ms, maximum steps
+209.727 / 261.855µs. The intermediate pass before owner-lookup deduplication is also retained in
+[rectangle](evidence/r01-review/intermediate-residency-rect-1.log),
+[second rectangle](evidence/r01-review/intermediate-residency-rect-2.log),
+[path](evidence/r01-review/intermediate-residency-path-1.log) and
+[second path](evidence/r01-review/intermediate-residency-path-2.log). The first pass's [printed timing summary](evidence/r01-review/pre-final-probe-summary.log)
+is retained separately; it is not the final binary and no latency guarantee or
+cause of variation is inferred. No device-performance claim is made.
+
+Use the existing reproduction commands below, limiting the test command to
+`-p reel-core -p reel-stage -p reel-render`. The measurement command's final
+compiler artifact is saved in [measurement-build.jsonl](evidence/r01-review/measurement-build.jsonl).
+The resumed workspace remained executable after the reported disconnect;
+[environment.log](evidence/r01-review/environment.log) preserves the exact initial
+Rust read-only-home error. Using the already installed workspace toolchain's
+CARGO_HOME/RUSTUP_HOME resolved it, with no escalation or system-directory write.
+There is no remaining execution blocker. This stays a draft for owner revalidation;
+GPU rasterization/compositing, windows/player and device acceptance remain outside
+R01. No independent VM execution test, main update, merge/ready transition,
+Actions enablement or acceptance comment was performed.
+
+## Initial behavior evidence (`73589e9`)
 
 The full debug/release workspace runs pass 12 core contracts, 24 original U02
 contracts, the real pointer allocation contract, ten R01 portable-frame cases
@@ -72,7 +180,7 @@ and four cases; strict all-target Clippy passes for both selected crates.
 one existing local geometry source and the exact 206,315-byte production diff.
 Original hashes, copyright headers and Apache-2.0 license are retained.
 
-## Export and source residency observations
+## Initial export and source residency observations (`73589e9`)
 
 2026-10-08, Rust 1.96.0, Linux x86_64 KVM, Xeon Platinum 8573C, five exposed CPUs;
 details and native Fontconfig setup are in [environment.log](evidence/r01/environment.log).

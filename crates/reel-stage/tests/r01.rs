@@ -38,6 +38,243 @@ fn version(n: u8) -> ResourceVersion {
         version: ContentVersion([n; 32]),
     }
 }
+
+#[test]
+fn expired_registration_reclaims_its_descriptor_before_slot_reuse() {
+    let pool = pool();
+    let mut probe = ResourceRegistry::new(1, 8192).unwrap();
+    probe
+        .register(
+            version(1),
+            ResourceData::External { token: 1 },
+            ticket(&pool, 0),
+        )
+        .unwrap();
+    let exact_capacity = probe.usage().bytes;
+    drop(probe);
+    for external_weak in [false, true] {
+        let mut registry = ResourceRegistry::new(1, exact_capacity).unwrap();
+        let old = registry
+            .register(
+                version(1),
+                ResourceData::External { token: 1 },
+                ticket(&pool, 0),
+            )
+            .unwrap();
+        let weak = external_weak.then(|| registry.acquire(old).unwrap().downgrade());
+        registry.retire(old);
+        if external_weak {
+            assert_eq!(
+                registry.register(
+                    version(2),
+                    ResourceData::External { token: 2 },
+                    ticket(&pool, 0)
+                ),
+                Err(ResourceError::Bytes)
+            );
+        }
+        drop(weak);
+        let new = registry
+            .register(
+                version(2),
+                ResourceData::External { token: 2 },
+                ticket(&pool, 0),
+            )
+            .expect("released registration must not consume the replacement descriptor quota");
+        assert_eq!(new.slot, old.slot);
+        assert!(new.generation > old.generation);
+        assert!(registry.acquire(old).is_err());
+        assert_eq!(registry.usage().bytes, exact_capacity);
+    }
+}
+
+#[test]
+fn inline_child_draws_and_errors_keep_the_actual_command_owner() {
+    let pool = pool();
+    for case in 0..5 {
+        let mut own = fill(Color::WHITE);
+        if case == 1 {
+            own = Scene::new();
+            own.draw(Draw::Stroke {
+                transform: Affine::IDENTITY,
+                stroke: Stroke::new(-1.),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 10., 10.)),
+                composite: Composite::default(),
+            });
+        } else if case == 2 {
+            own = Scene::new();
+            own.draw(Draw::Fill {
+                transform: Affine::new([f64::NAN, 0., 0., 1., 0., 0.]),
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 10., 10.)),
+                composite: Composite::default(),
+            });
+        } else if case == 3 {
+            own = Scene::new();
+            own.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Image(peniko::ImageBrush::new(fixture::image_data([
+                    255, 0, 0, 255,
+                ]))),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 10., 10.)),
+                composite: Composite::default(),
+            });
+        } else if case == 4 {
+            let mut path = BezPath::with_capacity(8194);
+            path.move_to((0., 0.));
+            for i in 0..8192 {
+                path.line_to((i as f64, 0.));
+            }
+            path.line_to((f64::NAN, 0.));
+            own = Scene::new();
+            own.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Path(path),
+                composite: Composite::default(),
+            });
+        }
+        let mut parent = RecordWidget::new(fill(Color::BLACK));
+        let child = parent.inner.add(
+            RecordWidget::new(own).prepare(),
+            Point::new(13., 19.),
+            Size::new(40., 30.),
+        );
+        let mut bridge = widget_bridge(parent, Affine::IDENTITY);
+        let source = bridge.record(FrameId(1)).unwrap();
+        assert_eq!(
+            source.plan().layers.len(),
+            1,
+            "ordinary Inline child shares a fragment"
+        );
+        if case == 0 {
+            let frame = build(source, empty_snapshot(&pool), &pool);
+            let owners: Vec<_> = frame
+                .commands()
+                .iter()
+                .filter_map(|c| matches!(c.op, FrameOp::Draw(_)).then_some(c.origin.at.owner))
+                .collect();
+            assert_eq!(owners.last(), Some(&child));
+        } else {
+            let notice = PresentationNotice::new(
+                source.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(1)),
+            );
+            let mut build = FrameBuild::new(
+                source,
+                empty_snapshot(&pool),
+                FrameInfo {
+                    logical_size: [400., 300.],
+                    physical_size: [400, 300],
+                },
+                limits(),
+                &pool,
+            )
+            .unwrap();
+            let error = loop {
+                match build.step(step_budget()) {
+                    Err(e) => break e,
+                    Ok(p) => assert!(!p.complete, "invalid record unexpectedly completed"),
+                }
+            };
+            assert_eq!(
+                error.at.owner, child,
+                "case {case}: Inline child failure belongs to its painter"
+            );
+            assert_eq!(error.at.fragment, 0);
+            if case == 3 {
+                assert!(matches!(error.kind, BuildErrorKind::MissingResource { .. }));
+            } else {
+                assert_eq!(error.kind, BuildErrorKind::InvalidRecord);
+            }
+            assert_eq!(bridge.pending_count(), 0);
+            assert_eq!(
+                bridge.resolve(notice),
+                NoticeResult::StaleOrForeign,
+                "a build failure invalidates even an outstanding notice"
+            );
+        }
+    }
+}
+
+#[test]
+fn debug_bounds_are_drawn_once_in_window_space_even_when_singular() {
+    if std::env::var_os("REEL_R01_DEBUG_CHILD").is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "debug_bounds_are_drawn_once_in_window_space_even_when_singular",
+                "--nocapture",
+            ])
+            .env("REEL_R01_DEBUG_CHILD", "1")
+            .env("MASONRY_DEBUG_PAINT", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let pool = pool();
+    for transform in [
+        Affine::translate((17., 23.)) * Affine::scale_non_uniform(2., 3.),
+        Affine::new([0., 0., 0., 2., 17., 23.]),
+    ] {
+        let mut parent = RecordWidget::new(Scene::new());
+        parent.scroll = Vec2::new(-7., -11.);
+        let child = parent.inner.add(
+            RecordWidget::new(Scene::new()).prepare(),
+            Point::new(13., 19.),
+            Size::new(40., 30.),
+        );
+        let mut bridge = widget_bridge(parent, transform);
+        let frame = build(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let actual: Vec<_> = frame
+            .commands()
+            .iter()
+            .filter_map(|c| match &c.op {
+                FrameOp::Draw(FrameDraw::Stroke {
+                    transform,
+                    shape: Geometry::Rect(rect),
+                    ..
+                }) => Some((*rect, *transform)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actual.len(), 2);
+        let expected: Vec<_> = frame
+            .geometry()
+            .records()
+            .iter()
+            .rev()
+            .map(|r| r.bounding_box.inset(-0.5))
+            .collect();
+        for ((rect, transform), expected) in actual.into_iter().zip(expected) {
+            affine_agrees(transform, Affine::IDENTITY);
+            assert_eq!(
+                rect, expected,
+                "window-space debug geometry is never transformed twice"
+            );
+        }
+        assert!(frame.geometry().get(child).is_some());
+    }
+}
 fn ticket(pool: &BudgetPool, n: usize) -> reel_core::budget::BudgetTicket {
     pool.reserve(n as u64).unwrap()
 }
@@ -52,6 +289,11 @@ fn source_drop_cancel_epoch_and_success_keep_the_exact_acceptance_gate() {
     let pool = pool();
     let source = bridge.record(FrameId(1)).unwrap();
     let key = source.key();
+    let outstanding = PresentationNotice::new(
+        key.clone(),
+        SurfaceEpoch(1),
+        PresentationOutcome::Accepted(FrameId(1)),
+    );
     let mut b = FrameBuild::new(
         source,
         empty_snapshot(&pool),
@@ -72,12 +314,13 @@ fn source_drop_cancel_epoch_and_success_keep_the_exact_acceptance_gate() {
     b.cancel();
     assert_eq!(bridge.pending_count(), 0);
     assert_eq!(pool.usage().bytes, 0);
+    assert_eq!(bridge.resolve(outstanding), NoticeResult::StaleOrForeign);
     assert_eq!(
-        bridge.resolve(PresentationNotice {
+        bridge.resolve(PresentationNotice::new(
             key,
-            surface_epoch: SurfaceEpoch(1),
-            outcome: PresentationOutcome::Accepted(FrameId(1))
-        }),
+            SurfaceEpoch(1),
+            PresentationOutcome::Accepted(FrameId(1))
+        )),
         NoticeResult::StaleOrForeign
     );
     let source = bridge.record(FrameId(2)).unwrap();
@@ -106,19 +349,19 @@ fn source_drop_cancel_epoch_and_success_keep_the_exact_acceptance_gate() {
     assert!(bridge.accepted_key().is_none());
     assert_eq!(bridge.pending_count(), 1);
     assert_eq!(
-        bridge.resolve(PresentationNotice {
-            key: frame.key(),
-            surface_epoch: SurfaceEpoch(2),
-            outcome: PresentationOutcome::Accepted(FrameId(99))
-        }),
+        bridge.resolve(PresentationNotice::new(
+            frame.key(),
+            SurfaceEpoch(2),
+            PresentationOutcome::Accepted(FrameId(99))
+        )),
         NoticeResult::StaleOrForeign
     );
     assert_eq!(
-        bridge.resolve(PresentationNotice {
-            key: frame.key(),
-            surface_epoch: SurfaceEpoch(2),
-            outcome: PresentationOutcome::Accepted(frame.frame_id())
-        }),
+        bridge.resolve(PresentationNotice::new(
+            frame.key(),
+            SurfaceEpoch(2),
+            PresentationOutcome::Accepted(frame.frame_id())
+        )),
         NoticeResult::Accepted
     );
     let source = bridge.record(FrameId(4)).unwrap();
@@ -135,11 +378,11 @@ fn source_drop_cancel_epoch_and_success_keep_the_exact_acceptance_gate() {
     )
     .unwrap();
     assert_eq!(
-        bridge.resolve(PresentationNotice {
+        bridge.resolve(PresentationNotice::new(
             key,
-            surface_epoch: SurfaceEpoch(2),
-            outcome: PresentationOutcome::Error,
-        }),
+            SurfaceEpoch(2),
+            PresentationOutcome::Error
+        )),
         NoticeResult::NotPresented
     );
     assert_eq!(
@@ -290,11 +533,11 @@ fn cross_fragment_groups_external_order_cache_and_forward_scroll_singular() {
                     Some(ext_id)
                 );
             }
-            bridge.resolve(PresentationNotice {
-                key: frame.key(),
-                surface_epoch: SurfaceEpoch(1),
-                outcome: PresentationOutcome::Skipped,
-            });
+            bridge.resolve(PresentationNotice::new(
+                frame.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Skipped,
+            ));
         }
         bridge.edit_widget(ext_id, |mut w| {
             let mut w = w.downcast::<RecordWidget>();

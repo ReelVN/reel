@@ -18,6 +18,8 @@ pub use tracing_backend::{
     TracingSubscriberHasBeenSetError, default_tracing_subscriber, try_init_test_tracing,
     try_init_tracing,
 };
-pub use visual_layers::{GroupMetadata, VisualLayer, VisualLayerKind, VisualLayerPlan};
+pub use visual_layers::{
+    CommandOwnerRange, GroupMetadata, VisualLayer, VisualLayerKind, VisualLayerPlan,
+};
 
 pub(crate) use render_root::{MutateCallback, RenderRootState};

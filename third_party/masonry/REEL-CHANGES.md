@@ -61,6 +61,8 @@ R01 adds only the paint metadata/ordering needed by architecture §16:
 
 - VisualLayer groups carry command index, owner WidgetId and forward effect
   space recorded at each paint/append boundary. No owner is inferred from draws.
+- Sorted command-owner ranges also capture ordinary Inline children, generated
+  clips and debug/inspector painting. Frame export prepays their bounded lookup.
 - External retains opaque token, content-local bounds and content transform.
   PaintCtx::set_external_paint declares its retained mode/token. External is
   emitted after pre and own clip, before children; pop clip and post follow.
@@ -68,6 +70,9 @@ R01 adds only the paint metadata/ordering needed by architecture §16:
 - Base and overlay fragments share the layer-local-to-window convention.
   Forward traversal accumulates full compose_local_transform, including layout
   origin and scroll, without inverse matrices. Finite singular transforms survive.
+- Debug bounding boxes are already window-space and use identity fragments;
+  baselines use forward window transforms. Painter scopes remain continuous
+  across these fragments, including with finite singular transforms.
 
 The source manifest, upstream hashes and licenses are unchanged. imaging remains
 the pinned ordinary 0.0.1 dependency; no extra source fork or UI ecosystem is added.

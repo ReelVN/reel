@@ -345,6 +345,18 @@ pub struct FrameBuild {
     state: Option<Building>,
     error: Option<BuildError>,
 }
+impl Drop for FrameBuild {
+    fn drop(&mut self) {
+        if let Some(state) = &self.state {
+            state
+                .source
+                .key
+                .identity
+                .cancelled
+                .store(true, Ordering::Release);
+        }
+    }
+}
 impl FrameBuild {
     /// Reserves the maximum frame/scratch allowance before any compiler allocation.
     /// Source Scene/cache residency is the producer's separate, measured account.
@@ -365,7 +377,10 @@ impl FrameBuild {
                 .first()
                 .map_or_else(|| source.geometry.records()[0].id, |l| l.widget_id),
         };
-        let error = |kind| BuildError { at, kind };
+        let error = |kind| {
+            source.key.identity.cancelled.store(true, Ordering::Release);
+            BuildError { at, kind }
+        };
         if source.plan.layers.len() > limits.max_fragments
             || limits.max_depth == 0
             || limits
@@ -464,6 +479,12 @@ impl FrameBuild {
         match state.step(budget) {
             Ok(progress) => Ok(progress),
             Err(error) => {
+                state
+                    .source
+                    .key
+                    .identity
+                    .cancelled
+                    .store(true, Ordering::Release);
                 self.error = Some(error);
                 self.state = None;
                 Err(error)
@@ -477,6 +498,12 @@ impl FrameBuild {
         }
         let state = self.state.take().expect("unfinished build");
         if !state.complete {
+            state
+                .source
+                .key
+                .identity
+                .cancelled
+                .store(true, Ordering::Release);
             return Err(state.error(BuildErrorKind::Incomplete));
         }
         let Building {
@@ -576,12 +603,6 @@ impl Building {
             if b.max_commands == 0 {
                 break;
             }
-            let cursor = self.cursors.last_mut().expect("active cursor");
-            if cursor.stream.is_none()
-                && let Some(layer) = self.source.plan.layers.get(cursor.layer)
-            {
-                cursor.owner = layer.widget_id;
-            }
             if let Some(mut job) = self.job.take() {
                 if job.field < 9 {
                     let resolve_units =
@@ -647,7 +668,7 @@ impl Building {
                 self.complete = true;
                 break;
             }
-            // Prepay even the source-path probe, group metadata search and External
+            // Prepay even the source-path probe, owner/group searches and External
             // resource/ink lookup. Credit survives a slice too small for the lookup.
             let group_search = u64::from(
                 usize::BITS
@@ -656,11 +677,23 @@ impl Building {
                         .len()
                         .leading_zeros(),
             );
+            let owner_search = if c.stream.is_none() {
+                u64::from(
+                    usize::BITS
+                        - self.source.plan.layers[c.layer]
+                            .command_owners
+                            .len()
+                            .leading_zeros(),
+                )
+            } else {
+                0
+            };
             let mapping_work = 2 * self.mappings.len() as u64
                 + 4 * c.path.len() as u64
                 + 2 * self.resources.leases().len() as u64
                 + c.scopes.len() as u64
                 + group_search
+                + owner_search
                 + 8;
             let available = (mapping_work - self.start_credit).min(b.max_units - p.units);
             self.spend(&mut p, &b, available, 0)?;
@@ -686,6 +719,9 @@ impl Building {
                         let c = self.cursors.last_mut().unwrap();
                         c.layer += 1;
                         c.position = 0;
+                        if let Some(layer) = self.source.plan.layers.get(c.layer) {
+                            c.owner = layer.widget_id;
+                        }
                     }
                     continue;
                 }
@@ -695,6 +731,8 @@ impl Building {
                     break;
                 }
                 self.start_credit = 0;
+                let c = self.cursors.last_mut().unwrap();
+                c.owner = self.source.plan.layers[c.layer].widget_id;
                 let c = self.cursors.last().unwrap();
                 if self.command_count >= self.limits.max_commands {
                     return Err(self.error(BuildErrorKind::Capacity));
@@ -746,6 +784,22 @@ impl Building {
                 if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
                     p.minimum_bytes = size_of::<FrameCommand>() as u64;
                     break;
+                }
+                // Lookup once after header payment, retaining this owner while
+                // payload-capacity credits accumulate over subsequent slices.
+                let c = self.cursors.last().unwrap();
+                if c.stream.is_none() {
+                    let layer = &self.source.plan.layers[c.layer];
+                    let index = layer
+                        .command_owners
+                        .partition_point(|range| range.commands.end <= c.position);
+                    let owner = layer
+                        .command_owners
+                        .get(index)
+                        .filter(|range| range.commands.start <= c.position)
+                        .ok_or_else(|| self.error(BuildErrorKind::InvalidRecord))?
+                        .owner;
+                    self.cursors.last_mut().unwrap().owner = owner;
                 }
                 self.allocation_need = Some(self.next_allocation()?);
             }

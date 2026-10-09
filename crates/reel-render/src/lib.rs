@@ -157,16 +157,16 @@ pub fn presentation_notice(
     epoch: SurfaceEpoch,
     result: Result<PresentOutcome, RenderError>,
 ) -> PresentationNotice {
-    PresentationNotice {
-        key: frame.key(),
-        surface_epoch: epoch,
-        outcome: match result {
+    PresentationNotice::new(
+        frame.key(),
+        epoch,
+        match result {
             Ok(PresentOutcome::PresentAccepted(id)) => PresentationOutcome::Accepted(id),
             Ok(PresentOutcome::Skipped(_)) => PresentationOutcome::Skipped,
             Ok(PresentOutcome::SurfaceUnavailable) => PresentationOutcome::SurfaceUnavailable,
             Err(_) => PresentationOutcome::Error,
         },
-    }
+    )
 }
 #[derive(Clone, Copy, Debug)]
 pub struct ConsumerLimits {
@@ -174,6 +174,7 @@ pub struct ConsumerLimits {
     pub max_resources: usize,
     pub max_frames: usize,
     pub max_events: usize,
+    /// Aggregate payload-capacity tickets in the pending upload queue.
     pub max_upload_bytes: u64,
     pub max_retained_bytes: u64,
     pub max_metadata_bytes: u64,
@@ -272,12 +273,14 @@ impl RecordingBackend {
             .iter()
             .map(|r| r.payload.bytes().ticket().bytes())
             .sum::<u64>()
-            + self
-                .uploads
-                .iter()
-                .flat_map(|u| &u.batch.items)
-                .map(|i| i.payload.bytes().ticket().bytes())
-                .sum::<u64>()
+            + self.queued_upload_bytes()
+    }
+    pub fn queued_upload_bytes(&self) -> u64 {
+        self.uploads
+            .iter()
+            .flat_map(|u| &u.batch.items)
+            .map(|i| i.payload.bytes().ticket().bytes())
+            .sum()
     }
     fn obligations(&self) -> usize {
         self.events.len()
@@ -484,6 +487,10 @@ impl RenderBackend for RecordingBackend {
             Err(code) => return Err(reject(batch, code)),
         };
         if self.uploads.len() >= self.limits.max_uploads as usize
+            || self
+                .queued_upload_bytes()
+                .checked_add(bytes)
+                .is_none_or(|n| n > self.limits.max_upload_bytes)
             || batch.items.len() > self.limits.max_resources - self.slots()
             || batch.items.len() + 1 > self.limits.max_events - self.obligations()
             || self

@@ -9,6 +9,10 @@ mode. `UploadBatch` owns prepared resource leases, pixel/font `OwnedBytes`,
 Scope and its vector-capacity ticket. Invalid metadata, overflow, unsupported
 payloads or exhausted limits return the original batch before acceptance.
 Accepted batches reserve resource, byte, metadata and terminal-event capacity.
+`max_upload_bytes` bounds the sum of payload-capacity tickets across **all pending
+batches**; `max_retained_bytes` independently bounds pending plus resident storage.
+Every terminal upload outcome releases queue byte capacity; completed residency
+remains charged. Rejection returns the original batch and its tickets unchanged.
 `UploadId` has at most one completed/failed/cancelled terminal outcome.
 
 `RecordingBackend` retains CPU upload storage as simulated residency. Explicit
@@ -29,7 +33,11 @@ missing-resource and Busy presentation results are distinct.
 
 `presentation_notice` preserves the exact borrowed frame key and separately
 reported epoch for the existing stage acceptance gate. Export/upload completion
-does not change input. `color` supplies analytical sRGB-to-linear, premultiplying,
+does not change input. For Accepted results it independently retains candidate
+qualification and matching geometry until resolve or the last notice drop, so
+caller frame drop and render completion may precede resolve. It retains no frame
+commands/resources. Notice fields have read-only accessors and a retaining
+`PresentationNotice::new` constructor. `color` supplies analytical sRGB-to-linear, premultiplying,
 over, whole-group alpha/mask and crossfade reference formulas; it is not a
 rasterizer. Structural CPU replay remains a separate U02 reference.
 

@@ -332,3 +332,123 @@ fn linear_alpha_mask_group_and_crossfade_analytic_expectations() {
     assert_eq!(crossfade(red, blue, 0.25), [0.75, 0., 0.25, 1.]);
     assert!((luminance_mask(linear_premultiplied([1., 0., 0., 0.5])) - 0.1063).abs() < 1e-12);
 }
+
+#[test]
+fn queued_upload_bytes_are_cumulative_and_return_the_original_batch() {
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 8192).unwrap();
+    let handles: Vec<_> = (1..=2)
+        .map(|n| {
+            registry
+                .register(
+                    version(n),
+                    ResourceData::Image {
+                        image: fixture::image_data([n, 0, 0, 255]),
+                        encoding: ColorEncoding::Srgb,
+                    },
+                    pool.reserve(4).unwrap(),
+                )
+                .unwrap()
+        })
+        .collect();
+    for terminal in [
+        Terminal::Completed(()),
+        Terminal::Cancelled,
+        Terminal::Failed(RenderError::Busy),
+    ] {
+        let mut quota = limits();
+        quota.max_upload_bytes = 4;
+        quota.max_retained_bytes = 8;
+        let mut backend = RecordingBackend::new(quota).unwrap();
+        let first = backend
+            .upload(batch(registry.acquire(handles[0]).unwrap(), &pool, 4))
+            .unwrap();
+        let second = batch(registry.acquire(handles[1]).unwrap(), &pool, 4);
+        let original_items = second.items.as_ptr();
+        let original_storage = second.storage.bytes();
+        let usage = pool.usage();
+        let rejected = backend
+            .upload(second)
+            .expect_err("two 4-byte pending batches exceed a 4-byte queue");
+        assert_eq!(rejected.reason.code, RejectCode::Busy);
+        assert_eq!(rejected.request.items.as_ptr(), original_items);
+        assert_eq!(rejected.request.storage.bytes(), original_storage);
+        assert_eq!(rejected.request.items[0].resource.handle(), handles[1]);
+        assert_eq!(pool.usage(), usage);
+        assert_eq!(backend.retained_bytes(), 4);
+        assert_eq!(backend.queued_upload_bytes(), 4);
+        assert!(backend.complete_upload(first, terminal));
+        assert!(!backend.complete_upload(first, Terminal::Cancelled));
+        assert_eq!(backend.queued_upload_bytes(), 0);
+        let second = backend.upload(rejected.request).unwrap();
+        assert_eq!(backend.pending_upload_count(), 1);
+        assert_eq!(backend.queued_upload_bytes(), 4);
+        assert!(backend.complete_upload(second, Terminal::Cancelled));
+        assert_eq!(backend.queued_upload_bytes(), 0);
+    }
+}
+
+#[test]
+fn accepted_notice_survives_frame_drop_and_render_completion() {
+    let pool = pool();
+    let mut bridge = widget_bridge(
+        RecordWidget::new(Scene::new()),
+        Affine::translate((17., 23.)),
+    );
+    let mut backend = RecordingBackend::new(limits()).unwrap();
+    backend.configure(surface()).unwrap();
+    for id in 1..=3 {
+        let frame = build(
+            bridge.record(FrameId(id)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let expected_transform = frame.geometry().records()[0].window_transform;
+        let result = backend.render_present(&frame);
+        let notice = presentation_notice(&frame, SurfaceEpoch(1), result);
+        let submission = backend.last_submission().unwrap();
+        let duplicate = notice.clone();
+        drop(frame);
+        assert!(backend.complete_render(submission));
+        assert_eq!(
+            pool.usage().bytes,
+            0,
+            "notice retains no frame/output resources"
+        );
+        assert_eq!(
+            bridge.pending_count(),
+            1,
+            "Accepted notice owns candidate eligibility"
+        );
+        assert!(bridge.snapshot_usage().bytes > 0);
+        drop(notice);
+        assert_eq!(
+            bridge.pending_count(),
+            1,
+            "a surviving notice clone retains eligibility"
+        );
+        if id == 1 {
+            assert_eq!(bridge.resolve(duplicate), NoticeResult::Accepted);
+            let masonry_core::app::InputGeometrySource::Presented(Some(view)) =
+                bridge.root().input_geometry_source()
+            else {
+                panic!("accepted view missing")
+            };
+            assert_eq!(view.records()[0].window_transform, expected_transform);
+        } else if id == 2 {
+            drop(duplicate);
+            assert_eq!(
+                bridge.pending_count(),
+                0,
+                "last unresolved notice drop cancels"
+            );
+            assert_eq!(bridge.accepted_key().unwrap().frame_id(), FrameId(1));
+        } else {
+            bridge.replace_surface(SurfaceEpoch(2));
+            assert_eq!(bridge.resolve(duplicate), NoticeResult::StaleOrForeign);
+        }
+        let mut events = vec![];
+        backend.poll(&mut events, 16);
+    }
+    assert_eq!(bridge.snapshot_usage().bytes, 0);
+}

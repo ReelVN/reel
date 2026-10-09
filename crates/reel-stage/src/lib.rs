@@ -13,7 +13,7 @@ use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, Q
 use reel_core::identity::{FrameId, SurfaceEpoch};
 use std::sync::{
     Arc, OnceLock, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 pub mod frame;
@@ -51,15 +51,48 @@ impl CandidateKey {
 #[derive(Debug)]
 struct CandidateIdentity {
     cancelled: AtomicBool,
+    // Keys and geometry retain accounting, but only guards retain eligibility.
+    owners: AtomicUsize,
+    geometry: OnceLock<Weak<PresentedGeometryView>>,
     _ticket: BudgetTicket,
 }
 #[derive(Debug)]
 pub(crate) struct CandidateGuard {
     key: CandidateKey,
 }
+impl CandidateGuard {
+    fn retain(key: &CandidateKey) -> Option<Self> {
+        key.identity
+            .owners
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+                (!key.identity.cancelled.load(Ordering::Acquire) && owners != 0)
+                    .then(|| owners.checked_add(1))
+                    .flatten()
+            })
+            .ok()?;
+        Some(Self { key: key.clone() })
+    }
+}
+impl Clone for CandidateGuard {
+    fn clone(&self) -> Self {
+        // A live guard always has a nonzero count, including after explicit clear.
+        self.key
+            .identity
+            .owners
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+                owners.checked_add(1)
+            })
+            .expect("candidate guard count exhausted");
+        Self {
+            key: self.key.clone(),
+        }
+    }
+}
 impl Drop for CandidateGuard {
     fn drop(&mut self) {
-        self.key.identity.cancelled.store(true, Ordering::Release);
+        if self.key.identity.owners.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.key.identity.cancelled.store(true, Ordering::Release);
+        }
     }
 }
 /// One real paint/geometry cycle, moved into the resumable compiler without flattening.
@@ -102,9 +135,56 @@ pub enum PresentationOutcome {
 }
 #[derive(Clone, Debug)]
 pub struct PresentationNotice {
-    pub key: CandidateKey,
-    pub surface_epoch: SurfaceEpoch,
-    pub outcome: PresentationOutcome,
+    key: CandidateKey,
+    surface_epoch: SurfaceEpoch,
+    outcome: PresentationOutcome,
+    _retention: Option<AcceptedRetention>,
+}
+#[derive(Clone, Debug)]
+struct AcceptedRetention {
+    _guard: CandidateGuard,
+    _geometry: Arc<PresentedGeometryView>,
+}
+impl PresentationNotice {
+    pub fn key(&self) -> &CandidateKey {
+        &self.key
+    }
+    pub fn surface_epoch(&self) -> SurfaceEpoch {
+        self.surface_epoch
+    }
+    pub fn outcome(&self) -> PresentationOutcome {
+        self.outcome
+    }
+    /// An Accepted notice owns eligibility and matching geometry independently
+    /// of the frame or GPU submission. An already cancelled key cannot revive it.
+    pub fn new(
+        key: CandidateKey,
+        surface_epoch: SurfaceEpoch,
+        outcome: PresentationOutcome,
+    ) -> Self {
+        let retention = if matches!(outcome, PresentationOutcome::Accepted(_)) {
+            // Upgrade geometry first so a concurrent final frame drop cannot
+            // destroy it between acquiring eligibility and acquiring the view.
+            key.identity
+                .geometry
+                .get()
+                .and_then(Weak::upgrade)
+                .and_then(|geometry| {
+                    CandidateGuard::retain(&key).map(|guard| AcceptedRetention {
+                        _guard: guard,
+                        _geometry: geometry,
+                    })
+                })
+        } else {
+            None
+        };
+        Self {
+            key,
+            surface_epoch,
+            outcome,
+            _retention: retention,
+        }
+    }
 }
 /// Whether an exact candidate was resolved, installed, or ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,9 +345,15 @@ impl PresentationBridge {
             .map_err(RecordError::Geometry)?;
         let lease = Arc::new(CandidateIdentity {
             cancelled: AtomicBool::new(false),
+            owners: AtomicUsize::new(1),
+            geometry: OnceLock::new(),
             _ticket: reservation,
         });
         let geometry = Arc::new(geometry.with_retention_guard(lease.clone()));
+        lease
+            .geometry
+            .set(Arc::downgrade(&geometry))
+            .expect("new candidate geometry");
         let key = CandidateKey {
             frame,
             epoch: self.epoch,

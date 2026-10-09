@@ -7,6 +7,15 @@ use crate::core::WidgetId;
 use crate::imaging::PaintSink;
 use crate::imaging::record::{Scene, replay_transformed};
 
+/// Actual painter ownership, independent of the widget requesting a layer boundary.
+#[derive(Clone, Debug)]
+pub struct CommandOwnerRange {
+    /// Contiguous command range produced by one paint/append operation.
+    pub commands: std::ops::Range<usize>,
+    /// Widget that produced these commands, including ordinary Inline children.
+    pub owner: WidgetId,
+}
+
 /// Reliable provenance captured when a widget's cached paint is appended.
 #[derive(Clone, Copy, Debug)]
 pub struct GroupMetadata {
@@ -85,6 +94,8 @@ pub struct VisualLayer {
     pub widget_id: WidgetId,
     /// Group provenance; independent of optional context annotations or child draws.
     pub groups: Vec<GroupMetadata>,
+    /// Sorted, nonoverlapping command ownership captured at paint/append boundaries.
+    pub command_owners: Vec<CommandOwnerRange>,
 }
 
 /// The content represented by a visual layer.
@@ -133,6 +144,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
+                    command_owners: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::External {
@@ -143,12 +155,14 @@ mod tests {
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
+                    command_owners: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::Scene(overlay_scene.clone()),
                     transform: Affine::translate((20.0, 5.0)),
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
+                    command_owners: Vec::new(),
                 },
             ],
         };
@@ -180,6 +194,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
+                    command_owners: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::External {
@@ -190,12 +205,14 @@ mod tests {
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
+                    command_owners: Vec::new(),
                 },
                 VisualLayer {
                     kind: VisualLayerKind::Scene(overlay_scene),
                     transform: Affine::translate((20.0, 5.0)),
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
+                    command_owners: Vec::new(),
                 },
             ],
         };

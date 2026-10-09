@@ -300,6 +300,13 @@ impl ResourceRegistry {
             .generation
             .checked_add(1)
             .ok_or(ResourceError::IdentityExhausted)?;
+        // The selected slot has no strong lease. Drop only this registry's expired
+        // weak descriptor before reserving its replacement. External weak aliases
+        // keep their own Arc allocation ticket until their actual last drop.
+        slot.last = ResourceWeak {
+            weak: Weak::new(),
+            _descriptor: None,
+        };
         let bytes = size_of::<Resource>()
             + size_of::<BudgetTicket>()
             + 4 * size_of::<usize>()

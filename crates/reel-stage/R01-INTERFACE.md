@@ -22,8 +22,9 @@ one source and resource snapshot. It reserves the full output/scratch allowance
 before allocating. `step(StepBudget)` advances borrowed public
 command/clip/group/mask/draw/context data and returns `BuildProgress`.
 `finish(self)` publishes a complete immutable `RenderFrame` or returns
-`Incomplete`. `cancel(self)`, an error, source/build/frame drop or an epoch
-change releases candidate eligibility. Retained keys and geometry remain charged
+`Incomplete`. `cancel(self)`, a build error or an epoch change releases candidate
+eligibility. Source/build/frame drop cancels an unsubmitted candidate; an Accepted
+notice independently retains eligibility after submission. Retained keys and geometry remain charged
 until their final lease drops. No partial frame is exposed.
 
 `BuildLimits` bounds fragments, output commands (including mask commands), mask
@@ -45,6 +46,10 @@ mask depth and owning WidgetId. Missing resources include a Blob ID lookup hint
 or External token. Structured source file/line/column and diagnostic contexts
 are retained in the completed frame. Invalid/nonfinite records, capacity/work/
 bytes exhaustion and unsupported records abort the whole candidate.
+The painter's command ranges identify ordinary Inline children as well as layer
+owners. Their binary lookup is prepaid within the step work allowance; payload
+continuations keep the same owner. Generated clips and debug/inspector commands
+also record their actual owner. Mask commands inherit their defining owner.
 
 ## Portable stream
 
@@ -110,12 +115,18 @@ be reused only after the prior resource's last strong lease disappears, and
 its complete generation is incremented. Backend completion independently
 controls backend residency; raw producer aliases independently control source
 Blob memory. Coordinate registry and backend retirement explicitly.
+Before reserving a replacement descriptor, the registry releases its own expired
+weak ticket for the selected slot. Genuine external weak aliases continue to
+retain that allocation's ticket; quota exhaustion returns `Bytes` until they drop.
 
 ## Masonry changes and presentation
 
 The same forward local-to-window convention applies to the base and overlays.
 Full `compose_local_transform()` includes origin and scroll. Finite singular
 transforms remain drawable without inversion; input's inverse mapping is empty.
+Debug bounding boxes already use window coordinates and are emitted in identity
+fragments, with baselines transformed forward into the same space. Open painter
+scopes continue across those fragments, including under singular transforms.
 External records retain opaque token, WidgetId, content-local bounds and forward
 content transform in exact `pre → own clip → external → children → pop clip →
 post` order. Cached pre/paint/post callbacks retain the prior mode/token until
@@ -127,6 +138,18 @@ Successful export or upload never installs input geometry. Only
 reported SurfaceEpoch, current epoch and valid acceptance order can accept
 `PresentAccepted`. Clear/failure/cancellation retain U02's old-view exit and
 capture cleanup behavior. Backend completion is a separate event.
+
+`PresentationNotice::new(key, reported_epoch, outcome)` replaces struct literals;
+read-only `key()`, `surface_epoch()` and `outcome()` keep ownership consistent.
+Create Accepted notices only from an actual presentation result. While the exact
+candidate remains eligible, the constructor acquires a qualification guard and
+the matching geometry, without retaining the source plan or frame resources.
+Keys alone cannot revive a cancelled candidate. Notice clones share that view
+and each retain qualification until `resolve` consumes them or the last notice
+drops. `render_present → notice → caller frame drop → complete_render → resolve`
+is valid. GPU completion can release frame/output resources before input acceptance.
+Nonaccepted notices do not retain qualification. Explicit build cancellation,
+failure, clear and epoch replacement still invalidate all notices.
 
 The backend contract, upload ownership and simulated consumers are documented
 in [reel-render/README.md](../reel-render/README.md). Verification and source

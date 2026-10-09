@@ -9,7 +9,8 @@ use tracing::{info_span, trace};
 use tree_arena::ArenaMut;
 
 use crate::app::{
-    GroupMetadata, RenderRoot, RenderRootState, VisualLayer, VisualLayerKind, VisualLayerPlan,
+    CommandOwnerRange, GroupMetadata, RenderRoot, RenderRootState, VisualLayer, VisualLayerKind,
+    VisualLayerPlan,
 };
 use crate::core::{
     DefaultProperties, PaintCtx, PaintLayerMode, PropertiesRef, PropertyArena, WidgetArenaNode,
@@ -23,6 +24,7 @@ use crate::util::get_debug_color;
 struct LayerCollector {
     current_scene: Scene,
     groups: Vec<GroupMetadata>,
+    command_owners: Vec<CommandOwnerRange>,
     layers: Vec<VisualLayer>,
     current_owner_id: WidgetId,
     transform: Affine,
@@ -33,6 +35,7 @@ impl LayerCollector {
         Self {
             current_scene: Scene::new(),
             groups: Vec::new(),
+            command_owners: Vec::new(),
             layers: Vec::new(),
             current_owner_id: root_id,
             transform,
@@ -51,10 +54,43 @@ impl LayerCollector {
                 });
             }
         }
+        self.record_owner(start, owner);
     }
 
-    fn scene_mut(&mut self) -> &mut Scene {
-        &mut self.current_scene
+    fn record_owner(&mut self, start: usize, owner: WidgetId) {
+        let end = self.current_scene.commands().len();
+        if start == end {
+            return;
+        }
+        if let Some(last) = self.command_owners.last_mut()
+            && last.owner == owner
+            && last.commands.end == start
+        {
+            last.commands.end = end;
+        } else {
+            self.command_owners.push(CommandOwnerRange {
+                commands: start..end,
+                owner,
+            });
+        }
+    }
+
+    fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
+        let start = self.current_scene.commands().len();
+        draw(&mut self.current_scene);
+        self.record_owner(start, owner);
+    }
+
+    fn paint_window(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
+        // Bounding boxes already use window space. Preserve painter scopes across
+        // fragments instead of inverting a possibly singular layer transform.
+        self.finish_current_layer(false);
+        let transform = std::mem::replace(&mut self.transform, Affine::IDENTITY);
+        let previous_owner = std::mem::replace(&mut self.current_owner_id, owner);
+        self.paint(owner, draw);
+        self.finish_current_layer(false);
+        self.transform = transform;
+        self.current_owner_id = previous_owner;
     }
 
     fn finish_current_layer(&mut self, allow_empty: bool) {
@@ -69,6 +105,7 @@ impl LayerCollector {
             transform: self.transform,
             widget_id: self.current_owner_id,
             groups: std::mem::take(&mut self.groups),
+            command_owners: std::mem::take(&mut self.command_owners),
         });
     }
 
@@ -88,6 +125,7 @@ impl LayerCollector {
             transform: self.transform,
             widget_id,
             groups: Vec::new(),
+            command_owners: Vec::new(),
         });
     }
 
@@ -208,10 +246,12 @@ fn paint_widget(
 
         if let Some(clip) = state.clip_path {
             // The clip path is stored in border-box space, so need to use that transform.
-            layer_collector.scene_mut().push_clip(Clip::Fill {
-                transform: border_box_to_layer_transform,
-                shape: Geometry::Rect(clip),
-                fill_rule: Fill::NonZero,
+            layer_collector.paint(id, |scene| {
+                scene.push_clip(Clip::Fill {
+                    transform: border_box_to_layer_transform,
+                    shape: Geometry::Rect(clip),
+                    fill_rule: Fill::NonZero,
+                });
             });
         }
 
@@ -249,34 +289,37 @@ fn paint_widget(
 
     if !is_stashed {
         if global_state.debug_paint {
-            // Draw the global axis aligned bounding rect of the widget
-            const BORDER_WIDTH: f64 = 1.0;
-            let color = get_debug_color(id.to_raw());
-            let rect = state.bounding_box.inset(BORDER_WIDTH / -2.0);
-            let border_style = Stroke::new(BORDER_WIDTH);
-            let mut painter = Painter::new(layer_collector.scene_mut());
-            painter.stroke(rect, &border_style, color).draw();
+            let border_box_to_window = layer_collector.transform * border_box_to_layer_transform;
+            layer_collector.paint_window(id, |scene| {
+                // Draw the global axis aligned bounding rect of the widget
+                const BORDER_WIDTH: f64 = 1.0;
+                let color = get_debug_color(id.to_raw());
+                let rect = state.bounding_box.inset(BORDER_WIDTH / -2.0);
+                let border_style = Stroke::new(BORDER_WIDTH);
+                let mut painter = Painter::new(scene);
+                painter.stroke(rect, &border_style, color).draw();
 
-            // Draw the widget's explicit baselines
-            let mut draw_baseline = |baseline| {
-                let border_box = state.border_box();
-                let line = Line::new((border_box.x0, baseline), (border_box.x1, baseline));
-                let baseline_style = Stroke::new(1.0).with_dashes(0., [4.0, 4.0]);
-                painter
-                    .stroke(line, &baseline_style, color)
-                    .transform(border_box_to_layer_transform)
-                    .draw();
-            };
-            if !state.first_baseline.is_nan() {
-                draw_baseline(state.first_baseline);
-            }
-            if !state.last_baseline.is_nan() && state.last_baseline != state.first_baseline {
-                draw_baseline(state.last_baseline);
-            }
+                // Draw the widget's explicit baselines
+                let mut draw_baseline = |baseline| {
+                    let border_box = state.border_box();
+                    let line = Line::new((border_box.x0, baseline), (border_box.x1, baseline));
+                    let baseline_style = Stroke::new(1.0).with_dashes(0., [4.0, 4.0]);
+                    painter
+                        .stroke(line, &baseline_style, color)
+                        .transform(border_box_to_window)
+                        .draw();
+                };
+                if !state.first_baseline.is_nan() {
+                    draw_baseline(state.first_baseline);
+                }
+                if !state.last_baseline.is_nan() && state.last_baseline != state.first_baseline {
+                    draw_baseline(state.last_baseline);
+                }
+            });
         }
 
         if has_clip {
-            layer_collector.scene_mut().pop_clip();
+            layer_collector.paint(id, |scene| scene.pop_clip());
         }
 
         let Some((_, _, post_scene)) = &mut scene_cache.get(&id) else {
@@ -291,10 +334,12 @@ fn paint_widget(
         if global_state.inspector_state.hovered_widget == Some(id) {
             const HOVER_FILL_COLOR: Color = Color::from_rgba8(60, 60, 250, 100);
             let rect = state.border_box();
-            Painter::new(layer_collector.scene_mut())
-                .fill(rect, HOVER_FILL_COLOR)
-                .transform(border_box_to_layer_transform)
-                .draw();
+            layer_collector.paint(id, |scene| {
+                Painter::new(scene)
+                    .fill(rect, HOVER_FILL_COLOR)
+                    .transform(border_box_to_layer_transform)
+                    .draw();
+            });
         }
     }
 

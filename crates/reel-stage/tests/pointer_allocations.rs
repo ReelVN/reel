@@ -59,11 +59,11 @@ fn real_uncaptured_pointer_dispatch_allocations() {
         )
         .unwrap();
         let candidate = bridge.record(FrameId(1)).unwrap();
-        bridge.resolve(PresentationNotice {
-            key: candidate.key(),
-            surface_epoch: SurfaceEpoch(1),
-            outcome: PresentationOutcome::Accepted(FrameId(1)),
-        });
+        bridge.resolve(PresentationNotice::new(
+            candidate.key(),
+            SurfaceEpoch(1),
+            PresentationOutcome::Accepted(FrameId(1)),
+        ));
         assert_eq!(candidate.geometry().len(), nodes);
         for (kind, point) in [
             ("first-child-hit", Point::new(15., 10.)),
