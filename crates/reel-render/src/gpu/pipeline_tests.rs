@@ -494,3 +494,159 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
     drop(renderer); // Renderer drains actual GPU work before releasing leases.
     assert_eq!(pool.usage().bytes, 0);
 }
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn pipeline_reuse_outer_scope_cannot_hide_construction_failure() {
+    let pool = pool();
+    let frame = frame(scene(Color::WHITE), [400, 300], &pool);
+    let renderer = renderer(Default::default());
+    renderer
+        .gpu
+        .device
+        .push_error_scope(wgpu::ErrorFilter::Validation);
+    renderer
+        .pipelines
+        .creations
+        .invalid_shader
+        .store(true, Ordering::Relaxed);
+    assert!(
+        matches!(renderer.prepare(&frame), Err(GpuError::Driver(_))),
+        "an outer scope must not turn invalid Pipelines into a successful Prepared"
+    );
+    renderer
+        .pipelines
+        .creations
+        .invalid_shader
+        .store(false, Ordering::Relaxed);
+    assert_eq!(renderer.pipelines.initialized_count(), 0);
+    let attempted = renderer.pipelines.creations.snapshot();
+    assert_eq!(attempted[3], 2);
+    assert!(matches!(renderer.prepare(&frame), Err(GpuError::Driver(_))));
+    assert_eq!(renderer.pipelines.creations.snapshot(), attempted);
+    // Renderer owns its construction error; the caller's scope stays balanced.
+    assert!(pollster::block_on(renderer.gpu.device.pop_error_scope()).is_none());
+    assert!(matches!(renderer.gpu.check(), Err(GpuError::Driver(_))));
+    empty(&renderer);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn pipeline_reuse_outer_scope_preserves_caller_errors_and_warm_pixels() {
+    let pool = pool();
+    let frame = frame(scene(Color::WHITE), [400, 300], &pool);
+    let mut renderer = renderer(Default::default());
+    renderer
+        .gpu
+        .device
+        .push_error_scope(wgpu::ErrorFilter::Validation);
+    let _ = renderer
+        .gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("caller-owned scoped fault"),
+            source: wgpu::ShaderSource::Wgsl("invalid caller WGSL".into()),
+        });
+    assert!(renderer.gpu.check().is_ok());
+    drop(renderer.prepare(&frame).unwrap());
+    drop(renderer.prepare(&frame).unwrap());
+    counts(&renderer, 1);
+    assert!(matches!(
+        pollster::block_on(renderer.gpu.device.pop_error_scope()),
+        Some(wgpu::Error::Validation { .. })
+    ));
+    assert!(renderer.gpu.check().is_ok());
+    let pixels = renderer
+        .readback(renderer.prepare(&frame).unwrap())
+        .unwrap();
+    assert!(
+        pixels
+            .iter()
+            .all(|p| p.iter().all(|c| (*c - 1.).abs() < 0.006))
+    );
+    counts(&renderer, 1);
+    empty(&renderer);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
+    for invalid in [false, true] {
+        let renderer = renderer(Default::default());
+        renderer
+            .pipelines
+            .creations
+            .invalid_shader
+            .store(invalid, Ordering::Relaxed);
+        renderer
+            .gpu
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let barrier = std::sync::Barrier::new(3);
+        let results = std::thread::scope(|scope| {
+            let threads: Vec<_> = [
+                (wgpu::TextureFormat::Rgba16Float, 4),
+                (wgpu::TextureFormat::Rgba16Float, 1),
+                (wgpu::TextureFormat::Rgba8Unorm, 1),
+            ]
+            .into_iter()
+            .map(|(format, samples)| {
+                scope.spawn({
+                    let barrier = &barrier;
+                    let renderer = &renderer;
+                    move || {
+                        barrier.wait();
+                        renderer.pipelines.get(
+                            &renderer.gpu,
+                            Quality {
+                                format,
+                                samples,
+                                degraded: samples != 4,
+                            },
+                        )
+                    }
+                })
+            })
+            .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        if invalid {
+            assert!(
+                results
+                    .iter()
+                    .all(|result| matches!(result, Err(GpuError::Driver(_))))
+            );
+            assert_eq!(renderer.pipelines.initialized_count(), 0);
+            assert_eq!(
+                renderer.pipelines.creations.snapshot(),
+                [2, 2, 2, 2, 1],
+                "one failed constructor becomes sticky before another tier constructs"
+            );
+        } else {
+            assert!(results.iter().all(Result::is_ok));
+            counts(&renderer, 3);
+        }
+        assert!(pollster::block_on(renderer.gpu.device.pop_error_scope()).is_none());
+        // A subsequent scoped error must still belong to the caller, not a leaked inner scope.
+        renderer
+            .gpu
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let _ = renderer
+            .gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("post-construction scope balance"),
+                source: wgpu::ShaderSource::Wgsl("invalid caller WGSL".into()),
+            });
+        assert!(matches!(
+            pollster::block_on(renderer.gpu.device.pop_error_scope()),
+            Some(wgpu::Error::Validation { .. })
+        ));
+        assert_eq!(renderer.gpu.check().is_ok(), !invalid);
+        empty(&renderer);
+    }
+}

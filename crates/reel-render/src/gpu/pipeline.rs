@@ -1,5 +1,7 @@
 use super::{Gpu, GpuError, Quality, mesh::Vertex, targets::Target};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use wgpu::util::DeviceExt;
 
 /// Only the three existing format/sample pairs can occupy these instance slots.
@@ -7,6 +9,8 @@ use wgpu::util::DeviceExt;
 #[derive(Default)]
 pub(super) struct PipelineSlots {
     slots: [Mutex<Option<Arc<Pipelines>>>; 3],
+    // wgpu 26 native error scopes share one device stack, including across tiers.
+    construction: Mutex<()>,
     #[cfg(test)]
     pub(super) creations: Creations,
 }
@@ -32,15 +36,46 @@ impl PipelineSlots {
         if let Some(pipelines) = &*slot {
             return Ok(pipelines.clone());
         }
+        let _construction = self
+            .construction
+            .lock()
+            .expect("pipeline construction poisoned");
+        gpu.check()?;
+        for filter in [
+            wgpu::ErrorFilter::Validation,
+            wgpu::ErrorFilter::Internal,
+            wgpu::ErrorFilter::OutOfMemory,
+        ] {
+            gpu.device.push_error_scope(filter);
+        }
         let pipelines = Arc::new(Pipelines::new(
             &gpu.device,
             quality,
             #[cfg(test)]
             &self.creations,
         ));
-        // A synchronous construction fault must never publish invalid handles.
-        // Later asynchronous faults remain sticky in Gpu and deny even cache hits.
+        // Pop every scope before returning, including on captured failure. The
+        // native wgpu-core backend returns ready(scope.error); this does not wait
+        // for queue completion. Never infer success from an uncaptured handler,
+        // nor block this synchronous API on a WebGPU Promise.
+        let mut pending = false;
+        for _ in 0..3 {
+            let mut result = std::pin::pin!(gpu.device.pop_error_scope());
+            match result
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            {
+                Poll::Ready(Some(error)) => gpu.capture_driver_error(error),
+                Poll::Ready(None) => (),
+                Poll::Pending => pending = true,
+            }
+        }
         gpu.check()?;
+        if pending {
+            return Err(GpuError::Device(
+                "pipeline construction requires asynchronous validation on this backend".into(),
+            ));
+        }
         *slot = Some(pipelines.clone());
         Ok(pipelines)
     }
