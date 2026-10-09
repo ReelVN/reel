@@ -265,8 +265,8 @@ A separate single debug observation measured analysis/result-drop at 951/28 ms;
 a single release observation measured 190/24 ms. Shared result-drop plus intact-
 history validation and final-tail release took 25 ms debug / 20 ms release.
 These are regression observations, not medians or an engine performance claim.
-Raw before/after observations and exact commands are in
-`bench-results/semantic/provenance-lifecycle.txt`.
+Historical before/after observations and exact commands are preserved in the
+[provenance lifecycle log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/semantic/provenance-lifecycle.txt).
 
 The direct namespace counterexample `a: pub let x=1;` and
 `b: use a as ns; let z:int=ns.x;` now retains exactly module a/export=None for the

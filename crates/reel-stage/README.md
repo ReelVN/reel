@@ -100,14 +100,14 @@ captured cleanup still receives exactly one Cancel. Shared/mutable safe-tree loo
 no longer allocate ancestor Vecs and preserve descendant scope after reparent/removal.
 
 The recursive lookup introduced in `694b395` has been replaced with bounded path
-storage and iterative descent. `tree_arena/tests/lookup_depth.rs` preserves the six current review
-probes using TreeArena<u64>: build on a separate 16MiB stack, print BUILT, query on
-the reported small stack, then forget the arena to exclude destruction. It compares
-local git snapshots fbb3c79/2534b9a with current source. Old lookup passes all six,
-2534b9a overflows all six, and current lookup passes all six with zero allocations
-and reallocations (`tree-depth-lookup.log`). The cases are debug find256/find_mut512
-on 64KiB, debug find512/find_mut1024 on 128KiB, and release find1024/find_mut2048 on
-64KiB. Configured depth128 lookup also passes on both stacks in both profiles.
+storage and iterative descent. `crates/tree_arena/tests/lookup_depth.rs` checks the
+current implementation using TreeArena<u64>: build on a separate 16 MiB stack,
+query on the reported small stack, then forget the arena to exclude destruction.
+Debug and release runs together cover the six find/find_mut review cases and
+assert zero allocations and reallocations. Configured depth128 lookup is also
+checked on both stacks in both profiles. The old-source comparisons are preserved
+in [the pre-cleanup log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/tree-depth-lookup.log);
+the current test does not rebuild those historical snapshots.
 
 The arena owns an independent std Mutex<Vec<u64>> workspace, preallocated to
 max_path at input configuration. try_lock never blocks; returned handles retain
@@ -279,10 +279,12 @@ Xilem commit `271a27a6d4a930f7878d404f9014e3c50a3a9b88`, then run:
 cargo run --locked -p reel-dev -- audit-masonry /path/to/extracted-upstream
 ```
 
-The audit verifies 94 original source/build/doc/resource files and the one new
-geometry source, exact diff and absence of nested Git. Only four required crates,
-Button/Image/Slider and Button's Label dependency plus their properties/theme
-are retained.
+The audit checks the hashes of 94 original upstream files, retained licenses and
+copyright headers, the exact Rust/manifest closure (including the local geometry
+source and lookup-depth test), and absence of nested Git. It generates the current
+local diff under `target/reel-artifacts/`; it does not compare a tracked patch.
+Only the four required crates and selected Button/Image/Slider/Label closure are
+retained.
 
 R01 replaces U02's temporary root-transform/External rejection: base and overlays
 now share complete forward origin/scroll transforms, including finite singular

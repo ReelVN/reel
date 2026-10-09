@@ -223,6 +223,7 @@ diagnostic limits, previous mutable parameters, internal labeled loop transfers,
 throw and rethrow. Valid defaults retain their expression type and contain no
 fabricated source Return. L04 can lower that result to its compiler-generated
 thunk Return as specified; this source-HIR check does not inspect or prohibit
-bytecode Return. This branch does not implement or execute lowering/the VM.
-Static verification commands/results are in
-`bench-results/semantic/default-return-boundary.txt`.
+bytecode Return. This semantic-analysis check does not execute lowering or the VM;
+L04 lowering is described separately in [LOWERING.md](LOWERING.md).
+Historical verification commands/results are preserved in the
+[default-return boundary log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/semantic/default-return-boundary.txt).
