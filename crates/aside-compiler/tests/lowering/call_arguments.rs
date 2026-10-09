@@ -400,7 +400,8 @@ fn packed_calls_and_rest_have_exact_budget_and_absolute_depth_boundaries() {
 #[test]
 fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
     use aside_compiler::semantic::{
-        CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
+        CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, MemoryResolver,
+        ModuleInterface, SymbolReference, TypeHint,
     };
     let reference = SymbolReference {
         module: "registry::test".into(),
@@ -581,4 +582,56 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
     )
     .unwrap_err();
     assert_eq!(e.kind, lowering::ErrorKind::Unsupported);
+
+    // Resolver-native members use node identities rather than host symbols.
+    let mut export = options.hosts[0].clone();
+    export.name = "run".into();
+    let mut resolver = MemoryResolver::default();
+    resolver.insert(ModuleInterface {
+        canonical_path: "reg::exports".into(),
+        version: "metadata-2".into(),
+        exports: vec![export],
+    });
+    for expression in ["native.run(...xs)", "((native.run))(...xs)"] {
+        let source = format!("use reg::exports as native;fn f(xs){{{expression}}}");
+        let m = analyze_module(&source, &AnalysisOptions::default(), &mut resolver)
+            .unwrap()
+            .into_module()
+            .unwrap();
+        let node = m
+            .external_bindings()
+            .iter()
+            .find_map(|e| {
+                e.node
+                    .filter(|&n| m.hir().node(n).kind == hir::HirKind::Member)
+            })
+            .unwrap();
+        let links = [lowering::NativeLink {
+            target: lowering::ExternalTarget::Node(node),
+            native: bc::NativeId(0),
+            reference: &reference,
+        }];
+        let c = lowering::compile(
+            &m,
+            &Linkage {
+                package: Some(&seed),
+                natives: &links,
+            },
+            Options::default(),
+        )
+        .unwrap();
+        let p = c.program.package();
+        assert_eq!(p.natives, seed.package().natives);
+        assert_eq!(p.signatures[1], seed.package().signatures[1]);
+        let f = function(p, "f");
+        assert!(pcs(f, bc::Opcode::MemberGet).is_empty());
+        let pc = pcs(f, bc::Opcode::Call)[0];
+        assert_eq!(text(p, f, pc), expression);
+        let d = descriptor(f, pc);
+        assert_eq!(d.target, bc::CallTarget::Native(bc::NativeId(0)));
+        assert!(matches!(d.arguments, bc::Arguments::Packed(_)) && d.names.is_empty());
+        let e = lowering::compile(&m, &Linkage::default(), Options::default()).unwrap_err();
+        assert_eq!(e.kind, lowering::ErrorKind::MissingLink);
+        assert_eq!(&source[byte_range(e.span)], "native.run");
+    }
 }
