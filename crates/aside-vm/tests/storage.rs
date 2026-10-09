@@ -31,7 +31,7 @@ fn finish(h: &mut Heap, budget: GcBudget) {
         if h.phase() == GcPhase::Idle {
             return;
         }
-        let p = h.gc_step(budget);
+        let p = h.gc_step(budget).unwrap();
         assert!(p.units <= budget.units && p.roots <= budget.roots && p.edges <= budget.edges);
         assert!(
             p.weak <= budget.weak
@@ -53,7 +53,7 @@ fn reach_phase(h: &mut Heap, phase: GcPhase) {
         if phase == GcPhase::Sweep {
             budget.objects = 0;
         }
-        h.gc_step(budget);
+        h.gc_step(budget).unwrap();
     }
 }
 
@@ -190,7 +190,8 @@ fn already_scanned_root_updates_and_late_root_publication_use_the_barrier() {
         roots: 2,
         units: 2,
         ..tiny()
-    });
+    })
+    .unwrap();
     h.set_root(token, replacement).unwrap();
     let late_token = root(&mut h, late);
     h.release_root(late_token).unwrap();
@@ -217,7 +218,7 @@ fn container_reordering_and_root_changes_between_every_single_step_preserve_edge
     let mut saw_partial = false;
     let mut n = 0;
     while h.phase() != GcPhase::Idle {
-        let p = h.gc_step(tiny());
+        let p = h.gc_step(tiny()).unwrap();
         if p.edges > 0 {
             saw_partial = true;
         }
@@ -250,19 +251,21 @@ fn array_swap_alone_preserves_an_unscanned_child_moved_behind_the_cursor() {
 
     // Only the array is rooted; root scanning must not visit its child yet.
     let slots = h.root_slots();
-    let roots = h.gc_step(GcBudget {
-        roots: slots,
-        edges: 0,
-        units: slots,
-        ..tiny()
-    });
+    let roots = h
+        .gc_step(GcBudget {
+            roots: slots,
+            edges: 0,
+            units: slots,
+            ..tiny()
+        })
+        .unwrap();
     assert_eq!(roots.roots, slots);
     assert_eq!(roots.edges, 0);
     assert_eq!(h.stats().gray_len, 1);
 
     // Visit only array[0] (null). The cursor is now 1, and array[1]'s sole
     // child is still white. No root update, weak upgrade or pop/push can shade it.
-    let first_edge = h.gc_step(tiny());
+    let first_edge = h.gc_step(tiny()).unwrap();
     assert_eq!(first_edge.edges, 1);
     assert_eq!(h.phase(), GcPhase::Mark);
     assert_eq!(h.stats().gray_len, 1);
@@ -290,7 +293,7 @@ fn initial_edges_insertions_and_weak_upgrades_during_marking_are_shaded() {
     let weak_child = h.alloc_cell(Value::int(12)).unwrap();
     let weak = h.downgrade(weak_child).unwrap();
     h.begin_collection().unwrap();
-    while h.gc_step(tiny()).edges == 0 && h.phase() == GcPhase::Mark {}
+    while h.gc_step(tiny()).unwrap().edges == 0 && h.phase() == GcPhase::Mark {}
     // Empty a may have finished; stay in marking by using another new object.
     if h.phase() == GcPhase::Mark {
         let fresh = h.alloc_array(&[child]).unwrap();
@@ -335,7 +338,7 @@ fn unified_weak_cutoff_refuses_white_targets_through_the_last_sweep_step() {
         assert!(h.upgrade(white_weak).unwrap().is_none());
         assert!(h.upgrade(live_weak).unwrap().is_some());
         assert!(h.upgrade(new_weak).unwrap().is_some());
-        h.gc_step(tiny());
+        h.gc_step(tiny()).unwrap();
     }
     assert!(h.upgrade(white_weak).unwrap().is_none());
     assert!(h.upgrade_weakref(reference).unwrap().is_none());
@@ -359,7 +362,7 @@ fn weak_stage_new_allocations_do_not_displace_old_sweep_records() {
         if h.phase() == GcPhase::Weak || h.phase() == GcPhase::Sweep {
             fresh.push(h.alloc_array(&[]).unwrap());
         }
-        h.gc_step(tiny());
+        h.gc_step(tiny()).unwrap();
     }
     for value in old {
         assert_eq!(h.info(value).unwrap_err(), HeapError::InvalidHandle);
@@ -390,13 +393,15 @@ fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() 
     h.begin_collection().unwrap();
     reach_phase(&mut h, GcPhase::Sweep);
     let before = h.stats().payload_bytes;
-    let p = h.gc_step(GcBudget {
-        objects: 1,
-        release_edges: 0,
-        bytes: 0,
-        units: 1,
-        ..tiny()
-    });
+    let p = h
+        .gc_step(GcBudget {
+            objects: 1,
+            release_edges: 0,
+            bytes: 0,
+            units: 1,
+            ..tiny()
+        })
+        .unwrap();
     assert_eq!(p.invalidated_objects, 1);
     assert_eq!(h.info(array).unwrap_err(), HeapError::InvalidHandle);
     assert_eq!(h.stats().pending_bytes, 64 * VALUE_CHUNK_BYTES);
@@ -408,17 +413,19 @@ fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() 
         units: 128,
         ..tiny()
     };
-    let p = h.gc_step(too_small);
+    let p = h.gc_step(too_small).unwrap();
     assert_eq!(p.release_edges, 64);
     assert_eq!(p.bytes, 0);
     assert!(p.blocked);
-    let p = h.gc_step(GcBudget {
-        objects: 0,
-        release_edges: 0,
-        bytes: VALUE_CHUNK_BYTES,
-        units: 1,
-        ..tiny()
-    });
+    let p = h
+        .gc_step(GcBudget {
+            objects: 0,
+            release_edges: 0,
+            bytes: VALUE_CHUNK_BYTES,
+            units: 1,
+            ..tiny()
+        })
+        .unwrap();
     assert_eq!(p.bytes, VALUE_CHUNK_BYTES);
     finish(&mut h, tiny());
     assert_eq!(h.stats().pending_bytes, 0);
@@ -512,7 +519,8 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
         bytes: 0,
         release_edges: 0,
         ..GcBudget::default()
-    });
+    })
+    .unwrap();
     assert!(h.stats().pending_bytes > 0);
     assert!(matches!(
         h.alloc_array(&[Value::NULL]),
@@ -530,7 +538,7 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
         units: 0,
     };
     probe.begin_collection().unwrap();
-    let p = probe.gc_step(zero);
+    let p = probe.gc_step(zero).unwrap();
     assert_eq!(p.units, 0);
 }
 

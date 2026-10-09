@@ -1,7 +1,7 @@
 //! Version-specific slotmap 1.1.1 adaptation. Never truncate keys for storage.
 use slotmap::{Key, KeyData, SlotMap, new_key_type};
 
-new_key_type! { pub(crate) struct HeapKey; pub(crate) struct RootKey; }
+new_key_type! { pub(crate) struct HeapKey; pub(crate) struct RootKey; pub(crate) struct RangeKey; }
 
 pub(crate) fn heap_key(raw: u64) -> Option<HeapKey> {
     let data = KeyData::from_ffi(raw);
@@ -22,7 +22,7 @@ pub(crate) enum Slot<T> {
 }
 
 pub(crate) struct Slots<K: Key, T> {
-    map: SlotMap<K, Slot<T>>,
+    map: Option<SlotMap<K, Slot<T>>>,
     limit: usize,
     retired: usize,
     retirement_version: u32,
@@ -31,34 +31,34 @@ pub(crate) struct Slots<K: Key, T> {
 impl<K: Key, T> Slots<K, T> {
     pub fn new(limit: usize, retirement_version: u32) -> Self {
         Self {
-            map: SlotMap::with_capacity_and_key(limit),
+            map: Some(SlotMap::with_capacity_and_key(limit)),
             limit,
             retired: 0,
             retirement_version,
         }
     }
     pub fn full(&self) -> bool {
-        self.map.len() >= self.limit
+        self.map.as_ref().unwrap().len() >= self.limit
     }
     pub fn insert(&mut self, value: T) -> K {
         assert!(!self.full()); // Caller checks capacity before taking payload ownership.
-        self.map.insert(Slot::Occupied(value))
+        self.map.as_mut().unwrap().insert(Slot::Occupied(value))
     }
     pub fn get(&self, key: K) -> Option<&T> {
-        match self.map.get(key)? {
+        match self.map.as_ref().unwrap().get(key)? {
             Slot::Occupied(v) => Some(v),
             Slot::Retired => None,
         }
     }
     pub fn get_mut(&mut self, key: K) -> Option<&mut T> {
-        match self.map.get_mut(key)? {
+        match self.map.as_mut().unwrap().get_mut(key)? {
             Slot::Occupied(v) => Some(v),
             Slot::Retired => None,
         }
     }
     pub fn remove(&mut self, key: K) -> Option<T> {
         if generation(key) >= self.retirement_version {
-            let slot = self.map.get_mut(key)?;
+            let slot = self.map.as_mut().unwrap().get_mut(key)?;
             match std::mem::replace(slot, Slot::Retired) {
                 Slot::Occupied(v) => {
                     self.retired += 1;
@@ -67,7 +67,7 @@ impl<K: Key, T> Slots<K, T> {
                 Slot::Retired => None,
             }
         } else {
-            match self.map.remove(key)? {
+            match self.map.as_mut().unwrap().remove(key)? {
                 Slot::Occupied(v) => Some(v),
                 Slot::Retired => unreachable!(),
             }
@@ -77,13 +77,17 @@ impl<K: Key, T> Slots<K, T> {
         self.retired
     }
     pub fn occupied(&self) -> usize {
-        self.map.len() - self.retired
+        self.map.as_ref().unwrap().len() - self.retired
     }
     pub fn reserved_bytes(&self) -> u64 {
         // Conservative upper bound for private SlotUnion<V> + u32 version + padding,
         // including the sentinel. Checked constructor bounds keep products in u64.
         let stride = std::mem::size_of::<Slot<T>>() + 2 * std::mem::align_of::<Slot<T>>().max(4);
-        ((self.map.capacity() + 1) as u64) * stride as u64
+        ((self.map.as_ref().unwrap().capacity() + 1) as u64) * stride as u64
+    }
+    // Heap teardown deallocates before returning its shared budget reservation.
+    pub fn drop_storage(&mut self) {
+        drop(self.map.take());
     }
 }
 
