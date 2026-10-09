@@ -1,4 +1,4 @@
-//! L04 IR v1 and sequential lowering. No VM execution is performed here.
+//! Bounded IR v1 lowering through B01 verification. No VM execution occurs here.
 mod budget;
 mod build;
 mod emit;

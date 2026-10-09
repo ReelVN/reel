@@ -10,6 +10,8 @@ use aside_vm::bytecode as bc;
 mod collections_locations;
 #[path = "lowering/initializer_locals.rs"]
 mod initializer_locals;
+#[path = "lowering/members.rs"]
+mod members;
 
 fn analyzed(source: &str) -> hir::AnalyzedModule {
     let result = analyze_module(source, &AnalysisOptions::default(), &mut NoModules).unwrap();
