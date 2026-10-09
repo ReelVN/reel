@@ -6,6 +6,8 @@ use aside_compiler::{
 };
 use aside_vm::bytecode as bc;
 
+#[path = "lowering/call_arguments.rs"]
+mod call_arguments;
 #[path = "lowering/collections_locations.rs"]
 mod collections_locations;
 #[path = "lowering/initializer_locals.rs"]

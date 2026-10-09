@@ -1,6 +1,60 @@
 use super::*;
 
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
+
+#[test]
+fn rest_name_cannot_be_supplied_through_a_property_bag_tail() {
+    let mut p = fixtures::helper_native();
+    let rest_name = SymbolId(p.symbols.len() as u32);
+    p.symbols.push("rest".into());
+    let property_name = SymbolId(p.symbols.len() as u32);
+    p.symbols.push("extra".into());
+    p.signatures[0].rest = Some(Parameter {
+        name: rest_name,
+        ty: TypeId(0),
+        mutable: false,
+        default: None,
+    });
+    p.signatures[0].property_bag_tail = Some(PropertyBagTail {
+        target_parameter: 0,
+        capability: None,
+        require_writable: true,
+        require_animatable: false,
+    });
+    let f = &mut p.functions[0];
+    f.register_count = 3;
+    f.source_map.clear();
+    f.code = vec![
+        Instruction::new(Opcode::LoadConst, 0, 1, 0),
+        Instruction::new(Opcode::LoadConst, 1, 1, 0),
+        Instruction::new(Opcode::Call, 2, 0, 0),
+        Instruction::new(Opcode::Return, 2, 0, 0),
+    ];
+    f.descriptors = vec![Descriptor::Call(CallDesc {
+        target: CallTarget::Native(NativeId(0)),
+        arguments: Arguments::Window(RegWindow {
+            start: Reg(0),
+            len: 2,
+        }),
+        names: vec![NamedArg {
+            name: property_name,
+            offset: 1,
+        }],
+    })];
+    let v = verify(p.clone(), limits()).unwrap();
+    let bytes = encode(v.package(), limits()).unwrap();
+    assert_eq!(
+        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        v.package()
+    );
+    let Descriptor::Call(call) = &mut p.functions[0].descriptors[0] else {
+        unreachable!()
+    };
+    call.names[0].name = rest_name;
+    let e = verify(p, limits()).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Signature);
+    assert!(e.detail.contains("cannot supply rest"));
+}
 const FIXTURES: &[Fixture] = &[
     (
         "native-parameter-defaults",

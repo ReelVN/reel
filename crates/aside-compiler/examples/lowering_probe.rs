@@ -22,6 +22,19 @@ fn main() {
     let max_depth = args.next().map(|s| s.parse::<usize>().unwrap());
     let mut source = String::new();
     match mode.as_str() {
+        "spread" => {
+            source.push_str("fn f(g,xs){");
+            for _ in 0..n { source.push_str("g(1,...xs,中文:2);"); }
+            source.push_str("null}");
+        }
+        "rest" => {
+            for i in 0..n {
+                writeln!(source,"fn f_{i}(mut x=0,y=||{{x+=1;x}},...mut rest:array){{let c=||rest;(y,c)}}").unwrap();
+            }
+        }
+        "call-evidence" => {
+            source.push_str("fn take(mut a:int=0,b=||a,...mut rest:array){let c=||rest;(b,c)}fn f(target,xs,flag){try{target?.run?(...xs,if flag{throw 1;}else{2},中文:take(...xs)).value}finally{take();}}");
+        }
         "plain" => {
             for i in 0..n {
                 writeln!(source, "fn f_{i}() {{ null }}").unwrap();

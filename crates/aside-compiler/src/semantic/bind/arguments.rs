@@ -1,0 +1,43 @@
+//! Call spread accepts only built-in array/tuple, never an implicit iterator.
+use super::*;
+
+impl Binder<'_> {
+    fn spread_type_possible(&mut self, node: NodeId, ty: TypeId) -> bool {
+        if !self.budget(node) {
+            return true;
+        }
+        match &self.out.types[ty.0 as usize] {
+            Type::Any | Type::Named(_) | Type::Array | Type::Tuple(_) => true,
+            Type::Union(types) => {
+                let count = types.len();
+                if !self.charge_work(node, count) {
+                    return true;
+                }
+                for i in 0..count {
+                    let Type::Union(types) = &self.out.types[ty.0 as usize] else {
+                        unreachable!()
+                    };
+                    let child = types[i];
+                    if self.spread_type_possible(node, child) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn check_argument_spread(&mut self, node: NodeId) {
+        let ty = self.ty(node);
+        if !self.spread_type_possible(node, ty) {
+            self.error(
+                D::TypeMismatch,
+                self.span(node),
+                "call spread requires array or tuple",
+            );
+        } else if !matches!(self.out.types[ty.0 as usize], Type::Array | Type::Tuple(_)) {
+            self.check(node, RuntimeChecks::TYPE);
+        }
+    }
+}
