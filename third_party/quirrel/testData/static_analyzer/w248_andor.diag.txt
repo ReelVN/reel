@@ -1,0 +1,8 @@
+WARNING: w248 (access-potentially-nulled) 'expression' can be null, but is used as a container without checking.
+testData/static_analyzer/w248_andor.nut:4:26
+
+  let a = list != null && list.len() == 0
+  let b = list != null || list.len() == 0
+                          ^---
+
+

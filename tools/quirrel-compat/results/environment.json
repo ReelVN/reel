@@ -1,0 +1,29 @@
+{
+  "os": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "architecture": "x86_64",
+  "cmake": "cmake version 3.31.6",
+  "cxx": "g++ (Debian 14.2.0-19) 14.2.0",
+  "make": "GNU Make 4.4.1",
+  "python": "3.12.14",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "build_type": "Release",
+  "cmake_generator": "Unix Makefiles",
+  "build_parallelism": 4,
+  "ENABLE_VAR_TRACE": false,
+  "_SQ64": true,
+  "SQUSEDOUBLE": false,
+  "SQInteger_bits": 64,
+  "SQFloat_bits": 32,
+  "build_exit_code": 0,
+  "upstream_timeout_seconds": 10,
+  "upstream_threads": 12,
+  "original_repeat_identical": true,
+  "target_limits": [
+    "Linux x86_64 only",
+    "No Aside executor: waiting_runtime",
+    "No 32-bit, Vita or device validation",
+    "CMake and Rust were initially absent; installed under /tmp; no system toolchain edits"
+  ],
+  "uninstrumented_runner_exit_code": 1,
+  "uninstrumented_same_failures": true
+}
