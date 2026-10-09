@@ -96,6 +96,13 @@ fn main() {
             }
             source.push_str("name}");
         }
+        "optional" => {
+            source.push_str("fn id(x){x}fn f(a,b){let mut name=0;let rhs=||{name+=1;name};");
+            for _ in 0..n {
+                source.push_str("a?.中文[id(0)]?(value:b?[rhs()]).尾; (a?.子).分数=rhs();");
+            }
+            source.push_str("name}");
+        }
         "nested" => {
             source.push_str("fn f(){");
             for _ in 0..n { source.push('['); }
@@ -113,7 +120,7 @@ fn main() {
         "evidence" => source.push_str(
             "fn id(x){x}fn f(a,b,flag,x={pair:(1,[])}){let mut name=0;let t={named:id(0),[id(1)]:id(1),[id(1)]:id(2),[[]]:id(3)};name=a[id(0)]=b[id(1)]=id(9);a[id(0)]+=id(2);try{a[id(0)]=[id(1),if flag{return t;}else{id(2)}];}finally{id(3);}let c=||x[\"pair\"][1];(t,c,a[0])}",
         ),
-        _ => panic!("mode must be plain, captures, temporaries, named, loops, initializer, sequences, tables, locations, members, nested, terminal or evidence"),
+        _ => panic!("mode must be plain, captures, temporaries, named, loops, initializer, sequences, tables, locations, members, optional, nested, terminal or evidence"),
     }
     let time = Instant::now();
     let parsed = parse(&source).unwrap();

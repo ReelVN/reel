@@ -1,4 +1,4 @@
-# L04/L05/L06/L07 lowering contract (IR v1, bytecode v1)
+# L04/L05/L06/L07/L08 lowering contract (IR v1, bytecode v1)
 
 Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
 `AnalyzedModule`; it does not analyze a second semantic model or execute programs.
@@ -61,8 +61,8 @@ native calls, forward shared Cells, and try/catch/finally/throw/rethrow. Module
 initializer and ordinary function loops with cleanup-aware break/continue are supported. Uninitialized
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
 reads/writes are supported by L06; L07 adds nonoptional member values/locations
-and dynamic calls through their results. Pattern/spread/optional-chain
-access, full script imports/linking, structural callable annotations, native
+and dynamic calls through their results; L08 adds optional value chains.
+Pattern/spread, optional-chain assignment targets, full script imports/linking, structural callable annotations, native
 values, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
@@ -171,8 +171,7 @@ register windows are admitted before traversal/reservation/emission. Quota error
 identify the failing collection, target or subexpression. IR/bytecode v1, VM
 interfaces and RuntimeSupport are unchanged.
 
-Spread/rest, patterns and optional chains (including a
-nonoptional segment belonging to a chain), children, classes, full script imports
+Spread/rest, patterns, children, classes, full script imports
 and unified callable/library work retain located rejection. L07 extends the
 location machinery below with Member values/locations. Member is never
 rewritten as Index. The existing trusted namespace-qualified direct native call
@@ -230,7 +229,8 @@ Resolved namespace exports retain the trusted direct-native call exception:
 identity, version, ABI, capabilities and actual default implementation checks
 still apply. Namespace function values and writes are rejected rather than
 treated as ordinary runtime members. Unlinked direct native calls still fail.
-Optional/chain segments, class/super, native function values, full module linking
+L08 extends value chains below. Optional-chain assignment targets, class/super,
+native function values, full module linking
 and complete unified callable support remain outside this increment.
 
 [Member static tests](tests/lowering/members.rs) inspect emitted operands,
@@ -240,6 +240,53 @@ terminal and partial-fallthrough cleanup, native provenance and exact limits.
 They use parse/analyze/lower, B01 verification, codec and disassembly only.
 Actual receiver binding, setters/metamethods, aliasing, GC and restoration remain
 unverified by execution.
+
+## Optional value chains (L08)
+
+Issue [#44](https://github.com/jhq223/reel/issues/44) builds on main
+`3ad7354ccb0b0cae0d4f5a973ad24a71f6bdc998`. Existing HIR optional flags mark
+explicit null guards; chain flags mark propagation through continuous postfix
+Member/Index/Call segments. Group remains a value boundary. IR v1/B01 and the
+VM interface are unchanged.
+
+The chain collector walks the receiver/callee spine with charged work, capacity
+and depth. It evaluates the base once and initializes a separate result register
+to null. Each explicit optional segment emits BranchNull to a shared join; only
+its non-null successor evaluates the index or source-order arguments and emits
+the existing MemberGet, IndexGet or Call. Ordinary suffixes do not add guards.
+Successful segment results update the evolving receiver through separate
+temporaries, not the null-exit result. Only full fallthrough writes the final
+result before joining. A later optional segment therefore also exits with null.
+
+In a?.b[i()](arg()).c, a null a skips every suffix. If a is non-null but b is
+null, ordinary later operations are not automatically skipped. In
+(a?.b)[i()] and (a?.b)(arg()), the inner chain first joins; outer ordinary
+operations still evaluate their index/arguments. An outer optional operator
+creates its own guard. Nested chains have independent joins; null coalescing
+branches on the completed chain result.
+
+The call helper preserves a reserved callee register, source-order argument
+windows and NamedArg offsets, with no injected self. If a receiver, index or
+argument path terminates, no pending Get/Call is emitted on that path; earlier
+null edges can still reach the join. The join remains in the surrounding
+protected region and existing Leave/exception/finally behavior is retained.
+No new catch layer masks missing members or hooks: non-null paths use the
+original may-throw instructions.
+
+A same-chain assignment target remains a located Unsupported result: this
+increment does not define optional assignment or RHS-skipping semantics.
+Group-separated outer ordinary locations such as (a?.b).c retain existing
+location preparation and writeback rules. Optional native values/calls, including
+native.run?() and native?.run(), remain rejected rather than using a non-null
+assumption to bypass missing native callable support. Ordinary trusted native
+calls, including multiple Groups and the prefix in native.run()?.x, retain
+exact Member identity, version, ABI, capability and default-implementation checks.
+
+[Optional-chain static tests](tests/lowering/optional_chains.rs) inspect null
+initialization, guard counts and reachability, Group/nested joins, coalescing,
+argument windows, rebinding, terminal/cleanup edges, native boundaries, UTF-8
+spans, exact lower/emit limits and temporary reuse. Static structure does not
+establish actual side effects, hook invocation, receiver binding, GC or recovery.
 
 ## Limits and verification
 
@@ -277,6 +324,7 @@ target/release/examples/lowering_probe 1000 sequences
 target/release/examples/lowering_probe 1000 tables
 target/release/examples/lowering_probe 1000 locations
 target/release/examples/lowering_probe 1000 members
+target/release/examples/lowering_probe 1000 optional
 target/release/examples/lowering_probe 80 nested 64
 target/release/examples/lowering_probe 100 terminal
 ASIDE_LOWERING_EVIDENCE=target/reel-artifacts/issue40/evidence target/release/examples/lowering_probe 1 evidence

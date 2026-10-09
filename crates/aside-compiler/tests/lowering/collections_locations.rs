@@ -492,13 +492,10 @@ fn conditional_fallthrough_keeps_prepared_values_and_shared_cfg_dominance() {
 }
 
 #[test]
-fn deferred_collection_optional_and_pattern_forms_are_located() {
+fn deferred_collection_and_pattern_forms_are_located() {
     for (source, span, detail) in [
         ("fn f(a){[...a]}", "...a", "spread"),
         ("fn f(a){({...a})}", "...a", "spread"),
-        ("fn f(a){a?[0]}", "a?[0]", "optional"),
-        ("fn f(a){a?[0][1]}", "a?[0][1]", "optional"),
-        ("fn f(a){(a?[0])[1]}", "a?[0]", "optional"),
         ("fn f(){let [a]=[1];}", "[a]", "pattern"),
         (
             "fn f(){let mut a=0;let mut b=0;(a,b)=(1,2);}",

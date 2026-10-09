@@ -362,14 +362,8 @@ fn conditional_paths_dominate_member_uses_and_keep_cleanup_edges() {
 }
 
 #[test]
-fn member_optional_chains_and_deferred_constructs_remain_located_rejections() {
+fn member_deferred_constructs_remain_located_rejections() {
     for (source, expected, detail) in [
-        ("fn f(a){a?.x}", "a?.x", "optional"),
-        ("fn f(a){a?.x.y}", "a?.x.y", "optional"),
-        ("fn f(a){a?.x[0]}", "a?.x[0]", "optional"),
-        ("fn f(a){a?.x()}", "a?.x()", "optional"),
-        ("fn f(a){(a?.x).y}", "a?.x", "optional"),
-        ("fn f(a){a.x?()}", "a.x?()", "optional"),
         (
             "class A{fn get(self){1}}",
             "class A{fn get(self){1}}",

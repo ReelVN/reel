@@ -10,12 +10,12 @@
 
 设计版本 1.1 是接口与行为的开发基线。代码已进入分模块实现和集成阶段；下列状态区分已合入 main 的 Rust 基础、尚在审查的分支，以及作者接口的设计目标。
 
-- 已合入 main：reel-core 的共享身份、预算与服务契约；aside-vm 的 Value、堆、增量 GC、连续根区与 B01 字节码格式/验证；aside-compiler 的词法、语法、语义分析及 L04 有界 lowering、L05 初始化局部绑定与 L06 固定集合/索引编译；reel-ui 的控件、布局、呈现几何与输入桥接；reel-render 的可移植帧、资源租约、记录型/null 消费者和 wgpu 消费者；reel-player 的 winit 诊断窗口；reel-media 的 Kira 音频桥、可选 CPAL 输出与有界后台 PCM 回收。能力边界见 [编译器](../crates/aside-compiler/README.md)、[L04 lowering](../crates/aside-compiler/LOWERING.md)、[VM 存储与根区](../crates/aside-vm/README.md)、[B01 字节码](../crates/aside-vm/src/bytecode/README.md)、[舞台](../crates/reel-ui/README.md)和[渲染契约](../crates/reel-render/README.md)。
+- 已合入 main：reel-core 的共享身份、预算与服务契约；aside-vm 的 Value、堆、增量 GC、连续根区与 B01 字节码格式/验证；aside-compiler 的词法、语法、语义分析及 L04 有界 lowering、L05 初始化局部绑定、L06 固定集合/索引编译与 L07 非可选成员编译；reel-ui 的控件、布局、呈现几何与输入桥接；reel-render 的可移植帧、资源租约、记录型/null 消费者和 wgpu 消费者；reel-player 的 winit 诊断窗口；reel-media 的 Kira 音频桥、可选 CPAL 输出与有界后台 PCM 回收。能力边界见 [编译器](../crates/aside-compiler/README.md)、[L04 lowering](../crates/aside-compiler/LOWERING.md)、[VM 存储与根区](../crates/aside-vm/README.md)、[B01 字节码](../crates/aside-vm/src/bytecode/README.md)、[舞台](../crates/reel-ui/README.md)和[渲染契约](../crates/reel-render/README.md)。
 - 待集成验收：[字节码执行器及源码执行联调（#23）](https://github.com/jhq223/reel/pull/23)。分支实现、作者自测和独立验收分别记录；未合并能力不属于 main。
 - 作者接口仍在实现：指南中的剧情、节点绑定、保存/回滚和 CLI 示例是目标合同。语法或语义分析通过不等于能够执行剧情；Rust 渲染诊断不等于完整游戏播放器。
 - 设备验证按具体目标记录。CPU/null 模拟、软件 Vulkan、32 位或 Windows 交叉编译均不能替代相应物理设备的运行验收。
 
-本次 L07 的开发基线为 `fd12d1441fab0a06a5030e89001cc54abefebe6d`，已包含 UI 整合、R04、L05 和 L06；L07 非可选成员编译位于 PR #43，最终合并状态以该 PR 为准。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
+本次 L08 的开发基线为 `3ad7354ccb0b0cae0d4f5a973ad24a71f6bdc998`，已包含 UI 整合、R04 和 L05–L07；L08 可选取值链位于 PR #45，最终合并状态以该 PR 为准。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
 
 仓库结构与验证工具整改已合入：[PR #29](https://github.com/jhq223/reel/pull/29) 曾将 UI 借用代码纳入 crates 和统一 workspace，第一方验证工具迁入 [reel-dev](../tools/reel-dev/README.md)，可再生成结果移至忽略的 target/reel-artifacts；Quirrel 的必要来源与测试输入继续保留。Linux 独立验收通过；Rust 上游观测桥的真实 Quirrel 重跑及 Windows 进程终止路径仍未验证。
 
@@ -31,7 +31,7 @@
 
 [初始化局部绑定编译（#39）](https://github.com/jhq223/reel/pull/39) 将模块根 global 与 initializer-local 明确分离，支持局部闭包与转捕获、入口 Cell 重建的静态生成，并通过 B01 验证/编解码检查。尚未提供的外部 Value/Cell 链接仍定位拒绝。运行时 Cell 共享与重入隔离、GC/宿主恢复及完整脚本模块初始化仍需各自验收。
 
-[固定集合与索引编译（#41）](https://github.com/jhq223/reel/pull/41) 已完成独立静态验收：tuple/array/table、有序键值求值、普通索引、混合位置赋值链与复合赋值生成通过 CFG/寄存器身份、B01 验证/编解码及账本检查。右值重绑 receiver/key 后仍使用预先保存的位置。可选链/spread/模式继续拒绝；生成正确结构不等于实际集合运行或完整作者示例已接通。
+[固定集合与索引编译（#41）](https://github.com/jhq223/reel/pull/41) 已完成独立静态验收：tuple/array/table、有序键值求值、普通索引、混合位置赋值链与复合赋值生成通过 CFG/寄存器身份、B01 验证/编解码及账本检查。右值重绑 receiver/key 后仍使用预先保存的位置。spread/模式继续拒绝；可选取值链见 L08；生成正确结构不等于实际集合运行或完整作者示例已接通。
 
 接下来继续打磨预算内质量选择和渲染资源复用，并连接语言、舞台、输入、渲染与音频，推进会话、持久化和完整剧情体验。后续每次验收同步本节及受影响的双语指南，不用测试数量代替能力状态。
 
@@ -56,4 +56,6 @@
 
 Game authors can start with the [English creator guide](guide/en.md). Engine contributors should also read the architecture and Aside language specification. The creator APIs are design targets until marked as implemented for a specific version.
 
-[非可选成员编译（#43）](https://github.com/jhq223/reel/pull/43) 扩展 MemberGet/MemberSet、Name/Index/Member 混合位置和十种复合赋值；普通成员调用复用动态 Call，不由编译器注入 self。简单写入不提前读取目标，位置保存原对象值与符号。class/super、native 函数值、完整统一 callable 和实际运行验收仍未完成。
+[非可选成员编译（#43）](https://github.com/jhq223/reel/pull/43) 已合入，扩展 MemberGet/MemberSet、Name/Index/Member 混合位置和十种复合赋值；普通成员调用复用动态 Call，不由编译器注入 self。简单写入不提前读取目标，位置保存原对象值与符号。class/super、native 函数值、完整统一 callable 和实际运行验收仍未完成。
+
+[可选取值链（#45）](https://github.com/jhq223/reel/pull/45) 使用既有 BranchNull 编译显式 null guard、同链后缀短路和独立嵌套汇合。Group 结束传播；非 null 读/调用继续使用原异常契约。同链可选赋值、可选 native 值/调用仍拒绝。静态 CFG 与寄存器检查不能替代实际副作用、hook、GC 和恢复验收。

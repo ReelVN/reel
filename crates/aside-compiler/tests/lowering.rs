@@ -12,6 +12,8 @@ mod collections_locations;
 mod initializer_locals;
 #[path = "lowering/members.rs"]
 mod members;
+#[path = "lowering/optional_chains.rs"]
+mod optional_chains;
 
 fn analyzed(source: &str) -> hir::AnalyzedModule {
     let result = analyze_module(source, &AnalysisOptions::default(), &mut NoModules).unwrap();

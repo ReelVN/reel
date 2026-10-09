@@ -393,3 +393,41 @@ cargo test -p aside-compiler --test lowering members --release --locked
 No V03, source execution or bytecode interpretation is involved. Actual member
 binding, setter/metamethod effects, GC and restoration remain outside these
 measurements. Generated evidence belongs under ignored target/reel-artifacts.
+
+## 2026-10-09 optional value chains (L08)
+
+Author measurements at [254da2b8](https://github.com/jhq223/reel/commit/254da2b86815a27f886f07bd19998c12ed973f3a),
+Issue #44 / PR #45, use Rust 1.96.0 on base 3ad7354c. Reported checks:
+compiler debug/release each 162 tests (72 lowering, including 16 L08), B01
+each 51; fmt, all-target clippy with warnings denied and diff check passed.
+Independent acceptance is recorded separately in the PR.
+
+The existing lowering_probe optional mode repeats a mixed chain with nested
+optional arguments plus a Group-separated ordinary assignment. Fresh debug and
+release processes at N=1/N=1000 verified both IR and final retained allocations.
+
+| Metric | N=1 | N=1000 |
+| --- | ---: | ---: |
+| Instructions | 92 | 59,033 |
+| Blocks | 11 | 7,004 |
+| IR retained bytes | 6,515 | 2,742,491 |
+| Final retained bytes = actual | 8,111 | 2,829,159 |
+| Capacity peak upper bound | 10,739 | 4,937,947 |
+| Maximum function registers | 11 | 11 |
+
+At N=1000 lower work is 1,080,012, total compiler work 1,300,570 and encoded
+size 2,056,917 bytes. The source is rejected at depth 6 with span 61..62 and
+accepted at depth 7. These capacity and structure results are not a runtime
+benchmark or speedup claim.
+
+```sh
+cargo build -p aside-compiler --example lowering_probe --release --locked
+target/release/examples/lowering_probe 1 optional
+target/release/examples/lowering_probe 1000 optional
+cargo test -p aside-compiler --test lowering optional_chains --locked
+cargo test -p aside-compiler --test lowering optional_chains --release --locked
+```
+
+No source/bytecode evaluator, V03 or execution simulator was used. Runtime side
+effects, hooks, binding, GC and restoration remain unverified. Logs and generated
+IR/bytecode/disassembly belong under ignored target/reel-artifacts.

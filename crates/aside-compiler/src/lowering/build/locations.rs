@@ -72,7 +72,7 @@ impl FunctionBuilder<'_, '_> {
                 (H::Index, _) => {
                     return Err(self.l.b.error(
                         ErrorKind::Unsupported,
-                        "optional index/chain awaits optional-chain lowering",
+                        "optional chain assignment target is unsupported",
                     ));
                 }
                 (
@@ -101,7 +101,7 @@ impl FunctionBuilder<'_, '_> {
                 (H::Member, _) => {
                     return Err(self.l.b.error(
                         ErrorKind::Unsupported,
-                        "optional member/chain awaits optional-chain lowering",
+                        "optional chain assignment target is unsupported",
                     ));
                 }
                 _ => {
