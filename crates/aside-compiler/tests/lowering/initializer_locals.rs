@@ -46,7 +46,7 @@ fn creator(
 /// cleanup targets selected by B01, and each cleanup's Leave continuation.
 /// Dominance over this graph proves preparation precedes uses on every edge;
 /// it does not prove the runtime semantics of the instructions.
-fn dominators(c: &lowering::Compilation, id: bc::FunctionId) -> Vec<Vec<bool>> {
+pub(super) fn dominators(c: &lowering::Compilation, id: bc::FunctionId) -> Vec<Vec<bool>> {
     let f = &c.program.package().functions[id.index()];
     let n = f.code.len();
     let mut edges = vec![Vec::new(); n];

@@ -1,4 +1,6 @@
+mod collections;
 mod expressions;
+mod locations;
 
 use super::{
     Error, ErrorKind, ExternalTarget, Linkage, Metadata, Options, budget::Budget, ir::*,
@@ -1198,6 +1200,16 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         }
         self.registers.drop_temp(reg, &mut self.l.b)
     }
+    fn release_window(&mut self, window: bc::RegWindow, n: h::NodeId) -> Result<(), Error> {
+        self.l.b.span = self.span(n);
+        self.l.b.work(window.len as u64)?;
+        if self.current.is_some() {
+            for offset in 0..window.len {
+                self.op(bc::Opcode::Clear, window.start.0 + offset, 0, 0, n)?;
+            }
+        }
+        self.registers.release(window, &mut self.l.b)
+    }
     fn descriptor(&mut self, descriptor: bc::Descriptor) -> Result<bc::DescriptorId, Error> {
         let id = bc::DescriptorId(self.def.descriptors.len() as u32);
         self.l.b.push(&mut self.def.descriptors, descriptor)?;
@@ -1563,13 +1575,7 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             node.kind,
             H::Class
                 | H::Interpolation
-                | H::Tuple
-                | H::Array
-                | H::Object
-                | H::ObjectField
-                | H::Spread
                 | H::Range
-                | H::Index
                 | H::Children
                 | H::For
                 | H::Match
@@ -1587,6 +1593,21 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             return Err(b.error(
                 ErrorKind::Unsupported,
                 format!("{:?} is outside L04 lowering support", node.kind),
+            ));
+        }
+        if node.kind == H::Spread {
+            return Err(b.error(
+                ErrorKind::Unsupported,
+                "spread awaits ordered builder lowering",
+            ));
+        }
+        if matches!(
+            node.form,
+            Form::Index { optional: true, .. } | Form::Index { chain: true, .. }
+        ) {
+            return Err(b.error(
+                ErrorKind::Unsupported,
+                "optional index/chain awaits optional-chain lowering",
             ));
         }
         if let Form::Call { optional: true, .. }

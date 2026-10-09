@@ -6,6 +6,8 @@ use aside_compiler::{
 };
 use aside_vm::bytecode as bc;
 
+#[path = "lowering/collections_locations.rs"]
+mod collections_locations;
 #[path = "lowering/initializer_locals.rs"]
 mod initializer_locals;
 
@@ -392,7 +394,7 @@ fn sequential_temporaries_are_reused_and_limits_fail_before_growth() {
 #[test]
 fn unsupported_nodes_report_original_range() {
     for (source, node_text) in [
-        ("fn f() { [1,2] }", "[1,2]"),
+        ("fn f() { [1,...[]] }", "...[]"),
         ("fn f() { let (a,b)=(1,2); }", "(a,b)"),
         ("fn f() { f\"value {1}\" }", "f\"value {1}\""),
     ] {

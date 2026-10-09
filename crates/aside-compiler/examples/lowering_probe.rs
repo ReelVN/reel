@@ -19,6 +19,7 @@ fn main() {
         .parse()
         .unwrap();
     let mode = args.next().unwrap_or_else(|| "plain".into());
+    let max_depth = args.next().map(|s| s.parse::<usize>().unwrap());
     let mut source = String::new();
     match mode.as_str() {
         "plain" => {
@@ -67,7 +68,45 @@ fn main() {
             }
             source.push_str("i+=1;}");
         }
-        _ => panic!("mode must be plain, captures, temporaries, named, loops or initializer"),
+        "sequences" => {
+            source.push_str("fn id(x){x}fn f(){[");
+            for i in 0..n {
+                write!(source, "(id({i}),[id({i})]),").unwrap();
+            }
+            source.push_str("]}");
+        }
+        "tables" => {
+            source.push_str("fn id(x){x}fn f(){({");
+            for i in 0..n {
+                write!(source, "[id({})]:id({i}),", i % 10).unwrap();
+            }
+            source.push_str("})}");
+        }
+        "locations" => {
+            source.push_str("fn id(x){x}fn f(a){let mut name=0;");
+            for i in 0..n {
+                write!(source, "name=a[id({i})]=a[id({})]=id({i});a[id({i})]+=id({i});", i + 1).unwrap();
+            }
+            source.push_str("name}");
+        }
+        "nested" => {
+            source.push_str("fn f(){");
+            for _ in 0..n { source.push('['); }
+            source.push('1');
+            for _ in 0..n { source.push(']'); }
+            source.push('}');
+        }
+        "terminal" => {
+            source.push_str("fn f(a,flag){");
+            for _ in 0..n {
+                source.push_str("try{a[0]={first:1,[if flag{throw 2;}else{throw 3;}]:4};}catch e{}finally{0;} ");
+            }
+            source.push_str("0}");
+        }
+        "evidence" => source.push_str(
+            "fn id(x){x}fn f(a,b,flag,x={pair:(1,[])}){let mut name=0;let t={named:id(0),[id(1)]:id(1),[id(1)]:id(2),[[]]:id(3)};name=a[id(0)]=b[id(1)]=id(9);a[id(0)]+=id(2);try{a[id(0)]=[id(1),if flag{return t;}else{id(2)}];}finally{id(3);}let c=||x[\"pair\"][1];(t,c,a[0])}",
+        ),
+        _ => panic!("mode must be plain, captures, temporaries, named, loops, initializer, sequences, tables, locations, nested, terminal or evidence"),
     }
     let time = Instant::now();
     let parsed = parse(&source).unwrap();
@@ -80,7 +119,11 @@ fn main() {
     let module = analysis.into_module().unwrap();
     let region = Region::new(GLOBAL);
     let time = Instant::now();
-    let ir = lowering::lower(&module, &Linkage::default(), Options::default());
+    let mut options = Options::default();
+    if let Some(max_depth) = max_depth {
+        options.limits.max_depth = max_depth;
+    }
+    let ir = lowering::lower(&module, &Linkage::default(), options);
     let lower_us = time.elapsed().as_micros();
     let ir = match ir {
         Ok(ir) => ir,
@@ -93,6 +136,18 @@ fn main() {
         }
     };
     let lower_stats = ir.stats();
+    let allocation = region.change();
+    assert_eq!(
+        lower_stats.capacity_bytes,
+        allocation.bytes_allocated - allocation.bytes_deallocated,
+        "IR capacity ledger differs from real retained allocation"
+    );
+    if let Some(directory) = std::env::var_os("ASIDE_LOWERING_EVIDENCE") {
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("source.aside"), &source).unwrap();
+        std::fs::write(directory.join("ir.txt"), format!("{ir:#?}")).unwrap();
+    }
     let time = Instant::now();
     let result = match ir.emit() {
         Ok(result) => result,
@@ -120,6 +175,18 @@ fn main() {
     let decoded = bc::decode(&bytes, bc::Limits::default()).unwrap();
     let decode_us = time.elapsed().as_micros();
     assert_eq!(result.program.package(), &decoded);
+    if let Some(directory) = std::env::var_os("ASIDE_LOWERING_EVIDENCE") {
+        let directory = std::path::PathBuf::from(directory);
+        let mut disassembly = String::new();
+        bc::disassemble(&result.program, &mut disassembly).unwrap();
+        std::fs::write(directory.join("disassembly.txt"), disassembly).unwrap();
+        std::fs::write(directory.join("program.asb"), &bytes).unwrap();
+        std::fs::write(
+            directory.join("tables.txt"),
+            format!("{:#?}", result.program.package()),
+        )
+        .unwrap();
+    }
     let pstats = result.program.stats();
     println!(
         "mode,n,source_bytes,parse_us,analysis_us,lower_us,emit_verify_us,encode_us,decode_us,lower_work,total_compiler_work,compiler_retained_bytes,compiler_peak_upper_bytes,allocator_retained_bytes,allocations,reallocations,blocks,instructions,registers,max_function_registers,encoded_bytes,bytecode_records,verification_work,verification_scratch_peak_bytes,ir_capacity_bytes"

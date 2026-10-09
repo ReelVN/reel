@@ -1,4 +1,4 @@
-# L04/L05 lowering contract (IR v1, bytecode v1)
+# L04/L05/L06 lowering contract (IR v1, bytecode v1)
 
 Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
 `AnalyzedModule`; it does not analyze a second semantic model or execute programs.
@@ -15,6 +15,12 @@ semantic/lowering, static tests/measurements and technical documentation. The
 integration owner maintains the language specification, index and both guides.
 No VM dispatch, host execution tests, Actions, remote merge, ready transition,
 release or acceptance comment belongs to this task.
+
+Issue [#40](https://github.com/jhq223/reel/issues/40) continues from main
+`6203ee138242baa74847f41c66e92382147aa5b1`, including L05. It adds fixed
+collections and ordinary index locations inside the existing compiler crate.
+Allowed edits remain compiler internals, static tests/probes and technical
+reports; the owner synchronizes language/index/bilingual guide changes.
 
 ## Interface and behavior
 
@@ -53,7 +59,8 @@ bindings/assignments, arithmetic/comparisons, return/tail values, if, strict boo
 short circuit, null coalescing, positional/named calls, defaults, trusted direct
 native calls, forward shared Cells, and try/catch/finally/throw/rethrow. Module
 initializer and ordinary function loops with cleanup-aware break/continue are supported. Uninitialized
-bindings stay distinct from null. Aggregate/tuple/pattern/spread/member-value
+bindings stay distinct from null. Fixed tuple/array/table and ordinary index
+reads/writes are supported by L06. Pattern/spread/member-value
 access, full script imports/linking, structural callable annotations, native
 values, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
@@ -106,7 +113,7 @@ range with MissingLink before allocating output. A native registration cannot
 substitute for that environment. Trusted host/import native links remain supported.
 NoWait-only ownerless declarations and non-root exports likewise retain located
 rejections before table admission. Module-context block fragments use initializer
-locals. Complete script imports, collections/patterns, unified callable/standard
+locals. Complete script imports, patterns/spread, unified callable/standard
 library and engine sessions remain separate tasks.
 
 [Initializer contracts](tests/lowering/initializer_locals.rs) check actual source
@@ -127,6 +134,66 @@ and Leave-continuation edges. These are structural compilation checks: they do
 not establish actual closure sharing, reentry isolation, GC/host restoration,
 module publication or playable-story behavior. No V03/Aside execution is run.
 
+## Fixed collections and index locations (L06)
+
+`build::collections` lowers `()`, `(value,)`, multi-element tuples, arrays and
+tables without spread. `(value)` remains grouping. Sequence elements are evaluated
+once left to right into a reserved contiguous register window, then consumed by
+the existing B01 Sequence descriptor and MakeTuple/MakeArray. Named table keys
+become UTF-8 string constants; dynamic keys retain their expressions. Every key
+then value is evaluated once in source field order into saved registers before
+one MakeTable consumes the ordered Table descriptor. There is no intermediate
+IndexSet, hash check or deduplication. The owner's contract puts key/hash
+construction errors after expression evaluation. Later duplicate values overwrite
+earlier values while retaining the first insertion position, according to ordinary
+table semantics; this task establishes descriptor order, not runtime hashing or
+duplicate-key behavior.
+
+`build::locations` prepares either a Name identity or an Index receiver/key pair.
+Ordinary index reads use IndexGet after receiver and key evaluation. Assignment
+chains prepare all locations left to right, evaluate the final RHS once and emit
+writes in reverse order. An index compound assignment prepares the location,
+reads the old value, evaluates RHS, performs the binary operation and writes back
+through the saved receiver/key. Neither operand is reevaluated. Nested index
+receivers use ordinary IndexGet; the final assignment location has no redundant
+read. Names keep their existing local/global/captured Cell write paths. Immutable
+`let` still permits mutations through array/table indices; known tuple writes and
+immutable-name rebindings remain semantic errors.
+
+Saved windows/receiver/key registers stay reserved across later calls and are
+cleared and reclaimed after their last lowering use. Terminal receiver/key/element
+or RHS paths release compiler scratch without generating subsequent evaluation,
+construction or writes. A remaining conditional fallthrough retains its saved
+operands. Return/Throw and finally continue to use B01's existing shared regions
+and cleanup selection. Work, descriptor/pair capacity, temporary locations and
+register windows are admitted before traversal/reservation/emission. Quota errors
+identify the failing collection, target or subexpression. IR/bytecode v1, VM
+interfaces and RuntimeSupport are unchanged.
+
+Spread/rest, patterns, Member values/locations, optional chains (including a
+nonoptional segment belonging to a chain), children, classes, full script imports
+and unified callable/library work retain located rejection. Member is never
+rewritten as Index. The existing trusted namespace-qualified direct native call
+exception retains its exact linkage/provenance checks.
+
+[L06 static matrix](tests/lowering/collections_locations.rs) uses actual source
+through analysis, IR, B01 verification, codec and disassembly:
+
+| Case | Structural evidence / negative boundary |
+| --- | --- |
+| Empty/unary/nested tuple/array/table and grouping | Exact constructor kinds, lengths and source spans; normal temporary clears |
+| Element calls, named/dynamic/duplicate table keys | Ordered calls and Move definitions; saved inputs not overwritten by later calls; all pairs precede one MakeTable |
+| Unhashable expression key | Compiles with all expression calls before MakeTable; no claim that construction succeeds |
+| Ordinary/nested Index and mixed Name/Index chains | Receiver/key called once; common RHS register; reverse IndexSet/BindWrite/CellWrite/GlobalWrite order |
+| All ten index compound operators | IndexGet precedes RHS call, operation consumes the old value, IndexSet uses original receiver/key |
+| Defaults, initializer captures and closures | Shared capture/default layouts survive B01 roundtrip; compiler-generated default Return retained |
+| Terminal receiver/key/element/RHS and finally | No unreachable calls, constructors or writes; shared Return/Throw cleanup targets; partial fallthrough use-def and conservative CFG dominance |
+| Sequential collection/location expressions | Bounded register high water with 300 repetitions; explicit Clears before reuse |
+| Deferred forms, tuple writes and quotas | Located preflight/semantic refusals; register/depth/work/capacity failure and exact-budget admission |
+
+No instruction/value evaluator or execution simulation is used. Actual hash,
+index bounds, alias mutation, GC, restoration and full engine behavior are untested.
+
 ## Limits and verification
 
 Work, vector/string capacity, blocks, instructions, tables and register counts
@@ -138,7 +205,7 @@ Compiler and bytecode checks use independent limits; B01's verification allocati
 limit is capped to the compiler's remaining capacity. `capacity_peak_bytes` is a
 conservative upper bound, not an RSS measurement.
 
-The 29 lowering integration tests compile actual source through L03, inspect IR
+The lowering integration tests compile actual source through L03, inspect IR
 and register liveness/order, verify with B01, encode/decode, disassemble and check
 all source-map boundaries. They cover Cell/capture identity, trusted native
 defaults and namespace links, cleanup regions, Context preservation, inferred
@@ -159,9 +226,15 @@ target/release/examples/lowering_probe 1000 captures
 target/release/examples/lowering_probe 1000 named
 target/release/examples/lowering_probe 1000 loops
 target/release/examples/lowering_probe 1000 initializer
+target/release/examples/lowering_probe 1000 sequences
+target/release/examples/lowering_probe 1000 tables
+target/release/examples/lowering_probe 1000 locations
+target/release/examples/lowering_probe 80 nested 64
+target/release/examples/lowering_probe 100 terminal
+ASIDE_LOWERING_EVIDENCE=target/reel-artifacts/issue40/evidence target/release/examples/lowering_probe 1 evidence
 ```
 
 The probe measures parse/analysis/lower/emit+verify/codec separately, checks the
-retained allocation ledger against `stats_alloc`, and prints work, capacity,
+IR and final-package retained allocation ledgers against `stats_alloc`, and prints work, capacity,
 blocks, instructions and registers. Measurements and rejection cases are recorded
 in `LOWERING_PERFORMANCE.md`; no VM execution measurement belongs to this report.
