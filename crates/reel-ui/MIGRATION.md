@@ -1,8 +1,9 @@
 # Issue #34 UI consolidation
 
 Base: `7990c326f1acf3531a940134eab38bd55c66f214`.
-Tested source: `228b19485ed85673195817b45943f7d1592990c5`.
-Branch: `issue-34-reel-ui`. Later changes in this delivery are documentation only.
+Tested consolidation source: `228b19485ed85673195817b45943f7d1592990c5`.
+Branch: `issue-34-reel-ui`. The accepted R03 combination and subsequent measurement
+selector repair are recorded separately below.
 
 The UI implementation is one unpublished `reel-ui` package with the workspace
 version and Reel repository metadata. It owns widgets, properties, geometry,
@@ -75,7 +76,7 @@ are ignored under `target/reel-artifacts/issue-34/`.
 | Existing Rust read-only maintenance check | Pass; `tool-check.log`; no source execution |
 | Strict rustdoc and local images | Pass; `doc.log`, `doc-images.log`; generated HTML embeds the exact original three PNGs |
 | Consumer and assertion preservation | Pass; `source-preservation.log` |
-| Migrated exact Cargo measurement selection | Pass; `measure-{contracts,rect,path,control}.log` and corresponding launcher logs |
+| Initial migrated measurement runs | Pass; `measure-{contracts,rect,path,control}.log` and corresponding launcher logs; selector negative cases were repaired in the combination below |
 
 The 24 UI input/geometry contracts, 14 ordinary R01 frame/resource contracts,
 private safe-tree scope/reparent/remove/busy-workspace checks and separate
@@ -108,19 +109,57 @@ separate in the raw logs. All measurement processes and the `/bin/true` launch
 control exit 0. The first attempt lacked GNU time; its failure is retained, then
 the local tool was installed and all four real runs completed successfully.
 
-## Integration handoff
+## Combination with accepted R03 main
 
-Architecture/index/creator-guide edits remain with the parent, as instructed.
-Suggested exact updates:
+The parent's architecture, index and bilingual-guide updates were fast-forwarded
+through `6778d126d4a95109bb821dd4416ca1a1b2262c31`. Normal merge
+`17295a64d46e970b1d2a10e6070a36b0af6e8816` then incorporated accepted main
+`3962819f75ae3cdd9dbd0d2be4dba79da5c1e8ac`, including PR #33 and its owner
+documentation. Five mechanical conflicts preserved both the UI and R03 paragraphs,
+selected R03's PipelineSlots import, and migrated test/command paths to reel-ui.
+No behavioral conflict or renderer/player algorithm change was introduced.
 
-- `docs/engine-architecture.md`: module/dependency list and source-maintenance
-  rules (§2), portable frame ownership (§8/§16), UI adaptation terminology (§15),
-  and current R01 links to `crates/reel-ui`.
-- `docs/README.md`: current package/status list and UI entry link.
-- `docs/guide/{zh-CN,en}.md`: relocate R01 report links and synchronize the
-  self-maintained UI explanation; preserve their shared Aside snippets.
+The ten new pipeline regressions now consume the maintained UI fixtures directly.
+Rust source comparison against the accepted new main confirms all 22 renderer/player
+production files are equivalent after import/path/whitespace normalization; the
+R03 pipeline implementation is byte-identical. All ten R03 regression functions
+and their 64 assertion statements are preserved, alongside all 343 original
+stage/safe-tree assertion statements from the original consolidation base.
 
-This branch stays on the accepted `7990` base. PR33 has not been merged into it.
-Final combination review waits for the parent's accepted new-main notification.
+Independent review found a pre-existing measurement selector weakness: manifest
+substring matching admitted foreign manifests, and a second candidate silently
+replaced the first. Separate fix `e8383148d42a51e7c21aa794751cec7c5b620a60`
+validates Cargo metadata's exact local package ID/manifest, integration-test source,
+release test profile and Cargo artifact path; multiple candidates fail. Before
+launch, the selected harness must list the required measurement tests. Real runs
+must report their named successful completion. The standalone launch control
+validates the same artifact/inventory before timing `/bin/true`.
+
+Combined tested source: `e8383148d42a51e7c21aa794751cec7c5b620a60`.
+The same Linux/Rust/font/software Vulkan environment described above was used.
+Raw commands, logs, Rust supporting programs and the complete 27-check result list
+are ignored under `target/reel-artifacts/issue-34/composed-main-3962819/`.
+Later changes only record these results.
+
+| Combined check | Actual result and evidence |
+| --- | --- |
+| fmt; selected all-target/all-feature strict Clippy, debug/release | Pass; `fmt.log`, `clippy-{debug,release}.log` |
+| UI/render/player/core default-off production builds and tests, both profiles | Pass; `default-off-{build,tests}-{debug,release}.log`; test-only core/test-support fixtures |
+| Native-feature contracts, zero-allocation pointer/deep-tree probes, candidate/geometry/budget/resource leases, both profiles | Pass; `native-tests-{debug,release}.log` |
+| R03 explicit pipeline regressions, both profiles | Exactly ten pass each; `pipeline10-{debug,release}.log`; internal scope confirmation, outer scopes, cross-slot cold lock, sticky failures and Pending refusal retained |
+| Original GPU pixels/correctness, both profiles | All ten pass each; `gpu-original-{debug,release}.log` |
+| Actual Parley, both profiles | One run / 14 glyphs each; `parley-{debug,release}.log` |
+| Actual Xvfb window Expose/retry/accepted geometry/generation-epoch recovery/shutdown, both profiles | One window test passes each; `window-expose-{debug,release}.log` |
+| Dependency direction, legal/source audit and negative metadata controls | Pass; `deps.log`, `audit-ui.log`, `maintenance-ui.log` |
+| Measure Rust negative regressions | Two pass; `maintenance-measure.log` |
+| Measure CLI negative controls | Foreign manifest, ambiguous candidates, empty filter, skipped probe, list-only and omitted ignored probe all exit 1 before measurement launch; `measure-cli-controls.log` and six individual logs |
+| Measure actual release positive controls | Contracts: 24 tests; rect/path: one probe each; launch control: exit 0; `measure-{contracts,rect,path,control}-launch.log` and matching raw logs |
+| Bilingual guides, parse/prefix recovery and semantic analysis only, both profiles | Two parse tests and one semantic test pass each, covering 24 matching scenes; `guide-{debug,release}.log` |
+| Consumer/R03/assertion preservation and read-only fixture maintenance | Pass; `source-preservation.log`, `read-only-check.log` |
+
+The current PR stays draft for independent integration review. Browser WebGPU,
+physical GPU faults/hot-unplug, Wayland and native Windows/macOS remain unverified.
+Driver allocations remain outside the hard frame/resource byte budget. CPU timings
+are software-device environment observations, not physical-GPU performance guarantees.
 Author node/DSL/image-slider work and platform IME/accessibility/touch adapters
 retain their existing boundaries. No V03, Aside source executor or Actions was run.
