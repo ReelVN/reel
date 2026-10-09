@@ -1,0 +1,10 @@
+[
+  {
+    "mode": "loops",
+    "n": 20000,
+    "repeat": 0,
+    "exit": 0,
+    "output": "rejected,loops,20000,lower,Limit,783337..783384,6266280,basic block budget exceeded\n",
+    "error": ""
+  }
+]
