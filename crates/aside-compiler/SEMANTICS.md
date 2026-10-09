@@ -198,3 +198,31 @@ analyzes and drops its result on a 2 MiB thread stack, then repeats with a retai
 shared tail. It verifies all 9,999 import-origin hops remain readable and a weak
 origin reference expires after final release. Child-process isolation preserves a
 useful test failure for a process-aborting stack regression.
+
+
+Issue #24 default-return contract was checked against owner language commits
+`65f8ba9177ab81e817202fb56fdd92bab10fe6d0` and
+`8dfa3bc6dd41a192eaa7f12d0f3175cfeccfb815` without importing lowering/VM code.
+A parameter default produces its value through its expression or block tail.
+Explicit source return crossing that lexical boundary reports `InvalidDefault`
+at the exact return statement, with a related range identifying the default.
+The rule applies to conditionals, short circuits, loops, match, catch and finally
+regardless of whether that path executes. An invalid return does not target the
+declaring function or get compared with that function's return contract.
+
+A private scalar default-expression marker follows ordinary lexical contexts;
+source function/closure/method entry resets it, and that function's own defaults
+establish their own markers. Synthesized field-initializer owners preserve the
+surrounding source marker because they are not author function boundaries.
+The parameter/capture default flag, runtime effect checks and public HIR layout
+stay independent. No extra AST traversal or per-node marker allocation is added.
+
+`tests/semantic_defaults.rs` checks actual parser→HIR→analysis source, including
+UTF-8 statement/boundary spans, nested-function target identity, nested defaults,
+diagnostic limits, previous mutable parameters, internal labeled loop transfers,
+throw and rethrow. Valid defaults retain their expression type and contain no
+fabricated source Return. L04 can lower that result to its compiler-generated
+thunk Return as specified; this source-HIR check does not inspect or prohibit
+bytecode Return. This branch does not implement or execute lowering/the VM.
+Static verification commands/results are in
+`bench-results/semantic/default-return-boundary.txt`.
