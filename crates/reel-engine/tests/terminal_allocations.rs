@@ -64,6 +64,9 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
             "en",
         )
         .unwrap();
+    let mut retirement = Session::new(SessionId(4), Epoch(1), limits).unwrap();
+    let retirement_root = retirement.root_owner();
+    let retiring = retirement.create_owner().unwrap();
 
     let region = Region::new(GLOBAL);
     let revealed = dialogue.reveal_more(root, id, 1);
@@ -92,6 +95,28 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
     let cancelled_now = cancelled.revoke_owner(cancelled_root);
     let cancelled_again = cancelled.cancel();
     let cancelled_completion = cancelled.take_completion();
+    // Ledger reports only, not a VM/Heap cleanup operation.
+    let revoked = retirement.revoke_owner_with_retirement(
+        retiring,
+        OwnerRetirementRequirements {
+            root_slots_end: 5,
+            tasks_pending: true,
+            external_resources_pending: true,
+        },
+    );
+    let cursor_first = retirement.report_owner_root_progress(retiring, 2, 2);
+    let task_cleanup = retirement.confirm_owner_task_cleanup(retiring);
+    let resource_cleanup = retirement.confirm_owner_resources_released(retiring);
+    let cursor_final = retirement.report_owner_root_progress(retiring, 5, 3);
+    let root_revoked = retirement.revoke_owner_with_retirement(
+        retirement_root,
+        OwnerRetirementRequirements {
+            root_slots_end: 0,
+            tasks_pending: true,
+            external_resources_pending: false,
+        },
+    );
+    let root_retired = retirement.confirm_owner_task_cleanup(retirement_root);
     let metrics = region.change();
 
     assert_eq!(metrics.allocations, 0, "{metrics:?}");
@@ -113,6 +138,13 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
         cancelled_completion.unwrap().delivery(),
         CompletionDelivery::CleanupOnly
     );
+    assert_eq!(revoked, Ok(true));
+    assert_eq!(cursor_first, Ok(OwnerLifecycle::Revoked));
+    assert_eq!(task_cleanup, Ok(OwnerLifecycle::Revoked));
+    assert_eq!(resource_cleanup, Ok(OwnerLifecycle::Revoked));
+    assert_eq!(cursor_final, Ok(OwnerLifecycle::Retired));
+    assert_eq!(root_revoked, Ok(true));
+    assert_eq!(root_retired, Ok(OwnerLifecycle::Retired));
     println!(
         "host terminal region: allocations={}, reallocations={}, bytes_allocated={}, deallocations={}",
         metrics.allocations, metrics.reallocations, metrics.bytes_allocated, metrics.deallocations

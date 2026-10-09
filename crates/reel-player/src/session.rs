@@ -61,8 +61,17 @@ struct Projection {
     status: String,
 }
 impl Projection {
-    fn from_session(session: &Session) -> Self {
+    fn from_session(session: &Session) -> Result<Self, Error> {
         let view = session.view();
+        match view.interaction {
+            Some(InteractionView::Dialogue(dialogue)) if dialogue.lines().len() > 2 => {
+                return Err("the compact session view supports at most two dialogue rows".into());
+            }
+            Some(InteractionView::Choice(choice)) if choice.options().len() > 2 => {
+                return Err("the compact session view supports at most two choice buttons".into());
+            }
+            _ => {}
+        }
         let mut projection = Self {
             interaction: None,
             lines: vec![],
@@ -96,7 +105,7 @@ impl Projection {
             }
             None => {}
         }
-        projection
+        Ok(projection)
     }
 }
 #[derive(Debug)]
@@ -369,6 +378,8 @@ fn allocate_choice_owners(session: &mut Session, count: usize) -> Result<Vec<Own
 
 /// Owns a real Session and maps accepted UI events to its public host boundary.
 /// The future executor adapter can drain Session completions independently.
+/// This compact 640×420 view accepts up to two dialogue rows or choice buttons;
+/// larger host interactions are rejected before replacing the displayed view.
 pub struct SessionUi {
     session: Session,
     projection: Projection,
@@ -383,7 +394,7 @@ pub struct SessionUi {
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
         let source_owner = session.create_owner()?;
-        let projection = Projection::from_session(&session);
+        let projection = Projection::from_session(&session)?;
         let choice_owners = allocate_choice_owners(&mut session, projection.choices.len())?;
         let stamp = ProjectionStamp {
             revision: 1,
@@ -435,7 +446,13 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
     ) -> Result<(), Error> {
-        let projection = Projection::from_session(&self.session);
+        let projection = match Projection::from_session(&self.session) {
+            Ok(projection) => projection,
+            Err(error) => {
+                self.clear_presented();
+                return Err(error);
+            }
+        };
         if projection != self.projection {
             if projection.interaction != self.projection.interaction {
                 let replacement =
@@ -486,13 +503,13 @@ impl SessionUi {
                 .sequence
                 .checked_add(1)
                 .ok_or("input sequence exhausted")?;
-            self.session
-                .handle_input(InputEvent {
-                    source_owner: input.owner,
-                    sequence: InputSequence(self.sequence),
-                    action: input.action,
-                })
-                .map_err(|e| format!("session input: {e:?}"))?;
+            // Owner/session cancellation may race the final UI dispatch. Host
+            // rejections filter that event; they are not window failures.
+            let _ = self.session.handle_input(InputEvent {
+                source_owner: input.owner,
+                sequence: InputSequence(self.sequence),
+                action: input.action,
+            });
         }
         Ok(handled)
     }
@@ -841,6 +858,67 @@ mod tests {
         assert!(ui.session.take_completion().is_none());
         assert_eq!(ui.session.view().history.len(), 1);
     }
+    #[test]
+    fn revoked_source_owner_input_is_filtered_without_a_window_error() {
+        let mut session = session();
+        say(&mut session, "A live main interaction");
+        let mut ui = SessionUi::new(session).unwrap();
+        let (mut bridge, _) = mount(&ui);
+        accept(&mut ui, &mut bridge, 1);
+        ui.session.revoke_owner(ui.source_owner).unwrap();
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert_eq!(visible(&ui), 0);
+        assert!(ui.session.take_completion().is_none());
+        assert_eq!(ui.session.status(), reel_engine::SessionStatus::Running);
+        assert_eq!(ui.session.view().history.len(), 1);
+    }
+
+    #[test]
+    fn oversized_host_interactions_are_rejected_before_compact_view_layout() {
+        let mut ui = SessionUi::new(session()).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, 1);
+        let line = DialogueLineInput {
+            speaker_id: None,
+            speaker_name: "",
+            content_id: "large-group",
+            text: "A real host row",
+        };
+        ui.session
+            .begin_say(ui.session.root_owner(), &[line; 6], "en")
+            .unwrap();
+        assert!(ui.sync(&mut bridge, root).is_err());
+        assert!(ui.projection.lines.is_empty());
+        assert!(ui.binding.borrow().accepted.is_none());
+        let InteractionView::Dialogue(dialogue) = ui.session.view().interaction.unwrap() else {
+            panic!("the host group must remain intact");
+        };
+        assert_eq!(dialogue.lines().len(), 6);
+        assert_eq!(ui.session.view().history.len(), 1);
+
+        let mut choice_session = session();
+        choice_session
+            .begin_choice(
+                choice_session.root_owner(),
+                &[
+                    ChoiceInput {
+                        key: "a",
+                        label: "A",
+                    },
+                    ChoiceInput {
+                        key: "b",
+                        label: "B",
+                    },
+                    ChoiceInput {
+                        key: "c",
+                        label: "C",
+                    },
+                ],
+            )
+            .unwrap();
+        assert!(SessionUi::new(choice_session).is_err());
+    }
+
     #[test]
     fn failed_choice_owner_allocation_rolls_back_without_destroying_old_view() {
         let session = Session::new(

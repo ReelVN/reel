@@ -524,6 +524,12 @@ pub enum SessionError {
     Capacity(CapacityKind),
     AllocationFailed,
     IdentityExhausted,
+    OwnerUnknown,
+    OwnerNotRevoked,
+    PeerOwnerRequirementsMissing,
+    RetirementCursorRegression,
+    RetirementCursorOutOfRange,
+    RetirementBudgetExceeded,
 }
 
 impl std::fmt::Display for SessionError {
@@ -553,12 +559,69 @@ pub struct StorageUsage {
     pub reserved_history_slots: usize,
     pub active_grapheme_boundary_slots: usize,
     pub retained_history_text_bytes: usize,
+    /// One retirement record is reserved inside every owner storage slot.
+    pub reserved_retirement_records: usize,
+    pub pending_owner_retirements: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerLifecycle {
+    Live,
+    Revoked,
+    Retired,
+}
+
+/// Obligations declared by a future real cleanup coordinator before revocation.
+/// `root_slots_end` is its fixed snapshot upper bound, not a root count or a
+/// claim that roots have already been released. A scanned empty slot still
+/// advances the cursor and consumes one unit of reported root work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnerRetirementRequirements {
+    pub root_slots_end: usize,
+    pub tasks_pending: bool,
+    pub external_resources_pending: bool,
+}
+
+/// Rust lifecycle bookkeeping only. These fields do not prove VM task stopping,
+/// GC, root release or device/resource cleanup; the real adapter reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerRetirementView {
+    pub root_cursor: usize,
+    pub root_slots_end: usize,
+    pub tasks_pending: bool,
+    pub external_resources_pending: bool,
 }
 
 #[derive(Debug)]
 struct OwnerEntry {
     handle: OwnerHandle,
-    live: bool,
+    lifecycle: OwnerLifecycle,
+    retirement: Option<OwnerRetirementView>,
+}
+
+impl OwnerEntry {
+    fn revoke(&mut self, requirements: OwnerRetirementRequirements) {
+        debug_assert_eq!(self.lifecycle, OwnerLifecycle::Live);
+        self.lifecycle = OwnerLifecycle::Revoked;
+        self.retirement = Some(OwnerRetirementView {
+            root_cursor: 0,
+            root_slots_end: requirements.root_slots_end,
+            tasks_pending: requirements.tasks_pending,
+            external_resources_pending: requirements.external_resources_pending,
+        });
+        self.retire_if_complete();
+    }
+
+    fn retire_if_complete(&mut self) {
+        if self.retirement.is_some_and(|record| {
+            record.root_cursor == record.root_slots_end
+                && !record.tasks_pending
+                && !record.external_resources_pending
+        }) {
+            debug_assert_ne!(self.lifecycle, OwnerLifecycle::Live);
+            self.lifecycle = OwnerLifecycle::Retired;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -617,7 +680,8 @@ impl Session {
         let mut owners = reserved_vec(limits.max_owners)?;
         owners.push(OwnerEntry {
             handle: root_owner,
-            live: true,
+            lifecycle: OwnerLifecycle::Live,
+            retirement: None,
         });
         Ok(Self {
             identity,
@@ -694,6 +758,12 @@ impl Session {
             reserved_history_slots: self.history.capacity(),
             active_grapheme_boundary_slots,
             retained_history_text_bytes: self.history_text_bytes,
+            reserved_retirement_records: self.owners.capacity(),
+            pending_owner_retirements: self
+                .owners
+                .iter()
+                .filter(|entry| entry.lifecycle == OwnerLifecycle::Revoked)
+                .count(),
         }
     }
 
@@ -707,13 +777,33 @@ impl Session {
             && self
                 .owners
                 .iter()
-                .any(|entry| entry.handle == owner && entry.live)
+                .any(|entry| entry.handle == owner && entry.lifecycle == OwnerLifecycle::Live)
+    }
+
+    /// Retired IDs remain observable until their storage slot is reused.
+    pub fn owner_lifecycle(&self, owner: OwnerHandle) -> Option<OwnerLifecycle> {
+        self.owners
+            .iter()
+            .find(|entry| entry.handle == owner)
+            .map(|entry| entry.lifecycle)
+    }
+
+    /// A live owner has no retirement record; revoked and retired records are
+    /// kept until actual retirement permits a later storage-slot reuse.
+    pub fn owner_retirement(&self, owner: OwnerHandle) -> Option<OwnerRetirementView> {
+        self.owners
+            .iter()
+            .find(|entry| entry.handle == owner)
+            .and_then(|entry| entry.retirement)
     }
 
     /// Register a UI node owner. Retired storage slots may be reused, IDs never are.
     pub fn create_owner(&mut self) -> Result<OwnerHandle, SessionError> {
         self.ensure_running()?;
-        let retired_index = self.owners.iter().position(|entry| !entry.live);
+        let retired_index = self
+            .owners
+            .iter()
+            .position(|entry| entry.lifecycle == OwnerLifecycle::Retired);
         if retired_index.is_none() && self.owners.len() == self.limits.max_owners {
             return Err(SessionError::Capacity(CapacityKind::Owners));
         }
@@ -722,7 +812,11 @@ impl Session {
             identity: self.identity,
             id: OwnerId(id),
         };
-        let entry = OwnerEntry { handle, live: true };
+        let entry = OwnerEntry {
+            handle,
+            lifecycle: OwnerLifecycle::Live,
+            retirement: None,
+        };
         if let Some(index) = retired_index {
             self.owners[index] = entry;
         } else {
@@ -732,27 +826,148 @@ impl Session {
         Ok(handle)
     }
 
-    /// Hard owner cancellation. A dead main owner produces cleanup, never a wakeup.
-    /// Calling this again for a retired owner is harmless and returns `false`.
+    /// Pure-Rust zero-obligation shortcut: the caller guarantees that the owner
+    /// has no executor tasks, host roots or external resources. A root shortcut
+    /// makes the same assertion for every still-live peer. It never relaxes or
+    /// overwrites an already-revoked owner's declared cleanup obligations.
+    /// A dead main owner produces cleanup, never a wakeup.
     pub fn revoke_owner(&mut self, owner: OwnerHandle) -> Result<bool, SessionError> {
+        self.revoke_owner_internal(owner, OwnerRetirementRequirements::default(), false)
+    }
+
+    /// Reserve the in-slot retirement record, revoke permissions, then wait for
+    /// all declared cleanup categories. Repeated revoke cannot replace a record.
+    /// Before revoking the root, a real coordinator must declare and revoke all
+    /// live peers; otherwise this returns a conflict before any mutation.
+    pub fn revoke_owner_with_retirement(
+        &mut self,
+        owner: OwnerHandle,
+        requirements: OwnerRetirementRequirements,
+    ) -> Result<bool, SessionError> {
+        self.revoke_owner_internal(owner, requirements, true)
+    }
+
+    fn revoke_owner_internal(
+        &mut self,
+        owner: OwnerHandle,
+        requirements: OwnerRetirementRequirements,
+        require_peer_declarations: bool,
+    ) -> Result<bool, SessionError> {
         if owner.identity != self.identity {
             return Err(SessionError::ForeignOwner);
         }
-        let Some(entry) = self.owners.iter_mut().find(|entry| entry.handle == owner) else {
+        let Some(index) = self.owners.iter().position(|entry| entry.handle == owner) else {
             return Ok(false);
         };
-        if !entry.live {
+        if self.owners[index].lifecycle != OwnerLifecycle::Live {
             return Ok(false);
         }
-        entry.live = false;
-        if owner == self.root_owner() {
+        let root = owner == self.root_owner();
+        if root
+            && require_peer_declarations
+            && self
+                .owners
+                .iter()
+                .any(|entry| entry.handle != owner && entry.lifecycle == OwnerLifecycle::Live)
+        {
+            return Err(SessionError::PeerOwnerRequirementsMissing);
+        }
+        self.owners[index].revoke(requirements);
+        if root {
             self.status = SessionStatus::Cancelled;
-            for entry in &mut self.owners {
-                entry.live = false;
+            if !require_peer_declarations {
+                self.retire_live_owners_without_obligations();
             }
             self.cancel_interaction(CancellationReason::OwnerRevoked);
         }
         Ok(true)
+    }
+
+    /// Report an actual adapter's cursor, including every traversed empty slot.
+    /// Its forward delta must fit this step's root work budget and the declared
+    /// snapshot bound. This bookkeeping performs no root or GC operation.
+    pub fn report_owner_root_progress(
+        &mut self,
+        owner: OwnerHandle,
+        new_cursor: usize,
+        work_budget: usize,
+    ) -> Result<OwnerLifecycle, SessionError> {
+        let entry = self.retirement_entry_mut(owner)?;
+        let record = entry
+            .retirement
+            .as_mut()
+            .expect("revoked owner has reserved record");
+        if new_cursor < record.root_cursor {
+            return Err(SessionError::RetirementCursorRegression);
+        }
+        if new_cursor > record.root_slots_end {
+            return Err(SessionError::RetirementCursorOutOfRange);
+        }
+        if new_cursor - record.root_cursor > work_budget {
+            return Err(SessionError::RetirementBudgetExceeded);
+        }
+        record.root_cursor = new_cursor;
+        entry.retire_if_complete();
+        Ok(entry.lifecycle)
+    }
+
+    /// Confirm actual task cleanup, not just a cancel request or stop return.
+    /// A coordinator may call this only after all task slices and their owned
+    /// cleanup obligations are released. This never recreates a live owner.
+    pub fn confirm_owner_task_cleanup(
+        &mut self,
+        owner: OwnerHandle,
+    ) -> Result<OwnerLifecycle, SessionError> {
+        let entry = self.retirement_entry_mut(owner)?;
+        entry
+            .retirement
+            .as_mut()
+            .expect("revoked owner has reserved record")
+            .tasks_pending = false;
+        entry.retire_if_complete();
+        Ok(entry.lifecycle)
+    }
+
+    /// Confirm actual external-resource cleanup. This only clears the declared
+    /// category; it performs no IO, device retirement or heap reclamation.
+    pub fn confirm_owner_resources_released(
+        &mut self,
+        owner: OwnerHandle,
+    ) -> Result<OwnerLifecycle, SessionError> {
+        let entry = self.retirement_entry_mut(owner)?;
+        entry
+            .retirement
+            .as_mut()
+            .expect("revoked owner has reserved record")
+            .external_resources_pending = false;
+        entry.retire_if_complete();
+        Ok(entry.lifecycle)
+    }
+
+    fn retirement_entry_mut(
+        &mut self,
+        owner: OwnerHandle,
+    ) -> Result<&mut OwnerEntry, SessionError> {
+        if owner.identity != self.identity {
+            return Err(SessionError::ForeignOwner);
+        }
+        let entry = self
+            .owners
+            .iter_mut()
+            .find(|entry| entry.handle == owner)
+            .ok_or(SessionError::OwnerUnknown)?;
+        if entry.lifecycle == OwnerLifecycle::Live {
+            return Err(SessionError::OwnerNotRevoked);
+        }
+        Ok(entry)
+    }
+
+    fn retire_live_owners_without_obligations(&mut self) {
+        for entry in &mut self.owners {
+            if entry.lifecycle == OwnerLifecycle::Live {
+                entry.revoke(OwnerRetirementRequirements::default());
+            }
+        }
     }
 
     pub fn view(&self) -> SessionView<'_> {
@@ -1020,7 +1235,9 @@ impl Session {
         self.completion.take()
     }
 
-    /// End a successfully idle session after its last result has been claimed.
+    /// End a successfully idle pure-Rust session after its result was claimed.
+    /// This zero-obligation shortcut asserts all still-live owners have no
+    /// external cleanup. Previously declared revoked records remain pending.
     pub fn end(&mut self) -> Result<(), SessionError> {
         self.ensure_running()?;
         if self.active.is_some() {
@@ -1030,21 +1247,20 @@ impl Session {
             return Err(SessionError::CompletionPending);
         }
         self.status = SessionStatus::Ended;
-        for entry in &mut self.owners {
-            entry.live = false;
-        }
+        self.retire_live_owners_without_obligations();
         Ok(())
     }
 
-    /// Hard session cancellation is idempotent and preserves already-written history.
+    /// Pure-Rust zero-obligation session shortcut. This asserts that still-live
+    /// owners have no executor tasks, host roots or external resources; pending
+    /// records already declared for revoked owners are never overwritten.
+    /// Cancellation is idempotent and preserves already-written history.
     pub fn cancel(&mut self) -> bool {
         if self.status != SessionStatus::Running {
             return false;
         }
         self.status = SessionStatus::Cancelled;
-        for entry in &mut self.owners {
-            entry.live = false;
-        }
+        self.retire_live_owners_without_obligations();
         self.cancel_interaction(CancellationReason::SessionCancelled);
         true
     }
