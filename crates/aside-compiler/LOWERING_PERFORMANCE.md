@@ -144,6 +144,83 @@ cargo build -p aside-compiler --example lowering_probe --release --locked
 cargo run --locked -p reel-dev -- compiler-probe lowering loops
 ```
 
+## 2026-10-09 initializer-local compilation (L05)
+
+Production, tests and probe: [81bef3405f0df4f248724e6a636f0f5b4e759fc4](https://github.com/jhq223/reel/blob/81bef3405f0df4f248724e6a636f0f5b4e759fc4/crates/aside-compiler/examples/lowering_probe.rs),
+based on main `9e0e10b856a1a6995da0a9268b605cd508e3ad71`, Issue #37.
+Rust 1.96.0 (ac68faa20), Linux 6.18.44 x86_64, release optimization.
+These are the task author's static results; integration review is separate.
+
+The pinned base passed 108 compiler tests in debug and release. L05 passed
+119 in each mode, including 29 lowering contracts. Both original module-local
+rejection tests retain their source cases and now assert initializer identity,
+reset ordering and successful B01 roundtrips; NoWait-only fragments retain their
+rejections. The 11 added contracts cover shared origin/owner, while condition
+reentry, shadowing/exports, sibling/transitive/default captures, forward read-only
+and recursion, Cell promotion of prior users, catch/finally CFG edges, enclosing
+analysis plus pre-admission link refusal, non-root exports and quota boundaries.
+Capture checks compare complete layouts and every Binding/Capture source against
+HIR SymbolId metadata. A conservative shared CFG checks reset dominance, and a
+named-function scope checks all CellNew/Clear before its first MakeClosure.
+The existing 24 paired author scenes passed parse and semantic checks unchanged.
+
+Validation commands, limited to the compiler (no workspace/VM execution tests):
+
+```sh
+cargo test -p aside-compiler --lib --tests --locked
+cargo test -p aside-compiler --lib --tests --release --locked
+cargo fmt -p aside-compiler --check
+cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
+git diff --check
+cargo build -p aside-compiler --example lowering_probe --release --locked
+```
+
+fmt, strict clippy and diff checks passed. The temporary environment initially
+had no Rust installation; the exact pinned toolchain was installed under /tmp
+without changing repository/toolchain configuration. A brief execution-server
+disconnect was recovered and subsequent commands actually completed; it did not
+require a different execution entry or loosened verification restrictions.
+
+The `initializer` probe compiles one root global, while-condition locals/capture,
+and N body blocks with mutable local x and two closures. It parses/analyzes/lowers,
+verifies and roundtrips the emitted package; none of those closures is invoked.
+Each accepted N used three fresh-process samples; the table gives medians.
+All nine accepted samples assert exact equality between retained allocations
+and the compiler capacity ledger. HIR/input storage is excluded from this ledger;
+Symbol.origin is included in semantic size_of-based retained-byte statistics.
+Peak remains a conservative capacity bound rather than measured RSS.
+
+| Body blocks | Lower ms | Emit + verify ms | Retained bytes | Peak upper bytes | Compiler work | Instructions | Max registers/function |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.406 | 0.325 | 361,270 | 500,754 | 307,113 | 4,746 | 306 |
+| 500 | 1.952 | 1.648 | 1,646,806 | 2,281,522 | 1,602,290 | 23,546 | 1,506 |
+| 1,000 | 3.814 | 3.341 | 3,294,430 | 4,562,522 | 3,276,195 | 47,046 | 3,006 |
+
+Fixed slots grow with source binding count under the existing pinned-slot model,
+not with the number of dynamic loop iterations. No runtime allocation rate or
+Cell/GC lifetime is measured. At 5,000 body blocks the compiler returns a normal
+instruction-quota rejection while lowering: source bytes `266543..266549`,
+14,993,380 charged work units. Register-limit tests also reject before allocating
+BindingDef/local tables at the failing declaration, while exact semantic work,
+symbol/capture and compiler capacity limits have successful admission cases.
+
+Reproduce each accepted command three times and the rejection once; keep output
+under ignored `target/reel-artifacts/issue37-baseline/`:
+
+```sh
+target/release/examples/lowering_probe 100 initializer
+target/release/examples/lowering_probe 500 initializer
+target/release/examples/lowering_probe 1000 initializer
+target/release/examples/lowering_probe 5000 initializer
+```
+
+The worktree's raw files are `initializer-N-SAMPLE.log` and
+`initializer-summary.json`; debug/release/clippy logs use the `final-` prefix.
+Generated output is not committed. These static results cannot establish actual
+closure sharing/reentry isolation, GC or host restoration, module publication,
+complete script imports or a playable engine session. V03 and every Aside source
+execution remain untested and were not invoked through alternative entry points.
+
 ## Pending acceptance
 
 No VM dispatch or native host invocation was run. V03 independent execution
@@ -152,7 +229,8 @@ The source default-return rule is resolved by the owner baseline and L03; it is
 no longer a missing transfer contract. Current public analysis cannot produce a
 combined Init+Derived declaration. Cumulative restrictions on actual call chains
 belong to VM flags, whose execution has not been verified by this task.
-Initializer-local/per-entry Cell lifetime and full-language deferred scopes are
-listed in [LOWERING.md](LOWERING.md); unsupported module bindings are diagnosed,
-not silently initialized as globals. Integration-owner review and dependency
-acceptance remain separate from these compiler results.
+L05 initializer-local compilation and its structural Cell checks are recorded
+above; actual Cell execution/lifetime acceptance remains pending. Full-language
+deferred scopes and external-environment link boundaries are listed in
+[LOWERING.md](LOWERING.md). The owner maintains language/index/guide status;
+integration-owner source review and acceptance remain separate from this report.
