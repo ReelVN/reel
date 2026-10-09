@@ -391,3 +391,5 @@ The core composition rules are ordinary functions, unified nodes, action values,
 
 
 V03 integration status (PR #49): executor sources have been combined with the current compiler in a separate integration branch and passed native/32-bit compile checks, not independent execution acceptance. Collections/index/member operations and script rest still have runtime support gaps; host waits, delivery roots and full restoration remain unconnected. This does not establish runnable source scenarios from this guide.
+
+S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adaptation, media and save/restore remain unconnected. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).

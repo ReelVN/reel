@@ -2452,6 +2452,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reel-engine"
+version = "0.1.0"
+dependencies = [
+ "reel-core",
+ "stats_alloc",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "reel-media"
 version = "0.1.0"
 dependencies = [
@@ -2471,6 +2480,7 @@ dependencies = [
  "blake3",
  "pollster",
  "reel-core",
+ "reel-engine",
  "reel-render",
  "reel-ui",
  "wgpu",

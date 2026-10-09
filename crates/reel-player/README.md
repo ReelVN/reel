@@ -36,3 +36,40 @@ record location where applicable and retain the last accepted view.
 
 See [device contract](../reel-render/R02-INTERFACE.md) and
 [verification and remaining scope](../reel-render/R02-REPORT.md).
+
+## Rust session-host window (S01)
+
+The additional binary exercises reel-engine with real Label/Button controls and
+the existing window/RenderFrame/wgpu path. It sends explicit Rust host requests,
+not Aside code. The original reel-diagnostic entry remains available.
+
+```sh
+export REEL_SESSION_FONT=/path/to/font.ttf
+cargo run --locked -p reel-player --features window --bin reel-session-host
+```
+
+A real font is required (REEL_DIAGNOSTIC_FONT is a fallback); the existing 16 MiB
+font-source limit remains. The scene shows two dialogue requests, a choice,
+a background branch and completion/cancellation. It does not establish native
+story APIs, media, save/load or VM integration.
+
+SessionUi records a projection stamp with each candidate frame. Only acceptance
+of that exact PresentationBridge frame enables its input projection. Down/Up
+must belong to the same presented projection; a stale screen cannot activate
+an unpresented successor. Choice release is consumed, not also a story advance.
+
+Full Parley text layout is kept while cluster/ligature masks reveal its prefix.
+Each 35 ms tick reveals at most one grapheme per line; a held gesture freezes
+reveal and wake-up does not replay a backlog. This compact 640×420 view supports
+at most two dialogue rows or two choice buttons; larger projections explicitly
+reject and clear input permission. The model's larger limits do not imply the
+view can display them. Input in this version is mouse-only.
+
+Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
+Independent checks and remaining limitations are tracked in PR #50. VM wait/root
+adaptation and actual source execution remain separate acceptance work.
+
+SessionUi dispatches through Session::handle_local_input rather than resetting
+a private input counter. Existing-session handoff and subsequent session_mut
+input preserve the same high-water sequence. Zero-line dialogue is accepted and
+can complete through the normal presented Down/Up path in one advance.

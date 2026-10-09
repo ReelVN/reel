@@ -355,3 +355,11 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 宿主协调完整 owner 撤销。先将 owner 标为 Revoked，禁止新增任务、根、等待注册和过期完成交付；Vm::cancel(owner) 只取消匹配任务并使硬取消票据失效，后续按预算清理任务。Idle 仅表示没有匹配 Task，不能解释为宿主根或适配器已释放。宿主生命周期记录在 owner 创建时预留有界退休容量，撤销时保存 cursor=0 与 end=heap.root_slots()，每个主线程预算 turn 推进 release_owner_step，传入 slots=min(剩余 work, end-cursor)，该 API 不直接接收 end，以 cursor>=end 判定扫描完成；按游标实际增量计费，空洞同样消耗工作。没有 Task 也必须推进根扫描。该扫描仅释放单根，宿主持有的非任务 RootRange 需独立有界释放游标，不能遗漏。任务清理、根扫描和外部资源释放全部完成才进入 Retired，随后对象由预算 GC 回收；宿主根记录同步失效，避免重复释放或继续使用旧 FaultRoot。
 
 PR #49 是执行器源码整合与原生/32 位编译检查，不构成独立执行验收。当前执行器缺少集合/索引/成员 handlers、script rest/property-bag、完整模块/类和快照；编译器支持不等于运行器支持。会话宿主与真实 UI 可先验证其 Rust 模型和事件接线，不能把这些结果冒充 Aside 剧情、跨等待 GC 或恢复验收。正式运行验收继续单列。
+
+## S01 Rust 会话宿主实现状态
+
+PR #50 在既有职责边界新增 reel-engine，管理有界 Session/Epoch/owner、唯一主交互、完整文本与字素揭示、稳定选项、过期和重复输入过滤、历史及终态一次交付。reel-player 的 reel-session-host 用真实 Label/Button 和既有呈现桥显示两句对白、选择与背景分支，原诊断入口保留。当前仅鼠标，紧凑投影最多两行或两个选项，超限明确拒绝并清输入权限；大模型容量不等于视图已支持。
+
+owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
+
+本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。

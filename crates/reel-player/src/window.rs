@@ -1,4 +1,5 @@
 use crate::diagnostic::Diagnostic;
+use crate::session::{ProjectionStamp, SessionHostDiagnostic};
 use crate::{
     demand::{Demand, Draw},
     surface::negotiate,
@@ -20,7 +21,11 @@ use reel_ui::{
     core::*,
     dpi::PhysicalSize,
 };
-use std::{io::Read, sync::Arc};
+use std::{
+    io::Read,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 type Error = Box<dyn std::error::Error>;
@@ -45,20 +50,41 @@ pub(crate) struct State {
     pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
+    pub(crate) session: Option<SessionHostDiagnostic>,
+    recorded_projection: Option<ProjectionStamp>,
+    next_reveal: Option<Instant>,
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
         Self::with_limits(event_loop, generation, GpuLimits::default())
+    }
+    pub(crate) fn new_session(
+        event_loop: &ActiveEventLoop,
+        generation: u64,
+    ) -> Result<Self, Error> {
+        Self::with_mode(event_loop, generation, GpuLimits::default(), true)
     }
     fn with_limits(
         event_loop: &ActiveEventLoop,
         generation: u64,
         limits: GpuLimits,
     ) -> Result<Self, Error> {
+        Self::with_mode(event_loop, generation, limits, false)
+    }
+    fn with_mode(
+        event_loop: &ActiveEventLoop,
+        generation: u64,
+        limits: GpuLimits,
+        session_host: bool,
+    ) -> Result<Self, Error> {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title("Reel renderer diagnostic — drag shapes; no Aside session")
+                    .with_title(if session_host {
+                        "Reel Rust session host diagnostic — no Aside execution"
+                    } else {
+                        "Reel renderer diagnostic — drag shapes; no Aside session"
+                    })
                     .with_inner_size(winit::dpi::LogicalSize::new(640., 420.)),
             )?,
         );
@@ -116,7 +142,12 @@ impl State {
             unreachable!()
         };
         let mut resources = vec![image_handle];
-        let font_path = std::env::var_os("REEL_DIAGNOSTIC_FONT");
+        let font_path = if session_host {
+            Some(std::env::var_os("REEL_SESSION_FONT").or_else(|| std::env::var_os("REEL_DIAGNOSTIC_FONT"))
+                .ok_or("set REEL_SESSION_FONT to a TTF/OTF file for the Rust session host diagnostic")?)
+        } else {
+            std::env::var_os("REEL_DIAGNOSTIC_FONT")
+        };
         let font = if let Some(path) = font_path {
             let mut file = std::fs::File::open(path)?;
             let length = file.metadata()?.len();
@@ -147,7 +178,14 @@ impl State {
             eprintln!("Set REEL_DIAGNOSTIC_FONT to a TTF/OTF file to include real Parley text.");
             None
         };
-        let widget = Diagnostic::new(image.clone(), font.is_some()).prepare();
+        let session = session_host.then(SessionHostDiagnostic::new).transpose()?;
+        let widget = if let Some(session) = &session {
+            session.ui.widget().prepare().erased()
+        } else {
+            Diagnostic::new(image.clone(), font.is_some())
+                .prepare()
+                .erased()
+        };
         let root_id = widget.id();
         let root = RenderRoot::new(
             widget,
@@ -195,6 +233,9 @@ impl State {
             demand: Demand::default(),
             root_id,
             zoom: 1.,
+            session,
+            recorded_projection: None,
+            next_reveal: session_host.then(|| Instant::now() + Duration::from_millis(35)),
         })
     }
     pub(crate) fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
@@ -206,6 +247,7 @@ impl State {
             self.output = output;
         }
         self.demand = Demand::default();
+        self.schedule_reveal();
         self.window.request_redraw();
         Ok(())
     }
@@ -221,7 +263,11 @@ impl State {
             .handle_window_event(reel_ui::core::WindowEvent::Resize(self.size));
         // Invalidates candidates even if fresh negotiation subsequently fails.
         self.demand = Demand::idle();
+        self.next_reveal = None;
         self.accepted_frame = None;
+        if let Some(session) = &mut self.session {
+            session.ui.clear_presented();
+        }
         Ok(())
     }
     pub(crate) fn invalidate(&mut self) {
@@ -271,6 +317,9 @@ impl State {
                         && key.surface_epoch() == frame.surface_epoch()
                 }) {
                     self.accepted_frame = None;
+                    if let Some(session) = &mut self.session {
+                        session.ui.clear_presented();
+                    }
                     self.demand.presented(draw);
                     return Ok(());
                 }
@@ -316,6 +365,10 @@ impl State {
             );
             let result = self.bridge.resolve(notice);
             if result == reel_ui::bridge::NoticeResult::Accepted {
+                if let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
+                {
+                    session.ui.presented(stamp);
+                }
                 self.accepted_frame = Some(frame);
             }
             Some(result)
@@ -342,6 +395,10 @@ impl State {
             .frame
             .checked_add(1)
             .ok_or("frame identity exhausted")?;
+        self.recorded_projection = self
+            .session
+            .as_ref()
+            .map(|session| session.ui.projection_stamp());
         let source = self
             .bridge
             .record(FrameId(self.frame))
@@ -384,7 +441,7 @@ impl State {
         Ok(build.finish().map_err(|e| format!("finish: {e:?}"))?)
     }
     pub(crate) fn recover_device(&mut self) -> Result<(), Error> {
-        self.pointer_event(PointerKind::Cancel);
+        self.pointer_event(PointerKind::Cancel)?;
         let size = self.window.inner_size();
         self.invalidate_surface(size)?;
         let generation = self
@@ -409,6 +466,7 @@ impl State {
         self.config = config;
         self.renderer = Renderer::new(gpu);
         self.demand = Demand::default();
+        self.schedule_reveal();
         self.window.request_redraw();
         eprintln!(
             "device recovered generation={generation}, epoch={}",
@@ -417,13 +475,17 @@ impl State {
         Ok(())
     }
     pub(crate) fn suspend(&mut self) {
-        self.pointer_event(PointerKind::Cancel);
+        let _ = self.pointer_event(PointerKind::Cancel);
         self.bridge.clear();
         let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
         let _ = self.renderer.poll();
         self.surface = None;
         self.demand = Demand::idle();
+        self.next_reveal = None;
         self.accepted_frame = None;
+        if let Some(session) = &mut self.session {
+            session.ui.clear_presented();
+        }
     }
     pub(crate) fn is_suspended(&self) -> bool {
         self.surface.is_none()
@@ -436,7 +498,7 @@ impl State {
             self.resize(self.window.inner_size())
         }
     }
-    pub(crate) fn pointer_event(&mut self, kind: PointerKind) {
+    pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {
         let pointer = PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),
             persistent_device_id: None,
@@ -474,10 +536,79 @@ impl State {
                 self.pointer
             );
         }
-        self.bridge.handle_pointer_event(event);
+        if let Some(session) = &mut self.session {
+            session.ui.handle_pointer(&mut self.bridge, event)?;
+            if matches!(kind, PointerKind::Up) {
+                session.after_input(&mut self.bridge, self.root_id)?;
+            }
+        } else {
+            self.bridge.handle_pointer_event(event);
+        }
+        if matches!(kind, PointerKind::Up) {
+            self.schedule_reveal();
+        }
         self.invalidate();
+        Ok(())
+    }
+    fn schedule_reveal(&mut self) {
+        if self.surface.is_none() || self.size.width == 0 || self.size.height == 0 {
+            self.next_reveal = None;
+            return;
+        }
+        self.next_reveal = self.session.as_ref().and_then(|session| {
+            match session.ui.session().view().interaction {
+                Some(reel_engine::InteractionView::Dialogue(dialogue))
+                    if dialogue.lines().iter().any(|line| {
+                        let reveal = line.reveal();
+                        reveal.revealed_count < reveal.total_count
+                    }) =>
+                {
+                    Some(Instant::now() + Duration::from_millis(35))
+                }
+                _ => None,
+            }
+        });
+    }
+    pub(crate) fn reveal_deadline(&self) -> Option<Instant> {
+        self.next_reveal
+    }
+    pub(crate) fn tick_reveal(&mut self) -> Result<(), Error> {
+        if self
+            .next_reveal
+            .is_none_or(|deadline| Instant::now() < deadline)
+        {
+            return Ok(());
+        }
+        if let Some(session) = &mut self.session {
+            if session.ui.gesture_active() {
+                // Preserve the presented content bound at Down until Up/Cancel.
+                self.schedule_reveal();
+                return Ok(());
+            }
+            let interaction = session
+                .ui
+                .session()
+                .view()
+                .interaction
+                .map(|interaction| interaction.id());
+            if let Some(interaction) = interaction {
+                let owner = session.ui.session().root_owner();
+                if session
+                    .ui
+                    .session_mut()
+                    .reveal_more(owner, interaction, 1)?
+                {
+                    session.ui.sync(&mut self.bridge, self.root_id)?;
+                    self.invalidate();
+                }
+            }
+        }
+        // Advance at most one grapheme per timer wake; no unbounded catch-up after a sleep.
+        self.schedule_reveal();
+        Ok(())
     }
 }
+#[derive(Clone, Copy)]
 pub(crate) enum PointerKind {
     Move,
     Down,
@@ -487,6 +618,9 @@ pub(crate) enum PointerKind {
 
 impl Drop for State {
     fn drop(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.ui.cancel();
+        }
         self.bridge.clear();
         let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
         let _ = self.renderer.poll();
@@ -720,6 +854,187 @@ mod tests {
         eprintln!(
             "native retry, accepted geometry, permanent refusal, generation/epoch recovery and shutdown passed"
         );
+    }
+    fn session_reveal(state: &State) -> usize {
+        match state
+            .session
+            .as_ref()
+            .unwrap()
+            .ui
+            .session()
+            .view()
+            .interaction
+        {
+            Some(reel_engine::InteractionView::Dialogue(dialogue)) => {
+                dialogue.lines()[0].reveal().revealed_count
+            }
+            _ => 0,
+        }
+    }
+    fn session_click(state: &mut State, x: f64, y: f64) {
+        state.pointer = reel_ui::dpi::PhysicalPosition::new(x, y);
+        for kind in [PointerKind::Move, PointerKind::Down, PointerKind::Up] {
+            state.pointer_event(kind).unwrap();
+        }
+    }
+    fn dark_dialogue_pixels(state: &mut State) -> usize {
+        let frame = state.build_frame().unwrap();
+        let prepared = state.renderer.prepare(&frame).unwrap();
+        let pixels = state.renderer.readback(prepared).unwrap();
+        let width = state.size.width as usize;
+        (280..365)
+            .flat_map(|y| (45..585).map(move |x| y * width + x))
+            .filter(|index| {
+                let p = pixels[*index];
+                p[0] < 0.3 && p[1] < 0.3 && p[2] < 0.3 && p[3] > 0.9
+            })
+            .count()
+    }
+    fn exercise_session(event_loop: &ActiveEventLoop) {
+        let mut state = State::new_session(event_loop, 1).unwrap();
+        let identity = state.session.as_ref().unwrap().ui.session().identity();
+        session_click(&mut state, 100., 300.);
+        assert_eq!(
+            session_reveal(&state),
+            0,
+            "no input before first actual presentation"
+        );
+        state.render().unwrap();
+        assert!(state.bridge.accepted_key().is_some());
+        let hidden_pixels = dark_dialogue_pixels(&mut state);
+        assert_eq!(
+            hidden_pixels, 0,
+            "hidden full-text layout paints no dialogue glyph pixels"
+        );
+        state.next_reveal = Some(Instant::now());
+        state.tick_reveal().unwrap();
+        assert_eq!(session_reveal(&state), 1);
+        assert_eq!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .ui
+                .session()
+                .view()
+                .history
+                .len(),
+            1
+        );
+        state.resize(state.window.inner_size()).unwrap();
+        assert!(state.reveal_deadline().is_some());
+        assert_eq!(session_reveal(&state), 1);
+        assert!(state.bridge.accepted_key().is_none());
+        state.render().unwrap();
+        state.renderer.gpu().device.destroy();
+        let _ = state.renderer.gpu().device.poll(wgpu::PollType::Wait);
+        state.recover_device().unwrap();
+        assert_eq!(session_reveal(&state), 1);
+        assert!(state.reveal_deadline().is_some());
+        assert!(state.bridge.accepted_key().is_none());
+        state.render().unwrap();
+        state.suspend();
+        assert!(state.reveal_deadline().is_none());
+        assert!(state.bridge.accepted_key().is_none());
+        state.resume().unwrap();
+        assert!(state.reveal_deadline().is_some());
+        assert_eq!(session_reveal(&state), 1);
+        assert_eq!(
+            state.session.as_ref().unwrap().ui.session().identity(),
+            identity
+        );
+        state.render().unwrap();
+        // Holding a real pointer gesture freezes the timed reveal revision.
+        state.pointer = reel_ui::dpi::PhysicalPosition::new(100., 300.);
+        state.pointer_event(PointerKind::Move).unwrap();
+        state.pointer_event(PointerKind::Down).unwrap();
+        state.next_reveal = Some(Instant::now());
+        state.tick_reveal().unwrap();
+        assert_eq!(session_reveal(&state), 1);
+        state.pointer_event(PointerKind::Up).unwrap();
+        assert!(session_reveal(&state) > 1);
+        assert!(state.reveal_deadline().is_none());
+        state.render().unwrap();
+        let shown_pixels = dark_dialogue_pixels(&mut state);
+        assert!(
+            shown_pixels > 100,
+            "real Parley glyphs must produce software GPU pixels"
+        );
+        eprintln!(
+            "software GPU dialogue glyph coverage: hidden={hidden_pixels}, full={shown_pixels}"
+        );
+        session_click(&mut state, 100., 300.); // drain first completion, request second line
+        assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 1);
+        assert_eq!(session_reveal(&state), 0);
+        session_click(&mut state, 100., 300.); // still accepted old first-line frame
+        assert_eq!(session_reveal(&state), 0);
+        state.render().unwrap();
+        session_click(&mut state, 100., 300.); // reveal second line
+        state.render().unwrap();
+        session_click(&mut state, 100., 300.); // install choice
+        assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 2);
+        state.render().unwrap();
+        session_click(&mut state, 100., 320.); // actual second Button
+        assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 3);
+        let session = state.session.as_ref().unwrap().ui.session();
+        assert_eq!(session.status(), reel_engine::SessionStatus::Ended);
+        assert_eq!(session.view().history.len(), 2);
+        assert!(session.view().interaction.is_none());
+        state.render().unwrap();
+        drop(state);
+        let mut cancelled = State::new_session(event_loop, 1).unwrap();
+        cancelled.render().unwrap();
+        assert!(cancelled.session.as_mut().unwrap().ui.cancel());
+        assert!(!cancelled.session.as_mut().unwrap().ui.cancel());
+        cancelled
+            .session
+            .as_mut()
+            .unwrap()
+            .after_input(&mut cancelled.bridge, cancelled.root_id)
+            .unwrap();
+        assert_eq!(
+            cancelled.session.as_ref().unwrap().ui.session().status(),
+            reel_engine::SessionStatus::Cancelled
+        );
+        assert_eq!(
+            cancelled
+                .session
+                .as_ref()
+                .unwrap()
+                .ui
+                .session()
+                .view()
+                .history
+                .len(),
+            1
+        );
+        eprintln!(
+            "real Rust host session/window: presented input, stable reveal timer, choice, end/cancel, resize/device/suspend preservation passed; no Aside execution"
+        );
+    }
+    #[test]
+    #[ignore = "requires Linux X11 display, a graphics adapter and REEL_SESSION_FONT"]
+    fn actual_session_window_host_contract() {
+        struct Harness;
+        impl ApplicationHandler for Harness {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                exercise_session(event_loop);
+                event_loop.exit();
+            }
+            fn window_event(
+                &mut self,
+                _: &ActiveEventLoop,
+                _: winit::window::WindowId,
+                _: winit::event::WindowEvent,
+            ) {
+            }
+        }
+        let event_loop = EventLoop::builder()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        event_loop.run_app(&mut Harness).unwrap();
     }
     #[test]
     #[ignore = "requires Linux X11 display and actual graphics adapter"]
