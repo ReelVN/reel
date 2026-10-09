@@ -10,3 +10,7 @@ test-support = []
 
 [lints]
 workspace = true
+
+[[example]]
+name = "cooperative_probe"
+required-features = ["test-support"]
