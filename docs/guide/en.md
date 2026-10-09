@@ -389,3 +389,5 @@ When an interface, behavior, default, or cancellation rule changes, the same PR 
 The repository commit containing this guide is its version reference. Feature status is marked by section; interface changes update the Chinese edition, English edition, and shared examples together.
 The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.
 
+
+V03 integration status (PR #49): executor sources have been combined with the current compiler in a separate integration branch and passed native/32-bit compile checks, not independent execution acceptance. Collections/index/member operations and script rest still have runtime support gaps; host waits, delivery roots and full restoration remain unconnected. This does not establish runnable source scenarios from this guide.

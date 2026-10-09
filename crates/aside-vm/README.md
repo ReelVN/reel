@@ -174,9 +174,12 @@ The host first marks the owner Revoked and rejects new tasks/roots/waits and old
 completion delivery. Its bounded owner lifecycle record is reserved at owner
 creation, not allocated without bounds during teardown. It captures cursor=0
 and end=heap.root_slots(), then advances Heap::release_owner_step each budget
-turn. Charge the actual cursor increment, including empty descriptor slots,
+turn, passing slots = min(remaining work, end - cursor), since that API does
+not accept end. Completion is cursor >= end. This scan releases single roots
+only; host-owned non-task RootRanges require their own bounded release cursor.
+Charge the actual cursor increment, including empty descriptor slots,
 not the number of released roots. No-task owners still require this scan.
-Retire only after task cleanup, the captured root scan and external adapter
+Retire only after task cleanup, the captured single-root scan, any host range cleanup and external adapter
 cleanup complete. Invalidate host root records so later cleanup cannot double
 release or reuse revoked FaultRoot handles. Reclamation of now-unreachable
 objects remains separate budgeted GC work.

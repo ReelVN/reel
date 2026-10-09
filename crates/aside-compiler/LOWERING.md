@@ -376,3 +376,13 @@ The probe measures parse/analysis/lower/emit+verify/codec separately, checks the
 IR and final-package retained allocation ledgers against `stats_alloc`, and prints work, capacity,
 blocks, instructions and registers. Measurements and rejection cases are recorded
 in `LOWERING_PERFORMANCE.md`; no VM execution measurement belongs to this report.
+
+## Executor integration boundary
+
+PR #49 combines executor sources with the main compiler after L09 using compile-only
+checks. The historical L04 statement above that no V03 implementation was merged
+refers to that original increment. B01 verification is still not execution
+acceptance: the current dispatcher lacks MakeArray/MakeTable, IndexGet/IndexSet
+and MemberGet/MemberSet, and rejects script rest/property-bag tails and other
+unsupported forms at load. RuntimeSupport registration cannot add missing handlers.
+No independent VM or source-program execution was performed for this integration.
