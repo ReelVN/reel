@@ -103,7 +103,9 @@ UI measurements resolve the local workspace package, integration-test source and
 release test profile against Cargo metadata. Foreign manifests and duplicate
 candidate artifacts fail before launch. The selected harness must list the
 required measurement tests, and a real run must report each one's successful
-completion; empty selections and skipped probes fail:
+completion. R01 must also emit a completed record/export workload; empty
+selections, skipped probes and test-name-only success fail. REEL_R01_PROBE_CASE
+accepts only rect or path; unset runs both, and invalid values fail:
 
 ```sh
 mkdir -p target/reel-artifacts

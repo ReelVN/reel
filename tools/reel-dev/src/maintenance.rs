@@ -476,6 +476,15 @@ fn verify_measurement_results(results: &str, target: &str) -> Result<()> {
             "required measurement test {test} did not complete"
         );
     }
+    if target == "r01_measurements" {
+        ensure!(
+            results.lines().any(|line| {
+                line.starts_with("workload count=512 path_elements=0 record=")
+                    || line.starts_with("workload count=16 path_elements=2048 record=")
+            }),
+            "r01 measurement completed no record/export workload"
+        );
+    }
     Ok(())
 }
 
@@ -831,13 +840,16 @@ mod tests {
         for results in [
             "running 0 tests\ntest result: ok. 0 passed; 0 failed",
             &format!("test {test} ... ignored\ntest other_test ... ok\ntest result: ok"),
+            &format!("test {test} ... ok\ntest result: ok. 1 passed"),
         ] {
             assert!(verify_measurement_results(results, target).is_err());
         }
         for results in [
-            format!("test {test} ... ok\ntest result: ok. 1 passed"),
             format!(
-                "test {test} ... phase=recorded\nphase=complete\nok\ntest result: ok. 1 passed"
+                "test {test} ... phase=recorded\nworkload count=512 path_elements=0 record=1ms\nok\ntest result: ok. 1 passed"
+            ),
+            format!(
+                "test {test} ... phase=recorded\nworkload count=16 path_elements=2048 record=1ms\nphase=complete\nok\ntest result: ok. 1 passed"
             ),
         ] {
             verify_measurement_results(&results, target).unwrap();

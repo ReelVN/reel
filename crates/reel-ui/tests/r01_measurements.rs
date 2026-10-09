@@ -67,15 +67,37 @@ fn workload(count: usize, payload: usize) -> Scene {
     }
     scene
 }
+
+fn probe_workloads(case: Option<&str>) -> Result<&'static [(usize, usize)], &'static str> {
+    match case {
+        None => Ok(&[(512, 0), (16, 2048)]),
+        Some("rect") => Ok(&[(512, 0)]),
+        Some("path") => Ok(&[(16, 2048)]),
+        Some(_) => Err("REEL_R01_PROBE_CASE must be rect, path, or unset"),
+    }
+}
+
+#[test]
+fn probe_case_selection_rejects_invalid_and_defaults_to_both_workloads() {
+    assert_eq!(probe_workloads(None).unwrap(), &[(512, 0), (16, 2048)]);
+    assert_eq!(probe_workloads(Some("rect")).unwrap(), &[(512, 0)]);
+    assert_eq!(probe_workloads(Some("path")).unwrap(), &[(16, 2048)]);
+    for case in ["typo", "", "RECT", " path"] {
+        assert!(probe_workloads(Some(case)).is_err(), "accepted {case:?}");
+    }
+}
+
 #[test]
 #[ignore = "run alone with --ignored --nocapture; measures full record/export and cleanup"]
 fn record_paused_finish_cancel_and_source_drop_cost() {
-    for (count, payload) in [(512, 0), (16, 2048)] {
-        if std::env::var("REEL_R01_PROBE_CASE")
-            .is_ok_and(|case| case != if payload == 0 { "rect" } else { "path" })
-        {
-            continue;
-        }
+    let case = match std::env::var("REEL_R01_PROBE_CASE") {
+        Ok(case) => Some(case),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => panic!("REEL_R01_PROBE_CASE must be rect, path, or unset: {error}"),
+    };
+    let workloads = probe_workloads(case.as_deref()).expect("invalid measurement case");
+    let mut completed = 0;
+    for &(count, payload) in workloads {
         let initial = ALLOCATOR.stats();
         let mut bridge = widget_bridge(
             RecordWidget::new(workload(count, payload)),
@@ -197,5 +219,13 @@ fn record_paused_finish_cancel_and_source_drop_cost() {
             warm_export[18],
             warm_export[19]
         );
+        completed += 1;
     }
+    assert_eq!(
+        completed,
+        workloads.len(),
+        "every selected workload completed"
+    );
+    assert!(completed > 0, "measurement must perform record/export work");
+    println!("completed_workloads={completed}");
 }
