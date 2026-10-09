@@ -429,6 +429,7 @@ impl<T> ArenaMut<'_, T> {
 
 impl<'arena, T> ArenaMutList<'arena, T> {
     /// Returns `true` if the list has an element with the given id.
+    #[cfg(debug_assertions)]
     pub fn has(&self, id: impl Into<NodeId>) -> bool {
         let id = id.into();
         self.children.contains_key(&id)

@@ -285,7 +285,7 @@ pub(crate) struct WidgetState {
 impl WidgetState {
     pub(crate) fn new(
         id: WidgetId,
-        widget_name: &'static str,
+        _widget_name: &'static str,
         options: WidgetOptions,
         action_type: TypeId,
         property_stack_id: Option<PropertyStackId>,
@@ -356,7 +356,7 @@ impl WidgetState {
 
             trace_span: Span::none(),
             #[cfg(debug_assertions)]
-            widget_name,
+            widget_name: _widget_name,
             #[cfg(debug_assertions)]
             action_type_name,
         }

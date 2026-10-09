@@ -12,9 +12,10 @@ use dpi::LogicalSize;
 use tracing::{info_span, trace};
 
 use crate::app::{RenderRoot, RenderRootSignal, RenderRootState, WindowSizePolicy};
+#[cfg(debug_assertions)]
+use crate::core::ChildrenIds;
 use crate::core::{
-    ChildrenIds, LayoutCtx, MeasureCtx, PropertiesRef, PropertyArena, Widget, WidgetArenaNode,
-    WidgetState,
+    LayoutCtx, MeasureCtx, PropertiesRef, PropertyArena, Widget, WidgetArenaNode, WidgetState,
 };
 use crate::kurbo::{Axis, Insets, Point, Size};
 use crate::layout::{LayoutSize, LenDef, LenReq, Length, MeasurementInputs, SizeDef};
@@ -383,10 +384,10 @@ pub(crate) fn run_layout_on(
     // Again, these two blocks read `is_explicitly_stashed` instead of `is_stashed`
     // because the latter may be outdated if layout code has called `set_stashed`.
 
-    let mut children_ids = ChildrenIds::new();
-    if cfg!(debug_assertions) {
-        children_ids = widget.children_ids();
-
+    #[cfg(debug_assertions)]
+    let children_ids: ChildrenIds = widget.children_ids();
+    #[cfg(debug_assertions)]
+    {
         // We forcefully set request_layout to true for all children.
         // This is used below to check that widget.layout(..) visited all of them.
         for child_id in widget.children_ids() {
