@@ -1,6 +1,6 @@
 # R01 backend contract and semantic consumers
 
-This crate depends on `reel-stage` and `reel-core`; it owns no window or native
+This crate depends on `reel-ui` and `reel-core`; it owns no window or native
 handle. `RenderBackend` defines `capabilities`, `configure`, owned `upload`,
 borrowed `render_present`, `retire`, bounded `poll` and `suspend`.
 
@@ -45,8 +45,8 @@ Run `cargo test -p reel-render --locked -- --test-threads=1`. Tests use actual
 Masonry image records for duplicate resource references, paused build retirement,
 old/new content versions, owned Blob aliases, accepted upload and frame retention,
 completion, slot generation, refusal and null presentation. See
-[R01-INTERFACE.md](../reel-stage/R01-INTERFACE.md) and
-[R01-REPORT.md](../reel-stage/R01-REPORT.md) for the integrated evidence.
+[R01-INTERFACE.md](../reel-ui/R01-INTERFACE.md) and
+[R01-REPORT.md](../reel-ui/R01-REPORT.md) for the integrated evidence.
 
 
 ## R02 optional real device profile

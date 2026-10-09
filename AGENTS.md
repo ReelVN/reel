@@ -26,7 +26,7 @@ Use pinned ordinary dependencies by default. Import upstream source only for a d
 
 ## Repository hygiene
 
-- Maintain the Masonry fork packages under `crates/` in the root workspace; preserve their upstream versions, licenses, provenance and explicit lint boundaries.
+- Maintain borrowed UI code in the single `crates/reel-ui` workspace package, organized by responsibility through modules. Reel owns subsequent changes; upstream synchronization, contribution, package versions and source-layout closure are not maintenance requirements. Preserve the original Apache license, necessary copyright/NOTICE and concise provenance. Keep production `unsafe_code = "forbid"` and native window/GPU dependencies outside UI.
 - First-party validation tooling belongs in Rust tests or `tools/reel-dev`. Keep unchanged upstream tools with their documented source snapshot; do not use them to hide a second first-party implementation.
 - Write reproducible logs, measurements, screenshots and generated reports under ignored `target/reel-artifacts/` or temporary storage. Track only source, concise contracts and necessary immutable test inputs. Update consumers and preserve assertions before retiring a fixture or validation tool.
 - Keep documentation linked to current commands; historical measurements use fixed commit links and are not current verification claims.

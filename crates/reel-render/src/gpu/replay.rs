@@ -6,11 +6,11 @@ use super::{
     scopes::{Kind, Scopes},
     targets::{Target, target_bytes},
 };
-use masonry_core::{
+use reel_ui::frame::{FrameCommand, FrameOp, RecordLocation, RenderFrame};
+use reel_ui::{
     imaging::{Composite, MaskMode, record::Clip},
     kurbo::Affine,
 };
-use reel_stage::{FrameCommand, FrameOp, RecordLocation, RenderFrame};
 use std::{collections::HashMap, sync::Arc};
 pub(super) struct Context<'a> {
     pub(super) gpu: &'a Gpu,
@@ -21,12 +21,12 @@ pub(super) struct Context<'a> {
     pub(super) budgets: &'a Budgets,
     pub(super) budget_scope: Budgets,
     pub(super) tickets: Vec<Reservation>,
-    pub(super) images: HashMap<reel_stage::ResourceHandle, Arc<resources::Image>>,
+    pub(super) images: HashMap<reel_ui::resources::ResourceHandle, Arc<resources::Image>>,
 }
 struct Scope<'a> {
     target: Target,
     clip: Option<&'a Clip>,
-    mask: Option<reel_stage::MaskUse>,
+    mask: Option<reel_ui::frame::MaskUse>,
     opacity: f32,
 }
 impl Context<'_> {

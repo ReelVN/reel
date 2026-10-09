@@ -1,6 +1,7 @@
 use super::{Gpu, GpuError};
-use masonry_core::peniko::{ImageAlphaType, ImageFormat};
-use reel_stage::{ColorEncoding, RecordLocation, RenderFrame, ResourceData, ResourceHandle};
+use reel_ui::frame::{RecordLocation, RenderFrame};
+use reel_ui::peniko::{ImageAlphaType, ImageFormat};
+use reel_ui::resources::{ColorEncoding, ResourceData, ResourceHandle};
 use wgpu::util::DeviceExt;
 
 pub struct Image {

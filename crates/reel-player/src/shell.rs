@@ -1,6 +1,6 @@
 use crate::window::{PointerKind, State};
-use masonry_core::core::TextEvent;
 use reel_render::gpu::GpuError;
+use reel_ui::core::TextEvent;
 use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
@@ -108,7 +108,7 @@ impl ApplicationHandler for App {
                 Ok(())
             }
             WindowEvent::CursorMoved { position, .. } => {
-                state.pointer = masonry_core::dpi::PhysicalPosition::new(position.x, position.y);
+                state.pointer = reel_ui::dpi::PhysicalPosition::new(position.x, position.y);
                 state.pointer_event(PointerKind::Move);
                 Ok(())
             }
@@ -132,7 +132,7 @@ impl ApplicationHandler for App {
                 state.zoom = (state.zoom + delta).clamp(0.5, 1.5);
                 let zoom = state.zoom;
                 state.bridge.edit_widget(state.root_id, |mut widget| {
-                    widget.set_transform(masonry_core::kurbo::Affine::scale(zoom))
+                    widget.set_transform(reel_ui::kurbo::Affine::scale(zoom))
                 });
                 state.invalidate();
                 Ok(())

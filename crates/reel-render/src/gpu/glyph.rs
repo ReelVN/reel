@@ -1,6 +1,7 @@
 //! Consumes shaped glyph IDs/positions; this module never invokes Swash shaping.
 use super::GpuError;
-use reel_stage::{FrameGlyphRun, RecordLocation, RenderFrame, ResourceData};
+use reel_ui::frame::{FrameGlyphRun, RecordLocation, RenderFrame};
+use reel_ui::resources::ResourceData;
 use swash::scale::{Render, ScaleContext, Source, image::Content};
 pub struct GlyphBitmap {
     pub x: f64,
@@ -36,7 +37,7 @@ pub fn rasterize(
             record: "font collection index",
         },
     )?;
-    if run.font_size > 256. || run.font_embolden != masonry_core::kurbo::Vec2::ZERO {
+    if run.font_size > 256. || run.font_embolden != reel_ui::kurbo::Vec2::ZERO {
         return Err(GpuError::Unsupported {
             at,
             record: "glyph size above 256 or embolden",

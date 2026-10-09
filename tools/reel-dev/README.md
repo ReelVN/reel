@@ -1,8 +1,8 @@
 # Reel development checks
 
 Run from the repository root with pinned Rust 1.96.0. Production crates and the
-four maintained Masonry crates use one workspace and root lockfile. The historical
-U01 upstream/experimental comparison remains explicitly excluded and isolated.
+single maintained UI crate use one workspace and root lockfile. The historical
+U01 experiment is retired; its sources remain at the accepted base in Git history.
 No command below dispatches Aside bytecode. Parsing, binding and codec checks are
 not execution coverage. Native UI checks require Fontconfig/pkg-config on Linux;
 process RSS measurements additionally require GNU `time` on PATH.
@@ -12,10 +12,10 @@ cargo run --locked -p reel-dev -- check
 cargo test --locked -p reel-dev
 cargo run --locked -p reel-dev -- deps
 cargo run --locked -p reel-dev -- inventory
-cargo run --locked -p reel-dev -- audit-masonry /path/to/xilem-271a27a6
-cargo test --locked -p tree_arena --test lookup_depth -- --nocapture
-cargo test --locked -p tree_arena --test lookup_depth --release -- --nocapture
-cargo test --locked -p tree_arena --no-default-features --features safe_tree --lib
+cargo run --locked -p reel-dev -- audit-ui
+cargo test --locked -p reel-ui --test lookup_depth -- --nocapture
+cargo test --locked -p reel-ui --test lookup_depth --release -- --nocapture
+cargo test --locked -p reel-ui --no-default-features --lib
 cargo run --locked -p reel-dev -- root-negative
 ```
 
@@ -99,13 +99,13 @@ the budget probe's 15-second bound. Both have short-deadline mock regression tes
 Semantic failures save exact stdout/stderr byte files, exit/signal and timeout
 records before failing, and a timeout terminates the whole owned process group.
 
-Stage measurements resolve the exact package/target executable from Cargo JSON:
+UI measurements resolve the exact package/target executable from Cargo JSON:
 
 ```sh
 mkdir -p target/reel-artifacts
-cargo test --locked -p reel-stage --test contracts --release --no-run --message-format=json > target/reel-artifacts/stage-build.jsonl
-cargo run --locked -p reel-dev -- measure target/reel-artifacts/stage-build.jsonl contracts
-cargo test --locked -p reel-stage --test r01_measurements --release --no-run --message-format=json > target/reel-artifacts/r01-build.jsonl
+cargo test --locked -p reel-ui --test contracts --release --no-run --message-format=json > target/reel-artifacts/ui-build.jsonl
+cargo run --locked -p reel-dev -- measure target/reel-artifacts/ui-build.jsonl contracts
+cargo test --locked -p reel-ui --test r01_measurements --release --no-run --message-format=json > target/reel-artifacts/r01-build.jsonl
 REEL_R01_PROBE_CASE=rect cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --ignored
 REEL_R01_PROBE_CASE=path cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --ignored
 cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --launch-control
@@ -180,11 +180,11 @@ limits above. The two upstream Python files are untouched and remain covered by
 | compiler `bench-results/run_pattern_trial_probe.py` | exact type/OR/location cases and both entries in `frontend.rs`, plus existing full pattern grammar trials |
 | compiler fixtures `check_integrity.py` | `fixtures::immutable_t01`, source/map pins, accepted T01, 10 sources/32 assertions/waiting_runtime |
 | VM `run_root_range_negative_controls.py` | `root-negative`; all nine precise failure checks in an isolated copy, original files unchanged |
-| stage `audit-source.py` | `audit-masonry`; upstream hashes, original licenses/headers, exact Rust closure, generated current diff |
-| stage `check-tree-depth.py` | `tree_arena/tests/lookup_depth.rs`; all current stack/capacity/allocation cases |
+| stage `audit-source.py` | `audit-ui`; original license/copyright, local provenance and single UI source/dependency ownership |
+| stage `check-tree-depth.py` | `reel-ui/tests/lookup_depth.rs`; all current stack/capacity/allocation cases |
 | stage `measure.py` / `measure-r01.py` | `measure`; exact Cargo executable, rect/path, launch control, child RSS/exit |
-| Masonry experiment `prepare.py` | `prepare-masonry UPSTREAM`; hash verification before copying, patch dry-run/application, original locks and isolated baseline/experiment |
-| Masonry experiment `check-deps.py` | `deps MANIFEST`; isolated root, unique UI types and native normal/build dependency closure |
+| Masonry experiment `prepare.py` | Retired; [immutable U01 history](https://github.com/jhq223/reel/tree/7990c326f1acf3531a940134eab38bd55c66f214/tools/masonry-contract-check); production assertions live in reel-ui tests |
+| Masonry experiment `check-deps.py` | `deps`; single UI source/types and no reverse native normal/build dependency closure |
 | Quirrel `lexical.py` / `convert.py` | Rust byte scanner/converter; source pins, UTF-8, complete bidirectional maps and all assertion/boundary negative cases |
 | Quirrel `inventory.py` | `inventory` plus `verify-results`; six categories, exact 1,296 universe, faithful tested seed predicate, frontend/recipe checks |
 | Quirrel `test_integrity.py` | Rust fixture tests plus full `verify-results`; original ZIP/SHA/mismatch and all conversion checks |

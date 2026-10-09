@@ -99,8 +99,8 @@ impl Demand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use masonry_core::core::Widget;
-    use reel_stage::RecordLocation;
+    use reel_ui::core::Widget;
+    use reel_ui::frame::RecordLocation;
     #[test]
     fn pressure_and_busy_wait_for_completion_then_retry_latest_state() {
         for error in [
@@ -129,7 +129,7 @@ mod tests {
             fragment: 0,
             command: 3,
             mask_depth: 1,
-            owner: masonry::widgets::Label::new("").prepare().id(),
+            owner: reel_ui::widgets::Label::new("").prepare().id(),
         };
         for error in [
             GpuError::Budget {

@@ -1,5 +1,5 @@
 //! A renderer/input diagnostic, not an Aside story session.
-use masonry_core::{
+use reel_ui::{
     accesskit::{Node, Role},
     core::*,
     imaging::{Composite, GroupRef, Painter},
@@ -12,7 +12,7 @@ pub struct Diagnostic {
     x: f64,
     dragging: bool,
     image: ImageData,
-    label: Option<WidgetPod<masonry::widgets::Label>>,
+    label: Option<WidgetPod<reel_ui::widgets::Label>>,
 }
 impl Diagnostic {
     pub fn new(image: ImageData, text: bool) -> Self {
@@ -21,7 +21,7 @@ impl Diagnostic {
             dragging: false,
             image,
             label: text.then(|| {
-                WidgetPod::new(masonry::widgets::Label::new(
+                WidgetPod::new(reel_ui::widgets::Label::new(
                     "Reel: drag to move; scroll to zoom. GPU + Parley diagnostic.",
                 ))
             }),

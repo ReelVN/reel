@@ -1,11 +1,14 @@
 #![cfg(feature = "wgpu")]
 #[allow(dead_code, reason = "shared actual Masonry fixture")]
-#[path = "../../reel-stage/tests/support/fixture.rs"]
+#[path = "../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
 #[allow(dead_code, reason = "shared R01 compiler fixture")]
-#[path = "../../reel-stage/tests/support/r01_fixture.rs"]
+#[path = "../../reel-ui/tests/support/r01_fixture.rs"]
 mod r01_fixture;
-use masonry_core::{
+use r01_fixture::*;
+use reel_core::identity::FrameId;
+use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+use reel_ui::{
     imaging::{
         Composite,
         record::{Draw, Geometry, Scene},
@@ -13,9 +16,6 @@ use masonry_core::{
     kurbo::{Affine, Rect},
     peniko::{Brush, Color},
 };
-use r01_fixture::*;
-use reel_core::identity::FrameId;
-use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
 fn scene(color: Color) -> Scene {
     let mut scene = Scene::new();
     fill(&mut scene, color);
@@ -94,7 +94,7 @@ fn close(actual: [f32; 4], expected: [f32; 4]) {
 #[test]
 #[ignore = "requires an actual graphics adapter"]
 fn whole_group_opacity_and_nested_masks_clips() {
-    use masonry_core::imaging::{
+    use reel_ui::imaging::{
         MaskMode,
         record::{AppliedMask, Clip, Group, Mask},
     };
@@ -197,17 +197,17 @@ fn bounded_admission_and_completion_preserve_frame_lease() {
 #[test]
 #[ignore = "requires adapter and REEL_R01_TEST_FONT"]
 fn image_linear_upload_retirement_and_actual_parley_glyphs() {
-    use masonry_core::{
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::resources::{ResourceData, ResourceRegistry};
+    use reel_ui::{
         app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
         core::{DefaultProperties, Widget},
         dpi::PhysicalSize,
         peniko::{Blob, FontData, ImageAlphaType, ImageBrush, ImageFormat},
     };
-    use reel_core::{
-        budget::OwnedBytes,
-        identity::{AssetKey, ContentVersion, ResourceVersion},
-    };
-    use reel_stage::{ResourceData, ResourceRegistry};
     use std::sync::Arc;
     let mut renderer = device();
     let pool = pool();
@@ -224,7 +224,7 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
             [1, 1],
             ImageFormat::Rgba8,
             ImageAlphaType::Alpha,
-            reel_stage::ColorEncoding::Srgb,
+            reel_ui::resources::ColorEncoding::Srgb,
         )
         .unwrap();
     let lease = registry.acquire(h).unwrap();
@@ -273,7 +273,7 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
         )
         .unwrap();
     let root = RenderRoot::new(
-        masonry::widgets::Label::new("office ffi Reel 25").prepare(),
+        reel_ui::widgets::Label::new("office ffi Reel 25").prepare(),
         |_| {},
         RenderRootOptions {
             default_properties: Arc::new(DefaultProperties::new()),
@@ -294,7 +294,7 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
         .commands()
         .iter()
         .filter_map(|c| match &c.op {
-            reel_stage::FrameOp::Draw(reel_stage::FrameDraw::GlyphRun(run)) => {
+            reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => {
                 Some(run.glyphs.len())
             }
             _ => None,
@@ -364,9 +364,9 @@ fn localized_refusal_and_foreign_prepared_device() {
         brush_transform: None,
         shape: Geometry::Rect(Rect::new(0., 0., 20., 20.)),
         composite: Composite {
-            blend: masonry_core::peniko::BlendMode::new(
-                masonry_core::peniko::Mix::Multiply,
-                masonry_core::peniko::Compose::SrcOver,
+            blend: reel_ui::peniko::BlendMode::new(
+                reel_ui::peniko::Mix::Multiply,
+                reel_ui::peniko::Compose::SrcOver,
             ),
             alpha: 1.,
         },
@@ -385,7 +385,7 @@ fn localized_refusal_and_foreign_prepared_device() {
                 frame
                     .commands()
                     .iter()
-                    .find(|c| matches!(c.op, reel_stage::FrameOp::Draw(_)))
+                    .find(|c| matches!(c.op, reel_ui::frame::FrameOp::Draw(_)))
                     .unwrap()
                     .origin
                     .at
@@ -410,7 +410,7 @@ fn localized_refusal_and_foreign_prepared_device() {
 #[test]
 #[ignore = "requires an actual graphics adapter"]
 fn transformed_path_clip_has_geometric_coverage() {
-    use masonry_core::{imaging::record::Clip, kurbo::BezPath};
+    use reel_ui::{imaging::record::Clip, kurbo::BezPath};
     let mut renderer = device();
     let pool = pool();
     let mut path = BezPath::new();

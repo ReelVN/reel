@@ -1,7 +1,7 @@
 use super::{Gpu, GpuError, Quality, pipeline::Pipelines, replay::Context};
-use masonry_core::kurbo::Affine;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
-use reel_stage::RenderFrame;
+use reel_ui::frame::RenderFrame;
+use reel_ui::kurbo::Affine;
 use std::collections::HashMap;
 use std::sync::{
     Arc,
@@ -204,7 +204,7 @@ impl Renderer {
         );
         let origin = |frame: &RenderFrame| {
             frame.commands().first().map_or(
-                reel_stage::RecordLocation {
+                reel_ui::frame::RecordLocation {
                     fragment: 0,
                     command: 0,
                     mask_depth: 0,
