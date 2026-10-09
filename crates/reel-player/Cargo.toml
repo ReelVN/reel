@@ -11,6 +11,7 @@ window = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:blake3", "reel-render/wg
 
 [dependencies]
 reel-ui.workspace = true
+reel-engine = { path = "../reel-engine" }
 blake3 = { version = "=1.8.2", optional = true }
 reel-core = { path = "../reel-core" }
 reel-render = { path = "../reel-render" }
@@ -25,3 +26,8 @@ required-features = ["window"]
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "reel-session-host"
+path = "src/session_main.rs"
+required-features = ["window"]

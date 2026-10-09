@@ -1,0 +1,1193 @@
+//! The bounded Rust session host, design baseline 1.1, host interface 0.1.
+//!
+//! This owns ADV dialogue, copied choice rows, input permission and one terminal
+//! record. It does not run Aside or implement a VM adapter. A later adapter can
+//! associate an interaction with its existing executor wait, then claim the
+//! completion record. Such an adapter must retain its own executor roots and
+//! must never resume an owner for a `CleanupOnly` record. A claimed `Resume`
+//! record is not perpetual delivery permission: the adapter must revalidate
+//! session/epoch, owner liveness and its real executor wait at actual delivery.
+
+use std::ops::Range;
+
+pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
+use unicode_segmentation::UnicodeSegmentation;
+
+/// Fixed allocation and work bounds for a session. History is not evicted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionLimits {
+    pub max_owners: usize,
+    pub max_history_groups: usize,
+    pub max_history_text_bytes: usize,
+    pub max_lines_per_dialogue: usize,
+    pub max_choices: usize,
+    /// Sum of copied locale, role, content ID, text, key and label UTF-8 bytes.
+    pub max_interaction_text_bytes: usize,
+}
+
+impl Default for SessionLimits {
+    fn default() -> Self {
+        Self {
+            max_owners: 64,
+            max_history_groups: 256,
+            max_history_text_bytes: 1024 * 1024,
+            max_lines_per_dialogue: 16,
+            max_choices: 64,
+            max_interaction_text_bytes: 64 * 1024,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SessionIdentity {
+    pub session_id: SessionId,
+    pub epoch: Epoch,
+}
+
+/// A scoped owner allocated by this host. IDs are never reused in an epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OwnerHandle {
+    identity: SessionIdentity,
+    id: OwnerId,
+}
+
+impl OwnerHandle {
+    pub fn owner_id(self) -> OwnerId {
+        self.id
+    }
+
+    pub fn scope(self) -> Scope {
+        Scope::Session {
+            session_id: self.identity.session_id,
+            epoch: self.identity.epoch,
+            owner_id: self.id,
+        }
+    }
+}
+
+/// Opaque identity: a new generation for each successfully submitted interaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InteractionId {
+    identity: SessionIdentity,
+    generation: u64,
+}
+
+impl InteractionId {
+    pub fn session_id(self) -> SessionId {
+        self.identity.session_id
+    }
+
+    pub fn epoch(self) -> Epoch {
+        self.identity.epoch
+    }
+
+    pub fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DialogueLineId {
+    interaction_id: InteractionId,
+    index: u32,
+}
+
+impl DialogueLineId {
+    pub fn interaction_id(self) -> InteractionId {
+        self.interaction_id
+    }
+
+    pub fn index(self) -> u32 {
+        self.index
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HistoryGroupId(InteractionId);
+
+/// A choice row's stable identity combines its interaction with its business key.
+/// Only submitted rows create these IDs; they cannot be forged from an index.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ChoiceId {
+    interaction_id: InteractionId,
+    key: String,
+}
+
+impl ChoiceId {
+    pub fn interaction_id(&self) -> InteractionId {
+        self.interaction_id
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// Borrowed plain-text input. All fields are copied before the transaction commits.
+#[derive(Clone, Copy, Debug)]
+pub struct DialogueLineInput<'a> {
+    pub speaker_id: Option<&'a str>,
+    pub speaker_name: &'a str,
+    pub content_id: &'a str,
+    pub text: &'a str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChoiceInput<'a> {
+    pub key: &'a str,
+    pub label: &'a str,
+}
+
+/// Plain text preserves its stable content identity and original fallback.
+/// Parameters, rich text and locale resolution are outside this host version.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PlainTextContent {
+    id: String,
+    fallback: String,
+}
+
+impl PlainTextContent {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn fallback(&self) -> &str {
+        &self.fallback
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reveal {
+    pub revealed_count: usize,
+    pub total_count: usize,
+    /// UTF-8 range of the visible prefix in the fixed full text.
+    pub visible_bytes: Range<usize>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DialogueLine {
+    id: DialogueLineId,
+    speaker_id: Option<String>,
+    speaker_name: String,
+    content: PlainTextContent,
+    /// Every grapheme endpoint, including the initial zero boundary.
+    grapheme_boundaries: Vec<usize>,
+    revealed_count: usize,
+}
+
+impl DialogueLine {
+    pub fn id(&self) -> DialogueLineId {
+        self.id
+    }
+
+    pub fn speaker_id(&self) -> Option<&str> {
+        self.speaker_id.as_deref()
+    }
+
+    pub fn speaker_name(&self) -> &str {
+        &self.speaker_name
+    }
+
+    pub fn content(&self) -> &PlainTextContent {
+        &self.content
+    }
+
+    pub fn content_id(&self) -> &str {
+        self.content.id()
+    }
+
+    pub fn fallback_text(&self) -> &str {
+        self.content.fallback()
+    }
+
+    pub fn resolved_text(&self) -> &str {
+        // This version accepts only plain text, already resolved by the caller.
+        self.content.fallback()
+    }
+
+    pub fn reveal(&self) -> Reveal {
+        Reveal {
+            revealed_count: self.revealed_count,
+            total_count: self.grapheme_boundaries.len() - 1,
+            visible_bytes: 0..self.grapheme_boundaries[self.revealed_count],
+        }
+    }
+
+    pub fn grapheme_boundaries(&self) -> &[usize] {
+        &self.grapheme_boundaries
+    }
+
+    pub fn visible_text(&self) -> &str {
+        &self.resolved_text()[self.reveal().visible_bytes]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogueMode {
+    Adv,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DialogueInteraction {
+    id: InteractionId,
+    mode: DialogueMode,
+    current_line_ids: Vec<DialogueLineId>,
+    lines: Vec<DialogueLine>,
+    page_locale: String,
+}
+
+impl DialogueInteraction {
+    pub fn id(&self) -> InteractionId {
+        self.id
+    }
+
+    pub fn mode(&self) -> DialogueMode {
+        self.mode
+    }
+
+    pub fn current_line_ids(&self) -> &[DialogueLineId] {
+        &self.current_line_ids
+    }
+
+    pub fn lines(&self) -> &[DialogueLine] {
+        &self.lines
+    }
+
+    pub fn page_locale(&self) -> &str {
+        &self.page_locale
+    }
+
+    pub fn speaker_name(&self) -> &str {
+        self.lines.first().map_or("", DialogueLine::speaker_name)
+    }
+
+    pub fn text(&self) -> &str {
+        self.lines.first().map_or("", DialogueLine::resolved_text)
+    }
+
+    pub fn reveal(&self) -> Reveal {
+        self.lines.first().map_or(
+            Reveal {
+                revealed_count: 0,
+                total_count: 0,
+                visible_bytes: 0..0,
+            },
+            DialogueLine::reveal,
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChoiceOption {
+    id: ChoiceId,
+    label: String,
+}
+
+impl ChoiceOption {
+    pub fn id(&self) -> &ChoiceId {
+        &self.id
+    }
+
+    pub fn key(&self) -> &str {
+        self.id.key()
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChoiceInteraction {
+    id: InteractionId,
+    options: Vec<ChoiceOption>,
+}
+
+impl ChoiceInteraction {
+    pub fn id(&self) -> InteractionId {
+        self.id
+    }
+
+    pub fn options(&self) -> &[ChoiceOption] {
+        &self.options
+    }
+}
+
+/// History owns its submitted content independently of reveal and view lifetime.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HistoryLine {
+    id: DialogueLineId,
+    speaker_id: Option<String>,
+    speaker_name: String,
+    content: PlainTextContent,
+}
+
+impl HistoryLine {
+    pub fn id(&self) -> DialogueLineId {
+        self.id
+    }
+
+    pub fn speaker_id(&self) -> Option<&str> {
+        self.speaker_id.as_deref()
+    }
+
+    pub fn speaker_name(&self) -> &str {
+        &self.speaker_name
+    }
+
+    pub fn content(&self) -> &PlainTextContent {
+        &self.content
+    }
+
+    pub fn resolved_text(&self) -> &str {
+        self.content.fallback()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct HistoryGroup {
+    group_id: HistoryGroupId,
+    interaction_id: InteractionId,
+    lines: Vec<HistoryLine>,
+    page_locale: String,
+}
+
+impl HistoryGroup {
+    pub fn group_id(&self) -> HistoryGroupId {
+        self.group_id
+    }
+
+    pub fn interaction_id(&self) -> InteractionId {
+        self.interaction_id
+    }
+
+    pub fn lines(&self) -> &[HistoryLine] {
+        &self.lines
+    }
+
+    pub fn page_locale(&self) -> &str {
+        &self.page_locale
+    }
+
+    pub fn speaker_name(&self) -> &str {
+        self.lines.first().map_or("", HistoryLine::speaker_name)
+    }
+
+    pub fn text(&self) -> &str {
+        self.lines.first().map_or("", HistoryLine::resolved_text)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionStatus {
+    Running,
+    Ended,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InteractionView<'a> {
+    Dialogue(&'a DialogueInteraction),
+    Choice(&'a ChoiceInteraction),
+}
+
+impl InteractionView<'_> {
+    pub fn id(self) -> InteractionId {
+        match self {
+            Self::Dialogue(dialogue) => dialogue.id(),
+            Self::Choice(choice) => choice.id(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SessionView<'a> {
+    pub identity: SessionIdentity,
+    pub status: SessionStatus,
+    pub interaction: Option<InteractionView<'a>>,
+    pub history: &'a [HistoryGroup],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputSequence(pub u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputAction {
+    Advance(InteractionId),
+    Select(ChoiceId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputEvent {
+    pub source_owner: OwnerHandle,
+    pub sequence: InputSequence,
+    pub action: InputAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputOutcome {
+    Revealed,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputRejection {
+    SessionNotRunning,
+    ForeignOwner,
+    OwnerNotLive,
+    DuplicateOrOutOfOrder,
+    NoActiveInteraction,
+    StaleInteraction,
+    WrongInteractionKind,
+    UnknownChoice,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancellationReason {
+    OwnerRevoked,
+    SessionCancelled,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompletionOutcome {
+    Advanced,
+    Selected(String),
+    Cancelled(CancellationReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionDelivery {
+    /// The root owner was live at claim. Revalidate it and the real wait at delivery.
+    Resume,
+    /// Terminal cleanup evidence only. No task or owner may be resumed.
+    CleanupOnly,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Completion {
+    interaction_id: InteractionId,
+    owner: OwnerHandle,
+    outcome: CompletionOutcome,
+    delivery: CompletionDelivery,
+}
+
+impl Completion {
+    pub fn interaction_id(&self) -> InteractionId {
+        self.interaction_id
+    }
+
+    pub fn owner(&self) -> OwnerHandle {
+        self.owner
+    }
+
+    pub fn outcome(&self) -> &CompletionOutcome {
+        &self.outcome
+    }
+
+    pub fn delivery(&self) -> CompletionDelivery {
+        self.delivery
+    }
+
+    /// Move a selected business key to a future adapter without copying it.
+    pub fn into_outcome(self) -> CompletionOutcome {
+        self.outcome
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacityKind {
+    Owners,
+    HistoryGroups,
+    HistoryTextBytes,
+    DialogueLines,
+    Choices,
+    InteractionTextBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionError {
+    InvalidLimits,
+    SessionNotRunning,
+    ForeignOwner,
+    OwnerNotLive,
+    MainOwnerRequired,
+    InteractionActive,
+    CompletionPending,
+    NoActiveInteraction,
+    StaleInteraction,
+    WrongInteractionKind,
+    EmptyLocale,
+    EmptyContentId,
+    EmptyChoiceKey,
+    EmptyChoices,
+    DuplicateChoiceKey,
+    Capacity(CapacityKind),
+    AllocationFailed,
+    IdentityExhausted,
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "session host: {self:?}")
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+impl std::fmt::Display for InputRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "session input: {self:?}")
+    }
+}
+
+impl std::error::Error for InputRejection {}
+
+/// Requested storage capacities; this is not OS resident memory or allocator
+/// overhead. Includes both dialogue and its independent history copies, every
+/// string/vector backing buffer and the pending selected-key buffer. Does not
+/// include the in-struct `Session` or a completion already moved to its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageUsage {
+    pub allocated_capacity_bytes: usize,
+    pub reserved_owner_slots: usize,
+    pub reserved_history_slots: usize,
+    pub active_grapheme_boundary_slots: usize,
+    pub retained_history_text_bytes: usize,
+}
+
+#[derive(Debug)]
+struct OwnerEntry {
+    handle: OwnerHandle,
+    live: bool,
+}
+
+#[derive(Debug)]
+enum Interaction {
+    Dialogue(DialogueInteraction),
+    Choice(ChoiceInteraction),
+}
+
+impl Interaction {
+    fn id(&self) -> InteractionId {
+        match self {
+            Self::Dialogue(dialogue) => dialogue.id,
+            Self::Choice(choice) => choice.id,
+        }
+    }
+}
+
+/// One host owns exactly one main interaction, plus a reserved terminal slot.
+///
+/// Owner and history storage is preallocated at construction. An interaction
+/// prepares all copied data and grapheme boundaries before publication. Its
+/// completion is moved into a single in-struct slot without allocation; the
+/// next interaction cannot start until that slot is claimed.
+#[derive(Debug)]
+pub struct Session {
+    identity: SessionIdentity,
+    status: SessionStatus,
+    limits: SessionLimits,
+    owners: Vec<OwnerEntry>,
+    next_owner: Option<u64>,
+    next_interaction: Option<u64>,
+    last_input_sequence: Option<InputSequence>,
+    active: Option<Interaction>,
+    completion: Option<Completion>,
+    history: Vec<HistoryGroup>,
+    history_text_bytes: usize,
+}
+
+impl Session {
+    /// Construct a new identity namespace. The runtime must assign a fresh
+    /// `(SessionId, Epoch)` pair when replacing or restarting a session; reusing
+    /// that pair would deliberately make the old scoped identities equivalent.
+    pub fn new(
+        session_id: SessionId,
+        epoch: Epoch,
+        limits: SessionLimits,
+    ) -> Result<Self, SessionError> {
+        if limits.max_owners == 0 || limits.max_lines_per_dialogue > u32::MAX as usize {
+            return Err(SessionError::InvalidLimits);
+        }
+        let identity = SessionIdentity { session_id, epoch };
+        let root_owner = OwnerHandle {
+            identity,
+            id: OwnerId(1),
+        };
+        let mut owners = reserved_vec(limits.max_owners)?;
+        owners.push(OwnerEntry {
+            handle: root_owner,
+            live: true,
+        });
+        Ok(Self {
+            identity,
+            status: SessionStatus::Running,
+            limits,
+            owners,
+            next_owner: Some(2),
+            next_interaction: Some(1),
+            last_input_sequence: None,
+            active: None,
+            completion: None,
+            history: reserved_vec(limits.max_history_groups)?,
+            history_text_bytes: 0,
+        })
+    }
+
+    pub fn identity(&self) -> SessionIdentity {
+        self.identity
+    }
+
+    pub fn status(&self) -> SessionStatus {
+        self.status
+    }
+
+    pub fn limits(&self) -> SessionLimits {
+        self.limits
+    }
+
+    /// Inspect allocated backing capacity outside the input/render hot path.
+    pub fn storage_usage(&self) -> StorageUsage {
+        let mut bytes = vector_capacity_bytes(&self.owners) + vector_capacity_bytes(&self.history);
+        for history in &self.history {
+            bytes += vector_capacity_bytes(&history.lines) + history.page_locale.capacity();
+            for line in &history.lines {
+                bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
+                    + line.speaker_name.capacity()
+                    + line.content.id.capacity()
+                    + line.content.fallback.capacity();
+            }
+        }
+        let mut active_grapheme_boundary_slots = 0;
+        match &self.active {
+            Some(Interaction::Dialogue(dialogue)) => {
+                bytes += vector_capacity_bytes(&dialogue.lines)
+                    + vector_capacity_bytes(&dialogue.current_line_ids)
+                    + dialogue.page_locale.capacity();
+                for line in &dialogue.lines {
+                    bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
+                        + line.speaker_name.capacity()
+                        + line.content.id.capacity()
+                        + line.content.fallback.capacity()
+                        + vector_capacity_bytes(&line.grapheme_boundaries);
+                    active_grapheme_boundary_slots += line.grapheme_boundaries.capacity();
+                }
+            }
+            Some(Interaction::Choice(choice)) => {
+                bytes += vector_capacity_bytes(&choice.options);
+                for option in &choice.options {
+                    bytes += option.id.key.capacity() + option.label.capacity();
+                }
+            }
+            None => {}
+        }
+        if let Some(Completion {
+            outcome: CompletionOutcome::Selected(key),
+            ..
+        }) = &self.completion
+        {
+            bytes += key.capacity();
+        }
+        StorageUsage {
+            allocated_capacity_bytes: bytes,
+            reserved_owner_slots: self.owners.capacity(),
+            reserved_history_slots: self.history.capacity(),
+            active_grapheme_boundary_slots,
+            retained_history_text_bytes: self.history_text_bytes,
+        }
+    }
+
+    pub fn root_owner(&self) -> OwnerHandle {
+        self.owners[0].handle
+    }
+
+    pub fn is_owner_live(&self, owner: OwnerHandle) -> bool {
+        self.status == SessionStatus::Running
+            && owner.identity == self.identity
+            && self
+                .owners
+                .iter()
+                .any(|entry| entry.handle == owner && entry.live)
+    }
+
+    /// Register a UI node owner. Retired storage slots may be reused, IDs never are.
+    pub fn create_owner(&mut self) -> Result<OwnerHandle, SessionError> {
+        self.ensure_running()?;
+        let retired_index = self.owners.iter().position(|entry| !entry.live);
+        if retired_index.is_none() && self.owners.len() == self.limits.max_owners {
+            return Err(SessionError::Capacity(CapacityKind::Owners));
+        }
+        let id = self.next_owner.ok_or(SessionError::IdentityExhausted)?;
+        let handle = OwnerHandle {
+            identity: self.identity,
+            id: OwnerId(id),
+        };
+        let entry = OwnerEntry { handle, live: true };
+        if let Some(index) = retired_index {
+            self.owners[index] = entry;
+        } else {
+            self.owners.push(entry);
+        }
+        self.next_owner = id.checked_add(1);
+        Ok(handle)
+    }
+
+    /// Hard owner cancellation. A dead main owner produces cleanup, never a wakeup.
+    /// Calling this again for a retired owner is harmless and returns `false`.
+    pub fn revoke_owner(&mut self, owner: OwnerHandle) -> Result<bool, SessionError> {
+        if owner.identity != self.identity {
+            return Err(SessionError::ForeignOwner);
+        }
+        let Some(entry) = self.owners.iter_mut().find(|entry| entry.handle == owner) else {
+            return Ok(false);
+        };
+        if !entry.live {
+            return Ok(false);
+        }
+        entry.live = false;
+        if owner == self.root_owner() {
+            self.status = SessionStatus::Cancelled;
+            for entry in &mut self.owners {
+                entry.live = false;
+            }
+            self.cancel_interaction(CancellationReason::OwnerRevoked);
+        }
+        Ok(true)
+    }
+
+    pub fn view(&self) -> SessionView<'_> {
+        SessionView {
+            identity: self.identity,
+            status: self.status,
+            interaction: self.active.as_ref().map(|active| match active {
+                Interaction::Dialogue(dialogue) => InteractionView::Dialogue(dialogue),
+                Interaction::Choice(choice) => InteractionView::Choice(choice),
+            }),
+            history: &self.history,
+        }
+    }
+
+    /// Submit one ADV group and append history once, in the same transaction.
+    /// The locale tag and full plain text remain fixed for this interaction.
+    pub fn begin_say(
+        &mut self,
+        owner: OwnerHandle,
+        lines: &[DialogueLineInput<'_>],
+        page_locale: &str,
+    ) -> Result<InteractionId, SessionError> {
+        let id = self.prepare_interaction(owner)?;
+        if lines.len() > self.limits.max_lines_per_dialogue {
+            return Err(SessionError::Capacity(CapacityKind::DialogueLines));
+        }
+        if self.history.len() == self.limits.max_history_groups {
+            return Err(SessionError::Capacity(CapacityKind::HistoryGroups));
+        }
+        if page_locale.is_empty() {
+            return Err(SessionError::EmptyLocale);
+        }
+        let mut text_bytes = page_locale.len();
+        for line in lines {
+            if line.content_id.is_empty() {
+                return Err(SessionError::EmptyContentId);
+            }
+            for count in [
+                line.speaker_id.map_or(0, str::len),
+                line.speaker_name.len(),
+                line.content_id.len(),
+                line.text.len(),
+            ] {
+                text_bytes = add_text_bytes(text_bytes, count)?;
+            }
+        }
+        if text_bytes > self.limits.max_interaction_text_bytes {
+            return Err(SessionError::Capacity(CapacityKind::InteractionTextBytes));
+        }
+        let history_bytes = self
+            .history_text_bytes
+            .checked_add(text_bytes)
+            .ok_or(SessionError::Capacity(CapacityKind::HistoryTextBytes))?;
+        if history_bytes > self.limits.max_history_text_bytes {
+            return Err(SessionError::Capacity(CapacityKind::HistoryTextBytes));
+        }
+
+        let mut owned_lines = reserved_vec(lines.len())?;
+        let mut current_line_ids = reserved_vec(lines.len())?;
+        let mut history_lines = reserved_vec(lines.len())?;
+        for (index, line) in lines.iter().enumerate() {
+            let line_id = DialogueLineId {
+                interaction_id: id,
+                index: index as u32,
+            };
+            let total_count = line.text.graphemes(true).count();
+            let mut boundaries = reserved_vec(
+                total_count
+                    .checked_add(1)
+                    .ok_or(SessionError::AllocationFailed)?,
+            )?;
+            boundaries.push(0);
+            boundaries.extend(
+                line.text
+                    .grapheme_indices(true)
+                    .map(|(offset, grapheme)| offset + grapheme.len()),
+            );
+            owned_lines.push(DialogueLine {
+                id: line_id,
+                speaker_id: copy_optional_text(line.speaker_id)?,
+                speaker_name: copy_text(line.speaker_name)?,
+                content: copy_content(line)?,
+                grapheme_boundaries: boundaries,
+                revealed_count: 0,
+            });
+            current_line_ids.push(line_id);
+            history_lines.push(HistoryLine {
+                id: line_id,
+                speaker_id: copy_optional_text(line.speaker_id)?,
+                speaker_name: copy_text(line.speaker_name)?,
+                content: copy_content(line)?,
+            });
+        }
+        let dialogue = DialogueInteraction {
+            id,
+            mode: DialogueMode::Adv,
+            current_line_ids,
+            lines: owned_lines,
+            page_locale: copy_text(page_locale)?,
+        };
+        let history = HistoryGroup {
+            group_id: HistoryGroupId(id),
+            interaction_id: id,
+            lines: history_lines,
+            page_locale: copy_text(page_locale)?,
+        };
+        // Everything fallible is complete. Both publications use reserved storage.
+        self.active = Some(Interaction::Dialogue(dialogue));
+        self.history.push(history);
+        self.history_text_bytes = history_bytes;
+        self.next_interaction = id.generation.checked_add(1);
+        Ok(id)
+    }
+
+    /// Copy option rows, preserving order and returning their original business keys.
+    pub fn begin_choice(
+        &mut self,
+        owner: OwnerHandle,
+        options: &[ChoiceInput<'_>],
+    ) -> Result<InteractionId, SessionError> {
+        let id = self.prepare_interaction(owner)?;
+        if options.is_empty() {
+            return Err(SessionError::EmptyChoices);
+        }
+        if options.len() > self.limits.max_choices {
+            return Err(SessionError::Capacity(CapacityKind::Choices));
+        }
+        let mut text_bytes = 0;
+        for option in options {
+            if option.key.is_empty() {
+                return Err(SessionError::EmptyChoiceKey);
+            }
+            text_bytes = add_text_bytes(text_bytes, option.key.len())?;
+            text_bytes = add_text_bytes(text_bytes, option.label.len())?;
+        }
+        if text_bytes > self.limits.max_interaction_text_bytes {
+            return Err(SessionError::Capacity(CapacityKind::InteractionTextBytes));
+        }
+        // Only bounded accepted text reaches potentially linear string comparisons.
+        for (index, option) in options.iter().enumerate() {
+            if options[..index].iter().any(|other| other.key == option.key) {
+                return Err(SessionError::DuplicateChoiceKey);
+            }
+        }
+        let mut copied = reserved_vec(options.len())?;
+        for option in options {
+            copied.push(ChoiceOption {
+                id: ChoiceId {
+                    interaction_id: id,
+                    key: copy_text(option.key)?,
+                },
+                label: copy_text(option.label)?,
+            });
+        }
+        self.active = Some(Interaction::Choice(ChoiceInteraction {
+            id,
+            options: copied,
+        }));
+        self.next_interaction = id.generation.checked_add(1);
+        Ok(id)
+    }
+
+    /// Reveal a bounded number of logical graphemes on every current ADV line.
+    /// A timer callback must retain this interaction ID, so an old timer cannot
+    /// reveal a successor. Zero units and an already-full group are no-ops.
+    pub fn reveal_more(
+        &mut self,
+        owner: OwnerHandle,
+        id: InteractionId,
+        graphemes_per_line: usize,
+    ) -> Result<bool, SessionError> {
+        self.ensure_running()?;
+        if owner.identity != self.identity {
+            return Err(SessionError::ForeignOwner);
+        }
+        if !self.is_owner_live(owner) {
+            return Err(SessionError::OwnerNotLive);
+        }
+        if owner != self.root_owner() {
+            return Err(SessionError::MainOwnerRequired);
+        }
+        let active = self
+            .active
+            .as_mut()
+            .ok_or(SessionError::NoActiveInteraction)?;
+        if id != active.id() {
+            return Err(SessionError::StaleInteraction);
+        }
+        let Interaction::Dialogue(dialogue) = active else {
+            return Err(SessionError::WrongInteractionKind);
+        };
+        let mut changed = false;
+        for line in &mut dialogue.lines {
+            let total_count = line.grapheme_boundaries.len() - 1;
+            let next =
+                line.revealed_count + graphemes_per_line.min(total_count - line.revealed_count);
+            changed |= next != line.revealed_count;
+            line.revealed_count = next;
+        }
+        Ok(changed)
+    }
+
+    /// Process each live same-session sequence at most once, even if its action is
+    /// stale or invalid. Foreign/dead sources do not change the high-water mark.
+    pub fn handle_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
+        if self.status != SessionStatus::Running {
+            return Err(InputRejection::SessionNotRunning);
+        }
+        if event.source_owner.identity != self.identity {
+            return Err(InputRejection::ForeignOwner);
+        }
+        if !self.is_owner_live(event.source_owner) {
+            return Err(InputRejection::OwnerNotLive);
+        }
+        if self
+            .last_input_sequence
+            .is_some_and(|last| event.sequence <= last)
+        {
+            return Err(InputRejection::DuplicateOrOutOfOrder);
+        }
+        self.last_input_sequence = Some(event.sequence);
+        let active = self
+            .active
+            .as_mut()
+            .ok_or(InputRejection::NoActiveInteraction)?;
+        let target = match &event.action {
+            InputAction::Advance(id) => *id,
+            InputAction::Select(id) => id.interaction_id,
+        };
+        if target != active.id() {
+            return Err(InputRejection::StaleInteraction);
+        }
+        match (active, event.action) {
+            (Interaction::Dialogue(dialogue), InputAction::Advance(_)) => {
+                let mut revealed = false;
+                for line in &mut dialogue.lines {
+                    let total_count = line.grapheme_boundaries.len() - 1;
+                    if line.revealed_count < total_count {
+                        line.revealed_count = total_count;
+                        revealed = true;
+                    }
+                }
+                if revealed {
+                    return Ok(InputOutcome::Revealed);
+                }
+                self.complete(CompletionOutcome::Advanced);
+            }
+            (Interaction::Choice(choice), InputAction::Select(id)) => {
+                let selected = choice
+                    .options
+                    .iter_mut()
+                    .find(|option| option.id == id)
+                    .ok_or(InputRejection::UnknownChoice)?;
+                // Move the reserved key; no terminal allocation or duplicate copy.
+                let key = std::mem::take(&mut selected.id.key);
+                self.complete(CompletionOutcome::Selected(key));
+            }
+            _ => return Err(InputRejection::WrongInteractionKind),
+        }
+        Ok(InputOutcome::Completed)
+    }
+
+    /// Claim the single terminal record once. This does not execute or resume a task.
+    pub fn take_completion(&mut self) -> Option<Completion> {
+        self.completion.take()
+    }
+
+    /// End a successfully idle session after its last result has been claimed.
+    pub fn end(&mut self) -> Result<(), SessionError> {
+        self.ensure_running()?;
+        if self.active.is_some() {
+            return Err(SessionError::InteractionActive);
+        }
+        if self.completion.is_some() {
+            return Err(SessionError::CompletionPending);
+        }
+        self.status = SessionStatus::Ended;
+        for entry in &mut self.owners {
+            entry.live = false;
+        }
+        Ok(())
+    }
+
+    /// Hard session cancellation is idempotent and preserves already-written history.
+    pub fn cancel(&mut self) -> bool {
+        if self.status != SessionStatus::Running {
+            return false;
+        }
+        self.status = SessionStatus::Cancelled;
+        for entry in &mut self.owners {
+            entry.live = false;
+        }
+        self.cancel_interaction(CancellationReason::SessionCancelled);
+        true
+    }
+
+    fn ensure_running(&self) -> Result<(), SessionError> {
+        if self.status == SessionStatus::Running {
+            Ok(())
+        } else {
+            Err(SessionError::SessionNotRunning)
+        }
+    }
+
+    fn prepare_interaction(&self, owner: OwnerHandle) -> Result<InteractionId, SessionError> {
+        self.ensure_running()?;
+        if owner.identity != self.identity {
+            return Err(SessionError::ForeignOwner);
+        }
+        if !self.is_owner_live(owner) {
+            return Err(SessionError::OwnerNotLive);
+        }
+        if owner != self.root_owner() {
+            return Err(SessionError::MainOwnerRequired);
+        }
+        if self.active.is_some() {
+            return Err(SessionError::InteractionActive);
+        }
+        if self.completion.is_some() {
+            return Err(SessionError::CompletionPending);
+        }
+        Ok(InteractionId {
+            identity: self.identity,
+            generation: self
+                .next_interaction
+                .ok_or(SessionError::IdentityExhausted)?,
+        })
+    }
+
+    fn complete(&mut self, outcome: CompletionOutcome) {
+        let interaction = self
+            .active
+            .take()
+            .expect("active interaction reserves completion");
+        debug_assert!(self.completion.is_none());
+        self.completion = Some(Completion {
+            interaction_id: interaction.id(),
+            owner: self.root_owner(),
+            outcome,
+            delivery: CompletionDelivery::Resume,
+        });
+    }
+
+    fn cancel_interaction(&mut self, reason: CancellationReason) {
+        if let Some(interaction) = self.active.take() {
+            debug_assert!(self.completion.is_none());
+            self.completion = Some(Completion {
+                interaction_id: interaction.id(),
+                owner: self.root_owner(),
+                outcome: CompletionOutcome::Cancelled(reason),
+                delivery: CompletionDelivery::CleanupOnly,
+            });
+        } else if let Some(completion) = &mut self.completion {
+            // A result already committed stays the unique terminal result. Its
+            // dead owner makes it cleanup-only, regardless of the original result.
+            completion.delivery = CompletionDelivery::CleanupOnly;
+        }
+    }
+}
+
+fn reserved_vec<T>(capacity: usize) -> Result<Vec<T>, SessionError> {
+    let mut data = Vec::new();
+    data.try_reserve_exact(capacity)
+        .map_err(|_| SessionError::AllocationFailed)?;
+    Ok(data)
+}
+
+fn copy_text(text: &str) -> Result<String, SessionError> {
+    let mut copy = String::new();
+    copy.try_reserve_exact(text.len())
+        .map_err(|_| SessionError::AllocationFailed)?;
+    copy.push_str(text);
+    Ok(copy)
+}
+
+fn copy_optional_text(text: Option<&str>) -> Result<Option<String>, SessionError> {
+    text.map(copy_text).transpose()
+}
+
+fn copy_content(line: &DialogueLineInput<'_>) -> Result<PlainTextContent, SessionError> {
+    Ok(PlainTextContent {
+        id: copy_text(line.content_id)?,
+        fallback: copy_text(line.text)?,
+    })
+}
+
+fn add_text_bytes(current: usize, additional: usize) -> Result<usize, SessionError> {
+    current
+        .checked_add(additional)
+        .ok_or(SessionError::Capacity(CapacityKind::InteractionTextBytes))
+}
+
+fn vector_capacity_bytes<T>(data: &Vec<T>) -> usize {
+    data.capacity() * std::mem::size_of::<T>()
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn interaction_generation_exhaustion_never_wraps_or_changes_history() {
+        let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default()).unwrap();
+        let root = session.root_owner();
+        session.next_interaction = Some(u64::MAX);
+        let id = session.begin_say(root, &[], "en").unwrap();
+        assert_eq!(id.generation(), u64::MAX);
+        session
+            .handle_input(InputEvent {
+                source_owner: root,
+                sequence: InputSequence(1),
+                action: InputAction::Advance(id),
+            })
+            .unwrap();
+        session.take_completion().unwrap();
+        let before = session.storage_usage();
+        assert_eq!(
+            session.begin_say(root, &[], "en"),
+            Err(SessionError::IdentityExhausted)
+        );
+        assert_eq!(session.storage_usage(), before);
+        assert_eq!(session.view().history.len(), 1);
+        assert!(session.view().interaction.is_none());
+    }
+
+    #[test]
+    fn owner_generation_exhaustion_does_not_reuse_a_retired_id() {
+        let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default()).unwrap();
+        session.next_owner = Some(u64::MAX);
+        let last = session.create_owner().unwrap();
+        assert_eq!(last.owner_id(), OwnerId(u64::MAX));
+        session.revoke_owner(last).unwrap();
+        let before = session.storage_usage();
+        assert_eq!(session.create_owner(), Err(SessionError::IdentityExhausted));
+        assert_eq!(session.storage_usage(), before);
+        assert!(!session.is_owner_live(last));
+    }
+}

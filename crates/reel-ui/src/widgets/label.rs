@@ -11,7 +11,8 @@ use tracing::{Span, trace_span};
 use crate::core::{
     AccessCtx, ArcStr, BrushIndex, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
     PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, StyleSet, Update, UpdateCtx,
-    UsesProperty, Widget, WidgetId, WidgetMut, render_text, set_accesskit_brush_properties,
+    UsesProperty, Widget, WidgetId, WidgetMut, render_text, render_text_revealed,
+    set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Size};
@@ -43,6 +44,7 @@ pub struct Label {
     active_layout: usize,
 
     text: ArcStr,
+    visible_bytes: Option<std::ops::Range<usize>>,
     styles: StyleSet,
     text_alignment: TextAlign,
 
@@ -180,12 +182,29 @@ impl Label {
             cache_time: 0,
             active_layout: usize::MAX,
             text: text.into(),
+            visible_bytes: None,
             styles,
             text_alignment: TextAlign::Start,
             hint: true,
             accessibility_hidden: false,
             accessibility: LayoutAccessibility::default(),
         }
+    }
+
+    /// Paint only complete shaping clusters inside this UTF-8 range while laying
+    /// out the complete text.
+    ///
+    /// # Panics
+    /// Panics when the range is reversed, exceeds the text, or is not on UTF-8 boundaries.
+    pub fn with_visible_bytes(mut self, range: std::ops::Range<usize>) -> Self {
+        assert!(
+            range.start <= range.end
+                && range.end <= self.text.len()
+                && self.text.is_char_boundary(range.start)
+                && self.text.is_char_boundary(range.end)
+        );
+        self.visible_bytes = Some(range);
+        self
     }
 
     /// Sets a style property for the new label.
@@ -323,9 +342,28 @@ impl Label {
     /// Replaces the text of this widget.
     pub fn set_text(this: &mut WidgetMut<'_, Self>, new_text: impl Into<ArcStr>) {
         this.widget.text = new_text.into();
+        this.widget.visible_bytes = None;
 
         this.widget.clear_cache();
         this.ctx.request_layout();
+    }
+
+    /// Update reveal without clearing the full-text layout cache or requesting layout.
+    ///
+    /// # Panics
+    /// Panics when the range is reversed, exceeds the text, or is not on UTF-8 boundaries.
+    pub fn set_visible_bytes(this: &mut WidgetMut<'_, Self>, range: std::ops::Range<usize>) {
+        assert!(
+            range.start <= range.end
+                && range.end <= this.widget.text.len()
+                && this.widget.text.is_char_boundary(range.start)
+                && this.widget.text.is_char_boundary(range.end)
+        );
+        if this.widget.visible_bytes.as_ref() != Some(&range) {
+            this.widget.visible_bytes = Some(range);
+            this.ctx.request_paint_only();
+            this.ctx.request_accessibility_update();
+        }
     }
 
     /// The runtime equivalent of [`with_text_alignment`](Self::with_text_alignment).
@@ -616,13 +654,25 @@ impl Widget for Label {
 
         let layout = &self.layouts[self.active_layout];
 
-        render_text(
-            painter,
-            Affine::IDENTITY,
-            &layout.layout,
-            &[text_color.color.into()],
-            self.hint,
-        );
+        let brushes = [text_color.color.into()];
+        if let Some(range) = &self.visible_bytes {
+            render_text_revealed(
+                painter,
+                Affine::IDENTITY,
+                &layout.layout,
+                &brushes,
+                self.hint,
+                range.clone(),
+            );
+        } else {
+            render_text(
+                painter,
+                Affine::IDENTITY,
+                &layout.layout,
+                &brushes,
+                self.hint,
+            );
+        }
     }
 
     fn accessibility_role(&self) -> Role {
@@ -637,6 +687,11 @@ impl Widget for Label {
     ) {
         if self.accessibility_hidden {
             node.set_hidden();
+            return;
+        }
+
+        if let Some(range) = &self.visible_bytes {
+            node.set_label(&self.text[range.clone()]);
             return;
         }
 
@@ -673,3 +728,69 @@ impl Widget for Label {
 }
 
 // --- MARK: TESTS
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+    use crate::{
+        app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
+        core::{DefaultProperties, Widget},
+        dpi::PhysicalSize,
+        peniko::Blob,
+    };
+    use std::sync::Arc;
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT for a real cached Parley layout"]
+    fn reveal_changes_paint_without_rebuilding_full_text_layout() {
+        let font = Blob::from(
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+        );
+        let text = "office ffi e\u{301} stable line breaks for full text";
+        let label = Label::new(text).with_visible_bytes(0..0).prepare();
+        let id = label.id();
+        let mut root = RenderRoot::new(
+            label,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(200, 150),
+                scale_factor: 1.,
+                test_font: Some(font),
+            },
+        );
+        root.redraw();
+        let snapshot = |root: &RenderRoot| {
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            let active = label.active_layout;
+            let layout = &label.layouts[active].layout;
+            (
+                label.layouts.len(),
+                active,
+                label.cache_time,
+                layout.width(),
+                layout.height(),
+                layout
+                    .lines()
+                    .map(|line| line.text_range())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let before = snapshot(&root);
+        root.edit_widget(id, |mut widget| {
+            Label::set_visible_bytes(&mut widget.downcast::<Label>(), 0..text.len())
+        });
+        root.redraw();
+        assert_eq!(snapshot(&root), before);
+        assert_eq!(
+            root.get_widget(id)
+                .unwrap()
+                .downcast::<Label>()
+                .unwrap()
+                .text()
+                .as_ref(),
+            text
+        );
+    }
+}

@@ -10,11 +10,19 @@ use winit::{
 };
 type Error = Box<dyn std::error::Error>;
 pub fn run() -> Result<(), Error> {
+    run_mode(false)
+}
+/// Open the real Rust host/session diagnostic through the existing native renderer.
+pub fn run_session_host() -> Result<(), Error> {
+    run_mode(true)
+}
+fn run_mode(session_host: bool) -> Result<(), Error> {
     let event_loop = EventLoop::new()?;
     let mut app = App {
         state: None,
         error: None,
         next_generation: 1,
+        session_host,
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
@@ -26,6 +34,7 @@ struct App {
     state: Option<State>,
     error: Option<String>,
     next_generation: u64,
+    session_host: bool,
 }
 impl App {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl std::fmt::Display) {
@@ -42,7 +51,12 @@ impl ApplicationHandler for App {
             }
             return;
         }
-        match State::new(event_loop, self.next_generation) {
+        let created = if self.session_host {
+            State::new_session(event_loop, self.next_generation)
+        } else {
+            State::new(event_loop, self.next_generation)
+        };
+        match created {
             Ok(state) => {
                 state.window.request_redraw();
                 self.state = Some(state);
@@ -103,28 +117,25 @@ impl ApplicationHandler for App {
                     .bridge
                     .handle_text_event(TextEvent::WindowFocusChange(focus));
                 if !focus {
-                    state.pointer_event(PointerKind::Cancel);
+                    state.pointer_event(PointerKind::Cancel)
+                } else {
+                    Ok(())
                 }
-                Ok(())
             }
             WindowEvent::CursorMoved { position, .. } => {
                 state.pointer = reel_ui::dpi::PhysicalPosition::new(position.x, position.y);
-                state.pointer_event(PointerKind::Move);
-                Ok(())
+                state.pointer_event(PointerKind::Move)
             }
             WindowEvent::MouseInput {
                 state: button,
                 button: MouseButton::Left,
                 ..
-            } => {
-                state.pointer_event(if button == ElementState::Pressed {
-                    PointerKind::Down
-                } else {
-                    PointerKind::Up
-                });
-                Ok(())
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
+            } => state.pointer_event(if button == ElementState::Pressed {
+                PointerKind::Down
+            } else {
+                PointerKind::Up
+            }),
+            WindowEvent::MouseWheel { delta, .. } if state.session.is_none() => {
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 0.1,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y * 0.002,
@@ -156,6 +167,10 @@ impl ApplicationHandler for App {
                 event_loop.set_control_flow(ControlFlow::Wait);
                 return;
             }
+            if let Err(e) = state.tick_reveal() {
+                self.fail(event_loop, e);
+                return;
+            }
             if let Err(e) = state.poll_completions() {
                 if matches!(e, GpuError::DeviceLost) {
                     if let Err(e) = state.recover_device() {
@@ -170,13 +185,18 @@ impl ApplicationHandler for App {
                 state.window.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            if state.demand.has_work() || state.renderer.usage().targets != 0 {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + Duration::from_millis(8),
-                ));
-            } else {
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
+            let completion_deadline = (state.demand.has_work()
+                || state.renderer.usage().targets != 0)
+                .then(|| Instant::now() + Duration::from_millis(8));
+            let deadline = match (completion_deadline, state.reveal_deadline()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            event_loop.set_control_flow(
+                deadline
+                    .map(ControlFlow::WaitUntil)
+                    .unwrap_or(ControlFlow::Wait),
+            );
         }
     }
 }

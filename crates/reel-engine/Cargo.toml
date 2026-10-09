@@ -1,0 +1,16 @@
+[package]
+name = "reel-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+reel-core = { path = "../reel-core" }
+unicode-segmentation = "=1.13.3"
+
+[dev-dependencies]
+stats_alloc = "=0.1.10"
+
+[lints]
+workspace = true
