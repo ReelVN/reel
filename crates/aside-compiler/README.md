@@ -1,17 +1,20 @@
-# Aside source frontend
+# Aside source frontend and semantic analysis
 
 Design 1.1 / Issue #8. One Logos scanner and one recursive descent/Pratt parser
 produce a rowan lossless tree. Includes tuple/group, object/computed keys/spread,
 arrays, calls/named arguments/children, closures, all defined operators,
 functions/classes/imports, patterns, control flow, exceptions and interpolation.
-No lowering, binding/type checker, bytecode format or executor is implemented.
-Syntax success does not imply name/type/effect validity or a runnable game.
+L03 adds source-owned typed HIR, lexical/module binding, initialization-aware
+captures, conservative type/effect checks and injected module resolution.
+No lowering, bytecode format or executor is implemented. Syntax success does not
+imply analysis success, and analysis success does not imply execution.
 
 The workspace comes from D01 `c03226a`; only this directory and compiler lockfile
 entries change relative to that base. [INTERFACE.md](INTERFACE.md) records the
 approved public interface and the owner decisions resolving the original syntax
-gaps. Pattern OR binding consistency, names, effects and runtime type rules remain
-work for subsequent passes.
+gaps. [SEMANTICS.md](SEMANTICS.md) records HIR v1 and the analysis API on accepted
+L02 `a50f1f7`, using frozen language `999a8e3`. Only compiler/necessary lockfile
+changes are part of L03; author guides remain owned by the integration lead.
 
 ```rust
 use aside_compiler::{parse, lex, EntryPoint, ParseOptions, parse_with_options};
@@ -84,3 +87,35 @@ child process, protecting the test runner from a stack-overflow regression.
 The 100,000-name argument case preserves the first duplicate range using a
 HashMap rather than repeated linear search. Performance evidence is in
 [PERFORMANCE.md](PERFORMANCE.md).
+
+Semantic source use (host/module policy is explicit):
+
+```rust
+use aside_compiler::{analyze, AnalysisOptions, semantic::NoModules};
+let parsed = aside_compiler::parse("fn add(a: int, b: int = 1) -> int { a+b } add(2);")?;
+let result = analyze(&parsed, &AnalysisOptions::default(), &mut NoModules);
+let module = result.into_module().expect("source must have no unresolved diagnostics");
+assert_eq!(module.functions().len(), 1);
+# Ok::<(), aside_compiler::SourceTooLarge>(())
+```
+
+`AnalysisOptions` supplies versioned module identity, real execution context,
+explicit host registrations and lexical enclosing bindings for fragments.
+`ModuleResolver` accepts logical import requests; `MemoryResolver` and
+`analyze_project` support in-memory module fixtures and legal SCC initialization
+plans. No compiler filesystem policy or VM dependency is introduced.
+
+Source checks live in `tests/semantics.rs`, `semantic_modules.rs`,
+`semantic_guides.rs`, `semantic_quirrel.rs`, and `semantic_depth.rs`.
+All 24 bilingual scenes are analyzed with actual module/story contexts, explicit
+native symbols, and source enclosing bindings (including capture of story `view`).
+Accepted T01 fixture bytes/maps/license are immutable and locally hash-checked:
+
+```sh
+python3 crates/aside-compiler/tests/fixtures/quirrel/check_integrity.py
+cargo test -p aside-compiler --test semantic_quirrel -- --nocapture
+```
+
+Those samples report parse, analysis and `execution=waiting_runtime` separately.
+[SEMANTIC_PERFORMANCE.md](SEMANTIC_PERFORMANCE.md) records large-module timing,
+allocation/retained storage, named-signature scaling and bounded diagnostics.

@@ -1213,7 +1213,7 @@ impl Parser<'_> {
     }
     fn type_atom(&mut self, stop_union: bool) {
         match self.peek() {
-            K::Ident | K::Null => {
+            K::Ident | K::Null | K::Class => {
                 self.start(K::TypeName);
                 self.bump();
                 while self.eat(K::ColonColon) && !self.halted {

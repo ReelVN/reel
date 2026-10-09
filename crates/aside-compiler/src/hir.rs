@@ -1,0 +1,575 @@
+//! L03 HIR v1: source-owned, arena-based semantic input to future lowering.
+//! This module does not define bytecode, VM handles, or executed behavior.
+use crate::{SyntaxKind, TextRange};
+use std::{ops::Range, sync::Arc};
+
+macro_rules! id {
+    ($($name:ident),*) => {$ (
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub struct $name(pub u32);
+    )*};
+}
+id!(NodeId, NameId, ScopeId, SymbolId, FunctionId, TypeId);
+
+/// Every non-error CST production has a semantic production. Significant tokens
+/// remain ordered with nodes, preserving operators, field names and punctuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirKind {
+    Module,
+    Block,
+    Let,
+    Function,
+    Class,
+    Import,
+    ImportPath,
+    ImportGroup,
+    Parameters,
+    Parameter,
+    NamedType,
+    TupleType,
+    UnionType,
+    FunctionType,
+    GroupType,
+    ExpressionStatement,
+    Return,
+    Break,
+    Continue,
+    Throw,
+    Yield,
+    Name,
+    Literal,
+    String,
+    Interpolation,
+    Tuple,
+    Group,
+    Array,
+    Object,
+    ObjectField,
+    Spread,
+    Prefix,
+    Binary,
+    Range,
+    Assignment,
+    Member,
+    Index,
+    Call,
+    Arguments,
+    Argument,
+    NamedArgument,
+    Children,
+    Closure,
+    If,
+    While,
+    For,
+    Loop,
+    Label,
+    Match,
+    MatchArm,
+    Try,
+    Catch,
+    Finally,
+    NamePattern,
+    WildcardPattern,
+    LiteralPattern,
+    TuplePattern,
+    GroupPattern,
+    ArrayPattern,
+    ObjectPattern,
+    PatternField,
+    RestPattern,
+    OrPattern,
+    TypePattern,
+    ModifiedDeclaration,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HirToken {
+    pub kind: SyntaxKind,
+    pub span: TextRange,
+    /// Identifiers are interned once per module. Other text is a source slice.
+    pub name: Option<NameId>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirElement {
+    Node(NodeId),
+    Token(HirToken),
+}
+#[derive(Debug, Clone)]
+pub struct HirNode {
+    pub kind: HirKind,
+    pub span: TextRange,
+    pub parent: Option<NodeId>,
+    pub elements: Range<u32>,
+    pub form: Form,
+}
+#[derive(Debug, Clone)]
+pub struct Hir {
+    pub source: Arc<str>,
+    pub nodes: Vec<HirNode>,
+    pub elements: Vec<HirElement>,
+    pub names: Vec<String>,
+}
+impl Hir {
+    pub fn node(&self, id: NodeId) -> &HirNode {
+        &self.nodes[id.0 as usize]
+    }
+    pub fn elements(&self, id: NodeId) -> &[HirElement] {
+        let r = &self.node(id).elements;
+        &self.elements[r.start as usize..r.end as usize]
+    }
+    pub fn children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.elements(id).iter().filter_map(|e| match e {
+            HirElement::Node(n) => Some(*n),
+            _ => None,
+        })
+    }
+    pub fn tokens(&self, id: NodeId) -> impl Iterator<Item = HirToken> + '_ {
+        self.elements(id).iter().filter_map(|e| match e {
+            HirElement::Token(t) => Some(*t),
+            _ => None,
+        })
+    }
+    pub fn name(&self, id: NameId) -> &str {
+        &self.names[id.0 as usize]
+    }
+    pub fn text(&self, span: TextRange) -> &str {
+        &self.source[crate::byte_range(span)]
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Type {
+    Any,
+    Closure,
+    Null,
+    Bool,
+    Int,
+    Float,
+    String,
+    Array,
+    Table,
+    Future,
+    Generator,
+    Tuple(Vec<TypeId>),
+    Union(Vec<TypeId>),
+    Callable(Vec<TypeId>, TypeId),
+    Function(FunctionId),
+    BoundMethod(FunctionId),
+    Class(NodeId),
+    Instance(NodeId),
+    Named(NameId),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Local,
+    Parameter,
+    Function,
+    Class,
+    Import,
+    Host,
+    Catch,
+    Receiver,
+    Super,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    Local,
+    Module,
+    ValueCapture,
+    SharedCell,
+}
+/// SharedCell carries this state on the cell itself, including read-only cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Initialization {
+    ScopeEntry,
+    Declaration,
+    Parameter,
+    External,
+}
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub name: NameId,
+    pub declaration: TextRange,
+    pub scope: ScopeId,
+    pub owner: Option<FunctionId>,
+    pub kind: SymbolKind,
+    pub mutable: bool,
+    pub ty: TypeId,
+    pub storage: Storage,
+    pub initialization: Initialization,
+    /// Allocate this binding (and any cell) afresh on each loop iteration.
+    pub per_iteration: bool,
+}
+#[derive(Debug, Clone)]
+pub struct Scope {
+    pub parent: Option<ScopeId>,
+    pub owner: Option<FunctionId>,
+    pub span: TextRange,
+    pub symbols: Vec<SymbolId>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionKind {
+    Plain,
+    Async,
+    Generator,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Receiver {
+    None,
+    ExplicitSelf,
+    Static,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionRole {
+    Body,
+    FieldInitializer,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMode {
+    Value,
+    Cell,
+}
+#[derive(Debug, Clone)]
+pub struct Capture {
+    pub symbol: SymbolId,
+    pub mode: CaptureMode,
+    pub first_use: TextRange,
+    /// Defaults are evaluated at call time using this definition environment.
+    pub used_in_default: bool,
+}
+#[derive(Debug, Clone)]
+pub struct Parameter {
+    pub symbol: SymbolId,
+    pub annotation: Option<TypeId>,
+    pub default: Option<NodeId>,
+    pub rest: bool,
+}
+/// Declared restrictions, independent of inferred possibility summaries and
+/// caller constraints. Runtime combines these with the effective calling context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeclaredContext {
+    pub no_wait: bool,
+    pub init: bool,
+    pub derived: bool,
+}
+impl DeclaredContext {
+    pub fn effect(self) -> crate::semantic::CallEffect {
+        if self.no_wait {
+            crate::semantic::CallEffect::NoWait
+        } else {
+            crate::semantic::CallEffect::MayWait
+        }
+    }
+}
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub node: NodeId,
+    pub parent: Option<FunctionId>,
+    pub kind: FunctionKind,
+    pub receiver: Receiver,
+    pub role: FunctionRole,
+    pub declared_context: DeclaredContext,
+    pub lexical_class: Option<NodeId>,
+    pub parameters: Vec<Parameter>,
+    pub return_type: TypeId,
+    pub body: NodeId,
+    pub captures: Vec<Capture>,
+    pub known_wait: bool,
+    pub dynamic_calls: bool,
+}
+/// Facts are indexed by NodeId. Unknown facts keep runtime checks; they are not errors.
+#[derive(Debug, Clone)]
+pub struct NodeFacts {
+    pub ty: TypeId,
+    pub symbol: Option<SymbolId>,
+    pub function: Option<FunctionId>,
+    pub scope: Option<ScopeId>,
+    pub checks: RuntimeChecks,
+    pub control: Option<ControlTransfer>,
+    pub intrinsic: Option<crate::semantic::Intrinsic>,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeChecks(pub u16);
+impl RuntimeChecks {
+    pub const TYPE: u16 = 1;
+    pub const INITIALIZED: u16 = 2;
+    pub const CALL: u16 = 4;
+    pub const NO_WAIT: u16 = 8;
+    pub const PATTERN: u16 = 16;
+    pub const MUTABILITY: u16 = 32;
+    pub const RECEIVER: u16 = 64;
+    pub const DERIVED_SAFE: u16 = 128;
+    pub const INIT_SAFE: u16 = 256;
+    pub const PROPERTY: u16 = 512;
+    pub const WRITE_EFFECT: u16 = 1024;
+}
+#[derive(Debug, Clone)]
+pub struct ControlTransfer {
+    pub target: Option<NodeId>,
+    /// Innermost to outermost. Throw uses dynamic handler selection at runtime.
+    pub finally: Vec<NodeId>,
+}
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub node: NodeId,
+    pub module: String,
+    pub version: String,
+    pub names: Vec<(NameId, SymbolId)>,
+}
+#[derive(Debug, Clone, Default)]
+pub struct AnalysisStats {
+    pub nodes: usize,
+    pub symbols: usize,
+    pub captures: usize,
+    pub work_units: usize,
+    pub retained_bytes: usize,
+    pub symbol_bytes: usize,
+    pub capture_bytes: usize,
+    pub imports: usize,
+    pub signature_builds: usize,
+    pub signature_parameters: usize,
+}
+/// Created only by successful analysis; future lowering must require this wrapper.
+#[derive(Debug, Clone)]
+pub struct AnalyzedModule {
+    pub(crate) entry_context: crate::semantic::AnalysisContext,
+    pub(crate) canonical_path: String,
+    pub(crate) version: String,
+    pub(crate) hir: Hir,
+    pub(crate) facts: Vec<NodeFacts>,
+    pub(crate) types: Vec<Type>,
+    pub(crate) scopes: Vec<Scope>,
+    pub(crate) symbols: Vec<Symbol>,
+    pub(crate) functions: Vec<Function>,
+    pub(crate) imports: Vec<Import>,
+    pub(crate) exports: Vec<SymbolId>,
+    pub(crate) stats: AnalysisStats,
+    pub(crate) external: Vec<ExternalBinding>,
+}
+/// A local slot is stable within the fixed module content version, rather than
+/// a process pointer or a globally meaningful arena index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalSymbolRef<'a> {
+    pub module: &'a str,
+    pub version: &'a str,
+    pub slot: SymbolId,
+}
+impl AnalyzedModule {
+    pub fn entry_context(&self) -> crate::semantic::AnalysisContext {
+        self.entry_context
+    }
+    pub fn symbol_reference(&self, slot: SymbolId) -> Option<LocalSymbolRef<'_>> {
+        self.symbols.get(slot.0 as usize)?;
+        Some(LocalSymbolRef {
+            module: &self.canonical_path,
+            version: &self.version,
+            slot,
+        })
+    }
+
+    pub fn canonical_path(&self) -> &str {
+        &self.canonical_path
+    }
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    pub fn hir(&self) -> &Hir {
+        &self.hir
+    }
+    pub fn facts(&self) -> &[NodeFacts] {
+        &self.facts
+    }
+    pub fn types(&self) -> &[Type] {
+        &self.types
+    }
+    pub fn scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
+    pub fn symbols(&self) -> &[Symbol] {
+        &self.symbols
+    }
+    pub fn functions(&self) -> &[Function] {
+        &self.functions
+    }
+    pub fn imports(&self) -> &[Import] {
+        &self.imports
+    }
+    pub fn exports(&self) -> &[SymbolId] {
+        &self.exports
+    }
+    pub fn stats(&self) -> &AnalysisStats {
+        &self.stats
+    }
+    pub fn external_bindings(&self) -> &[ExternalBinding] {
+        &self.external
+    }
+}
+
+/// Full resolver signature survives analysis, including named-call semantics.
+#[derive(Debug, Clone)]
+pub struct ExternalBinding {
+    pub symbol: Option<SymbolId>,
+    pub node: Option<NodeId>,
+    pub descriptor: Arc<crate::semantic::ExternalSymbol>,
+}
+
+/// Grammar roles resolved once during projection. Sequence items use the
+/// existing packed children edges; no second per-node child allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKey {
+    Name(HirToken),
+    Expression(NodeId),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    Sequence,
+    Block {
+        tail: Option<NodeId>,
+    },
+    Binding {
+        pattern: NodeId,
+        annotation: Option<NodeId>,
+        initializer: Option<NodeId>,
+        mutable: bool,
+    },
+    Function {
+        name: Option<HirToken>,
+        parameters: Option<NodeId>,
+        result: Option<NodeId>,
+        body: NodeId,
+        kind: FunctionKind,
+    },
+    Class {
+        name: Option<HirToken>,
+        base: Option<NodeId>,
+    },
+    Parameter {
+        name: HirToken,
+        annotation: Option<NodeId>,
+        default: Option<NodeId>,
+        mutable: bool,
+        rest: bool,
+    },
+    Import {
+        path: NodeId,
+    },
+    ImportPath {
+        alias: Option<HirToken>,
+        group: Option<NodeId>,
+        wildcard: bool,
+    },
+    TypeName,
+    FunctionType {
+        result: NodeId,
+    },
+    Single {
+        child: NodeId,
+    },
+    Statement {
+        expression: NodeId,
+        terminated: bool,
+    },
+    Transfer {
+        value: Option<NodeId>,
+        label: Option<HirToken>,
+    },
+    Name {
+        name: HirToken,
+    },
+    Wildcard,
+    Literal {
+        token: HirToken,
+    },
+    LiteralPattern {
+        value: NodeId,
+        negative: bool,
+    },
+    Field {
+        key: FieldKey,
+        value: NodeId,
+    },
+    Spread {
+        value: NodeId,
+    },
+    Unary {
+        operator: HirToken,
+        value: NodeId,
+    },
+    Binary {
+        left: NodeId,
+        operator: HirToken,
+        right: NodeId,
+    },
+    Member {
+        object: NodeId,
+        key: HirToken,
+        optional: bool,
+        chain: bool,
+    },
+    Index {
+        object: NodeId,
+        index: NodeId,
+        optional: bool,
+        chain: bool,
+    },
+    Call {
+        callee: NodeId,
+        arguments: Option<NodeId>,
+        children: Option<NodeId>,
+        optional: bool,
+        chain: bool,
+    },
+    Argument {
+        name: Option<HirToken>,
+        value: NodeId,
+    },
+    Condition {
+        pattern: Option<NodeId>,
+        condition: NodeId,
+        body: NodeId,
+        otherwise: Option<NodeId>,
+    },
+    For {
+        pattern: NodeId,
+        source: NodeId,
+        body: NodeId,
+        asynchronous: bool,
+    },
+    Label {
+        name: HirToken,
+        body: NodeId,
+    },
+    Match {
+        value: NodeId,
+    },
+    MatchArm {
+        pattern: NodeId,
+        guard: Option<NodeId>,
+        body: NodeId,
+    },
+    Try {
+        body: NodeId,
+        catch: Option<NodeId>,
+        finally: Option<NodeId>,
+    },
+    Catch {
+        name: HirToken,
+        body: NodeId,
+    },
+    PatternField {
+        key: HirToken,
+        pattern: Option<NodeId>,
+        default: Option<NodeId>,
+    },
+    Or {
+        left: NodeId,
+        right: NodeId,
+    },
+    TypePattern {
+        pattern: NodeId,
+        annotation: NodeId,
+    },
+    Modified {
+        declaration: NodeId,
+        public: bool,
+        static_member: bool,
+    },
+}

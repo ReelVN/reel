@@ -29,6 +29,21 @@ pub enum DiagnosticCode {
     DuplicateArgument,
     ChildrenConflict,
     BudgetExceeded,
+    InvalidHir,
+    UnknownName,
+    DuplicateBinding,
+    UninitializedBinding,
+    ImmutableBinding,
+    PatternBindings,
+    InvalidControl,
+    TypeMismatch,
+    InvalidReceiver,
+    InvalidDefault,
+    NoWait,
+    InvalidCall,
+    ModuleResolution,
+    InvalidType,
+    InvalidEffect,
 }
 impl DiagnosticCode {
     pub fn as_str(self) -> &'static str {
@@ -58,6 +73,21 @@ impl DiagnosticCode {
             Self::DuplicateArgument => "ASP013",
             Self::ChildrenConflict => "ASP014",
             Self::BudgetExceeded => "ASR001",
+            Self::InvalidHir => "ASS001",
+            Self::UnknownName => "ASS002",
+            Self::DuplicateBinding => "ASS003",
+            Self::UninitializedBinding => "ASS004",
+            Self::ImmutableBinding => "ASS005",
+            Self::PatternBindings => "ASS006",
+            Self::InvalidControl => "ASS007",
+            Self::TypeMismatch => "ASS008",
+            Self::InvalidReceiver => "ASS009",
+            Self::InvalidDefault => "ASS010",
+            Self::NoWait => "ASS011",
+            Self::InvalidCall => "ASS012",
+            Self::ModuleResolution => "ASS013",
+            Self::InvalidType => "ASS014",
+            Self::InvalidEffect => "ASS015",
         }
     }
 }

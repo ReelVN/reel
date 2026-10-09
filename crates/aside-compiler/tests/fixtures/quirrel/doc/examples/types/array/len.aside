@@ -1,0 +1,8 @@
+// Source: third_party/quirrel/doc/examples/types/array/len.nut
+// Upstream: 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: third_party/quirrel/COPYRIGHT
+// Reviewed syntax conversion. Aside execution: waiting_runtime.
+println("[].len() =", [].len());
+println("[1, 2, 3].len() =", [1, 2, 3].len());
+let a = [1, 2, 3];
+a.append(4);
+println("a.len() =", a.len());
