@@ -1,5 +1,52 @@
 use aside_vm::*;
 
+#[test]
+fn single_root_gc_and_owner_scans_charge_used_high_water_and_holes() {
+    for max_roots in [8, 4096] {
+        let mut h = Heap::new(
+            SessionEpoch(1),
+            HeapLimits {
+                max_roots,
+                ..HeapLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(h.root_slots(), 0);
+        let a = h
+            .add_root(RootOwner(1), RootKind::Host, Value::int(1))
+            .unwrap();
+        let b = h
+            .add_root(RootOwner(2), RootKind::Host, Value::int(2))
+            .unwrap();
+        let c = h
+            .add_root(RootOwner(1), RootKind::Host, Value::int(3))
+            .unwrap();
+        h.release_root(c).unwrap();
+        assert_eq!(h.root_slots(), 4); // sentinel + three used positions, one hole
+        h.begin_collection().unwrap();
+        let mut scanned = 0;
+        while h.phase() != GcPhase::Idle {
+            scanned += h
+                .gc_step(GcBudget {
+                    units: 1,
+                    ..GcBudget::default()
+                })
+                .unwrap()
+                .single_root_slots;
+        }
+        assert_eq!(scanned, 4);
+        let mut cursor = 0;
+        let mut released = 0;
+        while cursor < h.root_slots() {
+            released += h.release_owner_step(RootOwner(1), &mut cursor, 1);
+        }
+        assert_eq!((cursor, released), (4, 1));
+        assert!(h.root_value(a).is_err());
+        assert_eq!(h.root_value(b).unwrap().as_int(), Some(2));
+        assert_eq!(h.root_slots(), 4); // released positions remain scan holes
+    }
+}
+
 fn heap(objects: u32) -> Heap {
     Heap::new(
         SessionEpoch(7),
