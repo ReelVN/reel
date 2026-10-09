@@ -90,6 +90,8 @@ pub struct Gpu {
     pub(super) limits: GpuLimits,
     lost: Arc<AtomicBool>,
     fault: Arc<Mutex<Option<Arc<wgpu::Error>>>>,
+    #[cfg(test)]
+    pub(super) upload_creations: super::resources::UploadCreations,
 }
 impl Gpu {
     pub fn generation(&self) -> DeviceGeneration {
@@ -146,6 +148,8 @@ impl Gpu {
             limits,
             lost,
             fault,
+            #[cfg(test)]
+            upload_creations: Default::default(),
         })
     }
     pub fn check(&self) -> Result<(), GpuError> {

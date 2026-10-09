@@ -43,8 +43,18 @@ impl Context<'_> {
             [1.; 4],
             at,
         )?;
-        let white = self.upload([1, 1], &[1.; 4])?;
+        let white = self.white()?;
         self.paint(target, &mesh, &white.view)
+    }
+    fn white(&mut self) -> Result<Arc<resources::Image>, GpuError> {
+        if let Some(image) = &self.white {
+            return Ok(image.clone());
+        }
+        // The image never escapes this Context. Its upload is encoded here;
+        // the existing ticket follows Prepared through observed completion.
+        let image = Arc::new(self.upload([1, 1], &[1.; 4])?);
+        self.white = Some(image.clone());
+        Ok(image)
     }
     fn upload(&mut self, size: [u32; 2], pixels: &[f32]) -> Result<resources::Image, GpuError> {
         let available = self
@@ -126,11 +136,7 @@ impl Context<'_> {
                 let rgba = c.components.map(f64::from);
                 let color =
                     crate::color::linear_premultiplied(rgba).map(|v| v as f32 * composite.alpha);
-                (
-                    Arc::new(self.upload([1, 1], &[1.; 4])?),
-                    Affine::IDENTITY,
-                    color,
-                )
+                (self.white()?, Affine::IDENTITY, color)
             }
             Brush::Image(brush) => {
                 if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium {

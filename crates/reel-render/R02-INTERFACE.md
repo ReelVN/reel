@@ -1,6 +1,6 @@
 # R02 device contract (implemented portable device profile)
 
-Scope: `reel-render` optional wgpu adapter and `reel-player` assembly; stage/core
+Scope: `reel-render` optional wgpu adapter and `reel-player` assembly; UI/core
 remain portable. Started from R01 411cc7531431f35fbd43a614476815e22cd58f21;
 synchronized the exact accepted painter work-error repair
 9578cb3991d62a5dffb6a8580a1a6d1a850230cc. No VM execution.
@@ -179,3 +179,26 @@ is not a WebGPU Promise guarantee: an unresolved pop causes a permanent Device
 refusal, drops the attempted Pipelines and publishes no slot. Supporting a backend
 that requires asynchronous confirmation needs a separately agreed asynchronous
 preparation contract; it is not implemented by blocking `prepare(&self)`.
+
+## Preparation-local white texture (Issue #36 / R04)
+
+Each prepare/crossfade owns one Context with an initially empty white-image
+slot. Its first solid fill/stroke or geometric clip reserves the existing
+resource upload ticket and encodes one RGBA16Float 1x1 white upload before its
+draw in the same encoder. All subsequent solid/clip uses, including recursive
+masks and both crossfade inputs, share that image within this Context only.
+An unused slot creates/uploads nothing. No slot or image is stored in Renderer,
+Gpu or Pipelines, and a later transaction must reserve/upload independently,
+even after an earlier preparation was dropped without submission.
+
+The existing upload_cost([1,1]) remains 536 resource bytes: 16 bytes of f32
+input, 256 bytes each of CPU/GPU padded staging, and 8 bytes of texture extent.
+This conservative application charge is held once per using transaction, not
+once per draw; target/transient quotas and every other resource path are
+unchanged. It does not measure driver allocator granularity. Publication follows
+successful upload encoding. Refusal/cancellation drops the Context/encoder and
+all its reservations. Prepared carries the ticket through submit into Inflight;
+only observed completion (or Renderer teardown after completion/device loss)
+releases residency. The encoder/queue own the actual wgpu resource references
+after the Context slot drops. Device/foreign-preparation checks and R03 pipeline
+scope confirmation remain unchanged. No quality, public API or atlas change.
