@@ -2,6 +2,14 @@
 use super::*;
 
 impl Vm {
+    // Call only after the current stage's layout query work has been admitted.
+    fn native_storage(&self, native: NativeId, parameter: u32) -> Result<BindingStorage, VmError> {
+        #[cfg(test)]
+        self.work_probe
+            .native_layout_queries
+            .set(self.work_probe.native_layout_queries.get() + 1);
+        Ok(self.program.native_parameter_storage(native, parameter)?)
+    }
     pub(super) fn parameter_value(
         &mut self,
         contract: CellContract,
@@ -72,7 +80,7 @@ impl Vm {
                 if parameter == count + u32::from(sig.rest.is_some()) {
                     n.phase = NativePhase::Resume(NativeInput::Entry);
                 } else if self.slots.read(at(n.bound, parameter)).is_ok() {
-                    let storage = self.program.native_parameter_storage(n.native, parameter)?;
+                    let storage = self.native_storage(n.native, parameter)?;
                     n.phase = NativePhase::Parameter { parameter, storage };
                 } else if let Some(default) = sig
                     .parameters
@@ -155,7 +163,7 @@ impl Vm {
                         .or(sig.rest.as_ref())
                         .unwrap();
                     let ty = p.ty;
-                    let storage = self.program.native_parameter_storage(n.native, index)?;
+                    let storage = self.native_storage(n.native, index)?;
                     let binding = self.value(n.bindings.unwrap(), index)?;
                     let value = if matches!(storage, BindingStorage::Cell(_)) {
                         self.heap.cell_read(binding)?

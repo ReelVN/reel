@@ -14,6 +14,8 @@ mod api;
 mod cancellation_tests;
 mod faults;
 mod parameters;
+#[cfg(test)]
+mod review_tests;
 pub use api::*;
 
 #[derive(Clone, Copy)]
@@ -137,6 +139,9 @@ struct ScriptFrame {
     argument_count: u32,
     closure: bool,
     shared_parameters: bool,
+    // Shared prefix Cells belong to the binder that prepared them, while this
+    // frame's code, captures, locals and diagnostics retain its lexical module.
+    parameter_module: ModuleInstanceId,
     effects: Effects,
     context: ContextFlags,
     owner: RootOwner,
@@ -339,6 +344,7 @@ pub struct Vm {
     active_slot: Option<usize>,
     scratch: ChargedVec<Value>,
     text_scratch: ChargedVec<u8>,
+    native_cells: ChargedVec<bool>,
     globals: RootRangeToken,
     constants: RootRangeToken,
     heap: Heap,
@@ -350,6 +356,14 @@ pub struct Vm {
     native_null_publications: u64,
     slices: u64,
     last_usage: SliceUsage,
+    #[cfg(test)]
+    work_probe: WorkProbe,
+}
+#[cfg(test)]
+#[derive(Default)]
+struct WorkProbe {
+    release_catch_checks: std::cell::Cell<u64>,
+    native_layout_queries: std::cell::Cell<u64>,
 }
 impl Vm {
     pub fn load(
@@ -453,6 +467,14 @@ impl Vm {
             - std::mem::size_of::<Heap>()
             - std::mem::size_of::<FrameSlots>();
         let control_charge = Reservation::new(&usage, control_bytes as u64)?;
+        // B01's shared-signature query traverses a binary table. Do it once at
+        // load, with owned capacity charged, so slice admission is O(1).
+        let mut native_cells = ChargedVec::new(&usage, p.natives.len())?;
+        for index in 0..p.natives.len() {
+            native_cells
+                .data
+                .push(program.native_parameters_need_cells(NativeId(index as u32))?);
+        }
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
         let mut tasks = ChargedVec::new(&usage, limits.max_tasks as usize)?;
         for _ in 0..limits.max_tasks {
@@ -535,6 +557,7 @@ impl Vm {
             active_slot: None,
             scratch,
             text_scratch,
+            native_cells,
 
             globals,
             constants,
@@ -547,6 +570,8 @@ impl Vm {
             native_null_publications: 0,
             slices: 0,
             last_usage: SliceUsage::default(),
+            #[cfg(test)]
+            work_probe: WorkProbe::default(),
         })
     }
     pub fn program(&self) -> &VerifiedProgram {
@@ -740,7 +765,7 @@ impl Vm {
     fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
         let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
-        let cells = self.program.native_parameters_need_cells(native).unwrap();
+        let cells = self.native_cells.data[native.index()];
         let parameters = sig.parameters.len() as u64 + u64::from(sig.rest.is_some());
         let values = 3
             + self.limits.max_native_faults as u64
@@ -786,13 +811,14 @@ impl Vm {
                     .0,
         );
         let shared_parameters = matches!(source, ArgSource::Prefix { .. });
-        let module = if let ArgSource::Prefix { frame } = source {
+        let module = ModuleInstanceId(f.module.0);
+        let parameter_module = if let ArgSource::Prefix { frame } = source {
             match self.active.frames.data[self.index(frame)?] {
-                Frame::Script(parent) => parent.module,
+                Frame::Script(parent) => parent.parameter_module,
                 Frame::Native(parent) => parent.module,
             }
         } else {
-            ModuleInstanceId(f.module.0)
+            module
         };
         let id = FrameId(self.serial()?);
         // Failed construction rolls back published roots and does not push a partial frame.
@@ -837,6 +863,7 @@ impl Vm {
             argument_count: count,
             closure: closure.is_some(),
             shared_parameters,
+            parameter_module,
             effects,
             context,
             owner,
@@ -1073,7 +1100,7 @@ impl Vm {
         let sig = &self.program.package().signatures[signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
-        let needs_cells = self.program.native_parameters_need_cells(native)?;
+        let needs_cells = self.native_cells.data[native.index()];
         let id = FrameId(self.serial()?);
         let args = self.open(s.owner, RootKind::Arguments, count * 2)?;
         let bound = match self.open(s.owner, RootKind::Arguments, n) {
@@ -1940,7 +1967,7 @@ impl Vm {
                 let p = &self.program.package().signatures[signature.index()].parameters
                     [parameter as usize];
                 let input = self.value(s.bound, parameter)?;
-                let contract = self.contract(ModuleId(s.module.0), p.ty, p.mutable);
+                let contract = self.contract(ModuleId(s.parameter_module.0), p.ty, p.mutable);
                 let prepared = self.parameter_value(contract, input, storage, s.shared_parameters);
                 match prepared {
                     Ok(value) => {
@@ -2109,17 +2136,19 @@ impl Vm {
             }
             ScriptPhase::Release { reason } => {
                 let caught = self.active.caught.data.len() as u64;
-                let index = self.active.caught.data.iter().position(|c| c.frame == s.id);
-                let next = if index.is_some() {
-                    caught + 2
-                } else {
-                    self.release_cost(4) + self.commit_work(s.ret)
-                };
+                let next = (caught + 2).max(self.release_cost(4) + self.commit_work(s.ret));
                 // The scan is not a saved stage. Charge it with its successor
                 // so the reported retry grant can complete this bounded action.
                 if !m.take(0, caught + next, 0) {
                     return Ok(false);
                 }
+                let index = self.active.caught.data.iter().position(|c| {
+                    #[cfg(test)]
+                    self.work_probe
+                        .release_catch_checks
+                        .set(self.work_probe.release_catch_checks.get() + 1);
+                    c.frame == s.id
+                });
                 if let Some(index) = index {
                     let record = self.active.caught.data.remove(index);
                     self.clear(s.env, 3 + record.region.0 * 2)?;
