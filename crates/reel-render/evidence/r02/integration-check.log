@@ -1,0 +1,12 @@
+    Updating crates.io index
+     Locking 2 packages to latest Rust 1.96 compatible versions
+      Adding blake3 v1.8.2 (available: v1.8.7)
+      Adding constant_time_eq v0.3.1
+ Downloading crates ...
+  Downloaded constant_time_eq v0.3.1
+  Downloaded blake3 v1.8.2
+   Compiling blake3 v1.8.2
+    Checking constant_time_eq v0.3.1
+    Checking reel-render v0.1.0 (/workspace/reel/crates/reel-render)
+    Checking reel-player v0.1.0 (/workspace/reel/crates/reel-player)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.14s

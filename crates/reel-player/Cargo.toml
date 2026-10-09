@@ -7,9 +7,10 @@ publish = false
 
 [features]
 default = []
-window = ["dep:winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
+window = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:blake3", "reel-render/wgpu"]
 
 [dependencies]
+blake3 = { version = "=1.8.2", optional = true }
 masonry = { path = "../../third_party/masonry/masonry", default-features = false }
 reel-core = { path = "../reel-core" }
 reel-stage = { path = "../reel-stage" }

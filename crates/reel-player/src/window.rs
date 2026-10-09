@@ -17,7 +17,7 @@ use reel_stage::{
     BridgeLimits, BuildLimits, FrameBuild, FrameInfo, PresentationBridge, ResourceRegistry,
     StepBudget,
 };
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 type Error = Box<dyn std::error::Error>;
@@ -100,9 +100,9 @@ impl State {
         );
         let mut registry =
             ResourceRegistry::new(2, 64 << 10).map_err(|e| format!("registry: {e:?}"))?;
-        let version = |name: &str| ResourceVersion {
+        let version = |name: &str, bytes: &[u8]| ResourceVersion {
             key: AssetKey(name.into()),
-            version: ContentVersion([1; 32]),
+            version: ContentVersion(*blake3::hash(bytes).as_bytes()),
         };
         let pixels = vec![
             255, 255, 255, 255, 255, 100, 0, 255, 20, 100, 255, 255, 255, 255, 255, 255,
@@ -115,7 +115,7 @@ impl State {
         .map_err(|e| format!("pixels: {e:?}"))?;
         let image_handle = registry
             .register_image(
-                version("diagnostic/checker-v1"),
+                version("diagnostic/checker-v1", bytes.as_slice()),
                 bytes,
                 [2, 2],
                 masonry_core::peniko::ImageFormat::Rgba8,
@@ -132,13 +132,22 @@ impl State {
         let mut resources = vec![image_handle];
         let font_path = std::env::var_os("REEL_DIAGNOSTIC_FONT");
         let font = if let Some(path) = font_path {
-            let bytes = std::fs::read(path)?;
+            let mut file = std::fs::File::open(path)?;
+            let length = file.metadata()?.len();
+            if length > 16 << 20 {
+                return Err("diagnostic font exceeds 16 MiB source budget".into());
+            }
             let ticket = pool
-                .reserve(bytes.capacity() as u64)
+                .reserve(length)
                 .map_err(|e| format!("font quota: {e:?}"))?;
+            let mut bytes = vec![0; length as usize];
+            file.read_exact(&mut bytes)?;
+            if file.read(&mut [0])? != 0 {
+                return Err("font changed size during preparation".into());
+            }
             let bytes = OwnedBytes::new(bytes, ticket).map_err(|e| format!("font bytes: {e:?}"))?;
             let handle = registry
-                .register_font(version("diagnostic/font-v1"), bytes, 0)
+                .register_font(version("diagnostic/font-v1", bytes.as_slice()), bytes, 0)
                 .map_err(|e| format!("font: {e:?}"))?;
             resources.push(handle);
             let lease = registry

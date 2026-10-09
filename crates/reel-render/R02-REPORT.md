@@ -4,14 +4,17 @@ The optional wgpu adapter now consumes actual R01 RenderFrame records and submit
 real command buffers. The winit assembly displays the same production output and
 routes pointer input through PresentationBridge. This is window/render integration,
 not a playable Aside session. No VM execution, independent VM test bypass, main
-update, merge, ready transition or Actions enablement was performed by this task.
+update, PR merge, ready transition or Actions enablement was performed by this task.
 
 Started on an independent `feat/r02-wgpu-player` branch from PR #27
 `411cc7531431f35fbd43a614476815e22cd58f21`, then synchronized exact dependency
 `9578cb3991d62a5dffb6a8580a1a6d1a850230cc`. The R01 branch was not modified.
-Its owner subsequently merged main/B01 into that branch (`3b5c45f` observed);
-this work remains on the explicitly approved R01 snapshot pending integration
-coordination. The draft PR targets `task/issue-25-render-frame`.
+After the integration owner explicitly authorized main as the new dependency,
+merged exact main `9c2f768f53461770985f8872d3a833542e83aed5` into this branch.
+Only Cargo.lock conflicted; resolution preserved pinned renderer dependencies
+and added main's workspace packages. No VM target was executed. The draft PR now
+targets main; neither main nor the original R01 branch was modified by this task.
+
 
 ## Implementation boundaries
 
@@ -80,6 +83,11 @@ the normal feature-off dependency tree contains neither wgpu nor winit.
 [dependency tree](evidence/r02/feature-off-tree.log),
 [Parley debug](evidence/r02/parley-debug.log),
 [Parley release](evidence/r02/parley-release.log).
+
+After syncing main, the scoped verification script passed again, including both
+GPU profiles: [integrated validation](evidence/r02/integration.log). Diagnostic
+asset versions now hash the actual bytes with pinned BLAKE3 1.8.2; the optional
+font is precharged and capped at 16 MiB before reading.
 
 Commands and environment are in [commands](evidence/r02/commands.txt).
 [check-r02.sh](../reel-player/scripts/check-r02.sh) restricts future checks to the

@@ -1,3 +1,4 @@
+blake3 1.8.2 CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception registry+https://github.com/rust-lang/crates.io-index
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index
 half 2.7.1 MIT OR Apache-2.0 registry+https://github.com/rust-lang/crates.io-index
 kurbo 0.13.1 Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index

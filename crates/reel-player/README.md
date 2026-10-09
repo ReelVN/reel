@@ -9,6 +9,9 @@ export REEL_DIAGNOSTIC_FONT=/path/to/font.ttf
 cargo run --locked -p reel-player --features window --bin reel-diagnostic
 ```
 
+The optional font source is capped at 16 MiB and budgeted before reading; image
+and font ContentVersion values are BLAKE3 hashes computed during preparation.
+
 Drag the shapes/white indicator; scroll to change the root transform. The checker
 image, overlapping transparent group, clip and optional Parley label use the same
 render path as readback tests. F5 destroys the actual device and exercises device
