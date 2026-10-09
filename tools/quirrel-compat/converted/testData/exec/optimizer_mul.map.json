@@ -1,0 +1,154 @@
+{
+  "source": "testData/exec/optimizer_mul.nut",
+  "source_sha256": "46133e8b1a494ebb70e98a7e7104f1cd59f4da7f9f3ed68a98c9972d7359cd7f",
+  "aside_sha256": "7b6a13827a5dc4d8a66c9df0f0117fc3d5d53a28022e6b6814004b80cda41e46",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
+  "segments": [
+    {
+      "original": [
+        0,
+        0
+      ],
+      "aside": [
+        0,
+        222
+      ],
+      "kind": "generated_header"
+    },
+    {
+      "original": [
+        0,
+        18
+      ],
+      "aside": [
+        222,
+        241
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        18,
+        19
+      ],
+      "aside": [
+        241,
+        242
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        19,
+        32
+      ],
+      "aside": [
+        242,
+        256
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        32,
+        33
+      ],
+      "aside": [
+        256,
+        257
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        33,
+        63
+      ],
+      "aside": [
+        257,
+        288
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        63,
+        64
+      ],
+      "aside": [
+        288,
+        289
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        64,
+        107
+      ],
+      "aside": [
+        289,
+        333
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        107,
+        108
+      ],
+      "aside": [
+        333,
+        334
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        33,
+        63
+      ],
+      "aside": [
+        257,
+        287
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "x",
+        "*",
+        "y",
+        "==",
+        "0x1_0000_0000",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        64,
+        107
+      ],
+      "aside": [
+        289,
+        332
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "0x100_0000",
+        "*",
+        "0x100",
+        "==",
+        "0x1_0000_0000",
+        ")"
+      ]
+    }
+  ]
+}

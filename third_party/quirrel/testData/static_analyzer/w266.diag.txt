@@ -1,0 +1,9 @@
+WARNING: w266 (forgotten-do) 'while' after the statement list (forgot 'do' ?)
+testData/static_analyzer/w266.nut:10:2
+
+  ::x++
+} while (::x)
+  ^
+::x--
+
+

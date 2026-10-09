@@ -1,0 +1,16 @@
+WARNING: w248 (access-potentially-nulled) 'a' can be null, but is used as a function without checking.
+testData/static_analyzer/w248.nut:11:4
+
+} else {
+    a()
+    ^
+}
+
+
+WARNING: w248 (access-potentially-nulled) 'a' can be null, but is used as a function without checking.
+testData/static_analyzer/w248.nut:14:7
+
+return a()
+       ^
+
+
