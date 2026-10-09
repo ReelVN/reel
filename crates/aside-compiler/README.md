@@ -27,8 +27,17 @@ mixed Name/Index assignment chains and index compound writes using B01's existin
 descriptors and instructions. Table keys/values are evaluated before one ordered
 MakeTable; assignment receivers/keys are saved across RHS calls. See the
 [L06 static contract and matrix](LOWERING.md#fixed-collections-and-index-locations-l06).
-Member, optional chains, spread/rest and patterns remain deferred. No Aside
+Optional chains, spread/rest and patterns remain deferred. No Aside
 execution, hashing/index bounds, alias/GC or engine acceptance is claimed.
+
+L07 / Issue #42 adds nonoptional MemberGet/MemberSet, mixed Name/Index/Member
+assignment chains and all ten compound assignments. MemberGet results feed the
+existing dynamic Call without compiler-injected self. Prepared locations retain
+the object value and SymbolId, not a resolved slot or setter. Trusted native
+namespace links keep their original identity and contract checks. See the
+[L07 static contract](LOWERING.md#member-values-and-locations-l07). Classes/super,
+native function values and complete unified callable support remain deferred;
+actual receiver binding, hooks and GC behavior are not execution-validated.
 
 The workspace comes from D01 `c03226a`; only this directory and compiler lockfile
 entries change relative to that base. [INTERFACE.md](INTERFACE.md) records the

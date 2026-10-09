@@ -1,4 +1,4 @@
-# L04/L05/L06 lowering contract (IR v1, bytecode v1)
+# L04/L05/L06/L07 lowering contract (IR v1, bytecode v1)
 
 Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
 `AnalyzedModule`; it does not analyze a second semantic model or execute programs.
@@ -60,7 +60,8 @@ short circuit, null coalescing, positional/named calls, defaults, trusted direct
 native calls, forward shared Cells, and try/catch/finally/throw/rethrow. Module
 initializer and ordinary function loops with cleanup-aware break/continue are supported. Uninitialized
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
-reads/writes are supported by L06. Pattern/spread/member-value
+reads/writes are supported by L06; L07 adds nonoptional member values/locations
+and dynamic calls through their results. Pattern/spread/optional-chain
 access, full script imports/linking, structural callable annotations, native
 values, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
@@ -170,9 +171,10 @@ register windows are admitted before traversal/reservation/emission. Quota error
 identify the failing collection, target or subexpression. IR/bytecode v1, VM
 interfaces and RuntimeSupport are unchanged.
 
-Spread/rest, patterns, Member values/locations, optional chains (including a
+Spread/rest, patterns and optional chains (including a
 nonoptional segment belonging to a chain), children, classes, full script imports
-and unified callable/library work retain located rejection. Member is never
+and unified callable/library work retain located rejection. L07 extends the
+location machinery below with Member values/locations. Member is never
 rewritten as Index. The existing trusted namespace-qualified direct native call
 exception retains its exact linkage/provenance checks.
 
@@ -193,6 +195,51 @@ through analysis, IR, B01 verification, codec and disassembly:
 
 No instruction/value evaluator or execution simulation is used. Actual hash,
 index bounds, alias mutation, GC, restoration and full engine behavior are untested.
+
+## Member values and locations (L07)
+
+Issue [#42](https://github.com/jhq223/reel/issues/42) builds on main
+`fd12d1441fab0a06a5030e89001cc54abefebe6d`. It extends existing compiler
+modules without new crates, descriptors, bytecode versions or VM execution.
+
+`PreparedLocation::Member` retains an evaluated object register, a mapped B01
+SymbolId and the source node. HIR NameId is not a bytecode symbol index.
+MemberGet uses (destination, object, symbol); MemberSet uses
+(object, value, symbol), unlike IndexSet's (object, key, value).
+Ordinary Member and Index remain distinct instructions.
+
+All mixed Name/Index/Member locations are prepared once in source order before
+the single RHS; writes occur in reverse order. A simple final Member target has
+no preliminary MemberGet. Intermediate receivers use ordinary expression reads.
+The ten compound operations read the old member value before RHS, apply the
+existing binary operation and write through the original saved object/symbol.
+Later binding changes do not reevaluate a receiver. The saved location is not
+an eagerly resolved slot or setter. Registers remain reserved across calls and
+are cleared/reused after their final lowering use; terminating paths preserve
+the existing cleanup/CFG rules without emitting pending writes.
+
+MemberGet results feed CallTarget::Register. The callee is evaluated before
+source-order arguments; the compiler does not inject self or classify arbitrary
+callable values as methods. B01 retains its class-method binding contract and
+table closures remain ordinary functions. IndexGet is not rewritten to
+MemberGet, and this increment does not settle class string-index binding.
+Runtime method classification, field/delegate/hook results and native callable
+dispatch are not newly implemented here.
+
+Resolved namespace exports retain the trusted direct-native call exception:
+identity, version, ABI, capabilities and actual default implementation checks
+still apply. Namespace function values and writes are rejected rather than
+treated as ordinary runtime members. Unlinked direct native calls still fail.
+Optional/chain segments, class/super, native function values, full module linking
+and complete unified callable support remain outside this increment.
+
+[Member static tests](tests/lowering/members.rs) inspect emitted operands,
+Chinese symbol mapping, source order, mixed writeback, saved receiver identity,
+all compound operators, dynamic-call arguments, initializer/default captures,
+terminal and partial-fallthrough cleanup, native provenance and exact limits.
+They use parse/analyze/lower, B01 verification, codec and disassembly only.
+Actual receiver binding, setters/metamethods, aliasing, GC and restoration remain
+unverified by execution.
 
 ## Limits and verification
 
@@ -229,6 +276,7 @@ target/release/examples/lowering_probe 1000 initializer
 target/release/examples/lowering_probe 1000 sequences
 target/release/examples/lowering_probe 1000 tables
 target/release/examples/lowering_probe 1000 locations
+target/release/examples/lowering_probe 1000 members
 target/release/examples/lowering_probe 80 nested 64
 target/release/examples/lowering_probe 100 terminal
 ASIDE_LOWERING_EVIDENCE=target/reel-artifacts/issue40/evidence target/release/examples/lowering_probe 1 evidence
