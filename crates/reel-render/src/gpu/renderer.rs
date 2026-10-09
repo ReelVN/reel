@@ -85,7 +85,7 @@ pub(super) fn reserve(
     domain: &'static str,
 ) -> Result<Reservation, GpuError> {
     // Test the preparation's own live demand first. Other preparations cannot
-    // turn a permanently oversized frame into a misleading retryable refusal.
+    // hide a request which already exceeds this preparation's own quota.
     let local = local.reserve(bytes).map_err(|_| GpuError::Budget {
         domain,
         requested: bytes,

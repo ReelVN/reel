@@ -40,7 +40,8 @@ pub enum GpuError {
     InvalidSize,
     IdentityExhausted,
     Busy,
-    /// Other prepared/in-flight submissions currently occupy the shared quota.
+    /// Other prepared/in-flight submissions occupy quota needed by this request.
+    /// Later records can still exceed the preparation's own quota on retry.
     Pressure {
         domain: &'static str,
         requested: u64,

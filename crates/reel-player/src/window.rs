@@ -469,11 +469,19 @@ mod tests {
         view.get(state.root_id).unwrap().transform
     }
     fn exercise(event_loop: &ActiveEventLoop) {
+        // Derive pressure from the current profile rather than assuming 4x support.
+        let mut probe = State::new(event_loop, 1).unwrap();
+        let probe_frame = probe.build_frame().unwrap();
+        let prepared = probe.renderer.prepare(&probe_frame).unwrap();
+        let single_targets = probe.renderer.usage().targets;
+        drop(prepared);
+        drop(probe_frame);
+        drop(probe);
         let mut state = State::with_limits(
             event_loop,
             1,
             GpuLimits {
-                target_bytes: 96 << 20,
+                target_bytes: single_targets * 3 / 2,
                 ..Default::default()
             },
         )
@@ -585,7 +593,7 @@ mod tests {
         // Permanent refusals stop preparation even when unrelated GPU work completes.
         for limits in [
             GpuLimits {
-                target_bytes: 16 << 20,
+                target_bytes: single_targets * 3 / 4,
                 ..Default::default()
             },
             GpuLimits {

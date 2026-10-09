@@ -114,6 +114,7 @@ fn draw_and_clip_strokes_reject_small_miters_without_panic_or_leak() {
 fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
     let limits = GpuLimits {
         target_bytes: 8 << 20,
+        max_inflight: 32,
         ..Default::default()
     };
     let mut renderer = renderer(limits);
@@ -121,7 +122,22 @@ fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
     let mut scene = Scene::new();
     fill(&mut scene);
     let simple = frame(scene, &pool);
-    let held = renderer.prepare(&simple).unwrap();
+    let mut held = Vec::new();
+    let mut pressure = false;
+    // Allow either quality fallback: even RGBA8/1x exhausts 8 MiB before 32 slots.
+    for _ in 0..limits.max_inflight {
+        match renderer.prepare(&simple) {
+            Ok(prepared) => held.push(prepared),
+            Err(GpuError::Pressure {
+                domain: "targets", ..
+            }) => {
+                pressure = true;
+                break;
+            }
+            _ => panic!("only shared target pressure may stop this frame"),
+        }
+    }
+    assert!(pressure && !held.is_empty());
     let used = renderer.usage().targets;
     assert!(used > 0 && used <= limits.target_bytes);
     assert!(matches!(
@@ -132,10 +148,13 @@ fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
         })
     ));
     assert_eq!(renderer.usage().targets, used);
-    let id = renderer.submit(held).unwrap();
+    let ids: Vec<_> = held
+        .into_iter()
+        .map(|prepared| renderer.submit(prepared).unwrap())
+        .collect();
     renderer.gpu().device.poll(wgpu::PollType::Wait).unwrap();
     assert_eq!(renderer.usage().targets, used);
-    assert_eq!(renderer.poll().unwrap(), vec![id]);
+    assert_eq!(renderer.poll().unwrap(), ids);
     drop(
         renderer
             .prepare(&simple)
@@ -143,13 +162,17 @@ fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
     );
     assert_eq!(renderer.usage().targets, 0);
     let mut large = Scene::new();
-    large.push_group(Group::default());
+    for _ in 0..18 {
+        large.push_group(Group::default());
+    }
     fill(&mut large);
-    large.pop_group();
+    for _ in 0..18 {
+        large.pop_group();
+    }
     let large = frame(large, &pool);
     let error = match renderer.prepare(&large) {
         Err(e) => e,
-        Ok(_) => panic!("two targets exceed a single frame's quota"),
+        Ok(_) => panic!("nineteen targets exceed quota even with RGBA8/1x"),
     };
     assert!(matches!(
         error,
