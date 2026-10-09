@@ -18,12 +18,12 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 - aside-vm：语言值、对象、调用帧、模块与执行接口。
 - aside-compiler：解析、分析、字节码及源码定位，依赖 VM 公共格式。
 - reel-ui：控件、布局、属性、交互与舞台桥接。core/app/layout/properties/widgets/theme 管理 UI 基础，bridge/frame/resources 管理呈现接受、可移植帧与资源租约；passes/tree_arena 为私有实现。
-- reel-render：后端接口、资源上传、缓存与分组合成，读取 stage 提交结果。
+- reel-render：后端接口、资源上传、缓存与分组合成，读取 UI 提交结果。
 - reel-media：Kira 适配和播放控制，视频作为可选模块。
 - reel-engine：会话、剧情任务、宿主绑定、资源与持久化协调。
 - reel-player：平台适配、窗口与事件循环，组装引擎、渲染和媒体输出。
 - reel-cli：检查、开发运行和构建，调用编译器与播放器库入口。
-依赖箭头固定为 stage→core，render→stage/core，media→core，engine→aside-vm/stage/media/core，player→engine/render/core，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
+依赖方向固定为 ui→core，render→ui/core，media→core，player→ui/render/core；后续 engine→aside-vm/ui/media/core，player→engine，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
 通用依赖直接使用锁定版本，不复制进仓库。Parley、winit、wgpu、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理。需修改的代码从明确来源借用后在仓库内维护；其余依赖继续锁定引用。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。借用的 Masonry 控件、布局与呈现几何代码整合到 reel-ui 后由 Reel 自主修改和维护，不以维持上游包图、同步或贡献为目标。Kira 0.12.5 的本地修改集中在退休 Sound 的有界纯移动接口和退休队列容量检查，支持后台 PCM 释放；其内部 atomic-arena 继续使用普通依赖。
 third_party/quirrel 保存 Quirrel 4.41 的固定源码与对应测试快照，基线为 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，用于规范核对与差分测试。它属于开发工具，不链接进发行播放器；Aside 编译器与 VM 是工作区自己的 Rust 实现。[6]
 UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88。[5] 当前仅维护 crates/reel-ui 一个 UI crate，版本跟随 Reel workspace；原 masonry、masonry_core、tree_arena、reel-stage 的实现按职责合为内部模块，不保留兼容转发包。安全树为私有模块，文档截图直接引用，不再保留 include_doc_path 宏包。许可、版权及必要来源说明保留；不要求与上游目录、版本或源码哈希持续一致。reel-render/reel-player 分别承担后端与平台组装，UI 不反向依赖它们。
@@ -292,7 +292,7 @@ RecordedSource 移入同次真实 VisualLayerPlan、几何和候选身份。Fram
 
 等待上传字节额度累计约束全部未完成批次的 payload 容量票据，与上传加驻留总额度独立检查；拒绝返回原批次。选定无强租约的资源槽后，先释放登记表自己的过期弱描述符票据再预留替代项，外部弱别名继续保留相应责任。
 
-reel-render 定义后端及上传/呈现/完成/退休接口，读取 stage/core。RenderFrame 和资源描述保持平台无关；wgpu、窗口及平台句柄属于实现适配层。记录型/null 后端验证合同，提供明确的模拟提交结果；设备性能由实际后端测量。
+reel-render 定义后端及上传/呈现/完成/退休接口，读取 ui/core。RenderFrame 和资源描述保持平台无关；wgpu、窗口及平台句柄属于实现适配层。记录型/null 后端验证合同，提供明确的模拟提交结果；设备性能由实际后端测量。
 
 ### 外部内容与坐标
 
@@ -336,7 +336,7 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 [2] Ren’Py Screens https://www.renpy.org/doc/html/screens.html
 [3] Ren’Py Screen 优化 https://www.renpy.org/doc/html/screen_optimization.html
 [4] 现有项目 https://github.com/jhq223/ons-rs 和 https://github.com/jhq223/krkr-rs
-[5] Masonry 绘制与分层 https://github.com/linebender/xilem/blob/main/masonry_core/src/passes/paint.rs
+[5] Masonry 绘制与分层 https://github.com/linebender/xilem/blob/271a27a6d4a930f7878d404f9014e3c50a3a9b88/masonry_core/src/passes/paint.rs
 [6] Quirrel 项目 https://github.com/GaijinEntertainment/quirrel
 [7] Cargo features https://doc.rust-lang.org/cargo/reference/features.html
 [8] Quirrel 模块 https://quirrel.io/doc/language/modules.html
