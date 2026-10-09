@@ -31,21 +31,34 @@ Rust 检查器覆盖源 SHA、token 边界、原断言完整保留、完整双�
 ## 上游观测的独立复现
 
 以下命令执行的是 Quirrel 上游测试，不是 Aside；只在确需重新采集时运行。
-需要 CMake、C/C++ 编译器和 Python 3。构建沿用上游 Release `sq` 目标；
+需要 CMake、C/C++ 编译器和 Rust。构建沿用上游 Release `sq` 目标；
 默认 int64/float32 与 Aside 的 int64/float64 目标差异保留，不改 golden 消除失败。
 
 ```sh
 cmake -S third_party/quirrel -B target/reel-artifacts/quirrel-build -DCMAKE_BUILD_TYPE=Release
 cmake --build target/reel-artifacts/quirrel-build --target sq --parallel 4
-python3 tools/quirrel-compat/run_upstream.py \
+cargo run --locked -p reel-dev -- run-upstream \
   --sq target/reel-artifacts/quirrel-build/bin/sq \
   --out target/reel-artifacts/quirrel-results \
   --work target/reel-artifacts/quirrel-work
 ```
 
-这是唯一保留的第一方 Python：为未修改的上游 `testRunner.py` 安装观测 hook，
-保留原 12 worker、10 秒 timeout、seed 选择、比较和退出码；源完整性验证调用 Rust。
-`--work` 必须不存在，`--out` 不能混有旧运行，二者都必须位于产物根目录。
+第一方 Python 观测桥已由 Rust `run-upstream` 替代；固定快照中的上游
+`testRunner.py` 和构建 Python 文件未修改，继续作为契约与来源参照。
+Rust 保留六个入口、首个点号的文件选择、原参数、12 worker、10 秒 timeout、
+每个 fixture 的 default→0→255 种子选择/顺序、逐行数量和 Python `rstrip` 比较。
+Exec/Types 的 stdout/stderr 合写；其他入口分别保留原始进程流。
+每次 seed 的实际输出字节及 SHA 在下一次覆写前保存，归档时间固定为 1980，失败字节可直接读取。
+无 golden 时只在副本中创建并标记 `unasserted`，新增 golden 或源变更使桥接命令失败。
+正常 runner 退出仍为 0/1；observer 异常的 JSON runner 码为 2，命令退出为 1。
+`--work`、`--out` 都必须不存在、互不重叠，并位于产物根目录；原快照运行前后均核验。
+两次 `-v` 查询也采用 10 秒限制并保存原始字节；日志格式与 observer/platform 元数据改为 Rust。
+Unix 超时终止自有进程组中的包装器及后代，并限制等待管道 EOF 的时间；Windows 尚未实测。
+
+本次迁移只通过模拟子进程、固定合成 fixture 和负例验证，不运行真实 Quirrel 测试集。
+检查包括全部 1,296 fixture/1,494 次计划参数与历史观测的固定摘要、12 worker/seed 顺序、
+原始字节/SHA/ZIP、crash/timeout/spawn/decode 错误、快照变更和缺失 golden 的退出路径。
+**Rust observer 的实际上游复跑尚未验证**，这些测试不能据此宣称真实兼容率。
 该历史基线实际退出 1，8 个 golden 不匹配；不能把它报告成全部通过。
 旧 fc418d9 外部前端工程/lock 和 Python wrapper 已退休；当前解析/分析使用工作区 Rust 测试。
 首批运行宿主仍见 [HARNESS.md](HARNESS.md)，历史观察见 [REPORT.md](REPORT.md)。
@@ -83,5 +96,6 @@ for 循环。循环转换逐份检查更新顺序、return、continue 和捕获�
 tuple 没有对应原生 oracle，明确列为缺口；文本、逐调用缺省、每实例字段、显式 self、
 强绑定、严格 bool、检查整数和普通表自身槽规则均保持规范，不追求抹平差异。
 
-本次预算是上游 runner 的单次 10 秒超时和 12 worker；前端 probe 批次超时 30 秒。
+本次预算是上游 runner 的单次 10 秒超时和 12 worker；语义 probe 保留 30 秒，
+budget probe 保留 15 秒，两者均有短时限模拟回归测试与进程组终止保护。
 本项没有扩大到 VM 性能、GC、快照、32 位或设备验收。

@@ -1,6 +1,9 @@
 //! Repository maintenance checks. These tools never execute Aside programs.
 pub mod fixtures;
 pub mod maintenance;
+#[path = "../../test-support/process.rs"]
+pub mod process;
+pub mod upstream;
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};

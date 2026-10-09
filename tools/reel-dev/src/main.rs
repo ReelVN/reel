@@ -1,11 +1,17 @@
 use anyhow::{Result, bail};
-use reel_dev::{fixtures, maintenance, root};
+use reel_dev::{fixtures, maintenance, root, upstream};
 use std::{env, fs, path::Path};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let command = args.iter().map(String::as_str).collect::<Vec<_>>();
     match command.as_slice() {
+        ["run-upstream", ..] => {
+            let code = upstream::run_cli(&args[1..])?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         ["check"] => {
             let assertions = fixtures::conversions(false)?;
             fixtures::immutable_t01()?;
@@ -53,7 +59,7 @@ fn main() -> Result<()> {
             maintenance::measure(Path::new(build), target, &args[3..])?
         }
         _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|convert --write|inventory|verify-results DIR [--t01-baseline]|deps [MANIFEST]|audit-masonry UPSTREAM|prepare-masonry UPSTREAM|root-negative|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
+            "Usage: cargo run -p reel-dev -- <check|convert --write|inventory|verify-results DIR [--t01-baseline]|run-upstream --sq PATH --out NEW_DIR --work NEW_DIR|deps [MANIFEST]|audit-masonry UPSTREAM|prepare-masonry UPSTREAM|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
             root().display()
         ),
     }

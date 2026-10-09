@@ -1,18 +1,54 @@
 use aside_compiler::{DiagnosticCode, EntryPoint, ParseOptions, parse_with_options};
 use std::process::Command;
+#[path = "../../../tools/test-support/process.rs"]
+#[allow(
+    dead_code,
+    reason = "shared subprocess helper also exposes exit-code conversion for tool observers"
+)]
+mod process;
+const BUDGET_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn budget_child(command: &mut Command, timeout: std::time::Duration) -> process::Outcome {
+    process::run(command, timeout, None).unwrap()
+}
+
 #[test]
 fn deep_else_chain_exits_in_a_separate_process() {
-    let child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "deep_child", "--nocapture"])
-        .env("ASIDE_DEEP_CHILD", "1")
-        .output()
-        .unwrap();
+    let child = budget_child(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "deep_child", "--nocapture"])
+            .env("ASIDE_DEEP_CHILD", "1"),
+        BUDGET_PROBE_TIMEOUT,
+    );
+    assert!(
+        !child.timed_out,
+        "deep parser child exceeded the original 15 second bound"
+    );
     assert!(
         child.status.success(),
         "child {:?}: {}",
         child.status,
         String::from_utf8_lossy(&child.stderr)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn budget_probe_keeps_fifteen_second_policy_and_kills_a_timed_out_mock() {
+    assert_eq!(BUDGET_PROBE_TIMEOUT, std::time::Duration::from_secs(15));
+    let started = std::time::Instant::now();
+    let child = budget_child(
+        Command::new("/bin/sh").args([
+            "-c",
+            "printf 'budget-partial'; printf 'error' >&2; sleep 30",
+        ]),
+        std::time::Duration::from_millis(200),
+    );
+    assert!(child.timed_out);
+    assert_eq!(process::return_code(child.status), Some(-9));
+    assert_eq!(child.stdout, b"budget-partial");
+    assert_eq!(child.stderr, b"error");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
 }
 #[test]
 fn deep_child() {

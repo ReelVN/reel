@@ -5,6 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 pub fn artifacts() -> Result<PathBuf> {
@@ -493,6 +494,64 @@ pub fn prepare_experiment(upstream: &Path) -> Result<()> {
     Ok(())
 }
 
+const SEMANTIC_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn compiler_sample(
+    command: &mut Command,
+    probe: &str,
+    semantic_timeout: Duration,
+) -> Result<crate::process::Outcome> {
+    if probe == "semantic" {
+        Ok(crate::process::run(command, semantic_timeout, None)?)
+    } else {
+        let output = command.output().context("GNU time must be installed")?;
+        Ok(crate::process::Outcome {
+            status: output.status,
+            timed_out: false,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn save_compiler_sample(
+    directory: &Path,
+    records: &mut Vec<serde_json::Value>,
+    mut record: serde_json::Value,
+    result: crate::process::Outcome,
+) -> Result<(String, bool)> {
+    let stem = format!(
+        "{}-{}-{}",
+        record["mode"].as_str().context("mode")?,
+        record["n"],
+        record["repeat"]
+    );
+    let stdout_path = format!("{stem}.stdout");
+    let stderr_path = format!("{stem}.stderr");
+    fs::write(directory.join(&stdout_path), &result.stdout)?;
+    fs::write(directory.join(&stderr_path), &result.stderr)?;
+    record["stdout_raw"] = serde_json::json!(stdout_path);
+    record["stderr_raw"] = serde_json::json!(stderr_path);
+    record["exit"] = serde_json::json!(crate::process::return_code(result.status));
+    record["timed_out"] = serde_json::json!(result.timed_out);
+    // Keep exact byte files even when a failed child emits invalid UTF-8.
+    record["stdout"] = serde_json::json!(String::from_utf8_lossy(&result.stdout));
+    record["stderr"] = serde_json::json!(String::from_utf8_lossy(&result.stderr));
+    let rejected = result.stdout.starts_with(b"rejected,");
+    record["rejected"] = serde_json::json!(rejected);
+    records.push(record);
+    fs::write(
+        directory.join("samples.json"),
+        serde_json::to_string_pretty(records)? + "\n",
+    )?;
+    ensure!(
+        !result.timed_out && result.status.success(),
+        "probe failed or exceeded its timeout; see {}",
+        directory.display()
+    );
+    Ok((String::from_utf8(result.stdout)?, rejected))
+}
+
 /// Measure already built Rust compiler probes. No bytecode dispatch or host calls.
 pub fn compiler_probe(probe: &str, selected: Option<&str>) -> Result<()> {
     use serde_json::json;
@@ -540,21 +599,13 @@ pub fn compiler_probe(probe: &str, selected: Option<&str>) -> Result<()> {
                     command.arg(size.to_string());
                 }
                 command.arg(mode);
-                let result = command.output().context("GNU time must be installed")?;
-                let stdout = String::from_utf8(result.stdout)?;
-                let stderr = String::from_utf8(result.stderr)?;
-                let rejected = stdout.starts_with("rejected,");
-                records.push(json!({"mode":mode,"n":size,"repeat":repeat,"exit":result.status.code(),"rejected":rejected,"stdout":stdout,"stderr":stderr}));
-                // Persist observations before checking exit status, preserving failures.
-                fs::write(
-                    directory.join("samples.json"),
-                    serde_json::to_string_pretty(&records)? + "\n",
+                let result = compiler_sample(&mut command, probe, SEMANTIC_PROBE_TIMEOUT)?;
+                let (stdout, rejected) = save_compiler_sample(
+                    &directory,
+                    &mut records,
+                    json!({"mode":mode,"n":size,"repeat":repeat}),
+                    result,
                 )?;
-                ensure!(
-                    result.status.success(),
-                    "{mode}/{size}: probe failed; see {}",
-                    directory.display()
-                );
                 if rejected {
                     break;
                 }
@@ -601,4 +652,87 @@ pub fn compiler_probe(probe: &str, selected: Option<&str>) -> Result<()> {
     )?;
     println!("{}", directory.display());
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn semantic_sample_keeps_thirty_second_policy_and_timeout_failure_evidence() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        assert_eq!(SEMANTIC_PROBE_TIMEOUT, Duration::from_secs(30));
+        let directory = artifacts().unwrap().join(format!(
+            "semantic-timeout-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let pidfile = directory.join("descendant.pid");
+        let result = compiler_sample(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "printf 'partial'; printf '\\377err' >&2; sleep 30 & echo $! > \"$1\"; wait",
+                    "mock",
+                ])
+                .arg(&pidfile),
+            "semantic",
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert!(result.timed_out);
+        assert_eq!(crate::process::return_code(result.status), Some(-9));
+        let mut records = Vec::new();
+        assert!(
+            save_compiler_sample(
+                &directory,
+                &mut records,
+                json!({"mode":"mock","n":1,"repeat":0}),
+                result
+            )
+            .is_err()
+        );
+        let samples: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("samples.json")).unwrap()).unwrap();
+        assert_eq!(samples[0]["timed_out"], true);
+        assert_eq!(samples[0]["exit"], -9);
+        assert_eq!(
+            fs::read(directory.join(samples[0]["stdout_raw"].as_str().unwrap())).unwrap(),
+            b"partial"
+        );
+        assert_eq!(
+            fs::read(directory.join(samples[0]["stderr_raw"].as_str().unwrap())).unwrap(),
+            b"\xfferr"
+        );
+        let pid = fs::read_to_string(pidfile).unwrap();
+        if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
+            assert_eq!(
+                stat.split(") ").nth(1).unwrap().chars().next(),
+                Some('Z'),
+                "probe descendant still running"
+            );
+        }
+        // A non-timeout failure must also persist its original exit and bytes.
+        let result = compiler_sample(
+            Command::new("/bin/sh").args(["-c", "printf 'failed'; exit 7"]),
+            "semantic",
+            SEMANTIC_PROBE_TIMEOUT,
+        )
+        .unwrap();
+        assert!(!result.timed_out);
+        assert!(
+            save_compiler_sample(
+                &directory,
+                &mut records,
+                json!({"mode":"mock","n":1,"repeat":1}),
+                result
+            )
+            .is_err()
+        );
+        assert_eq!(records[1]["exit"], 7);
+        assert_eq!(records[1]["stdout"], "failed");
+    }
 }
