@@ -1,4 +1,4 @@
-//! Instrumentation forwards behavior and drawing to the pinned upstream widgets.
+//! Instrumentation forwards behavior and drawing to Reel's maintained UI widgets.
 use reel_ui::widgets::{Button, Image, Slider, SliderMoved};
 use reel_ui::{
     accesskit::{Node, Role},
@@ -65,7 +65,7 @@ fn observe(trace: &Trace, ctx: &EventCtx<'_>, event: &PointerEvent) {
     });
 }
 
-/// A transparent observer: all control behavior remains upstream code.
+/// A transparent observer: all control behavior remains in the maintained UI widgets.
 pub struct Observed<W> {
     pub inner: W,
     pub trace: Trace,

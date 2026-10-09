@@ -341,7 +341,7 @@ pub(crate) fn run_update_widget_tree_pass(root: &mut RenderRoot) {
 
 // --- MARK: DISABLED
 /// See the [passes documentation](crate::doc::pass_system#update-passes).
-/// See the [disabled status documentation](../doc/06_concepts.md#disabled).
+/// See the [disabled status documentation](crate::doc::concepts#disabled).
 fn update_disabled_for_widget(
     global_state: &mut RenderRootState,
     default_properties: &DefaultProperties,
@@ -429,7 +429,7 @@ pub(crate) fn run_update_disabled_pass(root: &mut RenderRoot) {
 
 // --- MARK: STASHED
 /// See the [passes documentation](crate::doc::pass_system#update-passes).
-/// See the [stashed status documentation](../doc/06_concepts.md#stashed).
+/// See the [stashed status documentation](crate::doc::concepts#stashed).
 fn update_stashed_for_widget(
     global_state: &mut RenderRootState,
     default_properties: &DefaultProperties,
@@ -661,7 +661,7 @@ fn find_first_focusable(
 
 // --- MARK: FOCUS
 /// See the [passes documentation](crate::doc::pass_system#update-passes).
-/// See the [focus status documentation](../doc/06_concepts.md#text-focus).
+/// See the [focus status documentation](crate::doc::concepts#text-focus).
 pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
     let _span = info_span!("update_focus").entered();
     // If the next-focused widget is disabled, stashed or removed, we set

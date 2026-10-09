@@ -29,11 +29,14 @@ Run from the repository root with Rust 1.96.0 and Fontconfig/pkg-config:
 ```sh
 cargo fmt --all --check
 cargo clippy --locked -p reel-ui -p reel-render -p reel-player -p reel-core --all-targets --all-features -- -D warnings
-cargo test --locked -p reel-ui -p reel-render -p reel-player -p reel-core --no-default-features -- --test-threads=1
-cargo test --locked -p reel-ui -p reel-render -p reel-player -p reel-core --no-default-features --release -- --test-threads=1
+cargo test --locked -p reel-ui -p reel-render -p reel-player -p reel-core --no-default-features --features reel-core/test-support -- --test-threads=1
+cargo test --locked -p reel-ui -p reel-render -p reel-player -p reel-core --no-default-features --features reel-core/test-support --release -- --test-threads=1
 cargo run --locked -p reel-dev -- audit-ui
 cargo doc --locked -p reel-ui --no-deps
 ```
+
+`reel-core/test-support` enables only the core contract test fixtures, so those
+tests run while the production UI/window/GPU default features remain off.
 
 `tests/lookup_depth.rs` includes the production private safe tree in an isolated
 allocator-instrumented binary. All deep/small-stack/capacity/zero-allocation
