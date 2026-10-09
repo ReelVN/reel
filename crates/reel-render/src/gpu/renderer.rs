@@ -1,4 +1,4 @@
-use super::{Gpu, GpuError, Quality, pipeline::Pipelines, replay::Context};
+use super::{Gpu, GpuError, Quality, pipeline::PipelineSlots, replay::Context};
 use masonry_core::kurbo::Affine;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
 use reel_stage::RenderFrame;
@@ -49,6 +49,7 @@ pub struct Renderer {
     budgets: Budgets,
     admission: BudgetPool,
     owner: Arc<()>,
+    pipelines: PipelineSlots,
 }
 pub(super) struct Budgets {
     pub(super) targets: BudgetPool,
@@ -121,6 +122,7 @@ impl Renderer {
             budgets,
             admission,
             owner: Arc::new(()),
+            pipelines: PipelineSlots::default(),
         }
     }
     pub(super) fn reserve_readback(
@@ -190,7 +192,7 @@ impl Renderer {
         let mut ctx = Context {
             gpu: &self.gpu,
             encoder: self.gpu.device.create_command_encoder(&Default::default()),
-            pipelines: Pipelines::new(&self.gpu.device, quality),
+            pipelines: self.pipelines.get(&self.gpu, quality)?,
             quality,
             size,
             budgets: &self.budgets,
@@ -281,6 +283,9 @@ impl Drop for Renderer {
         self.inflight.clear();
     }
 }
+#[cfg(test)]
+#[path = "pipeline_tests.rs"]
+mod pipeline_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

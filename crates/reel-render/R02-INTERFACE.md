@@ -121,3 +121,35 @@ The diagnostic profile explicitly requires an sRGB surface format, opaque alpha,
 FIFO presentation and render-attachment usage. An incompatible set is refused;
 old configuration is never reused. Surface epoch/candidate invalidation precedes
 negotiation, including failure; a recreated device advances generation independently.
+
+## Renderer-local pipeline reuse (Issue #32)
+
+`prepare(&self)` and `crossfade` lazily reuse the complete paint/composite
+Pipelines in exactly three instance-owned slots: Rgba16Float/4x,
+Rgba16Float/1x and Rgba8Unorm/1x. Slot identity uses actual format and samples;
+the diagnostic `degraded` flag is not an identity. Quality negotiation and all
+budgets remain unchanged. A per-slot mutex serializes first construction under
+concurrent preparations; replay uses an Arc after releasing the mutex. Unused
+tiers allocate no GPU pipeline objects. Each initialized slot creates two
+shaders, two bind-group layouts, two pipeline layouts, two render pipelines and
+one sampler once. SurfacePass remains independently rebuilt after negotiation.
+
+Slots belong to one Renderer/Gpu, never to a global generation-number map. A
+fresh Renderer starts empty even with the same caller-supplied generation.
+Prepared ownership validation still rejects old/foreign preparations. Slots
+hold only immutable pipeline objects, no RenderFrame, source lease, target,
+upload, texture, bind group or budget ticket. Valid pipeline construction may
+remain cached after a later record/budget refusal, but every partial preparation
+reservation still releases. Drop Prepared and observed submission completion
+return the same application usage baseline while initialized slots remain.
+Renderer drop drains pending work as before and drops its slots.
+
+Gpu's sticky loss/error state is checked before lookup, after acquiring the
+initialization mutex, and after construction before publishing a slot. A
+construction fault is returned without publishing; a later asynchronous driver
+fault denies cached hits, preparation, submission and readback through the
+existing checks. Slots in a lost/faulted Renderer are unusable and are released
+when that instance drops. Driver-private pipeline memory remains outside the
+measurable application budgets; the three-slot bound is an object-count bound,
+not an engine-wide memory or latency guarantee. This change adds no white-texture,
+atlas, mesh/image/glyph reuse or scene-wide quality negotiation.

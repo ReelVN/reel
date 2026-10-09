@@ -54,6 +54,8 @@ struct Varying { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
             &layout,
             shader,
             false,
+            #[cfg(test)]
+            None,
         );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,

@@ -1,5 +1,76 @@
-use super::{Quality, mesh::Vertex, targets::Target};
+use super::{Gpu, GpuError, Quality, mesh::Vertex, targets::Target};
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
+
+/// Only the three existing format/sample pairs can occupy these instance slots.
+/// No frame data or application-accounted allocations live here.
+#[derive(Default)]
+pub(super) struct PipelineSlots {
+    slots: [Mutex<Option<Arc<Pipelines>>>; 3],
+    #[cfg(test)]
+    pub(super) creations: Creations,
+}
+impl PipelineSlots {
+    #[cfg(test)]
+    pub(super) fn initialized_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.lock().unwrap().is_some())
+            .count()
+    }
+    pub(super) fn get(&self, gpu: &Gpu, quality: Quality) -> Result<Arc<Pipelines>, GpuError> {
+        gpu.check()?;
+        let index = match (quality.format, quality.samples) {
+            (wgpu::TextureFormat::Rgba16Float, 4) => 0,
+            (wgpu::TextureFormat::Rgba16Float, 1) => 1,
+            (wgpu::TextureFormat::Rgba8Unorm, 1) => 2,
+            _ => return Err(GpuError::Device("unsupported pipeline quality".into())),
+        };
+        let mut slot = self.slots[index].lock().expect("pipeline slot poisoned");
+        // Another caller may have initialized this slot while we were waiting.
+        gpu.check()?;
+        if let Some(pipelines) = &*slot {
+            return Ok(pipelines.clone());
+        }
+        let pipelines = Arc::new(Pipelines::new(
+            &gpu.device,
+            quality,
+            #[cfg(test)]
+            &self.creations,
+        ));
+        // A synchronous construction fault must never publish invalid handles.
+        // Later asynchronous faults remain sticky in Gpu and deny even cache hits.
+        gpu.check()?;
+        *slot = Some(pipelines.clone());
+        Ok(pipelines)
+    }
+}
+
+/// Test-only counts at the actual device creation calls, never lookup counts.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct Creations {
+    pub(super) bind_layouts: std::sync::atomic::AtomicUsize,
+    pub(super) shaders: std::sync::atomic::AtomicUsize,
+    pub(super) pipeline_layouts: std::sync::atomic::AtomicUsize,
+    pub(super) render_pipelines: std::sync::atomic::AtomicUsize,
+    pub(super) samplers: std::sync::atomic::AtomicUsize,
+    pub(super) invalid_shader: std::sync::atomic::AtomicBool,
+}
+#[cfg(test)]
+impl Creations {
+    pub(super) fn snapshot(&self) -> [usize; 5] {
+        use std::sync::atomic::Ordering;
+        [
+            &self.bind_layouts,
+            &self.shaders,
+            &self.pipeline_layouts,
+            &self.render_pipelines,
+            &self.samplers,
+        ]
+        .map(|count| count.load(Ordering::Relaxed))
+    }
+}
 pub struct CompositeParams {
     pub opacity: f32,
     pub mode: u32,
@@ -33,11 +104,19 @@ fn sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 impl Pipelines {
-    pub fn new(device: &wgpu::Device, quality: Quality) -> Self {
+    fn new(device: &wgpu::Device, quality: Quality, #[cfg(test)] counts: &Creations) -> Self {
+        #[cfg(test)]
+        counts
+            .bind_layouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("paint"),
             entries: &[texture(0), sampler(1)],
         });
+        #[cfg(test)]
+        counts
+            .bind_layouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("composite"),
             entries: &[
@@ -62,6 +141,8 @@ impl Pipelines {
             &paint_layout,
             include_str!("paint.wgsl"),
             true,
+            #[cfg(test)]
+            Some(counts),
         );
         let composite = pipeline(
             device,
@@ -69,7 +150,13 @@ impl Pipelines {
             &composite_layout,
             include_str!("composite.wgsl"),
             false,
+            #[cfg(test)]
+            Some(counts),
         );
+        #[cfg(test)]
+        counts
+            .samplers
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("linear premultiplied"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -144,11 +231,31 @@ pub fn pipeline(
     layout: &wgpu::BindGroupLayout,
     code: &str,
     mesh: bool,
+    #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
+    #[cfg(test)]
+    let code =
+        if counts.is_some_and(|c| c.invalid_shader.load(std::sync::atomic::Ordering::Relaxed)) {
+            "invalid WGSL for the construction failure regression"
+        } else {
+            code
+        };
+    #[cfg(test)]
+    if let Some(counts) = counts {
+        counts
+            .shaders
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("reel linear shader"),
         source: wgpu::ShaderSource::Wgsl(code.into()),
     });
+    #[cfg(test)]
+    if let Some(counts) = counts {
+        counts
+            .pipeline_layouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("reel"),
         bind_group_layouts: &[layout],
@@ -160,6 +267,12 @@ pub fn pipeline(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &attributes,
     }];
+    #[cfg(test)]
+    if let Some(counts) = counts {
+        counts
+            .render_pipelines
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("reel source over"),
         layout: Some(&pipeline_layout),
