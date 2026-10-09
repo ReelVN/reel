@@ -1191,6 +1191,12 @@ fn validate_call(
                     "extra positional arguments",
                 )?;
                 for name in &c.names {
+                    b.work(1)?;
+                    check(
+                        s.rest.as_ref().is_none_or(|rest| rest.name != name.name),
+                        ErrorKind::Signature,
+                        "named argument cannot supply rest",
+                    )?;
                     b.work(s.parameters.len() as u64)?;
                     if let Some(index) = s.parameters.iter().position(|p| p.name == name.name) {
                         check(

@@ -1,4 +1,4 @@
-# L04/L05/L06/L07/L08 lowering contract (IR v1, bytecode v1)
+# L04/L05/L06/L07/L08/L09 lowering contract (IR v1, bytecode v1)
 
 Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
 `AnalyzedModule`; it does not analyze a second semantic model or execute programs.
@@ -62,7 +62,7 @@ initializer and ordinary function loops with cleanup-aware break/continue are su
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
 reads/writes are supported by L06; L07 adds nonoptional member values/locations
 and dynamic calls through their results; L08 adds optional value chains.
-Pattern/spread, optional-chain assignment targets, full script imports/linking, structural callable annotations, native
+Patterns/collection spread, optional-chain assignment targets, full script imports/linking, structural callable annotations, native
 values, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
@@ -114,7 +114,7 @@ range with MissingLink before allocating output. A native registration cannot
 substitute for that environment. Trusted host/import native links remain supported.
 NoWait-only ownerless declarations and non-root exports likewise retain located
 rejections before table admission. Module-context block fragments use initializer
-locals. Complete script imports, patterns/spread, unified callable/standard
+locals. Complete script imports, patterns/collection spread, unified callable/standard
 library and engine sessions remain separate tasks.
 
 [Initializer contracts](tests/lowering/initializer_locals.rs) check actual source
@@ -171,7 +171,7 @@ register windows are admitted before traversal/reservation/emission. Quota error
 identify the failing collection, target or subexpression. IR/bytecode v1, VM
 interfaces and RuntimeSupport are unchanged.
 
-Spread/rest, patterns, children, classes, full script imports
+Collection spread, patterns, children, classes, full script imports
 and unified callable/library work retain located rejection. L07 extends the
 location machinery below with Member values/locations. Member is never
 rewritten as Index. The existing trusted namespace-qualified direct native call
@@ -287,6 +287,48 @@ initialization, guard counts and reachability, Group/nested joins, coalescing,
 argument windows, rebinding, terminal/cleanup edges, native boundaries, UTF-8
 spans, exact lower/emit limits and temporary reuse. Static structure does not
 establish actual side effects, hook invocation, receiver binding, GC or recovery.
+
+## Call spread and rest (L09)
+
+Issue #46 / PR #47 builds on main 244bf5c7. No opcode, format, dependency or
+crate is added. Unexpanded calls retain Window. Expanded calls evaluate the
+callee once, allocate a private Args builder and append each source-order
+ordinary, named or spread argument via ArgsPush/ArgsNamed/ArgsSpread. The final
+single Call uses Packed; CallDesc.names is empty. Dynamic spread length does
+not reserve an imaginary positional slot or become a compile-time flattening.
+
+ArgsSpread occurs at its source position before later expressions. Only
+array/tuple sources are allowed; known invalid types diagnose, unknown types
+retain runtime checks. Source/clone/quota failures belong to capture, while
+dynamic name/slot conflicts, missing arguments and defaults belong to final
+binding after actual arguments. The language contract requires shallow outer
+capture and full array content-version checks across budget slices; it is not
+an execution claim. Partial builder state needs roots, capacity and failure
+cleanup in its eventual executor.
+
+Rest is separate from ordinary Signature.parameters and occupies the following
+Parameter slot. The binder creates a new outer array including the empty case;
+the annotation applies to this binding, not its elements. Incompatible known
+annotations and named supply of rest reject. Mutable/captured parameters retain
+their required Cell storage, and the body does not recreate binder-owned Cells.
+Defaults retain only their preceding parameter prefix and definition captures.
+ExternalSignature still has no PropertyBagTail projection; ordinary B01 tail
+bag behavior is retained, while a rest-name collision cannot be silently routed
+into it.
+
+Callee and builder remain live across argument side effects. L08 null exits
+skip builder/arguments/Call; terminated argument paths emit no pending append
+or Call and preserve existing cleanup routing. Trusted native direct calls
+retain exact symbol/node identity, version, ABI, capabilities and actual default
+implementation. Collection/tuple-literal spread, new named-spread syntax,
+children, optional native values and full dynamic forwarding remain deferred.
+
+The source matrix in tests/lowering/call_arguments.rs verifies instruction
+order, Packed descriptors, parameter/capture identity, optional and cleanup CFG,
+negative boundaries, lower/emit quotas and register reuse through B01
+verify/codec/disassembly. Fresh rest allocation, true shallow alias behavior,
+ConcurrentModification, error timing, default execution and GC/restoration still
+require runtime acceptance.
 
 ## Limits and verification
 

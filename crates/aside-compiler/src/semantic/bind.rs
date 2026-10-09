@@ -1,4 +1,5 @@
 use super::*;
+mod arguments;
 use crate::hir::*;
 use crate::{DiagnosticCode as D, RelatedRange, SyntaxKind as K, TextRange};
 use smallvec::{SmallVec, smallvec};
@@ -867,6 +868,9 @@ impl Binder<'_> {
             };
             let annotation = annotation.map(|a| self.annotation(a, &inner));
             let mut pty = annotation.unwrap_or(ANY);
+            if self.modifier(p, K::Ellipsis) {
+                self.require(p, ARRAY, pty, "rest array binding");
+            }
             if receiver == Receiver::ExplicitSelf && index == 0 {
                 if let Some((class, _)) = self.class {
                     pty = self.intern_type(Type::Instance(class));
@@ -2138,6 +2142,13 @@ impl Binder<'_> {
         for c in arguments.into_iter().chain(trailing) {
             self.visit(c, &actual_ctx);
         }
+        if let Some(arguments) = arguments {
+            for arg in self.children(arguments) {
+                if self.kind(arg) == HirKind::Spread {
+                    self.check_argument_spread(arg);
+                }
+            }
+        }
         if let Some(intrinsic) = descriptor.as_ref().and_then(|d| d.intrinsic) {
             self.out.facts[n.0 as usize].intrinsic = Some(intrinsic);
             if intrinsic == Intrinsic::Bind {
@@ -3073,7 +3084,9 @@ impl Binder<'_> {
         let mut required = Vec::new();
         let mut rest = None;
         for (i, parameter) in parameters.iter().enumerate() {
-            named.insert(parameter.name, i);
+            if !parameter.rest {
+                named.insert(parameter.name, i);
+            }
             if parameter.required {
                 required.push(i);
             }

@@ -27,7 +27,8 @@ mixed Name/Index assignment chains and index compound writes using B01's existin
 descriptors and instructions. Table keys/values are evaluated before one ordered
 MakeTable; assignment receivers/keys are saved across RHS calls. See the
 [L06 static contract and matrix](LOWERING.md#fixed-collections-and-index-locations-l06).
-Spread/rest and patterns remain deferred; optional value chains are added by L08. No Aside
+Collection spread and patterns remain deferred; L08 adds optional value chains
+and L09 adds call spread/rest. No Aside
 execution, hashing/index bounds, alias/GC or engine acceptance is claimed.
 
 L07 / Issue #42 adds nonoptional MemberGet/MemberSet, mixed Name/Index/Member
@@ -156,3 +157,16 @@ cargo test -p aside-compiler --test semantic_quirrel -- --nocapture
 Those samples report parse, analysis and `execution=waiting_runtime` separately.
 [SEMANTIC_PERFORMANCE.md](SEMANTIC_PERFORMANCE.md) records large-module timing,
 allocation/retained storage, named-signature scaling and bounded diagnostics.
+
+## Call spread/rest (L09)
+
+Issue #46 / PR #47 adds source-order ArgsNew/Push/Named/Spread followed by a
+single Packed Call with no CallDesc names. Calls without spread retain Window.
+Script rest occupies Signature.rest and its proper Parameter slot, preserving
+Cell/default-prefix/capture identity. Rest receives only surplus positional
+arguments as a fresh outer array; its annotation constrains that array, not each
+element. A named argument cannot supply rest. Known invalid spread sources and
+incompatible rest annotations diagnose; unknown sources retain runtime checks.
+See [the contract](LOWERING.md#call-spread-and-rest-l09). Collection spread,
+children and native function values remain separate. No runtime acceptance is
+implied by these source/IR/B01 checks.
