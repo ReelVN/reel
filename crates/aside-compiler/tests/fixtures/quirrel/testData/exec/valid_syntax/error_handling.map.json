@@ -1,0 +1,1724 @@
+{
+  "source": "testData/exec/valid_syntax/error_handling.nut",
+  "source_sha256": "b2ecd25bd8a8e1b85b08fbcd7fc68c14885566acd7953e01146d1c8ac324ff6c",
+  "aside_sha256": "d347dc7be4828e479c4860a794ef9be4f5adab52e5ea8a424422324353fdcd1f",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
+  "segments": [
+    {
+      "original": [
+        0,
+        0
+      ],
+      "aside": [
+        0,
+        236
+      ],
+      "kind": "generated_header"
+    },
+    {
+      "original": [
+        0,
+        70
+      ],
+      "aside": [
+        236,
+        306
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        70,
+        89
+      ],
+      "aside": [
+        306,
+        328
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        89,
+        96
+      ],
+      "aside": [
+        328,
+        335
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        96,
+        118
+      ],
+      "aside": [
+        335,
+        358
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        118,
+        119
+      ],
+      "aside": [
+        358,
+        359
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        119,
+        132
+      ],
+      "aside": [
+        359,
+        370
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        132,
+        133
+      ],
+      "aside": [
+        370,
+        371
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        133,
+        147
+      ],
+      "aside": [
+        371,
+        386
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        147,
+        150
+      ],
+      "aside": [
+        386,
+        389
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        150,
+        180
+      ],
+      "aside": [
+        389,
+        420
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        180,
+        209
+      ],
+      "aside": [
+        420,
+        449
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        209,
+        232
+      ],
+      "aside": [
+        449,
+        475
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        232,
+        239
+      ],
+      "aside": [
+        475,
+        482
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        239,
+        253
+      ],
+      "aside": [
+        482,
+        497
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate empty object initializer as ordinary let statement"
+    },
+    {
+      "original": [
+        253,
+        254
+      ],
+      "aside": [
+        497,
+        498
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        254,
+        288
+      ],
+      "aside": [
+        498,
+        533
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        288,
+        289
+      ],
+      "aside": [
+        533,
+        534
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        289,
+        302
+      ],
+      "aside": [
+        534,
+        545
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        302,
+        303
+      ],
+      "aside": [
+        545,
+        546
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        303,
+        323
+      ],
+      "aside": [
+        546,
+        567
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        323,
+        326
+      ],
+      "aside": [
+        567,
+        570
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        326,
+        343
+      ],
+      "aside": [
+        570,
+        588
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        343,
+        362
+      ],
+      "aside": [
+        588,
+        607
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        362,
+        382
+      ],
+      "aside": [
+        607,
+        630
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        382,
+        389
+      ],
+      "aside": [
+        630,
+        637
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        389,
+        401
+      ],
+      "aside": [
+        637,
+        650
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        401,
+        402
+      ],
+      "aside": [
+        650,
+        651
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        402,
+        415
+      ],
+      "aside": [
+        651,
+        662
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        415,
+        416
+      ],
+      "aside": [
+        662,
+        663
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        416,
+        431
+      ],
+      "aside": [
+        663,
+        679
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        431,
+        434
+      ],
+      "aside": [
+        679,
+        682
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        434,
+        455
+      ],
+      "aside": [
+        682,
+        704
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        455,
+        471
+      ],
+      "aside": [
+        704,
+        720
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        471,
+        498
+      ],
+      "aside": [
+        720,
+        750
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        498,
+        505
+      ],
+      "aside": [
+        750,
+        757
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        505,
+        519
+      ],
+      "aside": [
+        757,
+        772
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        519,
+        520
+      ],
+      "aside": [
+        772,
+        773
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        520,
+        533
+      ],
+      "aside": [
+        773,
+        784
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        533,
+        534
+      ],
+      "aside": [
+        784,
+        785
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        534,
+        550
+      ],
+      "aside": [
+        785,
+        802
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        550,
+        553
+      ],
+      "aside": [
+        802,
+        805
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        553,
+        577
+      ],
+      "aside": [
+        805,
+        830
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        577,
+        594
+      ],
+      "aside": [
+        830,
+        847
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        594,
+        614
+      ],
+      "aside": [
+        847,
+        870
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        614,
+        621
+      ],
+      "aside": [
+        870,
+        877
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        621,
+        666
+      ],
+      "aside": [
+        877,
+        921
+      ],
+      "kind": "reviewed_edit",
+      "reason": "object field separators; thrown value and fields retained"
+    },
+    {
+      "original": [
+        666,
+        667
+      ],
+      "aside": [
+        921,
+        922
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        667,
+        680
+      ],
+      "aside": [
+        922,
+        933
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        680,
+        681
+      ],
+      "aside": [
+        933,
+        934
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        681,
+        696
+      ],
+      "aside": [
+        934,
+        950
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        696,
+        699
+      ],
+      "aside": [
+        950,
+        953
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        699,
+        726
+      ],
+      "aside": [
+        953,
+        981
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        726,
+        748
+      ],
+      "aside": [
+        981,
+        1003
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        748,
+        773
+      ],
+      "aside": [
+        1003,
+        1031
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        773,
+        774
+      ],
+      "aside": [
+        1031,
+        1032
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        774,
+        799
+      ],
+      "aside": [
+        1032,
+        1060
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        799,
+        816
+      ],
+      "aside": [
+        1060,
+        1077
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        816,
+        837
+      ],
+      "aside": [
+        1077,
+        1099
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        837,
+        838
+      ],
+      "aside": [
+        1099,
+        1100
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        838,
+        855
+      ],
+      "aside": [
+        1100,
+        1115
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        855,
+        856
+      ],
+      "aside": [
+        1115,
+        1116
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        856,
+        880
+      ],
+      "aside": [
+        1116,
+        1141
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        880,
+        881
+      ],
+      "aside": [
+        1141,
+        1142
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        881,
+        902
+      ],
+      "aside": [
+        1142,
+        1164
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        902,
+        909
+      ],
+      "aside": [
+        1164,
+        1171
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        909,
+        922
+      ],
+      "aside": [
+        1171,
+        1182
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        922,
+        923
+      ],
+      "aside": [
+        1182,
+        1183
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        923,
+        943
+      ],
+      "aside": [
+        1183,
+        1204
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        943,
+        946
+      ],
+      "aside": [
+        1204,
+        1207
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        946,
+        977
+      ],
+      "aside": [
+        1207,
+        1239
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        977,
+        978
+      ],
+      "aside": [
+        1239,
+        1240
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        978,
+        1009
+      ],
+      "aside": [
+        1240,
+        1272
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1009,
+        1042
+      ],
+      "aside": [
+        1272,
+        1305
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1042,
+        1061
+      ],
+      "aside": [
+        1305,
+        1327
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1061,
+        1068
+      ],
+      "aside": [
+        1327,
+        1334
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1068,
+        1082
+      ],
+      "aside": [
+        1334,
+        1349
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1082,
+        1083
+      ],
+      "aside": [
+        1349,
+        1350
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1083,
+        1096
+      ],
+      "aside": [
+        1350,
+        1361
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        1096,
+        1097
+      ],
+      "aside": [
+        1361,
+        1362
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1097,
+        1115
+      ],
+      "aside": [
+        1362,
+        1381
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1115,
+        1118
+      ],
+      "aside": [
+        1381,
+        1384
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1118,
+        1132
+      ],
+      "aside": [
+        1384,
+        1399
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1132,
+        1161
+      ],
+      "aside": [
+        1399,
+        1428
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1161,
+        1184
+      ],
+      "aside": [
+        1428,
+        1445
+      ],
+      "kind": "reviewed_edit",
+      "reason": "named function declaration"
+    },
+    {
+      "original": [
+        1184,
+        1185
+      ],
+      "aside": [
+        1445,
+        1446
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1185,
+        1225
+      ],
+      "aside": [
+        1446,
+        1489
+      ],
+      "kind": "reviewed_edit",
+      "reason": "brace formerly single throw branch"
+    },
+    {
+      "original": [
+        1225,
+        1226
+      ],
+      "aside": [
+        1489,
+        1490
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1226,
+        1242
+      ],
+      "aside": [
+        1490,
+        1507
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1242,
+        1246
+      ],
+      "aside": [
+        1507,
+        1511
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1246,
+        1272
+      ],
+      "aside": [
+        1511,
+        1538
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1272,
+        1274
+      ],
+      "aside": [
+        1538,
+        1540
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1274,
+        1294
+      ],
+      "aside": [
+        1540,
+        1563
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1294,
+        1301
+      ],
+      "aside": [
+        1563,
+        1570
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1301,
+        1318
+      ],
+      "aside": [
+        1570,
+        1588
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1318,
+        1319
+      ],
+      "aside": [
+        1588,
+        1589
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1319,
+        1332
+      ],
+      "aside": [
+        1589,
+        1600
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        1332,
+        1333
+      ],
+      "aside": [
+        1600,
+        1601
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1333,
+        1348
+      ],
+      "aside": [
+        1601,
+        1617
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1348,
+        1351
+      ],
+      "aside": [
+        1617,
+        1620
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1351,
+        1388
+      ],
+      "aside": [
+        1620,
+        1658
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1388,
+        1411
+      ],
+      "aside": [
+        1658,
+        1681
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1411,
+        1434
+      ],
+      "aside": [
+        1681,
+        1707
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1434,
+        1435
+      ],
+      "aside": [
+        1707,
+        1708
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1435,
+        1466
+      ],
+      "aside": [
+        1708,
+        1723
+      ],
+      "kind": "reviewed_edit",
+      "reason": "reviewed constant integer loop; no shared capture or continue"
+    },
+    {
+      "original": [
+        1466,
+        1477
+      ],
+      "aside": [
+        1723,
+        1734
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1477,
+        1519
+      ],
+      "aside": [
+        1734,
+        1779
+      ],
+      "kind": "reviewed_edit",
+      "reason": "brace formerly single throw branch"
+    },
+    {
+      "original": [
+        1519,
+        1520
+      ],
+      "aside": [
+        1779,
+        1780
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1520,
+        1537
+      ],
+      "aside": [
+        1780,
+        1795
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        1537,
+        1538
+      ],
+      "aside": [
+        1795,
+        1796
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1538,
+        1561
+      ],
+      "aside": [
+        1796,
+        1823
+      ],
+      "kind": "reviewed_edit",
+      "reason": "increment result unused"
+    },
+    {
+      "original": [
+        1561,
+        1570
+      ],
+      "aside": [
+        1823,
+        1832
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1570,
+        1607
+      ],
+      "aside": [
+        1832,
+        1870
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1607,
+        1620
+      ],
+      "aside": [
+        1870,
+        1883
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1620,
+        1641
+      ],
+      "aside": [
+        1883,
+        1907
+      ],
+      "kind": "reviewed_edit",
+      "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1641,
+        1658
+      ],
+      "aside": [
+        1907,
+        1924
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1658,
+        1682
+      ],
+      "aside": [
+        1924,
+        1949
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1682,
+        1683
+      ],
+      "aside": [
+        1949,
+        1950
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1683,
+        1700
+      ],
+      "aside": [
+        1950,
+        1965
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        1700,
+        1701
+      ],
+      "aside": [
+        1965,
+        1966
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1701,
+        1727
+      ],
+      "aside": [
+        1966,
+        1993
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1727,
+        1734
+      ],
+      "aside": [
+        1993,
+        2000
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1734,
+        1747
+      ],
+      "aside": [
+        2000,
+        2011
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        1747,
+        1748
+      ],
+      "aside": [
+        2011,
+        2012
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1748,
+        1764
+      ],
+      "aside": [
+        2012,
+        2029
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1764,
+        1767
+      ],
+      "aside": [
+        2029,
+        2032
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1767,
+        1797
+      ],
+      "aside": [
+        2032,
+        2063
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1797,
+        1799
+      ],
+      "aside": [
+        2063,
+        2065
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        1799,
+        1828
+      ],
+      "aside": [
+        2065,
+        2095
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        1828,
+        1829
+      ],
+      "aside": [
+        2095,
+        2096
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        150,
+        180
+      ],
+      "aside": [
+        389,
+        419
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "caught",
+        "==",
+        "\"test error\"",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        326,
+        343
+      ],
+      "aside": [
+        570,
+        587
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "rt_caught",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        434,
+        455
+      ],
+      "aside": [
+        682,
+        703
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "int_err",
+        "==",
+        "42",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        553,
+        577
+      ],
+      "aside": [
+        805,
+        829
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "null_err",
+        "==",
+        "null",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        699,
+        726
+      ],
+      "aside": [
+        953,
+        980
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "tbl_err",
+        ".",
+        "code",
+        "==",
+        "404",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        946,
+        977
+      ],
+      "aside": [
+        1207,
+        1238
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "inner_caught",
+        "==",
+        "\"inner\"",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        978,
+        1009
+      ],
+      "aside": [
+        1240,
+        1271
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "outer_caught",
+        "==",
+        "\"outer\"",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        1118,
+        1132
+      ],
+      "aside": [
+        1384,
+        1398
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "no_err",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        1246,
+        1272
+      ],
+      "aside": [
+        1511,
+        1537
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "divide",
+        "(",
+        "10",
+        ",",
+        "2",
+        ")",
+        "==",
+        "5",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        1351,
+        1388
+      ],
+      "aside": [
+        1620,
+        1657
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "div_err",
+        "==",
+        "\"division by zero\"",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        1570,
+        1596
+      ],
+      "aside": [
+        1832,
+        1858
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "errors_caught",
+        "==",
+        "3",
+        ")"
+      ]
+    },
+    {
+      "original": [
+        1767,
+        1797
+      ],
+      "aside": [
+        2032,
+        2062
+      ],
+      "tokens": [
+        "assert",
+        "(",
+        "rethrown",
+        "==",
+        "\"original\"",
+        ")"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+Baseline: a50a7ceda254dfa1549166545ac905283fe9e26a plus source regression tests
+Rust 1.96.0; Linux x86_64; explicit 2 MiB Rust thread stack inside subprocess
+Namespace before: expected namespace export=None, got Some("a"); regression failed
+Drop before: 10000-module analysis_ms=990; tail drop aborted (signal 6), stack overflow
+After debug single observation: analysis_ms=951; result drop_ms=28; shared result drop+history validation_ms=25
+After release single observation: analysis_ms=190; result drop_ms=24; shared result drop+history validation_ms=20
+Both after observations passed, including 9999 surviving source hops and Weak-origin expiry
+Source: m0 pub let x=1; m1..m9999 pub use m<previous>::{x}; default analysis budgets
+Independent debug/release subprocess test verifies ordinary result drop and retained-tail drop
+Commands (repo root with Rust 1.96.0):
+cargo test -p aside-compiler --test semantic_depth deep_reexport_result_drop
+cargo test -p aside-compiler --test semantic_depth --release deep_reexport_result_drop
+cargo test -p aside-compiler --test semantic_modules
+For uncaptured observations run the built semantic_depth test binary:
+L03_REEXPORT_DROP_CHILD=1 <debug-or-release-semantic_depth-binary> --exact reexport_drop_child --nocapture
+Validation: fmt --check, workspace all-target clippy -D warnings, workspace debug/release --locked
+T01 integrity: 10 immutable sources; 32 unchanged assertion maps; execution=waiting_runtime
+No capture/signature timing rerun or general performance improvement claimed

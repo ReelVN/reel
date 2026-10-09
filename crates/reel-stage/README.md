@@ -1,9 +1,33 @@
 # Stage recording, geometry and presentation
 
-R01 implements Issue #25 against architecture §16 at `ac004182`, on U02
-`8dc2428` (Issue #11 / draft PR #12). Its draft PR targets
-`task/issue-11-presented-geometry` so that only the R01 extension is reviewed.
-The core identity/budget types are reused without a dependency cycle.
+R01 implements Issue #25 against architecture §16 at `ac004182`, extending
+U02 `8dc242891be199ef2e6da7bc88a6ffdaf80cc403` (Issue #11 / PR #12).
+The independently reviewed R01 implementation and owner-budget repair are
+`9578cb3991d62a5dffb6a8580a1a6d1a850230cc`.
+
+This branch normally merges main
+`acb40b7fa8d42fc6c747352ddfff7f98da638c93`, where U02 PR #12 and B01 PR #21
+are integrated.
+The R01 production code, interfaces, tests and Masonry closure remain unchanged
+from the reviewed R01 commit. The latest main language specification, compiler,
+bytecode format/verifier, storage and core are retained alongside the R01 architecture and guide updates.
+The core identity/budget types are reused without a dependency cycle. No V03
+execution implementation is included, and retargeting/merging PR #27 into main
+is a separate integration step.
+
+Cargo.lock merged without a conflict, retaining the combined main/R01 graph and
+Masonry's exact `proc-macro2 1.0.106` / `quote 1.0.45` pins. The README conflict
+was the superseded PR #12/PR #27 integration status; this introduction replaces
+those old target-branch instructions while preserving the U02 evidence below.
+
+The combined workspace passes debug/release tests (209 repository checks per
+profile) and strict all-target Clippy; workspace and Masonry formatting checks
+also pass. Six additional independent tests remain local and pass both profiles,
+including the original two-Draw Work-owner counterexample and 2,735 builds across
+all work cutoffs in six Inline/empty/isolated/External scenarios. U02's 24 input
+contracts and warmed pointer dispatch retain zero allocations/reallocations.
+Selected `masonry_core`/`tree_arena` debug/release checks (5 + 4) and strict
+all-target Clippy pass. These are CPU contracts, not GPU/device acceptance.
 
 The bridge moves a real Masonry VisualLayerPlan and that cycle's compact geometry
 into a frozen RecordedSource. FrameBuild compiles the public imaging records

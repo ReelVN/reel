@@ -1,0 +1,8 @@
+WARNING: w223 (compared-with-bool) Comparison with boolean.
+testData/static_analyzer/w223_method_is.nut:11:4
+
+if (r.foo() != s) // warns
+    ^-----------
+    print("d")
+
+
