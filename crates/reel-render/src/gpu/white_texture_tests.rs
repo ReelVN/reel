@@ -1,11 +1,6 @@
 //! Real resource device-call counts and preparation ownership regressions.
+use super::pipeline_tests::r01_fixture;
 use super::*;
-#[allow(dead_code, reason = "shared actual UI fixture")]
-#[path = "../../../reel-ui/tests/support/fixture.rs"]
-mod fixture;
-#[allow(dead_code, reason = "shared R01 compiler fixture")]
-#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
-mod r01_fixture;
 use r01_fixture::*;
 use reel_core::identity::FrameId;
 use reel_ui::frame::{FrameBuild, FrameInfo};
