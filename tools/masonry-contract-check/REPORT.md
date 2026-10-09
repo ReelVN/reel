@@ -1,5 +1,10 @@
 # 收尾报告 — 2026-10-08 14:03 UTC
 
+Historical observations below describe their original revisions. Raw evidence links
+point to the pre-cleanup Git revision; new generated output belongs under
+`target/reel-artifacts/`. Current maintenance commands are documented in
+[`tools/reel-dev`](../reel-dev/README.md).
+
 在原 Draft PR #7 继续收尾。负责人确认最小输入 fork 必要，授权实验完善；生产源码导入和目标设备验收仍待审查。clippy、默认 codeload 下载及完整核对脚本均通过，审查发现的三项输入回归已修正。具体适配建议见 [ADAPTATION-NOTES.md](ADAPTATION-NOTES.md)，它与实际行为验证分开标注。Issue #3 保持开放。
 
 ## 已完成和实际观察
@@ -12,11 +17,11 @@
 - 实验补丁统一冻结命中、hover、capture 坐标/尺寸、DPI、画序和祖先路由。真实滑条在旧呈现几何中产生 0.25 → 0.7 → 1.0；跳过、表面不可用、错误、错误帧 ID、过期帧和表面代数都不切换视图；匹配的新接受结果才切换坐标和静止 hover。
 - 失焦/销毁/禁用各交付一次 Cancel；正常释放交付一次 Up，捕获清掉，后续移动不再产生值变化。按钮孤立释放不点击、正常配对释放点击一次；真实状态可投影到作者 Image。失败呈现后的父变换、clip 和重排不改输入路径，新接受帧才改变这些行为。
 - 奇异仿射矩阵不进入命中/捕获。只验证单个主鼠标主键、仿射矩形；透视、自定义命中映射、多指针及模态不在已验证集合。
-- 格式、两种构建 all-targets clippy（`-D warnings`）、未修改上游对照、补丁 debug 行为、release 运行与依赖审计均通过。完整原始输出见 [evidence/verification.log](evidence/verification.log)。
+- 格式、两种构建 all-targets clippy（`-D warnings`）、未修改上游对照、补丁 debug 行为、release 运行与依赖审计均通过。完整原始输出见 [evidence/verification.log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/masonry-contract-check/evidence/verification.log)。
 
 ## 审查回归：修正前失败，修正后实际验证
 
-新增用例先针对 PR 原 `152f401` 的输入 patch 运行，exit 101，实际观察三项失败：禁用子控件点击返回 No、Button Up 后又收到 Cancel、RawCtx 返回未接受的局部平移 (7,3)。原始失败输出保存为 [evidence/review-regressions-before.log](evidence/review-regressions-before.log)。修正后相同用例 exit 0，输出见 [evidence/review-regressions-after.log](evidence/review-regressions-after.log)：
+新增用例先针对 PR 原 `152f401` 的输入 patch 运行，exit 101，实际观察三项失败：禁用子控件点击返回 No、Button Up 后又收到 Cancel、RawCtx 返回未接受的局部平移 (7,3)。原始失败输出保存为 [evidence/review-regressions-before.log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/masonry-contract-check/evidence/review-regressions-before.log)。修正后相同用例 exit 0，输出见 [evidence/review-regressions-after.log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/masonry-contract-check/evidence/review-regressions-after.log)：
 
 - pointer_hit_test 保留 disabled 目标的祖先路径，只过滤已删除/stashed 节点。无快照与冻结视图下，父 StageGroup 均返回 Handled::Yes；禁用 Slider 的非取消指针事件回调、动作和捕获均为零。状态更新回调仍按上游策略执行，捕获目标变禁用仍独立发送一次 Cancel。
 - 新增 capture 终止已交付标记，在真实 Up/Cancel handler 开始前设置；capture 保持到其回调结束，删除识别已终止状态。Button/Slider、Up/Cancel、无快照/冻结模式均在父组同次冒泡删除子控件后只有一个终止回调；active 仍为 true、最终 capture=None。事件外删除用例继续验证一次 Cancel。
@@ -30,13 +35,13 @@
 ```sh
 cargo +1.96.0 check --locked --manifest-path tools/masonry-contract-check/Cargo.toml
 cargo +1.96.0 run --locked --manifest-path tools/masonry-contract-check/Cargo.toml
-python3 tools/masonry-contract-check/scripts/prepare.py --source /tmp/masonry-upstream
-cargo +1.96.0 run --locked --manifest-path tools/masonry-contract-check/experiment/Cargo.toml \
-  --features experimental --target-dir tools/masonry-contract-check/target
+cargo run --locked -p reel-dev -- prepare-masonry /path/to/extracted-xilem
+cargo +1.96.0 run --locked --manifest-path target/reel-artifacts/masonry-experiment/Cargo.toml \
+  --features experimental --target-dir target/reel-artifacts/masonry-build
 cargo +1.96.0 fmt --manifest-path tools/masonry-contract-check/Cargo.toml --check
 cargo +1.96.0 test --locked --manifest-path tools/masonry-contract-check/Cargo.toml
-cargo +1.96.0 test --locked --manifest-path tools/masonry-contract-check/experiment/Cargo.toml \
-  --features experimental --target-dir tools/masonry-contract-check/target
+cargo +1.96.0 test --locked --manifest-path target/reel-artifacts/masonry-experiment/Cargo.toml \
+  --features experimental --target-dir target/reel-artifacts/masonry-build
 ```
 
 上述生成过程逐一验证 72 个源文件哈希，原始源码闭包 592,487 字节；只有 `masonry_core` 六个文件有实验差异。`tree_arena` 同级路径、继承配置和许可证保留，其他生态没有导入生产仓库。
@@ -44,7 +49,7 @@ cargo +1.96.0 test --locked --manifest-path tools/masonry-contract-check/experim
 本轮完整核对命令从仓库根成功结束（exit 0）。有意设置旧工具链环境，验证脚本会明确切换到已安装的 1.96.0：
 
 ```sh
-RUSTUP_TOOLCHAIN=1.90.0 ./tools/masonry-contract-check/scripts/check.sh
+RUSTUP_TOOLCHAIN=1.90.0 ./tools/masonry-contract-check/scripts/check.sh /path/to/extracted-xilem
 ```
 
 没有传 --source，实际从固定 codeload URL 下载并校验来源，然后完成格式、两种 clippy、原始对照、补丁 debug、release 和依赖审计；没有残留后台构建。最后一轮 release 缓存重编用时 1m 01s，完整运行日志另保留在：
@@ -53,9 +58,9 @@ RUSTUP_TOOLCHAIN=1.90.0 ./tools/masonry-contract-check/scripts/check.sh
 /workspace/reel-masonry/tools/masonry-contract-check/target/final-verification.log
 ```
 
-提交中的 `evidence/verification.log` 已复制最终完整日志。默认下载也单独执行了 `python3 tools/masonry-contract-check/scripts/prepare.py` 并 exit 0，输出见 [evidence/codeload-prepare.log](evidence/codeload-prepare.log)。独立依赖审计此前已 exit 0，本轮完整脚本再次完成；check-deps.py 自身也显式使用 cargo +1.96.0。两种构建均确认隔离 workspace、统一类型版本且无活跃 winit/wgpu/masonry_winit。
+提交中的 `evidence/verification.log` 已复制最终完整日志。默认下载也单独执行了 `python3 tools/masonry-contract-check/scripts/prepare.py` 并 exit 0，输出见 [evidence/codeload-prepare.log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/masonry-contract-check/evidence/codeload-prepare.log)。独立依赖审计此前已 exit 0，本轮完整脚本再次完成；check-deps.py 自身也显式使用 cargo +1.96.0。两种构建均确认隔离 workspace、统一类型版本且无活跃 winit/wgpu/masonry_winit。
 
-clippy 的实际命令分别为 `cargo +1.96.0 clippy --locked --manifest-path tools/masonry-contract-check/Cargo.toml --all-targets -- -D warnings`，以及实验 manifest 的同一命令加 `--features experimental --target-dir tools/masonry-contract-check/target`。两者 exit 0，没有压制 clippy 告警。工具修正主要是显式版本选择、转发观察入口和真实回归用例；三个行为缺陷在实验 core patch 中修复。
+clippy 的实际命令分别为 `cargo +1.96.0 clippy --locked --manifest-path tools/masonry-contract-check/Cargo.toml --all-targets -- -D warnings`，以及实验 manifest 的同一命令加 `--features experimental --target-dir target/reel-artifacts/masonry-build`。两者 exit 0，没有压制 clippy 告警。工具修正主要是显式版本选择、转发观察入口和真实回归用例；三个行为缺陷在实验 core patch 中修复。
 
 ## 环境与暂时测量
 

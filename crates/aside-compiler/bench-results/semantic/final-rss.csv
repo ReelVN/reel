@@ -1,2 +1,0 @@
-functions,source_bytes,parse_us,analysis_us,nodes,symbols,captures,work,accounted_bytes,allocator_retained_bytes,allocations,node_size,symbol_size,capture_size,symbol_capacity_bytes,capture_capacity_bytes,mode
-10000,718890,36411,130128,240001,40000,10000,190000,65723597,65723629,1480118,72,36,16,2359296,640000,captures

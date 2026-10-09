@@ -1,5 +1,10 @@
 # L04 compiler validation and measurements
 
+Historical observations below describe their original revisions. Raw evidence links
+point to the pre-cleanup Git revision; new generated output belongs under
+`target/reel-artifacts/`. Current maintenance commands are documented in
+[`tools/reel-dev`](../../tools/reel-dev/README.md).
+
 Implementation measured: `2edce46ca236c6424db61d8f3dd89b0e5fd19b25`.
 Rust 1.96.0, Linux x86_64/glibc 2.41, 2026-10-08, release optimization.
 The initial dataset remains pinned to that revision. The 2026-10-09 source-review
@@ -56,11 +61,11 @@ Run from the repository root with the pinned toolchain on PATH:
 
 ```sh
 cargo build -p aside-compiler --example lowering_probe --release --locked
-python3 crates/aside-compiler/bench-results/lowering/run_probe.py
+cargo run --locked -p reel-dev -- compiler-probe lowering
 ```
 
 The runner preserves individual samples, medians, environment/revision and
-rejections in [bench-results/lowering](bench-results/lowering/). The source
+rejections in [bench-results/lowering](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/lowering). The source
 generator and retained-allocation assertion are in
 [examples/lowering_probe.rs](examples/lowering_probe.rs).
 
@@ -71,7 +76,7 @@ cargo fmt --all --check
 cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
 cargo test -p aside-compiler --all-targets --locked
 cargo test -p aside-compiler --all-targets --release --locked
-python3 crates/aside-compiler/tests/fixtures/quirrel/check_integrity.py
+cargo run --locked -p reel-dev -- check
 git diff --check
 ```
 
@@ -132,11 +137,11 @@ At 20,000 loops, lowering normally rejects at the 100,000-block quota: source
 bytes `783337..783384`, 6,266,280 charged compiler work units. The normal rejection
 is recorded rather than counted as a successful compilation. Raw samples,
 medians, environment and the rejection are the `2026-10-09*` files in
-[bench-results/lowering](bench-results/lowering/). Reproduce from the root:
+[bench-results/lowering](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/lowering). Reproduce from the root:
 
 ```sh
 cargo build -p aside-compiler --example lowering_probe --release --locked
-python3 crates/aside-compiler/bench-results/lowering/run_probe.py --label 2026-10-09 --modes loops
+cargo run --locked -p reel-dev -- compiler-probe lowering loops
 ```
 
 ## Pending acceptance

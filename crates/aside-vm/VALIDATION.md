@@ -82,7 +82,7 @@ checks alongside their source modules. They exercise actual stored graphs:
 
 ## Fixed loads
 
-[LOAD-RESULTS.txt](LOAD-RESULTS.txt) contains all three final sequential runs,
+[LOAD-RESULTS.txt](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-vm/LOAD-RESULTS.txt) contains all three final sequential runs,
 including per-phase maxima, p50/p95/p99, allocation totals, peaks, queue/pending
 accounting, edge/byte releases and final object counts. Each load first collects
 with an explicit host root, verifies survival, removes that root, then collects

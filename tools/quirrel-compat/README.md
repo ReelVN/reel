@@ -1,96 +1,73 @@
 # Quirrel 原始测试与 Aside 转换基线
 
-Issue [#13](https://github.com/jhq223/reel/issues/13)，Aside 规范 1.1。
-[实际结果](REPORT.md) · [逐 fixture CSV](results/inventory.csv) · [完整记录 JSON](results/inventory.json)
+`third_party/quirrel` 保留 Quirrel 4.41 固定快照、上游 Python runner/build、
+COPYRIGHT、来源哈希和全部原始 fixtures。Aside 的 Rust 迁移完成前继续作为行为参照，
+不链接进发行播放器。转换规则、deliberate deltas、衍生源码和双向字节映射仍被版本管理。
 
-本项只修改 `third_party/quirrel/**`、`tools/quirrel-compat/**`。结果是可复现的原语言
-oracle、逐 fixture 处理状态和首批可审查的转换。依赖固定 Quirrel
-`19f17df9b6ee43c91ef5c635fd45970ec76c5dbe` 和隔离的 Aside 前端
-`fc418d9a26ebf5f0dfdbde2d6c25670e78c94926`；未更改语言接口、作者指南或 VM。
-没有 Cargo 工作区依赖、播放器链接或 CI/Actions 配置。
+## 当前检查
 
-## 三种结果
-
-| 列 | 实际做了什么 | 尚不能证明什么 |
-| --- | --- | --- |
-| `original_run` | 构建并执行上游 `sq`，按原 runner 比较原 golden；执行 fixture 内的原断言 | Aside 行为 |
-| `aside_parse` | 真正调用固定提交的 `aside_compiler::parse`，保留诊断与映射 | 名称、绑定、类型、效果、lowering、执行 |
-| `aside_execution` | 当前所有行均为 `waiting_runtime` | 完整执行器尚未实现，没有 Aside 语义通过项 |
-
-## 复现
-
-从仓库根目录运行。需要 Python 3、GCC/G++、Make、CMake 和 Rust 1.96.0。
-本环境最初没有 CMake 和 Rust，安装在 `/tmp`，没有修改系统工具链：
+从仓库根运行；要求 Rust 1.96.0。以下命令只检查文件或解析/分析，不执行 Aside：
 
 ```sh
-python3 -m pip install --target /tmp/reel-build-tools cmake==3.31.6
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/reel-rustup-init.sh
-CARGO_HOME=/tmp/reel-cargo RUSTUP_HOME=/tmp/reel-rustup \
-  sh /tmp/reel-rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain 1.96.0
-export PATH="/tmp/reel-build-tools/cmake/data/bin:/tmp/reel-cargo/bin:$PATH"
-export CARGO_HOME=/tmp/reel-cargo RUSTUP_HOME=/tmp/reel-rustup
+cargo run --locked -p reel-dev -- check
+cargo test --locked -p reel-dev
+cargo run --locked -p reel-dev -- inventory
+cargo test --locked -p aside-compiler --test semantic_quirrel
 ```
 
-构建沿用上游 `doc/build.py::build_sq` 的 Release `sq` 目标。
-默认 `ENABLE_VAR_TRACE=OFF`、`SQUSEDOUBLE` 未定义，因此 int64/float32；**Aside 目标是 int64/float64**。
-没有改编译选项以消除原测试失败。
+需要主动再生成已审查衍生文件时使用 `cargo run --locked -p reel-dev -- convert --write`。
+Rust 检查器覆盖源 SHA、token 边界、原断言完整保留、完整双向 UTF-8 映射、
+1,296 个 fixtures 的六类分类，以及 accepted T01 的 10 个源文件/32 处断言映射。
+源码 inventory 明确标记 `original_run=not_run`、`aside_parse=not_run` 和
+`aside_execution=waiting_runtime`；原始运行、解析/分析、Aside 执行相互独立。
+
+所有可再生成结果写到 `target/reel-artifacts/`。旧完整观测在
+[清理前提交](https://github.com/jhq223/reel/tree/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results)。
+必要 ZIP/SHA 回归输入精简保存在 `tools/reel-dev/tests/fixtures/quirrel-observations`：
+原 8 个 mismatch、一个通过 fixture 的 default/0/255 三次观测、可读失败字节及原 golden 引用。
+完整运行包可用 `cargo run --locked -p reel-dev -- verify-results DIR --t01-baseline` 核验，
+包含原种子选择、每个 returncode=0、runner_exit_code=1、8 mismatch、源/golden 未修改和前端哈希。
+
+## 上游观测的独立复现
+
+以下命令执行的是 Quirrel 上游测试，不是 Aside；只在确需重新采集时运行。
+需要 CMake、C/C++ 编译器和 Rust。构建沿用上游 Release `sq` 目标；
+默认 int64/float32 与 Aside 的 int64/float64 目标差异保留，不改 golden 消除失败。
 
 ```sh
-cmake -S third_party/quirrel -B tools/quirrel-compat/build -DCMAKE_BUILD_TYPE=Release
-cmake --build tools/quirrel-compat/build --target sq --parallel 4
-python3 tools/quirrel-compat/run_upstream.py \
-  --sq tools/quirrel-compat/build/bin/sq \
-  --out /tmp/reel-compat-results \
-  --work tools/quirrel-compat/work-repro
+cmake -S third_party/quirrel -B target/reel-artifacts/quirrel-build -DCMAKE_BUILD_TYPE=Release
+cmake --build target/reel-artifacts/quirrel-build --target sq --parallel 4
+cargo run --locked -p reel-dev -- run-upstream \
+  --sq target/reel-artifacts/quirrel-build/bin/sq \
+  --out target/reel-artifacts/quirrel-results \
+  --work target/reel-artifacts/quirrel-work
 ```
 
-此基线的 runner **退出 1**，有 8 个真实 golden 不匹配，详情见报告。
-`--work` 必须不存在；`--out` 不能包含既有 `upstream.json`，避免混入旧结果。
-工具调用未修改的上游 `testRunner.py::main`：原 12 worker、10 秒单次 timeout、
-`-optCH`、`--check-stack` / `-diag-file` / `-sa` / `-ast-dump` / `--parse-types` 和
-默认/0/255 iteration seed 选择均保留。观察 hook 只记录命令、返回码、比较结果及每次输出，
-不改选择或断言。runner 在副本运行，因为它可能自动创建缺失的 golden；这种运行记为
-`unasserted`，不能算通过。本次没有创建或修改任何 golden。
+第一方 Python 观测桥已由 Rust `run-upstream` 替代；固定快照中的上游
+`testRunner.py` 和构建 Python 文件未修改，继续作为契约与来源参照。
+Rust 保留六个入口、首个点号的文件选择、原参数、12 worker、10 秒 timeout、
+每个 fixture 的 default→0→255 种子选择/顺序、逐行数量和 Python `rstrip` 比较。
+Exec/Types 的 stdout/stderr 合写；其他入口分别保留原始进程流。
+每次 seed 的实际输出字节及 SHA 在下一次覆写前保存，归档时间固定为 1980，失败字节可直接读取。
+无 golden 时只在副本中创建并标记 `unasserted`，新增 golden 或源变更使桥接命令失败。
+正常 runner 退出仍为 0/1；observer 异常的 JSON runner 码为 2，命令退出为 1。
+`--work`、`--out` 都必须不存在、互不重叠，并位于产物根目录；原快照运行前后均核验。
+两次 `-v` 查询也采用 10 秒限制并保存原始字节；日志格式与 observer/platform 元数据改为 Rust。
+Unix 超时终止自有进程组中的包装器及后代，并限制等待管道 EOF 的时间；Windows 尚未实测。
 
-`upstream.json` 索引 `upstream-artifacts.zip` 中每次运行的完整实际输出、进程 stdout/stderr、hash。
-失败输出另外放在可读的 `failures/` 中。也保存了完全不挂观察 hook 的直接运行日志；
-复现命令是在副本中运行 `python3 testRunner.py -sq <绝对 sq 路径> -wd <输出目录> -ci`。
-
-首批转换和固定前端检查：
-
-```sh
-python3 tools/quirrel-compat/convert.py
-git fetch origin codex/issue-8-aside-frontend
-git worktree add --detach /tmp/reel-aside-frontend-repro fc418d9a26ebf5f0dfdbde2d6c25670e78c94926
-python3 tools/quirrel-compat/check_frontend.py \
-  --frontend /tmp/reel-aside-frontend-repro \
-  --work tools/quirrel-compat/work-probe-repro \
-  --out /tmp/reel-compat-results
-python3 tools/quirrel-compat/inventory.py --results /tmp/reel-compat-results
-```
-
-probe 使用本目录的 Rust 调用代码和固定 `probe.lock`，`cargo build --release --locked`；
-通过 path dependency 引用隔离工作区的原前端，不复制其实现，不改其文件。
-工具拒绝错误 HEAD 或有改动的前端工作区。该提交来自 draft PR #9，未随远程分支移动。
-probe 每份输入的 SHA-256、诊断、诊断对应原源码范围和执行等待状态见 `frontend.json`。
-
-检查提交内的证据和生成物：
-
-```sh
-python3 tools/quirrel-compat/convert.py --check
-python3 tools/quirrel-compat/inventory.py --check
-python3 -m unittest discover -s tools/quirrel-compat -p 'test_*.py' -v
-```
-
-完整性检查重新读取实际输出，对照原 golden 和原 runner 的行比较规则；还验证所有
-fixture/seed 都有记录、无丢弃断言、字面量边界、UTF-8 字节偏移和双向映射。
-这是证据校验，不能算 Aside 执行测试。
+本次迁移只通过模拟子进程、固定合成 fixture 和负例验证，不运行真实 Quirrel 测试集。
+检查包括全部 1,296 fixture/1,494 次计划参数与历史观测的固定摘要、12 worker/seed 顺序、
+原始字节/SHA/ZIP、crash/timeout/spawn/decode 错误、快照变更和缺失 golden 的退出路径。
+**Rust observer 的实际上游复跑尚未验证**，这些测试不能据此宣称真实兼容率。
+该历史基线实际退出 1，8 个 golden 不匹配；不能把它报告成全部通过。
+旧 fc418d9 外部前端工程/lock 和 Python wrapper 已退休；当前解析/分析使用工作区 Rust 测试。
+首批运行宿主仍见 [HARNESS.md](HARNESS.md)，历史观察见 [REPORT.md](REPORT.md)。
 
 ## 转换和分类
 
 `recipes.json` 是 **10 份固定 hash 的人工逐项审查清单**，不是全库自动转换器。
 每个编辑写明原 UTF-8 字节范围、完整原文本、新文本和具体语法/绑定理由。
-`lexical.py` 区分 token、字符串、注释和空白，禁止切开 token；只处理已审查的源文件。
+`tools/reel-dev/src/fixtures.rs` 的 Rust 扫描器 区分 token、字符串、注释和空白，禁止切开 token；只处理已审查的源文件。
 它不宣称实现完整 Quirrel grammar。未匹配 hash、重叠范围、错误原文本或断言变化均直接失败。
 没有全库 regex 替换；上游 runner 自身的 seed 选择 heuristic 原样保留。
 
@@ -119,5 +96,6 @@ for 循环。循环转换逐份检查更新顺序、return、continue 和捕获�
 tuple 没有对应原生 oracle，明确列为缺口；文本、逐调用缺省、每实例字段、显式 self、
 强绑定、严格 bool、检查整数和普通表自身槽规则均保持规范，不追求抹平差异。
 
-本次预算是上游 runner 的单次 10 秒超时和 12 worker；前端 probe 批次超时 30 秒。
+本次预算是上游 runner 的单次 10 秒超时和 12 worker；语义 probe 保留 30 秒，
+budget probe 保留 15 秒，两者均有短时限模拟回归测试与进程组终止保护。
 本项没有扩大到 VM 性能、GC、快照、32 位或设备验收。

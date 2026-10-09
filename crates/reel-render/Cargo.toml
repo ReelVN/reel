@@ -13,8 +13,8 @@ reel-core = { path = "../reel-core" }
 reel-stage = { path = "../reel-stage" }
 
 [dev-dependencies]
-masonry_core = { path = "../../third_party/masonry/masonry_core", default-features = false }
-masonry = { path = "../../third_party/masonry/masonry", default-features = false }
+masonry_core = { workspace = true }
+masonry = { workspace = true }
 
 [lints]
 workspace = true
