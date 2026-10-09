@@ -57,6 +57,8 @@ cargo test --locked -p reel-render --features wgpu --test gpu_correctness -- --i
 cargo test --locked -p reel-render --features wgpu --test gpu_correctness --release -- --ignored --nocapture --test-threads=1
 cargo test --locked -p reel-render --features wgpu --lib pipeline_reuse -- --ignored --nocapture --test-threads=1
 cargo test --locked -p reel-render --features wgpu --lib pipeline_reuse --release -- --ignored --nocapture --test-threads=1
+cargo test --locked -p reel-render --features wgpu --lib white_texture -- --include-ignored --nocapture --test-threads=1
+cargo test --locked -p reel-render --features wgpu --lib white_texture --release -- --include-ignored --nocapture --test-threads=1
 cargo test --locked -p reel-ui actual_parley_label_glyphs_are_copied_without_reshaping -- --ignored --nocapture
 cargo test --locked -p reel-ui --release actual_parley_label_glyphs_are_copied_without_reshaping -- --ignored --nocapture
 cargo test --locked -p reel-player --features window actual_window_retry_and_recovery_contract -- --ignored --nocapture --test-threads=1
@@ -216,6 +218,163 @@ under ignored `target/reel-artifacts/issue32/scope-fix` (`results.txt`,
 the shared environment setup is `target/reel-artifacts/issue32/env.sh`). No generated evidence is
 tracked. The repository has no workflow files; normal branch push uses
 `[skip ci]` commits, with no Actions enable/dispatch/rerun operation.
+
+## Issue #36 preparation-local white texture verification
+
+Base: [`9e0e10b856a1a6995da0a9268b605cd508e3ad71`](https://github.com/jhq223/reel/commit/9e0e10b856a1a6995da0a9268b605cd508e3ad71).
+Validated Rust source:
+[`28b5d98c32ebbd7d86c60186e944cfbd3a18ada1`](https://github.com/jhq223/reel/commit/28b5d98c32ebbd7d86c60186e944cfbd3a18ada1).
+The following report commit changes no validated Rust. Scope is the existing
+reel-render GPU Context, its private test instrumentation and R02 documents.
+No new crate, dependency, public API, quality negotiation or other resource
+cache/atlas change. reel-ui keeps its current single-package module structure.
+R03 production pipeline construction, locks, error scopes and publication are
+unchanged; two test-fixture modules are now shared with the new tests. Index and
+both creator guides remain for the owner to synchronize. No V03 executor or
+Aside source program was executed.
+
+Context starts with no white image and reserves/uploads it on first solid or
+clip use. Its slot is shared by both crossfade streams and recursive masks.
+Only encoder/queue references and the original budget tickets survive Context;
+Renderer/Gpu/Pipelines retain no white image. The existing upload cost remains
+536 resource bytes: 16 f32 input + 256 CPU padded staging + 256 GPU staging +
+8 texture extent. It is charged once for a using transaction. All target,
+transient and other resource paths retain their original accounting.
+
+`src/gpu/white_texture_tests.rs` has one extent-accounting unit test and seven
+explicit real-device tests. Test-build-only counters live on each Gpu and
+increment beside actual resource `create_texture`, staging `create_buffer_init`
+and encoder `copy_buffer_to_texture` calls. They count uploads, not cache hits;
+targets, bind groups, SurfacePass and diagnostic readback are excluded.
+
+| Transaction | Actual texture / staging / copy calls | Resource bytes |
+| --- | ---: | ---: |
+| Empty group, no white use | 0 / 0 / 0 | 0 |
+| 100 solid fills | 1 / 1 / 1 | 536 |
+| 100 geometric clips | 1 / 1 / 1 | 536 |
+| 50 solids + 50 clips | 1 / 1 / 1 | 536 |
+| Crossfade, 100 uses in each input | 1 / 1 / 1 | 536 |
+| Solid plus recursive mask with 50 solids + 10 clips | 1 / 1 / 1 | 536 |
+| 1x1 image only, white unused | 1 / 1 / 1 (image) | 536 |
+| That image + 100 solids | 2 / 2 / 2 (image + white) | 1,072 |
+
+Crossfade readback asserts every pixel is linear premultiplied
+`[0.75, 0, 0.25, 1]`; recursive alpha-mask and mixed-image readbacks assert white.
+One 536-byte cap admits all 100 solids; a second live transaction gets resource
+Pressure without uploads and preserves the first's exact usage/admission.
+535 bytes gives permanent Budget before any upload. Unsupported record and
+second-crossfade-input failures after white creation, and later target/transient
+Budget failures, return all partial reservations. Dropping an unsubmitted
+Prepared releases its ticket, and the next transaction uploads anew.
+
+Eight concurrent Contexts each upload once and hold exactly 8 resource tickets /
+4,288 resource bytes; the ninth is Busy. Actual queue completion is deliberately
+observed by Device::poll(Wait) before Renderer::poll: all frame leases, residency
+and admission remain live during this observation delay. Renderer::poll retires
+all eight IDs once and returns CPU frame and GPU usage to zero. Foreign submit,
+actual Device::destroy before submit/admission, and destroy/drop with submitted
+work release or retain obligations at the existing terminal boundaries; a fresh
+same-generation renderer uploads independently. Retained budget-pool handles
+assert all bytes/tickets are zero after Renderer drop.
+
+All reproducible commands above passed. In both debug/release the scoped
+all-feature suite passed 87 tests with 32 ignored (ignored is not passed).
+Explicit runs passed eight white-texture tests, seven original GPU pixel tests,
+three correctness tests, ten R03 pipeline tests, one actual Parley test and one
+Xvfb/X11 window recovery test per build. Parley preserves 14 positioned glyphs;
+Swash readback covers 593 pixels. The existing analytical composition, whole-group
+opacity, clips/masks, image conversion/retirement, quality tiers and recovery
+assertions remain. fmt and four-package strict Clippy passed. Clippy initially
+reported duplicate test fixture modules; sharing the existing modules resolves
+that failure without suppressing the lint or changing R03 assertions.
+Feature-off check/tree passed, with neither wgpu, winit, aside-vm, aside-compiler
+nor retired UI packages in the normal dependency tree. Feature-off tests passed
+75 tests with four ignored in each build, using the existing test-support gate:
+
+```sh
+cargo test --locked -p reel-core -p reel-ui -p reel-render -p reel-player --no-default-features --features reel-core/test-support --release -- --test-threads=1
+```
+
+### Same-load count, byte and CPU comparison
+
+Measurements use the same immutable Rust Scene/FrameBuild fixture and test counters
+in a detached worktree at the fixed base, preserving its production draw,
+Context and pipeline code. Only test instrumentation, the measurement source,
+module registration and fixture visibility are added there. The new count
+regression fails on the old path with actual `[100,100,100]` versus `[1,1,1]`
+(expected debug exit 101). The benchmark's baseline expectation is 128; every
+sample asserts all three actual call deltas and resource usage, and final
+readback asserts unchanged white pixels. The benchmark runs on the fixed base
+and the validated source with the commands below in both debug and release:
+
+```sh
+# Fixed baseline worktree with identical test instrumentation/fixture only:
+cargo clean -p reel-render
+cargo clean -p reel-render --release
+REEL_R04_EXPECT_UPLOADS=128 cargo test --locked -p reel-render --features wgpu --lib white_texture_cpu_measurement -- --ignored --nocapture --test-threads=1
+REEL_R04_EXPECT_UPLOADS=128 cargo test --locked -p reel-render --features wgpu --lib white_texture_cpu_measurement --release -- --ignored --nocapture --test-threads=1
+# Validated source, default expected upload count is one:
+cargo clean -p reel-render
+cargo clean -p reel-render --release
+cargo test --locked -p reel-render --features wgpu --lib white_texture_cpu_measurement -- --ignored --nocapture --test-threads=1
+cargo test --locked -p reel-render --features wgpu --lib white_texture_cpu_measurement --release -- --ignored --nocapture --test-threads=1
+```
+
+Both loads have 128 white uses at 64x48, RGBA16Float/4x, default immutable limits.
+Each has one warm-up preparation and 30 timed prepares on the same Renderer.
+Pipeline/device construction, frame building, Prepared drop, submission,
+completion and readback are outside the prepare timer. Runs are sequential with
+one test thread and no parallel build. Sorted nearest-rank p50/p95 use indices
+14/28. These are instrumented native Rust builds; driver/OS caches are not flushed.
+Measured resource extents fall from 68,608 to 536 bytes in every sample (68,072
+bytes / 99.21875% removed); actual upload object/copy calls fall from 128 to one.
+The budget formula includes the same four extents on both sides, not driver
+allocation granularity or private object/pipeline storage.
+
+The worktrees share a target directory; profile-specific reel-render cleanup
+above forces recompilation when switching source. Initial baseline release
+attempts reused an optimized artifact and failed the actual-call assertion
+`[1,1,1] != [128,128,128]`. They produced no accepted timing distribution.
+The final baseline and optimized runs verify their own expected counts before
+any measurements are accepted. Cleanup/build time is outside the timer.
+
+CPU durations in microseconds:
+
+| Build | Load | Baseline p50 | Baseline p95 | Shared p50 | Shared p95 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| debug | 128 solids | 53951.985 | 62965.831 | 40613.357 | 66182.034 |
+| debug | 64 solids + 64 clips | 170995.179 | 209479.823 | 140187.925 | 148207.908 |
+| release | 128 solids | 3113.678 | 3765.699 | 2067.323 | 2893.617 |
+| release | 64 solids + 64 clips | 9983.722 | 11876.032 | 6687.901 | 9703.472 |
+
+All four p50 values decrease in these runs. Debug solid-only p95 increases;
+these 30-sample distributions do not establish a uniform tail-latency gain or
+engine-wide latency bound. Target creation, mesh/bind-group and scope work are
+unchanged by this optimization.
+
+Environment: Debian 13 x86_64, Rust 1.96.0 (ac68faa20), AMD EPYC 9V74 virtual CPU
+with five visible CPUs, Mesa llvmpipe 25.0.7-2+deb13u1 / LLVM 19.1.7 CPU Vulkan,
+Xvfb/X11 1280x800x24, DejaVuSans.ttf. Rust and native development/driver packages
+are installed/extracted under `/workspace`, without repository dependency or
+Cargo.lock changes. The reproducible environment is
+`target/reel-artifacts/issue36/env.sh`, using WGPU_BACKEND=vulkan,
+the extracted lvp_icd.json, DISPLAY=:99 and REEL_R01_TEST_FONT=DejaVuSans.ttf.
+
+These CPU/extent numbers describe this software-device preparation workload.
+They do not measure physical GPU execution/throughput, scanout or end-to-end
+frame latency. Physical GPU, hardware OOM/hot-unplug, Wayland, Windows/macOS,
+mobile OS lifecycle and asynchronous WebGPU scope completion remain unverified.
+Device::destroy and suspend/resume are controlled injections. Driver-private
+allocation/latency and other resource optimizations remain outside this task.
+There is no remaining local validation blocker; owner review/acceptance remains.
+The PR remains draft and Issue #36 remains open.
+
+Generated command/exit records, complete test/benchmark logs and the environment
+remain under ignored `target/reel-artifacts/issue36/` (`commands.txt`,
+`results.txt`, `validated-source.txt`, `white-*.log`, GPU/pipeline/window logs,
+`baseline-red-debug.log`, `baseline-measure-*.log`, `optimized-measure-*.log`).
+No generated evidence is tracked. Normal pushes use `[skip ci]` commits; no
+Actions enable/dispatch/rerun, force push, main write, merge or ready operation.
 
 ## Launch
 

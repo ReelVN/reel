@@ -1,6 +1,6 @@
 # R02 device contract (implemented portable device profile)
 
-Scope: `reel-render` optional wgpu adapter and `reel-player` assembly; stage/core
+Scope: `reel-render` optional wgpu adapter and `reel-player` assembly; UI/core
 remain portable. Started from R01 411cc7531431f35fbd43a614476815e22cd58f21;
 synchronized the exact accepted painter work-error repair
 9578cb3991d62a5dffb6a8580a1a6d1a850230cc. No VM execution.
