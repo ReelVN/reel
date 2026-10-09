@@ -68,9 +68,9 @@ cargo test -p aside-compiler --locked
 cargo test -p aside-compiler --release --locked
 cargo run -p aside-compiler --example check -- path/to/file.aside module
 cargo build -p aside-compiler --example frontend_probe --release --locked
-python3 crates/aside-compiler/bench-results/run_probe.py parse
-python3 crates/aside-compiler/bench-results/run_probe.py lex
-python3 crates/aside-compiler/bench-results/run_probe.py named
+cargo run --locked -p reel-dev -- compiler-probe frontend parse
+cargo run --locked -p reel-dev -- compiler-probe frontend lex
+cargo run --locked -p reel-dev -- compiler-probe frontend named
 ```
 
 `ASIDE_DUMP_TREE=1` prints the actual CST in the check example. Source diagnostics
@@ -112,7 +112,7 @@ native symbols, and source enclosing bindings (including capture of story `view`
 Accepted T01 fixture bytes/maps/license are immutable and locally hash-checked:
 
 ```sh
-python3 crates/aside-compiler/tests/fixtures/quirrel/check_integrity.py
+cargo run --locked -p reel-dev -- check
 cargo test -p aside-compiler --test semantic_quirrel -- --nocapture
 ```
 

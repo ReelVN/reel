@@ -335,7 +335,7 @@ Each measured allocator peak was covered by charged peak. Maximum observed GC
 call was 44.387 microseconds (100,000-element array); the one-unit binary-buffer
 case had a 15.575 microsecond maximum. These are one-run baseline observations,
 including allocator instrumentation, not device or wall-clock guarantees.
-Raw output is retained in [ROOT-RANGES-BASELINE.txt](ROOT-RANGES-BASELINE.txt).
+Raw output is retained in [ROOT-RANGES-BASELINE.txt](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-vm/ROOT-RANGES-BASELINE.txt).
 Measurements ran in this Linux x86_64 KVM container with five exposed CPUs,
 reported model Intel Xeon Platinum 8573C, using rustc 1.96.0
 `ac68faa20` (2026-05-25); this is not the N100/Vita reference hardware.

@@ -5,7 +5,7 @@ Current recording/render interface: [R01-INTERFACE.md](R01-INTERFACE.md), Issue
 The remaining geometry/input descriptions below continue to apply. Historical
 dependency information describes U02 before this extension.
 
-Scope: third_party/masonry, crates/reel-stage, required root manifest/lock and
+Scope: crates/{masonry,masonry_core,tree_arena,include_doc_path,reel-stage}, required root manifest/lock and
 this task's verification. Dependencies: PR #7 (31b9430, experiment ccd0547) and
 D01 (c03226a). Task branch combines both; draft PR #12 targets PR #7. Integrate
 both dependencies before rebasing onto the shared production base.
@@ -113,5 +113,5 @@ producer Scene/cache residency.
 
 No author language syntax is added. Both guides now state R01's Rust-only
 implementation scope. Verification and measurements are in README.md,
-R01-REPORT.md and evidence/. Historical U02 32-bit checks are separate from
+R01-REPORT.md (historical evidence links) and `target/reel-artifacts/` for new runs. Historical U02 32-bit checks are separate from
 native-library linking, target execution and real-device acceptance.

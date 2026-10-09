@@ -1,2 +1,0 @@
-functions,source_bytes,parse_us,analysis_us,nodes,symbols,captures,work,accounted_bytes,allocator_retained_bytes,allocations,node_size,symbol_size,capture_size,symbol_capacity_bytes,capture_capacity_bytes,mode,signature_builds,signature_parameters
-10000,718890,32850,120535,240001,40000,10000,380006,65723597,65723629,1460133,72,36,16,2359296,640000,captures,1,0

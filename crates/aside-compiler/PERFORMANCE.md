@@ -1,5 +1,10 @@
 # Frontend verification and fixed-source cost
 
+Historical observations below describe their original revisions. Raw evidence links
+point to the pre-cleanup Git revision; new generated output belongs under
+`target/reel-artifacts/`. Current maintenance commands are documented in
+[`tools/reel-dev`](../../tools/reel-dev/README.md).
+
 Measured 2026-10-08 on Linux 6.18.44 x86_64, AMD EPYC 9V74, KVM (5 exposed CPUs),
 Rust 1.96.0 `ac68faa20`, release defaults. One synchronous source call per sample;
 no semantic execution or bytecode is measured. Source construction and a warmup
@@ -50,15 +55,15 @@ cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
 cargo test -p aside-compiler --locked
 cargo test -p aside-compiler --release --locked
 cargo build -p aside-compiler --example frontend_probe --release --locked
-python3 crates/aside-compiler/bench-results/run_probe.py parse
-python3 crates/aside-compiler/bench-results/run_probe.py lex
-python3 crates/aside-compiler/bench-results/run_probe.py named
+cargo run --locked -p reel-dev -- compiler-probe frontend parse
+cargo run --locked -p reel-dev -- compiler-probe frontend lex
+cargo run --locked -p reel-dev -- compiler-probe frontend named
 cargo build -p aside-compiler --example budget_probe --locked
-python3 crates/aside-compiler/bench-results/run_budget_probe.py
+cargo test --locked -p aside-compiler --test deep_process
 ```
 
 The Python wrapper uses standard resource for child RSS; GNU time was unavailable.
-CSV, RSS and budget outputs are committed in [bench-results](bench-results/).
+Historical CSV, RSS and budget outputs are archived in [bench-results](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results).
 
 ## Behavioral evidence
 
@@ -95,16 +100,16 @@ against that commit:
 git worktree add --detach /tmp/reel-budget-before 4f673fe
 cp crates/aside-compiler/examples/budget_probe.rs /tmp/reel-budget-before/crates/aside-compiler/examples/
 CARGO_TARGET_DIR=/tmp/reel-budget-target cargo build --manifest-path /tmp/reel-budget-before/Cargo.toml -p aside-compiler --example budget_probe --locked
-python3 crates/aside-compiler/bench-results/run_budget_probe.py /tmp/reel-budget-target/debug/examples/budget_probe
+cargo test --locked -p aside-compiler --test deep_process
 ```
 
-[budget-before.txt](bench-results/budget-before.txt) records actual observations:
+[budget-before.txt](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/budget-before.txt) records actual observations:
 max_tokens=2 on `"a"` emitted 3 ordinary tokens with exhausted=false;
 `\u{+41}` was accepted; 5000 else branches produced depth 5005 and a budget
 error only at EOF; 50000 branches aborted from stack overflow (signal 6).
 The 5000 case did not crash on this host, so no such claim is made.
 
-[budget-after.txt](bench-results/budget-after.txt): ordinary tokens now obey the
+[budget-after.txt](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/budget-after.txt): ordinary tokens now obey the
 exact emission limit, with at most one separate lossless error-tail leaf. The
 same escape diagnoses ASL006. Both 5000/50000 children exit normally with tree
 depth 130 and ASR001 at bytes 2019..2023, before the long tail. Unwind/error
@@ -115,7 +120,7 @@ stack-overflow regression.
 ## Before/after grouped assignment reproduction
 
 The previous baseline `fc418d9` and fix `d453c6a` were built as separate check
-CLIs. [assignment-lookahead-before-after.json](bench-results/assignment-lookahead-before-after.json)
+CLIs. [assignment-lookahead-before-after.json](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/assignment-lookahead-before-after.json)
 retains all 36 actual runs, including source, argv, exit code, complete tree and
 diagnostics in both module and body entries. Four grouped location targets
 failed before: `(f(a, b).x)`, `(a[(i, j)])`, `([1][0])`, `({x: 0}.x)`.
@@ -130,14 +135,14 @@ wrappers exposed a regression; these historical observations remain intact.
 git worktree add --detach /tmp/reel-assignment-before fc418d9
 CARGO_TARGET_DIR=/tmp/reel-issue8-repro-target cargo build --manifest-path /tmp/reel-assignment-before/Cargo.toml -p aside-compiler --example check --locked
 cargo build -p aside-compiler --example check --locked
-python3 crates/aside-compiler/bench-results/run_assignment_probe.py /tmp/reel-issue8-repro-target/debug/examples/check target/debug/examples/check > crates/aside-compiler/bench-results/assignment-lookahead-before-after.json
+cargo test --locked -p aside-compiler --test frontend retired_cli_probes_keep_both_entry_points_and_exact_cases
 ```
 
 ## Shared-pattern trial regression and bounds
 
 Fix `46392a80bd96104ed4954500f9a055397e35a0d7` replaces the delimiter/structure
 heuristic with a silent trial of the actual pattern/type/default-expression
-grammar. [pattern-trial-before-after.json](bench-results/pattern-trial-before-after.json)
+grammar. [pattern-trial-before-after.json](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/pattern-trial-before-after.json)
 records 88 real CLI runs and executable hashes: debug/release, module/body,
 before `b6463fa` and after the fix. Typed/OR grouped tuples and arrays failed
 before with ASP009, but all four now exit 0 with TypePattern/OrPattern trees.
@@ -176,7 +181,7 @@ a controlled speed comparison or a target-device guarantee.
 # They can also be rebuilt in a detached b6463fa worktree with a separate target.
 cargo build -p aside-compiler --example check --locked
 cargo build -p aside-compiler --example check --release --locked
-python3 crates/aside-compiler/bench-results/run_pattern_trial_probe.py /tmp/reel-pattern-repro/check-before-debug /tmp/reel-pattern-repro/check-before-release target/debug/examples/check target/release/examples/check 46392a80bd96104ed4954500f9a055397e35a0d7 > crates/aside-compiler/bench-results/pattern-trial-before-after.json
+cargo test --locked -p aside-compiler --test frontend retired_cli_probes_keep_both_entry_points_and_exact_cases
 ```
 
 All owner-resolved forms are implemented and ASP015 removed. Binding/name/type/

@@ -28,11 +28,11 @@ def digest(path):
 
 
 def verify_snapshot():
-    manifest = json.loads((VENDOR / "UPSTREAM.json").read_text())
-    for name, expected in manifest["files_sha256"].items():
-        if digest(VENDOR / name) != expected:
-            raise RuntimeError(f"snapshot modified: {name}")
-    return manifest
+    # Validation is owned by the unified Rust tool, including source pins,
+    # conversion boundaries and immutable T01 assertion maps.
+    subprocess.run(["cargo", "run", "--locked", "-p", "reel-dev", "--", "check"],
+                   cwd=VENDOR.parents[1], check=True)
+    return json.loads((VENDOR / "UPSTREAM.json").read_text())
 
 
 def main():
@@ -43,6 +43,9 @@ def main():
                         help="must not exist; disposable upstream copy")
     args = parser.parse_args()
     sq, out, work = args.sq.resolve(), args.out.resolve(), args.work.resolve()
+    artifact_root = (VENDOR.parents[1] / "target/reel-artifacts").resolve()
+    if not out.is_relative_to(artifact_root) or not work.is_relative_to(artifact_root):
+        parser.error("--out and --work must be below target/reel-artifacts")
     manifest = verify_snapshot()
     if work.exists():
         parser.error("--work already exists; choose a fresh directory")

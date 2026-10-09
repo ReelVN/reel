@@ -1,9 +1,14 @@
 # Issue #13 实测报告
 
+Historical observations below describe their original revisions. Raw evidence links
+point to the pre-cleanup Git revision; new generated output belongs under
+`target/reel-artifacts/`. Current maintenance commands are documented in
+[`tools/reel-dev`](../reel-dev/README.md).
+
 Quirrel 已真正构建并按原 runner 跑完：**1296 个 fixture / 1494 次运行，1486 次通过，8 次 golden 不匹配，退出 1**。
 首批 **10 份 Aside 转换解析通过，32 个原 assert 调用保留**。**Aside 执行仍全部等待运行时**，没有语义通过项。
 
-[复现命令](README.md#复现) · [完整逐 fixture CSV](results/inventory.csv) · [结构化清单](results/inventory.json)
+[复现命令](README.md#复现) · [完整逐 fixture CSV](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/inventory.csv) · [结构化清单](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/inventory.json)
 
 ## 固定来源和环境
 
@@ -15,11 +20,11 @@ Quirrel 已真正构建并按原 runner 跑完：**1296 个 fixture / 1494 次�
   CMake 与 Rust 原先缺失，通过官方安装方式放在 /tmp 后完成构建，未改系统工具链。
 - 测试：Python 3.12.14，原 12 worker / 单次 10 秒超时；六个原入口和 iteration seeds 全保留。
   构建 warning、命令、原结果、返回码和每次完整输出均保留。
-  [环境](results/environment.json)、[配置日志](results/configure.log)、[完整构建日志](results/build.log)。
+  [环境](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/environment.json)、[配置日志](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/configure.log)、[完整构建日志](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/build.log)。
 - Aside 前端：隔离 detached worktree `/tmp/reel-aside-frontend`，固定 PR #9 的
   `fc418d9a26ebf5f0dfdbde2d6c25670e78c94926`；Rust/Cargo 1.96.0，
   外部 probe `cargo build --release --locked`。前端工作区前后无改动，本 PR 不含前端实现。
-  [probe 源码](probe.rs)、[固定依赖](probe.lock)、[构建日志](results/frontend-build.log)、[实测解析](results/frontend.json)。
+  [probe 源码](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/probe.rs)、[固定依赖](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/probe.lock)、[构建日志](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/frontend-build.log)、[实测解析](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/frontend.json)。
 
 ## 原套件结果
 
@@ -32,12 +37,12 @@ Quirrel 已真正构建并按原 runner 跑完：**1296 个 fixture / 1494 次�
 | parse types | 5 | 5 | 5 | 0 |
 | doc/examples | 458 | 524 | 524 | 0 |
 
-[原 runner 日志](results/upstream.log)、[逐次命令/seed/返回码/比较结果](results/upstream.json)、
-[所有实际字节输出的归档](results/upstream-artifacts.zip)。zip 内路径由 JSON 的 actual/process_stdout/process_stderr 字段索引。
+[原 runner 日志](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/upstream.log)、[逐次命令/seed/返回码/比较结果](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/upstream.json)、
+[所有实际字节输出的归档](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/upstream-artifacts.zip)。zip 内路径由 JSON 的 actual/process_stdout/process_stderr 字段索引。
 每个实际输出都保存 SHA-256；同一个 fixture 的默认/0/255 输出分别保留，不被后一次覆盖。
 
 两个带记录的完整运行具有相同的 1494 个结果和实际输出 hash；另一次完全不挂 hook 的
-[原 runner 直接运行](results/upstream-uninstrumented.log)同样退出 1、同样 8 个失败。
+[原 runner 直接运行](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/upstream-uninstrumented.log)同样退出 1、同样 8 个失败。
 没有崩溃、超时、缺失 golden 或新建 golden。上游 runner 的 numOfTests 会统计非源码文件，
 这里用实际 sq 调用和完整 fixture/seed 集合核对，不以文件数冒充执行结果。
 
@@ -49,14 +54,14 @@ Quirrel 已真正构建并按原 runner 跑完：**1296 个 fixture / 1494 次�
 
 | fixture | 差异 | actual / 原 golden |
 | --- | --- | --- |
-| `testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut` | 光标跨度短 1 字符 | [actual](results/failures/testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/lex_errors/newline_in_const.diag.txt) |
-| `testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut` | 列 30 / 31 | [actual](results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.diag.txt) |
-| `testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut` | 列 7 / 8 | [actual](results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_expression.diag.txt) |
-| `testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut` | 列 28 / 29 | [actual](results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.diag.txt) |
-| `testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut` | 列 1 / 2 | [actual](results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_while.diag.txt) |
-| `testData/diagnostics/import_04.nut` | 列 0 / 1 | [actual](results/failures/testData/diagnostics/import_04.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/import_04.diag.txt) |
-| `testData/diagnostics/import_07.nut` | 光标跨度短 1 字符 | [actual](results/failures/testData/diagnostics/import_07.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/import_07.diag.txt) |
-| `testData/diagnostics/import_error.nut` | 列 19 / 20 | [actual](results/failures/testData/diagnostics/import_error.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/import_error.diag.txt) |
+| `testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut` | 光标跨度短 1 字符 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/compilation_errors/lex_errors/newline_in_const.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/lex_errors/newline_in_const.diag.txt) |
+| `testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut` | 列 30 / 31 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_bracket.diag.txt) |
+| `testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut` | 列 7 / 8 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_expression.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_expression.diag.txt) |
+| `testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut` | 列 28 / 29 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_token_brace.diag.txt) |
+| `testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut` | 列 1 / 2 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/compilation_errors/syntax_errors/expected_while.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/compilation_errors/syntax_errors/expected_while.diag.txt) |
+| `testData/diagnostics/import_04.nut` | 列 0 / 1 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/import_04.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/import_04.diag.txt) |
+| `testData/diagnostics/import_07.nut` | 光标跨度短 1 字符 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/import_07.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/import_07.diag.txt) |
+| `testData/diagnostics/import_error.nut` | 列 19 / 20 | [actual](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/failures/testData/diagnostics/import_error.nut/default.actual.txt) / [golden](../../third_party/quirrel/testData/diagnostics/import_error.diag.txt) |
 
 ## 首批可追溯转换
 
@@ -86,7 +91,7 @@ Quirrel 已真正构建并按原 runner 跑完：**1296 个 fixture / 1494 次�
 top→最后项索引仅用于原测试已知非空的数组。未转换原 this/default/overflow 断言来伪造兼容。
 
 最初解析发现 error_handling 的空对象 let 初始化缺少分号；已修正 recipe，最终 10 份解析
-均无诊断且未耗尽预算。[初次诊断记录](results/frontend-initial.json)仍保留。
+均无诊断且未耗尽预算。[初次诊断记录](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/tools/quirrel-compat/results/frontend-initial.json)仍保留。
 解析不检查绑定、类型、效果和执行；[未来测试宿主](HARNESS.md)尚未实现。
 
 ## 全量处理状态和有意差异

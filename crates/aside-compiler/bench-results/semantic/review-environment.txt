@@ -1,7 +1,0 @@
-Measured code: 5e27085faff313f2280994898b5e3b6fa3ec881d
-Baseline code: 726dbf8cfd035d9b4ee819b81c5619254c3b26f0 + shared generator only
-Rust 1.96.0, Linux x86_64 KVM, AMD EPYC 9V74, 5 visible vCPUs
-Seven separate processes per mode/size; source generation precedes timing
-Instrumentation: stats_alloc 0.1.10; release; ordinary System allocator
-Generator sha256: b87df1f67333419929b1730826d494ba4f837b9a1620e221c04ff8782c2bca0e
-UTC recorded: 2026-10-08T17:46:45.716580+00:00

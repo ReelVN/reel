@@ -19,22 +19,31 @@ fn deep_child() {
     if std::env::var_os("ASIDE_DEEP_CHILD").is_none() {
         return;
     }
-    let source = "if true {} else ".repeat(50_000) + "if true {}";
-    let parsed = parse_with_options(
-        &source,
-        ParseOptions {
-            entry: EntryPoint::Expression,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert!(parsed.exhausted());
-    assert!(
-        parsed
-            .diagnostics()
-            .iter()
-            .any(|d| d.code == DiagnosticCode::BudgetExceeded)
-    );
-    assert_eq!(parsed.syntax().text().to_string(), source);
-    drop(parsed); // dropping and traversing the bounded error tree must also be safe
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            for count in [5_000, 50_000] {
+                let source = "if true {} else ".repeat(count) + "if true {}";
+                let parsed = parse_with_options(
+                    &source,
+                    ParseOptions {
+                        entry: EntryPoint::Expression,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(parsed.exhausted());
+                assert!(
+                    parsed
+                        .diagnostics()
+                        .iter()
+                        .any(|d| d.code == DiagnosticCode::BudgetExceeded)
+                );
+                assert_eq!(parsed.syntax().text().to_string(), source);
+                drop(parsed); // dropping and traversing the bounded error tree must also be safe
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

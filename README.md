@@ -7,3 +7,5 @@ Reel 是面向视觉小说的跨平台游戏引擎，Aside 是其 Rust 实现的
 Reel is a cross-platform visual novel engine with Aside, an embedded language implemented in Rust.
 
 Design baseline 1.1 has passed architecture, language, and creator-interface review. Implementation is organized around shared contracts, the VM, the stage, and media. See [documentation](docs/README.md) for the architecture, language specification, and bilingual creator guide.
+
+开发检查与第一方脚本覆盖迁移见 [reel-dev](tools/reel-dev/README.md)。Masonry 四个维护包位于 `crates/`，共用根 workspace 和 lockfile；可再生成输出统一放入忽略的 `target/reel-artifacts/`。

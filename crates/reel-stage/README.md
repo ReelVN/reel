@@ -58,7 +58,7 @@ Current full debug/release runs retain those behavior checks.
   queries/raw mutable queries return Option for absent children. WidgetRef
   enumerates selected painter topology, filtering destroyed children. Ordinary
   animation/layout/mutation and nonpointer updates use Live. The context literal
-  inventory in evidence/ is a review aid, not a substitute for source review.
+  source inventory is a review aid, not a substitute for source review.
 - Pointer routing shares one fixed borrowed view and a reused bounded bubble
   route. Old-only exits use old geometry; new-only entries and stationary cursor
   use the new view. Shared ancestors receive no duplicate notifications. Current
@@ -100,7 +100,7 @@ captured cleanup still receives exactly one Cancel. Shared/mutable safe-tree loo
 no longer allocate ancestor Vecs and preserve descendant scope after reparent/removal.
 
 The recursive lookup introduced in `694b395` has been replaced with bounded path
-storage and iterative descent. `check-tree-depth.py` recreates the exact six review
+storage and iterative descent. `tree_arena/tests/lookup_depth.rs` preserves the six current review
 probes using TreeArena<u64>: build on a separate 16MiB stack, print BUILT, query on
 the reported small stack, then forget the arena to exclude destruction. It compares
 local git snapshots fbb3c79/2534b9a with current source. Old lookup passes all six,
@@ -154,7 +154,7 @@ two old keys retain two charged leases, and the remaining 62 record attempts ret
 SnapshotBudget. Releasing those keys restores recording; key clones do not create
 extra tickets. The single-ticket maximum-reservation test also verifies clear,
 raw view retention and final release. Before-fix failures and before/after allocation
-output are preserved in evidence/.
+output are preserved in Git history; the regression tests remain in source.
 
 The actual production candidate is also CPU-rendered in the nested-group case:
 two 0.5-opacity groups yield alpha 64 over overlapping Image and Button. Group
@@ -200,7 +200,7 @@ At 3 actual nodes / 1,120 geometry bytes / 1,376 snapshot-limit bytes, candidate
 slot refusal took 93–99ns, a retained external view's budget refusal 260–638ns,
 and release followed by real record recovery 2,138–2,970ns. Final usage was zero.
 These tiny timings are diagnostic observations; correctness is asserted separately.
-Raw runs are retained in `evidence/release-tests-{1,2,3}.log`.
+Historical raw runs are in the pre-cleanup Git revision; new measurements go to `target/reel-artifacts/`.
 
 An additional allocator-instrumented binary dispatches real uncaptured Move events
 through PresentationBridge, with 20 warmups and 100 events per case. It hits the
@@ -239,28 +239,30 @@ packages or binaries are vendored in this task.
 
 ```sh
 cargo fmt --all --check
-cargo fmt --manifest-path third_party/masonry/Cargo.toml --all --check
+cargo fmt --manifest-path Cargo.toml --all --check
 cargo test --workspace --features reel-core/test-support --locked -- --test-threads=1
 cargo clippy --workspace --all-targets --features reel-core/test-support --locked -- -D warnings
-CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path third_party/masonry/Cargo.toml -p masonry_core --lib --no-default-features -- -D warnings
-CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path third_party/masonry/Cargo.toml -p masonry_core -p tree_arena --lib -- --test-threads=1
-CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path third_party/masonry/Cargo.toml -p masonry_core -p tree_arena --all-targets -- -D warnings
-cargo test -p reel-stage --release --no-default-features --locked --no-run --message-format=json > /tmp/reel-stage-build.jsonl
-python3 crates/reel-stage/scripts/measure.py /tmp/reel-stage-build.jsonl /tmp/reel-stage-release.log
+CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path Cargo.toml -p masonry_core --lib --no-default-features -- -D warnings
+CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path Cargo.toml -p masonry_core -p tree_arena --lib -- --test-threads=1
+CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path Cargo.toml -p masonry_core -p tree_arena --all-targets -- -D warnings
+mkdir -p target/reel-artifacts
+cargo test -p reel-stage --release --no-default-features --locked --no-run --message-format=json > target/reel-artifacts/stage-build.jsonl
+cargo run --locked -p reel-dev -- measure target/reel-artifacts/stage-build.jsonl contracts
 cargo test -p reel-stage --release --no-default-features --locked --test pointer_allocations -- --test-threads=1 --nocapture
-python3 crates/reel-stage/scripts/check-tree-depth.py --output /tmp/tree-depth-lookup.log
-CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path third_party/masonry/Cargo.toml -p tree_arena --no-default-features --features safe_tree --lib
+cargo test --locked -p tree_arena --test lookup_depth -- --nocapture
+cargo test --locked -p tree_arena --release --test lookup_depth -- --nocapture
+CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path Cargo.toml -p tree_arena --no-default-features --features safe_tree --lib
 cargo tree -p reel-stage --edges normal --locked
 PKG_CONFIG_ALLOW_CROSS=1 cargo check -p reel-stage --lib --no-default-features --locked --target i686-unknown-linux-gnu
 PKG_CONFIG_ALLOW_CROSS=1 cargo build -p reel-stage --lib --no-default-features --locked --target i686-unknown-linux-gnu
 ```
 
-Formatting, workspace strict Clippy, direct masonry_core/tree_arena all-target strict Clippy,
-debug/release contracts and i686 check/rlib build passed. The broader direct vendored
-workspace `clippy --workspace --lib ... -D warnings` finds seven existing warnings
-in fixed upstream Button/Label/Slider (single_match and narrowing casts). Their
-behavior was preserved; `selected-upstream-clippy.log` records that failed optional
-check. Normal dependencies include one local masonry_core/tree_arena and reel-core;
+The current root-workspace strict Clippy check includes all four Masonry crates.
+The seven previously reported Button/Label/Slider warnings are resolved with a
+single-match simplification, checked cache-rank conversions and documented f64/f32
+API boundaries; no widget formula changed. Historical debug/release and i686
+observations elsewhere in this README refer to their original revisions.
+Normal dependencies include one local masonry_core/tree_arena and reel-core;
 they contain no winit/wgpu, reel-render/player or registry Masonry duplicate.
 Masonry itself has no reel-core dependency.
 
@@ -270,11 +272,11 @@ native-library linking or execution. No Vita, Windows/N100 or GPU device accepta
 is claimed.
 
 The fixed upstream source closure, original hashes, Apache-2.0 licenses and
-complete local diff are under third_party/masonry. To audit, extract official
+source mapping are under `crates/masonry`; the local diff is generated into `target/reel-artifacts/`. To audit, extract official
 Xilem commit `271a27a6d4a930f7878d404f9014e3c50a3a9b88`, then run:
 
 ```sh
-python3 crates/reel-stage/scripts/audit-source.py /path/to/extracted-upstream
+cargo run --locked -p reel-dev -- audit-masonry /path/to/extracted-upstream
 ```
 
 The audit verifies 94 original source/build/doc/resource files and the one new
