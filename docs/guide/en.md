@@ -346,6 +346,7 @@ settings belongs to the engine's global preference service; restoring a story sa
 
 ## 13 Extending Your Own Building Blocks
 The smallest unit of reuse is an ordinary fn. Functions returning nodes build scenes; functions returning actions choreograph them; ordinary objects expose parts that callers need to manipulate. Named arguments, children, closures, and module imports work together to support this approach.
+Default parameter expressions run in parameter order on each call, after every actual argument has been evaluated. They may refer to earlier parameters and use the expression or block's final value as their result. An explicit return belongs in a function body; it is invalid inside that function's parameter default, including conditional or short-circuit branches. A nested function defined within a default returns through its own body. break and continue may target only loops established inside the default, and throw propagates a parameter-preparation failure.
 ```aside
 fn arrive(node, destination_x, seconds = 0.5) {
     parallel(

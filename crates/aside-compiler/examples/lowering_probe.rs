@@ -53,7 +53,14 @@ fn main() {
             }
             source.push_str(")}");
         }
-        _ => panic!("mode must be plain, captures, temporaries or named"),
+        "loops" => {
+            source.push_str("fn choose(x)->bool{true} fn f(flag){");
+            for _ in 0..n {
+                source.push_str("while choose(if flag{break;}else{continue;}){} ");
+            }
+            source.push_str("7}");
+        }
+        _ => panic!("mode must be plain, captures, temporaries, named or loops"),
     }
     let time = Instant::now();
     let parsed = parse(&source).unwrap();

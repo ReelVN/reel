@@ -3,14 +3,14 @@
 Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
 `AnalyzedModule`; it does not analyze a second semantic model or execute programs.
 The owner's language baseline is
-`32054c99d8ba5e174657d844247a25aeb58a9989:docs/aside-language.md`, superseding
+`65f8ba9177ab81e817202fb56fdd92bab10fe6d0:docs/aside-language.md`, superseding
 `7322292a32a416e6963e5b70162a25fb4e38e54a`. The branch retains real merge ancestry
-from L03 `6f2329b3efe758a4bb8f52e469c25bcd396ff719` (PR #20) and B01
+from L03 `4500f788c5cd56bd431d6f75424f0c8a756a540d` (PR #20) and B01
 `57ff60e635b2f81f0ccbcf323ce420e45b908ce8` (PR #21). No V03 implementation is
 copied or merged. Dependency acceptance remains the integration owner's decision.
 
-Allowed edits: aside-compiler and its Cargo.lock dependency entry. The initial
-dependency merge resolves language/creator documents to the owner baseline.
+Allowed edits: aside-compiler and its Cargo.lock dependency entry, with the owner's
+language baseline and matching default-boundary clarification in both guides.
 No VM dispatch, host execution tests, Actions, remote merge, ready transition,
 release or acceptance comment belongs to this task.
 
@@ -54,10 +54,26 @@ function loops and cleanup-aware break/continue are also supported. Uninitialize
 bindings stay distinct from null. Aggregate/tuple/pattern/spread/member-value
 access, full script-module initialization, structural callable annotations, native
 values, generator/thread/async and the broader language/library scopes remain
-deferred. An explicit author return escaping a default expression is diagnosed:
-the shared default-thunk transfer contract does not yet represent its
-enclosing-body target. Combined derived+init function context likewise has no
-single B01 Context tag. These boundaries do not imply full-language completion.
+deferred. L03 rejects explicit source return in a parameter default with
+InvalidDefault before producing an AnalyzedModule, including conditional and
+short-circuit branches. Nested author functions return through their own boundary;
+default expression/block tails produce a compiler-generated thunk Return.
+Internal default loops and throw remain legal. The public analysis entry points
+produce declarations representable by Ordinary/NoWait/Init/Derived. Combined
+Init+Derived restrictions arise on actual call chains and belong to VM cumulative
+flags; they are not an unsupported legal declaration in the current analysis API.
+The compiler guard for a future unrepresentable declaration is retained.
+
+While targets are installed before lowering the condition. Break records an exit
+edge even when the complete condition terminates; continue targets the condition
+head. Targets are retired before the next source statement/loop. Loops without an
+exit edge do not fabricate a fallthrough path. Root-scope module globals remain
+supported. Ownerless bindings in module blocks, loop conditions/bodies, catch, or
+ownerless block fragments are rejected at their declaration before table admission;
+initializer-local lifetime and per-entry Cell identity are not modeled yet. This
+prevents shadowing collisions and repeated initialize-once GlobalInit. Ordinary
+function locals keep their established lowering. These boundaries do not imply
+full-language completion.
 
 ## Limits and verification
 
@@ -70,7 +86,7 @@ Compiler and bytecode checks use independent limits; B01's verification allocati
 limit is capped to the compiler's remaining capacity. `capacity_peak_bytes` is a
 conservative upper bound, not an RSS measurement.
 
-The 19 lowering integration tests compile actual source through L03, inspect IR
+The 22 lowering integration tests compile actual source through L03, inspect IR
 and register liveness/order, verify with B01, encode/decode, disassemble and check
 all source-map boundaries. They cover Cell/capture identity, trusted native
 defaults and namespace links, cleanup regions, Context preservation, inferred
@@ -89,6 +105,7 @@ target/release/examples/lowering_probe 1000 plain
 target/release/examples/lowering_probe 10000 temporaries
 target/release/examples/lowering_probe 1000 captures
 target/release/examples/lowering_probe 1000 named
+target/release/examples/lowering_probe 1000 loops
 ```
 
 The probe measures parse/analysis/lower/emit+verify/codec separately, checks the

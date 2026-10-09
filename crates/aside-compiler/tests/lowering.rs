@@ -401,13 +401,19 @@ fn unsupported_nodes_report_original_range() {
 }
 
 #[test]
-fn missing_default_transfer_and_shared_emission_limits_are_located() {
+fn invalid_default_control_and_shared_emission_limits_are_located() {
     let source = "fn f(x=if true{return 1;}else{2}){x}";
-    let module = analyzed(source);
-    let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
-    assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
-    assert_eq!(&source[aside_compiler::byte_range(error.span)], "return 1;");
-    assert!(error.detail.contains("shared transfer contract"));
+    let analysis = analyze_module(source, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    let error = analysis
+        .diagnostics
+        .iter()
+        .find(|d| d.code == aside_compiler::DiagnosticCode::InvalidDefault)
+        .unwrap();
+    assert_eq!(
+        &source[aside_compiler::byte_range(error.range)],
+        "return 1;"
+    );
+    assert!(analysis.into_module().is_err());
 
     let source = "fn f(){1}";
     let module = analyzed(source);
@@ -428,6 +434,46 @@ fn missing_default_transfer_and_shared_emission_limits_are_located() {
 }
 
 #[test]
+fn default_block_tails_nested_returns_loops_and_throw_still_compile() {
+    let result = compiled(
+        "fn block(x=if true{let local=2;local}else{3}){x} \
+         fn closure(x=||{return 1;}){x()} \
+         fn named(x=if true{fn nested(){return 1;}nested()}else{2}){x} \
+         fn internal_loop(x=if true{loop{break;}2}else{3}){x} \
+         fn condition_loop(x=if true{while if true{break;}else{true}{}2}else{3}){x} \
+         fn throwing(x=if true{throw 1;}else{2}){x}",
+    );
+    let p = result.program.package();
+    for name in [
+        "block",
+        "closure",
+        "named",
+        "internal_loop",
+        "condition_loop",
+        "throwing",
+    ] {
+        let f = function(p, name);
+        let default = p.signatures[f.signature.index()].parameters[0]
+            .default
+            .unwrap();
+        let thunk = &p.functions[default.index()];
+        assert_eq!(thunk.context, bc::Context::NoWait);
+        assert!(
+            thunk
+                .code
+                .iter()
+                .any(|i| i.opcode == bc::Opcode::Return as u16)
+        );
+    }
+    assert!(
+        function(p, "nested")
+            .code
+            .iter()
+            .any(|i| i.opcode == bc::Opcode::Return as u16)
+    );
+}
+
+#[test]
 fn source_entry_context_and_fragment_identity_survive_lowering() {
     use aside_compiler::{AnalysisContext, EntryPoint, ParseOptions, analyze_source};
     for context in [
@@ -444,7 +490,7 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
         let source = if context == AnalysisContext::Function {
             "let x=7; return x;"
         } else {
-            "let x=7; x;"
+            "7;"
         };
         let analysis = analyze_source(
             source,
@@ -479,6 +525,26 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
         );
         if context == AnalysisContext::Function {
             assert!(!entry.bindings.is_empty());
+        } else {
+            // Block fragments without an author function have no modeled local
+            // binding lifetime either; they must not silently create globals.
+            let source = "let x=7;x;";
+            let module = analyze_source(
+                source,
+                ParseOptions {
+                    entry: EntryPoint::Block,
+                    ..Default::default()
+                },
+                &options,
+                &mut NoModules,
+            )
+            .unwrap()
+            .into_module()
+            .unwrap();
+            let error =
+                lowering::compile(&module, &Linkage::default(), Options::default()).unwrap_err();
+            assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
+            assert_eq!(&source[aside_compiler::byte_range(error.span)], "x");
         }
     }
 }
@@ -783,6 +849,134 @@ fn cleanup_aware_loop_edges_stay_in_their_lexical_regions() {
             .count()
             >= 2
     );
+}
+
+#[test]
+fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
+    let source = "fn choose(x)->bool{true} fn marker(){9} \
+        fn condition_break(flag){outer:while if flag{break outer;}else{true}{} 7} \
+        fn condition_continue(flag){outer:while if flag{continue outer;}else{true}{break outer;} 7} \
+        fn anonymous(flag){while if flag{break;}else{true}{break;} 7} \
+        fn terminal(flag){outer:while choose(if flag{break outer;}else{continue outer;}){marker();} 7} \
+        fn terminal_return(flag){while choose(if flag{return 1;}else{return 2;}){marker();} marker()} \
+        fn outer_transfer(flag){outer:while true{while choose(if flag{break outer;}else{continue outer;}){marker();} marker();} 7} \
+        fn cleanup(flag){outer:while if flag{try{break outer;}finally{1;} true}else{true}{break outer;} 7} \
+        fn forever(){loop{continue;} marker()}";
+    let result = compiled(source);
+    let p = result.program.package();
+    for name in ["terminal", "terminal_return", "outer_transfer", "forever"] {
+        let f = function(p, name);
+        assert!(
+            !f.code.iter().any(|i| i.opcode == bc::Opcode::Call as u16),
+            "unreachable call in {name}"
+        );
+    }
+    let f = function(p, "condition_continue");
+    let head = f.code[0].operands[0];
+    let jump = f
+        .code
+        .iter()
+        .zip(&f.source_map)
+        .find(|(_, map)| {
+            &source[map.span.start as usize..map.span.end as usize] == "continue outer;"
+        })
+        .unwrap()
+        .0;
+    assert_eq!(jump.opcode, bc::Opcode::Jump as u16);
+    assert_eq!(jump.operands[0], head);
+    for name in ["condition_break", "terminal"] {
+        let f = function(p, name);
+        let jump = f
+            .code
+            .iter()
+            .zip(&f.source_map)
+            .find(|(_, map)| {
+                &source[map.span.start as usize..map.span.end as usize] == "break outer;"
+            })
+            .unwrap()
+            .0;
+        let next = f.code[jump.operands[0] as usize];
+        assert_eq!(next.opcode, bc::Opcode::LoadConst as u16);
+        assert_eq!(p.constants[next.operands[1] as usize], bc::Const::Int(7));
+    }
+    let cleanup = function(p, "cleanup");
+    assert!(
+        cleanup
+            .code
+            .iter()
+            .any(|i| i.opcode == bc::Opcode::Leave as u16)
+    );
+    assert_eq!(cleanup.regions.len(), 1);
+    let id = bc::FunctionId(
+        p.functions
+            .iter()
+            .position(|f| p.symbols[f.name.index()] == "cleanup")
+            .unwrap() as u32,
+    );
+    let (pc, leave) = cleanup
+        .code
+        .iter()
+        .enumerate()
+        .find(|(_, i)| i.opcode == bc::Opcode::Leave as u16)
+        .unwrap();
+    let handler = result
+        .program
+        .cleanup_handler(
+            id,
+            bc::Pc(pc as u32),
+            bc::CleanupDestination::Leave(bc::Pc(leave.operands[0])),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(handler.kind, bc::HandlerKind::Finally);
+    assert_eq!(
+        handler.pc,
+        cleanup.regions[handler.region.index()]
+            .finally
+            .unwrap()
+            .start
+    );
+    assert!(
+        !function(p, "forever")
+            .code
+            .iter()
+            .any(|i| i.opcode == bc::Opcode::Return as u16)
+    );
+}
+
+#[test]
+fn module_nested_bindings_fail_before_global_table_admission() {
+    for (source, name) in [
+        ("let mut i=0;while i<2{let x=i;i+=1;}", "x"),
+        ("let x=1;if true{let x=2;x;}", "x"),
+        ("if true{fn hidden(){1} hidden();}", "hidden"),
+        ("try{throw 1;}catch error{null;}", "error"),
+        (
+            "outer:while if true{let x=true;x}else{false}{break outer;}",
+            "x",
+        ),
+    ] {
+        let module = analyzed(source);
+        let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
+        assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
+        assert_eq!(&source[aside_compiler::byte_range(error.span)], name);
+        assert!(error.detail.contains("initializer-local lifetime"));
+        assert_eq!(error.stats.capacity_bytes, 0);
+    }
+    let result = compiled("let mut i=0;while i<2{i+=1;}");
+    let p = result.program.package();
+    assert_eq!(p.modules[0].globals.len(), 1);
+    let initializer = &p.functions[result.entry.index()];
+    assert_eq!(
+        initializer
+            .code
+            .iter()
+            .filter(|i| i.opcode == bc::Opcode::GlobalInit as u16)
+            .count(),
+        1
+    );
+    compiled("fn f(){let x=1;while false{let x=2;x;}x}");
 }
 
 #[test]

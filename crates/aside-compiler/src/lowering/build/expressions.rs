@@ -315,7 +315,10 @@ impl FunctionBuilder<'_, '_> {
             }
             (H::Return, Form::Transfer { value, .. }) => {
                 if matches!(self.ir.origin, Origin::Default { .. }) {
-                    return Err(self.l.b.error(ErrorKind::Unsupported, "author return escaping a default expression requires a shared transfer contract"));
+                    return Err(self.l.b.error(
+                        ErrorKind::InvalidIr,
+                        "explicit return crossed the analyzed parameter-default boundary",
+                    ));
                 }
                 let value = match value {
                     Some(value) => {
@@ -381,18 +384,23 @@ impl FunctionBuilder<'_, '_> {
                             .error(ErrorKind::InvalidIr, "loop transfer lacks analyzed target")
                     })?;
                 self.l.b.work(self.loops.len() as u64)?;
-                let (_, next, end, loop_depth) = self
+                let target = self
                     .loops
-                    .iter()
+                    .iter_mut()
                     .rev()
-                    .find(|(node, _, _, _)| *node == target)
-                    .copied()
+                    .find(|entry| entry.node == target)
                     .ok_or_else(|| {
                         self.l
                             .b
                             .error(ErrorKind::InvalidIr, "analyzed loop target not active")
                     })?;
-                let target = if kind == H::Break { end } else { next };
+                let loop_depth = target.protected_depth;
+                let target = if kind == H::Break {
+                    target.has_break = true;
+                    target.end
+                } else {
+                    target.next
+                };
                 self.terminate(
                     if self.protected_depth > loop_depth {
                         Terminator::Leave(target)
@@ -614,8 +622,22 @@ impl FunctionBuilder<'_, '_> {
         let end = self.block()?;
         self.terminate(Terminator::Jump(head), n)?;
         self.start(head)?;
+        self.l.b.push(
+            &mut self.loops,
+            LoopTarget {
+                node: n,
+                next: head,
+                end,
+                protected_depth: self.protected_depth,
+                has_break: false,
+            },
+        )?;
         if let Some(condition) = condition {
             let Some(value) = self.value(condition, depth)? else {
+                let target = self.loops.pop().expect("installed loop target");
+                if target.has_break {
+                    self.start(end)?;
+                }
                 return Ok(());
             };
             self.terminate(
@@ -630,9 +652,6 @@ impl FunctionBuilder<'_, '_> {
         } else {
             self.terminate(Terminator::Jump(body_block), n)?;
         }
-        self.l
-            .b
-            .push(&mut self.loops, (n, head, end, self.protected_depth))?;
         self.start(body_block)?;
         if let Some(value) = self.expr(body, depth)? {
             self.release(value)?;
@@ -640,8 +659,10 @@ impl FunctionBuilder<'_, '_> {
         if self.current.is_some() {
             self.terminate(Terminator::Jump(head), n)?;
         }
-        self.loops.pop();
-        self.start(end)?;
+        let target = self.loops.pop().expect("installed loop target");
+        if condition.is_some() || target.has_break {
+            self.start(end)?;
+        }
         Ok(())
     }
     fn try_node(

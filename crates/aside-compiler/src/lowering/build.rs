@@ -962,8 +962,17 @@ struct FunctionBuilder<'b, 'a> {
     registers: Registers,
     locals: Vec<(h::SymbolId, bc::BindingId)>,
     captures: Vec<(h::SymbolId, bc::CaptureId)>,
-    loops: Vec<(h::NodeId, BlockId, BlockId, usize)>,
+    loops: Vec<LoopTarget>,
     protected_depth: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LoopTarget {
+    node: h::NodeId,
+    next: BlockId,
+    end: BlockId,
+    protected_depth: usize,
+    has_break: bool,
 }
 
 impl<'b, 'a> FunctionBuilder<'b, 'a> {
@@ -1452,13 +1461,22 @@ fn hint_matches(
 }
 
 fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Result<(), Error> {
+    let root_scope = m.facts()[0].scope.ok_or_else(|| {
+        b.error(
+            ErrorKind::InvalidIr,
+            "analyzed entry lacks its lexical scope",
+        )
+    })?;
     b.work(m.symbols().len() as u64)?;
     for symbol in m.symbols() {
-        if symbol.owner.is_none() && symbol.per_iteration {
+        if symbol.owner.is_none()
+            && !matches!(symbol.kind, h::SymbolKind::Host | h::SymbolKind::Import)
+            && (symbol.scope != root_scope || symbol.per_iteration)
+        {
             b.span = symbol.declaration;
             return Err(b.error(
                 ErrorKind::Unsupported,
-                "module-scope iteration bindings require full module initialization lowering",
+                "module block/loop bindings require initializer-local lifetime lowering; only root-scope globals are supported",
             ));
         }
     }
