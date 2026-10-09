@@ -10,12 +10,12 @@
 
 设计版本 1.1 是接口与行为的开发基线。代码已进入分模块实现和集成阶段；下列状态区分已合入 main 的 Rust 基础、尚在审查的分支，以及作者接口的设计目标。
 
-- 已合入 main：reel-core 的共享身份、预算与服务契约；aside-vm 的 Value、堆、增量 GC、连续根区与 B01 字节码格式/验证；aside-compiler 的词法、语法、语义分析及 L04 有界 lowering、L05 初始化局部绑定、L06 固定集合/索引编译与 L07 非可选成员编译；reel-ui 的控件、布局、呈现几何与输入桥接；reel-render 的可移植帧、资源租约、记录型/null 消费者和 wgpu 消费者；reel-player 的 winit 诊断窗口；reel-media 的 Kira 音频桥、可选 CPAL 输出与有界后台 PCM 回收。能力边界见 [编译器](../crates/aside-compiler/README.md)、[L04 lowering](../crates/aside-compiler/LOWERING.md)、[VM 存储与根区](../crates/aside-vm/README.md)、[B01 字节码](../crates/aside-vm/src/bytecode/README.md)、[舞台](../crates/reel-ui/README.md)和[渲染契约](../crates/reel-render/README.md)。
+- 已合入 main：reel-core 的共享身份、预算与服务契约；aside-vm 的 Value、堆、增量 GC、连续根区与 B01 字节码格式/验证；aside-compiler 的词法、语法、语义分析及 L04 有界 lowering、L05 初始化局部绑定与 L06 固定集合/索引编译；reel-ui 的控件、布局、呈现几何与输入桥接；reel-render 的可移植帧、资源租约、记录型/null 消费者和 wgpu 消费者；reel-player 的 winit 诊断窗口；reel-media 的 Kira 音频桥、可选 CPAL 输出与有界后台 PCM 回收。能力边界见 [编译器](../crates/aside-compiler/README.md)、[L04 lowering](../crates/aside-compiler/LOWERING.md)、[VM 存储与根区](../crates/aside-vm/README.md)、[B01 字节码](../crates/aside-vm/src/bytecode/README.md)、[舞台](../crates/reel-ui/README.md)和[渲染契约](../crates/reel-render/README.md)。
 - 待集成验收：[字节码执行器及源码执行联调（#23）](https://github.com/jhq223/reel/pull/23)。分支实现、作者自测和独立验收分别记录；未合并能力不属于 main。
 - 作者接口仍在实现：指南中的剧情、节点绑定、保存/回滚和 CLI 示例是目标合同。语法或语义分析通过不等于能够执行剧情；Rust 渲染诊断不等于完整游戏播放器。
 - 设备验证按具体目标记录。CPU/null 模拟、软件 Vulkan、32 位或 Windows 交叉编译均不能替代相应物理设备的运行验收。
 
-本次 L07 的开发基线为 `fd12d1441fab0a06a5030e89001cc54abefebe6d`，已包含 UI 整合、R04、L05 和 L06；L07 的代码与本次文档一同发布。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
+本次 L07 的开发基线为 `fd12d1441fab0a06a5030e89001cc54abefebe6d`，已包含 UI 整合、R04、L05 和 L06；L07 非可选成员编译位于 PR #43，最终合并状态以该 PR 为准。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
 
 仓库结构与验证工具整改已合入：[PR #29](https://github.com/jhq223/reel/pull/29) 曾将 UI 借用代码纳入 crates 和统一 workspace，第一方验证工具迁入 [reel-dev](../tools/reel-dev/README.md)，可再生成结果移至忽略的 target/reel-artifacts；Quirrel 的必要来源与测试输入继续保留。Linux 独立验收通过；Rust 上游观测桥的真实 Quirrel 重跑及 Windows 进程终止路径仍未验证。
 
