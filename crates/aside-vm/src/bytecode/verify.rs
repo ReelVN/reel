@@ -1193,7 +1193,7 @@ fn validate_call(
                 for name in &c.names {
                     b.work(1)?;
                     check(
-                        !s.rest.as_ref().is_some_and(|rest| rest.name == name.name),
+                        s.rest.as_ref().is_none_or(|rest| rest.name != name.name),
                         ErrorKind::Signature,
                         "named argument cannot supply rest",
                     )?;
