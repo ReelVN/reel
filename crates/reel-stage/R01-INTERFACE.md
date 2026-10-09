@@ -134,7 +134,7 @@ External records retain opaque token, WidgetId, content-local bounds and forward
 content transform in exact `pre → own clip → external → children → pop clip →
 post` order. Cached pre/paint/post callbacks retain the prior mode/token until
 explicitly reset to Inline. The producer change record and complete licensed
-upstream diff are under [third_party/masonry](../../third_party/masonry).
+upstream diff are under [Masonry provenance](../masonry/REEL-CHANGES.md).
 
 Successful export or upload never installs input geometry. Only
 `PresentationBridge::resolve` with the exact candidate identity, FrameId,

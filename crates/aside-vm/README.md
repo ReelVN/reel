@@ -1,10 +1,48 @@
-# Aside storage (L01, contract 1.1)
+# Aside storage, root ranges and bytecode (L01, V02 and B01)
 
-This crate implements Value storage, an object heap, explicit roots, and one
-incremental tracing collector. It does not implement the parser, bytecode
-execution, language collection operations, native adapters, or snapshot format.
+This crate implements Value storage, an object heap, explicit roots, continuous
+root ranges, one incremental tracing collector, and the B01 shared bytecode
+format, codec, verifier and disassembler. See [B01](src/bytecode/README.md) for
+program loading and validation boundaries. It does not implement the parser,
+bytecode execution, language collection operations, native adapters, or snapshot
+format on this main-branch baseline.
 Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
 is maintained by the integration owner.
+
+V02 implements the frozen section 22 at `1226c6b`: continuous FrameSlots,
+generation-checked RootRangeToken descriptors and temporary RootRanges provider
+borrows. The owner approved the [interface/ownership contract](ROOT-RANGES-DRAFT.md)
+before implementation. See [V02 validation](ROOT-RANGES-VALIDATION.md) for current
+commands, allocator-boundary evidence and measured costs; the L01 measurements
+below remain historical evidence for the original heap.
+
+`FrameSlots::new` binds one pool to a Heap with explicit initial/max capacity and
+max window length. `open` publishes all-null storage and its mapping together;
+`write`, `copy_value`, `move_value`, `swap` and host-root transfer preserve the
+insertion barrier. `read` checks one initialized bit; null is an ordinary
+initialized value. Values use a contiguous Vec, not per-register objects,
+boxes, map entries or single roots. `borrow_initialized` checks the requested
+whole window once for native arguments; its immutable borrow excludes mutation,
+relocation and reentry. There is no mutable slice or unchecked public registration.
+
+`Heap::gc_step` now returns `Result`; with any live external range it refuses
+MissingRootProvider before Idle/Mark/Weak/Sweep or zero-work calls can advance.
+Use `heap.gc_step_with_ranges(budget, frames.roots())`. Both entries run one
+collector with descriptor/hole/Value quotas and a full-generation element cursor.
+The original weak cutoff, object invalidation and retirement adapter are shared.
+
+Release invalidates registration before recycling a span; retained capacity
+keeps its charge. Physical relocation is explicit and keeps both pools and
+bitmaps charged until the old allocations are freed. All storage, descriptor
+indices, free spans, retired slots and control metadata share Heap's byte ceiling.
+`HeapBudgetUsage` is a live read-only observer, including during real dealloc.
+An unexpected drop with live descriptors makes GC and reattachment fail
+explicitly. `close(&mut self, &mut Heap)` preflights before changing ownership;
+an error retains the pool, while success permits a new provider. Closed inline
+control metadata stays charged until that FrameSlots owner drops. The Rc byte
+book itself stays charged while any observer/pool still physically owns it.
+Future executor frame/continuation metadata must use this same internal budget;
+this milestone allocates and accounts for window/provider metadata only.
 
 ## Public interface draft
 
@@ -69,10 +107,13 @@ No method silently executes a whole collection to obtain space.
 Cells store their one Value inside the reserved object slot. Other value fields
 use 64-element chunks; text and bytes use 1,024-byte chunks. A chunk is charged
 its 1,024-byte payload plus a conservative 1,024-byte tree metadata reserve.
-The reserve covers Rust 1.90 BTreeMap leaf/internal nodes with u32/Box entries
+The original reserve covered Rust 1.90 BTreeMap leaf/internal nodes with u32/Box entries
 (up to 11 entries and 12 child links per node), including transient splits.
 After removing the final chunk, the empty tree node is freed immediately.
-The accounting adapter must be rechecked with toolchain/dependency changes.
+Rust 1.96's original seven loads were rerun for V02 and still covered all observed
+allocator peaks. Pinned RawVec/Global/Rc source and actual root-pool deallocation
+were also checked. The accounting adapter must be rechecked with further
+toolchain/dependency changes.
 
 `HeapStats` includes actual queue lengths, reserved capacity, payload/pending
 bytes, peaks and cumulative chunk allocations. Fixed slots stay charged when

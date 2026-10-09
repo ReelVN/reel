@@ -1,6 +1,0 @@
-Linux x86_64, KVM
-AMD EPYC 9V74 80-Core Processor; 5 vCPUs visible
-Rust 1.96.0 (ac68faa20 2026-05-25)
-Release optimized; stats_alloc 0.1.10 instrumented System allocator
-Each CSV has seven separate processes per size; inputs generated before timing
-Times are wall-clock microseconds, not execution or device results

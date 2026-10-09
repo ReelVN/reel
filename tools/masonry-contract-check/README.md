@@ -1,43 +1,34 @@
-# Masonry contract check — U01 / Issue #3
+# Masonry contract check — historical U01 baseline/experiment
 
-这是设计 1.1（Reel `5a7cfd4c0802e604928e72f623ffec024d864d71`）的隔离验证工具，不是生产 stage/render 实现或作者 API。唯一修改范围是 `tools/masonry-contract-check/**`；根 workspace、生产 crates、作者指南和 GitHub Actions 均未修改。
+This isolated comparison retains the unmodified upstream Git dependency and the
+reviewed experimental patch. Production uses the four maintained crates under
+`crates/` and the root workspace; this historical experiment intentionally has its
+own pinned lockfiles and must never substitute for production regression tests.
 
-验证实际链接固定 Masonry 提交中的 `RenderRoot`、`Button`、`Slider` 和 `Image`。`Observed<W>` 只记录上下文并委托上游控件方法；`StageGroup` 是使用公开布局/绘制扩展点的容器，没有自行实现按钮、滑条或替代 UI。像素由真实 `imaging_vello_cpu` 渲染。呈现结果由宿主夹具注入，用来验证快照提交门；不代表真实窗口、wgpu 表面或设备已经验证。
-
-## 运行与证据
-
-需要已安装 Rust **1.96.0**、该版本的 rustfmt/clippy、Python 3、`patch`、Linux Fontconfig 链接环境。普通 Cargo 依赖由 `Cargo.lock` 固定；默认关闭 Masonry 的渲染/窗口 features。
-
-`check.sh` 显式导出 `RUSTUP_TOOLCHAIN=1.96.0`，因此在仓库根调用、根工具链仍为 1.90 或环境中指定旧工具链时也选择正确版本。直接 Cargo 命令须带 `+1.96.0`；仅传 `--manifest-path` 不会改变 rustup 的工作目录工具链选择。需要准备工具链时：
+From the repository root, with Rust 1.96.0, patch and Linux Fontconfig available:
 
 ```sh
-rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+# Extract the fixed Xilem 271a27a6d4a930f7878d404f9014e3c50a3a9b88 archive first.
+./tools/masonry-contract-check/scripts/check.sh /path/to/extracted-xilem
 ```
+
+The Rust `reel-dev prepare-masonry` command verifies all 72 original file hashes,
+then copies only the audited closure, dry-runs/applies the reviewed patch and uses
+the pinned experimental lock. It writes to `target/reel-artifacts/masonry-experiment`
+and refuses an existing output directory. The script runs the separate upstream
+and experimental checks and audits both dependency closures. Python preparation
+and dependency wrappers have been removed; comparison source/assertions remain.
 
 ```sh
-./tools/masonry-contract-check/scripts/check.sh
+cargo run --locked --manifest-path tools/masonry-contract-check/Cargo.toml --target-dir target/reel-artifacts/masonry-build
+cargo run --locked -p reel-dev -- prepare-masonry /path/to/extracted-xilem
+cargo run --locked --release --manifest-path target/reel-artifacts/masonry-experiment/Cargo.toml --features experimental --target-dir target/reel-artifacts/masonry-build
 ```
 
-脚本依次检查格式、两种构建的 clippy（all-targets，`-D warnings`）、未修改上游对照、生成并验证实验源码、补丁行为检查、release 测量和依赖闭包。默认 codeload 固定提交下载路径已实际完成并通过来源检查及后续完整构建。已有固定提交的 Xilem 检出时可传 `--source /path/to/xilem`；它读取该提交的 Git archive，忽略检出中的工作改动。
-
-单独运行未修改上游：
-
-```sh
-cargo +1.96.0 run --locked --manifest-path tools/masonry-contract-check/Cargo.toml
-```
-
-单独运行输入补丁实验：
-
-```sh
-python3 tools/masonry-contract-check/scripts/prepare.py
-cargo +1.96.0 run --locked --release \
-  --manifest-path tools/masonry-contract-check/experiment/Cargo.toml \
-  --features experimental --target-dir tools/masonry-contract-check/target
-```
-
-`experiment/` 和 `target/` 是忽略的生成物。持久实验修改放入 `patches/presented-geometry.patch`；生成器会重建 `experiment/`。源文件逐一核对 `upstream-source.sha256`，保留上游许可证；应用补丁前先做 dry-run。基线和实验使用各自 lockfile，避免把本地 patch 混入普通依赖验证。
-
-真实命令、环境准备、结果和测量见 [REPORT.md](REPORT.md)；原始输出见 [evidence/verification.log](evidence/verification.log)。独立层责任边界与 slider 包装方案的源码分析见 [ADAPTATION-NOTES.md](ADAPTATION-NOTES.md)，其中尚未实现的方案不作为行为通过结论。
+Original historical measurements are linked from [REPORT.md](REPORT.md) to their
+Git revision. New logs belong under `target/reel-artifacts/`. Design limitations
+and the slider-slot analysis remain in [ADAPTATION-NOTES.md](ADAPTATION-NOTES.md).
+The sections below describe the original U01 experiment, not current production status.
 
 ## 可直接使用的上游能力
 

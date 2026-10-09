@@ -1,5 +1,0 @@
-   Compiling reel-render v0.1.0 (/workspace/reel/crates/reel-render)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
-  Executable tests/contracts.rs (target/debug/deps/contracts-bf23593b35e485dc)
-  Executable tests/contracts.rs (target/debug/deps/contracts-22bc3defb73bb820)
-  Executable tests/r01.rs (target/debug/deps/r01-f93233aa12c09dd9)

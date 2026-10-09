@@ -885,3 +885,37 @@ fn assignment_trials_bound_nested_defaults_and_reuse_completed_groups() {
     assert!(p.diagnostics().iter().any(|d| d.code == D::BudgetExceeded));
     ranges(&p, &source);
 }
+
+#[test]
+fn retired_cli_probes_keep_both_entry_points_and_exact_cases() {
+    for (source, kind) in [
+        ("(f(a, b).x) = value;", K::GroupExpr),
+        ("(a[(i, j)]) = value;", K::GroupExpr),
+        ("([1][0]) = value;", K::GroupExpr),
+        ("({x: 0}.x) = value;", K::GroupExpr),
+        ("(f(a).x) = value;", K::GroupExpr),
+        ("(a[i]) = value;", K::GroupExpr),
+        ("((a, b)) = pair;", K::GroupPattern),
+        ("(([a, ...rest])) = pair;", K::GroupPattern),
+        ("(({name, ...rest})) = pair;", K::GroupPattern),
+        ("((a,b) is Pair) = value;", K::TypePattern),
+        ("((a,b) | (a,b)) = value;", K::OrPattern),
+        ("(([a,...rest]) is (Array|null)) = value;", K::TypePattern),
+        ("(([a,...rest]) | ([a,...rest])) = value;", K::OrPattern),
+    ] {
+        for entry in [E::Module, E::Block] {
+            let parsed = ok(source, entry);
+            assert_eq!(has(&parsed, K::AssignExpr), 1, "{source}: {entry:?}");
+            assert!(has(&parsed, kind) > 0, "{source}: {entry:?}");
+            if kind == K::GroupExpr {
+                assert!(
+                    !parsed
+                        .syntax()
+                        .descendants()
+                        .any(|node| format!("{:?}", node.kind()).ends_with("Pattern")),
+                    "{source}: {entry:?}"
+                );
+            }
+        }
+    }
+}

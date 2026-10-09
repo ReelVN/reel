@@ -1,5 +1,10 @@
 # R01 result — portable frames and render interfaces
 
+Historical observations below describe their original revisions. Raw evidence links
+point to the pre-cleanup Git revision; new generated output belongs under
+`target/reel-artifacts/`. Current maintenance commands are documented in
+[`tools/reel-dev`](../../tools/reel-dev/README.md).
+
 Issue #25 is implemented against the complete architecture §16 contract at
 `ac00418231ddc16ec0b90b2181cd77138b3f6e49`, extending independently checked U02
 `8dc242891be199ef2e6da7bc88a6ffdaf80cc403`. The production path moves one real
@@ -21,7 +26,7 @@ specifies ownership, quotas, cancellation and the portable profile;
 The owning WidgetId contract applies to `Work` errors too. A public-API regression
 reproduced the remaining boundary with only two actual Masonry Draw commands and
 no clip: allowance 20 and slice allowance 1 reported child command 1 with its
-parent's owner. [Before-fix output](evidence/r01-work-owner/before-fix.log) retains
+parent's owner. [Before-fix output](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/before-fix.log) retains
 that failure; this agrees with the owner's independent debug/release counterexample.
 
 Each compiler cursor now retains a monotonically advancing owner-range index.
@@ -43,14 +48,14 @@ command's Work owner is checked against its painter, aggregate/per-slice units
 remain within allowance, and failure/finished-frame drop releases output and
 candidate eligibility. Each configuration reaches 21 child-owned Work failures
 and successful publication. The final one-past-stream probe is an end marker,
-not an actual command. [Debug](evidence/r01-work-owner/debug-tests.log) and
-[release](evidence/r01-work-owner/release-tests.log) pass 14 R01 cases, the original
+not an actual command. [Debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/debug-tests.log) and
+[release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/release-tests.log) pass 14 R01 cases, the original
 24 U02 contracts, zero-allocation dispatch, 12 core and six render contracts.
-[Strict Clippy](evidence/r01-work-owner/clippy.log), fmt and
-[recorded commands](evidence/r01-work-owner/checks.log) pass. Real Parley retains
-one run / 14 positioned glyphs in [debug](evidence/r01-work-owner/parley-debug.log)
-and [release](evidence/r01-work-owner/parley-release.log). No Masonry production
-source/dependency changes were needed; its [source audit](evidence/r01-work-owner/source-audit.log)
+[Strict Clippy](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/clippy.log), fmt and
+[recorded commands](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/checks.log) pass. Real Parley retains
+one run / 14 positioned glyphs in [debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/parley-debug.log)
+and [release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/parley-release.log). No Masonry production
+source/dependency changes were needed; its [source audit](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/source-audit.log)
 remains 94 fixed files, one existing local source and 212,652 diff bytes.
 
 Two isolated processes per original workload, each with 20 warm samples, remeasure
@@ -76,11 +81,11 @@ and source Drop are unchanged; live requested-byte phase peaks are now
 residency remains 856,328 / 5,558,536; source Drop still frees
 277,192 / 1,847,240 bytes in eight / 24 deallocations. These source/private,
 physical allocator observations remain distinct from output reservations.
-[Rectangles 1](evidence/r01-work-owner/residency-rect-1.log),
-[rectangles 2](evidence/r01-work-owner/residency-rect-2.log),
-[paths 1](evidence/r01-work-owner/residency-path-1.log),
-[paths 2](evidence/r01-work-owner/residency-path-2.log) and the
-[RSS launch control](evidence/r01-work-owner/rss-launch-control.log) retain the
+[Rectangles 1](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/residency-rect-1.log),
+[rectangles 2](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/residency-rect-2.log),
+[paths 1](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/residency-path-1.log),
+[paths 2](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/residency-path-2.log) and the
+[RSS launch control](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-work-owner/rss-launch-control.log) retain the
 full observations. This does not establish a wall-clock deadline or GPU behavior.
 Previous repair evidence below remains unchanged. The same draft branch is used;
 owner independent revalidation remains pending, with no execution blocker.
@@ -89,7 +94,7 @@ owner independent revalidation remains pending, with no execution blocker.
 
 All five Issue #25 findings were reproduced against `73589e9` with actual
 Masonry records and the public consumers: every new check failed as expected.
-[Before-fix output](evidence/r01-review/before-fixes.log) records the admitted
+[Before-fix output](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/before-fixes.log) records the admitted
 second 4-byte upload in a 4-byte queue, `Bytes` on an expired one-descriptor slot,
 Inline child ownership assigned to its ancestor, double-transformed debug bounds,
 and loss of eligibility after the last frame's render completion.
@@ -121,17 +126,17 @@ At `411cc753`, debug and release runs pass 12 core, 24 unchanged U02 behavioral 
 the zero-allocation pointer-dispatch contract, 13 R01 cases and six render cases.
 Real Parley independently passes both profiles with one run / 14 original glyphs.
 Workspace and selected masonry_core/tree_arena strict all-target Clippy, both fmt
-checks and direct core debug/release checks pass. [Debug](evidence/r01-review/debug-tests.log),
-[release](evidence/r01-review/release-tests.log), [final commands](evidence/r01-review/final-checks.log),
-[Clippy](evidence/r01-review/clippy.log), [Masonry Clippy](evidence/r01-review/masonry-clippy.log),
-[Parley debug](evidence/r01-review/parley-debug.log),
-[Parley release](evidence/r01-review/parley-release.log),
-[Masonry debug](evidence/r01-review/masonry-debug.log) and
-[Masonry release](evidence/r01-review/masonry-release.log) retain the outputs.
-The [source audit](evidence/r01-review/source-audit.log) verifies the same 94 fixed
+checks and direct core debug/release checks pass. [Debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/debug-tests.log),
+[release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/release-tests.log), [final commands](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/final-checks.log),
+[Clippy](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/clippy.log), [Masonry Clippy](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/masonry-clippy.log),
+[Parley debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/parley-debug.log),
+[Parley release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/parley-release.log),
+[Masonry debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/masonry-debug.log) and
+[Masonry release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/masonry-release.log) retain the outputs.
+The [source audit](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/source-audit.log) verifies the same 94 fixed
 upstream files and one existing local source, with a regenerated 212,652-byte
-production diff. [Normal](evidence/r01-review/normal-dependencies.log) and
-[feature](evidence/r01-review/feature-dependencies.log) trees retain the same
+production diff. [Normal](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/normal-dependencies.log) and
+[feature](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/feature-dependencies.log) trees retain the same
 single-source dependency boundaries. Both guide editions and the latest full
 architecture were updated together; their Aside snippets remain identical.
 
@@ -162,30 +167,30 @@ peaks in these phase observations are 1,141,976 / 7,414,232; after source releas
 Source Drop releases 277,192 / 1,847,240 bytes in eight / 24 deallocations.
 Frame accounting remains 304,800 / 1,858,976 against its continuous 16MiB ticket.
 
-[Rectangle process 1](evidence/r01-review/residency-rect-1.log),
-[process 2](evidence/r01-review/residency-rect-2.log),
-[path process 1](evidence/r01-review/residency-path-1.log) and
-[process 2](evidence/r01-review/residency-path-2.log) contain full allocator,
+[Rectangle process 1](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/residency-rect-1.log),
+[process 2](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/residency-rect-2.log),
+[path process 1](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/residency-path-1.log) and
+[process 2](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/residency-path-2.log) contain full allocator,
 record→paused→finish/cancel and cleanup observations. Maximum reported phase
 VmHWM is 4,040–4,048 / 10,232–10,240 KiB. Child `getrusage` peaks are
-9,856–9,984 KiB and the [launch control](evidence/r01-review/rss-launch-control.log)
+9,856–9,984 KiB and the [launch control](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/rss-launch-control.log)
 is 9,984 KiB, preserving the launch-floor limitation. These remain phase/OS
 observations, not an exact continuous allocator peak or a hard source quota.
 A preliminary probe before the last cancellation-path repair had wider timing
 variation: rectangle p95 0.864–1.215ms, path p95 2.706–3.074ms, maximum steps
 209.727 / 261.855µs. The intermediate pass before owner-lookup deduplication is also retained in
-[rectangle](evidence/r01-review/intermediate-residency-rect-1.log),
-[second rectangle](evidence/r01-review/intermediate-residency-rect-2.log),
-[path](evidence/r01-review/intermediate-residency-path-1.log) and
-[second path](evidence/r01-review/intermediate-residency-path-2.log). The first pass's [printed timing summary](evidence/r01-review/pre-final-probe-summary.log)
+[rectangle](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/intermediate-residency-rect-1.log),
+[second rectangle](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/intermediate-residency-rect-2.log),
+[path](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/intermediate-residency-path-1.log) and
+[second path](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/intermediate-residency-path-2.log). The first pass's [printed timing summary](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/pre-final-probe-summary.log)
 is retained separately; it is not the final binary and no latency guarantee or
 cause of variation is inferred. No device-performance claim is made.
 
 Use the existing reproduction commands below, limiting the test command to
 `-p reel-core -p reel-stage -p reel-render`. The measurement command's final
-compiler artifact is saved in [measurement-build.jsonl](evidence/r01-review/measurement-build.jsonl).
+compiler artifact is saved in [measurement-build.jsonl](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/measurement-build.jsonl).
 The resumed workspace remained executable after the reported disconnect;
-[environment.log](evidence/r01-review/environment.log) preserves the exact initial
+[environment.log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01-review/environment.log) preserves the exact initial
 Rust read-only-home error. Using the already installed workspace toolchain's
 CARGO_HOME/RUSTUP_HOME resolved it, with no escalation or system-directory write.
 There is no remaining execution blocker. This stays a draft for owner revalidation;
@@ -200,11 +205,11 @@ contracts, the real pointer allocation contract, ten R01 portable-frame cases
 and four render-consumer cases. The separately invoked real Parley Label case
 passes in both profiles: one run, 14 positioned glyphs, unchanged glyph IDs,
 positions, font index, size and variation coordinates. See
-[debug](evidence/r01/debug-tests.log),
-[release](evidence/r01/release-tests.log),
-[final render debug](evidence/r01/render-debug-tests.log),
-[Parley debug](evidence/r01/parley-debug.log) and
-[Parley release](evidence/r01/parley-release.log).
+[debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/debug-tests.log),
+[release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/release-tests.log),
+[final render debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/render-debug-tests.log),
+[Parley debug](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/parley-debug.log) and
+[Parley release](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/parley-release.log).
 
 These checks establish the following behavior, with actual Masonry records:
 
@@ -245,14 +250,14 @@ These checks establish the following behavior, with actual Masonry records:
 All warmed U02 whole-pointer dispatch cases still assert zero allocations and
 reallocations. Direct masonry_core/tree_arena debug and release checks pass five
 and four cases; strict all-target Clippy passes for both selected crates.
-[Source audit](evidence/r01/source-audit.log) verifies 94 fixed upstream files,
+[Source audit](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/source-audit.log) verifies 94 fixed upstream files,
 one existing local geometry source and the exact 206,315-byte production diff.
 Original hashes, copyright headers and Apache-2.0 license are retained.
 
 ## Initial export and source residency observations (`73589e9`)
 
 2026-10-08, Rust 1.96.0, Linux x86_64 KVM, Xeon Platinum 8573C, five exposed CPUs;
-details and native Fontconfig setup are in [environment.log](evidence/r01/environment.log).
+details and native Fontconfig setup are in [environment.log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/environment.log).
 Two isolated processes per workload ran without concurrent builds/tests from
 this task. Each uses actual Masonry recording at 400×300, release opt-level=3,
 stats_alloc 0.1.10 and slices of two commands / 128 units / 4,096 byte work.
@@ -303,15 +308,15 @@ usage returns to zero after frame drop even though the measured **producer
 cache remains resident**. These are distinct accounting domains.
 
 Raw allocator-phase observations and timings:
-[rectangles](evidence/r01/residency-rect.log),
-[paths](evidence/r01/residency-path.log),
-[second rectangle process](evidence/r01/residency-rect-os-peak.log),
-[second path process](evidence/r01/residency-path-os-peak.log).
+[rectangles](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/residency-rect.log),
+[paths](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/residency-path.log),
+[second rectangle process](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/residency-rect-os-peak.log),
+[second path process](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/residency-path-os-peak.log).
 Their maximum observed `/proc` VmHWM values are 4,080 / 10,184 KiB in the first
 processes and 4,104 / 10,276 KiB in the second processes. These phase reads are
 OS observations, not an exact continuously sampled allocator high-water mark.
 The compiler-excluded `getrusage` child peak is 10,112 KiB for both second runs;
-the [same-launcher /bin/true control](evidence/r01/rss-launch-control.log) is
+the [same-launcher /bin/true control](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/rss-launch-control.log) is
 also 10,112 KiB. Thus that OS metric includes the fork/exec launch floor and
 cannot distinguish these small probe peaks by itself. All three measurements
 are retained separately; no pool reservation or command count is presented as
@@ -333,27 +338,28 @@ Use the pinned Rust 1.96 toolchain and Linux Fontconfig/pkg-config environment
 
 ```sh
 cargo fmt --all --check
-cargo fmt --manifest-path third_party/masonry/Cargo.toml --all --check
+cargo fmt --manifest-path Cargo.toml --all --check
 cargo test --workspace --features reel-core/test-support --locked -- --test-threads=1 --nocapture
 cargo test --workspace --release --features reel-core/test-support --locked -- --test-threads=1 --nocapture
 cargo clippy --workspace --all-targets --features reel-core/test-support --locked -- -D warnings
-CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path third_party/masonry/Cargo.toml -p masonry_core -p tree_arena --all-targets -- -D warnings
-CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path third_party/masonry/Cargo.toml -p masonry_core -p tree_arena --lib -- --test-threads=1
-CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path third_party/masonry/Cargo.toml -p masonry_core -p tree_arena --lib --release -- --test-threads=1
+CARGO_TARGET_DIR="$PWD/target" cargo clippy --manifest-path Cargo.toml -p masonry_core -p tree_arena --all-targets -- -D warnings
+CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path Cargo.toml -p masonry_core -p tree_arena --lib -- --test-threads=1
+CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path Cargo.toml -p masonry_core -p tree_arena --lib --release -- --test-threads=1
 REEL_R01_TEST_FONT=/path/to/font.ttf cargo test -p reel-stage --test r01 actual_parley_label_glyphs_are_copied_without_reshaping --locked -- --ignored --test-threads=1 --nocapture
 REEL_R01_TEST_FONT=/path/to/font.ttf cargo test -p reel-stage --release --test r01 actual_parley_label_glyphs_are_copied_without_reshaping --locked -- --ignored --test-threads=1 --nocapture
-cargo test -p reel-stage --release --test r01_measurements --locked --no-run --message-format=json > /tmp/reel-r01-build.jsonl
-python3 crates/reel-stage/scripts/measure-r01.py /tmp/reel-r01-build.jsonl /tmp/r01-rect.log --case rect
-python3 crates/reel-stage/scripts/measure-r01.py /tmp/reel-r01-build.jsonl /tmp/r01-path.log --case path
-python3 crates/reel-stage/scripts/measure-r01.py /tmp/reel-r01-build.jsonl /tmp/r01-launch.log --case rect --launch-control
+mkdir -p target/reel-artifacts
+cargo test -p reel-stage --release --test r01_measurements --locked --no-run --message-format=json > target/reel-artifacts/r01-build.jsonl
+REEL_R01_PROBE_CASE=rect cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --ignored
+REEL_R01_PROBE_CASE=path cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --ignored
+cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --launch-control
 cargo tree -p reel-render --edges normal --locked
 cargo tree -p reel-render --edges features --locked
-python3 crates/reel-stage/scripts/audit-source.py /path/to/extracted-xilem-271a27a6
+cargo run --locked -p reel-dev -- audit-masonry /path/to/extracted-xilem-271a27a6
 ```
 
 Formatting and workspace/direct selected-core strict Clippy pass. Normal and
-feature trees are saved in [normal](evidence/r01/normal-dependencies.log) and
-[features](evidence/r01/feature-dependencies.log). The normal tree has one local
+feature trees are saved in [normal](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/normal-dependencies.log) and
+[features](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/reel-stage/evidence/r01/feature-dependencies.log). The normal tree has one local
 masonry_core/tree_arena, core, stage and pinned ordinary imaging; no winit/wgpu,
 player, VM, imaging_vello or second UI source. Core reads neither stage nor
 render; Masonry reads no Reel crate. The two creator guides state Rust-only

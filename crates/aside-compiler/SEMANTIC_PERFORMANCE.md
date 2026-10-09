@@ -1,5 +1,10 @@
 # L03 semantic analysis: measured source behavior and cost
 
+Historical observations below describe their original revisions. Raw evidence links
+point to the pre-cleanup Git revision; new generated output belongs under
+`target/reel-artifacts/`. Current maintenance commands are documented in
+[`tools/reel-dev`](../../tools/reel-dev/README.md).
+
 Rust 1.96.0, Linux x86_64 KVM, AMD EPYC 9V74 (5 visible vCPUs), release.
 This measures the compiler, not bytecode or script execution. It does not establish
 full-engine, low-end-device, 32-bit, or VM memory results.
@@ -7,7 +12,7 @@ full-engine, low-end-device, 32-bit, or VM memory results.
 `semantic_probe` generates source before timing, runs the real parser, then
 projects/analyzes the successful CST. Each row below is the median of seven
 separate processes. Raw CSVs and environment metadata are in
-[bench-results/semantic](bench-results/semantic/).
+[bench-results/semantic](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/semantic).
 
 | Capture workload | Source bytes | HIR nodes | Parse ms | Analysis ms | Allocator-retained MiB |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -62,12 +67,9 @@ Reproduce from repository root:
 
 ```sh
 cargo build -p aside-compiler --example semantic_probe --release --locked
-python3 crates/aside-compiler/bench-results/semantic/run_probe.py \
-  target/release/examples/semantic_probe /tmp/l03-captures.csv captures
-python3 crates/aside-compiler/bench-results/semantic/run_probe.py \
-  target/release/examples/semantic_probe /tmp/l03-named.csv named
-python3 crates/aside-compiler/bench-results/semantic/rss_probe.py \
-  target/release/examples/semantic_probe > /tmp/l03-rss.csv 2> /tmp/l03-rss.json
+cargo run --locked -p reel-dev -- compiler-probe semantic captures
+cargo run --locked -p reel-dev -- compiler-probe semantic named
+cargo run --locked -p reel-dev -- compiler-probe semantic captures
 ```
 
 Bounded behavior uses source tests, not a fabricated HIR. `semantic_depth.rs`
@@ -85,7 +87,7 @@ cargo fmt --all --check
 cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
 cargo test -p aside-compiler --all-targets --locked
 cargo test -p aside-compiler --release --all-targets --locked
-python3 crates/aside-compiler/tests/fixtures/quirrel/check_integrity.py
+cargo run --locked -p reel-dev -- check
 ```
 
 Debug/release and clippy passed. The 24 bilingual scenes are independently
@@ -159,8 +161,7 @@ Reproduce the corrected shared workload:
 
 ```sh
 cargo build -p aside-compiler --example semantic_probe --release --locked
-python3 crates/aside-compiler/bench-results/semantic/run_probe.py \
-  target/release/examples/semantic_probe /tmp/l03-shared.csv shared
+cargo run --locked -p reel-dev -- compiler-probe semantic shared
 ```
 
 The full debug/release suite, strict clippy, fmt and immutable-fixture integrity
@@ -264,8 +265,8 @@ A separate single debug observation measured analysis/result-drop at 951/28 ms;
 a single release observation measured 190/24 ms. Shared result-drop plus intact-
 history validation and final-tail release took 25 ms debug / 20 ms release.
 These are regression observations, not medians or an engine performance claim.
-Raw before/after observations and exact commands are in
-`bench-results/semantic/provenance-lifecycle.txt`.
+Historical before/after observations and exact commands are preserved in the
+[provenance lifecycle log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/semantic/provenance-lifecycle.txt).
 
 The direct namespace counterexample `a: pub let x=1;` and
 `b: use a as ns; let z:int=ns.x;` now retains exactly module a/export=None for the
