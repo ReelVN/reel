@@ -102,11 +102,11 @@ live in `src/gpu/pipeline_tests.rs`; counters and the invalid-shader constructio
 fixture are test-build-only. Counters increment at the actual wgpu device calls,
 not at lookups or quality changes. SurfacePass construction is excluded.
 Validated source/contract commit:
-[`16fddb92ec1063934b436fd33d9264623b0edeef`](https://github.com/jhq223/reel/commit/16fddb92ec1063934b436fd33d9264623b0edeef).
+[`2809d0ce5851a7dd2a4aab2363ec448e6aba3f1d`](https://github.com/jhq223/reel/commit/2809d0ce5851a7dd2a4aab2363ec448e6aba3f1d).
 The following report-only commit changes no validated Rust source. No V03
 executor or Aside source program was executed.
 
-Seven explicit real-device tests verify:
+Ten explicit real-device tests verify:
 
 - One Renderer selects all three tiers through different physical sizes with
   one immutable 4,800,000-byte target budget. Exactly 100 preparations per tier
@@ -124,6 +124,13 @@ Seven explicit real-device tests verify:
   failures, publishes no slot and releases admission. Sticky faults prevent
   repeated construction. A background uncaptured driver-error callback after
   warming refuses prepare, submit and readback without further construction.
+- A caller's outer Validation scope cannot hide failed construction: the
+  preparation returns sticky Driver, zero slots are published, turning off the
+  invalid-shader fixture cannot resurrect the attempt, and the outer scope pops
+  empty. Valid cold/warm preparation preserves the caller's previously captured
+  raw-device error and the original pixels. Concurrent construction of three
+  distinct slots balances the outer stack; a concurrent failing batch attempts
+  exactly one set before sticky refusal stops the other tiers.
 - Shared Pressure preserves the exact preexisting usage; permanent unsupported
   records and target/resource/transient/readback Budget errors release partial
   reservations. Valid pipeline slots survive these refusals. Crossfade readback
@@ -138,9 +145,27 @@ Seven explicit real-device tests verify:
   sorted durations (p50 index 14, p95 index 28). Cold means first use of that
   Renderer; OS/driver shader caches are not flushed.
 
+Independent review of frozen `75a2d0db9fc43593c46885f7b6592d0382912635` found
+that an outer caller Validation scope could consume constructor errors before
+the uncaptured handler, so Gpu::check alone did not prove success. The new Rust
+regression reproduced this on that implementation (debug exit 101). Constructor
+scopes now capture Validation/Internal/OutOfMemory, pop completely in reverse
+order, record errors into the existing sticky Driver state and confirm success
+before publication. A single Renderer-owned construction lock covers all tiers'
+push/create/pop transactions. Warm lookup/replay stays outside that lock.
+Native wgpu 26.0.1 `src/backend/wgpu_core.rs` returns `ready(scope.error)` on pop:
+one future poll confirms completion without `device.poll(Wait)` or a queue wait.
+A Pending confirmation is a permanent Device refusal with no published slot;
+WebGPU Promise behavior is not treated as native-ready or verified here.
+The public raw device permits outer scopes. Callers must pair and coordinate
+their own stack mutations, avoiding interleaving with construction or other
+scope transactions. Unrelated errors captured by callers remain theirs; valid
+constructor scopes do not drain them. This boundary and the synchronous-backend
+limit are explicit in R02-INTERFACE. Public APIs and admission limits are intact.
+
 All commands in the reproducible checks above passed on this source. The scoped
-all-feature suite passed 68 tests in each debug/release build; its 20 ignored
-tests are not counted as passes. Explicit runs passed seven pipeline tests,
+all-feature suite passed 68 tests in each debug/release build; its 23 ignored
+tests are not counted as passes. Explicit runs passed ten pipeline tests,
 seven original gpu_pixels tests, three original gpu_correctness tests, one real
 Parley test and one native window test in each debug/release build. The additional
 feature-off test run passed 45 tests (two ignored); feature-off check and normal
@@ -162,17 +187,17 @@ are microseconds; each row is 30 paired cold/warm samples at the named tier.
 
 | Build | Format/samples | Physical size | Cold p50 | Cold p95 | Warm p50 | Warm p95 |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| debug | Rgba16Float/4x | 400x300 | 8661.572 | 12013.524 | 482.946 | 690.358 |
-| debug | Rgba16Float/1x | 800x600 | 8513.579 | 11120.137 | 461.113 | 609.126 |
-| debug | Rgba8Unorm/1x | 1000x800 | 10129.731 | 12643.483 | 490.548 | 576.618 |
-| release | Rgba16Float/4x | 400x300 | 3861.820 | 4636.415 | 29.084 | 36.404 |
-| release | Rgba16Float/1x | 800x600 | 3824.945 | 4307.772 | 27.532 | 33.701 |
-| release | Rgba8Unorm/1x | 1000x800 | 5504.011 | 6336.744 | 39.219 | 92.199 |
+| debug | Rgba16Float/4x | 400x300 | 9585.536 | 11159.863 | 534.874 | 784.119 |
+| debug | Rgba16Float/1x | 800x600 | 9216.070 | 10203.255 | 509.706 | 737.439 |
+| debug | Rgba8Unorm/1x | 1000x800 | 10879.983 | 12690.055 | 510.455 | 810.189 |
+| release | Rgba16Float/4x | 400x300 | 4379.414 | 5601.160 | 32.068 | 35.123 |
+| release | Rgba16Float/1x | 800x600 | 4322.559 | 4845.485 | 30.475 | 89.675 |
+| release | Rgba8Unorm/1x | 1000x800 | 5965.365 | 7724.885 | 39.711 | 78.138 |
 
 Every sample pair asserts exactly `[2,2,2,2,1]` real Pipelines creations and zero
 application usage after dropping each preparation. In the separate 100-repeat
-test, the release first-cold times were 4499.179 / 1537.604 / 3429.129 us and the
-99-warm p50/p95 values were 21.472/48.723, 18.037/26.500, 19.038/39.579 us in tier
+test, the release first-cold times were 6032.199 / 2093.558 / 3580.393 us and the
+99-warm p50/p95 values were 23.805/57.296, 19.239/36.134, 20.260/30.446 us in tier
 order. These single cold samples are not cold distributions. Counts remained
 one set per tier and three sets total in both build modes.
 
@@ -186,8 +211,9 @@ still required. The PR stays draft and Issue #32 stays open. Document index and
 both creator guides remain for the owner to synchronize.
 
 Generated command/exit records, complete test output and environment setup stay
-under ignored `target/reel-artifacts/issue32` (`results.txt`, `pipeline-debug.log`,
-`pipeline-release.log`, GPU/window logs and `env.sh`). No generated evidence is
+under ignored `target/reel-artifacts/issue32/scope-fix` (`results.txt`,
+`red-debug.log`, `pipeline-debug.log`, `pipeline-release.log` and GPU/window logs;
+the shared environment setup is `target/reel-artifacts/issue32/env.sh`). No generated evidence is
 tracked. The repository has no workflow files; normal branch push uses
 `[skip ci]` commits, with no Actions enable/dispatch/rerun operation.
 
