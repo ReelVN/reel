@@ -21,6 +21,8 @@ const GENERATOR: TypeId = TypeId(9);
 struct Context {
     function: Option<FunctionId>,
     default: bool,
+    // Source return scope is independent of synthesized function owners.
+    default_return_boundary: Option<NodeId>,
     no_wait: bool,
     catch: bool,
     finally: Vec<NodeId>,
@@ -941,6 +943,7 @@ impl Binder<'_> {
                 self.default_boundaries.push((f, symbol));
                 let mut default_ctx = inner.clone();
                 default_ctx.default = true;
+                default_ctx.default_return_boundary = Some(default);
                 default_ctx.no_wait = true;
                 let actual = self.visit(default, &default_ctx);
                 if let Some(expected) = annotation {
@@ -2394,6 +2397,35 @@ impl Binder<'_> {
         let mut cleanup = ctx.finally.iter().rev().copied().collect::<Vec<_>>();
         match self.kind(n) {
             HirKind::Return => {
+                if let Some(default) = ctx.default_return_boundary {
+                    let previous_diagnostics = self.diagnostics.len();
+                    let boundary = self.span(default);
+                    self.error(
+                        D::InvalidDefault,
+                        self.span(n),
+                        "explicit return cannot leave a parameter default expression",
+                    );
+                    if self.diagnostics.len() > previous_diagnostics {
+                        self.diagnostics
+                            .last_mut()
+                            .unwrap()
+                            .related
+                            .push(RelatedRange {
+                                range: boundary,
+                                message: "parameter default expression boundary".into(),
+                            });
+                    }
+                    for &child in children {
+                        self.visit(child, ctx);
+                    }
+                    // An invalid source return does not target the declaring
+                    // function or get checked against its return contract.
+                    self.out.facts[n.0 as usize].control = Some(ControlTransfer {
+                        target: None,
+                        finally: cleanup,
+                    });
+                    return;
+                }
                 if ctx.function.is_none() {
                     self.error(
                         D::InvalidControl,
@@ -2735,6 +2767,8 @@ impl Binder<'_> {
                         let c = Context {
                             function: Some(f),
                             no_wait: true,
+                            // This synthetic initializer is not a source fn.
+                            default_return_boundary: ctx.default_return_boundary,
                             ..Default::default()
                         };
                         if !self.modifier(member, K::Static) {
