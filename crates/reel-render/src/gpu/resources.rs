@@ -4,6 +4,21 @@ use reel_ui::peniko::{ImageAlphaType, ImageFormat};
 use reel_ui::resources::{ColorEncoding, ResourceData, ResourceHandle};
 use wgpu::util::DeviceExt;
 
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct UploadCreations {
+    pub(super) textures: std::sync::atomic::AtomicUsize,
+    pub(super) staging: std::sync::atomic::AtomicUsize,
+    pub(super) copies: std::sync::atomic::AtomicUsize,
+}
+#[cfg(test)]
+impl UploadCreations {
+    pub(super) fn snapshot(&self) -> [usize; 3] {
+        use std::sync::atomic::Ordering;
+        [&self.textures, &self.staging, &self.copies].map(|n| n.load(Ordering::Relaxed))
+    }
+}
+
 pub struct Image {
     pub view: wgpu::TextureView,
     pub size: [u32; 2],
@@ -102,6 +117,10 @@ pub fn upload(
             bytes[y * row as usize + x * 2..y * row as usize + x * 2 + 2].copy_from_slice(&value);
         }
     }
+    #[cfg(test)]
+    gpu.upload_creations
+        .textures
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("linear premultiplied image"),
         size: wgpu::Extent3d {
@@ -116,6 +135,10 @@ pub fn upload(
         usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
+    #[cfg(test)]
+    gpu.upload_creations
+        .staging
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let staging = gpu
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -123,6 +146,10 @@ pub fn upload(
             contents: &bytes,
             usage: wgpu::BufferUsages::COPY_SRC,
         });
+    #[cfg(test)]
+    gpu.upload_creations
+        .copies
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
             buffer: &staging,

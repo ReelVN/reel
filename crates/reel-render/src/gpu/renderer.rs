@@ -199,6 +199,7 @@ impl Renderer {
             budget_scope: Budgets::new(self.gpu.limits),
             tickets: Vec::new(),
             images: HashMap::new(),
+            white: None,
         };
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
@@ -286,6 +287,9 @@ impl Drop for Renderer {
 #[cfg(test)]
 #[path = "pipeline_tests.rs"]
 mod pipeline_tests;
+#[cfg(test)]
+#[path = "white_texture_tests.rs"]
+mod white_texture_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
