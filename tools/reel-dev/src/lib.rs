@@ -1,4 +1,5 @@
 //! Repository maintenance checks. These tools never execute Aside programs.
+pub mod audio;
 pub mod fixtures;
 pub mod maintenance;
 #[path = "../../test-support/process.rs"]

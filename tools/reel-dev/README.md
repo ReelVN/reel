@@ -118,6 +118,46 @@ the six small-stack find/find_mut cases, with capacities 1/32/128/depth and zero
 allocation/reallocation checks. The historical old/recursive source comparisons
 remain in Git history; current regression checks do not need obsolete commits.
 
+## Audio audit and real probes
+
+The approved Kira fork remains outside the root workspace; its 126 original
+files, licenses/config and two-file production patch keep their identities.
+From the repository root:
+
+```sh
+cargo run --locked -p reel-dev -- audit-kira
+cargo run --locked -p reel-dev -- audit-kira /path/to/kira-0.12.5
+cargo run --locked -p reel-dev -- audio-regression
+cargo run --locked -p reel-dev -- audio-regression --release
+cargo run --locked -p reel-dev -- audio-probe
+```
+
+`audit-kira` pins the approved source manifest and patch independently of mutable
+JSON fields, reverses only the two approved files and checks every original byte
+hash, exact-VCS license/config sources and the Rust source closure. The optional
+directory compares the original crates.io package bytes as well. Negative tests
+reject changed sources, patches, licenses/config, forged records and extra Rust.
+
+`audio-regression` copies the exact fork into an isolated wrapper workspace under
+the artifact root, preserves imported manifests and uses the curated
+`crates/reel-media/tests/support/kira-test.lock`. The test's actual StaticSound/
+Renderer capacity-1 schedule, quota 0/1, capacity clamp and no implicit play
+cleanup assertions remain unchanged. Upstream dev dependencies stay isolated.
+
+`audio-probe` builds shipping feature-off libraries in debug/release, selects exact
+package/target libraries from Cargo JSON and runs the existing standalone Rust
+PCM/reclaim observers. Real Kira plus 8ch conversion is observed for allocation,
+reallocation and deallocation on the PCM thread. Physical PCM System::dealloc is
+observed on the service worker while the pool remains charged before and after
+the free returns, followed by zero usage at job completion. Control transfer,
+worker job/free and live-64MiB offline stop costs are reported separately.
+
+These commands save raw stdout/stderr, command/exit/timeout records and generated
+copies under `target/reel-artifacts/`. Builds have a 600-second bound and probes
+a 60-second bound. Failure preserves available evidence before returning an
+error. Offline/virtual-sink measurements are not hardware repair or WCET claims;
+see [media verification boundaries](../../crates/reel-media/VERIFICATION.md).
+
 ## First-party Python disposition
 
 Paths below identify the former scripts. No assertion is removed merely to reduce
@@ -128,6 +168,9 @@ limits above. The two upstream Python files are untouched and remain covered by
 
 | Former script | Replacement / retained coverage |
 | --- | --- |
+| media `verify_kira_fork.py` | `audit-kira`; reverse patch/all 126 original hashes/exact-VCS licenses and config, plus forged-record/extra-source rejection |
+| media `run_kira_regression.sh` | `audio-regression` in both profiles; unchanged real-Kira scheduling/quota/play assertions and isolated immutable test lock |
+| media `run_pcm_probe.sh` | `audio-probe`; exact Cargo libraries, original PCM assertions and physical-free/thread/budget-order checks; debug/release raw output retained in ignored artifacts |
 | compiler `bench-results/run_probe.py` | `compiler-probe frontend`; existing `frontend_probe.rs` assertions, child RSS/user/system time |
 | compiler `bench-results/semantic/run_probe.py` | `compiler-probe semantic`; 1k/5k/10k, seven samples, raw bytes/exit/timeout, original 30-second bound |
 | compiler `bench-results/semantic/rss_probe.py` | same command; every child has separate GNU time RSS |

@@ -1,6 +1,6 @@
 # reel-media: AudioOutput / Kira bridge (contract 1.1)
 
-Issue #10 implementation, based on accepted D01 `c03226a59a9dd4f8b448d4eea82262a1d6e57ef8` (`issue-1-core-contracts`, Rust 1.96.0). The approved scope includes this crate, the minimal Kira fork in `third_party/kira`, and necessary manifest/lock wiring. Other engine crates are unchanged. The integration owner maintains both creator guides.
+Issue #10 implementation, integrated with the root workspace on Rust 1.96.0. The audio scope includes this crate, the approved minimal Kira fork in `third_party/kira`, manifest/lock wiring and Rust validation in `tools/reel-dev`. The integration owner maintains both creator guides.
 
 ## Review entry points
 
@@ -46,7 +46,7 @@ DecodedSound requires an owned BudgetTicket covering input vector capacity plus 
 
 At every normal control tick, acknowledge the host wake before draining sources and call `reclaim_unused(limit)`. Before new decode allocation, `reserve_decode_budget` attempts transfer then immediately reserves or returns Busy; it never waits for budget. Inspect progress even on Busy. Full/contended destination leaves Sound in Kira; quota exhaustion requests another turn. Empty observation is not global residency completion. Worker job counts describe destruction of those jobs; accepted aliases may still retain PCM, so the real pool remains authoritative. Completion wakes the same scheduler after destruction, including while UI sleeps. Decoding/conversion is producer work outside the control transfer deadline.
 
-The host service outlives mixers. Each generation reserves Renderer/Manager credits before construction; ordinary work cannot consume them, and unavailable generation credit returns Busy. Fill Drop only moves Renderer; Mixer Drop only moves Manager, including an untaken fill whose worker-side Drop submits its own Renderer credit. Neither joins. Final host exit drops all control owners then explicitly calls `drain_and_join`; outstanding control owners return Busy. Service Drop safely detaches a draining worker. The maximum 64MiB capability and 128MiB construction charge remain; actual millisecond PCM destruction has moved off the main frame. See [current measurements and commands](BACKGROUND-RECLAIM.md).
+The host service outlives mixers. Each generation reserves Renderer/Manager credits before construction; ordinary work cannot consume them, and unavailable generation credit returns Busy. Fill Drop only moves Renderer; Mixer Drop only moves Manager, including an untaken fill whose worker-side Drop submits its own Renderer credit. Neither joins. Final host exit drops all control owners then explicitly calls `drain_and_join`; outstanding control owners return Busy. Service Drop safely detaches a draining worker. The maximum 64MiB capability and 128MiB construction charge remain; physical PCM destruction runs on the worker. See [the ownership and measurement boundaries](BACKGROUND-RECLAIM.md).
 
 Clock snapshots use triple_buffer, with a Mutex only around the **control-side reader**. The callback never touches it. `generated_frames` counts software-produced frames including silence, for diagnostics. CPAL declares Unavailable: its callback has no write acknowledgement, and ALSA writei Err(EAGAIN) with frames_written==0 silently drops the generated block; actual Ok(0) retries without progress. CPAL latency/timestamps stay diagnostic. Under any Unavailable precision, submitted/presented numeric zeros are invalid, and both `submitted_frames()` and `presented_frames()` return None. They cannot anchor MediaPTS.
 
@@ -62,14 +62,15 @@ cargo clippy -p reel-media --no-default-features --all-targets --locked -- -D wa
 cargo fmt --all -- --check
 cargo tree -p reel-media --no-default-features --edges normal
 cargo check -p reel-media --all-targets --target x86_64-pc-windows-gnu --locked
-python3 crates/reel-media/tests/support/verify_kira_fork.py
-crates/reel-media/tests/support/run_kira_regression.sh
-crates/reel-media/tests/support/run_pcm_probe.sh
+cargo run -p reel-dev --locked -- audit-kira
+cargo run -p reel-dev --locked -- audio-regression
+cargo run -p reel-dev --locked -- audio-regression --release
+cargo run -p reel-dev --locked -- audio-probe
 cargo run -p reel-media --example device_probe --locked
 ```
 
 `tests/audio_contracts.rs` uses actual Kira StaticSound and Renderer, including two-track summation, stereo→8ch, mono, integer/float conversion, finite-value handling, malformed buffers, PCM shortages, freeze/resume, fault→stop→configure→new Kira and budget reclamation. `src/output/tests.rs` drives the **same lifecycle implementation** with injected build/play/pause/verify failures and an observable in-flight interval. The failed native operations in those unit fixtures are simulated output failures, not hardware measurements. Both tests of immediate native rejection assert identity of the original uncalled Box. A retained-native-callback fixture proves immediate control-side fill disposal even when native pause fails and the callback object survives stop. The concurrent fixture deliberately blocks its fill to prove the fence; production fills must remain bounded.
 
-`tests/support/pcm_probe.rs` is a standalone allocator observer compiled by its script, following D01's existing probe pattern. Production code retains unsafe_code=forbid. It runs the real Kira mixer continuously, including a finite Sound's deferred retirement, through the normal 8ch converter. The observer records allocation/reallocation/deallocation only on the calling PCM thread, excluding setup, teardown, control notification and unrelated threads. This proves the tested data path, not arbitrary third-party effects or every native driver internals. Source audit verifies that this path has no file IO or main-thread wait.
+`audio-probe` builds the production crate in debug/release and selects its exact libraries from Cargo JSON. It compiles `tests/support/pcm_probe.rs` and `reclaim_probe.rs`; production code retains unsafe_code=forbid. The PCM probe runs the real Kira mixer continuously, including a finite Sound's deferred retirement, through the normal 8ch converter. The observer records allocation/reallocation/deallocation only on the calling PCM thread, excluding setup, teardown, control notification and unrelated threads. The reclaim probe observes actual System::dealloc on the service worker and asserts that the pool remains charged immediately before and after the physical free, then reaches zero after job completion. These checks cover this data path, not arbitrary effects or every native driver's internals.
 
-See [BACKGROUND-RECLAIM.md](BACKGROUND-RECLAIM.md) for current regressions, actual commands, measurements and remaining targets. [RETIREMENT.md](RETIREMENT.md) preserves the earlier direct-control retirement measurements; [VERIFICATION.md](VERIFICATION.md) preserves the initial environment/device record.
+Generated transcripts and measurements belong under ignored `target/reel-artifacts/`. `tests/support/kira-test.lock` is the immutable lock for the isolated upstream regression, not another engine workspace. See [BACKGROUND-RECLAIM.md](BACKGROUND-RECLAIM.md), [RETIREMENT.md](RETIREMENT.md) and [VERIFICATION.md](VERIFICATION.md) for contracts, current commands and fixed historical evidence links.

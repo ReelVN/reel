@@ -2,7 +2,10 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Instant,
 };
 pub(crate) static BACKGROUND_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -11,6 +14,10 @@ pub(crate) static WORKER_PCM_FREES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static WRONG_THREAD_PCM_FREES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static WORKER_PCM_FREE_NS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static WORKER_LARGEST_FREE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static PHYSICAL_FREE_ORDER_CHECKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static WRONG_PHYSICAL_FREE_ORDER: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static EXPECTED_CHARGE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static OBSERVED_POOL: Mutex<Option<reel_core::budget::BudgetPool>> = Mutex::new(None);
 thread_local! { static BACKGROUND_REENTRY: Cell<bool> = const { Cell::new(false) }; }
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Counts {
@@ -28,6 +35,18 @@ fn count(update: impl FnOnce(&mut Counts)) {
             update(&mut counts);
             cell.set(counts);
         });
+    }
+}
+fn check_charge() {
+    let held = OBSERVED_POOL.lock().is_ok_and(|pool| {
+        pool.as_ref().is_some_and(|pool| {
+            let usage = pool.usage();
+            usage.tickets == 1 && usage.bytes == EXPECTED_CHARGE.load(Ordering::Acquire) as u64
+        })
+    });
+    PHYSICAL_FREE_ORDER_CHECKS.fetch_add(1, Ordering::AcqRel);
+    if !held {
+        WRONG_PHYSICAL_FREE_ORDER.fetch_add(1, Ordering::Release);
     }
 }
 struct Observer;
@@ -52,14 +71,21 @@ unsafe impl GlobalAlloc for Observer {
         let track = BACKGROUND_ENABLED.load(Ordering::Acquire) && !BACKGROUND_REENTRY.replace(true);
         let worker = track && std::thread::current().name() == Some("reel-audio-reclaim");
         let pcm = track && layout.size() == TARGET_LAYOUT.load(Ordering::Acquire);
+        if pcm {
+            check_charge();
+        }
         let begin = (worker && pcm).then(Instant::now);
         unsafe { System.dealloc(ptr, layout) }
+        let elapsed = begin.map(|begin| begin.elapsed());
+        if pcm {
+            check_charge();
+        }
         if worker {
             WORKER_LARGEST_FREE.fetch_max(layout.size(), Ordering::AcqRel);
         }
         if pcm {
             if worker {
-                let ns = begin.unwrap().elapsed().as_nanos().min(usize::MAX as u128) as usize;
+                let ns = elapsed.unwrap().as_nanos().min(usize::MAX as u128) as usize;
                 WORKER_PCM_FREE_NS.fetch_max(ns, Ordering::AcqRel);
                 WORKER_PCM_FREES.fetch_add(1, Ordering::Release);
             } else {

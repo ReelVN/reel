@@ -20,8 +20,12 @@ fn wait(mut done: impl FnMut() -> bool) {
         std::thread::park_timeout(Duration::from_micros(100));
     }
 }
-fn enable_background(frames: usize) {
+fn enable_background(frames: usize, pool: &BudgetPool) {
     BACKGROUND_ENABLED.store(false, Ordering::Release);
+    *OBSERVED_POOL.lock().unwrap() = Some(pool.clone());
+    EXPECTED_CHARGE.store(frames * 16, Ordering::Release);
+    PHYSICAL_FREE_ORDER_CHECKS.store(0, Ordering::Release);
+    WRONG_PHYSICAL_FREE_ORDER.store(0, Ordering::Release);
     TARGET_LAYOUT.store(frames * 8 + 2 * size_of::<usize>(), Ordering::Release);
     WORKER_PCM_FREES.store(0, Ordering::Release);
     WRONG_THREAD_PCM_FREES.store(0, Ordering::Release);
@@ -50,9 +54,12 @@ fn physical_free(pool: &BudgetPool) -> (u64, usize) {
     assert_eq!(pool.usage().bytes, 0);
     assert_eq!(WORKER_PCM_FREES.load(Ordering::Acquire), 1);
     assert_eq!(WRONG_THREAD_PCM_FREES.load(Ordering::Acquire), 0);
+    assert_eq!(PHYSICAL_FREE_ORDER_CHECKS.load(Ordering::Acquire), 2);
+    assert_eq!(WRONG_PHYSICAL_FREE_ORDER.load(Ordering::Acquire), 0);
     let ns = WORKER_PCM_FREE_NS.load(Ordering::Acquire) as u64;
     let bytes = WORKER_LARGEST_FREE.load(Ordering::Acquire);
     BACKGROUND_ENABLED.store(false, Ordering::Release);
+    *OBSERVED_POOL.lock().unwrap() = None;
     (ns, bytes)
 }
 fn main() {
@@ -94,7 +101,7 @@ fn main() {
             let (_, ticket) = mixer.reserve_decode_budget(&pool, bytes, 1);
             let owned =
                 DecodedSound::new(48_000, vec![[0.1, -0.2]; frames], ticket.unwrap()).unwrap();
-            enable_background(frames);
+            enable_background(frames, &pool);
             let accepted_before = service.status().completed_accepted_data;
             let mut handle = None;
             let (play_ns, _) = measured(|| {
@@ -146,7 +153,8 @@ fn main() {
             "control_transfer median_us={tick_median:.3} max_us={tick_max:.3} alloc=0 realloc=0 dealloc=0; accepted_original_move play_median_us={play_median:.3} play_max_us={play_max:.3}"
         );
         println!(
-            "worker_full_job median_us={job_median:.3} max_us={job_max:.3}; actual_System_PCM_free median_us={free_median:.3} max_us={free_max:.3} largest_worker_free_bytes={largest_worker_free} PCM_frees_on_control=0; tickets_return_after_physical_free=true"
+            "worker_full_job median_us={job_median:.3} max_us={job_max:.3}; actual_System_PCM_free median_us={free_median:.3} max_us={free_max:.3} largest_worker_free_bytes={largest_worker_free} PCM_frees_on_control=0; ticket_held_before_and_after_System_dealloc=true order_checks={} tickets_return_after_physical_free=true",
+            SAMPLES * 2
         );
     }
     drop(fill);
@@ -210,7 +218,7 @@ fn main() {
         );
         assert!(block.iter().any(|f| (*f - 0.1f32).abs() < 1e-6));
         assert_eq!(pool.usage().tickets, 1);
-        enable_background(frames);
+        enable_background(frames, &pool);
         let (stop_ns, counts) = measured(|| output.stop().unwrap());
         stops[sample] = stop_ns;
         largest_control_free = largest_control_free.max(counts.largest_free);

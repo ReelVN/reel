@@ -47,3 +47,11 @@ only a legal arena-free -> unused-publish interval.
 The exact VCS commit's repository-root rustfmt.toml was omitted by publishing.
 It is restored unchanged (hard_tabs = true), with URL/hash in
 UPSTREAM-CONFIG-SOURCES.json; no unmodified imported source is reformatted.
+
+From the repository root, `cargo run -p reel-dev --locked -- audit-kira` checks
+all 126 original hashes after reversing the approved patch, exact-VCS
+licenses/config and the Rust source closure. An optional official package
+directory adds independent original-byte comparisons. `audio-regression` (also
+with `--release`) runs the unchanged real-Kira scheduling/quota/play test in an
+isolated copy using the curated media test lock. Generated logs/copies remain
+under ignored `target/reel-artifacts/`; see [Rust tooling](../../tools/reel-dev/README.md).
