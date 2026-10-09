@@ -1,4 +1,22 @@
-Current source-review fixes at 2501e9b (review base 4fef7b6; same dependencies)
+Current Exit admission/saved-selection fix at 1af4d31 (same dependencies)
+68 unit + 55 executor + 15 FrameSlots + 16 storage + 1 doc test passed.
+All five Exit regressions passed; Clippy all-targets and i686 compile passed.
+Rejected selection grants invoke zero shared handler queries; exact grant saves one.
+Work/allocation/ResourceBlocked retries reuse that result and retain fault/root/event.
+GC capacity recovery appends once; inner catch preserves Return; cancellation
+invalidates selection while retaining the complete prior fault. Ordinary Exit
+omits hypothetical unwind release; actual frame teardown remains separately charged.
+Seven current raw runs: EXIT-BUDGET-PERF-SAMPLES.jsonl
+Call median: 41667 us / 10000 calls; p50/p95 medians 3766/3966 ns.
+Numeric median: 304158 us / 3000004 instructions. Numeric/call/GC allocation: 0.
+Peak shared bytes: 7143814; idle ranges: 34; FrameSlots bytes: 289024.
+Numeric/call work: 3000136/16370000; GC units/descriptors/values: 8812/45/8766.
+Cancellation: 296 work/1 slice. Work reduction is an accounting correction,
+not a matched CPU speedup or device claim; host scheduling remains visible.
+Authorized author checks do not replace blocked independent V03 execution.
+Precise scope, atomic selection bound and remaining limits: EXIT-BUDGET-REVIEW.md
+
+Prior source-review fixes at 2501e9b (review base 4fef7b6; same dependencies)
 63 unit + 55 executor + 15 FrameSlots + 16 storage + 1 doc test passed.
 All four review regressions passed; Clippy all-targets and i686 compile passed.
 Rejected Release grants inspect zero catch predicates; exact retry releases helper.

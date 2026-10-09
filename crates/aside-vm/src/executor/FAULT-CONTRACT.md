@@ -106,6 +106,9 @@ shared/back edges, versioned code registry/program/native references, immutable
 stack and cause records, append event identities, active catch activations,
 pending exits and original routing/consumed regions, FaultBuild phase/cursor and
 partial graph, native fault slots/continuation phase, and unclaimed deliveries.
+The Exit/ExitApply stage boundary and its saved handler result must retain the
+same code version, or restore must explicitly admit any recomputation before
+invoking the shared selector; application retries must not silently rescan.
 Restore allocates fresh Heap IDs before wiring edges; missing versions fail at
 their recorded source. A snapshot stage boundary must preserve whether a cause
 event has committed, so restoration never appends it twice. Diagnostic cursors

@@ -11,6 +11,8 @@ This executes verified hand-authored B01 packages. Source compilation/lowering,
 creator-guide snippets and production source execution are **not** claimed.
 The three source findings on review head `4fef7b6` are corrected at `2501e9b`;
 see [review changes and author evidence](REVIEW-FIXES.md).
+The later Exit pre-admission scan finding is corrected at `1af4d31`; see
+[charged selection and saved application](EXIT-BUDGET-REVIEW.md).
 
 ## Public ownership and scheduling
 
@@ -165,6 +167,14 @@ share HeapBudgetUsage. No continuation contains uncharged owned host closures.
 Unsaved catch scanning and its release successor are precharged together;
 the bound is computed from O(1) metadata before any predicate check. Granting
 the reported retry requirement can advance that bounded action.
+Exit admits the shared B01 region selector before its first query and saves
+its result in the charged frame's ExitApply state. Selection costs
+`regions * 8 + 1`, or `regions * 32 + 1` for consumed-region ancestry checks;
+it is an atomic O(actual regions) action. Application separately admits catch
+scan/removal, actual root release/open and any replaced-fault cause allocation.
+Work/allocation/capacity retries preserve the selection, roots and stable event
+without repeating the selector. Ordinary exits charge no hypothetical unwind
+release; physical frame teardown remains separately charged.
 
 ## Verification and performance evidence
 
@@ -203,18 +213,23 @@ activations, cooperative cancellation during equality and actual parameter
 preparation phases, native Entry gating, shared default closures, projected
 host argument values after callbacks, and native positional rest.
 
-At code head `2501e9b`, author validation passed 63 unit, 55 executor, 15
+At code head `1af4d31`, author validation passed 68 unit, 55 executor, 15
 FrameSlots, 16 storage and one doc test, Clippy with warnings denied, and the
 i686 compile check. This is author evidence; independent V03 execution remains
 blocked in the separate acceptance workflow.
 Private review regressions directly count rejected Release predicates and
 runtime native query invocations, and execute Value-only fault diagnostics and
 shared/local Cell captures across native default module boundaries.
+Five additional Exit regressions count actual shared selector invocations,
+verify exact-grant progress and saved results through work/allocation shortages,
+hard capacity/GC and cancellation, preserve inner-catch pending Return and
+check ordinary-exit cost. See [Exit author evidence](EXIT-BUDGET-REVIEW.md).
 
 [RESULTS.txt](RESULTS.txt) links the seven-pair complete-fault
 [native comparison](NATIVE-PERFORMANCE.md), seven additional native-default runs
 and seven current live-work runs,
 plus seven review-fix regression runs,
+seven saved-Exit regression runs,
 and retains the earlier historical
 Linux x86_64 release run, including total
 instructions/work, slice and call timing, actual allocator calls/bytes, shared

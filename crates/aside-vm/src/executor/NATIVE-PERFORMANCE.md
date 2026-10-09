@@ -156,3 +156,22 @@ residency is unchanged. This is a regression check, not a new matched timing
 comparison; the new default/module cases are covered by author semantic tests.
 See [review scope](REVIEW-FIXES.md) and
 [seven raw outputs](REVIEW-FIX-PERF-SAMPLES.jsonl).
+
+## Saved Exit selection regression
+
+Seven standalone runs at `1af4d31` retain zero allocator calls/bytes for
+numeric/call/GC work, 34 idle root ranges, 289,024 FrameSlots bytes and peak
+shared charge 7,143,814 bytes. Numeric median is 304,158 µs (273,131–349,791);
+10,000 Ready/Pending calls median is 41,667 µs (38,574–43,871), with within-run
+call p50/p95 medians 3,766/3,966 ns. Numeric/call work becomes
+3,000,136 / 16,370,000 because ordinary Exit no longer charges a hypothetical
+unwind release. GC remains 8,812 / 45 / 8,766; cancellation remains 296 work
+in one slice. The saved handler fits the already charged inline frame state.
+
+These are regression samples, not a new matched speedup comparison. Numeric
+slice maxima include a 16.24 ms host-scheduling outlier and do not establish
+a hard deadline/device guarantee. The no-default echo load retains its earlier
+scope; five author regressions separately execute fault/capacity/cancellation
+paths with saved selections, exact retry grants and GC. See
+[Exit review scope](EXIT-BUDGET-REVIEW.md) and
+[seven raw outputs](EXIT-BUDGET-PERF-SAMPLES.jsonl).

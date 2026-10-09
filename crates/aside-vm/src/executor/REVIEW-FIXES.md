@@ -98,8 +98,9 @@ outputs: [REVIEW-FIX-PERF-SAMPLES.jsonl](REVIEW-FIX-PERF-SAMPLES.jsonl).
 This continuation is authorized implementation and author testing. The earlier
 platform-blocked independent V03 execution remains separately pending and is
 neither replaced nor bypassed by these checks. Source lowering/execution and
-device acceptance are not claimed. The ordinary Exit estimate still includes
-a conservative possible-release charge on its no-unwind branch; refining that
-estimate remains an optimization. Bounded destruction of a final retired
+device acceptance are not claimed. A later Exit review at `1af4d31` admits and
+saves handler selection before application, and removes the hypothetical
+release fee on ordinary exits; see [Exit review evidence](EXIT-BUDGET-REVIEW.md).
+Bounded destruction of a final retired
 CodeLease and the other integration follow-ups remain as documented in
 [FAULT-CONTRACT.md](FAULT-CONTRACT.md).
