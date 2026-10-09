@@ -1,12 +1,15 @@
 //! Actual device regressions; counters are compiled only into the library test build.
 use super::*;
-#[allow(dead_code, reason = "shared actual Masonry fixture")]
-#[path = "../../../reel-stage/tests/support/fixture.rs"]
+#[allow(dead_code, reason = "shared actual UI fixture")]
+#[path = "../../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
 #[allow(dead_code, reason = "shared R01 compiler fixture")]
-#[path = "../../../reel-stage/tests/support/r01_fixture.rs"]
+#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
 mod r01_fixture;
-use masonry_core::{
+use r01_fixture::*;
+use reel_core::identity::FrameId;
+use reel_ui::frame::{FrameBuild, FrameInfo};
+use reel_ui::{
     imaging::{
         Composite,
         record::{Draw, Geometry, Group, Scene},
@@ -14,9 +17,6 @@ use masonry_core::{
     kurbo::{Affine, Rect},
     peniko::{Brush, Color},
 };
-use r01_fixture::*;
-use reel_core::identity::FrameId;
-use reel_stage::{FrameBuild, FrameInfo};
 use std::time::{Duration, Instant};
 
 fn renderer(limits: super::super::GpuLimits) -> Renderer {
@@ -299,9 +299,9 @@ fn pipeline_reuse_refusals_and_completion_lifecycle() {
     let mut bad = scene(Color::WHITE);
     bad.push_group(Group {
         composite: Composite {
-            blend: masonry_core::peniko::BlendMode::new(
-                masonry_core::peniko::Mix::Multiply,
-                masonry_core::peniko::Compose::SrcOver,
+            blend: reel_ui::peniko::BlendMode::new(
+                reel_ui::peniko::Mix::Multiply,
+                reel_ui::peniko::Compose::SrcOver,
             ),
             ..Default::default()
         },

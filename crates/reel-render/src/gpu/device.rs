@@ -1,4 +1,4 @@
-use reel_stage::RecordLocation;
+use reel_ui::frame::RecordLocation;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},

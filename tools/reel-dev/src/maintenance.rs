@@ -1,7 +1,6 @@
 use crate::{files, root, sha};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
-    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -24,194 +23,177 @@ fn output(command: &mut Command) -> Result<String> {
     Ok(String::from_utf8(result.stdout)?)
 }
 
-pub fn dependencies(manifest: Option<&Path>) -> Result<()> {
-    let manifest = manifest
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| root().join("Cargo.toml"))
-        .canonicalize()?;
-    let metadata: serde_json::Value = serde_json::from_str(&output(
-        Command::new("cargo")
-            .args([
-                "metadata",
-                "--locked",
-                "--format-version",
-                "1",
-                "--manifest-path",
-            ])
-            .arg(&manifest),
-    )?)?;
-    let packages = metadata["packages"].as_array().context("packages")?;
-    if manifest == root().join("Cargo.toml") {
-        ensure!(
-            metadata["workspace_root"].as_str() == root().to_str(),
-            "workspace root changed"
-        );
-        for (name, version, dir) in [
-            ("masonry", "0.4.0", "masonry"),
-            ("masonry_core", "0.4.0", "masonry_core"),
-            ("tree_arena", "0.2.0", "tree_arena"),
-            ("linebender_include_doc_path", "0.1.0", "include_doc_path"),
-        ] {
-            let selected: Vec<_> = packages.iter().filter(|p| p["name"] == name).collect();
-            ensure!(
-                selected.len() == 1 && selected[0]["version"] == version,
-                "duplicate or wrong-version {name}"
-            );
-            let p = selected[0];
-            ensure!(
-                p["manifest_path"].as_str()
-                    == root().join("crates").join(dir).join("Cargo.toml").to_str(),
-                "wrong source for {name}"
-            );
-            ensure!(
-                metadata["workspace_members"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&p["id"]),
-                "{name} is not a workspace member"
-            );
-            if name == "tree_arena" {
-                let node = metadata["resolve"]["nodes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|n| n["id"] == p["id"])
-                    .context("tree node")?;
-                ensure!(
-                    node["features"]
-                        .as_array()
-                        .unwrap()
-                        .contains(&serde_json::json!("safe_tree")),
-                    "production tree lost safe_tree"
-                );
-            }
-            println!("{name} {version}: one local workspace member");
-        }
-    } else {
-        ensure!(
-            metadata["workspace_root"].as_str() == manifest.parent().unwrap().to_str(),
-            "experiment is not isolated"
-        );
-        for name in [
-            "masonry",
-            "masonry_core",
-            "tree_arena",
-            "imaging",
-            "peniko",
-            "kurbo",
-        ] {
-            ensure!(
-                packages.iter().filter(|p| p["name"] == name).count() == 1,
-                "duplicate {name}"
-            );
-        }
-    }
-    let mut command = Command::new("cargo");
-    command
-        .args(["tree", "--locked", "--manifest-path"])
-        .arg(&manifest)
-        .args(["-e", "normal,build", "--prefix", "none"]);
-    if manifest == root().join("Cargo.toml") {
-        command.args(["-p", "reel-stage", "-p", "reel-render"]);
-    }
-    let tree = output(&mut command)?;
+/// Check the single local UI source and both headless and enabled native closures.
+pub fn dependencies() -> Result<()> {
+    let metadata: serde_json::Value =
+        serde_json::from_str(&output(Command::new("cargo").current_dir(root()).args([
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--all-features",
+        ]))?)?;
     ensure!(
-        !tree.lines().any(|l| matches!(
-            l.split_whitespace().next(),
+        metadata["workspace_root"].as_str() == root().to_str(),
+        "workspace root changed"
+    );
+    validate_ui_metadata(&metadata)?;
+    let tree = output(Command::new("cargo").current_dir(root()).args([
+        "tree",
+        "--locked",
+        "-p",
+        "reel-ui",
+        "-p",
+        "reel-render",
+        "-p",
+        "reel-player",
+        "--no-default-features",
+        "-e",
+        "normal,build",
+        "--prefix",
+        "none",
+    ]))?;
+    ensure!(
+        !tree.lines().any(|line| matches!(
+            line.split_whitespace().next(),
             Some("winit" | "wgpu" | "masonry_winit")
         )),
-        "window/GPU dependency entered headless closure"
+        "native dependency entered default-off closure"
     );
-    println!("No active winit/wgpu/masonry_winit normal/build dependencies");
+    println!(
+        "One local reel-ui; enabled UI closure and default-off UI/render/player have no reverse native dependencies"
+    );
     Ok(())
 }
 
-pub fn audit_masonry(upstream: &Path) -> Result<()> {
-    let base = root().join("crates");
-    let manifest = fs::read_to_string(base.join("masonry/UPSTREAM-SOURCE.sha256"))?;
-    let mut expected = BTreeSet::new();
-    let mut diff = Vec::new();
-    for line in manifest.lines() {
-        let (digest, name) = line.split_once("  ").context("source manifest line")?;
-        let original = upstream.join(name);
-        let before = fs::read(&original).with_context(|| name.to_owned())?;
-        ensure!(sha(&before) == digest, "upstream hash: {name}");
-        let local = match name {
-            "Cargo.toml" => root().join("Cargo.toml"),
-            "LICENSE" => base.join("masonry/LICENSE"),
-            _ => base.join(name),
-        };
-        let after = fs::read(&local).with_context(|| format!("retained source: {name}"))?;
-        if name.ends_with("LICENSE") {
-            ensure!(before == after, "changed license: {name}");
-        }
-        if name != "Cargo.toml" && name.ends_with("Cargo.toml") {
-            expected.insert(base.join(name));
-        }
-        if name.ends_with(".rs") {
-            expected.insert(base.join(name));
-            let source = std::str::from_utf8(&after)?;
-            for line in std::str::from_utf8(&before)?.lines().take(4) {
-                if line.starts_with("// Copyright") || line.starts_with("// SPDX-") {
-                    ensure!(source.contains(line), "missing copyright header: {name}");
-                }
-            }
-        }
-        if before != after {
-            let result = Command::new("git")
-                .args(["diff", "--no-index", "--no-ext-diff", "--no-color", "--"])
-                .arg(&original)
-                .arg(&local)
-                .output()?;
-            ensure!(
-                matches!(result.status.code(), Some(0 | 1)),
-                "source diff failed"
-            );
-            diff.extend(result.stdout);
-        }
-    }
-    expected.insert(base.join("masonry_core/src/app/presented_geometry.rs"));
-    expected.insert(base.join("tree_arena/tests/lookup_depth.rs"));
-    let mut actual = BTreeSet::new();
-    for name in ["masonry", "masonry_core", "tree_arena", "include_doc_path"] {
-        for path in files(&base.join(name))? {
-            if path.extension().is_some_and(|e| e == "rs")
-                || path.file_name().is_some_and(|n| n == "Cargo.toml")
-            {
-                actual.insert(path);
-            }
-        }
-    }
-    ensure!(
-        actual == expected,
-        "retained source closure differs from provenance; extra={:?}; missing={:?}",
-        actual.difference(&expected).collect::<Vec<_>>(),
-        expected.difference(&actual).collect::<Vec<_>>()
-    );
+fn validate_ui_metadata(metadata: &serde_json::Value) -> Result<()> {
+    let packages = metadata["packages"].as_array().context("packages")?;
     for name in [
-        "masonry_core/src/app/presented_geometry.rs",
-        "tree_arena/tests/lookup_depth.rs",
+        "masonry",
+        "masonry_core",
+        "tree_arena",
+        "linebender_include_doc_path",
+        "reel-stage",
     ] {
-        let result = Command::new("git")
-            .args([
-                "diff",
-                "--no-index",
-                "--no-ext-diff",
-                "--no-color",
-                "--",
-                "/dev/null",
-            ])
-            .arg(base.join(name))
-            .output()?;
-        ensure!(result.status.code() == Some(1), "new source diff failed");
-        diff.extend(result.stdout);
+        ensure!(
+            !packages.iter().any(|p| p["name"] == name),
+            "retired UI package {name}"
+        );
     }
-    let target = artifacts()?.join("masonry-production.patch");
-    fs::write(&target, diff)?;
+    for name in ["reel-ui", "imaging", "kurbo", "peniko", "parley"] {
+        ensure!(
+            packages.iter().filter(|p| p["name"] == name).count() == 1,
+            "duplicate UI types: {name}"
+        );
+    }
+    let ui = packages
+        .iter()
+        .find(|p| p["name"] == "reel-ui")
+        .context("reel-ui")?;
+    ensure!(
+        ui["manifest_path"].as_str() == root().join("crates/reel-ui/Cargo.toml").to_str()
+            && ui["source"].is_null()
+            && metadata["workspace_members"]
+                .as_array()
+                .context("members")?
+                .contains(&ui["id"]),
+        "reel-ui must be the local workspace member"
+    );
+    let nodes = metadata["resolve"]["nodes"].as_array().context("nodes")?;
+    let mut pending = vec![ui["id"].clone()];
+    let mut visited = Vec::new();
+    while let Some(id) = pending.pop() {
+        if visited.contains(&id) {
+            continue;
+        }
+        visited.push(id.clone());
+        let package = packages
+            .iter()
+            .find(|p| p["id"] == id)
+            .context("dependency package")?;
+        ensure!(
+            !matches!(
+                package["name"].as_str(),
+                Some(
+                    "wgpu"
+                        | "wgpu-core"
+                        | "wgpu-hal"
+                        | "winit"
+                        | "masonry_winit"
+                        | "reel-render"
+                        | "reel-player"
+                )
+            ),
+            "reverse native dependency in UI: {}",
+            package["name"]
+        );
+        let node = nodes
+            .iter()
+            .find(|n| n["id"] == id)
+            .context("dependency node")?;
+        for dep in node["deps"].as_array().context("deps")? {
+            if dep["dep_kinds"]
+                .as_array()
+                .context("dep kinds")?
+                .iter()
+                .any(|k| k["kind"] != "dev")
+            {
+                pending.push(dep["pkg"].clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Audit legal attribution and single ownership, without constraining local source layout.
+pub fn audit_ui() -> Result<()> {
+    let base = root().join("crates/reel-ui");
+    // All imported UI package licenses at the accepted base were identical.
+    ensure!(
+        sha(&fs::read(base.join("LICENSE"))?)
+            == "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+        "original UI license changed"
+    );
+    let provenance = fs::read_to_string(base.join("ORIGIN.md"))?;
+    ensure!(
+        provenance.contains("271a27a6d4a930f7878d404f9014e3c50a3a9b88")
+            && provenance.contains("Reel"),
+        "missing UI provenance"
+    );
+    for path in files(&base)? {
+        if path.starts_with(base.join("src")) && path.extension().is_some_and(|x| x == "rs") {
+            let text = fs::read_to_string(&path)?;
+            ensure!(
+                !text.contains("masonry_core::")
+                    && !text.contains("use masonry::")
+                    && !text.contains("include_doc_path!")
+                    && !text.contains("tree_arena_unsafe"),
+                "retired UI source boundary: {}",
+                path.display()
+            );
+            ensure!(
+                text.contains("// Copyright")
+                    && text.contains("// SPDX-License-Identifier: Apache-2.0"),
+                "UI attribution lost: {}",
+                path.display()
+            );
+        }
+    }
+    for name in [
+        "masonry",
+        "masonry_core",
+        "tree_arena",
+        "include_doc_path",
+        "reel-stage",
+    ] {
+        ensure!(
+            !root().join("crates").join(name).exists(),
+            "duplicate UI source: {name}"
+        );
+    }
+    dependencies()?;
     println!(
-        "Verified {} pinned files, original licenses/headers and Rust source closure; diff: {}",
-        manifest.lines().count(),
-        target.display()
+        "Original Apache license/copyright, local provenance and single UI ownership verified"
     );
     Ok(())
 }
@@ -391,37 +373,169 @@ fn negative_test(
     Ok(())
 }
 
-pub fn measure(build: &Path, target: &str, arguments: &[String]) -> Result<()> {
-    let package = if matches!(target, "contracts" | "r01_measurements") {
-        "reel-stage"
-    } else {
-        bail!("measurement supports only stage contracts/r01_measurements")
-    };
+fn measurement_tests(target: &str) -> Result<&'static [&'static str]> {
+    match target {
+        "contracts" => Ok(&[
+            "production_input_measurements",
+            "actual_bridge_record_and_input_measurements",
+        ]),
+        "r01_measurements" => Ok(&["record_paused_finish_cancel_and_source_drop_cost"]),
+        _ => bail!("measurement supports only UI contracts/r01_measurements"),
+    }
+}
+
+fn measurement_executable(
+    build: &str,
+    target: &str,
+    metadata: &serde_json::Value,
+) -> Result<PathBuf> {
+    measurement_tests(target)?;
+    let package = metadata["packages"]
+        .as_array()
+        .context("packages")?
+        .iter()
+        .find(|package| package["name"] == "reel-ui")
+        .context("local UI package missing")?;
+    ensure!(
+        package["manifest_path"].as_str() == root().join("crates/reel-ui/Cargo.toml").to_str()
+            && package["source"].is_null()
+            && metadata["workspace_members"]
+                .as_array()
+                .context("workspace members")?
+                .contains(&package["id"]),
+        "measurement requires the local UI workspace package"
+    );
+    let source = root().join(format!("crates/reel-ui/tests/{target}.rs"));
+    let directory = Path::new(
+        metadata["target_directory"]
+            .as_str()
+            .context("Cargo target directory")?,
+    )
+    .join("release/deps");
     let mut executable = None;
-    for line in fs::read_to_string(build)?.lines() {
+    for line in build.lines() {
         let row: serde_json::Value = serde_json::from_str(line)?;
         if row["reason"] == "compiler-artifact"
             && row["target"]["name"] == target
-            && row["manifest_path"]
-                .as_str()
-                .is_some_and(|s| s.contains(&format!("/{package}/")))
             && let Some(path) = row["executable"].as_str()
         {
-            executable = Some(path.to_owned());
+            ensure!(
+                row["manifest_path"] == package["manifest_path"]
+                    && row["package_id"] == package["id"],
+                "foreign manifest/package for UI measurement"
+            );
+            ensure!(
+                row["target"]["kind"] == serde_json::json!(["test"])
+                    && row["target"]["src_path"].as_str() == source.to_str()
+                    && row["profile"]["test"] == true
+                    && row["profile"]["opt_level"] == "3"
+                    && row["profile"]["debug_assertions"] == false,
+                "measurement requires the selected UI integration test in release profile"
+            );
+            let path = PathBuf::from(path);
+            ensure!(
+                path.parent() == Some(directory.as_path())
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&format!("{target}-")))
+                    && row["filenames"]
+                        .as_array()
+                        .context("artifact filenames")?
+                        .contains(&serde_json::json!(path)),
+                "executable must be the Cargo release test artifact"
+            );
+            ensure!(executable.is_none(), "ambiguous UI measurement artifacts");
+            executable = Some(path);
         }
     }
-    let executable = executable.context("test executable missing from Cargo JSON")?;
+    executable.context("test executable missing from Cargo JSON")
+}
+
+fn verify_measurement_tests(list: &str, target: &str) -> Result<()> {
+    for test in measurement_tests(target)? {
+        ensure!(
+            list.lines().any(|line| line == format!("{test}: test")),
+            "measurement selection is missing required test {test}"
+        );
+    }
+    Ok(())
+}
+
+fn verify_measurement_results(results: &str, target: &str) -> Result<()> {
+    for test in measurement_tests(target)? {
+        let completed = results
+            .split_once(&format!("test {test} ... "))
+            .and_then(|(_, tail)| tail.split("\ntest ").next())
+            .is_some_and(|block| {
+                let block = block.trim_end();
+                block == "ok" || block.ends_with("\nok") || block.ends_with(" ok")
+            });
+        ensure!(
+            completed,
+            "required measurement test {test} did not complete"
+        );
+    }
+    if target == "r01_measurements" {
+        ensure!(
+            results.lines().any(|line| {
+                line.starts_with("workload count=512 path_elements=0 record=")
+                    || line.starts_with("workload count=16 path_elements=2048 record=")
+            }),
+            "r01 measurement completed no record/export workload"
+        );
+    }
+    Ok(())
+}
+
+pub fn measure(build: &Path, target: &str, arguments: &[String]) -> Result<()> {
+    measurement_tests(target)?;
+    let control = arguments.iter().any(|arg| arg == "--launch-control");
+    ensure!(
+        !control || arguments.len() == 1,
+        "launch control cannot be combined with test arguments"
+    );
+    ensure!(
+        !arguments.iter().any(|arg| matches!(
+            arg.split('=').next(),
+            Some("--list" | "--format" | "--quiet" | "-q" | "--help" | "-h")
+        )),
+        "measurement must run tests with their named results"
+    );
+    ensure!(
+        control
+            || target != "r01_measurements"
+            || arguments
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--ignored" | "--include-ignored")),
+        "r01_measurements requires --ignored or --include-ignored"
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_str(&output(Command::new("cargo").current_dir(root()).args([
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--no-deps",
+        ]))?)?;
+    let executable = measurement_executable(&fs::read_to_string(build)?, target, &metadata)?;
+    let mut listing = Command::new(&executable);
+    if !control {
+        listing.args(arguments);
+    }
+    verify_measurement_tests(
+        &output(listing.args(["--list", "--format", "terse"]))?,
+        target,
+    )?;
     let path = artifacts()?.join(format!("{target}-{}.log", std::process::id()));
     let log = fs::File::create(&path)?;
     let mut command = Command::new("time"); // GNU time measures this child only, excluding Cargo.
-    command
-        .args(["-v", "--"])
-        .arg(if arguments.iter().any(|s| s == "--launch-control") {
-            "/bin/true"
-        } else {
-            &executable
-        });
-    if !arguments.iter().any(|s| s == "--launch-control") {
+    command.args(["-v", "--"]).arg(if control {
+        Path::new("/bin/true")
+    } else {
+        &executable
+    });
+    if !control {
         command
             .args(arguments)
             .args(["--test-threads=1", "--nocapture"]);
@@ -433,64 +547,10 @@ pub fn measure(build: &Path, target: &str, arguments: &[String]) -> Result<()> {
         .context("GNU time must be installed")?;
     println!("{}: {status}", path.display());
     ensure!(status.success(), "measurement failed");
-    Ok(())
-}
-
-pub fn prepare_experiment(upstream: &Path) -> Result<()> {
-    let base = root().join("tools/masonry-contract-check");
-    let target = artifacts()?.join("masonry-experiment");
-    ensure!(
-        !target.exists(),
-        "experiment output already exists: {}",
-        target.display()
-    );
-    let manifest = fs::read_to_string(base.join("upstream-source.sha256"))?;
-    // Verify every source before writing the experiment.
-    for line in manifest.lines() {
-        let (digest, name) = line.split_once("  ").context("manifest line")?;
-        ensure!(
-            sha(&fs::read(upstream.join(name))?) == digest,
-            "upstream hash: {name}"
-        );
+    if !control {
+        verify_measurement_results(&fs::read_to_string(&path)?, target)
+            .with_context(|| format!("measurement results: {}", path.display()))?;
     }
-    for line in manifest.lines() {
-        let (_, name) = line.split_once("  ").unwrap();
-        let dest = target.join("upstream").join(name);
-        fs::create_dir_all(dest.parent().unwrap())?;
-        fs::copy(upstream.join(name), dest)?;
-    }
-    let path = target.join("upstream/Cargo.toml");
-    let mut text = fs::read_to_string(&path)?;
-    let start = text.find("members = [").context("members")?;
-    let end = start + text[start..].find(']').context("members end")? + 1;
-    text.replace_range(start..end, "members = [\"masonry_core\", \"tree_arena\"]");
-    fs::write(&path, text)?;
-    for dry in [true, false] {
-        let mut command = Command::new("patch");
-        command
-            .args(["-p1", "--batch", "--input"])
-            .arg(base.join("patches/presented-geometry.patch"))
-            .current_dir(target.join("upstream"));
-        if dry {
-            command.arg("--dry-run");
-        }
-        output(&mut command)?;
-    }
-    for name in ["masonry_core", "tree_arena"] {
-        let path = target.join("upstream").join(name).join("Cargo.toml");
-        fs::write(
-            &path,
-            fs::read_to_string(&path)?.replacen("[package]", "[package]\nworkspace = \"..\"", 1),
-        )?;
-    }
-    let mut text = fs::read_to_string(base.join("Cargo.toml"))?;
-    text.push_str(&format!("\n[[bin]]\nname = \"masonry-contract-check\"\npath = {}\n\n[patch.\"https://github.com/linebender/xilem\"]\nmasonry_core = {{ path = \"upstream/masonry_core\" }}\ntree_arena = {{ path = \"upstream/tree_arena\" }}\n",serde_json::to_string(&base.join("src/main.rs"))?));
-    fs::write(target.join("Cargo.toml"), text)?;
-    fs::copy(
-        base.join("locks/experimental.lock"),
-        target.join("Cargo.lock"),
-    )?;
-    println!("Pinned experiment prepared at {}", target.display());
     Ok(())
 }
 
@@ -659,6 +719,142 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn ui_metadata() -> serde_json::Value {
+        let mut packages = Vec::new();
+        let mut nodes = Vec::new();
+        for name in ["reel-ui", "imaging", "kurbo", "peniko", "parley", "wgpu"] {
+            packages.push(json!({"id": name, "name": name, "source": null,
+                "manifest_path": root().join("crates").join(name).join("Cargo.toml")}));
+            nodes.push(json!({"id": name, "deps": []}));
+        }
+        json!({"packages": packages, "workspace_members": ["reel-ui"], "resolve": {"nodes": nodes}})
+    }
+
+    #[test]
+    fn ui_ownership_rejects_retired_duplicate_or_remote_packages() {
+        let baseline = ui_metadata();
+        validate_ui_metadata(&baseline).unwrap();
+        for name in [
+            "masonry",
+            "masonry_core",
+            "tree_arena",
+            "linebender_include_doc_path",
+            "reel-stage",
+            "reel-ui",
+            "kurbo",
+        ] {
+            let mut changed = baseline.clone();
+            changed["packages"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name": name}));
+            assert!(validate_ui_metadata(&changed).is_err(), "accepted {name}");
+        }
+        let mut remote = baseline;
+        remote["packages"][0]["source"] = json!("registry+unexpected");
+        assert!(validate_ui_metadata(&remote).is_err());
+    }
+
+    #[test]
+    fn ui_native_closure_checks_transitive_normal_build_edges_and_ignores_dev_edges() {
+        for kind in [serde_json::Value::Null, json!("build")] {
+            let mut changed = ui_metadata();
+            changed["resolve"]["nodes"][0]["deps"] =
+                json!([{"pkg": "imaging", "dep_kinds": [{"kind": kind}]}]);
+            changed["resolve"]["nodes"][1]["deps"] =
+                json!([{"pkg": "wgpu", "dep_kinds": [{"kind": null}]}]);
+            let error = validate_ui_metadata(&changed).unwrap_err().to_string();
+            assert!(error.contains("reverse native dependency"), "{error}");
+        }
+        let mut changed = ui_metadata();
+        changed["resolve"]["nodes"][0]["deps"] =
+            json!([{"pkg": "wgpu", "dep_kinds": [{"kind": "dev"}]}]);
+        validate_ui_metadata(&changed).unwrap();
+    }
+
+    #[test]
+    fn measurement_selection_rejects_foreign_manifest_and_ambiguous_artifacts() {
+        let mut metadata = ui_metadata();
+        metadata["target_directory"] = json!(root().join("target"));
+        let target = "r01_measurements";
+        let executable = root().join(format!("target/release/deps/{target}-fixture"));
+        let artifact = json!({
+            "reason": "compiler-artifact", "package_id": "reel-ui",
+            "manifest_path": root().join("crates/reel-ui/Cargo.toml"),
+            "target": {"name": target, "kind": ["test"],
+                "src_path": root().join(format!("crates/reel-ui/tests/{target}.rs"))},
+            "profile": {"test": true, "opt_level": "3", "debug_assertions": false},
+            "executable": executable, "filenames": [executable],
+        });
+        assert_eq!(
+            measurement_executable(&artifact.to_string(), target, &metadata).unwrap(),
+            executable
+        );
+        let mut foreign = artifact.clone();
+        foreign["manifest_path"] = json!("/tmp/foreign/reel-ui/Cargo.toml");
+        foreign["executable"] = json!("/bin/true");
+        assert!(
+            measurement_executable(&foreign.to_string(), target, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("foreign manifest")
+        );
+        let ambiguous = format!("{artifact}\n{artifact}\n");
+        assert!(
+            measurement_executable(&ambiguous, target, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        for (field, value) in [
+            ("package_id", json!("foreign")),
+            ("target", json!({"name": target, "kind": ["bin"]})),
+            (
+                "profile",
+                json!({"test": true, "opt_level": "0", "debug_assertions": true}),
+            ),
+            (
+                "profile",
+                json!({"test": false, "opt_level": "3", "debug_assertions": false}),
+            ),
+            ("executable", json!("/bin/true")),
+        ] {
+            let mut changed = artifact.clone();
+            changed[field] = value;
+            assert!(
+                measurement_executable(&changed.to_string(), target, &metadata).is_err(),
+                "accepted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn measurement_requires_named_tests_to_be_selected_and_completed() {
+        let target = "r01_measurements";
+        let test = measurement_tests(target).unwrap()[0];
+        verify_measurement_tests(&format!("{test}: test\n"), target).unwrap();
+        for list in ["", "other_test: test\n"] {
+            assert!(verify_measurement_tests(list, target).is_err());
+        }
+        for results in [
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed",
+            &format!("test {test} ... ignored\ntest other_test ... ok\ntest result: ok"),
+            &format!("test {test} ... ok\ntest result: ok. 1 passed"),
+        ] {
+            assert!(verify_measurement_results(results, target).is_err());
+        }
+        for results in [
+            format!(
+                "test {test} ... phase=recorded\nworkload count=512 path_elements=0 record=1ms\nok\ntest result: ok. 1 passed"
+            ),
+            format!(
+                "test {test} ... phase=recorded\nworkload count=16 path_elements=2048 record=1ms\nphase=complete\nok\ntest result: ok. 1 passed"
+            ),
+        ] {
+            verify_measurement_results(&results, target).unwrap();
+        }
+    }
 
     #[test]
     fn semantic_sample_keeps_thirty_second_policy_and_timeout_failure_evidence() {

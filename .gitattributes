@@ -1,2 +1,0 @@
-# Upstream experimental patch preserves original whitespace.
-tools/masonry-contract-check/patches/presented-geometry.patch -whitespace

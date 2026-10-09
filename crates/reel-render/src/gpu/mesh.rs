@@ -5,12 +5,12 @@ use lyon_tessellation::{
     geometry_builder::{FillGeometryBuilder, GeometryBuilder, StrokeGeometryBuilder},
     path::{Path, math::point},
 };
-use masonry_core::{
+use reel_ui::frame::RecordLocation;
+use reel_ui::{
     imaging::record::Geometry,
     kurbo::{Affine, PathEl, Point, Shape, Stroke},
     peniko::Fill,
 };
-use reel_stage::RecordLocation;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -186,19 +186,19 @@ fn stroke_options(stroke: &Stroke, at: RecordLocation) -> Result<StrokeOptions, 
         .with_line_width(width)
         .with_miter_limit(miter_limit)
         .with_line_join(match stroke.join {
-            masonry_core::kurbo::Join::Bevel => lyon_tessellation::LineJoin::Bevel,
-            masonry_core::kurbo::Join::Miter => lyon_tessellation::LineJoin::Miter,
-            masonry_core::kurbo::Join::Round => lyon_tessellation::LineJoin::Round,
+            reel_ui::kurbo::Join::Bevel => lyon_tessellation::LineJoin::Bevel,
+            reel_ui::kurbo::Join::Miter => lyon_tessellation::LineJoin::Miter,
+            reel_ui::kurbo::Join::Round => lyon_tessellation::LineJoin::Round,
         })
         .with_start_cap(cap(stroke.start_cap))
         .with_end_cap(cap(stroke.end_cap)))
 }
 
-fn cap(c: masonry_core::kurbo::Cap) -> lyon_tessellation::LineCap {
+fn cap(c: reel_ui::kurbo::Cap) -> lyon_tessellation::LineCap {
     match c {
-        masonry_core::kurbo::Cap::Butt => lyon_tessellation::LineCap::Butt,
-        masonry_core::kurbo::Cap::Square => lyon_tessellation::LineCap::Square,
-        masonry_core::kurbo::Cap::Round => lyon_tessellation::LineCap::Round,
+        reel_ui::kurbo::Cap::Butt => lyon_tessellation::LineCap::Butt,
+        reel_ui::kurbo::Cap::Square => lyon_tessellation::LineCap::Square,
+        reel_ui::kurbo::Cap::Round => lyon_tessellation::LineCap::Round,
     }
 }
 pub fn transform(
@@ -232,19 +232,19 @@ pub fn transform(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use masonry_core::core::Widget;
+    use reel_ui::core::Widget;
     #[test]
     fn stroke_float32_boundary_has_no_assertion_or_silent_clamp() {
         let at = RecordLocation {
             fragment: 7,
             command: 3,
             mask_depth: 2,
-            owner: masonry::widgets::Label::new("").prepare().id(),
+            owner: reel_ui::widgets::Label::new("").prepare().id(),
         };
         for join in [
-            masonry_core::kurbo::Join::Miter,
-            masonry_core::kurbo::Join::Bevel,
-            masonry_core::kurbo::Join::Round,
+            reel_ui::kurbo::Join::Miter,
+            reel_ui::kurbo::Join::Bevel,
+            reel_ui::kurbo::Join::Round,
         ] {
             for miter in [0., 0.5, 1. - f64::EPSILON, 1., 1e300, f64::NAN] {
                 let stroke = Stroke::new(5.).with_join(join).with_miter_limit(miter);

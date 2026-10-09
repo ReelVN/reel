@@ -38,12 +38,12 @@ Run from the repository root; use Rust 1.96 and native Freetype/Fontconfig metad
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --locked -p reel-core -p reel-stage -p reel-render -p reel-player --all-targets --all-features -- -D warnings
-cargo test --locked -p reel-core -p reel-stage -p reel-render -p reel-player --all-features -- --test-threads=1
-cargo test --locked -p reel-core -p reel-stage -p reel-render -p reel-player --all-features --release -- --test-threads=1
-cargo check --locked -p reel-core -p reel-stage -p reel-render -p reel-player --no-default-features
-cargo test --locked -p reel-core -p reel-stage -p reel-render -p reel-player --no-default-features -- --test-threads=1
-cargo tree --locked -p reel-core -p reel-stage -p reel-render -p reel-player --no-default-features -e normal
+cargo clippy --locked -p reel-core -p reel-ui -p reel-render -p reel-player --all-targets --all-features -- -D warnings
+cargo test --locked -p reel-core -p reel-ui -p reel-render -p reel-player --all-features -- --test-threads=1
+cargo test --locked -p reel-core -p reel-ui -p reel-render -p reel-player --all-features --release -- --test-threads=1
+cargo check --locked -p reel-core -p reel-ui -p reel-render -p reel-player --no-default-features
+cargo test --locked -p reel-core -p reel-ui -p reel-render -p reel-player --no-default-features --features reel-core/test-support -- --test-threads=1
+cargo tree --locked -p reel-core -p reel-ui -p reel-render -p reel-player --no-default-features -e normal
 ```
 
 The feature-off normal dependency tree must contain neither wgpu nor winit. With
@@ -57,13 +57,13 @@ cargo test --locked -p reel-render --features wgpu --test gpu_correctness -- --i
 cargo test --locked -p reel-render --features wgpu --test gpu_correctness --release -- --ignored --nocapture --test-threads=1
 cargo test --locked -p reel-render --features wgpu --lib pipeline_reuse -- --ignored --nocapture --test-threads=1
 cargo test --locked -p reel-render --features wgpu --lib pipeline_reuse --release -- --ignored --nocapture --test-threads=1
-cargo test --locked -p reel-stage actual_parley_label_glyphs_are_copied_without_reshaping -- --ignored --nocapture
-cargo test --locked -p reel-stage --release actual_parley_label_glyphs_are_copied_without_reshaping -- --ignored --nocapture
+cargo test --locked -p reel-ui actual_parley_label_glyphs_are_copied_without_reshaping -- --ignored --nocapture
+cargo test --locked -p reel-ui --release actual_parley_label_glyphs_are_copied_without_reshaping -- --ignored --nocapture
 cargo test --locked -p reel-player --features window actual_window_retry_and_recovery_contract -- --ignored --nocapture --test-threads=1
 cargo test --locked -p reel-player --features window --release actual_window_retry_and_recovery_contract -- --ignored --nocapture --test-threads=1
 ```
 
-These commands select only core/stage/render/player; there is no workspace-wide
+These commands select only core/UI/render/player; there is no workspace-wide
 test or VM execution. The earlier shell command bundle is retired; every
 assertion lives in the Rust tests listed below.
 

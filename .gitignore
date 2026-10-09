@@ -2,13 +2,11 @@
 target/
 /target/reel-artifacts/
 # Prevent obsolete output locations from being accidentally committed again.
-/crates/reel-stage/evidence/
+/crates/reel-ui/evidence/
 /crates/reel-render/evidence/
 /crates/reel-media/tests/evidence/
 /crates/aside-compiler/bench-results/
 /crates/aside-vm/LOAD-RESULTS.txt
 /crates/aside-vm/ROOT-RANGES-BASELINE.txt
 /crates/aside-vm/ROOT-RANGES-RESULTS.txt
-/tools/masonry-contract-check/evidence/
-/tools/masonry-contract-check/experiment/
 /tools/quirrel-compat/results/

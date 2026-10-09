@@ -1,17 +1,9 @@
 #[allow(dead_code, reason = "shared real U02 fixtures")]
-#[path = "../../reel-stage/tests/support/fixture.rs"]
+#[path = "../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
 #[allow(dead_code, reason = "shared real R01 fixtures")]
-#[path = "../../reel-stage/tests/support/r01_fixture.rs"]
+#[path = "../../reel-ui/tests/support/r01_fixture.rs"]
 mod r01_fixture;
-use masonry_core::{
-    imaging::{
-        Composite,
-        record::{Draw, Geometry, Scene},
-    },
-    kurbo::{Affine, Rect},
-    peniko::{Brush, ImageBrush},
-};
 use r01_fixture::*;
 use reel_core::{
     budget::{BudgetPool, OwnedBytes},
@@ -19,7 +11,15 @@ use reel_core::{
     result::{RejectCode, Terminal},
 };
 use reel_render::*;
-use reel_stage::*;
+use reel_ui::{bridge::*, frame::*, resources::*};
+use reel_ui::{
+    imaging::{
+        Composite,
+        record::{Draw, Geometry, Scene},
+    },
+    kurbo::{Affine, Rect},
+    peniko::{Brush, ImageBrush},
+};
 fn limits() -> ConsumerLimits {
     ConsumerLimits {
         max_uploads: 2,
@@ -70,7 +70,7 @@ fn batch(resource: ResourceLease, pool: &BudgetPool, stride: u64) -> UploadBatch
         storage,
     }
 }
-fn image_scene(image: &masonry_core::peniko::ImageData) -> Scene {
+fn image_scene(image: &reel_ui::peniko::ImageData) -> Scene {
     let mut scene = Scene::new();
     for _ in 0..2 {
         scene.draw(Draw::Fill {
@@ -99,8 +99,8 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
             old.clone(),
             pixels,
             [1, 1],
-            masonry_core::peniko::ImageFormat::Rgba8,
-            masonry_core::peniko::ImageAlphaType::Alpha,
+            reel_ui::peniko::ImageFormat::Rgba8,
+            reel_ui::peniko::ImageAlphaType::Alpha,
             ColorEncoding::Srgb,
         )
         .unwrap();
@@ -429,7 +429,7 @@ fn accepted_notice_survives_frame_drop_and_render_completion() {
         );
         if id == 1 {
             assert_eq!(bridge.resolve(duplicate), NoticeResult::Accepted);
-            let masonry_core::app::InputGeometrySource::Presented(Some(view)) =
+            let reel_ui::app::InputGeometrySource::Presented(Some(view)) =
                 bridge.root().input_geometry_source()
             else {
                 panic!("accepted view missing")

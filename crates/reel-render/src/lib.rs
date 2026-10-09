@@ -11,9 +11,10 @@ use reel_core::{
     identity::{FrameId, ResourceVersion, Scope, SurfaceEpoch},
     result::{RejectCode, RejectReason, Rejected, Terminal},
 };
-use reel_stage::{
-    ColorEncoding, PresentationNotice, PresentationOutcome, RenderFrame, ResourceData,
-    ResourceHandle, ResourceLease, ResourceWeak,
+use reel_ui::bridge::{PresentationNotice, PresentationOutcome};
+use reel_ui::frame::RenderFrame;
+use reel_ui::resources::{
+    ColorEncoding, ResourceData, ResourceHandle, ResourceLease, ResourceWeak,
 };
 use std::sync::Arc;
 

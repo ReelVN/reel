@@ -1,10 +1,10 @@
 use super::{GpuError, mesh, renderer::reserve, replay::Context, resources, targets::Target};
-use masonry_core::{
+use reel_ui::frame::{FrameDraw, RecordLocation, RenderFrame};
+use reel_ui::{
     imaging::record::{Clip, Geometry},
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, Fill},
 };
-use reel_stage::{FrameDraw, RecordLocation, RenderFrame};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 impl Context<'_> {
@@ -133,7 +133,7 @@ impl Context<'_> {
                 )
             }
             Brush::Image(brush) => {
-                if brush.sampler.quality != masonry_core::peniko::ImageQuality::Medium {
+                if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium {
                     return Err(GpuError::Unsupported {
                         at,
                         record: "non-bilinear image sampling",
@@ -157,7 +157,7 @@ impl Context<'_> {
                             at,
                             record: "missing image",
                         })?;
-                    let reel_stage::ResourceData::Image { image, .. } = lease.data() else {
+                    let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
                         return Err(GpuError::Unsupported {
                             at,
                             record: "image type",
@@ -210,7 +210,7 @@ impl Context<'_> {
         &mut self,
         frame: &RenderFrame,
         target: &Target,
-        run: &reel_stage::FrameGlyphRun,
+        run: &reel_ui::frame::FrameGlyphRun,
         outer: Affine,
         at: RecordLocation,
     ) -> Result<(), GpuError> {
@@ -221,9 +221,7 @@ impl Context<'_> {
                 record: "non-solid glyph brush",
             });
         };
-        if !matches!(run.style, masonry_core::peniko::Style::Fill(_))
-            || run.glyph_transform.is_some()
-        {
+        if !matches!(run.style, reel_ui::peniko::Style::Fill(_)) || run.glyph_transform.is_some() {
             return Err(GpuError::Unsupported {
                 at,
                 record: "glyph stroke or glyph transform",

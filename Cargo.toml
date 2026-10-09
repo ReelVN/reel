@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/*", "tools/reel-dev"]
 resolver = "3"
-exclude = ["tools/masonry-contract-check", "third_party/kira"]
+exclude = ["third_party/kira"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,20 +12,16 @@ rust-version = "1.96"
 unsafe_code = "forbid"
 
 [workspace.dependencies]
-masonry_core = { version = "=0.4.0", path = "crates/masonry_core", default-features = false }
-tree_arena = { version = "=0.2.0", path = "crates/tree_arena", default-features = false, features = ["std", "safe_tree"] }
-include_doc_path = { version = "=0.1.0", path = "crates/include_doc_path", package = "linebender_include_doc_path" }
+reel-ui = { path = "crates/reel-ui", default-features = false }
 
 anymore = "=1.0.0"
 imaging = "=0.0.1"
 kurbo = "=0.13.1"
 parley = { version = "=0.8.0", features = ["accesskit"] }
-# TODO: Use no_std correctly in Xilem Web.
 peniko = "=0.6.1"
 tracing = { version = "=0.1.44", default-features = false }
 tracing-wasm = "=0.2.1"
 console_error_panic_hook = "=0.1.7"
-# Remove "std" when that's fixed upstream
 ui-events = { version = "=0.3.0", default-features = false, features = ["kurbo"] }
 smallvec = "=1.15.1"
 hashbrown = { version = "=0.17.0", default-features = false, features = ["default-hasher"] }
@@ -36,7 +32,6 @@ web-time = "=1.1.0"
 accesskit = "=0.24.0"
 time = "=0.3.47"
 
-masonry = { version = "=0.4.0", path = "crates/masonry", default-features = false }
 
 [profile.build-perf]
 inherits = "dev"

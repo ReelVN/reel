@@ -3,11 +3,6 @@ use crate::{
     demand::{Demand, Draw},
     surface::negotiate,
 };
-use masonry_core::{
-    app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
-    core::*,
-    dpi::PhysicalSize,
-};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, ContentVersion, FrameId, ResourceVersion, SurfaceEpoch},
@@ -17,9 +12,13 @@ use reel_render::{
     gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer, SurfacePass},
     presentation_notice,
 };
-use reel_stage::{
-    BridgeLimits, BuildLimits, FrameBuild, FrameInfo, PresentationBridge, RenderFrame,
-    ResourceRegistry, StepBudget,
+use reel_ui::bridge::{BridgeLimits, PresentationBridge};
+use reel_ui::frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget};
+use reel_ui::resources::ResourceRegistry;
+use reel_ui::{
+    app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
+    core::*,
+    dpi::PhysicalSize,
 };
 use std::{io::Read, sync::Arc};
 use winit::{event_loop::ActiveEventLoop, window::Window};
@@ -37,12 +36,12 @@ pub(crate) struct State {
     size: PhysicalSize<u32>,
     pool: BudgetPool,
     registry: ResourceRegistry,
-    resources: Vec<reel_stage::ResourceHandle>,
+    resources: Vec<reel_ui::resources::ResourceHandle>,
     epoch: u64,
     frame: u64,
     // One budgeted immutable accepted CPU frame, for expose after model refusal.
     accepted_frame: Option<RenderFrame>,
-    pub(crate) pointer: masonry_core::dpi::PhysicalPosition<f64>,
+    pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
@@ -105,15 +104,15 @@ impl State {
                 version("diagnostic/checker-v1", bytes.as_slice()),
                 bytes,
                 [2, 2],
-                masonry_core::peniko::ImageFormat::Rgba8,
-                masonry_core::peniko::ImageAlphaType::Alpha,
-                reel_stage::ColorEncoding::Srgb,
+                reel_ui::peniko::ImageFormat::Rgba8,
+                reel_ui::peniko::ImageAlphaType::Alpha,
+                reel_ui::resources::ColorEncoding::Srgb,
             )
             .map_err(|e| format!("image: {e:?}"))?;
         let lease = registry
             .acquire(image_handle)
             .map_err(|e| format!("image lease: {e:?}"))?;
-        let reel_stage::ResourceData::Image { image, .. } = lease.data() else {
+        let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
             unreachable!()
         };
         let mut resources = vec![image_handle];
@@ -140,7 +139,7 @@ impl State {
             let lease = registry
                 .acquire(handle)
                 .map_err(|e| format!("font lease: {e:?}"))?;
-            let reel_stage::ResourceData::Font(font) = lease.data() else {
+            let reel_ui::resources::ResourceData::Font(font) = lease.data() else {
                 unreachable!()
             };
             Some(font.data.clone())
@@ -166,7 +165,7 @@ impl State {
             root,
             SurfaceEpoch(1),
             BridgeLimits {
-                geometry: masonry_core::app::GeometryLimits {
+                geometry: reel_ui::app::GeometryLimits {
                     max_nodes: 1024,
                     max_bytes: 2 << 20,
                     max_path: 64,
@@ -215,11 +214,11 @@ impl State {
         self.epoch = self.epoch.checked_add(1).ok_or("surface epoch exhausted")?;
         self.bridge.replace_surface(SurfaceEpoch(self.epoch));
         self.bridge
-            .handle_window_event(masonry_core::core::WindowEvent::Rescale(
+            .handle_window_event(reel_ui::core::WindowEvent::Rescale(
                 self.window.scale_factor(),
             ));
         self.bridge
-            .handle_window_event(masonry_core::core::WindowEvent::Resize(self.size));
+            .handle_window_event(reel_ui::core::WindowEvent::Resize(self.size));
         // Invalidates candidates even if fresh negotiation subsequently fails.
         self.demand = Demand::idle();
         self.accepted_frame = None;
@@ -316,7 +315,7 @@ impl State {
                 Ok(PresentOutcome::PresentAccepted(frame.frame_id())),
             );
             let result = self.bridge.resolve(notice);
-            if result == reel_stage::NoticeResult::Accepted {
+            if result == reel_ui::bridge::NoticeResult::Accepted {
                 self.accepted_frame = Some(frame);
             }
             Some(result)
@@ -499,13 +498,13 @@ impl Drop for State {
 mod tests {
     use super::*;
     use crate::demand::Model;
-    use masonry_core::app::InputGeometrySource;
+    use reel_ui::app::InputGeometrySource;
     use winit::{
         application::ApplicationHandler, event_loop::EventLoop,
         platform::x11::EventLoopBuilderExtX11,
     };
 
-    fn accepted_transform(state: &State) -> masonry_core::kurbo::Affine {
+    fn accepted_transform(state: &State) -> reel_ui::kurbo::Affine {
         let InputGeometrySource::Presented(Some(view)) =
             state.bridge.root().input_geometry_source()
         else {
@@ -563,16 +562,13 @@ mod tests {
             state.renderer.usage().targets
         );
         state.bridge.edit_widget(state.root_id, |mut widget| {
-            widget.set_transform(masonry_core::kurbo::Affine::scale(0.7))
+            widget.set_transform(reel_ui::kurbo::Affine::scale(0.7))
         });
         state.invalidate();
         state.render().unwrap();
         assert_eq!(state.demand.model, Model::Waiting);
         assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
-        assert_eq!(
-            accepted_transform(&state),
-            masonry_core::kurbo::Affine::IDENTITY
-        );
+        assert_eq!(accepted_transform(&state), reel_ui::kurbo::Affine::IDENTITY);
         let refused_frame = state.frame;
         // No completion and no new input: OS redraws cannot repeatedly compile.
         for _ in 0..10 {
@@ -593,7 +589,7 @@ mod tests {
         assert!(state.bridge.accepted_key().unwrap().frame_id() > accepted);
         assert_eq!(
             accepted_transform(&state),
-            masonry_core::kurbo::Affine::scale(0.7)
+            reel_ui::kurbo::Affine::scale(0.7)
         );
         state
             .renderer
@@ -604,7 +600,7 @@ mod tests {
         state.poll_completions().unwrap();
         // R01 can freeze this finite f64 transform; GPU conversion cannot represent it.
         state.bridge.edit_widget(state.root_id, |mut widget| {
-            widget.set_transform(masonry_core::kurbo::Affine::scale(1e100))
+            widget.set_transform(reel_ui::kurbo::Affine::scale(1e100))
         });
         state.invalidate();
         state.redraw_requested().unwrap();
@@ -620,7 +616,7 @@ mod tests {
         assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
         assert_eq!(
             accepted_transform(&state),
-            masonry_core::kurbo::Affine::scale(0.7)
+            reel_ui::kurbo::Affine::scale(0.7)
         );
         state
             .renderer
@@ -635,7 +631,7 @@ mod tests {
         assert_eq!(state.frame, failed_count);
         assert_eq!(state.demand.model, Model::Blocked);
         state.bridge.edit_widget(state.root_id, |mut widget| {
-            widget.set_transform(masonry_core::kurbo::Affine::scale(0.7))
+            widget.set_transform(reel_ui::kurbo::Affine::scale(0.7))
         });
         state.invalidate();
         state.redraw_requested().unwrap();
@@ -669,7 +665,7 @@ mod tests {
         assert!(state.accepted_frame.is_none());
         assert_eq!(
             state.bridge.resolve(old_notice),
-            reel_stage::NoticeResult::StaleOrForeign
+            reel_ui::bridge::NoticeResult::StaleOrForeign
         );
         assert!(matches!(
             state.renderer.submit(old),
@@ -678,7 +674,7 @@ mod tests {
         state.render().unwrap();
         assert_eq!(
             accepted_transform(&state),
-            masonry_core::kurbo::Affine::scale(0.7)
+            reel_ui::kurbo::Affine::scale(0.7)
         );
         let generation = state.renderer.gpu().generation();
         let epoch = state.epoch;

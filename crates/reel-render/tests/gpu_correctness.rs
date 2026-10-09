@@ -1,11 +1,15 @@
 #![cfg(feature = "wgpu")]
 #[allow(dead_code, reason = "shared actual Masonry fixture")]
-#[path = "../../reel-stage/tests/support/fixture.rs"]
+#[path = "../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
 #[allow(dead_code, reason = "shared R01 compiler fixture")]
-#[path = "../../reel-stage/tests/support/r01_fixture.rs"]
+#[path = "../../reel-ui/tests/support/r01_fixture.rs"]
 mod r01_fixture;
-use masonry_core::{
+use r01_fixture::*;
+use reel_core::identity::FrameId;
+use reel_render::gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer};
+use reel_ui::frame::{FrameOp, RenderFrame};
+use reel_ui::{
     imaging::{
         Composite, MaskMode,
         record::{AppliedMask, Clip, Draw, Geometry, Group, Mask, Scene},
@@ -13,10 +17,6 @@ use masonry_core::{
     kurbo::{Affine, Join, Rect, Stroke},
     peniko::{Brush, Color},
 };
-use r01_fixture::*;
-use reel_core::identity::FrameId;
-use reel_render::gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer};
-use reel_stage::{FrameOp, RenderFrame};
 
 fn renderer(limits: GpuLimits) -> Renderer {
     let instance = wgpu::Instance::default();
@@ -81,7 +81,10 @@ fn draw_and_clip_strokes_reject_small_miters_without_panic_or_leak() {
                         if clip {
                             matches!(c.op, FrameOp::PushClip(Clip::Stroke { .. }))
                         } else {
-                            matches!(c.op, FrameOp::Draw(reel_stage::FrameDraw::Stroke { .. }))
+                            matches!(
+                                c.op,
+                                FrameOp::Draw(reel_ui::frame::FrameDraw::Stroke { .. })
+                            )
                         }
                     })
                     .unwrap()

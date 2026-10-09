@@ -1,5 +1,5 @@
 use super::GpuError;
-use reel_stage::RecordLocation;
+use reel_ui::frame::RecordLocation;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -92,16 +92,15 @@ impl<T> Scopes<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use masonry_core::core::Widget;
+    use reel_ui::core::Widget;
     fn at(command: usize) -> RecordLocation {
         // One stable owner is needed to compare locations across calls.
-        static OWNER: std::sync::OnceLock<masonry_core::core::WidgetId> =
-            std::sync::OnceLock::new();
+        static OWNER: std::sync::OnceLock<reel_ui::core::WidgetId> = std::sync::OnceLock::new();
         RecordLocation {
             fragment: 0,
             command,
             mask_depth: 0,
-            owner: *OWNER.get_or_init(|| masonry::widgets::Label::new("").prepare().id()),
+            owner: *OWNER.get_or_init(|| reel_ui::widgets::Label::new("").prepare().id()),
         }
     }
     #[test]

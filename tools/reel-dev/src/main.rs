@@ -48,15 +48,13 @@ fn main() -> Result<()> {
                 "T01 baseline verified: every raw SHA and comparison, 8 mismatches, runner_exit_code=1"
             );
         }
-        ["deps"] => maintenance::dependencies(None)?,
+        ["deps"] => maintenance::dependencies()?,
         ["audit-kira"] => audio::audit_kira(None)?,
         ["audit-kira", source] => audio::audit_kira(Some(Path::new(source)))?,
         ["audio-regression"] => audio::regression(false)?,
         ["audio-regression", "--release"] => audio::regression(true)?,
         ["audio-probe"] => audio::probes()?,
-        ["deps", manifest] => maintenance::dependencies(Some(Path::new(manifest)))?,
-        ["audit-masonry", upstream] => maintenance::audit_masonry(Path::new(upstream))?,
-        ["prepare-masonry", upstream] => maintenance::prepare_experiment(Path::new(upstream))?,
+        ["audit-ui"] => maintenance::audit_ui()?,
         ["root-negative"] => maintenance::negative_controls()?,
         ["compiler-probe", probe, mode] => maintenance::compiler_probe(probe, Some(mode))?,
         ["compiler-probe", probe] => maintenance::compiler_probe(probe, None)?,
@@ -64,7 +62,7 @@ fn main() -> Result<()> {
             maintenance::measure(Path::new(build), target, &args[3..])?
         }
         _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|convert --write|inventory|verify-results DIR [--t01-baseline]|run-upstream --sq PATH --out NEW_DIR --work NEW_DIR|deps [MANIFEST]|audit-masonry UPSTREAM|audit-kira [UPSTREAM]|audio-regression [--release]|audio-probe|prepare-masonry UPSTREAM|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
+            "Usage: cargo run -p reel-dev -- <check|convert --write|inventory|verify-results DIR [--t01-baseline]|run-upstream --sq PATH --out NEW_DIR --work NEW_DIR|deps|audit-ui|audit-kira [UPSTREAM]|audio-regression [--release]|audio-probe|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
             root().display()
         ),
     }
