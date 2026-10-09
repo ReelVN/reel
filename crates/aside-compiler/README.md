@@ -22,6 +22,14 @@ link are located rejections. See the [L05 contracts](LOWERING.md#initializer-loc
 and [static measurements](LOWERING_PERFORMANCE.md#2026-10-09-initializer-local-compilation-l05).
 These checks do not execute Aside or establish runtime Cell/GC behavior.
 
+L06 / Issue #40 adds fixed tuple/array/table literals and nonoptional index reads,
+mixed Name/Index assignment chains and index compound writes using B01's existing
+descriptors and instructions. Table keys/values are evaluated before one ordered
+MakeTable; assignment receivers/keys are saved across RHS calls. See the
+[L06 static contract and matrix](LOWERING.md#fixed-collections-and-index-locations-l06).
+Member, optional chains, spread/rest and patterns remain deferred. No Aside
+execution, hashing/index bounds, alias/GC or engine acceptance is claimed.
+
 The workspace comes from D01 `c03226a`; only this directory and compiler lockfile
 entries change relative to that base. [INTERFACE.md](INTERFACE.md) records the
 approved public interface and the owner decisions resolving the original syntax

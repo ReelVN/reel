@@ -1,7 +1,7 @@
 use super::*;
 
 impl FunctionBuilder<'_, '_> {
-    fn value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+    pub(super) fn value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
         let value = self.expr(n, depth)?;
         if value.is_none() && self.current.is_some() {
             return Err(self.l.b.error(
@@ -145,6 +145,13 @@ impl FunctionBuilder<'_, '_> {
                 let text = self.string(n)?;
                 Ok(Some(self.constant(bc::Const::Utf8(text), n)?))
             }
+            (H::Tuple | H::Array, Form::Sequence) => self.sequence(n, depth),
+            (H::Object, Form::Sequence) => self.table(n, depth),
+            (H::Index, _) => self.index(n, depth - 1),
+            (H::Member, _) => Err(self.l.b.error(
+                ErrorKind::Unsupported,
+                "member access awaits member/callable lowering",
+            )),
             (H::Prefix, Form::Unary { operator, value }) => {
                 // Treat the negative int64 minimum as a single source constant.
                 if operator.kind == K::Minus
@@ -269,7 +276,7 @@ impl FunctionBuilder<'_, '_> {
                         };
                         let Some(value) = self.value(value, depth)? else {
                             self.l.b.release(names);
-                            self.registers.release(window, &mut self.l.b)?;
+                            self.release_window(window, n)?;
                             if let Some(callee) = callee_value {
                                 self.release(callee)?;
                             }
@@ -306,11 +313,7 @@ impl FunctionBuilder<'_, '_> {
                 if let Some(callee) = callee_value {
                     self.release(callee)?;
                 }
-                self.l.b.work(window.len as u64)?;
-                for i in 0..window.len {
-                    self.op(bc::Opcode::Clear, window.start.0 + i, 0, 0, n)?;
-                }
-                self.registers.release(window, &mut self.l.b)?;
+                self.release_window(window, n)?;
                 Ok(Some(out))
             }
             (H::Return, Form::Transfer { value, .. }) => {
@@ -538,77 +541,6 @@ impl FunctionBuilder<'_, '_> {
             self.release(out)?;
             Ok(None)
         }
-    }
-    fn assignment(&mut self, n: h::NodeId, depth: usize) -> Result<(), Error> {
-        let mut targets = Vec::new();
-        let mut current = n;
-        let (rhs, compound) = loop {
-            self.l.b.work(1)?;
-            let Form::Binary {
-                left,
-                operator,
-                right,
-            } = self.l.m.hir().node(current).form
-            else {
-                return Err(self.l.b.error(ErrorKind::InvalidIr, "assignment form"));
-            };
-            let mut target = left;
-            while let Form::Single { child } = self.l.m.hir().node(target).form {
-                target = child;
-                self.l.b.work(1)?;
-            }
-            if self.l.m.hir().node(target).kind != H::Name {
-                return Err(self.l.b.error(
-                    ErrorKind::Unsupported,
-                    "member/index/destructuring assignment awaits position lowering",
-                ));
-            }
-            let symbol = self.l.m.facts()[target.0 as usize].symbol.ok_or_else(|| {
-                self.l
-                    .b
-                    .error(ErrorKind::InvalidIr, "assignment target identity")
-            })?;
-            self.l.b.push(&mut targets, (symbol, target))?;
-            if operator.kind == K::Eq && self.l.m.hir().node(right).kind == H::Assignment {
-                current = right;
-                continue;
-            }
-            break (
-                right,
-                if operator.kind == K::Eq {
-                    None
-                } else {
-                    Some(operator.kind)
-                },
-            );
-        };
-        let value = if let Some(operator) = compound {
-            let opcode = binary(operator)
-                .ok_or_else(|| self.l.b.error(ErrorKind::Unsupported, "compound operator"))?;
-            let left = self.read(targets.last().expect("assignment target").0, n)?;
-            let Some(right) = self.value(rhs, depth)? else {
-                self.release(left)?;
-                self.l.b.release(targets);
-                return Ok(());
-            };
-            let out = self.temp()?;
-            self.op(opcode, out.0, left.0, right.0, n)?;
-            self.release(left)?;
-            self.release(right)?;
-            out
-        } else {
-            let Some(value) = self.value(rhs, depth)? else {
-                self.l.b.release(targets);
-                return Ok(());
-            };
-            value
-        };
-        for &(symbol, target) in targets.iter().rev() {
-            self.write(symbol, value, false, target)?;
-        }
-        self.release(value)?;
-        self.l.b.release(targets);
-        Ok(())
     }
     fn loop_node(
         &mut self,

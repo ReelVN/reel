@@ -221,6 +221,134 @@ closure sharing/reentry isolation, GC or host restoration, module publication,
 complete script imports or a playable engine session. V03 and every Aside source
 execution remain untested and were not invoked through alternative entry points.
 
+## 2026-10-09 fixed collections and index locations (L06)
+
+Production, tests and probe: `9ff3e67ade4797e9dd348d5cb038c258daeffa2b`, based
+on main `6203ee138242baa74847f41c66e92382147aa5b1`, Issue #40. Rust 1.96.0
+(`ac68faa20`), Linux 6.18.44 x86_64, release optimization. Changes are confined to
+the existing aside-compiler crate; B01/VM/bytecode v1/RuntimeSupport are unchanged.
+These are the implementer's static checks, pending the owner's independent review.
+
+At this production revision, all **134 compiler tests** passed in both debug and
+release, including 44 lowering contracts and 15 L06 contracts. The existing 24
+paired author-guide scenes passed parse/semantic checks. fmt, strict clippy and
+diff checks passed. Final check logs are under ignored
+`target/reel-artifacts/issue40/final-{debug,release,fmt,clippy,probe-build}.log`.
+The final full checks include the Name-location budget-span correction. The
+probe generator's initial invalid `catch(e)` was corrected to `catch e` before
+measurements; an initial expected refusal at 5,000 table fields actually compiled
+and is retained as a successful larger boundary sample.
+
+The [static matrix](tests/lowering/collections_locations.rs) proves ordered
+constructor descriptors, saved receiver/key/element registers across calls,
+reverse chain writes, all ten compound operations, default/capture identity and
+normal temporary clears. Terminal receiver/key/element/RHS branches omit later
+calls, constructors and writes; Return/Throw retain shared finally selection.
+Conditional fallthrough has definite temporary initialization and conservative
+shared-CFG dominance checks. Deferred forms and known tuple/immutable-name writes
+remain located errors. Work/capacity tests reject just below measured budgets and
+admit the exact lower budget; collection/location register and nesting quotas
+reject at their failing source. The repeated 300-expression contract keeps at
+most 12 registers instead of growing with expression count.
+
+All 53 accepted probe processes assert **both IR retained capacity and final
+verified-package retained capacity** against `stats_alloc`, excluding borrowed
+input/HIR. This matters for ordered pair descriptors and temporary prepared
+locations: emission's verifier ledger cannot mask an earlier IR ledger error.
+There are 45 L06 size-series samples (three fresh processes per size), one larger
+table boundary sample, six existing plain/captures/temporaries/named/loops/
+initializer samples and one generated structural-evidence sample. No seed package
+is used. Peak bytes remain a conservative capacity upper bound, not measured RSS.
+
+`sequences` constructs N `(id(i), [id(i)])` entries in a single outer array;
+`tables` constructs N dynamic key/value fields with repeated keys; `locations`
+repeats a mixed chain and index compound assignment N times. `nested` has N nested
+arrays. `terminal` repeats a table whose key throws on both conditional branches,
+inside catch/finally, to exercise abandoned pair/location scratch. These functions
+and calls are compiled only. Times below are medians of three processes, except
+the explicitly marked 5,000-field boundary sample, which ran once.
+
+| Workload | N | Lower ms | Emit + verify ms | Retained bytes | Peak upper bytes | Compiler work | Instructions | Max registers/function | IR retained bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sequences | 100 | 0.144 | 0.203 | 208,944 | 307,700 | 55,060 | 2,812 | 106 | 176,612 |
+| Sequences | 500 | 0.638 | 1.029 | 837,680 | 1,231,348 | 261,428 | 14,012 | 506 | 707,044 |
+| Sequences | 1,000 | 1.286 | 2.028 | 1,673,264 | 2,460,148 | 522,588 | 28,012 | 1,006 | 1,411,556 |
+| Tables | 100 | 0.100 | 0.150 | 111,664 | 161,268 | 39,612 | 2,012 | 203 | 95,716 |
+| Tables | 500 | 0.440 | 0.739 | 702,512 | 1,096,180 | 216,092 | 10,012 | 1,003 | 571,876 |
+| Tables | 1,000 | 0.839 | 1.548 | 1,402,928 | 2,189,812 | 431,476 | 20,012 | 2,003 | 1,141,220 |
+| Tables (one boundary sample) | 5,000 | 4.550 | 7.272 | 7,014,448 | 10,160,628 | 2,120,564 | 100,012 | 10,003 | 5,966,308 |
+| Locations | 100 | 0.617 | 0.423 | 354,661 | 551,721 | 150,108 | 5,416 | 9 | 289,561 |
+| Locations | 500 | 1.773 | 2.348 | 1,739,109 | 2,525,993 | 720,492 | 27,016 | 9 | 1,477,401 |
+| Locations | 1,000 | 3.295 | 4.513 | 3,475,813 | 5,049,129 | 1,441,410 | 54,016 | 9 | 2,951,961 |
+| Nested | 10 | 0.012 | 0.014 | 4,489 | 6,285 | 1,184 | 47 | 11 | 4,113 |
+| Nested | 40 | 0.021 | 0.021 | 13,801 | 20,205 | 2,984 | 167 | 41 | 11,889 |
+| Nested | 80 | 0.028 | 0.032 | 26,217 | 38,765 | 5,384 | 327 | 81 | 22,257 |
+| Terminal | 10 | 0.064 | 0.060 | 24,367 | 39,463 | 11,698 | 267 | 20 | 21,691 |
+| Terminal | 100 | 0.238 | 2.290 | 184,127 | 321,879 | 102,552 | 2,607 | 110 | 178,411 |
+| Terminal | 300 | 0.745 | 18.710 | 468,863 | 930,839 | 309,328 | 7,807 | 310 | 627,627 |
+
+Simultaneously live fixed collection elements grow the register window; sequential
+index operations reuse nine registers. Terminal register growth includes N pinned
+catch bindings under the existing source-binding slot model. Increasing shared
+exception-region verification cost in the terminal workload is visible here; it
+is not an execution/finally throughput claim or a new verifier optimization.
+
+Four probes return normal located lower errors (process exit 0, `rejected` output):
+
+| Workload | N | Diagnostic | Source byte range | Charged compiler work |
+| --- | ---: | --- | --- | ---: |
+| Sequences | 10,000 | Instruction quota | 160757..160761 | 3,387,177 |
+| Tables | 33,000 | Register window quota, before pair allocation/element lowering | 19..582911 | 2,457,508 |
+| Locations | 5,000 | Instruction quota | 216672..216683 | 5,197,403 |
+| Nested, lower depth set to 64 | 80 | Lower depth quota | 69..106 | 1,519 |
+
+Reproduction uses only the compiler:
+
+```sh
+cargo test -p aside-compiler --lib --tests --locked
+cargo test -p aside-compiler --lib --tests --release --locked
+cargo fmt -p aside-compiler --check
+cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
+cargo test -p aside-compiler --test lowering collections_locations --locked -- --nocapture
+cargo build -p aside-compiler --example lowering_probe --release --locked
+target/release/examples/lowering_probe 100 sequences
+target/release/examples/lowering_probe 500 sequences
+target/release/examples/lowering_probe 1000 sequences
+target/release/examples/lowering_probe 100 tables
+target/release/examples/lowering_probe 500 tables
+target/release/examples/lowering_probe 1000 tables
+target/release/examples/lowering_probe 100 locations
+target/release/examples/lowering_probe 500 locations
+target/release/examples/lowering_probe 1000 locations
+target/release/examples/lowering_probe 10 nested
+target/release/examples/lowering_probe 40 nested
+target/release/examples/lowering_probe 80 nested
+target/release/examples/lowering_probe 10 terminal
+target/release/examples/lowering_probe 100 terminal
+target/release/examples/lowering_probe 300 terminal
+target/release/examples/lowering_probe 5000 tables
+target/release/examples/lowering_probe 10000 sequences
+target/release/examples/lowering_probe 33000 tables
+target/release/examples/lowering_probe 5000 locations
+target/release/examples/lowering_probe 80 nested 64
+ASIDE_LOWERING_EVIDENCE=target/reel-artifacts/issue40/evidence target/release/examples/lowering_probe 1 evidence
+git diff --check
+```
+
+Run each size-series command three times. Raw `MODE-N-SAMPLE.log`, four
+`MODE-N-rejection.log`, `tables-5000-boundary.log` and `measurements.json` remain in
+ignored `target/reel-artifacts/issue40/`. The evidence directory contains actual
+source, IR, ordered descriptor tables, codec output and disassembly plus a SHA-256
+manifest tied to the production head. `static-matrix.log` records, for example,
+calls `obj(a), key(0), obj(b), key(1), rhs()` followed by IndexSet for
+`obj(b)[key(1)]`, IndexSet for `obj(a)[key(0)]` and BindWrite for `n`.
+
+These checks prove compilation order and register/CFG structure. They do not
+execute or simulate any Aside bytecode, establish actual key hash/duplicate
+overwrite behavior, index bounds, alias mutation, GC/restoration or a complete
+engine session. Source/index/bilingual-guide synchronization and independent
+integration review belong to the owner; the PR remains draft until those steps.
+
 ## Pending acceptance
 
 No VM dispatch or native host invocation was run. V03 independent execution
