@@ -1,0 +1,9 @@
+{
+  "revision": "f1040372d28a0a3a82e7c3162926321d804db4d0",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "machine": "x86_64",
+  "repetitions": 7,
+  "scope": "compiler and bytecode verification/codec only; no dispatch or host invocation",
+  "peak": "conservative compiler capacity upper bound, not measured process RSS"
+}

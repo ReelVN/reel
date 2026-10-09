@@ -2224,14 +2224,18 @@ impl Binder<'_> {
         else {
             return ANY;
         };
-        let value = self.visit(condition, ctx);
+        let mut inner = ctx.clone();
+        if is_loop && inner.loops.last().is_none_or(|(node, _, _)| *node != n) {
+            // The condition is inside its loop's control boundary as well.
+            // Labelled while already installed this exact target in loop_node.
+            inner.loops.push((n, None, ctx.finally.len()));
+        }
+        let value = self.visit(condition, if is_loop { &inner } else { ctx });
         if pattern.is_none() {
             self.require(condition, value, BOOL, "condition");
         }
         let previous = self.scope;
-        let mut inner = ctx.clone();
         if is_loop {
-            inner.loops.push((n, None, ctx.finally.len()));
             inner.iteration = true;
         }
         self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
@@ -2257,8 +2261,6 @@ impl Binder<'_> {
         if self.kind(n) == HirKind::While {
             let mut c = ctx.clone();
             c.loops.push((n, label, ctx.finally.len()));
-            // condition's own anonymous loop would hide the explicit label only
-            // for unlabelled jumps, which still targets this same node.
             self.condition(n, &c, true);
             return NULL;
         }

@@ -298,6 +298,51 @@ fn lexical_scope_shadowing_and_precise_reads() {
     valid("let t={x:1}; t.x=2;");
 }
 #[test]
+fn parameter_defaults_have_their_own_control_boundary() {
+    for (source, text) in [
+        ("fn f(x=if true{return 1;}else{2}){x}", "return 1;"),
+        ("fn f(x=if false{return 1;}else{2}){x}", "return 1;"),
+        (
+            "fn f(x=true||(if true{return true;}else{false})){x}",
+            "return true;",
+        ),
+        ("fn f(x=1??(if true{return 1;}else{2})){x}", "return 1;"),
+        ("fn f(x=if true{loop{return 1;} 2}else{3}){x}", "return 1;"),
+        (
+            "fn f(x=||{return 1;},y=if true{return 2;}else{3}){x}",
+            "return 2;",
+        ),
+    ] {
+        let analysis = analyze_code(source);
+        let errors: Vec<_> = analysis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::InvalidDefault)
+            .collect();
+        assert_eq!(errors.len(), 1, "{source}: {:?}", analysis.diagnostics);
+        assert_eq!(&source[byte_range(errors[0].range)], text);
+        assert!(analysis.into_module().is_err());
+    }
+    for source in [
+        "fn f(x=if true{let y=2;y}else{3}){x}",
+        "fn f(x=||{return 1;}){x()}",
+        "fn f(x=if true{fn nested(){return 1;} nested()}else{2}){x}",
+        "fn f(x=if true{loop{break;} 2}else{3}){x}",
+        "fn f(x=if true{while true{continue;} 2}else{3}){x}",
+        "fn f(x=if true{throw 1;}else{2}){x}",
+        "fn f(x=if true{inner:while if true{break inner;}else{true}{} 2}else{3}){x}",
+    ] {
+        valid(source);
+    }
+    for source in [
+        "fn outer(){loop{fn f(x=if true{break;}else{2}){x} break;}}",
+        "fn outer(){loop{fn f(x=if true{continue;}else{2}){x} break;}}",
+    ] {
+        rejects(source, DiagnosticCode::InvalidControl);
+    }
+}
+
+#[test]
 fn defaults_capture_definition_environment_and_previous_parameters() {
     let m = valid("fn outer(){let value=2; fn f(a=value,b=a){b} return f;}");
     let value = symbols(&m, "value")[0].0;

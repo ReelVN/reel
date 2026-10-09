@@ -147,6 +147,7 @@ dependencies = [
 name = "aside-compiler"
 version = "0.1.0"
 dependencies = [
+ "aside-vm",
  "codespan-reporting 0.13.1",
  "logos",
  "rowan",
