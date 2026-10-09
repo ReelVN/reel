@@ -15,7 +15,7 @@ use std::{collections::HashMap, sync::Arc};
 pub(super) struct Context<'a> {
     pub(super) gpu: &'a Gpu,
     pub(super) encoder: wgpu::CommandEncoder,
-    pub(super) pipelines: Pipelines,
+    pub(super) pipelines: Arc<Pipelines>,
     pub(super) quality: Quality,
     pub(super) size: [u32; 2],
     pub(super) budgets: &'a Budgets,

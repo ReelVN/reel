@@ -13,6 +13,8 @@
 
 内部模块组织（PR #35）：控件、布局、输入桥接、帧与资源集中在 reel-ui，按职责使用 mod；渲染后端与窗口组装仍独立。借用代码由 Reel 自主维护，不再维持上游多包结构。这次组织调整不增加作者 API，也不代表完整剧情会话已经接通。
 
+内部优化（R03 / PR #33）：Renderer 在实例内有界复用最多三档 GPU 管线；不会跨设备实例共享，也不改变作者接口、质量选择或帧资源的提交/完成寿命。native wgpu-core 的重复准备与构造失败隔离已独立验证；浏览器 WebGPU 和物理设备故障未验。首次/后续准备的 CPU 测量只反映测试环境，不能视为物理 GPU 帧性能保证。
+
 ## 一 最小项目与共同写法
 项目起步只需 game.toml、main.aside 和 assets/。ui/、story/ 等目录按创作规模自行拆分。配置指定入口 main::main 与逻辑画布 1920×1080。reel dev 运行源码并显示定位到文件的错误；reel build 生成字节码和资源包；精简播放器运行构建产物。这些命令属于实现目标。build 输出 .asb 字节码包、.rpk 资源包及 release.json；资源可以按素材类别分包，发布播放器按清单装载。更新剧情与更新素材分别构建。
 game.toml 使用 [game] 表的 entry 与 title，以及 [display] 表的 width、height、scale。entry 写 "main::main"；width=1920、height=1080、scale="contain" 作为默认值。contain 等比例缩放并保留边缘留空，输入坐标按同一缩放换算。game:: 模块从 game.toml 所在目录解析 .aside 文件。文件名与目录名必须可作模块标识符；外部源码模块通过 [modules] 的别名到相对目录映射导入，game 与 reel 是保留别名。
