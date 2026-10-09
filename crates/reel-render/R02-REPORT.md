@@ -14,6 +14,10 @@ merged exact main `9c2f768f53461770985f8872d3a833542e83aed5` into this branch.
 Only Cargo.lock conflicted; resolution preserved pinned renderer dependencies
 and added main's workspace packages. No VM target was executed. The draft PR now
 targets main; neither main nor the original R01 branch was modified by this task.
+Before delivery main advanced to `6b17f7966ded2376a3e45e278742ebee7c3e0321`
+(PR #26 lowering). The final normal merge resolved only Cargo.lock; scoped
+render/core/stage/player check and strict Clippy passed again, with no renderer
+source change or VM execution. See [main refresh](evidence/r02/main-refresh.log).
 
 
 ## Implementation boundaries
