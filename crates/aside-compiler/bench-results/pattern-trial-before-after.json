@@ -1,0 +1,1335 @@
+{
+  "before_revision": "b6463fa150363ccaa0e627e45a1c04846976364d",
+  "after_revision": "46392a80bd96104ed4954500f9a055397e35a0d7",
+  "binary_sha256": {
+    "/tmp/reel-pattern-repro/check-before-debug": "bf49c75de2f47f1cff32e138e99dc27d92e848e5817f42862358c81408770254",
+    "/tmp/reel-pattern-repro/check-before-release": "aec125cc8c3682b75fb78558b50ed442efa53581c17d05d61f1217899e5d1c1f",
+    "/workspace/reel/target/debug/examples/check": "abe59c0ceb833982a388c453ff2a40d0c9a9354377663229b67fdcec448276c8",
+    "/workspace/reel/target/release/examples/check": "1d6400e59520d93e4c418315427dd55551073d1d901d18a07c0ea32240c421db"
+  },
+  "environment": {
+    "ASIDE_DUMP_TREE": "1"
+  },
+  "runs": [
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupExpr@0..15\n        LParen@0..1 \"(\"\n        BinaryExpr@1..14\n          TupleExpr@1..6\n            LParen@1..2 \"(\"\n            NameExpr@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NameExpr@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Is@7..9 \"is\"\n          TypeName@9..14\n            Whitespace@9..10 \" \"\n            Ident@10..14 \"Pair\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside:1:17\n  │\n1 │ ((a,b) is Pair) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupExpr@0..15\n        LParen@0..1 \"(\"\n        BinaryExpr@1..14\n          TupleExpr@1..6\n            LParen@1..2 \"(\"\n            NameExpr@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NameExpr@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Is@7..9 \"is\"\n          TypeName@9..14\n            Whitespace@9..10 \" \"\n            Ident@10..14 \"Pair\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside:1:17\n  │\n1 │ ((a,b) is Pair) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        TypePattern@1..14\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Is@7..9 \"is\"\n          TypeName@9..14\n            Whitespace@9..10 \" \"\n            Ident@10..14 \"Pair\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        TypePattern@1..14\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Is@7..9 \"is\"\n          TypeName@9..14\n            Whitespace@9..10 \" \"\n            Ident@10..14 \"Pair\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupExpr@0..15\n          LParen@0..1 \"(\"\n          BinaryExpr@1..14\n            TupleExpr@1..6\n              LParen@1..2 \"(\"\n              NameExpr@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NameExpr@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Is@7..9 \"is\"\n            TypeName@9..14\n              Whitespace@9..10 \" \"\n              Ident@10..14 \"Pair\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside:1:17\n  │\n1 │ ((a,b) is Pair) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupExpr@0..15\n          LParen@0..1 \"(\"\n          BinaryExpr@1..14\n            TupleExpr@1..6\n              LParen@1..2 \"(\"\n              NameExpr@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NameExpr@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Is@7..9 \"is\"\n            TypeName@9..14\n              Whitespace@9..10 \" \"\n              Ident@10..14 \"Pair\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside:1:17\n  │\n1 │ ((a,b) is Pair) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          TypePattern@1..14\n            TuplePattern@1..6\n              LParen@1..2 \"(\"\n              NamePattern@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NamePattern@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Is@7..9 \"is\"\n            TypeName@9..14\n              Whitespace@9..10 \" \"\n              Ident@10..14 \"Pair\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-type",
+      "source": "((a,b) is Pair) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-type.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          TypePattern@1..14\n            TuplePattern@1..6\n              LParen@1..2 \"(\"\n              NamePattern@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NamePattern@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Is@7..9 \"is\"\n            TypeName@9..14\n              Whitespace@9..10 \" \"\n              Ident@10..14 \"Pair\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupExpr@0..15\n        LParen@0..1 \"(\"\n        BinaryExpr@1..14\n          TupleExpr@1..6\n            LParen@1..2 \"(\"\n            NameExpr@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NameExpr@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Pipe@7..8 \"|\"\n          Whitespace@8..9 \" \"\n          TupleExpr@9..14\n            LParen@9..10 \"(\"\n            NameExpr@10..11\n              Ident@10..11 \"a\"\n            Comma@11..12 \",\"\n            NameExpr@12..13\n              Ident@12..13 \"b\"\n            RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside:1:17\n  │\n1 │ ((a,b) | (a,b)) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupExpr@0..15\n        LParen@0..1 \"(\"\n        BinaryExpr@1..14\n          TupleExpr@1..6\n            LParen@1..2 \"(\"\n            NameExpr@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NameExpr@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Pipe@7..8 \"|\"\n          Whitespace@8..9 \" \"\n          TupleExpr@9..14\n            LParen@9..10 \"(\"\n            NameExpr@10..11\n              Ident@10..11 \"a\"\n            Comma@11..12 \",\"\n            NameExpr@12..13\n              Ident@12..13 \"b\"\n            RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside:1:17\n  │\n1 │ ((a,b) | (a,b)) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        OrPattern@1..14\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Pipe@7..8 \"|\"\n          Whitespace@8..9 \" \"\n          TuplePattern@9..14\n            LParen@9..10 \"(\"\n            NamePattern@10..11\n              Ident@10..11 \"a\"\n            Comma@11..12 \",\"\n            NamePattern@12..13\n              Ident@12..13 \"b\"\n            RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        OrPattern@1..14\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          Whitespace@6..7 \" \"\n          Pipe@7..8 \"|\"\n          Whitespace@8..9 \" \"\n          TuplePattern@9..14\n            LParen@9..10 \"(\"\n            NamePattern@10..11\n              Ident@10..11 \"a\"\n            Comma@11..12 \",\"\n            NamePattern@12..13\n              Ident@12..13 \"b\"\n            RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"value\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupExpr@0..15\n          LParen@0..1 \"(\"\n          BinaryExpr@1..14\n            TupleExpr@1..6\n              LParen@1..2 \"(\"\n              NameExpr@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NameExpr@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Pipe@7..8 \"|\"\n            Whitespace@8..9 \" \"\n            TupleExpr@9..14\n              LParen@9..10 \"(\"\n              NameExpr@10..11\n                Ident@10..11 \"a\"\n              Comma@11..12 \",\"\n              NameExpr@12..13\n                Ident@12..13 \"b\"\n              RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside:1:17\n  │\n1 │ ((a,b) | (a,b)) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupExpr@0..15\n          LParen@0..1 \"(\"\n          BinaryExpr@1..14\n            TupleExpr@1..6\n              LParen@1..2 \"(\"\n              NameExpr@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NameExpr@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Pipe@7..8 \"|\"\n            Whitespace@8..9 \" \"\n            TupleExpr@9..14\n              LParen@9..10 \"(\"\n              NameExpr@10..11\n                Ident@10..11 \"a\"\n              Comma@11..12 \",\"\n              NameExpr@12..13\n                Ident@12..13 \"b\"\n              RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside:1:17\n  │\n1 │ ((a,b) | (a,b)) = value;\n  │                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          OrPattern@1..14\n            TuplePattern@1..6\n              LParen@1..2 \"(\"\n              NamePattern@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NamePattern@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Pipe@7..8 \"|\"\n            Whitespace@8..9 \" \"\n            TuplePattern@9..14\n              LParen@9..10 \"(\"\n              NamePattern@10..11\n                Ident@10..11 \"a\"\n              Comma@11..12 \",\"\n              NamePattern@12..13\n                Ident@12..13 \"b\"\n              RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "tuple-or",
+      "source": "((a,b) | (a,b)) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/tuple-or.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          OrPattern@1..14\n            TuplePattern@1..6\n              LParen@1..2 \"(\"\n              NamePattern@2..3\n                Ident@2..3 \"a\"\n              Comma@3..4 \",\"\n              NamePattern@4..5\n                Ident@4..5 \"b\"\n              RParen@5..6 \")\"\n            Whitespace@6..7 \" \"\n            Pipe@7..8 \"|\"\n            Whitespace@8..9 \" \"\n            TuplePattern@9..14\n              LParen@9..10 \"(\"\n              NamePattern@10..11\n                Ident@10..11 \"a\"\n              Comma@11..12 \",\"\n              NamePattern@12..13\n                Ident@12..13 \"b\"\n              RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"value\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupExpr@0..31\n        LParen@0..1 \"(\"\n        BinaryExpr@1..30\n          GroupExpr@1..14\n            LParen@1..2 \"(\"\n            ArrayExpr@2..13\n              LBracket@2..3 \"[\"\n              NameExpr@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Spread@5..12\n                Ellipsis@5..8 \"...\"\n                NameExpr@8..12\n                  Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Is@15..17 \"is\"\n          Whitespace@17..18 \" \"\n          GroupType@18..30\n            LParen@18..19 \"(\"\n            UnionType@19..29\n              TypeName@19..24\n                Ident@19..24 \"Array\"\n              Pipe@24..25 \"|\"\n              TypeName@25..29\n                Null@25..29 \"null\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside:1:33\n  │\n1 │ (([a,...rest]) is (Array|null)) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupExpr@0..31\n        LParen@0..1 \"(\"\n        BinaryExpr@1..30\n          GroupExpr@1..14\n            LParen@1..2 \"(\"\n            ArrayExpr@2..13\n              LBracket@2..3 \"[\"\n              NameExpr@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Spread@5..12\n                Ellipsis@5..8 \"...\"\n                NameExpr@8..12\n                  Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Is@15..17 \"is\"\n          Whitespace@17..18 \" \"\n          GroupType@18..30\n            LParen@18..19 \"(\"\n            UnionType@19..29\n              TypeName@19..24\n                Ident@19..24 \"Array\"\n              Pipe@24..25 \"|\"\n              TypeName@25..29\n                Null@25..29 \"null\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside:1:33\n  │\n1 │ (([a,...rest]) is (Array|null)) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupPattern@0..31\n        LParen@0..1 \"(\"\n        TypePattern@1..30\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Is@15..17 \"is\"\n          Whitespace@17..18 \" \"\n          GroupType@18..30\n            LParen@18..19 \"(\"\n            UnionType@19..29\n              TypeName@19..24\n                Ident@19..24 \"Array\"\n              Pipe@24..25 \"|\"\n              TypeName@25..29\n                Null@25..29 \"null\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupPattern@0..31\n        LParen@0..1 \"(\"\n        TypePattern@1..30\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Is@15..17 \"is\"\n          Whitespace@17..18 \" \"\n          GroupType@18..30\n            LParen@18..19 \"(\"\n            UnionType@19..29\n              TypeName@19..24\n                Ident@19..24 \"Array\"\n              Pipe@24..25 \"|\"\n              TypeName@25..29\n                Null@25..29 \"null\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupExpr@0..31\n          LParen@0..1 \"(\"\n          BinaryExpr@1..30\n            GroupExpr@1..14\n              LParen@1..2 \"(\"\n              ArrayExpr@2..13\n                LBracket@2..3 \"[\"\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Spread@5..12\n                  Ellipsis@5..8 \"...\"\n                  NameExpr@8..12\n                    Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Is@15..17 \"is\"\n            Whitespace@17..18 \" \"\n            GroupType@18..30\n              LParen@18..19 \"(\"\n              UnionType@19..29\n                TypeName@19..24\n                  Ident@19..24 \"Array\"\n                Pipe@24..25 \"|\"\n                TypeName@25..29\n                  Null@25..29 \"null\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside:1:33\n  │\n1 │ (([a,...rest]) is (Array|null)) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupExpr@0..31\n          LParen@0..1 \"(\"\n          BinaryExpr@1..30\n            GroupExpr@1..14\n              LParen@1..2 \"(\"\n              ArrayExpr@2..13\n                LBracket@2..3 \"[\"\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Spread@5..12\n                  Ellipsis@5..8 \"...\"\n                  NameExpr@8..12\n                    Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Is@15..17 \"is\"\n            Whitespace@17..18 \" \"\n            GroupType@18..30\n              LParen@18..19 \"(\"\n              UnionType@19..29\n                TypeName@19..24\n                  Ident@19..24 \"Array\"\n                Pipe@24..25 \"|\"\n                TypeName@25..29\n                  Null@25..29 \"null\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside:1:33\n  │\n1 │ (([a,...rest]) is (Array|null)) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupPattern@0..31\n          LParen@0..1 \"(\"\n          TypePattern@1..30\n            GroupPattern@1..14\n              LParen@1..2 \"(\"\n              ArrayPattern@2..13\n                LBracket@2..3 \"[\"\n                NamePattern@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                RestPattern@5..12\n                  Ellipsis@5..8 \"...\"\n                  Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Is@15..17 \"is\"\n            Whitespace@17..18 \" \"\n            GroupType@18..30\n              LParen@18..19 \"(\"\n              UnionType@19..29\n                TypeName@19..24\n                  Ident@19..24 \"Array\"\n                Pipe@24..25 \"|\"\n                TypeName@25..29\n                  Null@25..29 \"null\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-type-union",
+      "source": "(([a,...rest]) is (Array|null)) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-type-union.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupPattern@0..31\n          LParen@0..1 \"(\"\n          TypePattern@1..30\n            GroupPattern@1..14\n              LParen@1..2 \"(\"\n              ArrayPattern@2..13\n                LBracket@2..3 \"[\"\n                NamePattern@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                RestPattern@5..12\n                  Ellipsis@5..8 \"...\"\n                  Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Is@15..17 \"is\"\n            Whitespace@17..18 \" \"\n            GroupType@18..30\n              LParen@18..19 \"(\"\n              UnionType@19..29\n                TypeName@19..24\n                  Ident@19..24 \"Array\"\n                Pipe@24..25 \"|\"\n                TypeName@25..29\n                  Null@25..29 \"null\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupExpr@0..31\n        LParen@0..1 \"(\"\n        BinaryExpr@1..30\n          GroupExpr@1..14\n            LParen@1..2 \"(\"\n            ArrayExpr@2..13\n              LBracket@2..3 \"[\"\n              NameExpr@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Spread@5..12\n                Ellipsis@5..8 \"...\"\n                NameExpr@8..12\n                  Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Pipe@15..16 \"|\"\n          Whitespace@16..17 \" \"\n          GroupExpr@17..30\n            LParen@17..18 \"(\"\n            ArrayExpr@18..29\n              LBracket@18..19 \"[\"\n              NameExpr@19..20\n                Ident@19..20 \"a\"\n              Comma@20..21 \",\"\n              Spread@21..28\n                Ellipsis@21..24 \"...\"\n                NameExpr@24..28\n                  Ident@24..28 \"rest\"\n              RBracket@28..29 \"]\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-or.aside:1:33\n  │\n1 │ (([a,...rest]) | ([a,...rest])) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "module"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupExpr@0..31\n        LParen@0..1 \"(\"\n        BinaryExpr@1..30\n          GroupExpr@1..14\n            LParen@1..2 \"(\"\n            ArrayExpr@2..13\n              LBracket@2..3 \"[\"\n              NameExpr@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Spread@5..12\n                Ellipsis@5..8 \"...\"\n                NameExpr@8..12\n                  Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Pipe@15..16 \"|\"\n          Whitespace@16..17 \" \"\n          GroupExpr@17..30\n            LParen@17..18 \"(\"\n            ArrayExpr@18..29\n              LBracket@18..19 \"[\"\n              NameExpr@19..20\n                Ident@19..20 \"a\"\n              Comma@20..21 \",\"\n              Spread@21..28\n                Ellipsis@21..24 \"...\"\n                NameExpr@24..28\n                  Ident@24..28 \"rest\"\n              RBracket@28..29 \"]\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-or.aside:1:33\n  │\n1 │ (([a,...rest]) | ([a,...rest])) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupPattern@0..31\n        LParen@0..1 \"(\"\n        OrPattern@1..30\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Pipe@15..16 \"|\"\n          Whitespace@16..17 \" \"\n          GroupPattern@17..30\n            LParen@17..18 \"(\"\n            ArrayPattern@18..29\n              LBracket@18..19 \"[\"\n              NamePattern@19..20\n                Ident@19..20 \"a\"\n              Comma@20..21 \",\"\n              RestPattern@21..28\n                Ellipsis@21..24 \"...\"\n                Ident@24..28 \"rest\"\n              RBracket@28..29 \"]\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  ExprStmt@0..40\n    AssignExpr@0..39\n      GroupPattern@0..31\n        LParen@0..1 \"(\"\n        OrPattern@1..30\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          Whitespace@14..15 \" \"\n          Pipe@15..16 \"|\"\n          Whitespace@16..17 \" \"\n          GroupPattern@17..30\n            LParen@17..18 \"(\"\n            ArrayPattern@18..29\n              LBracket@18..19 \"[\"\n              NamePattern@19..20\n                Ident@19..20 \"a\"\n              Comma@20..21 \",\"\n              RestPattern@21..28\n                Ellipsis@21..24 \"...\"\n                Ident@24..28 \"rest\"\n              RBracket@28..29 \"]\"\n            RParen@29..30 \")\"\n        RParen@30..31 \")\"\n      Whitespace@31..32 \" \"\n      Eq@32..33 \"=\"\n      Whitespace@33..34 \" \"\n      NameExpr@34..39\n        Ident@34..39 \"value\"\n    Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupExpr@0..31\n          LParen@0..1 \"(\"\n          BinaryExpr@1..30\n            GroupExpr@1..14\n              LParen@1..2 \"(\"\n              ArrayExpr@2..13\n                LBracket@2..3 \"[\"\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Spread@5..12\n                  Ellipsis@5..8 \"...\"\n                  NameExpr@8..12\n                    Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Pipe@15..16 \"|\"\n            Whitespace@16..17 \" \"\n            GroupExpr@17..30\n              LParen@17..18 \"(\"\n              ArrayExpr@18..29\n                LBracket@18..19 \"[\"\n                NameExpr@19..20\n                  Ident@19..20 \"a\"\n                Comma@20..21 \",\"\n                Spread@21..28\n                  Ellipsis@21..24 \"...\"\n                  NameExpr@24..28\n                    Ident@24..28 \"rest\"\n                RBracket@28..29 \"]\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-or.aside:1:33\n  │\n1 │ (([a,...rest]) | ([a,...rest])) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "block"
+      ],
+      "exit_code": 1,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupExpr@0..31\n          LParen@0..1 \"(\"\n          BinaryExpr@1..30\n            GroupExpr@1..14\n              LParen@1..2 \"(\"\n              ArrayExpr@2..13\n                LBracket@2..3 \"[\"\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Spread@5..12\n                  Ellipsis@5..8 \"...\"\n                  NameExpr@8..12\n                    Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Pipe@15..16 \"|\"\n            Whitespace@16..17 \" \"\n            GroupExpr@17..30\n              LParen@17..18 \"(\"\n              ArrayExpr@18..29\n                LBracket@18..19 \"[\"\n                NameExpr@19..20\n                  Ident@19..20 \"a\"\n                Comma@20..21 \",\"\n                Spread@21..28\n                  Ellipsis@21..24 \"...\"\n                  NameExpr@24..28\n                    Ident@24..28 \"rest\"\n                RBracket@28..29 \"]\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": "error[ASP009]: assignment requires a location or destructuring names\n  ┌─ /tmp/reel-pattern-trial-p6bvok8z/array-or.aside:1:33\n  │\n1 │ (([a,...rest]) | ([a,...rest])) = value;\n  │                                 ^ assignment requires a location or destructuring names\n\n"
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupPattern@0..31\n          LParen@0..1 \"(\"\n          OrPattern@1..30\n            GroupPattern@1..14\n              LParen@1..2 \"(\"\n              ArrayPattern@2..13\n                LBracket@2..3 \"[\"\n                NamePattern@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                RestPattern@5..12\n                  Ellipsis@5..8 \"...\"\n                  Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Pipe@15..16 \"|\"\n            Whitespace@16..17 \" \"\n            GroupPattern@17..30\n              LParen@17..18 \"(\"\n              ArrayPattern@18..29\n                LBracket@18..19 \"[\"\n                NamePattern@19..20\n                  Ident@19..20 \"a\"\n                Comma@20..21 \",\"\n                RestPattern@21..28\n                  Ellipsis@21..24 \"...\"\n                  Ident@24..28 \"rest\"\n                RBracket@28..29 \"]\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-or",
+      "source": "(([a,...rest]) | ([a,...rest])) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-or.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..40\n  Block@0..40\n    ExprStmt@0..40\n      AssignExpr@0..39\n        GroupPattern@0..31\n          LParen@0..1 \"(\"\n          OrPattern@1..30\n            GroupPattern@1..14\n              LParen@1..2 \"(\"\n              ArrayPattern@2..13\n                LBracket@2..3 \"[\"\n                NamePattern@3..4\n                  Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                RestPattern@5..12\n                  Ellipsis@5..8 \"...\"\n                  Ident@8..12 \"rest\"\n                RBracket@12..13 \"]\"\n              RParen@13..14 \")\"\n            Whitespace@14..15 \" \"\n            Pipe@15..16 \"|\"\n            Whitespace@16..17 \" \"\n            GroupPattern@17..30\n              LParen@17..18 \"(\"\n              ArrayPattern@18..29\n                LBracket@18..19 \"[\"\n                NamePattern@19..20\n                  Ident@19..20 \"a\"\n                Comma@20..21 \",\"\n                RestPattern@21..28\n                  Ellipsis@21..24 \"...\"\n                  Ident@24..28 \"rest\"\n                RBracket@28..29 \"]\"\n              RParen@29..30 \")\"\n          RParen@30..31 \")\"\n        Whitespace@31..32 \" \"\n        Eq@32..33 \"=\"\n        Whitespace@33..34 \" \"\n        NameExpr@34..39\n          Ident@34..39 \"value\"\n      Semi@39..40 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        MemberExpr@1..10\n          CallExpr@1..8\n            NameExpr@1..2\n              Ident@1..2 \"f\"\n            LParen@2..3 \"(\"\n            ArgList@3..8\n              Arg@3..4\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Arg@5..7\n                Whitespace@5..6 \" \"\n                NameExpr@6..7\n                  Ident@6..7 \"b\"\n              RParen@7..8 \")\"\n          Dot@8..9 \".\"\n          Ident@9..10 \"x\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        MemberExpr@1..10\n          CallExpr@1..8\n            NameExpr@1..2\n              Ident@1..2 \"f\"\n            LParen@2..3 \"(\"\n            ArgList@3..8\n              Arg@3..4\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Arg@5..7\n                Whitespace@5..6 \" \"\n                NameExpr@6..7\n                  Ident@6..7 \"b\"\n              RParen@7..8 \")\"\n          Dot@8..9 \".\"\n          Ident@9..10 \"x\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        MemberExpr@1..10\n          CallExpr@1..8\n            NameExpr@1..2\n              Ident@1..2 \"f\"\n            LParen@2..3 \"(\"\n            ArgList@3..8\n              Arg@3..4\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Arg@5..7\n                Whitespace@5..6 \" \"\n                NameExpr@6..7\n                  Ident@6..7 \"b\"\n              RParen@7..8 \")\"\n          Dot@8..9 \".\"\n          Ident@9..10 \"x\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        MemberExpr@1..10\n          CallExpr@1..8\n            NameExpr@1..2\n              Ident@1..2 \"f\"\n            LParen@2..3 \"(\"\n            ArgList@3..8\n              Arg@3..4\n                NameExpr@3..4\n                  Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              Arg@5..7\n                Whitespace@5..6 \" \"\n                NameExpr@6..7\n                  Ident@6..7 \"b\"\n              RParen@7..8 \")\"\n          Dot@8..9 \".\"\n          Ident@9..10 \"x\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          MemberExpr@1..10\n            CallExpr@1..8\n              NameExpr@1..2\n                Ident@1..2 \"f\"\n              LParen@2..3 \"(\"\n              ArgList@3..8\n                Arg@3..4\n                  NameExpr@3..4\n                    Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Arg@5..7\n                  Whitespace@5..6 \" \"\n                  NameExpr@6..7\n                    Ident@6..7 \"b\"\n                RParen@7..8 \")\"\n            Dot@8..9 \".\"\n            Ident@9..10 \"x\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          MemberExpr@1..10\n            CallExpr@1..8\n              NameExpr@1..2\n                Ident@1..2 \"f\"\n              LParen@2..3 \"(\"\n              ArgList@3..8\n                Arg@3..4\n                  NameExpr@3..4\n                    Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Arg@5..7\n                  Whitespace@5..6 \" \"\n                  NameExpr@6..7\n                    Ident@6..7 \"b\"\n                RParen@7..8 \")\"\n            Dot@8..9 \".\"\n            Ident@9..10 \"x\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          MemberExpr@1..10\n            CallExpr@1..8\n              NameExpr@1..2\n                Ident@1..2 \"f\"\n              LParen@2..3 \"(\"\n              ArgList@3..8\n                Arg@3..4\n                  NameExpr@3..4\n                    Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Arg@5..7\n                  Whitespace@5..6 \" \"\n                  NameExpr@6..7\n                    Ident@6..7 \"b\"\n                RParen@7..8 \")\"\n            Dot@8..9 \".\"\n            Ident@9..10 \"x\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "call-location",
+      "source": "(f(a, b).x) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/call-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          MemberExpr@1..10\n            CallExpr@1..8\n              NameExpr@1..2\n                Ident@1..2 \"f\"\n              LParen@2..3 \"(\"\n              ArgList@3..8\n                Arg@3..4\n                  NameExpr@3..4\n                    Ident@3..4 \"a\"\n                Comma@4..5 \",\"\n                Arg@5..7\n                  Whitespace@5..6 \" \"\n                  NameExpr@6..7\n                    Ident@6..7 \"b\"\n                RParen@7..8 \")\"\n            Dot@8..9 \".\"\n            Ident@9..10 \"x\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        IndexExpr@1..10\n          NameExpr@1..2\n            Ident@1..2 \"a\"\n          LBracket@2..3 \"[\"\n          TupleExpr@3..9\n            LParen@3..4 \"(\"\n            NameExpr@4..5\n              Ident@4..5 \"i\"\n            Comma@5..6 \",\"\n            Whitespace@6..7 \" \"\n            NameExpr@7..8\n              Ident@7..8 \"j\"\n            RParen@8..9 \")\"\n          RBracket@9..10 \"]\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        IndexExpr@1..10\n          NameExpr@1..2\n            Ident@1..2 \"a\"\n          LBracket@2..3 \"[\"\n          TupleExpr@3..9\n            LParen@3..4 \"(\"\n            NameExpr@4..5\n              Ident@4..5 \"i\"\n            Comma@5..6 \",\"\n            Whitespace@6..7 \" \"\n            NameExpr@7..8\n              Ident@7..8 \"j\"\n            RParen@8..9 \")\"\n          RBracket@9..10 \"]\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        IndexExpr@1..10\n          NameExpr@1..2\n            Ident@1..2 \"a\"\n          LBracket@2..3 \"[\"\n          TupleExpr@3..9\n            LParen@3..4 \"(\"\n            NameExpr@4..5\n              Ident@4..5 \"i\"\n            Comma@5..6 \",\"\n            Whitespace@6..7 \" \"\n            NameExpr@7..8\n              Ident@7..8 \"j\"\n            RParen@8..9 \")\"\n          RBracket@9..10 \"]\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  ExprStmt@0..20\n    AssignExpr@0..19\n      GroupExpr@0..11\n        LParen@0..1 \"(\"\n        IndexExpr@1..10\n          NameExpr@1..2\n            Ident@1..2 \"a\"\n          LBracket@2..3 \"[\"\n          TupleExpr@3..9\n            LParen@3..4 \"(\"\n            NameExpr@4..5\n              Ident@4..5 \"i\"\n            Comma@5..6 \",\"\n            Whitespace@6..7 \" \"\n            NameExpr@7..8\n              Ident@7..8 \"j\"\n            RParen@8..9 \")\"\n          RBracket@9..10 \"]\"\n        RParen@10..11 \")\"\n      Whitespace@11..12 \" \"\n      Eq@12..13 \"=\"\n      Whitespace@13..14 \" \"\n      NameExpr@14..19\n        Ident@14..19 \"value\"\n    Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          IndexExpr@1..10\n            NameExpr@1..2\n              Ident@1..2 \"a\"\n            LBracket@2..3 \"[\"\n            TupleExpr@3..9\n              LParen@3..4 \"(\"\n              NameExpr@4..5\n                Ident@4..5 \"i\"\n              Comma@5..6 \",\"\n              Whitespace@6..7 \" \"\n              NameExpr@7..8\n                Ident@7..8 \"j\"\n              RParen@8..9 \")\"\n            RBracket@9..10 \"]\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          IndexExpr@1..10\n            NameExpr@1..2\n              Ident@1..2 \"a\"\n            LBracket@2..3 \"[\"\n            TupleExpr@3..9\n              LParen@3..4 \"(\"\n              NameExpr@4..5\n                Ident@4..5 \"i\"\n              Comma@5..6 \",\"\n              Whitespace@6..7 \" \"\n              NameExpr@7..8\n                Ident@7..8 \"j\"\n              RParen@8..9 \")\"\n            RBracket@9..10 \"]\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          IndexExpr@1..10\n            NameExpr@1..2\n              Ident@1..2 \"a\"\n            LBracket@2..3 \"[\"\n            TupleExpr@3..9\n              LParen@3..4 \"(\"\n              NameExpr@4..5\n                Ident@4..5 \"i\"\n              Comma@5..6 \",\"\n              Whitespace@6..7 \" \"\n              NameExpr@7..8\n                Ident@7..8 \"j\"\n              RParen@8..9 \")\"\n            RBracket@9..10 \"]\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "index-location",
+      "source": "(a[(i, j)]) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/index-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..20\n  Block@0..20\n    ExprStmt@0..20\n      AssignExpr@0..19\n        GroupExpr@0..11\n          LParen@0..1 \"(\"\n          IndexExpr@1..10\n            NameExpr@1..2\n              Ident@1..2 \"a\"\n            LBracket@2..3 \"[\"\n            TupleExpr@3..9\n              LParen@3..4 \"(\"\n              NameExpr@4..5\n                Ident@4..5 \"i\"\n              Comma@5..6 \",\"\n              Whitespace@6..7 \" \"\n              NameExpr@7..8\n                Ident@7..8 \"j\"\n              RParen@8..9 \")\"\n            RBracket@9..10 \"]\"\n          RParen@10..11 \")\"\n        Whitespace@11..12 \" \"\n        Eq@12..13 \"=\"\n        Whitespace@13..14 \" \"\n        NameExpr@14..19\n          Ident@14..19 \"value\"\n      Semi@19..20 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  ExprStmt@0..17\n    AssignExpr@0..16\n      GroupExpr@0..8\n        LParen@0..1 \"(\"\n        IndexExpr@1..7\n          ArrayExpr@1..4\n            LBracket@1..2 \"[\"\n            LiteralExpr@2..3\n              Number@2..3 \"1\"\n            RBracket@3..4 \"]\"\n          LBracket@4..5 \"[\"\n          LiteralExpr@5..6\n            Number@5..6 \"0\"\n          RBracket@6..7 \"]\"\n        RParen@7..8 \")\"\n      Whitespace@8..9 \" \"\n      Eq@9..10 \"=\"\n      Whitespace@10..11 \" \"\n      NameExpr@11..16\n        Ident@11..16 \"value\"\n    Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  ExprStmt@0..17\n    AssignExpr@0..16\n      GroupExpr@0..8\n        LParen@0..1 \"(\"\n        IndexExpr@1..7\n          ArrayExpr@1..4\n            LBracket@1..2 \"[\"\n            LiteralExpr@2..3\n              Number@2..3 \"1\"\n            RBracket@3..4 \"]\"\n          LBracket@4..5 \"[\"\n          LiteralExpr@5..6\n            Number@5..6 \"0\"\n          RBracket@6..7 \"]\"\n        RParen@7..8 \")\"\n      Whitespace@8..9 \" \"\n      Eq@9..10 \"=\"\n      Whitespace@10..11 \" \"\n      NameExpr@11..16\n        Ident@11..16 \"value\"\n    Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  ExprStmt@0..17\n    AssignExpr@0..16\n      GroupExpr@0..8\n        LParen@0..1 \"(\"\n        IndexExpr@1..7\n          ArrayExpr@1..4\n            LBracket@1..2 \"[\"\n            LiteralExpr@2..3\n              Number@2..3 \"1\"\n            RBracket@3..4 \"]\"\n          LBracket@4..5 \"[\"\n          LiteralExpr@5..6\n            Number@5..6 \"0\"\n          RBracket@6..7 \"]\"\n        RParen@7..8 \")\"\n      Whitespace@8..9 \" \"\n      Eq@9..10 \"=\"\n      Whitespace@10..11 \" \"\n      NameExpr@11..16\n        Ident@11..16 \"value\"\n    Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  ExprStmt@0..17\n    AssignExpr@0..16\n      GroupExpr@0..8\n        LParen@0..1 \"(\"\n        IndexExpr@1..7\n          ArrayExpr@1..4\n            LBracket@1..2 \"[\"\n            LiteralExpr@2..3\n              Number@2..3 \"1\"\n            RBracket@3..4 \"]\"\n          LBracket@4..5 \"[\"\n          LiteralExpr@5..6\n            Number@5..6 \"0\"\n          RBracket@6..7 \"]\"\n        RParen@7..8 \")\"\n      Whitespace@8..9 \" \"\n      Eq@9..10 \"=\"\n      Whitespace@10..11 \" \"\n      NameExpr@11..16\n        Ident@11..16 \"value\"\n    Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  Block@0..17\n    ExprStmt@0..17\n      AssignExpr@0..16\n        GroupExpr@0..8\n          LParen@0..1 \"(\"\n          IndexExpr@1..7\n            ArrayExpr@1..4\n              LBracket@1..2 \"[\"\n              LiteralExpr@2..3\n                Number@2..3 \"1\"\n              RBracket@3..4 \"]\"\n            LBracket@4..5 \"[\"\n            LiteralExpr@5..6\n              Number@5..6 \"0\"\n            RBracket@6..7 \"]\"\n          RParen@7..8 \")\"\n        Whitespace@8..9 \" \"\n        Eq@9..10 \"=\"\n        Whitespace@10..11 \" \"\n        NameExpr@11..16\n          Ident@11..16 \"value\"\n      Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  Block@0..17\n    ExprStmt@0..17\n      AssignExpr@0..16\n        GroupExpr@0..8\n          LParen@0..1 \"(\"\n          IndexExpr@1..7\n            ArrayExpr@1..4\n              LBracket@1..2 \"[\"\n              LiteralExpr@2..3\n                Number@2..3 \"1\"\n              RBracket@3..4 \"]\"\n            LBracket@4..5 \"[\"\n            LiteralExpr@5..6\n              Number@5..6 \"0\"\n            RBracket@6..7 \"]\"\n          RParen@7..8 \")\"\n        Whitespace@8..9 \" \"\n        Eq@9..10 \"=\"\n        Whitespace@10..11 \" \"\n        NameExpr@11..16\n          Ident@11..16 \"value\"\n      Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  Block@0..17\n    ExprStmt@0..17\n      AssignExpr@0..16\n        GroupExpr@0..8\n          LParen@0..1 \"(\"\n          IndexExpr@1..7\n            ArrayExpr@1..4\n              LBracket@1..2 \"[\"\n              LiteralExpr@2..3\n                Number@2..3 \"1\"\n              RBracket@3..4 \"]\"\n            LBracket@4..5 \"[\"\n            LiteralExpr@5..6\n              Number@5..6 \"0\"\n            RBracket@6..7 \"]\"\n          RParen@7..8 \")\"\n        Whitespace@8..9 \" \"\n        Eq@9..10 \"=\"\n        Whitespace@10..11 \" \"\n        NameExpr@11..16\n          Ident@11..16 \"value\"\n      Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "array-location",
+      "source": "([1][0]) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/array-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..17\n  Block@0..17\n    ExprStmt@0..17\n      AssignExpr@0..16\n        GroupExpr@0..8\n          LParen@0..1 \"(\"\n          IndexExpr@1..7\n            ArrayExpr@1..4\n              LBracket@1..2 \"[\"\n              LiteralExpr@2..3\n                Number@2..3 \"1\"\n              RBracket@3..4 \"]\"\n            LBracket@4..5 \"[\"\n            LiteralExpr@5..6\n              Number@5..6 \"0\"\n            RBracket@6..7 \"]\"\n          RParen@7..8 \")\"\n        Whitespace@8..9 \" \"\n        Eq@9..10 \"=\"\n        Whitespace@10..11 \" \"\n        NameExpr@11..16\n          Ident@11..16 \"value\"\n      Semi@16..17 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  ExprStmt@0..19\n    AssignExpr@0..18\n      GroupExpr@0..10\n        LParen@0..1 \"(\"\n        MemberExpr@1..9\n          ObjectExpr@1..7\n            LBrace@1..2 \"{\"\n            ObjectField@2..6\n              Ident@2..3 \"x\"\n              Colon@3..4 \":\"\n              Whitespace@4..5 \" \"\n              LiteralExpr@5..6\n                Number@5..6 \"0\"\n            RBrace@6..7 \"}\"\n          Dot@7..8 \".\"\n          Ident@8..9 \"x\"\n        RParen@9..10 \")\"\n      Whitespace@10..11 \" \"\n      Eq@11..12 \"=\"\n      Whitespace@12..13 \" \"\n      NameExpr@13..18\n        Ident@13..18 \"value\"\n    Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  ExprStmt@0..19\n    AssignExpr@0..18\n      GroupExpr@0..10\n        LParen@0..1 \"(\"\n        MemberExpr@1..9\n          ObjectExpr@1..7\n            LBrace@1..2 \"{\"\n            ObjectField@2..6\n              Ident@2..3 \"x\"\n              Colon@3..4 \":\"\n              Whitespace@4..5 \" \"\n              LiteralExpr@5..6\n                Number@5..6 \"0\"\n            RBrace@6..7 \"}\"\n          Dot@7..8 \".\"\n          Ident@8..9 \"x\"\n        RParen@9..10 \")\"\n      Whitespace@10..11 \" \"\n      Eq@11..12 \"=\"\n      Whitespace@12..13 \" \"\n      NameExpr@13..18\n        Ident@13..18 \"value\"\n    Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  ExprStmt@0..19\n    AssignExpr@0..18\n      GroupExpr@0..10\n        LParen@0..1 \"(\"\n        MemberExpr@1..9\n          ObjectExpr@1..7\n            LBrace@1..2 \"{\"\n            ObjectField@2..6\n              Ident@2..3 \"x\"\n              Colon@3..4 \":\"\n              Whitespace@4..5 \" \"\n              LiteralExpr@5..6\n                Number@5..6 \"0\"\n            RBrace@6..7 \"}\"\n          Dot@7..8 \".\"\n          Ident@8..9 \"x\"\n        RParen@9..10 \")\"\n      Whitespace@10..11 \" \"\n      Eq@11..12 \"=\"\n      Whitespace@12..13 \" \"\n      NameExpr@13..18\n        Ident@13..18 \"value\"\n    Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  ExprStmt@0..19\n    AssignExpr@0..18\n      GroupExpr@0..10\n        LParen@0..1 \"(\"\n        MemberExpr@1..9\n          ObjectExpr@1..7\n            LBrace@1..2 \"{\"\n            ObjectField@2..6\n              Ident@2..3 \"x\"\n              Colon@3..4 \":\"\n              Whitespace@4..5 \" \"\n              LiteralExpr@5..6\n                Number@5..6 \"0\"\n            RBrace@6..7 \"}\"\n          Dot@7..8 \".\"\n          Ident@8..9 \"x\"\n        RParen@9..10 \")\"\n      Whitespace@10..11 \" \"\n      Eq@11..12 \"=\"\n      Whitespace@12..13 \" \"\n      NameExpr@13..18\n        Ident@13..18 \"value\"\n    Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  Block@0..19\n    ExprStmt@0..19\n      AssignExpr@0..18\n        GroupExpr@0..10\n          LParen@0..1 \"(\"\n          MemberExpr@1..9\n            ObjectExpr@1..7\n              LBrace@1..2 \"{\"\n              ObjectField@2..6\n                Ident@2..3 \"x\"\n                Colon@3..4 \":\"\n                Whitespace@4..5 \" \"\n                LiteralExpr@5..6\n                  Number@5..6 \"0\"\n              RBrace@6..7 \"}\"\n            Dot@7..8 \".\"\n            Ident@8..9 \"x\"\n          RParen@9..10 \")\"\n        Whitespace@10..11 \" \"\n        Eq@11..12 \"=\"\n        Whitespace@12..13 \" \"\n        NameExpr@13..18\n          Ident@13..18 \"value\"\n      Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  Block@0..19\n    ExprStmt@0..19\n      AssignExpr@0..18\n        GroupExpr@0..10\n          LParen@0..1 \"(\"\n          MemberExpr@1..9\n            ObjectExpr@1..7\n              LBrace@1..2 \"{\"\n              ObjectField@2..6\n                Ident@2..3 \"x\"\n                Colon@3..4 \":\"\n                Whitespace@4..5 \" \"\n                LiteralExpr@5..6\n                  Number@5..6 \"0\"\n              RBrace@6..7 \"}\"\n            Dot@7..8 \".\"\n            Ident@8..9 \"x\"\n          RParen@9..10 \")\"\n        Whitespace@10..11 \" \"\n        Eq@11..12 \"=\"\n        Whitespace@12..13 \" \"\n        NameExpr@13..18\n          Ident@13..18 \"value\"\n      Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  Block@0..19\n    ExprStmt@0..19\n      AssignExpr@0..18\n        GroupExpr@0..10\n          LParen@0..1 \"(\"\n          MemberExpr@1..9\n            ObjectExpr@1..7\n              LBrace@1..2 \"{\"\n              ObjectField@2..6\n                Ident@2..3 \"x\"\n                Colon@3..4 \":\"\n                Whitespace@4..5 \" \"\n                LiteralExpr@5..6\n                  Number@5..6 \"0\"\n              RBrace@6..7 \"}\"\n            Dot@7..8 \".\"\n            Ident@8..9 \"x\"\n          RParen@9..10 \")\"\n        Whitespace@10..11 \" \"\n        Eq@11..12 \"=\"\n        Whitespace@12..13 \" \"\n        NameExpr@13..18\n          Ident@13..18 \"value\"\n      Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "object-location",
+      "source": "({x: 0}.x) = value;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/object-location.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..19\n  Block@0..19\n    ExprStmt@0..19\n      AssignExpr@0..18\n        GroupExpr@0..10\n          LParen@0..1 \"(\"\n          MemberExpr@1..9\n            ObjectExpr@1..7\n              LBrace@1..2 \"{\"\n              ObjectField@2..6\n                Ident@2..3 \"x\"\n                Colon@3..4 \":\"\n                Whitespace@4..5 \" \"\n                LiteralExpr@5..6\n                  Number@5..6 \"0\"\n              RBrace@6..7 \"}\"\n            Dot@7..8 \".\"\n            Ident@8..9 \"x\"\n          RParen@9..10 \")\"\n        Whitespace@10..11 \" \"\n        Eq@11..12 \"=\"\n        Whitespace@12..13 \" \"\n        NameExpr@13..18\n          Ident@13..18 \"value\"\n      Semi@18..19 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  ExprStmt@0..15\n    AssignExpr@0..14\n      GroupPattern@0..7\n        LParen@0..1 \"(\"\n        TuplePattern@1..6\n          LParen@1..2 \"(\"\n          NamePattern@2..3\n            Ident@2..3 \"a\"\n          Comma@3..4 \",\"\n          NamePattern@4..5\n            Ident@4..5 \"b\"\n          RParen@5..6 \")\"\n        RParen@6..7 \")\"\n      Whitespace@7..8 \" \"\n      Eq@8..9 \"=\"\n      Whitespace@9..10 \" \"\n      NameExpr@10..14\n        Ident@10..14 \"pair\"\n    Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  ExprStmt@0..15\n    AssignExpr@0..14\n      GroupPattern@0..7\n        LParen@0..1 \"(\"\n        TuplePattern@1..6\n          LParen@1..2 \"(\"\n          NamePattern@2..3\n            Ident@2..3 \"a\"\n          Comma@3..4 \",\"\n          NamePattern@4..5\n            Ident@4..5 \"b\"\n          RParen@5..6 \")\"\n        RParen@6..7 \")\"\n      Whitespace@7..8 \" \"\n      Eq@8..9 \"=\"\n      Whitespace@9..10 \" \"\n      NameExpr@10..14\n        Ident@10..14 \"pair\"\n    Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  ExprStmt@0..15\n    AssignExpr@0..14\n      GroupPattern@0..7\n        LParen@0..1 \"(\"\n        TuplePattern@1..6\n          LParen@1..2 \"(\"\n          NamePattern@2..3\n            Ident@2..3 \"a\"\n          Comma@3..4 \",\"\n          NamePattern@4..5\n            Ident@4..5 \"b\"\n          RParen@5..6 \")\"\n        RParen@6..7 \")\"\n      Whitespace@7..8 \" \"\n      Eq@8..9 \"=\"\n      Whitespace@9..10 \" \"\n      NameExpr@10..14\n        Ident@10..14 \"pair\"\n    Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  ExprStmt@0..15\n    AssignExpr@0..14\n      GroupPattern@0..7\n        LParen@0..1 \"(\"\n        TuplePattern@1..6\n          LParen@1..2 \"(\"\n          NamePattern@2..3\n            Ident@2..3 \"a\"\n          Comma@3..4 \",\"\n          NamePattern@4..5\n            Ident@4..5 \"b\"\n          RParen@5..6 \")\"\n        RParen@6..7 \")\"\n      Whitespace@7..8 \" \"\n      Eq@8..9 \"=\"\n      Whitespace@9..10 \" \"\n      NameExpr@10..14\n        Ident@10..14 \"pair\"\n    Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  Block@0..15\n    ExprStmt@0..15\n      AssignExpr@0..14\n        GroupPattern@0..7\n          LParen@0..1 \"(\"\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          RParen@6..7 \")\"\n        Whitespace@7..8 \" \"\n        Eq@8..9 \"=\"\n        Whitespace@9..10 \" \"\n        NameExpr@10..14\n          Ident@10..14 \"pair\"\n      Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  Block@0..15\n    ExprStmt@0..15\n      AssignExpr@0..14\n        GroupPattern@0..7\n          LParen@0..1 \"(\"\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          RParen@6..7 \")\"\n        Whitespace@7..8 \" \"\n        Eq@8..9 \"=\"\n        Whitespace@9..10 \" \"\n        NameExpr@10..14\n          Ident@10..14 \"pair\"\n      Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  Block@0..15\n    ExprStmt@0..15\n      AssignExpr@0..14\n        GroupPattern@0..7\n          LParen@0..1 \"(\"\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          RParen@6..7 \")\"\n        Whitespace@7..8 \" \"\n        Eq@8..9 \"=\"\n        Whitespace@9..10 \" \"\n        NameExpr@10..14\n          Ident@10..14 \"pair\"\n      Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-tuple",
+      "source": "((a,b)) = pair;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-tuple.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..15\n  Block@0..15\n    ExprStmt@0..15\n      AssignExpr@0..14\n        GroupPattern@0..7\n          LParen@0..1 \"(\"\n          TuplePattern@1..6\n            LParen@1..2 \"(\"\n            NamePattern@2..3\n              Ident@2..3 \"a\"\n            Comma@3..4 \",\"\n            NamePattern@4..5\n              Ident@4..5 \"b\"\n            RParen@5..6 \")\"\n          RParen@6..7 \")\"\n        Whitespace@7..8 \" \"\n        Eq@8..9 \"=\"\n        Whitespace@9..10 \" \"\n        NameExpr@10..14\n          Ident@10..14 \"pair\"\n      Semi@14..15 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        GroupPattern@1..14\n          LParen@1..2 \"(\"\n          ArrayPattern@2..13\n            LBracket@2..3 \"[\"\n            NamePattern@3..4\n              Ident@3..4 \"a\"\n            Comma@4..5 \",\"\n            RestPattern@5..12\n              Ellipsis@5..8 \"...\"\n              Ident@8..12 \"rest\"\n            RBracket@12..13 \"]\"\n          RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"items\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        GroupPattern@1..14\n          LParen@1..2 \"(\"\n          ArrayPattern@2..13\n            LBracket@2..3 \"[\"\n            NamePattern@3..4\n              Ident@3..4 \"a\"\n            Comma@4..5 \",\"\n            RestPattern@5..12\n              Ellipsis@5..8 \"...\"\n              Ident@8..12 \"rest\"\n            RBracket@12..13 \"]\"\n          RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"items\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        GroupPattern@1..14\n          LParen@1..2 \"(\"\n          ArrayPattern@2..13\n            LBracket@2..3 \"[\"\n            NamePattern@3..4\n              Ident@3..4 \"a\"\n            Comma@4..5 \",\"\n            RestPattern@5..12\n              Ellipsis@5..8 \"...\"\n              Ident@8..12 \"rest\"\n            RBracket@12..13 \"]\"\n          RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"items\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  ExprStmt@0..24\n    AssignExpr@0..23\n      GroupPattern@0..15\n        LParen@0..1 \"(\"\n        GroupPattern@1..14\n          LParen@1..2 \"(\"\n          ArrayPattern@2..13\n            LBracket@2..3 \"[\"\n            NamePattern@3..4\n              Ident@3..4 \"a\"\n            Comma@4..5 \",\"\n            RestPattern@5..12\n              Ellipsis@5..8 \"...\"\n              Ident@8..12 \"rest\"\n            RBracket@12..13 \"]\"\n          RParen@13..14 \")\"\n        RParen@14..15 \")\"\n      Whitespace@15..16 \" \"\n      Eq@16..17 \"=\"\n      Whitespace@17..18 \" \"\n      NameExpr@18..23\n        Ident@18..23 \"items\"\n    Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"items\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"items\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"items\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-array-rest",
+      "source": "(([a,...rest])) = items;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-array-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..24\n  Block@0..24\n    ExprStmt@0..24\n      AssignExpr@0..23\n        GroupPattern@0..15\n          LParen@0..1 \"(\"\n          GroupPattern@1..14\n            LParen@1..2 \"(\"\n            ArrayPattern@2..13\n              LBracket@2..3 \"[\"\n              NamePattern@3..4\n                Ident@3..4 \"a\"\n              Comma@4..5 \",\"\n              RestPattern@5..12\n                Ellipsis@5..8 \"...\"\n                Ident@8..12 \"rest\"\n              RBracket@12..13 \"]\"\n            RParen@13..14 \")\"\n          RParen@14..15 \")\"\n        Whitespace@15..16 \" \"\n        Eq@16..17 \"=\"\n        Whitespace@17..18 \" \"\n        NameExpr@18..23\n          Ident@18..23 \"items\"\n      Semi@23..24 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  ExprStmt@0..28\n    AssignExpr@0..27\n      GroupPattern@0..18\n        LParen@0..1 \"(\"\n        GroupPattern@1..17\n          LParen@1..2 \"(\"\n          ObjectPattern@2..16\n            LBrace@2..3 \"{\"\n            PatternField@3..7\n              Ident@3..7 \"name\"\n            Comma@7..8 \",\"\n            RestPattern@8..15\n              Ellipsis@8..11 \"...\"\n              Ident@11..15 \"rest\"\n            RBrace@15..16 \"}\"\n          RParen@16..17 \")\"\n        RParen@17..18 \")\"\n      Whitespace@18..19 \" \"\n      Eq@19..20 \"=\"\n      Whitespace@20..21 \" \"\n      NameExpr@21..27\n        Ident@21..27 \"record\"\n    Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "module",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  ExprStmt@0..28\n    AssignExpr@0..27\n      GroupPattern@0..18\n        LParen@0..1 \"(\"\n        GroupPattern@1..17\n          LParen@1..2 \"(\"\n          ObjectPattern@2..16\n            LBrace@2..3 \"{\"\n            PatternField@3..7\n              Ident@3..7 \"name\"\n            Comma@7..8 \",\"\n            RestPattern@8..15\n              Ellipsis@8..11 \"...\"\n              Ident@11..15 \"rest\"\n            RBrace@15..16 \"}\"\n          RParen@16..17 \")\"\n        RParen@17..18 \")\"\n      Whitespace@18..19 \" \"\n      Eq@19..20 \"=\"\n      Whitespace@20..21 \" \"\n      NameExpr@21..27\n        Ident@21..27 \"record\"\n    Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  ExprStmt@0..28\n    AssignExpr@0..27\n      GroupPattern@0..18\n        LParen@0..1 \"(\"\n        GroupPattern@1..17\n          LParen@1..2 \"(\"\n          ObjectPattern@2..16\n            LBrace@2..3 \"{\"\n            PatternField@3..7\n              Ident@3..7 \"name\"\n            Comma@7..8 \",\"\n            RestPattern@8..15\n              Ellipsis@8..11 \"...\"\n              Ident@11..15 \"rest\"\n            RBrace@15..16 \"}\"\n          RParen@16..17 \")\"\n        RParen@17..18 \")\"\n      Whitespace@18..19 \" \"\n      Eq@19..20 \"=\"\n      Whitespace@20..21 \" \"\n      NameExpr@21..27\n        Ident@21..27 \"record\"\n    Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "module",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "module"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  ExprStmt@0..28\n    AssignExpr@0..27\n      GroupPattern@0..18\n        LParen@0..1 \"(\"\n        GroupPattern@1..17\n          LParen@1..2 \"(\"\n          ObjectPattern@2..16\n            LBrace@2..3 \"{\"\n            PatternField@3..7\n              Ident@3..7 \"name\"\n            Comma@7..8 \",\"\n            RestPattern@8..15\n              Ellipsis@8..11 \"...\"\n              Ident@11..15 \"rest\"\n            RBrace@15..16 \"}\"\n          RParen@16..17 \")\"\n        RParen@17..18 \")\"\n      Whitespace@18..19 \" \"\n      Eq@19..20 \"=\"\n      Whitespace@20..21 \" \"\n      NameExpr@21..27\n        Ident@21..27 \"record\"\n    Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "debug",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-debug",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  Block@0..28\n    ExprStmt@0..28\n      AssignExpr@0..27\n        GroupPattern@0..18\n          LParen@0..1 \"(\"\n          GroupPattern@1..17\n            LParen@1..2 \"(\"\n            ObjectPattern@2..16\n              LBrace@2..3 \"{\"\n              PatternField@3..7\n                Ident@3..7 \"name\"\n              Comma@7..8 \",\"\n              RestPattern@8..15\n                Ellipsis@8..11 \"...\"\n                Ident@11..15 \"rest\"\n              RBrace@15..16 \"}\"\n            RParen@16..17 \")\"\n          RParen@17..18 \")\"\n        Whitespace@18..19 \" \"\n        Eq@19..20 \"=\"\n        Whitespace@20..21 \" \"\n        NameExpr@21..27\n          Ident@21..27 \"record\"\n      Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "block",
+      "stage": "before",
+      "profile": "release",
+      "argv": [
+        "/tmp/reel-pattern-repro/check-before-release",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  Block@0..28\n    ExprStmt@0..28\n      AssignExpr@0..27\n        GroupPattern@0..18\n          LParen@0..1 \"(\"\n          GroupPattern@1..17\n            LParen@1..2 \"(\"\n            ObjectPattern@2..16\n              LBrace@2..3 \"{\"\n              PatternField@3..7\n                Ident@3..7 \"name\"\n              Comma@7..8 \",\"\n              RestPattern@8..15\n                Ellipsis@8..11 \"...\"\n                Ident@11..15 \"rest\"\n              RBrace@15..16 \"}\"\n            RParen@16..17 \")\"\n          RParen@17..18 \")\"\n        Whitespace@18..19 \" \"\n        Eq@19..20 \"=\"\n        Whitespace@20..21 \" \"\n        NameExpr@21..27\n          Ident@21..27 \"record\"\n      Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "debug",
+      "argv": [
+        "/workspace/reel/target/debug/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  Block@0..28\n    ExprStmt@0..28\n      AssignExpr@0..27\n        GroupPattern@0..18\n          LParen@0..1 \"(\"\n          GroupPattern@1..17\n            LParen@1..2 \"(\"\n            ObjectPattern@2..16\n              LBrace@2..3 \"{\"\n              PatternField@3..7\n                Ident@3..7 \"name\"\n              Comma@7..8 \",\"\n              RestPattern@8..15\n                Ellipsis@8..11 \"...\"\n                Ident@11..15 \"rest\"\n              RBrace@15..16 \"}\"\n            RParen@16..17 \")\"\n          RParen@17..18 \")\"\n        Whitespace@18..19 \" \"\n        Eq@19..20 \"=\"\n        Whitespace@20..21 \" \"\n        NameExpr@21..27\n          Ident@21..27 \"record\"\n      Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    },
+    {
+      "case": "grouped-object-rest",
+      "source": "(({name,...rest})) = record;",
+      "entry": "block",
+      "stage": "after",
+      "profile": "release",
+      "argv": [
+        "/workspace/reel/target/release/examples/check",
+        "/tmp/reel-pattern-trial-p6bvok8z/grouped-object-rest.aside",
+        "block"
+      ],
+      "exit_code": 0,
+      "stdout": "Root@0..28\n  Block@0..28\n    ExprStmt@0..28\n      AssignExpr@0..27\n        GroupPattern@0..18\n          LParen@0..1 \"(\"\n          GroupPattern@1..17\n            LParen@1..2 \"(\"\n            ObjectPattern@2..16\n              LBrace@2..3 \"{\"\n              PatternField@3..7\n                Ident@3..7 \"name\"\n              Comma@7..8 \",\"\n              RestPattern@8..15\n                Ellipsis@8..11 \"...\"\n                Ident@11..15 \"rest\"\n              RBrace@15..16 \"}\"\n            RParen@16..17 \")\"\n          RParen@17..18 \")\"\n        Whitespace@18..19 \" \"\n        Eq@19..20 \"=\"\n        Whitespace@20..21 \" \"\n        NameExpr@21..27\n          Ident@21..27 \"record\"\n      Semi@27..28 \";\"\n\n",
+      "stderr": ""
+    }
+  ]
+}
