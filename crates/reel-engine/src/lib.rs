@@ -572,9 +572,12 @@ pub enum OwnerLifecycle {
 }
 
 /// Obligations declared by a future real cleanup coordinator before revocation.
-/// `root_slots_end` is its fixed snapshot upper bound, not a root count or a
-/// claim that roots have already been released. A scanned empty slot still
-/// advances the cursor and consumes one unit of reported root work.
+/// `root_slots_end` freezes the single-root slot upper bound, not a root count
+/// or a claim that roots have been released. A scanned empty slot still advances
+/// the cursor and consumes work. Host-owned non-task root ranges are a separate
+/// obligation: the real coordinator must use its own bounded range-release
+/// cursor and keep `external_resources_pending` set until those ranges and all
+/// other external resources are released. This host does not allocate VM roots.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnerRetirementRequirements {
     pub root_slots_end: usize,
@@ -885,7 +888,9 @@ impl Session {
 
     /// Report an actual adapter's cursor, including every traversed empty slot.
     /// Its forward delta must fit this step's root work budget and the declared
-    /// snapshot bound. This bookkeeping performs no root or GC operation.
+    /// single-root snapshot bound. The adapter limits its real scan to remaining
+    /// work and `root_slots_end - root_cursor`; this is not an extra heap API
+    /// parameter. This bookkeeping performs no root, range-release or GC operation.
     pub fn report_owner_root_progress(
         &mut self,
         owner: OwnerHandle,
@@ -928,8 +933,9 @@ impl Session {
         Ok(entry.lifecycle)
     }
 
-    /// Confirm actual external-resource cleanup. This only clears the declared
-    /// category; it performs no IO, device retirement or heap reclamation.
+    /// Confirm all actual external cleanup, including independently tracked
+    /// host-owned non-task root ranges. This only clears the declared category;
+    /// it performs no IO, range release, device retirement or heap reclamation.
     pub fn confirm_owner_resources_released(
         &mut self,
         owner: OwnerHandle,
