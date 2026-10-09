@@ -1,17 +1,25 @@
 //! Real Masonry record/geometry candidates and a bounded presentation acceptance gate.
 //!
-//! This is the U02 bridge, not a StageGraph or rendering backend. A coordinator turns
+//! R01 compiles this record directly; U02 input ownership remains unchanged. A coordinator turns
 //! the renderer's result into a notice containing the candidate's unforgeable key.
 use masonry_core::app::{
     GeometryError, GeometryLimits, InputGeometrySource, PresentedGeometryView, RenderRoot,
-    VisualLayerKind,
+    VisualLayerPlan,
 };
 use masonry_core::core::WindowEvent;
 use masonry_core::core::{Handled, PointerEvent, TextEvent, Widget, WidgetId, WidgetMut};
 use masonry_core::imaging::record::Scene;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, QueueLimits};
 use reel_core::identity::{FrameId, SurfaceEpoch};
-use std::sync::Arc;
+use std::sync::{
+    Arc, OnceLock, Weak,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
+pub mod frame;
+pub mod resources;
+pub use frame::*;
+pub use resources::*;
 
 /// Bounded candidate geometry and route storage.
 #[derive(Clone, Copy, Debug)]
@@ -30,7 +38,7 @@ pub struct CandidateKey {
     frame: FrameId,
     epoch: SurfaceEpoch,
     // One allocation is both exact identity and the key/view budget lease.
-    identity: Arc<BudgetTicket>,
+    identity: Arc<CandidateIdentity>,
 }
 impl CandidateKey {
     pub fn frame_id(&self) -> FrameId {
@@ -39,26 +47,79 @@ impl CandidateKey {
     pub fn surface_epoch(&self) -> SurfaceEpoch {
         self.epoch
     }
-    fn matches(&self, other: &Self) -> bool {
-        self.frame == other.frame
-            && self.epoch == other.epoch
-            && Arc::ptr_eq(&self.identity, &other.identity)
+}
+#[derive(Debug)]
+struct CandidateIdentity {
+    cancelled: AtomicBool,
+    // Keys and geometry retain accounting, but only guards retain eligibility.
+    owners: AtomicUsize,
+    geometry: OnceLock<Weak<PresentedGeometryView>>,
+    _ticket: BudgetTicket,
+}
+#[derive(Debug)]
+pub(crate) struct CandidateGuard {
+    key: CandidateKey,
+}
+impl CandidateGuard {
+    fn retain(key: &CandidateKey) -> Option<Self> {
+        key.identity
+            .owners
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+                (!key.identity.cancelled.load(Ordering::Acquire) && owners != 0)
+                    .then(|| owners.checked_add(1))
+                    .flatten()
+            })
+            .ok()?;
+        Some(Self { key: key.clone() })
     }
 }
-/// Scene and geometry from the same real rewrite/compose/paint cycle.
-#[derive(Debug)]
-pub struct RecordedCandidate {
-    key: CandidateKey,
-    scene: Scene,
-    geometry: Arc<PresentedGeometryView>,
+impl Clone for CandidateGuard {
+    fn clone(&self) -> Self {
+        // A live guard always has a nonzero count, including after explicit clear.
+        self.key
+            .identity
+            .owners
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+                owners.checked_add(1)
+            })
+            .expect("candidate guard count exhausted");
+        Self {
+            key: self.key.clone(),
+        }
+    }
 }
-impl RecordedCandidate {
+impl Drop for CandidateGuard {
+    fn drop(&mut self) {
+        if self.key.identity.owners.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.key.identity.cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+/// One real paint/geometry cycle, moved into the resumable compiler without flattening.
+#[derive(Debug)]
+pub struct RecordedSource {
+    guard: CandidateGuard,
+    key: CandidateKey,
+    plan: VisualLayerPlan,
+    geometry: Arc<PresentedGeometryView>,
+    reference_scene: OnceLock<Scene>,
+}
+/// U02 source-compatible name. scene() is an explicit, lazy structural reference.
+pub type RecordedCandidate = RecordedSource;
+impl RecordedSource {
     pub fn key(&self) -> CandidateKey {
         self.key.clone()
     }
-    /// Full ordered replay: cross-fragment group/clip scope is preserved.
+    pub fn plan(&self) -> &VisualLayerPlan {
+        &self.plan
+    }
+    /// Compatibility/CPU reference only. Production FrameBuild never calls this.
     pub fn scene(&self) -> &Scene {
-        &self.scene
+        self.reference_scene.get_or_init(|| {
+            let mut scene = Scene::new();
+            self.plan.replay_into(&mut scene);
+            scene
+        })
     }
     pub fn geometry(&self) -> &PresentedGeometryView {
         &self.geometry
@@ -74,9 +135,56 @@ pub enum PresentationOutcome {
 }
 #[derive(Clone, Debug)]
 pub struct PresentationNotice {
-    pub key: CandidateKey,
-    pub surface_epoch: SurfaceEpoch,
-    pub outcome: PresentationOutcome,
+    key: CandidateKey,
+    surface_epoch: SurfaceEpoch,
+    outcome: PresentationOutcome,
+    _retention: Option<AcceptedRetention>,
+}
+#[derive(Clone, Debug)]
+struct AcceptedRetention {
+    _guard: CandidateGuard,
+    _geometry: Arc<PresentedGeometryView>,
+}
+impl PresentationNotice {
+    pub fn key(&self) -> &CandidateKey {
+        &self.key
+    }
+    pub fn surface_epoch(&self) -> SurfaceEpoch {
+        self.surface_epoch
+    }
+    pub fn outcome(&self) -> PresentationOutcome {
+        self.outcome
+    }
+    /// An Accepted notice owns eligibility and matching geometry independently
+    /// of the frame or GPU submission. An already cancelled key cannot revive it.
+    pub fn new(
+        key: CandidateKey,
+        surface_epoch: SurfaceEpoch,
+        outcome: PresentationOutcome,
+    ) -> Self {
+        let retention = if matches!(outcome, PresentationOutcome::Accepted(_)) {
+            // Upgrade geometry first so a concurrent final frame drop cannot
+            // destroy it between acquiring eligibility and acquiring the view.
+            key.identity
+                .geometry
+                .get()
+                .and_then(Weak::upgrade)
+                .and_then(|geometry| {
+                    CandidateGuard::retain(&key).map(|guard| AcceptedRetention {
+                        _guard: guard,
+                        _geometry: geometry,
+                    })
+                })
+        } else {
+            None
+        };
+        Self {
+            key,
+            surface_epoch,
+            outcome,
+            _retention: retention,
+        }
+    }
 }
 /// Whether an exact candidate was resolved, installed, or ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,16 +200,25 @@ pub enum RecordError {
     BridgeBudget,
     CandidateCapacity,
     FrameOrder,
-    UnsupportedExternal,
-    /// Fixed upstream strips the base layer root transform from paint output.
-    /// Use an identity layer root and put stage transforms on its children.
-    UnsupportedRootTransform,
-    InvalidScene,
 }
 #[derive(Debug)]
 struct Pending {
-    key: CandidateKey,
-    geometry: Arc<PresentedGeometryView>,
+    frame: FrameId,
+    epoch: SurfaceEpoch,
+    identity: Weak<CandidateIdentity>,
+    geometry: Weak<PresentedGeometryView>,
+}
+impl Pending {
+    fn eligible(&self) -> bool {
+        self.identity
+            .upgrade()
+            .is_some_and(|id| !id.cancelled.load(Ordering::Acquire))
+    }
+    fn matches(&self, key: &CandidateKey) -> bool {
+        self.frame == key.frame
+            && self.epoch == key.epoch
+            && self.identity.ptr_eq(&Arc::downgrade(&key.identity))
+    }
 }
 /// Owns the accepted input policy and exposes live widget edits and input dispatch.
 pub struct PresentationBridge {
@@ -125,7 +242,12 @@ impl PresentationBridge {
         let storage_bytes = route_bytes
             .checked_add(
                 (limits.max_candidates as usize)
-                    .checked_mul(size_of::<Pending>())
+                    .checked_mul(
+                        size_of::<Pending>()
+                            + size_of::<CandidateIdentity>()
+                            + size_of::<PresentedGeometryView>()
+                            + 4 * size_of::<usize>(),
+                    )
                     .ok_or(RecordError::BridgeBudget)?,
             )
             .ok_or(RecordError::BridgeBudget)?;
@@ -190,12 +312,13 @@ impl PresentationBridge {
         self.snapshots.usage()
     }
     pub fn pending_count(&self) -> usize {
-        self.pending.len()
+        self.pending.iter().filter(|p| p.eligible()).count()
     }
     pub fn accepted_key(&self) -> Option<&CandidateKey> {
         self.accepted.as_ref().map(|(key, _)| key)
     }
-    pub fn record(&mut self, frame: FrameId) -> Result<RecordedCandidate, RecordError> {
+    pub fn record(&mut self, frame: FrameId) -> Result<RecordedSource, RecordError> {
+        self.pending.retain(Pending::eligible);
         if self.last_issued.is_some_and(|id| frame <= id) {
             return Err(RecordError::FrameOrder);
         }
@@ -205,8 +328,9 @@ impl PresentationBridge {
         // Reserve the permitted geometry maximum before record/export. Scene and widget
         // runtime storage have separate owners. Keep this same ticket until the view's
         // last lease drops, conservatively retaining the released scratch allowance too.
-        let overhead =
-            (size_of::<BudgetTicket>() + size_of::<CandidateKey>() + 4 * size_of::<usize>()) as u64;
+        let overhead = (size_of::<CandidateIdentity>()
+            + size_of::<CandidateKey>()
+            + 4 * size_of::<usize>()) as u64;
         let reservation = self
             .snapshots
             .reserve(
@@ -219,39 +343,35 @@ impl PresentationBridge {
             .root
             .record_presented_geometry(self.limits.geometry)
             .map_err(RecordError::Geometry)?;
-        let base = self.root.get_layer_root(0).id();
-        if geometry
-            .get(base)
-            .is_none_or(|g| g.window_transform != masonry_core::kurbo::Affine::IDENTITY)
-        {
-            return Err(RecordError::UnsupportedRootTransform);
-        }
-        if plan
-            .layers
-            .iter()
-            .any(|l| matches!(l.kind, VisualLayerKind::External { .. }))
-        {
-            return Err(RecordError::UnsupportedExternal);
-        }
-        let mut scene = Scene::new();
-        plan.replay_into(&mut scene);
-        scene.validate().map_err(|_| RecordError::InvalidScene)?;
-        let lease = Arc::new(reservation);
+        let lease = Arc::new(CandidateIdentity {
+            cancelled: AtomicBool::new(false),
+            owners: AtomicUsize::new(1),
+            geometry: OnceLock::new(),
+            _ticket: reservation,
+        });
         let geometry = Arc::new(geometry.with_retention_guard(lease.clone()));
+        lease
+            .geometry
+            .set(Arc::downgrade(&geometry))
+            .expect("new candidate geometry");
         let key = CandidateKey {
             frame,
             epoch: self.epoch,
             identity: lease,
         };
         self.pending.push(Pending {
-            key: key.clone(),
-            geometry: geometry.clone(),
+            frame,
+            epoch: self.epoch,
+            identity: Arc::downgrade(&key.identity),
+            geometry: Arc::downgrade(&geometry),
         });
         self.last_issued = Some(frame);
-        Ok(RecordedCandidate {
+        Ok(RecordedSource {
+            guard: CandidateGuard { key: key.clone() },
             key,
-            scene,
+            plan,
             geometry,
+            reference_scene: OnceLock::new(),
         })
     }
     pub fn resolve(&mut self, notice: PresentationNotice) -> NoticeResult {
@@ -263,25 +383,30 @@ impl PresentationBridge {
         {
             return NoticeResult::StaleOrForeign;
         }
-        let Some(index) = self.pending.iter().position(|p| p.key.matches(&notice.key)) else {
+        let Some(index) = self.pending.iter().position(|p| p.matches(&notice.key)) else {
             return NoticeResult::StaleOrForeign;
         };
         let candidate = self.pending.remove(index);
+        if !candidate.eligible() {
+            return NoticeResult::StaleOrForeign;
+        }
         if !matches!(notice.outcome, PresentationOutcome::Accepted(_)) {
+            notice.key.identity.cancelled.store(true, Ordering::Release);
             return NoticeResult::NotPresented;
         }
         if self
             .accepted
             .as_ref()
-            .is_some_and(|(key, _)| key.frame >= candidate.key.frame)
+            .is_some_and(|(key, _)| key.frame >= candidate.frame)
         {
             return NoticeResult::StaleOrForeign;
         }
+        let Some(geometry) = candidate.geometry.upgrade() else {
+            return NoticeResult::StaleOrForeign;
+        };
         self.root
-            .set_input_geometry_source(InputGeometrySource::Presented(Some(
-                candidate.geometry.clone(),
-            )));
-        self.accepted = Some((candidate.key, candidate.geometry));
+            .set_input_geometry_source(InputGeometrySource::Presented(Some(geometry.clone())));
+        self.accepted = Some((notice.key, geometry));
         NoticeResult::Accepted
     }
     /// Clear accepted input and pending identities; outstanding renderer leases stay charged.
@@ -289,6 +414,11 @@ impl PresentationBridge {
         self.root
             .set_input_geometry_source(InputGeometrySource::Presented(None));
         self.accepted = None;
+        for pending in &self.pending {
+            if let Some(id) = pending.identity.upgrade() {
+                id.cancelled.store(true, Ordering::Release);
+            }
+        }
         self.pending.clear();
     }
     /// A new surface must use a strictly newer epoch. Old exits finish before releasing the view.

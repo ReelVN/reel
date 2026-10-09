@@ -1,4 +1,4 @@
-# Reel production Masonry closure (U02 / #11)
+# Reel production Masonry closure (U02 / #11, R01 / #25)
 
 Upstream: https://github.com/linebender/xilem/tree/271a27a6d4a930f7878d404f9014e3c50a3a9b88
 License: Apache-2.0; original LICENSE and file copyright headers retained.
@@ -56,3 +56,24 @@ fixed source listed in UPSTREAM-SOURCE.sha256; new files carry their own headers
 `crates/reel-stage/scripts/audit-source.py` verifies original upstream bytes,
 the retained Rust/manifest closure, absence of nested Git and exact local diff.
 Local README files provide build metadata; they are not imported upstream docs.
+
+R01 adds only the paint metadata/ordering needed by architecture §16:
+
+- VisualLayer groups carry command index, owner WidgetId and forward effect
+  space recorded at each paint/append boundary. No owner is inferred from draws.
+- Sorted command-owner ranges also capture ordinary Inline children, generated
+  clips and debug/inspector painting. Frame export advances a range cursor during
+  prepaid command/fragment advancement, including for Work failure diagnostics.
+- External retains opaque token, content-local bounds and content transform.
+  PaintCtx::set_external_paint declares its retained mode/token. External is
+  emitted after pre and own clip, before children; pop clip and post follow.
+  Cached callbacks preserve mode/token until explicitly switched to Inline.
+- Base and overlay fragments share the layer-local-to-window convention.
+  Forward traversal accumulates full compose_local_transform, including layout
+  origin and scroll, without inverse matrices. Finite singular transforms survive.
+- Debug bounding boxes are already window-space and use identity fragments;
+  baselines use forward window transforms. Painter scopes remain continuous
+  across these fragments, including with finite singular transforms.
+
+The source manifest, upstream hashes and licenses are unchanged. imaging remains
+the pinned ordinary 0.0.1 dependency; no extra source fork or UI ecosystem is added.

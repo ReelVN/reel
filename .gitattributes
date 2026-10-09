@@ -1,3 +1,6 @@
 # Unified diffs and raw verification logs preserve original/output whitespace.
 third_party/masonry/reel-production.patch -whitespace
 crates/reel-stage/evidence/*.log -whitespace
+crates/reel-stage/evidence/r01/*.log -whitespace
+crates/reel-stage/evidence/r01-review/*.log -whitespace
+crates/reel-stage/evidence/r01-work-owner/*.log -whitespace

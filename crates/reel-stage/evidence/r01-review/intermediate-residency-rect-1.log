@@ -1,0 +1,21 @@
+
+running 1 test
+test record_paused_finish_cancel_and_source_drop_cost ... phase=producer_before_record live_request_bytes_delta=287516 VmRSS:	    3180 kB VmHWM:	    3180 kB
+phase=recorded_source live_request_bytes_delta=838632 VmRSS:	    3732 kB VmHWM:	    3732 kB
+phase=paused_source_and_output live_request_bytes_delta=1141976 VmRSS:	    3736 kB VmHWM:	    3736 kB
+phase=complete_before_source_release live_request_bytes_delta=1141976 VmRSS:	    4020 kB VmHWM:	    4020 kB
+phase=immutable_frame_source_released live_request_bytes_delta=856328 VmRSS:	    3756 kB VmHWM:	    3836 kB
+phase=frame_dropped_cache_retained live_request_bytes_delta=561440 VmRSS:	    3468 kB VmHWM:	    3836 kB
+phase=paused_cancel live_request_bytes_delta=1141976 VmRSS:	    3700 kB VmHWM:	    3836 kB
+phase=cancelled live_request_bytes_delta=561440 VmRSS:	    3700 kB VmHWM:	    3836 kB
+phase=isolated_source_drop_cache_retained live_request_bytes_delta=561440 VmRSS:	    3700 kB VmHWM:	    3836 kB
+phase=producer_cache_dropped live_request_bytes_delta=712 VmRSS:	    3460 kB VmHWM:	    3864 kB
+workload count=512 path_elements=0 record=305.9µs setup=5.935µs first_step=5.571µs remaining_export=455.828µs full_setup_export_finish=480.903µs finish_source_cleanup=13.569µs cancel=2.492µs isolated_source_drop=2.041µs producer_drop=40.693µs max_step=24.645µs steps=258 frame_accounted=304800
+record_alloc=Stats { allocations: 15, deallocations: 2, reallocations: 17, bytes_allocated: 552308, bytes_deallocated: 1192, bytes_reallocated: 277424 } setup_alloc=Stats { allocations: 10, deallocations: 1, reallocations: 0, bytes_allocated: 303416, bytes_deallocated: 72, bytes_reallocated: 0 } first_step_alloc=Stats { allocations: 0, deallocations: 0, reallocations: 0, bytes_allocated: 0, bytes_deallocated: 0, bytes_reallocated: 0 } export_alloc=Stats { allocations: 0, deallocations: 0, reallocations: 0, bytes_allocated: 0, bytes_deallocated: 0, bytes_reallocated: 0 } finish_alloc=Stats { allocations: 1, deallocations: 12, reallocations: 0, bytes_allocated: 224, bytes_deallocated: 285872, bytes_reallocated: 0 } source_drop_alloc=Stats { allocations: 0, deallocations: 8, reallocations: 0, bytes_allocated: 0, bytes_deallocated: 277192, bytes_reallocated: 0 }
+20 warm runs record p50/p95/max=31.223µs/34.621µs/67.702µs; full setup/export/finish p50/p95/max=342.616µs/373.724µs/376.21µs
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+Whole probe process peak RSS (Linux KiB, compiler excluded): 9984

@@ -1,0 +1,54 @@
+   Compiling bitflags v2.13.2
+   Compiling syn v2.0.119
+   Compiling num-traits v0.2.19
+   Compiling getrandom v0.4.3
+   Compiling rustix v1.1.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling pxfm v0.1.30
+   Compiling fastrand v2.5.0
+   Compiling color v0.3.3
+   Compiling tempfile v3.27.0
+   Compiling moxcms v0.8.1
+   Compiling peniko v0.6.1
+   Compiling tracing-attributes v0.1.31
+   Compiling profiling-procmacros v1.0.18
+   Compiling png v0.18.1
+   Compiling tracing v0.1.44
+   Compiling keyboard-types v0.8.3
+   Compiling harfrust v0.5.2
+   Compiling skrifa v0.40.0
+   Compiling console v0.15.11
+   Compiling similar v2.7.0
+   Compiling byteorder-lite v0.1.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling ui-events v0.3.0
+   Compiling image v0.25.10
+   Compiling insta v1.46.3
+   Compiling parley v0.8.0
+   Compiling profiling v1.0.17
+   Compiling imaging v0.0.1
+   Compiling tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena)
+   Compiling float-cmp v0.10.0
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+    Finished `release` profile [optimized] target(s) in 41.19s
+     Running unittests src/lib.rs (target/release/deps/masonry_core-f7fca2b04d1746ac)
+
+running 5 tests
+test app::layer_stack::input_tests::layer_hooks_obey_current_disabled_and_stashed_with_terminal_cleanup ... ok
+test app::layer_stack::input_tests::layer_hooks_wait_for_visible_presented_record_after_live_unstash ... ok
+test app::tracing_backend::tests::multiple_init_test_tracing_errors ... ok
+test app::visual_layers::tests::replay_into_replays_layers_in_window_space ... ok
+test app::visual_layers::tests::scene_layer_helpers_skip_external_placeholders ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/release/deps/tree_arena-61b4fb4e58c25a23)
+
+running 4 tests
+test tree_arena_safe::read_lookup_tests::busy_lookup_workspace_is_never_overwritten_and_traits_are_preserved ... ok
+test tree_arena_safe::read_lookup_tests::read_lookup_preserves_scope_after_reparent_and_removal ... ok
+test tree_arena_safe::read_lookup_tests::repeated_parent_work_matches_the_configuration_bound ... ok
+test tree_arena_safe::read_lookup_tests::segmented_lookup_keeps_deep_scope_and_reparent_remove_correct ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
