@@ -612,3 +612,126 @@ fn native_observer_uses_only_a_mock_executable_and_retains_timeout_raw_bytes() {
     );
     assert_eq!(record.actual_sha256.unwrap(), sha(b"partialerror"));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pollable_capture_keeps_every_byte_across_multiple_reads() {
+    let outcome = process::run(
+        Command::new("/bin/sh").args([
+            "-c",
+            "head -c 524288 /dev/zero; head -c 393216 /dev/zero >&2; printf '\\377tail'; printf '\\376end' >&2",
+        ]),
+        Duration::from_secs(3),
+        None,
+    )
+    .unwrap();
+    let mut stdout = vec![0; 524288];
+    stdout.extend_from_slice(b"\xfftail");
+    let mut stderr = vec![0; 393216];
+    stderr.extend_from_slice(b"\xfeend");
+    assert!(!outcome.timed_out);
+    assert_eq!(process::return_code(outcome.status), Some(0));
+    assert_eq!(outcome.stdout, stdout);
+    assert_eq!(outcome.stderr, stderr);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn escaped_stream_holder_cannot_extend_the_deadline_and_mock_is_cleaned() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Cleanup {
+        pidfile: PathBuf,
+        stopped: bool,
+    }
+    impl Cleanup {
+        fn stop(&mut self) -> std::io::Result<()> {
+            let pid = fs::read_to_string(&self.pidfile)?;
+            let pid = pid.trim().parse::<u32>().map_err(std::io::Error::other)?;
+            // This PID/group was written by our own setsid mock. It execs sleep
+            // directly, so no further descendant hierarchy needs supervising.
+            let _ = process::run(
+                Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]),
+                Duration::from_secs(1),
+                None,
+            )?;
+            let limit = Instant::now() + Duration::from_secs(1);
+            loop {
+                match fs::read_to_string(format!("/proc/{pid}/stat")) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                    Ok(stat) if stat.split(") ").nth(1).unwrap().starts_with('Z') => break,
+                    Err(error) => return Err(error),
+                    _ if Instant::now() >= limit => {
+                        return Err(std::io::Error::other("escaped mock still running"));
+                    }
+                    _ => thread::sleep(Duration::from_millis(2)),
+                }
+            }
+            self.stopped = true;
+            Ok(())
+        }
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if !self.stopped {
+                let _ = self.stop();
+            }
+        }
+    }
+
+    for root_exits in [false, true] {
+        let dir = temporary();
+        let executable = dir.join("escaped-holder-mock.sh");
+        let ending = if root_exits { "exit 0" } else { "exec sleep 2" };
+        fs::write(&executable, format!(
+            "#!/bin/sh\nprintf 'mock actual\\n' > \"$3\"\nprintf 'root'\nsetsid /bin/sh -c 'printf escaped; printf \"\\377error\" >&2; printf \"%s\" \"$$\" > \"$1\"; exec sleep 2' mock escaped.pid &\nwhile [ ! -s escaped.pid ]; do sleep 0.001; done\n{ending}\n"
+        )).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut cleanup = Cleanup {
+            pidfile: dir.join("escaped.pid"),
+            stopped: false,
+        };
+        let runner = Runner {
+            program: &executable,
+            work: &dir,
+            out: &dir,
+            timeout: Duration::from_millis(150),
+            backend: &native,
+            comparison_lock: Mutex::new(()),
+        };
+        let job = sample_job("escaped", Kind::Diagnostics);
+        write_file(&dir.join(&job.golden), b"mock actual\n").unwrap();
+        let started = Instant::now();
+        let record = runner.observe(&job, "default");
+        let elapsed = started.elapsed();
+        // Stop the escaped mock before assertions; Drop retries on any error.
+        // Its 2s sleep is also a backstop for running this test on the old code.
+        cleanup.stop().unwrap();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "unbounded escaped-holder cleanup: {elapsed:?}"
+        );
+        assert!(elapsed >= Duration::from_millis(150));
+        assert_eq!(record.status, "timeout");
+        assert!(record.timed_out);
+        assert_eq!(record.returncode, Some(if root_exits { 0 } else { -9 }));
+        assert!(record.observer_error.is_none());
+        assert_eq!(
+            fs::read(dir.join(record.process_stdout.unwrap())).unwrap(),
+            b"rootescaped"
+        );
+        assert_eq!(
+            fs::read(dir.join(record.process_stderr.unwrap())).unwrap(),
+            b"\xfferror"
+        );
+        assert_eq!(
+            fs::read(dir.join(record.actual.unwrap())).unwrap(),
+            b"mock actual\n"
+        );
+        assert_eq!(record.actual_sha256.unwrap(), sha(b"mock actual\n"));
+        eprintln!(
+            "escaped holder root_exits={root_exits}: deadline=150ms, returned={}ms, raw bytes retained, mock stopped",
+            elapsed.as_millis()
+        );
+    }
+}
