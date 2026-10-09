@@ -2245,6 +2245,12 @@ impl PaintCtx<'_> {
         self.widget_state.paint_layer_mode = mode;
     }
 
+    /// Declare external content and retain its opaque host token across cached paints.
+    pub fn set_external_paint(&mut self, token: u64) {
+        self.widget_state.paint_layer_mode = PaintLayerMode::External;
+        self.widget_state.external_paint_token = token;
+    }
+
     /// Whether debug paint is enabled.
     ///
     /// If this property is set, your widget may draw additional debug information

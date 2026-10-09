@@ -1,0 +1,540 @@
+reel-render v0.1.0 (/workspace/reel/crates/reel-render)
+├── reel-core feature "default"
+│   └── reel-core v0.1.0 (/workspace/reel/crates/reel-core)
+└── reel-stage feature "default"
+    └── reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+        ├── masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+        │   ├── tracing-core v0.1.36
+        │   │   └── once_cell feature "default"
+        │   │       ├── once_cell v1.21.4
+        │   │       └── once_cell feature "std"
+        │   │           ├── once_cell v1.21.4
+        │   │           └── once_cell feature "alloc"
+        │   │               ├── once_cell v1.21.4
+        │   │               └── once_cell feature "race"
+        │   │                   └── once_cell v1.21.4
+        │   ├── accesskit feature "default"
+        │   │   └── accesskit v0.24.0
+        │   │       └── uuid v1.27.0
+        │   ├── anymap3 feature "default"
+        │   │   ├── anymap3 v1.0.1
+        │   │   └── anymap3 feature "std"
+        │   │       └── anymap3 v1.0.1
+        │   ├── anymore feature "default"
+        │   │   ├── anymore v1.0.0
+        │   │   ├── anymore feature "alloc"
+        │   │   │   └── anymore v1.0.0
+        │   │   └── anymore feature "type_name"
+        │   │       └── anymore v1.0.0
+        │   ├── cursor-icon feature "default"
+        │   │   ├── cursor-icon v1.2.0
+        │   │   └── cursor-icon feature "std"
+        │   │       ├── cursor-icon v1.2.0
+        │   │       └── cursor-icon feature "alloc"
+        │   │           └── cursor-icon v1.2.0
+        │   ├── dpi feature "default"
+        │   │   ├── dpi v0.1.2
+        │   │   └── dpi feature "std"
+        │   │       └── dpi v0.1.2
+        │   ├── imaging feature "default"
+        │   │   ├── imaging v0.0.1
+        │   │   │   ├── kurbo v0.13.1
+        │   │   │   │   ├── arrayvec v0.7.8
+        │   │   │   │   ├── polycool v0.4.0
+        │   │   │   │   │   └── arrayvec v0.7.8
+        │   │   │   │   ├── smallvec feature "const_new"
+        │   │   │   │   │   ├── smallvec v1.15.1
+        │   │   │   │   │   └── smallvec feature "const_generics"
+        │   │   │   │   │       └── smallvec v1.15.1
+        │   │   │   │   └── smallvec feature "default"
+        │   │   │   │       └── smallvec v1.15.1
+        │   │   │   └── peniko v0.6.1
+        │   │   │       ├── color v0.3.3
+        │   │   │       ├── kurbo v0.13.1 (*)
+        │   │   │       ├── linebender_resource_handle v0.1.1
+        │   │   │       └── smallvec feature "default" (*)
+        │   │   └── imaging feature "std"
+        │   │       ├── imaging v0.0.1 (*)
+        │   │       ├── kurbo feature "std"
+        │   │       │   ├── kurbo v0.13.1 (*)
+        │   │       │   └── polycool feature "std"
+        │   │       │       └── polycool v0.4.0 (*)
+        │   │       └── peniko feature "std"
+        │   │           ├── peniko v0.6.1 (*)
+        │   │           ├── kurbo feature "std" (*)
+        │   │           ├── color feature "std"
+        │   │           │   └── color v0.3.3
+        │   │           └── linebender_resource_handle feature "std"
+        │   │               └── linebender_resource_handle v0.1.1
+        │   ├── kurbo feature "default"
+        │   │   ├── kurbo v0.13.1 (*)
+        │   │   └── kurbo feature "std" (*)
+        │   ├── smallvec feature "default" (*)
+        │   ├── peniko feature "default"
+        │   │   ├── peniko v0.6.1 (*)
+        │   │   └── peniko feature "std" (*)
+        │   ├── parley feature "accesskit"
+        │   │   └── parley v0.8.0
+        │   │       ├── fontique v0.8.0
+        │   │       │   ├── linebender_resource_handle v0.1.1
+        │   │       │   ├── parlance v0.1.0
+        │   │       │   ├── read-fonts v0.37.0
+        │   │       │   │   ├── bytemuck feature "default"
+        │   │       │   │   │   └── bytemuck v1.25.2
+        │   │       │   │   │       └── bytemuck_derive feature "default"
+        │   │       │   │   │           └── bytemuck_derive v1.12.1 (proc-macro)
+        │   │       │   │   │               ├── proc-macro2 feature "default"
+        │   │       │   │   │               │   ├── proc-macro2 v1.0.106
+        │   │       │   │   │               │   │   └── unicode-ident feature "default"
+        │   │       │   │   │               │   │       └── unicode-ident v1.0.26
+        │   │       │   │   │               │   └── proc-macro2 feature "proc-macro"
+        │   │       │   │   │               │       └── proc-macro2 v1.0.106 (*)
+        │   │       │   │   │               ├── quote feature "default"
+        │   │       │   │   │               │   ├── quote v1.0.45
+        │   │       │   │   │               │   │   └── proc-macro2 v1.0.106 (*)
+        │   │       │   │   │               │   └── quote feature "proc-macro"
+        │   │       │   │   │               │       ├── quote v1.0.45 (*)
+        │   │       │   │   │               │       └── proc-macro2 feature "proc-macro" (*)
+        │   │       │   │   │               └── syn feature "default"
+        │   │       │   │   │                   ├── syn v3.0.6
+        │   │       │   │   │                   │   ├── proc-macro2 v1.0.106 (*)
+        │   │       │   │   │                   │   ├── quote v1.0.45 (*)
+        │   │       │   │   │                   │   └── unicode-ident feature "default" (*)
+        │   │       │   │   │                   ├── syn feature "clone-impls"
+        │   │       │   │   │                   │   └── syn v3.0.6 (*)
+        │   │       │   │   │                   ├── syn feature "derive"
+        │   │       │   │   │                   │   └── syn v3.0.6 (*)
+        │   │       │   │   │                   ├── syn feature "parsing"
+        │   │       │   │   │                   │   └── syn v3.0.6 (*)
+        │   │       │   │   │                   ├── syn feature "printing"
+        │   │       │   │   │                   │   └── syn v3.0.6 (*)
+        │   │       │   │   │                   └── syn feature "proc-macro"
+        │   │       │   │   │                       ├── syn v3.0.6 (*)
+        │   │       │   │   │                       ├── proc-macro2 feature "proc-macro" (*)
+        │   │       │   │   │                       └── quote feature "proc-macro" (*)
+        │   │       │   │   ├── core_maths feature "default"
+        │   │       │   │   │   └── core_maths v0.1.1
+        │   │       │   │   │       └── libm feature "default"
+        │   │       │   │   │           ├── libm v0.2.16
+        │   │       │   │   │           └── libm feature "arch"
+        │   │       │   │   │               └── libm v0.2.16
+        │   │       │   │   ├── font-types feature "bytemuck"
+        │   │       │   │   │   └── font-types v0.11.3
+        │   │       │   │   │       ├── bytemuck feature "default" (*)
+        │   │       │   │   │       ├── bytemuck feature "derive"
+        │   │       │   │   │       │   ├── bytemuck v1.25.2 (*)
+        │   │       │   │   │       │   └── bytemuck feature "bytemuck_derive"
+        │   │       │   │   │       │       └── bytemuck v1.25.2 (*)
+        │   │       │   │   │       └── bytemuck feature "min_const_generics"
+        │   │       │   │   │           └── bytemuck v1.25.2 (*)
+        │   │       │   │   └── font-types feature "default"
+        │   │       │   │       └── font-types v0.11.3 (*)
+        │   │       │   ├── smallvec feature "default" (*)
+        │   │       │   ├── hashbrown feature "default-hasher"
+        │   │       │   │   └── hashbrown v0.16.1
+        │   │       │   │       └── foldhash v0.2.0
+        │   │       │   ├── hashbrown feature "raw-entry"
+        │   │       │   │   └── hashbrown v0.16.1 (*)
+        │   │       │   ├── memmap2 feature "default"
+        │   │       │   │   └── memmap2 v0.9.11
+        │   │       │   │       └── libc feature "default"
+        │   │       │   │           ├── libc v0.2.190
+        │   │       │   │           └── libc feature "std"
+        │   │       │   │               └── libc v0.2.190
+        │   │       │   └── yeslogic-fontconfig-sys feature "default"
+        │   │       │       └── yeslogic-fontconfig-sys v6.0.1
+        │   │       │           ├── dlib feature "default"
+        │   │       │           │   └── dlib v0.5.3
+        │   │       │           │       └── libloading feature "default"
+        │   │       │           │           └── libloading v0.8.9
+        │   │       │           │               └── cfg-if feature "default"
+        │   │       │           │                   └── cfg-if v1.0.5
+        │   │       │           └── once_cell feature "default" (*)
+        │   │       │           [build-dependencies]
+        │   │       │           └── pkg-config feature "default"
+        │   │       │               └── pkg-config v0.3.34
+        │   │       ├── harfrust v0.5.2
+        │   │       │   ├── smallvec feature "default" (*)
+        │   │       │   ├── read-fonts feature "libm"
+        │   │       │   │   └── read-fonts v0.37.0 (*)
+        │   │       │   ├── bytemuck feature "default" (*)
+        │   │       │   ├── bytemuck feature "extern_crate_alloc"
+        │   │       │   │   └── bytemuck v1.25.2 (*)
+        │   │       │   ├── core_maths feature "default" (*)
+        │   │       │   └── bitflags feature "default"
+        │   │       │       └── bitflags v2.13.2
+        │   │       ├── linebender_resource_handle v0.1.1
+        │   │       ├── parlance v0.1.0
+        │   │       ├── skrifa v0.40.0
+        │   │       │   ├── read-fonts v0.37.0 (*)
+        │   │       │   └── bytemuck feature "default" (*)
+        │   │       ├── accesskit feature "default" (*)
+        │   │       ├── hashbrown feature "default-hasher" (*)
+        │   │       ├── hashbrown feature "raw-entry" (*)
+        │   │       ├── icu_normalizer feature "compiled_data"
+        │   │       │   ├── icu_normalizer v2.3.0
+        │   │       │   │   ├── icu_collections v2.3.0
+        │   │       │   │   │   ├── displaydoc v0.2.7 (proc-macro)
+        │   │       │   │   │   │   ├── proc-macro2 feature "default" (*)
+        │   │       │   │   │   │   ├── quote feature "default" (*)
+        │   │       │   │   │   │   └── syn feature "default" (*)
+        │   │       │   │   │   ├── utf8_iter v1.0.4
+        │   │       │   │   │   ├── potential_utf feature "zerovec"
+        │   │       │   │   │   │   └── potential_utf v0.1.6
+        │   │       │   │   │   │       ├── writeable v0.6.4
+        │   │       │   │   │   │       └── zerovec v0.11.8
+        │   │       │   │   │   │           ├── yoke v0.8.3
+        │   │       │   │   │   │           │   ├── stable_deref_trait v1.2.1
+        │   │       │   │   │   │           │   ├── yoke-derive v0.8.4 (proc-macro)
+        │   │       │   │   │   │           │   │   ├── proc-macro2 feature "default" (*)
+        │   │       │   │   │   │           │   │   ├── quote feature "default" (*)
+        │   │       │   │   │   │           │   │   ├── syn feature "default" (*)
+        │   │       │   │   │   │           │   │   ├── syn feature "fold"
+        │   │       │   │   │   │           │   │   │   └── syn v3.0.6 (*)
+        │   │       │   │   │   │           │   │   ├── syn feature "visit"
+        │   │       │   │   │   │           │   │   │   └── syn v3.0.6 (*)
+        │   │       │   │   │   │           │   │   └── synstructure feature "default"
+        │   │       │   │   │   │           │   │       ├── synstructure v0.14.0
+        │   │       │   │   │   │           │   │       │   ├── proc-macro2 v1.0.106 (*)
+        │   │       │   │   │   │           │   │       │   ├── quote v1.0.45 (*)
+        │   │       │   │   │   │           │   │       │   ├── syn feature "clone-impls" (*)
+        │   │       │   │   │   │           │   │       │   ├── syn feature "derive" (*)
+        │   │       │   │   │   │           │   │       │   ├── syn feature "extra-traits"
+        │   │       │   │   │   │           │   │       │   │   └── syn v3.0.6 (*)
+        │   │       │   │   │   │           │   │       │   ├── syn feature "parsing" (*)
+        │   │       │   │   │   │           │   │       │   ├── syn feature "printing" (*)
+        │   │       │   │   │   │           │   │       │   └── syn feature "visit" (*)
+        │   │       │   │   │   │           │   │       └── synstructure feature "proc-macro"
+        │   │       │   │   │   │           │   │           ├── synstructure v0.14.0 (*)
+        │   │       │   │   │   │           │   │           ├── proc-macro2 feature "proc-macro" (*)
+        │   │       │   │   │   │           │   │           ├── quote feature "proc-macro" (*)
+        │   │       │   │   │   │           │   │           └── syn feature "proc-macro" (*)
+        │   │       │   │   │   │           │   └── zerofrom v0.1.8
+        │   │       │   │   │   │           │       └── zerofrom-derive v0.1.8 (proc-macro)
+        │   │       │   │   │   │           │           ├── proc-macro2 feature "default" (*)
+        │   │       │   │   │   │           │           ├── quote feature "default" (*)
+        │   │       │   │   │   │           │           ├── syn feature "default" (*)
+        │   │       │   │   │   │           │           ├── syn feature "fold" (*)
+        │   │       │   │   │   │           │           ├── syn feature "visit" (*)
+        │   │       │   │   │   │           │           └── synstructure feature "default" (*)
+        │   │       │   │   │   │           ├── zerofrom v0.1.8 (*)
+        │   │       │   │   │   │           └── zerovec-derive v0.11.6 (proc-macro)
+        │   │       │   │   │   │               ├── proc-macro2 feature "default" (*)
+        │   │       │   │   │   │               ├── quote feature "default" (*)
+        │   │       │   │   │   │               ├── syn feature "default" (*)
+        │   │       │   │   │   │               └── syn feature "extra-traits" (*)
+        │   │       │   │   │   ├── zerovec feature "derive"
+        │   │       │   │   │   │   └── zerovec v0.11.8 (*)
+        │   │       │   │   │   ├── zerovec feature "yoke"
+        │   │       │   │   │   │   └── zerovec v0.11.8 (*)
+        │   │       │   │   │   ├── yoke feature "derive"
+        │   │       │   │   │   │   ├── yoke v0.8.3 (*)
+        │   │       │   │   │   │   ├── yoke feature "zerofrom"
+        │   │       │   │   │   │   │   └── yoke v0.8.3 (*)
+        │   │       │   │   │   │   └── zerofrom feature "derive"
+        │   │       │   │   │   │       └── zerofrom v0.1.8 (*)
+        │   │       │   │   │   └── zerofrom feature "derive" (*)
+        │   │       │   │   ├── icu_normalizer_data v2.3.0
+        │   │       │   │   ├── icu_provider v2.3.1
+        │   │       │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+        │   │       │   │   │   ├── icu_locale_core v2.3.0
+        │   │       │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+        │   │       │   │   │   │   ├── litemap v0.8.3
+        │   │       │   │   │   │   ├── tinystr v0.8.4
+        │   │       │   │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+        │   │       │   │   │   │   │   └── zerovec v0.11.8 (*)
+        │   │       │   │   │   │   ├── writeable v0.6.4
+        │   │       │   │   │   │   └── zerovec v0.11.8 (*)
+        │   │       │   │   │   ├── stable_deref_trait v1.2.1
+        │   │       │   │   │   ├── writeable v0.6.4
+        │   │       │   │   │   ├── zerotrie v0.2.5
+        │   │       │   │   │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+        │   │       │   │   │   │   ├── zerofrom v0.1.8 (*)
+        │   │       │   │   │   │   └── yoke feature "derive" (*)
+        │   │       │   │   │   ├── zerovec feature "derive" (*)
+        │   │       │   │   │   ├── yoke feature "derive" (*)
+        │   │       │   │   │   └── zerofrom feature "derive" (*)
+        │   │       │   │   ├── smallvec v1.15.1
+        │   │       │   │   └── zerovec v0.11.8 (*)
+        │   │       │   └── icu_provider feature "baked"
+        │   │       │       └── icu_provider v2.3.1 (*)
+        │   │       ├── icu_properties feature "compiled_data"
+        │   │       │   ├── icu_properties v2.3.0
+        │   │       │   │   ├── displaydoc v0.2.7 (proc-macro) (*)
+        │   │       │   │   ├── icu_collections v2.3.0 (*)
+        │   │       │   │   ├── icu_properties_data v2.3.0
+        │   │       │   │   ├── icu_provider v2.3.1 (*)
+        │   │       │   │   ├── zerovec feature "derive" (*)
+        │   │       │   │   ├── zerovec feature "yoke" (*)
+        │   │       │   │   ├── icu_locale_core feature "zerovec"
+        │   │       │   │   │   ├── icu_locale_core v2.3.0 (*)
+        │   │       │   │   │   └── tinystr feature "zerovec"
+        │   │       │   │   │       └── tinystr v0.8.4 (*)
+        │   │       │   │   ├── zerotrie feature "yoke"
+        │   │       │   │   │   └── zerotrie v0.2.5 (*)
+        │   │       │   │   └── zerotrie feature "zerofrom"
+        │   │       │   │       └── zerotrie v0.2.5 (*)
+        │   │       │   └── icu_provider feature "baked" (*)
+        │   │       ├── icu_segmenter feature "compiled_data"
+        │   │       │   ├── icu_segmenter v2.3.0
+        │   │       │   │   ├── icu_collections v2.3.0 (*)
+        │   │       │   │   ├── icu_locale_fallback v2.3.0
+        │   │       │   │   │   ├── icu_locale_fallback_data v2.3.0
+        │   │       │   │   │   ├── potential_utf feature "alloc"
+        │   │       │   │   │   │   ├── potential_utf v0.1.6 (*)
+        │   │       │   │   │   │   ├── potential_utf feature "writeable"
+        │   │       │   │   │   │   │   └── potential_utf v0.1.6 (*)
+        │   │       │   │   │   │   ├── writeable feature "alloc"
+        │   │       │   │   │   │   │   └── writeable v0.6.4
+        │   │       │   │   │   │   └── zerovec feature "alloc"
+        │   │       │   │   │   │       └── zerovec v0.11.8 (*)
+        │   │       │   │   │   ├── potential_utf feature "zerovec" (*)
+        │   │       │   │   │   ├── zerovec feature "alloc" (*)
+        │   │       │   │   │   ├── zerovec feature "yoke" (*)
+        │   │       │   │   │   ├── icu_provider feature "alloc"
+        │   │       │   │   │   │   ├── icu_provider v2.3.1 (*)
+        │   │       │   │   │   │   ├── zerovec feature "alloc" (*)
+        │   │       │   │   │   │   ├── yoke feature "alloc"
+        │   │       │   │   │   │   │   ├── yoke v0.8.3 (*)
+        │   │       │   │   │   │   │   ├── yoke feature "zerofrom" (*)
+        │   │       │   │   │   │   │   ├── stable_deref_trait feature "alloc"
+        │   │       │   │   │   │   │   │   └── stable_deref_trait v1.2.1
+        │   │       │   │   │   │   │   └── zerofrom feature "alloc"
+        │   │       │   │   │   │   │       └── zerofrom v0.1.8 (*)
+        │   │       │   │   │   │   ├── zerofrom feature "alloc" (*)
+        │   │       │   │   │   │   ├── icu_locale_core feature "alloc"
+        │   │       │   │   │   │   │   ├── icu_locale_core v2.3.0 (*)
+        │   │       │   │   │   │   │   ├── writeable feature "alloc" (*)
+        │   │       │   │   │   │   │   ├── litemap feature "alloc"
+        │   │       │   │   │   │   │   │   └── litemap v0.8.3
+        │   │       │   │   │   │   │   └── tinystr feature "alloc"
+        │   │       │   │   │   │   │       ├── tinystr v0.8.4 (*)
+        │   │       │   │   │   │   │       └── zerovec feature "alloc" (*)
+        │   │       │   │   │   │   └── zerotrie feature "alloc"
+        │   │       │   │   │   │       └── zerotrie v0.2.5 (*)
+        │   │       │   │   │   ├── icu_locale_core feature "alloc" (*)
+        │   │       │   │   │   ├── icu_locale_core feature "zerovec" (*)
+        │   │       │   │   │   ├── tinystr feature "alloc" (*)
+        │   │       │   │   │   └── tinystr feature "zerovec" (*)
+        │   │       │   │   ├── icu_provider v2.3.1 (*)
+        │   │       │   │   ├── icu_segmenter_data v2.3.0
+        │   │       │   │   ├── smallvec v1.15.1
+        │   │       │   │   ├── utf8_iter v1.0.4
+        │   │       │   │   ├── potential_utf feature "alloc" (*)
+        │   │       │   │   ├── potential_utf feature "zerovec" (*)
+        │   │       │   │   ├── zerovec feature "alloc" (*)
+        │   │       │   │   └── zerovec feature "yoke" (*)
+        │   │       │   ├── icu_provider feature "baked" (*)
+        │   │       │   └── icu_locale_fallback feature "compiled_data"
+        │   │       │       ├── icu_locale_fallback v2.3.0 (*)
+        │   │       │       └── icu_provider feature "baked" (*)
+        │   │       └── parley_data feature "baked"
+        │   │           └── parley_data v0.8.0
+        │   │               └── icu_properties v2.3.0 (*)
+        │   ├── parley feature "default"
+        │   │   ├── parley v0.8.0 (*)
+        │   │   └── parley feature "system"
+        │   │       ├── parley v0.8.0 (*)
+        │   │       ├── parley feature "std"
+        │   │       │   ├── parley v0.8.0 (*)
+        │   │       │   ├── fontique feature "std"
+        │   │       │   │   ├── fontique v0.8.0 (*)
+        │   │       │   │   ├── parlance feature "std"
+        │   │       │   │   │   └── parlance v0.1.0
+        │   │       │   │   └── read-fonts feature "std"
+        │   │       │   │       ├── read-fonts v0.37.0 (*)
+        │   │       │   │       └── font-types feature "std"
+        │   │       │   │           └── font-types v0.11.3 (*)
+        │   │       │   ├── parlance feature "std" (*)
+        │   │       │   ├── harfrust feature "std"
+        │   │       │   │   ├── harfrust v0.5.2 (*)
+        │   │       │   │   └── read-fonts feature "std" (*)
+        │   │       │   └── skrifa feature "std"
+        │   │       │       ├── skrifa v0.40.0 (*)
+        │   │       │       └── read-fonts feature "std" (*)
+        │   │       └── fontique feature "system"
+        │   │           ├── fontique v0.8.0 (*)
+        │   │           └── fontique feature "std" (*)
+        │   ├── time feature "default"
+        │   │   ├── time v0.3.47
+        │   │   │   ├── powerfmt v0.2.1
+        │   │   │   ├── deranged feature "default"
+        │   │   │   │   └── deranged v0.5.8
+        │   │   │   │       └── powerfmt v0.2.1
+        │   │   │   ├── deranged feature "powerfmt"
+        │   │   │   │   └── deranged v0.5.8 (*)
+        │   │   │   ├── itoa feature "default"
+        │   │   │   │   └── itoa v1.0.18
+        │   │   │   ├── num-conv feature "default"
+        │   │   │   │   └── num-conv v0.2.2
+        │   │   │   ├── time-core feature "default"
+        │   │   │   │   └── time-core v0.1.8
+        │   │   │   └── time-macros feature "default"
+        │   │   │       └── time-macros v0.2.27 (proc-macro)
+        │   │   │           ├── num-conv feature "default" (*)
+        │   │   │           └── time-core feature "default" (*)
+        │   │   └── time feature "std"
+        │   │       ├── time v0.3.47 (*)
+        │   │       └── time feature "alloc"
+        │   │           └── time v0.3.47 (*)
+        │   ├── time feature "formatting"
+        │   │   ├── time v0.3.47 (*)
+        │   │   ├── time feature "std" (*)
+        │   │   └── time-macros feature "formatting"
+        │   │       └── time-macros v0.2.27 (proc-macro) (*)
+        │   ├── time feature "macros"
+        │   │   └── time v0.3.47 (*)
+        │   ├── tracing feature "default"
+        │   │   ├── tracing v0.1.44
+        │   │   │   ├── tracing-core v0.1.36 (*)
+        │   │   │   ├── pin-project-lite feature "default"
+        │   │   │   │   └── pin-project-lite v0.2.17
+        │   │   │   └── tracing-attributes feature "default"
+        │   │   │       └── tracing-attributes v0.1.31 (proc-macro)
+        │   │   │           ├── proc-macro2 feature "default" (*)
+        │   │   │           ├── quote feature "default" (*)
+        │   │   │           ├── syn feature "clone-impls"
+        │   │   │           │   └── syn v2.0.119
+        │   │   │           │       ├── proc-macro2 v1.0.106 (*)
+        │   │   │           │       ├── quote v1.0.45 (*)
+        │   │   │           │       └── unicode-ident feature "default" (*)
+        │   │   │           ├── syn feature "extra-traits"
+        │   │   │           │   └── syn v2.0.119 (*)
+        │   │   │           ├── syn feature "full"
+        │   │   │           │   └── syn v2.0.119 (*)
+        │   │   │           ├── syn feature "parsing"
+        │   │   │           │   └── syn v2.0.119 (*)
+        │   │   │           ├── syn feature "printing"
+        │   │   │           │   └── syn v2.0.119 (*)
+        │   │   │           ├── syn feature "proc-macro"
+        │   │   │           │   ├── syn v2.0.119 (*)
+        │   │   │           │   ├── proc-macro2 feature "proc-macro" (*)
+        │   │   │           │   └── quote feature "proc-macro" (*)
+        │   │   │           └── syn feature "visit-mut"
+        │   │   │               └── syn v2.0.119 (*)
+        │   │   ├── tracing feature "attributes"
+        │   │   │   ├── tracing v0.1.44 (*)
+        │   │   │   └── tracing feature "tracing-attributes"
+        │   │   │       └── tracing v0.1.44 (*)
+        │   │   └── tracing feature "std"
+        │   │       ├── tracing v0.1.44 (*)
+        │   │       └── tracing-core feature "std"
+        │   │           ├── tracing-core v0.1.36 (*)
+        │   │           └── tracing-core feature "once_cell"
+        │   │               └── tracing-core v0.1.36 (*)
+        │   ├── tracing-subscriber feature "default"
+        │   │   ├── tracing-subscriber v0.3.23
+        │   │   │   ├── tracing v0.1.44 (*)
+        │   │   │   ├── tracing-core v0.1.36 (*)
+        │   │   │   ├── smallvec feature "default" (*)
+        │   │   │   ├── once_cell feature "default" (*)
+        │   │   │   ├── time feature "default" (*)
+        │   │   │   ├── time feature "formatting" (*)
+        │   │   │   ├── matchers feature "default"
+        │   │   │   │   └── matchers v0.2.0
+        │   │   │   │       ├── regex-automata feature "dfa-build"
+        │   │   │   │       │   ├── regex-automata v0.4.18
+        │   │   │   │       │   │   └── regex-syntax v0.8.11
+        │   │   │   │       │   ├── regex-automata feature "dfa-search"
+        │   │   │   │       │   │   └── regex-automata v0.4.18 (*)
+        │   │   │   │       │   └── regex-automata feature "nfa-thompson"
+        │   │   │   │       │       ├── regex-automata v0.4.18 (*)
+        │   │   │   │       │       └── regex-automata feature "alloc"
+        │   │   │   │       │           └── regex-automata v0.4.18 (*)
+        │   │   │   │       ├── regex-automata feature "dfa-search" (*)
+        │   │   │   │       └── regex-automata feature "syntax"
+        │   │   │   │           ├── regex-automata v0.4.18 (*)
+        │   │   │   │           └── regex-automata feature "alloc" (*)
+        │   │   │   ├── regex-automata feature "std"
+        │   │   │   │   ├── regex-automata v0.4.18 (*)
+        │   │   │   │   ├── regex-automata feature "alloc" (*)
+        │   │   │   │   └── regex-syntax feature "std"
+        │   │   │   │       └── regex-syntax v0.8.11
+        │   │   │   ├── nu-ansi-term feature "default"
+        │   │   │   │   ├── nu-ansi-term v0.50.3
+        │   │   │   │   └── nu-ansi-term feature "std"
+        │   │   │   │       └── nu-ansi-term v0.50.3
+        │   │   │   ├── sharded-slab feature "default"
+        │   │   │   │   └── sharded-slab v0.1.7
+        │   │   │   │       └── lazy_static feature "default"
+        │   │   │   │           └── lazy_static v1.5.1
+        │   │   │   ├── thread_local feature "default"
+        │   │   │   │   └── thread_local v1.1.10
+        │   │   │   │       └── cfg-if feature "default" (*)
+        │   │   │   ├── tracing-log feature "log-tracer"
+        │   │   │   │   └── tracing-log v0.2.0
+        │   │   │   │       ├── once_cell feature "default" (*)
+        │   │   │   │       ├── tracing-core feature "default"
+        │   │   │   │       │   ├── tracing-core v0.1.36 (*)
+        │   │   │   │       │   └── tracing-core feature "std" (*)
+        │   │   │   │       └── log feature "default"
+        │   │   │   │           └── log v0.4.34
+        │   │   │   └── tracing-log feature "std"
+        │   │   │       ├── tracing-log v0.2.0 (*)
+        │   │   │       └── log feature "std"
+        │   │   │           ├── log v0.4.34
+        │   │   │           └── log feature "alloc"
+        │   │   │               └── log v0.4.34
+        │   │   ├── tracing-subscriber feature "ansi"
+        │   │   │   ├── tracing-subscriber v0.3.23 (*)
+        │   │   │   ├── tracing-subscriber feature "fmt"
+        │   │   │   │   ├── tracing-subscriber v0.3.23 (*)
+        │   │   │   │   ├── tracing-subscriber feature "registry"
+        │   │   │   │   │   ├── tracing-subscriber v0.3.23 (*)
+        │   │   │   │   │   ├── tracing-subscriber feature "sharded-slab"
+        │   │   │   │   │   │   └── tracing-subscriber v0.3.23 (*)
+        │   │   │   │   │   ├── tracing-subscriber feature "std"
+        │   │   │   │   │   │   ├── tracing-subscriber v0.3.23 (*)
+        │   │   │   │   │   │   ├── tracing-core feature "std" (*)
+        │   │   │   │   │   │   └── tracing-subscriber feature "alloc"
+        │   │   │   │   │   │       └── tracing-subscriber v0.3.23 (*)
+        │   │   │   │   │   └── tracing-subscriber feature "thread_local"
+        │   │   │   │   │       └── tracing-subscriber v0.3.23 (*)
+        │   │   │   │   └── tracing-subscriber feature "std" (*)
+        │   │   │   └── tracing-subscriber feature "nu-ansi-term"
+        │   │   │       └── tracing-subscriber v0.3.23 (*)
+        │   │   ├── tracing-subscriber feature "fmt" (*)
+        │   │   ├── tracing-subscriber feature "smallvec"
+        │   │   │   └── tracing-subscriber v0.3.23 (*)
+        │   │   ├── tracing-subscriber feature "std" (*)
+        │   │   └── tracing-subscriber feature "tracing-log"
+        │   │       └── tracing-subscriber v0.3.23 (*)
+        │   ├── tracing-subscriber feature "env-filter"
+        │   │   ├── tracing-subscriber v0.3.23 (*)
+        │   │   ├── tracing-subscriber feature "matchers"
+        │   │   │   └── tracing-subscriber v0.3.23 (*)
+        │   │   ├── tracing-subscriber feature "once_cell"
+        │   │   │   └── tracing-subscriber v0.3.23 (*)
+        │   │   ├── tracing-subscriber feature "std" (*)
+        │   │   ├── tracing-subscriber feature "thread_local" (*)
+        │   │   └── tracing-subscriber feature "tracing"
+        │   │       └── tracing-subscriber v0.3.23 (*)
+        │   ├── tracing-subscriber feature "time"
+        │   │   └── tracing-subscriber v0.3.23 (*)
+        │   ├── tree_arena feature "default"
+        │   │   ├── tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena)
+        │   │   │   └── hashbrown feature "default-hasher"
+        │   │   │       └── hashbrown v0.17.0
+        │   │   │           └── foldhash v0.2.0
+        │   │   ├── tree_arena feature "safe_tree"
+        │   │   │   └── tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena) (*)
+        │   │   └── tree_arena feature "std"
+        │   │       └── tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena) (*)
+        │   └── ui-events feature "kurbo"
+        │       └── ui-events v0.3.0
+        │           ├── dpi v0.1.2
+        │           ├── keyboard-types v0.8.3
+        │           │   └── bitflags feature "default" (*)
+        │           └── kurbo v0.13.1 (*)
+        └── reel-core feature "default" (*)
+[dev-dependencies]
+├── masonry v0.4.0 (/workspace/reel/third_party/masonry/masonry)
+│   ├── masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core) (*)
+│   ├── accesskit feature "default" (*)
+│   ├── linebender_include_doc_path feature "default"
+│   │   └── linebender_include_doc_path v0.1.0 (proc-macro) (/workspace/reel/third_party/masonry/include_doc_path)
+│   │       ├── proc-macro2 feature "default" (*)
+│   │       └── quote feature "default" (*)
+│   ├── smallvec feature "default" (*)
+│   └── tracing feature "default" (*)
+└── masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core) (*)

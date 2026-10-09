@@ -1,0 +1,168 @@
+//! Real Masonry recording widget with controlled pre/own/post records and scrolling.
+use super::fixture::{StageGroup, root};
+use masonry_core::{
+    accesskit::{Node, Role},
+    app::RenderRoot,
+    core::*,
+    imaging::{Painter, record::Scene},
+    kurbo::{Affine, Axis, Rect, Size, Vec2},
+    layout::{LenReq, Length},
+};
+use reel_core::{
+    budget::{BudgetCategory, BudgetPool, QueueLimits},
+    identity::SurfaceEpoch,
+};
+use reel_stage::*;
+use std::{cell::RefCell, rc::Rc};
+pub struct RecordWidget {
+    pub inner: StageGroup,
+    pub pre: Scene,
+    pub own: Scene,
+    pub post: Scene,
+    pub mode: PaintLayerMode,
+    pub token: u64,
+    pub scroll: Vec2,
+    pub clip: bool,
+}
+impl RecordWidget {
+    pub fn new(own: Scene) -> Self {
+        Self {
+            inner: StageGroup::new(
+                Rc::new(RefCell::new(vec![])),
+                1.,
+                Rect::new(0., 0., 400., 300.),
+            ),
+            pre: Scene::new(),
+            own,
+            post: Scene::new(),
+            mode: PaintLayerMode::Inline,
+            token: 0,
+            scroll: Vec2::ZERO,
+            clip: true,
+        }
+    }
+}
+impl Widget for RecordWidget {
+    type Action = ();
+    fn register_children(&mut self, c: &mut RegisterCtx<'_>) {
+        self.inner.register_children(c)
+    }
+    fn measure(
+        &mut self,
+        c: &mut MeasureCtx<'_>,
+        p: &PropertiesRef<'_>,
+        a: Axis,
+        l: LenReq,
+        n: Option<Length>,
+    ) -> Length {
+        self.inner.measure(c, p, a, l, n)
+    }
+    fn layout(&mut self, c: &mut LayoutCtx<'_>, p: &PropertiesRef<'_>, s: Size) {
+        self.inner.layout(c, p, s);
+        if !self.clip {
+            c.clear_clip_path();
+        }
+    }
+    fn compose(&mut self, c: &mut ComposeCtx<'_>) {
+        for (child, _, _) in &mut self.inner.children {
+            c.set_animated_child_scroll_translation(child, self.scroll);
+        }
+    }
+    fn pre_paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
+        p.replay(&self.pre)
+    }
+    fn paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
+        if self.mode == PaintLayerMode::External {
+            c.set_external_paint(self.token);
+        } else {
+            c.set_paint_layer_mode(self.mode);
+        }
+        p.replay(&self.own)
+    }
+    fn post_paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
+        p.replay(&self.post)
+    }
+    fn accessibility_role(&self) -> Role {
+        Role::GenericContainer
+    }
+    fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
+    fn children_ids(&self) -> ChildrenIds {
+        self.inner.children_ids()
+    }
+    fn accepts_pointer_interaction(&self) -> bool {
+        true
+    }
+}
+pub fn limits() -> BuildLimits {
+    BuildLimits {
+        max_fragments: 128,
+        max_commands: 8192,
+        max_masks: 64,
+        max_depth: 32,
+        max_bytes: 16 * 1024 * 1024,
+        max_total_units: 4_000_000,
+    }
+}
+pub fn step_budget() -> StepBudget {
+    StepBudget {
+        max_commands: 2,
+        max_units: 128,
+        max_bytes: 4096,
+    }
+}
+pub fn pool() -> BudgetPool {
+    BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 16,
+            max_bytes: 256 * 1024 * 1024,
+        },
+    )
+}
+pub fn bridge(root: RenderRoot) -> PresentationBridge {
+    PresentationBridge::new(
+        root,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: masonry_core::app::GeometryLimits {
+                max_nodes: 8192,
+                max_bytes: 4 * 1024 * 1024,
+                max_path: 128,
+            },
+            max_candidates: 4,
+            max_bridge_bytes: 64 * 1024,
+            max_snapshot_bytes: 24 * 1024 * 1024,
+        },
+    )
+    .unwrap()
+}
+pub fn widget_bridge(widget: RecordWidget, transform: Affine) -> PresentationBridge {
+    bridge(root(widget.prepare().with_transform(transform)).0)
+}
+pub fn build(source: RecordedSource, snapshot: ResourceSnapshot, pool: &BudgetPool) -> RenderFrame {
+    let mut build = FrameBuild::new(
+        source,
+        snapshot,
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [400, 300],
+        },
+        limits(),
+        pool,
+    )
+    .unwrap();
+    for _ in 0..100_000 {
+        let p = build.step(step_budget()).unwrap();
+        assert!(p.units <= 128 && p.bytes <= 4096 && p.commands <= 2);
+        if p.complete {
+            return build.finish().unwrap();
+        }
+    }
+    panic!("bounded build made no final progress")
+}
+pub fn empty_snapshot(pool: &BudgetPool) -> ResourceSnapshot {
+    ResourceRegistry::new(0, 0)
+        .unwrap()
+        .freeze(&[], pool)
+        .unwrap()
+}

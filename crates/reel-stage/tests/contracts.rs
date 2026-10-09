@@ -201,11 +201,7 @@ fn accept(c: &RecordedCandidate) -> PresentationNotice {
     notice(c, PresentationOutcome::Accepted(c.key().frame_id()))
 }
 fn notice(c: &RecordedCandidate, outcome: PresentationOutcome) -> PresentationNotice {
-    PresentationNotice {
-        key: c.key(),
-        surface_epoch: c.key().surface_epoch(),
-        outcome,
-    }
+    PresentationNotice::new(c.key(), c.key().surface_epoch(), outcome)
 }
 
 #[test]
@@ -224,8 +220,11 @@ fn real_record_gate_first_frame_failures_identity_order_clear_and_epoch() {
         bridge.resolve(notice(&first, PresentationOutcome::Accepted(FrameId(99)))),
         NoticeResult::StaleOrForeign
     );
-    let mut wrong_epoch = accept(&first);
-    wrong_epoch.surface_epoch = SurfaceEpoch(99);
+    let wrong_epoch = PresentationNotice::new(
+        first.key(),
+        SurfaceEpoch(99),
+        PresentationOutcome::Accepted(first.key().frame_id()),
+    );
     assert_eq!(bridge.resolve(wrong_epoch), NoticeResult::StaleOrForeign);
     assert_eq!(bridge.resolve(accept(&first)), NoticeResult::Accepted);
     assert_eq!(bridge.resolve(accept(&first)), NoticeResult::StaleOrForeign);
