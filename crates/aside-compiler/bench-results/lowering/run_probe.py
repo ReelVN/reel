@@ -2,6 +2,7 @@
 """Record compiler-only probes; does not dispatch bytecode or invoke a host."""
 import argparse
 import csv
+import datetime
 import io
 import json
 import pathlib
@@ -14,8 +15,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", default="target/release/examples/lowering_probe")
     parser.add_argument("--output", default="crates/aside-compiler/bench-results/lowering")
-    parser.add_argument("--label", default="2026-10-08")
+    parser.add_argument("--label", default=datetime.datetime.now(datetime.timezone.utc).date().isoformat())
     parser.add_argument("--repeats", type=int, default=7)
+    parser.add_argument("--modes", nargs="+", choices=("plain", "captures", "named", "temporaries", "loops"))
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
@@ -27,8 +29,11 @@ def main():
         ("captures", [100, 1000, 2000, 5000]),
         ("named", [100, 1000, 5000, 10000]),
         ("temporaries", [1000, 10000, 25000, 50000]),
+        ("loops", [100, 1000, 5000, 10000, 20000]),
     ]
     for mode, sizes in workloads:
+        if args.modes and mode not in args.modes:
+            continue
         for n in sizes:
             for repeat in range(args.repeats):
                 result = subprocess.run(

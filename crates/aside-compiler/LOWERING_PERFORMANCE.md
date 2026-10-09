@@ -2,6 +2,8 @@
 
 Implementation measured: `2edce46ca236c6424db61d8f3dd89b0e5fd19b25`.
 Rust 1.96.0, Linux x86_64/glibc 2.41, 2026-10-08, release optimization.
+The initial dataset remains pinned to that revision. The 2026-10-09 source-review
+corrections and their separate measurements are recorded below.
 Each accepted workload ran seven fresh processes; times below are medians.
 These are local compiler measurements, with no earlier lowering baseline or
 runtime throughput claim. Container scheduling can affect elapsed times.
@@ -62,7 +64,7 @@ rejections in [bench-results/lowering](bench-results/lowering/). The source
 generator and retained-allocation assertion are in
 [examples/lowering_probe.rs](examples/lowering_probe.rs).
 
-Final implementation checks passed in debug and release:
+Initial 2026-10-08 implementation checks passed in debug and release:
 
 ```sh
 cargo fmt --all --check
@@ -86,14 +88,66 @@ instructions, registers, blocks, depth, source admission and shared emission.
 Fixture integrity reports 10 immutable T01 sources/maps and 32 unchanged
 assertion mappings; execution remains `waiting_runtime`.
 
+## 2026-10-09 source-review corrections
+
+The branch preserves the real merge of L03
+`4500f788c5cd56bd431d6f75424f0c8a756a540d`; it does not copy a second semantic
+implementation. L03's author reported 83 compiler tests in debug/release and
+fmt/strict clippy. This L04 environment reran the combined branch after the while
+and module-binding fixes: **106 compiler tests passed in each of debug and
+release**, including 22 lowering contracts and the five L03 default-control
+tests. These are the task author's combined checks, not the integration owner's
+independent acceptance. fmt, strict clippy, fixture integrity and diff checks
+also passed. The language file exactly matches the owner's
+`65f8ba9177ab81e817202fb56fdd92bab10fe6d0` baseline; both creator guides explain
+the same default rule without changing their 24 matched source scenes.
+
+Static source regressions cover labelled/unlabelled while condition transfers,
+conditions ending in break/continue or return, transfers to an outer loop,
+target retirement, omitted unreachable body calls and a condition Leave selecting
+the shared finally handler. Module-loop/block/condition/catch declarations and
+ownerless block-fragment locals fail at their declaration with zero compiler
+capacity admitted; root module globals and ordinary function-local shadowing
+still compile. InvalidDefault is now an L03 diagnostic, before AnalyzedModule
+admission. Default block tails, nested author returns, internal loops and throw
+compile through B01 verification/codec/disassembly. The compiler-generated Return
+still ends the default thunk; it is distinct from a rejected source return.
+
+Loop measurements use production revision
+`f1040372d28a0a3a82e7c3162926321d804db4d0` and the same Rust/Linux environment.
+The generator repeats `while choose(if flag{break;}else{continue;}){}` in one
+function; choose is only compiled and never executed. Each accepted size has
+seven fresh-process samples, 28 in total. Every sample asserts exact retained
+allocation equality. These are medians; peak remains a conservative capacity
+upper bound, not RSS.
+
+| Loops | Lower ms | Emit + verify ms | Retained bytes | Peak upper bytes | Compiler work | Max registers/function |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.066 | 0.057 | 51,706 | 118,354 | 44,446 | 5 |
+| 1,000 | 0.532 | 0.510 | 395,770 | 935,698 | 401,274 | 5 |
+| 5,000 | 2.453 | 2.234 | 1,837,562 | 4,175,122 | 1,937,114 | 5 |
+| 10,000 | 7.864 | 4.593 | 3,672,570 | 8,347,282 | 3,872,786 | 5 |
+
+At 20,000 loops, lowering normally rejects at the 100,000-block quota: source
+bytes `783337..783384`, 6,266,280 charged compiler work units. The normal rejection
+is recorded rather than counted as a successful compilation. Raw samples,
+medians, environment and the rejection are the `2026-10-09*` files in
+[bench-results/lowering](bench-results/lowering/). Reproduce from the root:
+
+```sh
+cargo build -p aside-compiler --example lowering_probe --release --locked
+python3 crates/aside-compiler/bench-results/lowering/run_probe.py --label 2026-10-09 --modes loops
+```
+
 ## Pending acceptance
 
 No VM dispatch or native host invocation was run. V03 independent execution
 validation remains pending its platform blocker; this task does not reroute it.
-Default expressions containing an explicit return to the enclosing body need
-an agreed shared transfer contract, demonstrated by located diagnostic test
-`missing_default_transfer_and_shared_emission_limits_are_located`. B01 also has
-no single Context encoding for combined derived+init declarations; the source
-flags are retained but such a function is diagnosed. Full-language deferred
-scopes are listed in [LOWERING.md](LOWERING.md). Integration-owner review and
-dependency acceptance remain separate from these compiler results.
+The source default-return rule is resolved by the owner baseline and L03; it is
+no longer a missing transfer contract. Current public analysis cannot produce a
+combined Init+Derived declaration. Cumulative restrictions on actual call chains
+belong to VM flags, whose execution has not been verified by this task.
+Initializer-local/per-entry Cell lifetime and full-language deferred scopes are
+listed in [LOWERING.md](LOWERING.md); unsupported module bindings are diagnosed,
+not silently initialized as globals. Integration-owner review and dependency
+acceptance remain separate from these compiler results.
