@@ -84,13 +84,18 @@ both dependencies before rebasing onto the shared production base.
   `RecordedCandidate` is a compatibility alias. Production `FrameBuild` visits
   the source directly; `scene()` is a lazy structural CPU reference. The base
   transform and External records are now supported using the forward convention
-  described in R01. Cancellation/drop releases candidate eligibility; retained
-  key/view storage remains charged.
-- `PresentationNotice { key, surface_epoch, outcome }`, with
+  described in R01. Cancellation/failure releases candidate eligibility; an
+  unsubmitted source/build/frame drop cancels it. Accepted notices independently
+  retain eligibility and matching geometry until resolve or final notice drop;
+  keys alone do not retain eligibility. Key/view storage remains charged.
+- `PresentationNotice::new(key, surface_epoch, outcome)`, with read-only accessors and
   `PresentationOutcome::{Accepted(FrameId),Skipped,SurfaceUnavailable,Error}`.
   `resolve` checks the renderer's FrameId, reported SurfaceEpoch, exact opaque
   candidate identity, current epoch and acceptance order. Wrong/foreign/duplicate
   notices cannot change the view. Failed outcomes retire only their candidate.
+  The retaining constructor cannot revive cancellation. After an Accepted notice
+  is created, caller frame drop and graphics completion may precede resolve;
+  the notice retains no frame commands/resources. See [R01 ownership](R01-INTERFACE.md).
 - `clear()` and increasing `replace_surface(epoch)` exit through the old view
   before releasing it; externally retained geometry stays charged. The bridge
   exposes immutable root inspection, narrow `edit_widget`, and pointer/text/

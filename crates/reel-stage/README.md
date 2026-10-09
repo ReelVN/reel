@@ -14,6 +14,10 @@ view. See [R01-INTERFACE.md](R01-INTERFACE.md) and
 [R01-REPORT.md](R01-REPORT.md) for current interfaces, checks, measurements and
 the atomic/source-storage limits. Backend interfaces and recording/null consumers
 live in [reel-render](../reel-render/README.md); GPU/window support is subsequent.
+Accepted notices independently retain candidate qualification and matching geometry
+until resolve or final notice drop, allowing frame resources to retire after render
+completion before acceptance is processed. The read-only notice API uses
+`PresentationNotice::new`; plain keys cannot revive cancelled candidates.
 
 The following sections preserve U02's historical verification and measurements.
 Current full debug/release runs retain those behavior checks.
