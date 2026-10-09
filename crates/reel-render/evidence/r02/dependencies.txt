@@ -1,0 +1,12 @@
+bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index
+half 2.7.1 MIT OR Apache-2.0 registry+https://github.com/rust-lang/crates.io-index
+kurbo 0.13.1 Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index
+lyon_tessellation 1.0.22 MIT OR Apache-2.0 registry+https://github.com/rust-lang/crates.io-index
+masonry 0.4.0 Apache-2.0 None
+masonry_core 0.4.0 Apache-2.0 None
+parley 0.8.0 Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index
+peniko 0.6.1 Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index
+pollster 0.4.0 Apache-2.0/MIT registry+https://github.com/rust-lang/crates.io-index
+swash 0.2.10 Apache-2.0 OR MIT registry+https://github.com/rust-lang/crates.io-index
+wgpu 26.0.1 MIT OR Apache-2.0 registry+https://github.com/rust-lang/crates.io-index
+winit 0.30.12 Apache-2.0 registry+https://github.com/rust-lang/crates.io-index

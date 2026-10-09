@@ -1,0 +1,18 @@
+   Compiling reel-render v0.1.0 (/workspace/reel/crates/reel-render)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.45s
+     Running tests/gpu_pixels.rs (target/debug/deps/gpu_pixels-588432f3aadcd53f)
+
+running 7 tests
+test bounded_admission_and_completion_preserve_frame_lease ... ok
+test explicit_quality_downgrade_and_device_loss ... ok
+test image_linear_upload_retirement_and_actual_parley_glyphs ... Parley glyphs=14; Swash covered pixels=593
+ok
+test linear_pixels_completion_and_frozen_crossfade ... adapter=AdapterInfo { name: "llvmpipe (LLVM 19.1.7, 256 bits)", vendor: 65541, device: 0, device_type: Cpu, driver: "llvmpipe", driver_info: "Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)", backend: Vulkan }
+quality=Quality { format: Rgba16Float, samples: 4, degraded: false } queued=Usage { targets: 43200000, resources: 2144, transient: 688 }
+ok
+test localized_refusal_and_foreign_prepared_device ... ok
+test transformed_path_clip_has_geometric_coverage ... ok
+test whole_group_opacity_and_nested_masks_clips ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+

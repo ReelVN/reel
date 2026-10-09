@@ -1,0 +1,16 @@
+adapter=AdapterInfo { name: "llvmpipe (LLVM 19.1.7, 256 bits)", vendor: 65541, device: 0, device_type: Cpu, driver: "llvmpipe", driver_info: "Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)", backend: Vulkan }; quality=Quality { format: Rgba16Float, samples: 4, degraded: false }
+pointer accepted=None position=PhysicalPosition { x: 0.0, y: 0.0 }
+pointer accepted=None position=PhysicalPosition { x: 280.0, y: 200.0 }
+present frame=1 epoch=1 result=Accepted
+pointer accepted=Some((FrameId(1), SurfaceEpoch(1))) position=PhysicalPosition { x: 280.0, y: 200.0 }
+pointer accepted=Some((FrameId(1), SurfaceEpoch(1))) position=PhysicalPosition { x: 140.0, y: 200.0 }
+pointer accepted=Some((FrameId(1), SurfaceEpoch(1))) position=PhysicalPosition { x: 140.0, y: 200.0 }
+pointer accepted=Some((FrameId(1), SurfaceEpoch(1))) position=PhysicalPosition { x: 280.0, y: 200.0 }
+pointer accepted=Some((FrameId(1), SurfaceEpoch(1))) position=PhysicalPosition { x: 280.0, y: 200.0 }
+present frame=2 epoch=1 result=Accepted
+present frame=3 epoch=1 result=Accepted
+pointer accepted=None position=PhysicalPosition { x: 280.0, y: 200.0 }
+device recovered generation=2, epoch=3
+present frame=4 epoch=3 result=Accepted
+pointer accepted=Some((FrameId(4), SurfaceEpoch(3))) position=PhysicalPosition { x: 280.0, y: 200.0 }
+present frame=5 epoch=4 result=Accepted

@@ -47,3 +47,12 @@ old/new content versions, owned Blob aliases, accepted upload and frame retentio
 completion, slot generation, refusal and null presentation. See
 [R01-INTERFACE.md](../reel-stage/R01-INTERFACE.md) and
 [R01-REPORT.md](../reel-stage/R01-REPORT.md) for the integrated evidence.
+
+
+## R02 optional real device profile
+
+Enable `wgpu` for the two-phase production adapter. It consumes RenderFrame
+without replay-to-Scene and uses Lyon, Swash and wgpu. See
+[R02-INTERFACE](R02-INTERFACE.md), [R02-REPORT](R02-REPORT.md), and the
+[winit diagnostic launch command](../reel-player/README.md). Recording/null
+remain feature-off semantic consumers; their simulated results are unchanged.
