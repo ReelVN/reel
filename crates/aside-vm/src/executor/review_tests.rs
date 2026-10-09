@@ -4,7 +4,7 @@ use super::*;
 
 const OWNER: RootOwner = RootOwner(17);
 
-fn echo_registry() -> RuntimeSupport {
+pub(super) fn echo_registry() -> RuntimeSupport {
     RuntimeSupport {
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
@@ -73,7 +73,7 @@ fn load(p: BytecodePackage, registry: RuntimeSupport) -> Vm {
     .unwrap()
 }
 
-fn tiny() -> SliceBudget {
+pub(super) fn tiny() -> SliceBudget {
     SliceBudget {
         instructions: 1,
         work: 1,
@@ -82,7 +82,7 @@ fn tiny() -> SliceBudget {
     }
 }
 
-fn gc(vm: &mut Vm) {
+pub(super) fn gc(vm: &mut Vm) {
     if vm.heap.phase() == GcPhase::Idle {
         vm.begin_collection().unwrap();
     }
@@ -93,7 +93,7 @@ fn gc(vm: &mut Vm) {
     .unwrap();
 }
 
-fn collect(vm: &mut Vm) {
+pub(super) fn collect(vm: &mut Vm) {
     while vm.heap.phase() != GcPhase::Idle {
         gc(vm);
     }
@@ -103,12 +103,12 @@ fn collect(vm: &mut Vm) {
     }
 }
 
-fn retry(budget: &mut SliceBudget, usage: SliceUsage) {
+pub(super) fn retry(budget: &mut SliceBudget, usage: SliceUsage) {
     budget.work = usage.required_work.max(1);
     budget.allocation_bytes = usage.required_allocation;
 }
 
-fn reach(vm: &mut Vm, task: TaskId, goal: impl Fn(&Vm) -> bool) {
+pub(super) fn reach(vm: &mut Vm, task: TaskId, goal: impl Fn(&Vm) -> bool) {
     let mut budget = tiny();
     for _ in 0..5000 {
         if goal(vm) {

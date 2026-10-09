@@ -12,6 +12,8 @@ use std::rc::Rc;
 mod api;
 #[cfg(test)]
 mod cancellation_tests;
+#[cfg(test)]
+mod exit_tests;
 mod faults;
 mod parameters;
 #[cfg(test)]
@@ -115,6 +117,11 @@ enum ScriptPhase {
         origin: Pc,
         reason: ExitReason,
         skip: Option<RegionId>,
+    },
+    ExitApply {
+        origin: Pc,
+        reason: ExitReason,
+        handler: Option<HandlerTarget>,
     },
     Release {
         reason: ExitReason,
@@ -364,6 +371,7 @@ pub struct Vm {
 struct WorkProbe {
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
+    exit_handler_queries: std::cell::Cell<u64>,
 }
 impl Vm {
     pub fn load(
@@ -2113,24 +2121,55 @@ impl Vm {
                 reason,
                 skip,
             } => {
-                let alloc = if self.replacement_needed(s, origin, reason, skip)? {
+                let regions = self.program.package().functions[s.code.function.index()]
+                    .regions
+                    .len() as u64;
+                // The shared selector visits every region. A consumed-region
+                // check can compare up to three parent blocks with three child
+                // blocks. Admit this bound before making any selector call.
+                let work = regions * (if skip.is_some() { 32 } else { 8 }) + 1;
+                if !m.take(0, work, 0) {
+                    return Ok(false);
+                }
+                let handler = self.select_exit_handler(s, origin, reason, skip)?;
+                s.phase = ScriptPhase::ExitApply {
+                    origin,
+                    reason,
+                    handler,
+                };
+            }
+            ScriptPhase::ExitApply {
+                origin,
+                reason,
+                handler,
+            } => {
+                let superseded = self.superseded_unwind(s, origin, reason, handler);
+                let replacing_fault =
+                    superseded.is_some() && matches!(reason, ExitReason::Throw(_));
+                let roots = if superseded.is_some() {
+                    self.release_cost(1)
+                } else if handler.is_some_and(|h| h.kind == HandlerKind::Finally) {
+                    self.window_push_cost(1, 2)
+                } else {
+                    0
+                };
+                let work = 2 * self.active.caught.data.len() as u64
+                    + 12
+                    + roots
+                    + if replacing_fault {
+                        self.native_layout_work()
+                    } else {
+                        0
+                    };
+                let alloc = if replacing_fault {
                     crate::fault::FAULT_NODE_BYTES
                 } else {
                     0
                 };
-                if !m.take(
-                    0,
-                    2 * self.program.package().functions[s.code.function.index()]
-                        .regions
-                        .len() as u64
-                        + self.active.caught.data.len() as u64
-                        + 12
-                        + self.release_cost(1),
-                    alloc,
-                ) {
+                if !m.take(0, work, alloc) {
                     return Ok(false);
                 }
-                if !self.exit_step(&mut s, origin, reason, skip)? {
+                if !self.exit_step(&mut s, origin, reason, handler, superseded)? {
                     return Ok(false);
                 }
             }
@@ -2873,40 +2912,18 @@ impl Vm {
         }
         Ok(())
     }
-    fn replacement_needed(
+    fn select_exit_handler(
         &self,
         s: ScriptFrame,
         origin: Pc,
         reason: ExitReason,
         skip: Option<RegionId>,
-    ) -> Result<bool, VmError> {
-        if !matches!(reason, ExitReason::Throw(_)) {
-            return Ok(false);
-        }
-        let Some(u) = self.active.unwinds.data.last().filter(|u| u.frame == s.id) else {
-            return Ok(false);
-        };
-        let range = self.program.package().functions[s.code.function.index()].regions
-            [u.region.index()]
-        .finally
-        .unwrap();
-        if !range.contains(origin) {
-            return Ok(false);
-        }
-        let handler = self
-            .program
-            .exception_handler(s.code.function, origin, skip)?;
-        Ok(handler.is_none_or(|h| !range.contains(h.pc)))
-    }
-    fn exit_step(
-        &mut self,
-        s: &mut ScriptFrame,
-        origin: Pc,
-        reason: ExitReason,
-        skip: Option<RegionId>,
-    ) -> Result<bool, VmError> {
-        let f = &self.program.package().functions[s.code.function.index()];
-        let handler = match reason {
+    ) -> Result<Option<HandlerTarget>, VmError> {
+        #[cfg(test)]
+        self.work_probe
+            .exit_handler_queries
+            .set(self.work_probe.exit_handler_queries.get() + 1);
+        Ok(match reason {
             ExitReason::Throw(_) => {
                 self.program
                     .exception_handler(s.code.function, origin, skip)?
@@ -2923,81 +2940,99 @@ impl Vm {
                 CleanupDestination::Leave(target),
                 skip,
             )?,
-        };
-        // A new error/return inside an active finally supersedes that exit. Nested
-        // ordinary Leave stays within the outer cleanup and preserves its record.
-        if let Some(u) = self
+        })
+    }
+    fn superseded_unwind(
+        &self,
+        s: ScriptFrame,
+        origin: Pc,
+        reason: ExitReason,
+        handler: Option<HandlerTarget>,
+    ) -> Option<Unwind> {
+        let u = self
             .active
             .unwinds
             .data
             .last()
             .copied()
-            .filter(|u| u.frame == s.id)
-        {
-            let range = f.regions[u.region.index()].finally.unwrap();
-            let handled_inside = handler.is_some_and(|h| range.contains(h.pc));
-            if range.contains(origin)
-                && !handled_inside
-                && !matches!(reason,ExitReason::Leave(target) if range.contains(target))
-            {
-                if let ExitReason::Throw(info) = reason {
-                    let id = info
-                        .fault
-                        .ok_or(VmError::Contract("incomplete unwind fault"))?;
-                    let (kind, old_fault, old_value) = match u.reason {
-                        ExitReason::Throw(old) => (
-                            CauseKind::ReplacedExit(ReplacedExit::Throw(
-                                old.fault
-                                    .ok_or(VmError::Contract("incomplete pending fault"))?,
-                            )),
-                            old.fault,
-                            Value::NULL,
-                        ),
-                        ExitReason::Return => (
-                            CauseKind::ReplacedExit(ReplacedExit::Return),
-                            None,
-                            self.value(u.value, 0)?,
-                        ),
-                        ExitReason::Leave(target) => (
-                            CauseKind::ReplacedExit(ReplacedExit::Leave {
-                                code: s.code,
-                                target,
-                            }),
-                            None,
-                            Value::NULL,
-                        ),
-                    };
-                    let event = if let Some(e) = u.replacement_event {
-                        e
-                    } else {
-                        let e = self.serial()?;
-                        self.active
-                            .unwinds
-                            .data
-                            .last_mut()
-                            .unwrap()
-                            .replacement_event = Some(e);
-                        e
-                    };
-                    if let Err(e) = self.heap.append_fault_cause(
-                        id,
-                        CauseInfo {
-                            event,
-                            kind,
-                            location: self.loc(*s, origin),
-                            fault: old_fault,
-                            value: old_value,
-                        },
-                        self.program.clone(),
-                    ) {
-                        self.block_heap(e)?;
-                        return Ok(true);
-                    }
+            .filter(|u| u.frame == s.id)?;
+        let range = self.program.package().functions[s.code.function.index()].regions
+            [u.region.index()]
+        .finally
+        .unwrap();
+        (range.contains(origin)
+            && !handler.is_some_and(|h| range.contains(h.pc))
+            && !matches!(reason, ExitReason::Leave(target) if range.contains(target)))
+        .then_some(u)
+    }
+    fn exit_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        origin: Pc,
+        reason: ExitReason,
+        handler: Option<HandlerTarget>,
+        superseded: Option<Unwind>,
+    ) -> Result<bool, VmError> {
+        // A new error/return inside an active finally supersedes that exit. Nested
+        // ordinary Leave stays within the outer cleanup and preserves its record.
+        if let Some(u) = superseded {
+            if let ExitReason::Throw(info) = reason {
+                let id = info
+                    .fault
+                    .ok_or(VmError::Contract("incomplete unwind fault"))?;
+                let (kind, old_fault, old_value) = match u.reason {
+                    ExitReason::Throw(old) => (
+                        CauseKind::ReplacedExit(ReplacedExit::Throw(
+                            old.fault
+                                .ok_or(VmError::Contract("incomplete pending fault"))?,
+                        )),
+                        old.fault,
+                        Value::NULL,
+                    ),
+                    ExitReason::Return => (
+                        CauseKind::ReplacedExit(ReplacedExit::Return),
+                        None,
+                        self.value(u.value, 0)?,
+                    ),
+                    ExitReason::Leave(target) => (
+                        CauseKind::ReplacedExit(ReplacedExit::Leave {
+                            code: s.code,
+                            target,
+                        }),
+                        None,
+                        Value::NULL,
+                    ),
+                };
+                let event = if let Some(e) = u.replacement_event {
+                    e
+                } else {
+                    let e = self.serial()?;
+                    self.active
+                        .unwinds
+                        .data
+                        .last_mut()
+                        .unwrap()
+                        .replacement_event = Some(e);
+                    e
+                };
+                if let Err(e) = self.heap.append_fault_cause(
+                    id,
+                    CauseInfo {
+                        event,
+                        kind,
+                        location: self.loc(*s, origin),
+                        fault: old_fault,
+                        value: old_value,
+                    },
+                    self.program.clone(),
+                ) {
+                    self.block_heap(e)?;
+                    return Ok(true);
                 }
-                self.slots.release(&mut self.heap, u.value)?;
-                self.active.unwinds.data.pop();
-                return Ok(true);
             }
+            self.slots.release(&mut self.heap, u.value)?;
+            self.active.unwinds.data.pop();
+            return Ok(true);
         }
         let target = handler.map(|h| h.pc).or(match reason {
             ExitReason::Leave(target) => Some(target),

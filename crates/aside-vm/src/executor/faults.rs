@@ -167,6 +167,10 @@ impl Vm {
                         reason: ExitReason::Throw(seed),
                         ..
                     }
+                    | ScriptPhase::ExitApply {
+                        reason: ExitReason::Throw(seed),
+                        ..
+                    }
                     | ScriptPhase::Release {
                         reason: ExitReason::Throw(seed),
                     } => seed.fault,
