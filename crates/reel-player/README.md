@@ -68,3 +68,8 @@ view can display them. Input in this version is mouse-only.
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
 adaptation and actual source execution remain separate acceptance work.
+
+SessionUi dispatches through Session::handle_local_input rather than resetting
+a private input counter. Existing-session handoff and subsequent session_mut
+input preserve the same high-water sequence. Zero-line dialogue is accepted and
+can complete through the normal presented Down/Up path in one advance.

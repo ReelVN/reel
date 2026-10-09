@@ -46,3 +46,12 @@ retirement and allocation-free accepted hot paths. See PR #50 for actual counts
 and independent acceptance. Real VM waits, deliveries, native registration,
 BudgetYield/ResourceBlocked and restore remain unconnected and unverified.
 No test in this increment executes or simulates Aside bytecode.
+
+Local input dispatch uses Session::handle_local_input(owner, action), which
+allocates the next sequence from the Session's current high-water mark at dispatch
+time. SessionUi owns no independent counter, so an already-used Session or later
+external input through session_mut cannot strand local clicks behind an old
+counter. handle_input remains the explicit-sequence replay/external path; local
+sequence exhaustion returns SequenceExhausted. A zero-line dialogue is a valid
+interaction and completes with one accepted Advance, retaining exactly-once
+history/completion semantics.
