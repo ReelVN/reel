@@ -1,0 +1,61 @@
+
+running 22 tests
+test actual_bridge_record_and_input_measurements ... production bridge 1080p controls=32 actual_nodes=34 geometry_bytes=11536 export_scratch_peak_bytes=256 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 12160, peak_bytes: 24320 }; record+replay p95=28897ns max=57992ns export p95=1870ns max=2130ns pointer p95=1411ns max=42304ns
+production bridge 1080p controls=256 actual_nodes=258 geometry_bytes=86800 export_scratch_peak_bytes=2048 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 91008, peak_bytes: 182016 }; record+replay p95=533832ns max=1399953ns export p95=22516ns max=97841ns pointer p95=1442ns max=66157ns
+production bridge 1080p controls=1024 actual_nodes=1026 geometry_bytes=344848 export_scratch_peak_bytes=8192 fixed_route_registry_bytes=5304 snapshot_usage=BudgetUsage { tickets: 1, bytes: 361344, peak_bytes: 722688 }; record+replay p95=6528378ns max=8314011ns export p95=120540ns max=142475ns pointer p95=1446ns max=25073ns
+ok
+test callback_deletion_in_live_and_presented_hover_and_active ... ok
+test hover_ancestor_removes_target_before_cursor ... ok
+test live_stashing_and_missing_new_view_cancel_alive_capture_once ... ok
+test missing_children_and_frozen_widgetref_order_include_stashed ... ok
+test production_input_measurements ... measure (headless, diagnostic trace included): widgets=3, retained_payload_lower_bound=1120B; pointer ns p50=1232 p95=1306 p99=1344; capture ns p50=235 p95=249 p99=259
+measure 1080p contract tree: controls=32 widgets=34 payload_lower_bound=11536B; pointer p95=1478ns capture p95=1647ns miss_scan p95=154ns
+measure 1080p contract tree: controls=256 widgets=258 payload_lower_bound=86800B; pointer p95=1591ns capture p95=12332ns miss_scan p95=631ns
+ok
+test raw_mut_missing_and_animation_live_with_complete_geometry_getters ... ok
+test real_record_gate_first_frame_failures_identity_order_clear_and_epoch ... ok
+test retired_candidate_keys_keep_identity_allocations_bounded_and_charged ... ok
+test snapshot_keeps_one_maximum_ticket_until_last_view_drops ... ok
+test snapshot_node_path_capacity_and_lease_recovery ... budget actual_nodes=3 payload_bytes=1120 snapshot_limit_bytes=1376: full_candidate_reject=99ns retained_lease_reject=638ns release_then_record=2138ns; final_usage=BudgetUsage { tickets: 0, bytes: 0, peak_bytes: 1200 }
+ok
+test support::checks::ancestor_removes_child_after_terminal_delivery ... ancestor removal button/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=false: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=false: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal button/up presented=true: terminal=["up"], capture=None, button clicks=0
+ancestor removal button/cancel presented=true: terminal=["cancel"], capture=None, button clicks=0
+ancestor removal slider/up presented=true: terminal=["up"], capture=None, button clicks=0
+ancestor removal slider/cancel presented=true: terminal=["cancel"], capture=None, button clicks=0
+ok
+test support::checks::base_layer_transform_boundary ... base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+ok
+test support::checks::disabled_child_bubbles_to_consuming_parent ... disabled child presented=false: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+disabled child presented=true: parent handled=Yes; child pointer callbacks=0, capture=None, actions=0
+ok
+test support::checks::real_upstream_groups ... groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+isolated fragment 0: (group,clip) (0, 0) -> (2, 3), commands=["PushClip", "PushGroup", "PushClip", "PushGroup", "PushClip", "PushClip", "Draw", "PopClip"]
+isolated fragment 1: (group,clip) (2, 3) -> (2, 3), commands=["PushClip", "Draw", "PopClip"]
+isolated fragment 2: (group,clip) (2, 3) -> (0, 0), commands=["PopClip", "PopGroup", "PopClip", "PopGroup", "PopClip"]
+groups isolated=true: cached_layers=3 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+ok
+test support::presentation::actual_button_topology_and_skin ... button: orphan up=0, paired up=1; author image reflects hover/active; frozen rotation/scale/clip/order/ancestor route survive failed present; acceptance switches all
+ok
+test support::presentation::actual_slider_cancellation ... drag focus: terminal=["cancel"], capture=None, later value changes=0
+drag release: terminal=["up"], capture=None, later value changes=0
+drag destroy: terminal=["cancel"], capture=None, later value changes=0
+drag disable: terminal=["cancel"], capture=None, later value changes=0
+ok
+test support::presentation::actual_slider_dpi ... DPI: physical-to-logical conversion uses accepted scale=1 then scale=2
+ok
+test support::presentation::actual_slider_frozen_input ... presented input: retained frame=1 across skipped/unavailable/error/mismatched/stale/expired outcomes; real slider values=0.25,0.7,1; accepted frame=3 switches coordinates+hover
+ok
+test support::presentation::cursor_update_and_raw_share_selected_geometry ... geometry queries: real QueryCtx cursor, pointer UpdateCtx and EventCtx.get_raw use frame 1 until accepted frame 2; ordinary QueryCtx/MutateCtx RawCtx remain live
+ok
+test support::presentation::singular_transform_is_not_hittable ... singular affine: excluded from snapshot hit/capture
+ok
+test view_change_notifies_only_differences_and_uses_old_exit_geometry ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+
+Whole test process peak RSS (Linux KiB, compiler excluded): 17384

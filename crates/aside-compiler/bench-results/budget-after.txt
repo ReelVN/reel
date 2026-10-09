@@ -1,0 +1,14 @@
+else_count=5000,child_stack_bytes=2097152,exit=0
+max_tokens=0,tokens=1,exhausted=true,codes=["ASR001"]
+max_tokens=1,tokens=2,exhausted=true,codes=["ASR001"]
+max_tokens=2,tokens=3,exhausted=true,codes=["ASR001"]
+max_tokens=3,tokens=3,exhausted=false,codes=[]
+unicode_plus_codes=["ASL006"]
+else_count=5000,source_bytes=80010,tree_depth=130,exhausted=true,diagnostics=[("ASR001", 2019..2023)]
+else_count=50000,child_stack_bytes=2097152,exit=0
+max_tokens=0,tokens=1,exhausted=true,codes=["ASR001"]
+max_tokens=1,tokens=2,exhausted=true,codes=["ASR001"]
+max_tokens=2,tokens=3,exhausted=true,codes=["ASR001"]
+max_tokens=3,tokens=3,exhausted=false,codes=[]
+unicode_plus_codes=["ASL006"]
+else_count=50000,source_bytes=800010,tree_depth=130,exhausted=true,diagnostics=[("ASR001", 2019..2023)]

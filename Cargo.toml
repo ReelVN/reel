@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["third_party/kira"]
 resolver = "3"
+exclude = ["third_party/masonry", "third_party/kira"]
 
 [workspace.package]
 version = "0.1.0"

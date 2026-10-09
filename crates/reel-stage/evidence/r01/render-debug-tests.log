@@ -1,0 +1,27 @@
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+   Compiling reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+   Compiling masonry v0.4.0 (/workspace/reel/third_party/masonry/masonry)
+   Compiling reel-render v0.1.0 (/workspace/reel/crates/reel-render)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.65s
+     Running unittests src/lib.rs (target/debug/deps/reel_render-2a13393e21ff6ae2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contracts.rs (target/debug/deps/contracts-b245885ebcaa05f5)
+
+running 4 tests
+test borrowed_present_retains_old_versions_until_last_lease_and_completion ... ok
+test invalid_upload_returns_original_busy_terminal_capacity_and_null_skip ... ok
+test linear_alpha_mask_group_and_crossfade_analytic_expectations ... ok
+test owned_font_storage_follows_producer_blob_aliases_after_retirement ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reel_render
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

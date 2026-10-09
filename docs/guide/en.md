@@ -204,7 +204,7 @@ fn preferences() {
     }
 }
 ```
-The control handles pointer capture and value conversion during dragging. The same value determines both the thumb position and the volume. Authors supply rendering nodes for the track and thumb; the control lays them out according to its orientation, range, and slots. settings contains global settings, which retain their current values after a story save is loaded.
+The control handles pointer capture and value conversion during dragging. The same value determines both the thumb position and the volume. Authors supply rendering nodes for the track and thumb; the control lays them out according to its orientation, range, and slots. settings contains global settings, which retain their current values after a story save is loaded. Ordinary movement, scaling, and layout changes preserve dragging; input uses the geometry of the most recently presented frame. Changing the range, step, direction, or track-endpoint policy ends the current drag. Interaction resumes when the new configuration is shown, while external updates to the bound value still take effect immediately.
 An image button is also the author's own ordinary function. The button provides interaction state, and the image selects a resource based on that state.
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
@@ -266,6 +266,8 @@ scope(body: |s| {
 Adding an offset only to hud shakes only the dialogue UI. It is independent of underlying x/y movement: multiple x/y offsets add together in the parent's coordinate system, leaving the base layout unchanged. Rendering and hit testing both use the composed result. When scope ends, it removes its own offset, leaving the moved base position correct. Rotation and scaling compose in an explicit transform-matrix order and are expressed through separate group nodes; additive x/y offsets do not imply additive rotation.
 
 ## 9 Masks, Effects, and Custom Scene Choreography
+Implementation status (R01 / Issue #25): real Masonry cases verify the internal Rust frame records and resource leases, groups/clips across fragments, and External paint order. Recording/null consumers and linear-alpha formulas are checked. Accepted notices retain candidate qualification and matching geometry, allowing acceptance to be processed after graphics completion; upload completion still leaves input geometry unchanged. Export work-budget failures also retain the actual painter location. The author-facing Aside examples remain design specifications; GPU rasterization, windows, and the player are not implemented, and simulated presentation does not establish device acceptance. See [verification scope and measurements](../../crates/reel-stage/R01-REPORT.md).
+
 Effect values such as mask and blur belong to the same compositing system. An effect group first composites its children, then applies its effects, with group opacity applied once. Clipping defines a geometric region; an image mask defines degrees of visibility. mask.progress ranges from 0 for fully hidden to 1 for fully visible; softness controls edge width. Grayscale values in a black-and-white mask determine the order of revelation.
 ```aside
 let wipe = mask("assets/ink-mask.png", progress: 0, softness: 0.06);
@@ -346,6 +348,7 @@ settings belongs to the engine's global preference service; restoring a story sa
 
 ## 13 Extending Your Own Building Blocks
 The smallest unit of reuse is an ordinary fn. Functions returning nodes build scenes; functions returning actions choreograph them; ordinary objects expose parts that callers need to manipulate. Named arguments, children, closures, and module imports work together to support this approach.
+Default parameter expressions run in parameter order on each call, after every actual argument has been evaluated. They may refer to earlier parameters and use the expression or block's final value as their result. An explicit return belongs in a function body; it is invalid inside that function's parameter default, including conditional or short-circuit branches. A nested function defined within a default returns through its own body. break and continue may target only loops established inside the default, and throw propagates a parameter-preparation failure.
 ```aside
 fn arrive(node, destination_x, seconds = 0.5) {
     parallel(
@@ -363,8 +366,13 @@ custom_node can directly register state, measure, record, route, and event imple
 Camera, Mesh, Material, and Effect provide perspective stages and programmable effects, with state and resource identities still included in saves. Each backend declares its supported implementations and fallbacks in a capability list. Live2D, system text-to-speech, mobile/Web packaging, and external services are adapter capabilities within the full target scope. Their specific API documentation will provide examples in the same style alongside verified implementations.
 External writes, such as network operations and purchases, use separate operation records and idempotency strategies. Unknown outcomes are queried and verified first; replay is read-only by default. Their lifetimes are explicitly distinguished from those of ordinary rollback-capable game variables. Author-defined components and script libraries can always extend scenes, layouts, choreography, and application logic.
 
+### Finding and Handling Errors (Design Contract)
+Use try/catch for resource loading, media playback, or errors you throw yourself. catch receives the original value: a thrown string remains a string, and a thrown object is the original object. Use throw; to propagate the same fault. Writing throw error; throws again at the current location, retaining the previous fault as a cause.
+core.error_info() provides the current catch's error code, original location, call stack, and causes. An ordinary helper called while handling the error can read the same information. Keeping the returned view keeps its fault record alive. finally is for synchronous cleanup; ordinary helpers may return synchronously within it. If cleanup raises another error, diagnostics show which return result or fault it replaced. The engine retains this information across suspension, host callbacks, and saves. See the [language specification: fault lifetimes](../aside-language.md#二十三-完整故障记录与生命周期).
+
 ## 15 Keeping Documentation and Code in Sync
 The project lead maintains this guide. Each API is marked as designed or implemented, with its applicable version. Once implemented, examples are extracted as source snippets checked alongside the code: parsing, type and interface checks, and any necessary behavior verification use the same examples. The Chinese and English editions reference the same example files; translation updates are committed with interface changes.
 When an interface, behavior, default, or cancellation rule changes, the same PR updates the implementation, specification, both language editions, and affected examples. Advanced uses still in planning are labeled separately. Users can begin creating with the implemented sections. When composition proves difficult, they can report minimal source code and the intended scene so the project lead can refine the shared interfaces.
 The repository commit containing this guide is its version reference. Feature status is marked by section; interface changes update the Chinese edition, English edition, and shared examples together.
 The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.
+

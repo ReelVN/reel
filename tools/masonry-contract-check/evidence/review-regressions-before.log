@@ -1,0 +1,53 @@
+   Compiling masonry-contract-check v0.1.0 (/workspace/reel-masonry/tools/masonry-contract-check/experiment)
+    Finished `test` profile [unoptimized] target(s) in 4.91s
+     Running unittests ../src/main.rs (tools/masonry-contract-check/target/debug/deps/masonry_contract_check-a0c535a03b1db0e9)
+
+running 10 tests
+
+thread 'checks::ancestor_removes_child_after_terminal_delivery' (11303) panicked at ../src/checks.rs:247:17:
+assertion `left == right` failed: one terminal before ancestor removal: button/up/presented=false
+  left: ["up", "cancel"]
+ right: ["up"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'checks::disabled_child_bubbles_to_consuming_parent' (11305) panicked at ../src/checks.rs:171:9:
+assertion `left == right` failed
+  left: No
+ right: Yes
+test checks::ancestor_removes_child_after_terminal_delivery ... FAILED
+test checks::disabled_child_bubbles_to_consuming_parent ... FAILED
+drag focus: terminal=["cancel"], capture=None, later value changes=0
+drag release: terminal=["up"], capture=None, later value changes=0
+drag destroy: terminal=["cancel"], capture=None, later value changes=0
+drag disable: terminal=["cancel"], capture=None, later value changes=0
+test presentation::actual_slider_cancellation ... ok
+DPI: physical-to-logical conversion uses accepted scale=1 then scale=2
+test presentation::actual_slider_dpi ... ok
+presented input: retained frame=1 across skipped/unavailable/error/mismatched/stale/expired outcomes; real slider values=0.25,0.7,1; accepted frame=3 switches coordinates+hover
+test presentation::actual_slider_frozen_input ... ok
+
+thread 'presentation::cursor_update_and_raw_share_selected_geometry' (11311) panicked at ../src/presentation.rs:360:21:
+assertion `left == right` failed: raw local transform frame 1
+  left: Affine([1.0, 0.0, 0.0, 1.0, 7.0, 3.0])
+ right: Affine([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+test presentation::cursor_update_and_raw_share_selected_geometry ... FAILED
+singular affine: excluded from snapshot hit/capture
+test presentation::singular_transform_is_not_hittable ... ok
+base-layer boundary: native root transform stripped from draw, retained by hit; identity host root + transformed stage child required
+test checks::base_layer_transform_boundary ... ok
+groups isolated=false: cached_layers=1 layers=1 invalid_independent=0, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+groups isolated=true: cached_layers=1 layers=3 invalid_independent=2, image=[255, 0, 0, 64], overlap=[0, 0, 255, 64], clip=[0, 0, 0, 0]
+test checks::real_upstream_groups ... ok
+button: orphan up=0, paired up=1; author image reflects hover/active; frozen rotation/scale/clip/order/ancestor route survive failed present; acceptance switches all
+test presentation::actual_button_topology_and_skin ... ok
+
+failures:
+
+failures:
+    checks::ancestor_removes_child_after_terminal_delivery
+    checks::disabled_child_bubbles_to_consuming_parent
+    presentation::cursor_update_and_raw_share_selected_geometry
+
+test result: FAILED. 7 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `--bin masonry-contract-check`

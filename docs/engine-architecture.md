@@ -241,7 +241,7 @@ Runtime 按 SessionId/Epoch 路由结果，活动会话只是其中一个。回�
 固定 720p、1080p 验证场景记录冷启动、包加载、输入响应、CPU/GPU 帧时间、分配、内存与纹理峰值。首阶段以 Windows x64 作低端体验基准，Linux 与 macOS 各自验证窗口、输入、渲染、音频和持久化。低端参考档为 N100 级集成显卡、8 GiB 内存、720p；每份结果注明实际硬件与构建配置。
 目标为控件可见响应 p95 小于 50ms，基础动画 CPU 帧工作 p95 小于 8ms，GPU p95 小于 12ms，呈现间隔 p99 小于 33.3ms。60Hz 稳态同时要求间隔中位数小于 17.5ms、超过 25ms 的比例低于 1%。这些均待实测验证。
 主线程起始调度配额为脚本 2ms、后台结果与资源安装 1ms、回收 0.5ms、快照捕获 1ms；VM 至少每 256 个工作单位检查时间，分配与释放另计。单次不可分割操作同样测量，超限不能只靠总额度掩盖。GPU 上传按帧字节预算分批。快照暂停造成的业务排队时间单独记录，小场景目标一帧内完成。
-资源预算起点为 VM 堆 32 MiB、CPU 解码驻留 64 MiB、GPU 纹理 128 MiB、离屏工作目标 32 MiB；峰值包括待释放对象、候选模块和快照副本。超限先逐出可选缓存、延后预取，再报告具体资源需求。队列与回收积压纳入背压，不能无限增长。
+资源预算起点为 VM 堆 32 MiB、CPU 解码驻留 64 MiB、GPU 纹理 128 MiB、桌面离屏工作目标 128 MiB；峰值包括待释放对象、候选模块和快照副本。超限先逐出可选缓存、延后预取，再报告具体资源需求。队列与回收积压纳入背压，不能无限增长。
 每阶段必验：静止场景无无效脚本、布局和呈现；单滑条不更新无关布局；纯音量变化只通知音频；单节点淡化复用排版。开发运行和 release 都测体验，优化由同一工作负载的前后数据证明。
 
 ## 十四 开发顺序与验收
@@ -262,15 +262,72 @@ Masonry 导出几何、选择输入源并分发事件；FrameId、surface epoch�
 接受新视图仅发送实际路径差异的通知。需要退出的 hover/active 状态及失效捕获使用旧视图完成清理，再用新视图处理进入和静止 cursor；仍有效且在新视图中的捕获继续。清空 Presented 或切换表面代数时保留旧视图直到必要退出结束。Up/Cancel 在捕获目标回调开始时记录终止已交付，回调期间仍可观察捕获状态，删除与祖先冒泡只清理一次。
 
 统一记录流
-默认 Scene 路径复用 VisualLayerPlan 的完整有序重放。Reel sink 在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 在 sink 重新登记。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。
+默认记录路径直接访问 VisualLayerPlan 的完整有序片段（§16）。Reel 导出在同一流中保留 Draw、Push/PopGroup、Push/PopClip 和诊断上下文；Scene 局部 ID 与源身份一起映射。效果组在 End 时整体合成一次，跨记录片段保持组与 clip 作用域。Imaging 图片、字体和 blob 转成带版本与预算的 Reel 资源引用，几何与绘制记录属于同一候选帧。replay-to-Scene 仅保留为显式调用的结构/CPU 参考。
 独立片段是画序分段，消费时按原顺序组成完整流。使用稳定层边界时，paint_layer_mode 为 retained 声明：初始 Inline，缓存回调未执行时保留，显式设置 Inline 才恢复普通模式；其他 pre/paint/post 回调执行时，保留未重声明的层模式。
-外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。现有缺少作用域的 post-children placeholder 需在 fork 中改为该完整合同；Reel 始终只有这一条画序来源。
+外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。R01 的 fork 已替换原先缺少作用域的 post-children placeholder；Reel 始终只有这一条画序来源，具体外部设备实现另行验收。
 
 作者滑条
 复用 Slider 的指针、键盘与 AccessKit 行为。slider.rs 提供只读规范化值/范围/步长、静默投影更新及变化标记，并让原 Widget 回调与作者包装器共用同一行为入口。Reel 包装器拥有轨道/滑块节点，替换全部默认绘制阶段，明确登记自身属性与默认值；装饰节点由控件统一处理命中和焦点。
 SliderInputProjection 保存所选帧的 a/b、axis/direction、min/max/step、步进锚点及配置版本。中心与指针逆映射共用同一几何 helper；范围与步长配置通过统一规范化，范围改变而值未变也更新外观和可访问性。退化几何产生空的指针映射，避免除零；无效配置在提交前报告。
 业务 value 由 Reel 当前模型管理，外部更新即时生效，旧帧显示值只用于绘制。指针按冻结投影产生绝对值，键盘/AccessKit 增减从当前业务值开始。配置版本仅随 range/step、axis/direction、端点策略等显式交互配置改变；普通布局尺寸、父级变换、动画与 value 更新保持版本。配置已变而对应帧尚未接受时，控件保留祖先消费，暂不执行旧投影行为；已有捕获沿失效路径交付一次 Cancel。新配置帧接受后恢复。
 源码导入范围根据上述实际调用闭包确定，至少审查 masonry_core、tree_arena 与受影响的 masonry widgets 及构建资源，保留上游来源/许可证，普通依赖继续锁定引用。生产验收覆盖首帧/清空、缺失子查询、路径变更、单次终止、绘制组跨片段、外部内容作用域，以及图片滑条与业务绑定的同一数值/几何。
+
+## 十六 可移植绘制帧与默认光栅后端
+
+### 帧与导出
+
+reel-stage 定义 RenderFrame，保存帧身份、SurfaceEpoch、逻辑/输出尺寸、确定画序、分组、裁剪、外部内容、诊断上下文和资源引用。绘制数据复用 kurbo/Peniko 的几何与画刷描述；字体记录直接使用 Parley 已计算的 glyph ID、位置、字号、字体集合索引及 variation 坐标。渲染器接收这些结果，排版仍由原有文本系统负责。
+
+导出直接访问 VisualLayerPlan 的有序片段与 imaging Scene 的公开 command/clip/group/mask/draw/context 数据。Scene 内的 ID 只在所属源 Scene 中有意义，映射键包含源 Scene 身份及局部 ID；若变换烘焙进数据，还需区分重放实例。mask 定义优先保持局部坐标，使用处携带变换，通过有界映射转成帧内索引。多个片段共用连续的 group/clip/context 状态，mask 子流使用独立验证栈。imaging 对 clip/group 深度分别验证；可移植记录同时保留独立逻辑栈及原画序。跨片段的正常嵌套完整支持；交叉结束的 clip/group 寿命缺少已定义的像素语义，导出以带位置的 UnsupportedRecord 明确拒绝该模式，避免按另一种栈规则猜测结果。IsolatedScene 表示记录边界，其本身不额外产生透明组。默认生产路径省去先展平为第二份 Scene 的复制，replay-to-Scene 保留作结构参考。
+
+RecordedSource 移入同次真实 VisualLayerPlan、几何和候选身份。FrameBuild 持有其冻结租约，跨暂停复用这一份源记录；完成或取消后释放源租约。step 按命令、字节和工作额度推进，保存片段、命令、嵌套 mask 以及路径段、glyph、渐变 stop、字符串字节等 payload 子游标；全部遍历使用显式有界栈。每次扩容、路径/glyph/渐变复制与映射建立均先申请额度。单片工作结束返回未完成状态，硬容量或内容错误返回定位失败；结果完整后公开不可变 RenderFrame。生产导出使用可提前结束的 visitor，避免 infallible PaintSink 在失败后仍走完整条记录。
+
+构建中和等待提交的候选共用容量限制。取消、失败或表面代数失效释放对应候选资格；几何和数据的实际驻留仍由最后租约计费。构建、上传完成都保持旧接受几何；协调器仅把精确候选的 PresentAccepted 送入既有接受门。Accepted 通知独立持有候选资格和同次几何，直到 resolve 或最后一个通知副本释放；允许 render_present → 创建通知 → 释放调用方 frame → 图形完成 → resolve 的同步顺序，不为等待接受而保留整帧资源。普通 key/几何引用不延长资格，未提交的 source/build/frame 在无接受通知时释放仍取消；通知不能复活已取消的候选。epoch、身份和接受顺序检查继续执行。图形完成通知独立决定后端资源回收。
+
+### 资源身份与所有权
+
+图片、字体和外部内容先在有界资源登记表中建立 ResourceVersion 与拥有型租约。复用 reel-core 的 AssetKey、ContentVersion，紧凑运行时句柄包含登记表代数及完整槽身份。源 Blob ID 只作为查找线索，登记时同时核对内容对象/版本，避免把碰撞身份当成相同内容。内容版本在资源准备阶段固定，导出只查表；缺少登记给出具体资源需求，由准备工作完成后重新构建候选。
+
+登记表持有共享不可变数据，帧保存资源引用/租约，上传和在途提交各自取得其所需拥有权。同一图片或字体在多次绘制中复用数据。缓冲、索引表、候选副本、等待上传、图形在途与退休空间均计费；物理释放完成后退账。retire 停止取得新租约并移除登记表自己的保留；已有租约仍可用于提交，包括暂停构建、完整帧和已接受上传。全部租约释放且最后一次图形使用完成之后才归还实际存储，槽复用更新完整代数。导出的硬字节/工作额度约束新增帧、映射与登记存储。源 Scene 私有表容量、未被 command 引用的 mask 与共享 Blob 的底层分配属于生产者记录/缓存，公共 command visitor 只提供内容访问。R01 对这些源驻留分别测量 record、暂停构建、完成和取消时的实际分配/进程峰值及源清理耗时，明确标识源租约保留期；不以命令长度冒充精确源分配账本。后续需要源计划硬上限或分片析构时，增加真正的上游 owned-parts/drain/storage 接口后验证。
+
+等待上传字节额度累计约束全部未完成批次的 payload 容量票据，与上传加驻留总额度独立检查；拒绝返回原批次。选定无强租约的资源槽后，先释放登记表自己的过期弱描述符票据再预留替代项，外部弱别名继续保留相应责任。
+
+reel-render 定义后端及上传/呈现/完成/退休接口，读取 stage/core。RenderFrame 和资源描述保持平台无关；wgpu、窗口及平台句柄属于实现适配层。记录型/null 后端验证合同，提供明确的模拟提交结果；设备性能由实际后端测量。
+
+### 外部内容与坐标
+
+Masonry 外部层保留宿主不透明 token、拥有 WidgetId、内容局部 bounds 与 content-to-layer 变换。真实顺序固定为 pre-paint → own clip → external paint → children → pop clip → post-paint。外部 paint 前结束当前记录片段，继承已打开的组和裁剪；其后子节点继续同一顺序流。跳过缓存回调时保留上次声明的外部模式/token，显式切回 Inline 才恢复普通内容。
+
+基底层与其他层使用一致的 layer-local-to-window 约定，绘制与 PresentedGeometryView 使用同次变换。内容坐标包含 border-box 的相应平移，clip 使用明确的 border-box 坐标。有限但奇异的变换可以保留视觉几何，输入逆映射返回空；导出转换使用显式上下文和前向变换，避免强制求逆。前向累计使用 Masonry 的完整 compose_local_transform，包含 layout origin 和 scroll translation；几何记录中单独的 transform 字段仅是其组成部分。非有限变换在变更提交/导出时给出定位错误。消除已知基底层变换偏差并通过像素/命中对应检查后，替换 U02 的临时 UnsupportedRootTransform 边界。
+
+paint/append 边界另存连续命令的实际绘制者范围，普通 Inline 子控件的命令和定位错误不能以片段边界 owner 代替；范围游标在已计费的命令提交/片段推进时只访问相邻范围，初始化以固定一次索引读取得首个 owner；下一命令的映射预付款发生 Work 失败时也报告该命令的实际 owner，诊断不做未计费扫描或延后查找，payload 暂停继续保留相同来源。生成的 clip、调试框和检查器绘制也保存实际 owner。调试 bounding_box 已在窗口坐标中，使用 identity 片段；baseline 前向累计到窗口坐标，跨片段保持打开的作用域，不对奇异变换求逆。
+
+组明确保存效果坐标空间、效果参数和保守 ink bounds。imaging Group 本身缺少整体效果变换，因此 paint/append 边界为组保存保证存在的 owner 与效果空间元数据；组的来源不能靠某个子绘制或可选诊断上下文猜测。bounds 包括笔画、字形外延、抗锯齿与滤镜扩张，布局盒仅用于布局。mask 自己的记录流、变换、alpha/亮度模式和采样规则随组保留。
+
+### 默认后端方向
+
+默认使用 wgpu 的常规几何与合成管线：图片四边形、缓存路径网格和字形图集四边形相邻兼容时合批。路径细分复用 lyon_tessellation，字形栅格化复用 Swash scale；保留现有 Parley 整形结果。候选依赖版本分别为 1.0.22、0.2.10，实施时锁定并检查实际依赖统一、许可证与目标构建。Swash 的 shaping 路径不进入此适配器。
+
+颜色在合成前转为线性并预乘 alpha，输出到表面时按 SurfaceInfo 编码一次。图片准备按源编码/alpha 描述转换；纹理过滤采用线性预乘数据。渐变保留声明的插值规则，产生的采样颜色进入同一线性合成约定。灰度字形覆盖率与颜色分开，彩色字体图像按自己的编码转换。
+
+普通绘制直接进入当前目标；需要独立组结果、mask 或 transition 时才使用离屏目标。EndGroup 对完整组结果应用一次 mask 与组透明度。alpha mask 使用覆盖率；亮度 mask 的覆盖率为 clamp(dot(linear_premultiplied_rgb, [0.2126, 0.7152, 0.0722]), 0, 1)，alpha 已包含在预乘值中。crossfade 对两份冻结输入的线性预乘结果按进度混合，遮罩转场沿用相同覆盖率与组机制。矩形裁剪可优化为 scissor，变换/path clip 使用真正的几何覆盖或 stencil，并保持跨片段、外部内容和离屏组的继承关系。
+
+设备建立时确定并公开精度、采样数与效果能力。桌面质量档以 RGBA16Float 中间目标和 4x MSAA 为首选；受限档显式使用线性 RGBA8 与 1x 采样，字形覆盖继续保留。具体选择由设备能力与已配置内存档共同决定，创建后保持稳定；变更质量档触发缓存/目标版本更新。桌面离屏起始池为 128 MiB，与普通资源驻留分别限制并汇总峰值。1080p RGBA16Float 的 4x 附件加 resolve 已占 82,944,000 字节，深度、mask 与在途重叠另计；64 MiB 等更小配置在设备/尺寸协商时选择明确的受限档，或报告所请求质量的最小资源量。目标池按实际格式、sample count、resolve、深度/覆盖和同时在途数量预先计量，空间不足时保持既有画面并报告资源需求。质量和内存默认值最终以同一基础场景的实际目标设备数据确认。
+
+Vello 0.8 的编码/渐变与 blend 路径采用 sRGB，imaging_vello 0.0.1 对 alpha mask/filter 另有缺失；因此它不是本合同的默认生产光栅器。CPU replay 可作结构与几何参考，线性颜色期望另用明确公式验证。
+
+### 实施验收
+
+R01 固定帧、资源租约、可恢复导出和外部内容顺序，保留 U02 的真实接受/输入回归。后续 wgpu 实施在同一合同上验证实际像素、alpha/亮度 mask、嵌套透明组、crossfade、字形与图片缓存、resize/挂起/设备丢失以及上传/回收边界。每份结果区分源码审查、CPU/null 和具体图形设备；完整帧、导出、光栅、合成、提交与物理完成分开计时。
+
+R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-stage/R01-INTERFACE.md)，真实 Masonry、U02 回归与导出/驻留/清理测量见 [R01-REPORT](../crates/reel-stage/R01-REPORT.md)。自有图片/字体以 core OwnedBytes 将全 capacity 票据绑定到 Blob 底层，生产者缓存别名继续保留该账目；公开 API 导入的不透明源分配仍归生产者单独计量。输出、映射与登记表有硬额度，源 Scene 私有容量不由 command 长度推算。逐元素复制、映射和容量信用可跨 step 推进；实际容量分配与源 Drop 仍是原子操作，分别报告耗时。已知几何外延包含按冻结 DPI 计算的 AA；有限值运算溢出、本地 mask 的采样外延、Gaussian cutoff、字形轮廓与滤镜未知外延明确记为 Unbounded 并要求后端按真实输出目标裁限。记录型 PresentAccepted 是模拟接口结果，null 明确 Skipped，均不代表设备像素或 GPU 性能通过。
+
+主要依据：
+- imaging 0.0.1 公开记录：https://github.com/forest-rs/imaging/blob/eea0e47503fdab1c4159a939797ba74acab19876/imaging/src/record.rs
+- 对应 Vello 适配：https://github.com/forest-rs/imaging/blob/eea0e47503fdab1c4159a939797ba74acab19876/imaging_vello/src/scene_sink.rs
+- Vello blend 约定：https://github.com/linebender/vello/blob/302fa902ebc5a7605b6664393d43abaf369eee29/vello_shaders/shader/shared/blend.wgsl
+- Lyon 细分接口：https://docs.rs/lyon_tessellation/latest/lyon_tessellation/
+- Swash 栅格接口：https://docs.rs/swash/latest/swash/scale/index.html
 
 ## 参考来源
 [1] Ren’Py 保存与回滚 https://www.renpy.org/doc/html/save_load_rollback.html
