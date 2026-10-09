@@ -13,6 +13,15 @@ aside-vm. No bytecode executor is included in this compiler. Syntax success does
 not imply analysis success; verified bytecode does not establish execution or
 full-language support.
 
+L05 / Issue #37 compiles module initializer-local block/condition/loop/catch
+bindings and transitive closure/default captures through the existing B01 Cell
+instructions. Root globals and exports retain their identities. BindingOrigin
+separates lexical ownership from capture storage; NoWait-only ownerless locals,
+non-root exports and enclosing bindings without an actual external Value/Cell
+link are located rejections. See the [L05 contracts](LOWERING.md#initializer-local-bindings-l05)
+and [static measurements](LOWERING_PERFORMANCE.md#2026-10-09-initializer-local-compilation-l05).
+These checks do not execute Aside or establish runtime Cell/GC behavior.
+
 The workspace comes from D01 `c03226a`; only this directory and compiler lockfile
 entries change relative to that base. [INTERFACE.md](INTERFACE.md) records the
 approved public interface and the owner decisions resolving the original syntax

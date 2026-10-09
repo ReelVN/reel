@@ -6,6 +6,9 @@ use aside_compiler::{
 };
 use aside_vm::bytecode as bc;
 
+#[path = "lowering/initializer_locals.rs"]
+mod initializer_locals;
+
 fn analyzed(source: &str) -> hir::AnalyzedModule {
     let result = analyze_module(source, &AnalysisOptions::default(), &mut NoModules).unwrap();
     assert!(result.is_ok(), "{:#?}", result.diagnostics);
@@ -526,8 +529,8 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
         if context == AnalysisContext::Function {
             assert!(!entry.bindings.is_empty());
         } else {
-            // Block fragments without an author function have no modeled local
-            // binding lifetime either; they must not silently create globals.
+            // Module fragments use initializer locals; NoWait alone supplies
+            // no author frame/environment and still rejects declarations.
             let source = "let x=7;x;";
             let module = analyze_source(
                 source,
@@ -541,10 +544,24 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
             .unwrap()
             .into_module()
             .unwrap();
-            let error =
-                lowering::compile(&module, &Linkage::default(), Options::default()).unwrap_err();
-            assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
-            assert_eq!(&source[aside_compiler::byte_range(error.span)], "x");
+            if context == AnalysisContext::Module {
+                let result =
+                    lowering::compile(&module, &Linkage::default(), Options::default()).unwrap();
+                assert!(result.program.package().modules[0].globals.is_empty());
+                assert_eq!(
+                    result.program.package().functions[result.entry.index()]
+                        .bindings
+                        .len(),
+                    1
+                );
+                assert_eq!(module.symbols()[0].origin, hir::BindingOrigin::EntryLocal);
+            } else {
+                let error = lowering::compile(&module, &Linkage::default(), Options::default())
+                    .unwrap_err();
+                assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
+                assert_eq!(&source[aside_compiler::byte_range(error.span)], "x");
+                assert_eq!(error.stats.capacity_bytes, 0);
+            }
         }
     }
 }
@@ -946,23 +963,48 @@ fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
 }
 
 #[test]
-fn module_nested_bindings_fail_before_global_table_admission() {
-    for (source, name) in [
-        ("let mut i=0;while i<2{let x=i;i+=1;}", "x"),
-        ("let x=1;if true{let x=2;x;}", "x"),
-        ("if true{fn hidden(){1} hidden();}", "hidden"),
-        ("try{throw 1;}catch error{null;}", "error"),
+fn module_nested_bindings_roundtrip_with_initializer_identity() {
+    for (source, name, globals) in [
+        ("let mut i=0;while i<2{let x=i;i+=1;}", "x", 1),
+        ("let x=1;if true{let x=2;x;}", "x", 1),
+        ("if true{fn hidden(){1} hidden();}", "hidden", 0),
+        ("try{throw 1;}catch error{null;}", "error", 0),
         (
             "outer:while if true{let x=true;x}else{false}{break outer;}",
             "x",
+            0,
         ),
     ] {
         let module = analyzed(source);
-        let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
-        assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
-        assert_eq!(&source[aside_compiler::byte_range(error.span)], name);
-        assert!(error.detail.contains("initializer-local lifetime"));
-        assert_eq!(error.stats.capacity_bytes, 0);
+        let result = compiled(source);
+        let p = result.program.package();
+        assert_eq!(p.modules[0].globals.len(), globals);
+        let (index, _) = module
+            .symbols()
+            .iter()
+            .enumerate()
+            .find(|(_, s)| {
+                module.hir().name(s.name) == name && s.origin == hir::BindingOrigin::EntryLocal
+            })
+            .unwrap();
+        let identity = result
+            .metadata
+            .bindings
+            .iter()
+            .find(|b| b.source == hir::SymbolId(index as u32))
+            .unwrap();
+        assert_eq!(identity.function, result.entry);
+        assert!(
+            !result
+                .metadata
+                .globals
+                .iter()
+                .any(|g| g.source == identity.source)
+        );
+        assert!(p.functions[result.entry.index()].code.iter().any(|i| {
+            i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == identity.binding.0
+        }));
+        initializer_locals::assert_local_structure(&module, &result);
     }
     let result = compiled("let mut i=0;while i<2{i+=1;}");
     let p = result.program.package();

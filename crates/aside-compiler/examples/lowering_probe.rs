@@ -60,7 +60,14 @@ fn main() {
             }
             source.push_str("7}");
         }
-        _ => panic!("mode must be plain, captures, temporaries, named or loops"),
+        "initializer" => {
+            source.push_str("let mut i=0;while if true{let mut condition=i;let probe=||condition;probe();i<2}else{false}{");
+            for i in 0..n {
+                writeln!(source, "if true{{let mut x_{i}=i;let a_{i}=||{{x_{i}+=1;x_{i}}};let b_{i}=||x_{i};a_{i}();b_{i}();}} ").unwrap();
+            }
+            source.push_str("i+=1;}");
+        }
+        _ => panic!("mode must be plain, captures, temporaries, named, loops or initializer"),
     }
     let time = Instant::now();
     let parsed = parse(&source).unwrap();

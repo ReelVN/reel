@@ -1,4 +1,7 @@
 use aside_compiler::{hir::*, semantic::*, *};
+
+#[path = "semantics/initializer_locals.rs"]
+mod initializer_locals;
 fn analyze_code(source: &str) -> Analysis {
     analyze_module(source, &AnalysisOptions::default(), &mut NoModules).unwrap()
 }
