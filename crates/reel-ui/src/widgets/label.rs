@@ -747,7 +747,12 @@ mod reveal_tests {
             let label = Label::new(text).with_visible_bytes(range);
             assert_eq!(label.text().as_ref(), text);
         }
-        for range in [5..1, 0..text.len() + 1, 2..5, 1..4] {
+        for range in [
+            std::ops::Range { start: 5, end: 1 },
+            0..text.len() + 1,
+            2..5,
+            1..4,
+        ] {
             assert!(
                 std::panic::catch_unwind(|| Label::new(text).with_visible_bytes(range.clone()))
                     .is_err(),
