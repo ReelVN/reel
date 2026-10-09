@@ -739,13 +739,30 @@ mod reveal_tests {
         peniko::Blob,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn visible_ranges_keep_utf8_boundaries_bounds_and_empty_range_contract() {
+        let text = "aلاe\u{301}";
+        for range in [0..0, 1..1, 1..5, 3..5, text.len()..text.len()] {
+            let label = Label::new(text).with_visible_bytes(range);
+            assert_eq!(label.text().as_ref(), text);
+        }
+        for range in [5..1, 0..text.len() + 1, 2..5, 1..4] {
+            assert!(
+                std::panic::catch_unwind(|| Label::new(text).with_visible_bytes(range.clone()))
+                    .is_err(),
+                "invalid visible range must be rejected: {range:?}"
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires REEL_SESSION_FONT for a real cached Parley layout"]
     fn reveal_changes_paint_without_rebuilding_full_text_layout() {
         let font = Blob::from(
             std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
         );
-        let text = "office ffi e\u{301} stable line breaks for full text";
+        let text = "office ffi لا ل\u{64e}ا e\u{301} stable line breaks for full text";
         let label = Label::new(text).with_visible_bytes(0..0).prepare();
         let id = label.id();
         let mut root = RenderRoot::new(
@@ -778,11 +795,20 @@ mod reveal_tests {
             )
         };
         let before = snapshot(&root);
-        root.edit_widget(id, |mut widget| {
-            Label::set_visible_bytes(&mut widget.downcast::<Label>(), 0..text.len())
-        });
-        root.redraw();
-        assert_eq!(snapshot(&root), before);
+        let rtl_start = text.find("لا").unwrap();
+        for range in [
+            0..text.len(),
+            rtl_start + 2..rtl_start + 4,
+            rtl_start..rtl_start + 4,
+            2..3,
+            text.len()..text.len(),
+        ] {
+            root.edit_widget(id, |mut widget| {
+                Label::set_visible_bytes(&mut widget.downcast::<Label>(), range)
+            });
+            root.redraw();
+            assert_eq!(snapshot(&root), before);
+        }
         assert_eq!(
             root.get_widget(id)
                 .unwrap()

@@ -295,14 +295,16 @@ fn render_text_inner(
     }
 }
 
-/// Linear logical-to-visual visibility map. Ligature components are grouped in
-/// one forward pass; no prefix scan is repeated for each ligature or style run.
+/// Linear visibility map indexed by logical cluster. Parley's ligature start
+/// precedes its continuations in visual order, including RTL runs where those
+/// continuations precede the start in logical order. Group in visual order, then
+/// restore logical indexing; no prefix scan repeats for a ligature or style run.
 fn revealed_clusters(
     run: &parley::Run<'_, BrushIndex>,
     visible: &std::ops::Range<usize>,
 ) -> SmallVec<[bool; 64]> {
     let mut masks = SmallVec::new();
-    let mut clusters = run.clusters().peekable();
+    let mut clusters = run.visual_clusters().peekable();
     while let Some(cluster) = clusters.next() {
         let mut range = cluster.text_range();
         let mut count = 1;
@@ -320,6 +322,9 @@ fn revealed_clusters(
         }
         let shown = visible.start <= range.start && range.end <= visible.end;
         masks.extend(std::iter::repeat_n(shown, count));
+    }
+    if run.is_rtl() {
+        masks.reverse();
     }
     masks
 }
@@ -375,11 +380,10 @@ mod reveal_tests {
     use crate::peniko::{Blob, Color};
 
     fn layout(text: &str, styled: bool) -> Layout<BrushIndex> {
-        let bytes =
-            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect(
-                "set REEL_SESSION_FONT to a real font with Latin ligatures and Hebrew glyphs",
-            ))
-            .unwrap();
+        let bytes = std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect(
+            "set REEL_SESSION_FONT to a real font with Latin ligatures and Hebrew/Arabic glyphs",
+        ))
+        .unwrap();
         let mut fonts = FontContext {
             collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
                 system_fonts: false,
@@ -398,6 +402,8 @@ mod reveal_tests {
         builder.push_default(parley::StyleProperty::FontFamily(family.as_str().into()));
         builder.push_default(parley::StyleProperty::FontSize(24.));
         if styled {
+            builder.push_default(parley::StyleProperty::Underline(true));
+            builder.push_default(parley::StyleProperty::Strikethrough(true));
             for (index, (byte, ch)) in text.char_indices().enumerate() {
                 builder.push(
                     parley::StyleProperty::Brush(BrushIndex(index % 2)),
@@ -489,25 +495,175 @@ mod reveal_tests {
         assert!(glyphs(&painted(&ligature, Some(0..2))).is_empty());
         assert!(!glyphs(&painted(&ligature, Some(0..3))).is_empty());
     }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT with real Latin and Arabic ligature shaping"]
+    fn arbitrary_ranges_never_paint_a_partial_ltr_or_rtl_ligature() {
+        for (text, rtl, continuations) in [
+            ("fi", false, 1),
+            ("ffi", false, 2),
+            ("لا", true, 1),
+            ("ل\u{64e}ا", true, 2),
+            ("e\u{301}", false, 1),
+        ] {
+            for styled in [false, true] {
+                let layout = layout(text, styled);
+                let runs: Vec<_> = layout.lines().flat_map(|line| line.runs()).collect();
+                assert_eq!(runs.len(), 1, "one shaping run: {text} styled={styled}");
+                let run = &runs[0];
+                assert_eq!(run.is_rtl(), rtl);
+                assert_eq!(
+                    run.clusters().filter(|c| c.is_ligature_start()).count(),
+                    1,
+                    "real font must shape one atomic group: {text} styled={styled}"
+                );
+                assert_eq!(
+                    run.clusters()
+                        .filter(|c| c.is_ligature_continuation())
+                        .count(),
+                    continuations,
+                    "real single/multiple continuation fixture: {text} styled={styled}"
+                );
+                let original = glyphs(&painted(&layout, None));
+                assert!(!original.is_empty());
+                let boundaries: Vec<_> = text
+                    .char_indices()
+                    .map(|(byte, _)| byte)
+                    .chain(std::iter::once(text.len()))
+                    .collect();
+                for (index, &start) in boundaries.iter().enumerate() {
+                    for &end in &boundaries[index..] {
+                        let scene = painted(&layout, Some(start..end));
+                        if start == 0 && end == text.len() {
+                            assert_eq!(glyphs(&scene), original);
+                        } else {
+                            assert!(
+                                glyphs(&scene).is_empty(),
+                                "partial atomic group leaked glyphs: {text} styled={styled} range={start}..{end}"
+                            );
+                            assert!(
+                                scene
+                                    .commands()
+                                    .iter()
+                                    .all(|c| !matches!(c, Command::Draw(_))),
+                                "hidden group leaked decorations: {text} styled={styled} range={start}..{end}"
+                            );
+                        }
+                    }
+                }
+                eprintln!(
+                    "arbitrary-range atomic font case: {text:?}, rtl={rtl}, continuations={continuations}, styled={styled}, glyphs={}",
+                    original.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT with real Latin and Arabic ligature shaping"]
+    fn mixed_direction_ranges_paint_only_complete_units_at_original_positions_and_styles() {
+        // These units have independently known atomic boundaries. Selection of
+        // any strict subrange of fi/ffi/lam-alef/combining clusters must hide that
+        // entire unit; spaces and x remain independently paintable.
+        let units = [
+            "fi",
+            " ",
+            "ffi",
+            " ",
+            "لا",
+            " ",
+            "ل\u{64e}ا",
+            " ",
+            "e\u{301}",
+            "x",
+        ];
+        let text: String = units.concat();
+        for styled in [false, true] {
+            let layout = layout(&text, styled);
+            let original = glyphs(&painted(&layout, None));
+            let mut offset = 0;
+            let unit_glyphs: Vec<_> = units
+                .iter()
+                .map(|unit| {
+                    let range = offset..offset + unit.len();
+                    offset = range.end;
+                    let glyphs = glyphs(&painted(&layout, Some(range.clone())));
+                    assert!(!glyphs.is_empty(), "real font must paint unit {unit:?}");
+                    (range, glyphs)
+                })
+                .collect();
+            assert_eq!(
+                unit_glyphs.iter().map(|(_, g)| g.len()).sum::<usize>(),
+                original.len()
+            );
+            let boundaries: Vec<_> = text
+                .char_indices()
+                .map(|(byte, _)| byte)
+                .chain(std::iter::once(text.len()))
+                .collect();
+            for (index, &start) in boundaries.iter().enumerate() {
+                for &end in &boundaries[index..] {
+                    // Filter the original visual sequence; the expected glyphs
+                    // retain the original position and brush, including styles
+                    // that split a shaping run into multiple painted glyph runs.
+                    let expected: Vec<_> = original
+                        .iter()
+                        .filter(|glyph| {
+                            unit_glyphs.iter().any(|(range, glyphs)| {
+                                start <= range.start && range.end <= end && glyphs.contains(glyph)
+                            })
+                        })
+                        .cloned()
+                        .collect();
+                    let scene = painted(&layout, Some(start..end));
+                    assert_eq!(
+                        glyphs(&scene),
+                        expected,
+                        "mixed non-prefix range changed selection/position/style: styled={styled} range={start}..{end}"
+                    );
+                    if expected.is_empty() {
+                        assert!(
+                            scene
+                                .commands()
+                                .iter()
+                                .all(|c| !matches!(c, Command::Draw(_)))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires REEL_SESSION_FONT with real ligature shaping"]
     fn many_ligatures_use_one_visibility_entry_per_logical_cluster() {
-        let text = "fi ffi ".repeat(8192);
-        let layout = layout(&text, false);
-        let mut cluster_count = 0;
-        let mut mask_count = 0;
-        for line in layout.lines() {
-            for run in line.runs() {
-                cluster_count += run.len();
-                mask_count += revealed_clusters(&run, &(0..text.len() / 2)).len();
+        for pattern in ["fi ffi ", "fi ffi لا ل\u{64e}ا "] {
+            let text = pattern.repeat(8192);
+            let layout = layout(&text, false);
+            for visible in [
+                0..pattern.len() * 4096,
+                pattern.len() * 2048..pattern.len() * 6144,
+            ] {
+                let mut cluster_count = 0;
+                let mut mask_count = 0;
+                let mut rtl_clusters = 0;
+                for line in layout.lines() {
+                    for run in line.runs() {
+                        cluster_count += run.len();
+                        if run.is_rtl() {
+                            rtl_clusters += run.len();
+                        }
+                        mask_count += revealed_clusters(&run, &visible).len();
+                    }
+                }
+                assert_eq!(cluster_count, mask_count);
+                let partial = glyphs(&painted(&layout, Some(visible.clone())));
+                assert!(!partial.is_empty());
+                eprintln!(
+                    "linear reveal projection: {cluster_count} clusters ({rtl_clusters} RTL), {mask_count} masks, {} painted glyphs, range={visible:?}",
+                    partial.len()
+                );
             }
         }
-        assert_eq!(cluster_count, mask_count);
-        let partial = glyphs(&painted(&layout, Some(0..text.len() / 2)));
-        assert!(!partial.is_empty());
-        eprintln!(
-            "linear reveal projection: {cluster_count} clusters, {mask_count} masks, {} painted glyphs",
-            partial.len()
-        );
     }
 }
