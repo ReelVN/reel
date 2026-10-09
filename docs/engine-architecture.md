@@ -349,3 +349,11 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 [14] Kira Backend https://docs.rs/kira/latest/kira/backend/trait.Backend.html
 [15] Kira Frame https://docs.rs/kira/latest/kira/struct.Frame.html
 
+
+## S01 Rust 会话宿主实现状态
+
+PR #50 在既有职责边界新增 reel-engine，管理有界 Session/Epoch/owner、唯一主交互、完整文本与字素揭示、稳定选项、过期和重复输入过滤、历史及终态一次交付。reel-player 的 reel-session-host 用真实 Label/Button 和既有呈现桥显示两句对白、选择与背景分支，原诊断入口保留。当前仅鼠标，紧凑投影最多两行或两个选项，超限明确拒绝并清输入权限；大模型容量不等于视图已支持。
+
+owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
+
+本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。

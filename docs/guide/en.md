@@ -389,3 +389,5 @@ When an interface, behavior, default, or cancellation rule changes, the same PR 
 The repository commit containing this guide is its version reference. Feature status is marked by section; interface changes update the Chinese edition, English edition, and shared examples together.
 The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.
 
+
+S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adaptation, media and save/restore remain unconnected. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).
