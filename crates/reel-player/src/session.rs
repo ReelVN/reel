@@ -3,13 +3,14 @@
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
 use reel_engine::{
-    ChoiceId, InputAction, InputEvent, InputSequence, InteractionId, InteractionView, OwnerHandle,
-    Session,
+    ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
 };
 #[cfg(any(test, feature = "window"))]
 use reel_engine::{
     ChoiceInput, CompletionOutcome, DialogueLineInput, Epoch, SessionId, SessionLimits,
 };
+#[cfg(test)]
+use reel_engine::{InputEvent, InputSequence};
 use reel_ui::{
     accesskit::{Node, Role},
     bridge::PresentationBridge,
@@ -225,9 +226,6 @@ impl Widget for SessionWidget {
         let Some(interaction) = self.projection.interaction else {
             return;
         };
-        if self.lines.is_empty() {
-            return;
-        }
         match event {
             PointerEvent::Down(e)
                 if ctx.target() == ctx.widget_id()
@@ -388,7 +386,6 @@ pub struct SessionUi {
     choice_owners: Vec<OwnerHandle>,
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
-    sequence: u64,
     background: Color,
 }
 impl SessionUi {
@@ -408,13 +405,15 @@ impl SessionUi {
             choice_owners,
             binding: Rc::new(RefCell::new(InputBinding::default())),
             inputs: Rc::new(RefCell::new(None)),
-            sequence: 0,
             background: Color::from_rgb8(35, 54, 74),
         })
     }
     pub fn session(&self) -> &Session {
         &self.session
     }
+    /// External stamped input shares the Session watermark with new UI actions.
+    /// Call `sync` after model changes, then present the matching frame before
+    /// allowing input to the replacement projection.
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
     }
@@ -499,17 +498,15 @@ impl SessionUi {
         }
         let input = self.inputs.borrow_mut().take();
         if let Some(input) = input {
-            self.sequence = self
-                .sequence
-                .checked_add(1)
-                .ok_or("input sequence exhausted")?;
             // Owner/session cancellation may race the final UI dispatch. Host
             // rejections filter that event; they are not window failures.
-            let _ = self.session.handle_input(InputEvent {
-                source_owner: input.owner,
-                sequence: InputSequence(self.sequence),
-                action: input.action,
-            });
+            // Assign the new event at final dispatch, after any external input
+            // through session_mut. Already-sequenced replays use handle_input.
+            if self.session.handle_local_input(input.owner, input.action)
+                == Err(InputRejection::SequenceExhausted)
+            {
+                return Err("input sequence exhausted".into());
+            }
         }
         Ok(handled)
     }
@@ -766,7 +763,6 @@ mod tests {
                 action: InputAction::Advance(first),
             })
             .unwrap();
-        ui.sequence = 1;
         ui.session.take_completion().unwrap();
         say(&mut ui.session, "Second");
         ui.sync(&mut bridge, id).unwrap();
@@ -871,6 +867,112 @@ mod tests {
         assert!(ui.session.take_completion().is_none());
         assert_eq!(ui.session.status(), reel_engine::SessionStatus::Running);
         assert_eq!(ui.session.view().history.len(), 1);
+    }
+
+    #[test]
+    fn first_ui_click_after_session_handoff_uses_the_consumed_input_watermark() {
+        let mut session = session();
+        let interaction = say(&mut session, "Already revealed before UI attachment");
+        assert_eq!(
+            session.handle_input(InputEvent {
+                source_owner: session.root_owner(),
+                sequence: InputSequence(100),
+                action: InputAction::Advance(interaction),
+            }),
+            Ok(reel_engine::InputOutcome::Revealed)
+        );
+        let mut ui = SessionUi::new(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, 1);
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert_eq!(
+            ui.session_mut().take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+        assert!(ui.session_mut().take_completion().is_none());
+        assert_eq!(ui.session().view().history.len(), 1);
+        ui.sync(&mut bridge, root).unwrap();
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert!(ui.session_mut().take_completion().is_none());
+    }
+
+    #[test]
+    fn inputs_through_session_mut_and_ui_share_one_sequence_source() {
+        let mut session = session();
+        let first = say(&mut session, "First");
+        let mut ui = SessionUi::new(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, 1);
+        click(&mut ui, &mut bridge, (100., 300.));
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(visible(&ui), "First".len());
+        let source_owner = ui.session().root_owner();
+        let mut foreign = Session::new(SessionId(99), Epoch(3), SessionLimits::default()).unwrap();
+        let foreign_interaction = say(&mut foreign, "Foreign interaction");
+        // A live source's invalid action still consumes the global watermark.
+        assert_eq!(
+            ui.session_mut().handle_input(InputEvent {
+                source_owner,
+                sequence: InputSequence(100),
+                action: InputAction::Advance(foreign_interaction),
+            }),
+            Err(reel_engine::InputRejection::StaleInteraction)
+        );
+        accept(&mut ui, &mut bridge, 2);
+        click(&mut ui, &mut bridge, (100., 300.));
+        let completion = ui.session_mut().take_completion().unwrap();
+        assert_eq!(completion.interaction_id(), first);
+        assert_eq!(completion.outcome(), &CompletionOutcome::Advanced);
+        assert!(ui.session_mut().take_completion().is_none());
+        say(ui.session_mut(), "After external input");
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(
+            ui.session_mut().handle_input(InputEvent {
+                source_owner,
+                sequence: InputSequence(1_000),
+                action: InputAction::Advance(first),
+            }),
+            Err(reel_engine::InputRejection::StaleInteraction)
+        );
+        accept(&mut ui, &mut bridge, 3);
+        click(&mut ui, &mut bridge, (100., 300.));
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(visible(&ui), "After external input".len());
+        assert!(ui.session_mut().take_completion().is_none());
+        accept(&mut ui, &mut bridge, 4);
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert_eq!(
+            ui.session_mut().take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+        assert_eq!(ui.session().view().history.len(), 2);
+    }
+
+    #[test]
+    fn zero_line_dialogue_advances_through_the_presented_pointer_path_once() {
+        let mut session = session();
+        let interaction = session.begin_say(session.root_owner(), &[], "en").unwrap();
+        let mut ui = SessionUi::new(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert!(ui.session_mut().take_completion().is_none());
+        accept(&mut ui, &mut bridge, 1);
+        click(&mut ui, &mut bridge, (100., 300.));
+        let completion = ui.session_mut().take_completion().unwrap();
+        assert_eq!(completion.interaction_id(), interaction);
+        assert_eq!(completion.outcome(), &CompletionOutcome::Advanced);
+        assert_eq!(ui.session().view().history.len(), 1);
+        assert!(ui.session().view().history[0].lines().is_empty());
+        assert!(ui.session_mut().take_completion().is_none());
+        say(ui.session_mut(), "Unseen successor");
+        ui.sync(&mut bridge, root).unwrap();
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert_eq!(visible(&ui), 0);
+        accept(&mut ui, &mut bridge, 2);
+        click(&mut ui, &mut bridge, (100., 300.));
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(visible(&ui), "Unseen successor".len());
+        assert_eq!(ui.session().view().history.len(), 2);
     }
 
     #[test]

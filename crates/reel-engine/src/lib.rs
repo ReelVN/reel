@@ -436,6 +436,7 @@ pub enum InputRejection {
     ForeignOwner,
     OwnerNotLive,
     DuplicateOrOutOfOrder,
+    SequenceExhausted,
     NoActiveInteraction,
     StaleInteraction,
     WrongInteractionKind,
@@ -1179,15 +1180,54 @@ impl Session {
     /// Process each live same-session sequence at most once, even if its action is
     /// stale or invalid. Foreign/dead sources do not change the high-water mark.
     pub fn handle_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
+        self.validate_input_source(event.source_owner)?;
+        self.apply_sequenced_input(event)
+    }
+
+    /// Dispatch one new local action, assigning its sequence from this Session's
+    /// shared watermark under the same exclusive borrow as processing the event.
+    /// This follows every prior live-source event, including stale/invalid actions
+    /// submitted through `handle_input`; UI attachment or replacement never resets
+    /// the sequence. Exhaustion rejects explicitly without wrapping or mutation.
+    ///
+    /// Use `handle_input` for events that already carry a sequence, retaining that
+    /// original sequence on replay. Replaying through this entry would create a
+    /// new event instead of checking whether the original was already consumed.
+    pub fn handle_local_input(
+        &mut self,
+        source_owner: OwnerHandle,
+        action: InputAction,
+    ) -> Result<InputOutcome, InputRejection> {
+        self.validate_input_source(source_owner)?;
+        let sequence = match self.last_input_sequence {
+            Some(last) => InputSequence(
+                last.0
+                    .checked_add(1)
+                    .ok_or(InputRejection::SequenceExhausted)?,
+            ),
+            None => InputSequence(1),
+        };
+        self.apply_sequenced_input(InputEvent {
+            source_owner,
+            sequence,
+            action,
+        })
+    }
+
+    fn validate_input_source(&self, source_owner: OwnerHandle) -> Result<(), InputRejection> {
         if self.status != SessionStatus::Running {
             return Err(InputRejection::SessionNotRunning);
         }
-        if event.source_owner.identity != self.identity {
+        if source_owner.identity != self.identity {
             return Err(InputRejection::ForeignOwner);
         }
-        if !self.is_owner_live(event.source_owner) {
+        if !self.is_owner_live(source_owner) {
             return Err(InputRejection::OwnerNotLive);
         }
+        Ok(())
+    }
+
+    fn apply_sequenced_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
         if self
             .last_input_sequence
             .is_some_and(|last| event.sequence <= last)

@@ -70,27 +70,15 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
 
     let region = Region::new(GLOBAL);
     let revealed = dialogue.reveal_more(root, id, 1);
-    let first = dialogue.handle_input(InputEvent {
-        source_owner: ui_owner,
-        sequence: InputSequence(1),
-        action: InputAction::Advance(id),
-    });
+    let first = dialogue.handle_local_input(ui_owner, InputAction::Advance(id));
     let duplicate = dialogue.handle_input(InputEvent {
         source_owner: ui_owner,
         sequence: InputSequence(1),
         action: InputAction::Advance(id),
     });
-    let second = dialogue.handle_input(InputEvent {
-        source_owner: ui_owner,
-        sequence: InputSequence(2),
-        action: InputAction::Advance(id),
-    });
+    let second = dialogue.handle_local_input(ui_owner, InputAction::Advance(id));
     let completed = dialogue.take_completion();
-    let selected = choice.handle_input(InputEvent {
-        source_owner: choice_root,
-        sequence: InputSequence(1),
-        action: InputAction::Select(option_id),
-    });
+    let selected = choice.handle_local_input(choice_root, InputAction::Select(option_id));
     let choice_completed = choice.take_completion();
     let cancelled_now = cancelled.revoke_owner(cancelled_root);
     let cancelled_again = cancelled.cancel();

@@ -741,3 +741,139 @@ fn input_sequence_high_water_is_shared_by_all_live_ui_owners() {
         Ok(InputOutcome::Revealed)
     );
 }
+
+#[test]
+fn new_local_actions_and_stamped_replays_share_one_session_sequence() {
+    let mut session = session();
+    let root = session.root_owner();
+    let local_owner = session.create_owner().unwrap();
+    let first = session.begin_say(root, &[line("first")], "en").unwrap();
+    assert_eq!(
+        session.handle_local_input(local_owner, InputAction::Advance(first)),
+        Ok(InputOutcome::Revealed)
+    );
+    assert_eq!(
+        advance(&mut session, root, 1, first),
+        Err(InputRejection::DuplicateOrOutOfOrder)
+    );
+    assert_eq!(
+        advance(&mut session, root, 100, first),
+        Ok(InputOutcome::Completed)
+    );
+    assert_eq!(
+        session.take_completion().unwrap().outcome(),
+        &CompletionOutcome::Advanced
+    );
+    let next = session.begin_say(root, &[line("next")], "en").unwrap();
+    assert_eq!(
+        advance(&mut session, root, 101, first),
+        Err(InputRejection::StaleInteraction)
+    );
+    assert_eq!(
+        session.handle_local_input(local_owner, InputAction::Advance(next)),
+        Ok(InputOutcome::Revealed)
+    );
+    assert_eq!(
+        advance(&mut session, root, 102, next),
+        Err(InputRejection::DuplicateOrOutOfOrder)
+    );
+    assert!(session.take_completion().is_none());
+    assert_eq!(
+        session.handle_local_input(local_owner, InputAction::Advance(next)),
+        Ok(InputOutcome::Completed)
+    );
+    assert_eq!(
+        session.take_completion().unwrap().outcome(),
+        &CompletionOutcome::Advanced
+    );
+    assert!(session.take_completion().is_none());
+    assert_eq!(session.view().history.len(), 2);
+}
+
+#[test]
+fn local_input_exhaustion_never_wraps_and_dead_or_foreign_sources_cannot_poison_it() {
+    let mut session = session();
+    let root = session.root_owner();
+    let dead = session.create_owner().unwrap();
+    session.revoke_owner(dead).unwrap();
+    let mut foreign = Session::new(SessionId(99), Epoch(1), SessionLimits::default()).unwrap();
+    let foreign_owner = foreign.root_owner();
+    let foreign_interaction = foreign
+        .begin_say(foreign_owner, &[line("foreign")], "en")
+        .unwrap();
+    let id = session.begin_say(root, &[line("live")], "en").unwrap();
+    assert_eq!(
+        advance(&mut session, dead, u64::MAX, id),
+        Err(InputRejection::OwnerNotLive)
+    );
+    assert_eq!(
+        advance(&mut session, foreign_owner, u64::MAX, id),
+        Err(InputRejection::ForeignOwner)
+    );
+    assert_eq!(
+        session.handle_local_input(root, InputAction::Advance(id)),
+        Ok(InputOutcome::Revealed)
+    );
+    assert_eq!(
+        advance(&mut session, root, u64::MAX, foreign_interaction),
+        Err(InputRejection::StaleInteraction)
+    );
+    assert_eq!(
+        session.handle_local_input(dead, InputAction::Advance(id)),
+        Err(InputRejection::OwnerNotLive)
+    );
+    assert_eq!(
+        session.handle_local_input(foreign_owner, InputAction::Advance(id)),
+        Err(InputRejection::ForeignOwner)
+    );
+    let before = session.storage_usage();
+    assert_eq!(
+        session.handle_local_input(root, InputAction::Advance(id)),
+        Err(InputRejection::SequenceExhausted)
+    );
+    assert_eq!(session.storage_usage(), before);
+    assert_eq!(dialogue(&session).lines()[0].visible_text(), "live");
+    assert_eq!(session.view().history.len(), 1);
+    assert!(session.take_completion().is_none());
+    assert_eq!(
+        advance(&mut session, root, 1, id),
+        Err(InputRejection::DuplicateOrOutOfOrder)
+    );
+    assert!(session.cancel());
+    assert_eq!(
+        session.take_completion().unwrap().delivery(),
+        CompletionDelivery::CleanupOnly
+    );
+    assert!(session.take_completion().is_none());
+    assert_eq!(
+        session.handle_local_input(root, InputAction::Advance(id)),
+        Err(InputRejection::SessionNotRunning)
+    );
+}
+
+#[test]
+fn zero_line_dialogue_has_one_history_group_and_one_advance_completion() {
+    let mut session = session();
+    let root = session.root_owner();
+    let id = session.begin_say(root, &[], "en").unwrap();
+    assert!(dialogue(&session).lines().is_empty());
+    assert_eq!(dialogue(&session).text(), "");
+    assert!(!session.reveal_more(root, id, 1).unwrap());
+    assert_eq!(session.view().history.len(), 1);
+    assert!(session.view().history[0].lines().is_empty());
+    assert_eq!(
+        session.handle_local_input(root, InputAction::Advance(id)),
+        Ok(InputOutcome::Completed)
+    );
+    let completion = session.take_completion().unwrap();
+    assert_eq!(completion.interaction_id(), id);
+    assert_eq!(completion.outcome(), &CompletionOutcome::Advanced);
+    assert_eq!(completion.delivery(), CompletionDelivery::Resume);
+    assert!(session.take_completion().is_none());
+    assert_eq!(
+        session.handle_local_input(root, InputAction::Advance(id)),
+        Err(InputRejection::NoActiveInteraction)
+    );
+    assert!(session.take_completion().is_none());
+    assert_eq!(session.view().history.len(), 1);
+}
