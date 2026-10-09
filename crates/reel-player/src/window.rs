@@ -1,4 +1,5 @@
 use crate::diagnostic::Diagnostic;
+use crate::{demand::Demand, surface::negotiate};
 use masonry_core::{
     app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
     core::*,
@@ -14,8 +15,8 @@ use reel_render::{
     presentation_notice,
 };
 use reel_stage::{
-    BridgeLimits, BuildLimits, FrameBuild, FrameInfo, PresentationBridge, ResourceRegistry,
-    StepBudget,
+    BridgeLimits, BuildLimits, FrameBuild, FrameInfo, PresentationBridge, RenderFrame,
+    ResourceRegistry, StepBudget,
 };
 use std::{io::Read, sync::Arc};
 use winit::{event_loop::ActiveEventLoop, window::Window};
@@ -37,12 +38,19 @@ pub(crate) struct State {
     epoch: u64,
     frame: u64,
     pub(crate) pointer: masonry_core::dpi::PhysicalPosition<f64>,
-    pub(crate) dirty: bool,
+    pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
+        Self::with_limits(event_loop, generation, GpuLimits::default())
+    }
+    fn with_limits(
+        event_loop: &ActiveEventLoop,
+        generation: u64,
+        limits: GpuLimits,
+    ) -> Result<Self, Error> {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
@@ -56,36 +64,10 @@ impl State {
             &instance,
             Some(&surface),
             DeviceGeneration(generation),
-            GpuLimits::default(),
+            limits,
         ))?;
-        let capabilities = surface.get_capabilities(&gpu.adapter);
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .ok_or("no sRGB surface")?;
-        if !capabilities
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::Opaque)
-        {
-            return Err("diagnostic requires an opaque surface".into());
-        }
         let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-            view_formats: vec![],
-        };
-        let output = SurfacePass::new(&gpu.device, format)?;
-        if size.width != 0 && size.height != 0 {
-            surface.configure(&gpu.device, &config);
-        }
+        let (config, output) = negotiate(&gpu, &surface, [size.width, size.height])?;
         eprintln!(
             "adapter={:?}; quality={:?}",
             gpu.adapter.get_info(),
@@ -205,12 +187,24 @@ impl State {
             epoch: 1,
             frame: 0,
             pointer: Default::default(),
-            dirty: true,
+            demand: Demand::Pending,
             root_id,
             zoom: 1.,
         })
     }
     pub(crate) fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
+        self.invalidate_surface(size)?;
+        if let Some(surface) = &self.surface {
+            let (config, output) =
+                negotiate(self.renderer.gpu(), surface, [size.width, size.height])?;
+            self.config = config;
+            self.output = output;
+        }
+        self.demand = Demand::Pending;
+        self.window.request_redraw();
+        Ok(())
+    }
+    fn invalidate_surface(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
         self.size = PhysicalSize::new(size.width, size.height);
         self.epoch = self.epoch.checked_add(1).ok_or("surface epoch exhausted")?;
         self.bridge.replace_surface(SurfaceEpoch(self.epoch));
@@ -220,22 +214,28 @@ impl State {
             ));
         self.bridge
             .handle_window_event(masonry_core::core::WindowEvent::Resize(self.size));
-        if size.width > 0 && size.height > 0 {
-            self.renderer.gpu().quality([size.width, size.height])?;
-            self.config.width = size.width;
-            self.config.height = size.height;
-            if let Some(surface) = &self.surface {
-                surface.configure(&self.renderer.gpu().device, &self.config);
-            }
+        // Invalidates candidates even if fresh negotiation subsequently fails.
+        self.demand = Demand::Idle;
+        Ok(())
+    }
+    pub(crate) fn invalidate(&mut self) {
+        self.demand.invalidate();
+        if self.demand.can_prepare() {
+            self.window.request_redraw();
         }
-        self.dirty = true;
-        self.window.request_redraw();
+    }
+    pub(crate) fn poll_completions(&mut self) -> Result<(), GpuError> {
+        let completed = self.renderer.poll()?;
+        self.demand.completed(!completed.is_empty());
         Ok(())
     }
     pub(crate) fn render(&mut self) -> Result<(), Error> {
-        self.renderer.poll()?;
+        self.poll_completions()?;
+        if !self.demand.can_prepare() {
+            return Ok(());
+        }
         if self.size.width == 0 || self.size.height == 0 {
-            self.dirty = false;
+            self.demand = Demand::Idle;
             return Ok(());
         }
         let Some(surface) = &self.surface else {
@@ -248,11 +248,54 @@ impl State {
                 return Ok(());
             }
             Err(wgpu::SurfaceError::Timeout) => {
-                self.dirty = true;
                 return Ok(());
             }
             Err(e) => return Err(e.into()),
         };
+        let frame = self.build_frame()?;
+        let mut prepared = match self.renderer.prepare(&frame) {
+            Ok(p) => p,
+            Err(error) if error.is_retryable() => {
+                self.demand.refused(&error);
+                return Ok(());
+            }
+            Err(
+                error @ (GpuError::Budget { .. }
+                | GpuError::Unsupported { .. }
+                | GpuError::Geometry { .. }
+                | GpuError::DepthLimit { .. }
+                | GpuError::InvalidRecord { .. }),
+            ) => {
+                eprintln!("frame refused; keeping last accepted view: {error}");
+                self.demand.refused(&error);
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        self.output.encode(
+            &self.renderer.gpu().device,
+            &mut prepared,
+            &surface_texture.texture.create_view(&Default::default()),
+        );
+        self.renderer.submit(prepared)?;
+        self.window.pre_present_notify();
+        surface_texture.present();
+        let notice = presentation_notice(
+            &frame,
+            SurfaceEpoch(self.epoch),
+            Ok(PresentOutcome::PresentAccepted(frame.frame_id())),
+        );
+        let accepted = self.bridge.resolve(notice);
+        if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
+            eprintln!(
+                "present frame={} epoch={} result={accepted:?}",
+                self.frame, self.epoch
+            );
+        }
+        self.demand = Demand::Idle;
+        Ok(())
+    }
+    fn build_frame(&mut self) -> Result<RenderFrame, Error> {
         self.frame = self
             .frame
             .checked_add(1)
@@ -296,49 +339,12 @@ impl State {
             .map_err(|e| format!("compile: {e:?}"))?
             .complete
         {}
-        let frame = build.finish().map_err(|e| format!("finish: {e:?}"))?;
-        let mut prepared = match self.renderer.prepare(&frame) {
-            Ok(p) => p,
-            Err(GpuError::Busy) => {
-                self.dirty = true;
-                return Ok(());
-            }
-            Err(
-                error @ (GpuError::Budget { .. }
-                | GpuError::Unsupported { .. }
-                | GpuError::Geometry { .. }),
-            ) => {
-                eprintln!("frame refused; keeping last accepted view: {error}");
-                self.dirty = false;
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
-        };
-        self.output.encode(
-            &self.renderer.gpu().device,
-            &mut prepared,
-            &surface_texture.texture.create_view(&Default::default()),
-        );
-        self.renderer.submit(prepared)?;
-        self.window.pre_present_notify();
-        surface_texture.present();
-        let notice = presentation_notice(
-            &frame,
-            SurfaceEpoch(self.epoch),
-            Ok(PresentOutcome::PresentAccepted(frame.frame_id())),
-        );
-        let accepted = self.bridge.resolve(notice);
-        if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
-            eprintln!(
-                "present frame={} epoch={} result={accepted:?}",
-                self.frame, self.epoch
-            );
-        }
-        self.dirty = false;
-        Ok(())
+        Ok(build.finish().map_err(|e| format!("finish: {e:?}"))?)
     }
     pub(crate) fn recover_device(&mut self) -> Result<(), Error> {
         self.pointer_event(PointerKind::Cancel);
+        let size = self.window.inner_size();
+        self.invalidate_surface(size)?;
         let generation = self
             .renderer
             .gpu()
@@ -350,11 +356,18 @@ impl State {
             &self.instance,
             self.surface.as_ref(),
             DeviceGeneration(generation),
-            GpuLimits::default(),
+            self.renderer.gpu().limits(),
         ))?;
-        self.output = SurfacePass::new(&gpu.device, self.config.format)?;
+        let surface = self
+            .surface
+            .as_ref()
+            .ok_or("device recovery requires a resumed surface")?;
+        let (config, output) = negotiate(&gpu, surface, [size.width, size.height])?;
+        self.output = output;
+        self.config = config;
         self.renderer = Renderer::new(gpu);
-        self.resize(self.window.inner_size())?;
+        self.demand = Demand::Pending;
+        self.window.request_redraw();
         eprintln!(
             "device recovered generation={generation}, epoch={}",
             self.epoch
@@ -367,7 +380,7 @@ impl State {
         let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
         let _ = self.renderer.poll();
         self.surface = None;
-        self.dirty = false;
+        self.demand = Demand::Idle;
     }
     pub(crate) fn is_suspended(&self) -> bool {
         self.surface.is_none()
@@ -419,8 +432,7 @@ impl State {
             );
         }
         self.bridge.handle_pointer_event(event);
-        self.dirty = true;
-        self.window.request_redraw();
+        self.invalidate();
     }
 }
 pub(crate) enum PointerKind {
@@ -436,5 +448,188 @@ impl Drop for State {
         let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
         let _ = self.renderer.poll();
         self.surface = None;
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use masonry_core::app::InputGeometrySource;
+    use winit::{
+        application::ApplicationHandler, event_loop::EventLoop,
+        platform::x11::EventLoopBuilderExtX11,
+    };
+
+    fn accepted_transform(state: &State) -> masonry_core::kurbo::Affine {
+        let InputGeometrySource::Presented(Some(view)) =
+            state.bridge.root().input_geometry_source()
+        else {
+            panic!("input requires an actually accepted surface frame");
+        };
+        view.get(state.root_id).unwrap().transform
+    }
+    fn exercise(event_loop: &ActiveEventLoop) {
+        let mut state = State::with_limits(
+            event_loop,
+            1,
+            GpuLimits {
+                target_bytes: 96 << 20,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        state.render().unwrap();
+        let accepted = state.bridge.accepted_key().unwrap().frame_id();
+        state
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
+        let held_frame = state.build_frame().unwrap();
+        let held = state.renderer.prepare(&held_frame).unwrap();
+        eprintln!(
+            "native pressure fixture targets={}",
+            state.renderer.usage().targets
+        );
+        state.bridge.edit_widget(state.root_id, |mut widget| {
+            widget.set_transform(masonry_core::kurbo::Affine::scale(0.7))
+        });
+        state.invalidate();
+        state.render().unwrap();
+        assert_eq!(state.demand, Demand::Waiting);
+        assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
+        assert_eq!(
+            accepted_transform(&state),
+            masonry_core::kurbo::Affine::IDENTITY
+        );
+        let refused_frame = state.frame;
+        // No completion and no new input: OS redraws cannot repeatedly compile.
+        for _ in 0..10 {
+            state.render().unwrap();
+        }
+        assert_eq!(state.frame, refused_frame);
+        let id = state.renderer.submit(held).unwrap(); // offscreen: never accepts its geometry
+        state
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
+        assert!(state.renderer.usage().targets > 0);
+        state.render().unwrap(); // observes completion and retries latest state, without input
+        assert_eq!(state.demand, Demand::Idle);
+        assert!(state.bridge.accepted_key().unwrap().frame_id() > accepted);
+        assert_eq!(
+            accepted_transform(&state),
+            masonry_core::kurbo::Affine::scale(0.7)
+        );
+        assert!(!state.renderer.poll().unwrap().contains(&id)); // completion is delivered once
+
+        state
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
+        let old_frame = state.build_frame().unwrap();
+        let old = state.renderer.prepare(&old_frame).unwrap();
+        let old_notice = presentation_notice(
+            &old_frame,
+            SurfaceEpoch(state.epoch),
+            Ok(PresentOutcome::PresentAccepted(old_frame.frame_id())),
+        );
+        let old_epoch = state.epoch;
+        // Stale configuration must never survive recovery negotiation.
+        state.config.format = wgpu::TextureFormat::Rgba8Unorm;
+        state.renderer.gpu().device.destroy();
+        let _ = state.renderer.gpu().device.poll(wgpu::PollType::Wait);
+        state.recover_device().unwrap();
+        assert_eq!(state.renderer.gpu().generation(), DeviceGeneration(2));
+        assert_eq!(state.epoch, old_epoch + 1);
+        assert!(state.config.format.is_srgb());
+        assert!(state.bridge.accepted_key().is_none());
+        assert_eq!(
+            state.bridge.resolve(old_notice),
+            reel_stage::NoticeResult::StaleOrForeign
+        );
+        assert!(matches!(
+            state.renderer.submit(old),
+            Err(GpuError::DeviceLost)
+        ));
+        state.render().unwrap();
+        assert_eq!(
+            accepted_transform(&state),
+            masonry_core::kurbo::Affine::scale(0.7)
+        );
+        let generation = state.renderer.gpu().generation();
+        let epoch = state.epoch;
+        state.suspend();
+        assert!(state.is_suspended());
+        assert!(state.bridge.accepted_key().is_none());
+        state.resume().unwrap();
+        assert_eq!(state.renderer.gpu().generation(), generation);
+        assert_eq!(state.epoch, epoch + 1);
+        state.render().unwrap();
+        assert!(state.bridge.accepted_key().is_some());
+        state.resize(winit::dpi::PhysicalSize::new(0, 0)).unwrap();
+        let frame = state.frame;
+        state.render().unwrap();
+        assert_eq!(state.frame, frame);
+        assert!(state.bridge.accepted_key().is_none());
+        drop(state);
+
+        // Permanent refusals stop preparation even when unrelated GPU work completes.
+        for limits in [
+            GpuLimits {
+                target_bytes: 16 << 20,
+                ..Default::default()
+            },
+            GpuLimits {
+                max_depth: 1,
+                ..Default::default()
+            },
+        ] {
+            let mut refused = State::with_limits(event_loop, 1, limits).unwrap();
+            refused.render().unwrap();
+            assert_eq!(refused.demand, Demand::Idle);
+            assert!(refused.bridge.accepted_key().is_none());
+            let count = refused.frame;
+            for _ in 0..10 {
+                refused.render().unwrap();
+            }
+            assert_eq!(refused.frame, count);
+            assert_eq!(refused.renderer.usage().targets, 0);
+        }
+        eprintln!(
+            "native retry, accepted geometry, permanent refusal, generation/epoch recovery and shutdown passed"
+        );
+    }
+    #[test]
+    #[ignore = "requires Linux X11 display and actual graphics adapter"]
+    fn actual_window_retry_and_recovery_contract() {
+        struct Harness;
+        impl ApplicationHandler for Harness {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                exercise(event_loop);
+                event_loop.exit();
+            }
+            fn window_event(
+                &mut self,
+                _: &ActiveEventLoop,
+                _: winit::window::WindowId,
+                _: winit::event::WindowEvent,
+            ) {
+            }
+        }
+        let event_loop = EventLoop::builder()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        event_loop.run_app(&mut Harness).unwrap();
     }
 }

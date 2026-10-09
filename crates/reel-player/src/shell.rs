@@ -79,8 +79,7 @@ impl ApplicationHandler for App {
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F5) =>
             {
                 state.renderer.gpu().device.destroy();
-                state.dirty = true;
-                state.window.request_redraw();
+                state.invalidate();
                 Ok(())
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -135,8 +134,7 @@ impl ApplicationHandler for App {
                 state.bridge.edit_widget(state.root_id, |mut widget| {
                     widget.set_transform(masonry_core::kurbo::Affine::scale(zoom))
                 });
-                state.dirty = true;
-                state.window.request_redraw();
+                state.invalidate();
                 Ok(())
             }
             WindowEvent::RedrawRequested => state.render(),
@@ -158,7 +156,7 @@ impl ApplicationHandler for App {
                 event_loop.set_control_flow(ControlFlow::Wait);
                 return;
             }
-            if let Err(e) = state.renderer.poll() {
+            if let Err(e) = state.poll_completions() {
                 if matches!(e, GpuError::DeviceLost) {
                     if let Err(e) = state.recover_device() {
                         self.fail(event_loop, e);
@@ -168,11 +166,11 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
-            if state.dirty {
+            if state.demand.can_prepare() {
                 state.window.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            if state.dirty || state.renderer.usage().targets != 0 {
+            if state.demand.can_prepare() || state.renderer.usage().targets != 0 {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_millis(8),
                 ));

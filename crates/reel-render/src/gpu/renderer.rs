@@ -21,7 +21,8 @@ pub struct Prepared {
     pub(super) quality: Quality,
     pub(super) size: [u32; 2],
     frames: Vec<RenderFrame>,
-    tickets: Vec<BudgetTicket>,
+    tickets: Vec<Reservation>,
+    budget_scope: Budgets,
     admission: BudgetTicket,
     generation: super::DeviceGeneration,
     owner: Arc<()>,
@@ -38,7 +39,7 @@ struct Inflight {
     id: u64,
     done: Arc<AtomicBool>,
     _frames: Vec<RenderFrame>,
-    _tickets: Vec<BudgetTicket>,
+    _tickets: Vec<Reservation>,
     _admission: BudgetTicket,
 }
 pub struct Renderer {
@@ -54,23 +55,12 @@ pub(super) struct Budgets {
     pub(super) resources: BudgetPool,
     pub(super) transient: BudgetPool,
 }
-pub(super) fn reserve(
-    pool: &BudgetPool,
-    bytes: u64,
-    limit: u64,
-    domain: &'static str,
-) -> Result<BudgetTicket, GpuError> {
-    pool.reserve(bytes).map_err(|_| GpuError::Budget {
-        domain,
-        requested: bytes,
-        available: limit.saturating_sub(pool.usage().bytes),
-    })
+pub(super) struct Reservation {
+    _shared: BudgetTicket,
+    _local: BudgetTicket,
 }
-impl Renderer {
-    pub fn gpu(&self) -> &Gpu {
-        &self.gpu
-    }
-    pub fn new(gpu: Gpu) -> Self {
+impl Budgets {
+    pub(super) fn new(limits: super::GpuLimits) -> Self {
         let pool = |category, max_bytes| {
             BudgetPool::new(
                 category,
@@ -80,11 +70,43 @@ impl Renderer {
                 },
             )
         };
-        let budgets = Budgets {
-            targets: pool(BudgetCategory::Offscreen, gpu.limits.target_bytes),
-            resources: pool(BudgetCategory::GpuResource, gpu.limits.resource_bytes),
-            transient: pool(BudgetCategory::Temporary, gpu.limits.transient_bytes),
-        };
+        Self {
+            targets: pool(BudgetCategory::Offscreen, limits.target_bytes),
+            resources: pool(BudgetCategory::GpuResource, limits.resource_bytes),
+            transient: pool(BudgetCategory::Temporary, limits.transient_bytes),
+        }
+    }
+}
+pub(super) fn reserve(
+    pool: &BudgetPool,
+    local: &BudgetPool,
+    bytes: u64,
+    limit: u64,
+    domain: &'static str,
+) -> Result<Reservation, GpuError> {
+    // Test the preparation's own live demand first. Other preparations cannot
+    // turn a permanently oversized frame into a misleading retryable refusal.
+    let local = local.reserve(bytes).map_err(|_| GpuError::Budget {
+        domain,
+        requested: bytes,
+        available: limit.saturating_sub(local.usage().bytes),
+    })?;
+    let shared = pool.reserve(bytes).map_err(|_| GpuError::Pressure {
+        domain,
+        requested: bytes,
+        available: limit.saturating_sub(pool.usage().bytes),
+    })?;
+    Ok(Reservation {
+        _shared: shared,
+        _local: local,
+    })
+}
+impl Renderer {
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+    pub fn new(gpu: Gpu) -> Self {
+        let budgets = Budgets::new(gpu.limits);
         let admission = BudgetPool::new(
             BudgetCategory::Temporary,
             QueueLimits {
@@ -101,9 +123,14 @@ impl Renderer {
             owner: Arc::new(()),
         }
     }
-    pub(super) fn reserve_readback(&self, bytes: u64) -> Result<BudgetTicket, GpuError> {
+    pub(super) fn reserve_readback(
+        &self,
+        prepared: &Prepared,
+        bytes: u64,
+    ) -> Result<Reservation, GpuError> {
         reserve(
             &self.budgets.transient,
+            &prepared.budget_scope.transient,
             bytes,
             self.gpu.limits.transient_bytes,
             "readback",
@@ -167,6 +194,7 @@ impl Renderer {
             quality,
             size,
             budgets: &self.budgets,
+            budget_scope: Budgets::new(self.gpu.limits),
             tickets: Vec::new(),
             images: HashMap::new(),
         };
@@ -174,10 +202,21 @@ impl Renderer {
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],
         );
-        let mut output = ctx.stream(frame, frame.commands(), transform, 0)?;
+        let origin = |frame: &RenderFrame| {
+            frame.commands().first().map_or(
+                reel_stage::RecordLocation {
+                    fragment: 0,
+                    command: 0,
+                    mask_depth: 0,
+                    owner: frame.geometry().root_id(),
+                },
+                |command| command.origin.at,
+            )
+        };
+        let mut output = ctx.stream(frame, frame.commands(), transform, 0, origin(frame))?;
         let mut frames = vec![frame.clone()];
         if let Some((second, progress)) = second {
-            let b = ctx.stream(second, second.commands(), transform, 0)?;
+            let b = ctx.stream(second, second.commands(), transform, 0, origin(second))?;
             let mixed = ctx.target()?;
             ctx.combine(&mixed, &output.view, &b.view, 1., 3, progress)?;
             output = mixed;
@@ -192,6 +231,7 @@ impl Renderer {
             size,
             frames,
             tickets: ctx.tickets,
+            budget_scope: ctx.budget_scope,
             admission,
             generation: self.gpu.generation,
             owner: self.owner.clone(),
@@ -239,5 +279,38 @@ impl Drop for Renderer {
         // leases and accounting live until it has completed or reported device loss.
         let _ = self.gpu.device.poll(wgpu::PollType::Wait);
         self.inflight.clear();
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn local_demand_and_shared_pressure_release_independently() {
+        let limits = super::super::GpuLimits {
+            target_bytes: 10,
+            ..Default::default()
+        };
+        let shared = Budgets::new(limits);
+        let first = Budgets::new(limits);
+        let second = Budgets::new(limits);
+        let old = reserve(&shared.targets, &first.targets, 8, 10, "targets").unwrap();
+        assert!(matches!(
+            reserve(&shared.targets, &second.targets, 8, 10, "targets"),
+            Err(GpuError::Pressure { available: 2, .. })
+        ));
+        assert_eq!(second.targets.usage().bytes, 0);
+        assert!(matches!(
+            reserve(&shared.targets, &second.targets, 11, 10, "targets"),
+            Err(GpuError::Budget { available: 10, .. })
+        ));
+        drop(old);
+        let target = reserve(&shared.targets, &second.targets, 8, 10, "targets").unwrap();
+        assert!(matches!(
+            reserve(&shared.targets, &second.targets, 3, 10, "targets"),
+            Err(GpuError::Budget { available: 2, .. })
+        ));
+        drop(target);
+        assert_eq!(shared.targets.usage().bytes, 0);
+        assert_eq!(second.targets.usage().bytes, 0);
     }
 }

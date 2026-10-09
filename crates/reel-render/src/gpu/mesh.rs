@@ -71,6 +71,9 @@ pub fn tessellate(
     at: RecordLocation,
     max_bytes: u64,
 ) -> Result<Mesh, GpuError> {
+    // Stage accepts nonnegative f64 miter limits. Lyon's ordinary assertion
+    // requires >= 1 even for Bevel/Round, so reject at this narrower boundary.
+    let stroke_options = stroke.map(|s| stroke_options(s, at)).transpose()?;
     let max = (max_bytes / (size_of::<Vertex>() as u64 + 12)).min(u64::from(u32::MAX)) as usize;
     let mut mesh = Mesh {
         vertices: Vec::with_capacity(max),
@@ -133,23 +136,7 @@ pub fn tessellate(
         builder.end(false);
     }
     let path = builder.build();
-    let result = if let Some(s) = stroke {
-        if !s.dash_pattern.is_empty() {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "dashed stroke",
-            });
-        }
-        let options = StrokeOptions::default()
-            .with_line_width(s.width as f32)
-            .with_miter_limit(s.miter_limit as f32)
-            .with_line_join(match s.join {
-                masonry_core::kurbo::Join::Bevel => lyon_tessellation::LineJoin::Bevel,
-                masonry_core::kurbo::Join::Miter => lyon_tessellation::LineJoin::Miter,
-                masonry_core::kurbo::Join::Round => lyon_tessellation::LineJoin::Round,
-            })
-            .with_start_cap(cap(s.start_cap))
-            .with_end_cap(cap(s.end_cap));
+    let result = if let Some(options) = stroke_options {
         StrokeTessellator::new().tessellate_path(&path, &options, &mut mesh)
     } else {
         FillTessellator::new().tessellate_path(
@@ -174,6 +161,39 @@ pub fn tessellate(
     }
     Ok(mesh)
 }
+fn stroke_options(stroke: &Stroke, at: RecordLocation) -> Result<StrokeOptions, GpuError> {
+    let width = stroke.width as f32;
+    let miter_limit = stroke.miter_limit as f32;
+    if !width.is_finite() || stroke.width < 0. || (stroke.width != 0. && width == 0.) {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "stroke width outside finite nonnegative float32 range",
+        });
+    }
+    if !miter_limit.is_finite() || stroke.miter_limit < 1. {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "Lyon stroke miter limit must be finite float32 and at least 1",
+        });
+    }
+    if !stroke.dash_pattern.is_empty() {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "dashed stroke",
+        });
+    }
+    Ok(StrokeOptions::default()
+        .with_line_width(width)
+        .with_miter_limit(miter_limit)
+        .with_line_join(match stroke.join {
+            masonry_core::kurbo::Join::Bevel => lyon_tessellation::LineJoin::Bevel,
+            masonry_core::kurbo::Join::Miter => lyon_tessellation::LineJoin::Miter,
+            masonry_core::kurbo::Join::Round => lyon_tessellation::LineJoin::Round,
+        })
+        .with_start_cap(cap(stroke.start_cap))
+        .with_end_cap(cap(stroke.end_cap)))
+}
+
 fn cap(c: masonry_core::kurbo::Cap) -> lyon_tessellation::LineCap {
     match c {
         masonry_core::kurbo::Cap::Butt => lyon_tessellation::LineCap::Butt,
@@ -207,4 +227,44 @@ pub fn transform(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use masonry_core::core::Widget;
+    #[test]
+    fn stroke_float32_boundary_has_no_assertion_or_silent_clamp() {
+        let at = RecordLocation {
+            fragment: 7,
+            command: 3,
+            mask_depth: 2,
+            owner: masonry::widgets::Label::new("").prepare().id(),
+        };
+        for join in [
+            masonry_core::kurbo::Join::Miter,
+            masonry_core::kurbo::Join::Bevel,
+            masonry_core::kurbo::Join::Round,
+        ] {
+            for miter in [0., 0.5, 1. - f64::EPSILON, 1., 1e300, f64::NAN] {
+                let stroke = Stroke::new(5.).with_join(join).with_miter_limit(miter);
+                let result = std::panic::catch_unwind(|| stroke_options(&stroke, at));
+                let result = result.expect("GPU boundary must never panic");
+                if miter == 1. {
+                    let options = result.unwrap();
+                    assert_eq!(options.miter_limit, 1.);
+                } else {
+                    assert!(
+                        matches!(result, Err(GpuError::Unsupported { at: location, .. }) if location == at)
+                    );
+                }
+            }
+        }
+        for width in [-1., -f64::MIN_POSITIVE, f64::MIN_POSITIVE, 1e300, f64::NAN] {
+            assert!(
+                matches!(stroke_options(&Stroke::new(width), at), Err(GpuError::Unsupported { at: location, .. }) if location == at)
+            );
+        }
+        assert!(stroke_options(&Stroke::new(0.), at).is_ok());
+    }
 }

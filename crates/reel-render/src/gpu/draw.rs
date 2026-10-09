@@ -29,6 +29,7 @@ impl Context<'_> {
         };
         let _scratch = reserve(
             &self.budgets.transient,
+            &self.budget_scope.transient,
             2 << 20,
             self.gpu.limits.transient_bytes,
             "mesh scratch",
@@ -50,10 +51,11 @@ impl Context<'_> {
             .gpu
             .limits
             .resource_bytes
-            .saturating_sub(self.budgets.resources.usage().bytes);
+            .saturating_sub(self.budget_scope.resources.usage().bytes);
         let cost = resources::upload_cost(size)?;
         self.tickets.push(reserve(
             &self.budgets.resources,
+            &self.budget_scope.resources,
             cost,
             self.gpu.limits.resource_bytes,
             "resources",
@@ -113,6 +115,7 @@ impl Context<'_> {
         self.composite_supported(composite, at)?;
         let _scratch = reserve(
             &self.budgets.transient,
+            &self.budget_scope.transient,
             2 << 20,
             self.gpu.limits.transient_bytes,
             "mesh scratch",
@@ -163,6 +166,7 @@ impl Context<'_> {
                     let cost = resources::upload_cost([image.width, image.height])?;
                     self.tickets.push(reserve(
                         &self.budgets.resources,
+                        &self.budget_scope.resources,
                         cost,
                         self.gpu.limits.resource_bytes,
                         "image upload",
@@ -232,7 +236,7 @@ impl Context<'_> {
                 .gpu
                 .limits
                 .resource_bytes
-                .saturating_sub(self.budgets.resources.usage().bytes);
+                .saturating_sub(self.budget_scope.resources.usage().bytes);
             let Some(bitmap) = super::glyph::rasterize(frame, run, index, at, available)? else {
                 continue;
             };
@@ -245,6 +249,7 @@ impl Context<'_> {
             ));
             let _scratch = reserve(
                 &self.budgets.transient,
+                &self.budget_scope.transient,
                 8192,
                 self.gpu.limits.transient_bytes,
                 "glyph mesh scratch",

@@ -12,7 +12,7 @@ impl Renderer {
         let size = prepared.size;
         let bytes = u64::from(row) * u64::from(size[1]);
         let output_bytes = u64::from(size[0]) * u64::from(size[1]) * 16;
-        let _storage = self.reserve_readback(bytes * 2 + output_bytes)?;
+        let _storage = self.reserve_readback(&prepared, bytes * 2 + output_bytes)?;
         let buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("diagnostic readback"),
             size: bytes,

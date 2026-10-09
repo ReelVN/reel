@@ -40,6 +40,12 @@ pub enum GpuError {
     InvalidSize,
     IdentityExhausted,
     Busy,
+    /// Other prepared/in-flight submissions currently occupy the shared quota.
+    Pressure {
+        domain: &'static str,
+        requested: u64,
+        available: u64,
+    },
     Budget {
         domain: &'static str,
         requested: u64,
@@ -49,11 +55,24 @@ pub enum GpuError {
         at: RecordLocation,
         record: &'static str,
     },
+    DepthLimit {
+        at: RecordLocation,
+        limit: usize,
+    },
+    InvalidRecord {
+        at: RecordLocation,
+        record: &'static str,
+    },
     Geometry {
         at: RecordLocation,
         reason: String,
     },
     Readback(String),
+}
+impl GpuError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Busy | Self::Pressure { .. })
+    }
 }
 impl std::fmt::Display for GpuError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

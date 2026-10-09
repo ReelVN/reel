@@ -59,6 +59,13 @@ this first profile. This avoids cache invalidation aliases at the cost of repeat
 rasterization/uploads, which remain optimization work rather than a performance claim.
 
 Preparation reserves a submission slot as well as each target/resource allocation.
+`Busy` is temporary admission pressure; `Pressure` is shared residency held by
+other prepared/in-flight submissions. `Budget` is a permanent limit of this
+preparation itself. Per-preparation live quotas are checked before shared quotas,
+including readback storage and mesh scratch. All partial reservations release
+on refusal. The player retains latest state after temporary refusal and retries
+only when `poll()` observes completion. A permanent refusal stops preparation
+until a new state/size invalidation. Neither refusal updates accepted input geometry.
 Dropping a preparation cancels it and releases its tickets. Submission moves those
 tickets and frame leases into an in-flight entry; only observed queue completion
 releases them. `poll()` returns completed submission IDs once, at most the configured
@@ -89,3 +96,19 @@ sampling, color glyph layers, glyph stroke/embolden/local glyph transform and
 sizes above 256. Font IDs, collection index, variation coordinates, hint and
 position are retained without shaping. This explicit profile does not remove any
 architecture §16 feature from the full engine scope.
+
+Stroke width must convert to a finite, nonnegative f32 without nonzero underflow.
+Miter limit must be at least 1 in the original f64 and finite after f32 conversion,
+for every join including Bevel/Round. R01's legal `[0, 1)` miter values are rejected
+here with their drawing or opening clip `RecordLocation`; there is no clamp.
+Replay root/scopes and recursive mask roots count toward `max_depth`. Exceeding
+it returns permanent `DepthLimit` at the responsible command (the opening group
+for an empty mask); mismatched, underflowing or unclosed scopes return permanent
+`InvalidRecord`. These cannot be confused with admission `Busy`.
+
+Every surface configuration/recreation and device recovery freshly queries the
+current adapter/surface pair and rebuilds the SurfacePass for its selected format.
+The diagnostic profile explicitly requires an sRGB surface format, opaque alpha,
+FIFO presentation and render-attachment usage. An incompatible set is refused;
+old configuration is never reused. Surface epoch/candidate invalidation precedes
+negotiation, including failure; a recreated device advances generation independently.

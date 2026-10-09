@@ -13,3 +13,4 @@ mod readback;
 pub use present::SurfacePass;
 mod draw;
 mod replay;
+mod scopes;

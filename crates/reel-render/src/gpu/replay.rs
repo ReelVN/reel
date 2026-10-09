@@ -1,15 +1,15 @@
 use super::{
     Gpu, GpuError, Quality,
     pipeline::Pipelines,
-    renderer::{Budgets, reserve},
+    renderer::{Budgets, Reservation, reserve},
     resources,
+    scopes::{Kind, Scopes},
     targets::{Target, target_bytes},
 };
 use masonry_core::{
     imaging::{Composite, MaskMode, record::Clip},
     kurbo::Affine,
 };
-use reel_core::budget::BudgetTicket;
 use reel_stage::{FrameCommand, FrameOp, RecordLocation, RenderFrame};
 use std::{collections::HashMap, sync::Arc};
 pub(super) struct Context<'a> {
@@ -19,7 +19,8 @@ pub(super) struct Context<'a> {
     pub(super) quality: Quality,
     pub(super) size: [u32; 2],
     pub(super) budgets: &'a Budgets,
-    pub(super) tickets: Vec<BudgetTicket>,
+    pub(super) budget_scope: Budgets,
+    pub(super) tickets: Vec<Reservation>,
     pub(super) images: HashMap<reel_stage::ResourceHandle, Arc<resources::Image>>,
 }
 struct Scope<'a> {
@@ -33,6 +34,7 @@ impl Context<'_> {
         let cost = target_bytes(self.size, self.quality)?;
         self.tickets.push(reserve(
             &self.budgets.targets,
+            &self.budget_scope.targets,
             cost,
             self.gpu.limits.target_bytes,
             "targets",
@@ -54,30 +56,29 @@ impl Context<'_> {
         commands: &[FrameCommand],
         transform: Affine,
         depth: usize,
+        origin: RecordLocation,
     ) -> Result<Target, GpuError> {
-        if depth >= self.gpu.limits.max_depth {
-            return Err(GpuError::Busy);
-        }
-        let mut stack = vec![Scope {
-            target: self.target()?,
-            clip: None,
-            mask: None,
-            opacity: 1.,
-        }];
+        let mut stack = Scopes::new(depth, self.gpu.limits.max_depth, origin, || {
+            Ok(Scope {
+                target: self.target()?,
+                clip: None,
+                mask: None,
+                opacity: 1.,
+            })
+        })?;
         for command in commands {
             let at = command.origin.at;
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
-                    if depth + stack.len() >= self.gpu.limits.max_depth {
-                        return Err(GpuError::Busy);
-                    }
-                    stack.push(Scope {
-                        target: self.target()?,
-                        clip: Some(clip),
-                        mask: None,
-                        opacity: 1.,
-                    });
+                    stack.push(Kind::Clip, at, || {
+                        Ok(Scope {
+                            target: self.target()?,
+                            clip: Some(clip),
+                            mask: None,
+                            opacity: 1.,
+                        })
+                    })?;
                 }
                 FrameOp::PushGroup(group) => {
                     self.composite_supported(group.composite, at)?;
@@ -87,29 +88,28 @@ impl Context<'_> {
                             record: "group filters",
                         });
                     }
-                    if depth + stack.len() >= self.gpu.limits.max_depth {
-                        return Err(GpuError::Busy);
-                    }
-                    stack.push(Scope {
-                        target: self.target()?,
-                        clip: group.clip.as_ref(),
-                        mask: group.mask,
-                        opacity: group.composite.alpha,
-                    });
+                    stack.push(Kind::Group, at, || {
+                        Ok(Scope {
+                            target: self.target()?,
+                            clip: group.clip.as_ref(),
+                            mask: group.mask,
+                            opacity: group.composite.alpha,
+                        })
+                    })?;
                 }
                 FrameOp::PopClip | FrameOp::PopGroup => {
-                    let group = stack.pop().ok_or(GpuError::Unsupported {
-                        at,
-                        record: "scope underflow",
-                    })?;
-                    let parent = stack.last().ok_or(GpuError::Unsupported {
-                        at,
-                        record: "scope underflow",
-                    })?;
+                    let kind = if matches!(command.op, FrameOp::PopClip) {
+                        Kind::Clip
+                    } else {
+                        Kind::Group
+                    };
+                    let entry = stack.pop(kind, at)?;
+                    let group = entry.value;
+                    let parent = stack.last();
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
-                        self.clip(&coverage, clip, transform, at)?;
+                        self.clip(&coverage, clip, transform, entry.at)?;
                         let clipped = self.target()?;
                         self.combine(&clipped, &source.view, &coverage.view, 1., 1, 0.)?;
                         source = clipped;
@@ -127,7 +127,8 @@ impl Context<'_> {
                             frame,
                             &definition.commands,
                             transform * mask.transform,
-                            depth + stack.len(),
+                            stack.depth(),
+                            entry.at,
                         )?;
                         self.combine(
                             &parent.target,
@@ -152,7 +153,7 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
-                    self.draw(frame, &stack.last().unwrap().target, draw, transform, at)?
+                    self.draw(frame, &stack.last().target, draw, transform, at)?
                 }
                 FrameOp::External(_) => {
                     return Err(GpuError::Unsupported {
@@ -162,10 +163,7 @@ impl Context<'_> {
                 }
             }
         }
-        if stack.len() != 1 {
-            return Err(GpuError::Busy);
-        }
-        Ok(stack.pop().unwrap().target)
+        Ok(stack.finish()?.target)
     }
     pub(super) fn combine(
         &mut self,
@@ -194,6 +192,7 @@ impl Context<'_> {
     pub(super) fn transient(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.tickets.push(reserve(
             &self.budgets.transient,
+            &self.budget_scope.transient,
             bytes,
             self.gpu.limits.transient_bytes,
             "transient",
