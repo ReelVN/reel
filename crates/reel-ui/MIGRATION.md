@@ -139,7 +139,8 @@ Combined tested source: `e8383148d42a51e7c21aa794751cec7c5b620a60`.
 The same Linux/Rust/font/software Vulkan environment described above was used.
 Raw commands, logs, Rust supporting programs and the complete 26-check result list
 are ignored under `target/reel-artifacts/issue-34/composed-main-3962819/`.
-Later changes only record these results.
+The following documentation commits recorded these results; the later workload-case
+repair is documented separately below.
 
 | Combined check | Actual result and evidence |
 | --- | --- |
@@ -163,3 +164,37 @@ Driver allocations remain outside the hard frame/resource byte budget. CPU timin
 are software-device environment observations, not physical-GPU performance guarantees.
 Author node/DSL/image-slider work and platform IME/accessibility/touch adapters
 retain their existing boundaries. No V03, Aside source executor or Actions was run.
+
+## R01 workload-case repair
+
+At `8a35bd4b821569fb53932e012a20e3e92cd22805`, independent review found that
+`REEL_R01_PROBE_CASE=typo` skipped both workload iterations. An actual reproduction
+returned exit 0 and one passed test without any record/export workload output.
+This exposed a second gap beyond the previously repaired Cargo artifact selector.
+
+Fix `acaa88c56ff13d02bd1b50567f4ebb1abfb38f8e` makes unset select both workloads,
+accepts only `rect` or `path`, and fails on other values, including non-Unicode
+environment values. The probe asserts that every selected workload completed and
+that the count is positive. `measure` additionally requires actual completed
+record/export workload output: a named successful test alone is insufficient.
+No UI runtime or renderer/player production algorithm changed.
+
+Only relevant increment checks were rerun, following the parent's completed
+independent `8a35` combination review. Evidence is ignored under
+`target/reel-artifacts/issue-34/measure-case-fix/`:
+
+| Increment check | Actual result and evidence |
+| --- | --- |
+| Probe-case Rust regression, debug/release | One test passes each; `probe-case-{debug,release}.log` |
+| Measure selector/result Rust regressions, debug/release | Two tests pass each; `tool-tests.log`, `tool-tests-release.log`; test-name-only success rejected |
+| Release CLI default/rect/path | Exit 0; exactly two/one/one completed workloads, respectively; `case-cli-controls.log`, `case-{default,rect,path}.log` |
+| Release CLI typo/empty/uppercase/space | Exit 1 with explicit invalid-case failure before any workload; `case-cli-controls.log`, four corresponding case logs |
+| Old already-built empty probe with new measure | Child still exits 0, but measure exits 1 for no record/export workload; `stale-empty-artifact.log` and child log |
+| Actual debug default and typo probe | Default completes two workloads; typo fails with Cargo exit 101 and no workload; `debug-case-controls.log` and two case logs |
+| Existing contracts and launch control | Contracts still pass all 24 tests; standalone launch control exits 0; `contracts-launch.log`, `control-launch.log` |
+| Selected UI/reel-dev strict Clippy, debug/release; fmt/diff | Pass; `clippy-{debug,release}.log`, `fmt.log` |
+| Consumer and original assertion preservation | Pass; `source-preservation.log`; 22 production files, ten R03 functions/64 assertions, all original 343 UI/stage assertions plus new case/count assertions |
+
+The earlier GPU/window/guide combination results retain their recorded tested
+source and independent review scope. They were not rerun for this test/tool-only
+increment. Device, author API and source-execution boundaries remain unchanged.
