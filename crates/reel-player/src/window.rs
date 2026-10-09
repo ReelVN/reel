@@ -1,5 +1,8 @@
 use crate::diagnostic::Diagnostic;
-use crate::{demand::Demand, surface::negotiate};
+use crate::{
+    demand::{Demand, Draw},
+    surface::negotiate,
+};
 use masonry_core::{
     app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
     core::*,
@@ -37,6 +40,8 @@ pub(crate) struct State {
     resources: Vec<reel_stage::ResourceHandle>,
     epoch: u64,
     frame: u64,
+    // One budgeted immutable accepted CPU frame, for expose after model refusal.
+    accepted_frame: Option<RenderFrame>,
     pub(crate) pointer: masonry_core::dpi::PhysicalPosition<f64>,
     pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
@@ -186,8 +191,9 @@ impl State {
             resources,
             epoch: 1,
             frame: 0,
+            accepted_frame: None,
             pointer: Default::default(),
-            demand: Demand::Pending,
+            demand: Demand::default(),
             root_id,
             zoom: 1.,
         })
@@ -200,7 +206,7 @@ impl State {
             self.config = config;
             self.output = output;
         }
-        self.demand = Demand::Pending;
+        self.demand = Demand::default();
         self.window.request_redraw();
         Ok(())
     }
@@ -215,12 +221,13 @@ impl State {
         self.bridge
             .handle_window_event(masonry_core::core::WindowEvent::Resize(self.size));
         // Invalidates candidates even if fresh negotiation subsequently fails.
-        self.demand = Demand::Idle;
+        self.demand = Demand::idle();
+        self.accepted_frame = None;
         Ok(())
     }
     pub(crate) fn invalidate(&mut self) {
         self.demand.invalidate();
-        if self.demand.can_prepare() {
+        if self.demand.has_work() {
             self.window.request_redraw();
         }
     }
@@ -231,11 +238,11 @@ impl State {
     }
     pub(crate) fn render(&mut self) -> Result<(), Error> {
         self.poll_completions()?;
-        if !self.demand.can_prepare() {
+        let Some(draw) = self.demand.draw() else {
             return Ok(());
-        }
+        };
         if self.size.width == 0 || self.size.height == 0 {
-            self.demand = Demand::Idle;
+            self.demand = Demand::idle();
             return Ok(());
         }
         let Some(surface) = &self.surface else {
@@ -252,11 +259,29 @@ impl State {
             }
             Err(e) => return Err(e.into()),
         };
-        let frame = self.build_frame()?;
+        let frame = match draw {
+            Draw::Current => self.build_frame()?,
+            Draw::Accepted => {
+                let Some(frame) = &self.accepted_frame else {
+                    self.demand.presented(draw);
+                    return Ok(());
+                };
+                // A frozen repaint cannot install stale or unaccepted geometry.
+                if !self.bridge.accepted_key().is_some_and(|key| {
+                    key.frame_id() == frame.frame_id()
+                        && key.surface_epoch() == frame.surface_epoch()
+                }) {
+                    self.accepted_frame = None;
+                    self.demand.presented(draw);
+                    return Ok(());
+                }
+                frame.clone()
+            }
+        };
         let mut prepared = match self.renderer.prepare(&frame) {
             Ok(p) => p,
             Err(error) if error.is_retryable() => {
-                self.demand.refused(&error);
+                self.demand.refused(draw, &error);
                 return Ok(());
             }
             Err(
@@ -267,7 +292,10 @@ impl State {
                 | GpuError::InvalidRecord { .. }),
             ) => {
                 eprintln!("frame refused; keeping last accepted view: {error}");
-                self.demand.refused(&error);
+                self.demand.refused(draw, &error);
+                if draw == Draw::Current && self.accepted_frame.is_some() {
+                    self.demand.exposed();
+                }
                 return Ok(());
             }
             Err(e) => return Err(e.into()),
@@ -280,20 +308,35 @@ impl State {
         self.renderer.submit(prepared)?;
         self.window.pre_present_notify();
         surface_texture.present();
-        let notice = presentation_notice(
-            &frame,
-            SurfaceEpoch(self.epoch),
-            Ok(PresentOutcome::PresentAccepted(frame.frame_id())),
-        );
-        let accepted = self.bridge.resolve(notice);
+        let frame_id = frame.frame_id();
+        let notice_result = if draw == Draw::Current {
+            let notice = presentation_notice(
+                &frame,
+                SurfaceEpoch(self.epoch),
+                Ok(PresentOutcome::PresentAccepted(frame.frame_id())),
+            );
+            let result = self.bridge.resolve(notice);
+            if result == reel_stage::NoticeResult::Accepted {
+                self.accepted_frame = Some(frame);
+            }
+            Some(result)
+        } else {
+            // This is the exact already accepted frame; repaint has no new
+            // candidate and cannot accept or change the latest model's geometry.
+            None
+        };
         if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
             eprintln!(
-                "present frame={} epoch={} result={accepted:?}",
-                self.frame, self.epoch
+                "present frame={} epoch={} draw={draw:?} notice={notice_result:?}",
+                frame_id.0, self.epoch
             );
         }
-        self.demand = Demand::Idle;
+        self.demand.presented(draw);
         Ok(())
+    }
+    pub(crate) fn redraw_requested(&mut self) -> Result<(), Error> {
+        self.demand.exposed();
+        self.render()
     }
     fn build_frame(&mut self) -> Result<RenderFrame, Error> {
         self.frame = self
@@ -366,7 +409,7 @@ impl State {
         self.output = output;
         self.config = config;
         self.renderer = Renderer::new(gpu);
-        self.demand = Demand::Pending;
+        self.demand = Demand::default();
         self.window.request_redraw();
         eprintln!(
             "device recovered generation={generation}, epoch={}",
@@ -380,7 +423,8 @@ impl State {
         let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
         let _ = self.renderer.poll();
         self.surface = None;
-        self.demand = Demand::Idle;
+        self.demand = Demand::idle();
+        self.accepted_frame = None;
     }
     pub(crate) fn is_suspended(&self) -> bool {
         self.surface.is_none()
@@ -454,6 +498,7 @@ impl Drop for State {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::demand::Model;
     use masonry_core::app::InputGeometrySource;
     use winit::{
         application::ApplicationHandler, event_loop::EventLoop,
@@ -487,7 +532,7 @@ mod tests {
         )
         .unwrap();
         state.render().unwrap();
-        let accepted = state.bridge.accepted_key().unwrap().frame_id();
+        assert!(state.bridge.accepted_key().is_some());
         state
             .renderer
             .gpu()
@@ -495,6 +540,22 @@ mod tests {
             .poll(wgpu::PollType::Wait)
             .unwrap();
         state.poll_completions().unwrap();
+        let before_expose = state.frame;
+        state.redraw_requested().unwrap();
+        assert!(state.frame > before_expose);
+        let accepted = state.bridge.accepted_key().unwrap().frame_id();
+        assert_eq!(state.demand.model, Model::Idle);
+        state
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
+        // Successful idle never creates a timer-driven model preparation.
+        let after_expose = state.frame;
+        state.render().unwrap();
+        assert_eq!(state.frame, after_expose);
         let held_frame = state.build_frame().unwrap();
         let held = state.renderer.prepare(&held_frame).unwrap();
         eprintln!(
@@ -506,7 +567,7 @@ mod tests {
         });
         state.invalidate();
         state.render().unwrap();
-        assert_eq!(state.demand, Demand::Waiting);
+        assert_eq!(state.demand.model, Model::Waiting);
         assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
         assert_eq!(
             accepted_transform(&state),
@@ -528,12 +589,57 @@ mod tests {
         assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
         assert!(state.renderer.usage().targets > 0);
         state.render().unwrap(); // observes completion and retries latest state, without input
-        assert_eq!(state.demand, Demand::Idle);
+        assert_eq!(state.demand.model, Model::Idle);
         assert!(state.bridge.accepted_key().unwrap().frame_id() > accepted);
         assert_eq!(
             accepted_transform(&state),
             masonry_core::kurbo::Affine::scale(0.7)
         );
+        state
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
+        // R01 can freeze this finite f64 transform; GPU conversion cannot represent it.
+        state.bridge.edit_widget(state.root_id, |mut widget| {
+            widget.set_transform(masonry_core::kurbo::Affine::scale(1e100))
+        });
+        state.invalidate();
+        state.redraw_requested().unwrap();
+        assert_eq!(state.demand.model, Model::Blocked);
+        let failed_count = state.frame;
+        let accepted = state.bridge.accepted_key().unwrap().frame_id();
+        state.redraw_requested().unwrap(); // repaint exact accepted frame; no bad-model compile
+        assert!(
+            state.renderer.usage().targets > 0,
+            "expose must actually submit the frozen accepted frame"
+        );
+        assert_eq!(state.frame, failed_count);
+        assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
+        assert_eq!(
+            accepted_transform(&state),
+            masonry_core::kurbo::Affine::scale(0.7)
+        );
+        state
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
+        for _ in 0..10 {
+            state.render().unwrap();
+        }
+        assert_eq!(state.frame, failed_count);
+        assert_eq!(state.demand.model, Model::Blocked);
+        state.bridge.edit_widget(state.root_id, |mut widget| {
+            widget.set_transform(masonry_core::kurbo::Affine::scale(0.7))
+        });
+        state.invalidate();
+        state.redraw_requested().unwrap();
+        assert_eq!(state.demand.model, Model::Idle);
         assert!(!state.renderer.poll().unwrap().contains(&id)); // completion is delivered once
 
         state
@@ -560,6 +666,7 @@ mod tests {
         assert_eq!(state.epoch, old_epoch + 1);
         assert!(state.config.format.is_srgb());
         assert!(state.bridge.accepted_key().is_none());
+        assert!(state.accepted_frame.is_none());
         assert_eq!(
             state.bridge.resolve(old_notice),
             reel_stage::NoticeResult::StaleOrForeign
@@ -578,6 +685,7 @@ mod tests {
         state.suspend();
         assert!(state.is_suspended());
         assert!(state.bridge.accepted_key().is_none());
+        assert!(state.accepted_frame.is_none());
         state.resume().unwrap();
         assert_eq!(state.renderer.gpu().generation(), generation);
         assert_eq!(state.epoch, epoch + 1);
@@ -588,6 +696,7 @@ mod tests {
         state.render().unwrap();
         assert_eq!(state.frame, frame);
         assert!(state.bridge.accepted_key().is_none());
+        assert!(state.accepted_frame.is_none());
         drop(state);
 
         // Permanent refusals stop preparation even when unrelated GPU work completes.
@@ -603,11 +712,11 @@ mod tests {
         ] {
             let mut refused = State::with_limits(event_loop, 1, limits).unwrap();
             refused.render().unwrap();
-            assert_eq!(refused.demand, Demand::Idle);
+            assert_eq!(refused.demand.model, Model::Blocked);
             assert!(refused.bridge.accepted_key().is_none());
             let count = refused.frame;
             for _ in 0..10 {
-                refused.render().unwrap();
+                refused.redraw_requested().unwrap();
             }
             assert_eq!(refused.frame, count);
             assert_eq!(refused.renderer.usage().targets, 0);

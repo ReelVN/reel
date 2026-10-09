@@ -66,6 +66,15 @@ including readback storage and mesh scratch. All partial reservations release
 on refusal. The player retains latest state after temporary refusal and retries
 only when `poll()` observes completion. A permanent refusal stops preparation
 until a new state/size invalidation. Neither refusal updates accepted input geometry.
+OS `RedrawRequested` is a separate content-invalidation obligation. After successful
+presentation it acquires/submits/presents again even with no model change. A blocked
+latest model is never recompiled just because of expose: the player retains at most
+one already accepted CPU RenderFrame (with its existing budgeted resource/geometry
+leases) and repaints that exact frozen frame. Repaint does not issue a new bridge
+acceptance or install latest model geometry. Temporary repaint pressure waits for
+completion too; successful repaint preserves the model's permanent block. The
+retained CPU frame is replaced on new acceptance and cleared on epoch change,
+suspend or shutdown. GPU allocation residency still ends at observed completion.
 Dropping a preparation cancels it and releases its tickets. Submission moves those
 tickets and frame leases into an in-flight entry; only observed queue completion
 releases them. `poll()` returns completed submission IDs once, at most the configured

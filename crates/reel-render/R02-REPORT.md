@@ -22,6 +22,10 @@ scope are in [R02-INTERFACE](R02-INTERFACE.md). Native handles stay in player.
 - Resize, surface recreation and device recovery freshly negotiate capabilities
   and rebuild SurfacePass. An incompatible format/alpha/present-mode/usage set is
   refused. Old device preparations and surface candidates remain invalid.
+- OS expose is independent of model dirtiness. Successful idle frames redraw;
+  blocked latest models repaint one bounded, frozen accepted CPU frame without
+  compiling the bad model or changing accepted geometry. Timer/completion polling
+  alone schedules neither a clean frame nor a permanent retry.
 
 The follow-up does not add persistent caches/atlas, scene-wide quality selection,
 white-texture or pipeline reuse. Unsupported records and target limitations in the

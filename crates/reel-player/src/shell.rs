@@ -137,7 +137,7 @@ impl ApplicationHandler for App {
                 state.invalidate();
                 Ok(())
             }
-            WindowEvent::RedrawRequested => state.render(),
+            WindowEvent::RedrawRequested => state.redraw_requested(),
             _ => Ok(()),
         };
         if let Err(e) = result {
@@ -166,11 +166,11 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
-            if state.demand.can_prepare() {
+            if state.demand.has_work() {
                 state.window.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            if state.demand.can_prepare() || state.renderer.usage().targets != 0 {
+            if state.demand.has_work() || state.renderer.usage().targets != 0 {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
                     Instant::now() + Duration::from_millis(8),
                 ));
