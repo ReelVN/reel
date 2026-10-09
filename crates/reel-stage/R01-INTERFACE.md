@@ -47,8 +47,11 @@ or External token. Structured source file/line/column and diagnostic contexts
 are retained in the completed frame. Invalid/nonfinite records, capacity/work/
 bytes exhaustion and unsupported records abort the whole candidate.
 The painter's command ranges identify ordinary Inline children as well as layer
-owners. Their binary lookup is prepaid within the step work allowance; payload
-continuations keep the same owner. Generated clips and debug/inspector commands
+owners. A range cursor advances only to the next contiguous range during a
+prepaid command commit or fragment advance; setup seeds the first owner by one
+indexed read. This makes even `Work` failure during the next command's mapping
+prepayment report that command's owner, with no diagnostic scan or late binary
+lookup. Payload continuations keep the same owner. Generated clips and debug/inspector commands
 also record their actual owner. Mask commands inherit their defining owner.
 
 ## Portable stream

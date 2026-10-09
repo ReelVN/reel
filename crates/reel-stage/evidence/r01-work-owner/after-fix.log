@@ -1,0 +1,9 @@
+   Compiling reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.75s
+     Running tests/r01.rs (target/debug/deps/r01-f93233aa12c09dd9)
+
+running 1 test
+test work_exhaustion_before_inline_child_mapping_has_the_child_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+

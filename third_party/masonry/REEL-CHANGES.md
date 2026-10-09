@@ -62,7 +62,8 @@ R01 adds only the paint metadata/ordering needed by architecture §16:
 - VisualLayer groups carry command index, owner WidgetId and forward effect
   space recorded at each paint/append boundary. No owner is inferred from draws.
 - Sorted command-owner ranges also capture ordinary Inline children, generated
-  clips and debug/inspector painting. Frame export prepays their bounded lookup.
+  clips and debug/inspector painting. Frame export advances a range cursor during
+  prepaid command/fragment advancement, including for Work failure diagnostics.
 - External retains opaque token, content-local bounds and content transform.
   PaintCtx::set_external_paint declares its retained mode/token. External is
   emitted after pre and own clip, before children; pop clip and post follow.

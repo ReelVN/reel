@@ -16,7 +16,76 @@ full forward origin/scroll transforms. [R01-INTERFACE.md](R01-INTERFACE.md)
 specifies ownership, quotas, cancellation and the portable profile;
 [reel-render/README.md](../reel-render/README.md) specifies backend consumers.
 
-## Review repairs on PR #27 (2026-10-09)
+## Work-budget diagnostic ownership repair (after `411cc753`)
+
+The owning WidgetId contract applies to `Work` errors too. A public-API regression
+reproduced the remaining boundary with only two actual Masonry Draw commands and
+no clip: allowance 20 and slice allowance 1 reported child command 1 with its
+parent's owner. [Before-fix output](evidence/r01-work-owner/before-fix.log) retains
+that failure; this agrees with the owner's independent debug/release counterexample.
+
+Each compiler cursor now retains a monotonically advancing owner-range index.
+Setup seeds the first range using one indexed read. Main command commit and Scene
+fragment advance prepay three units, including the constant range/owner update;
+External fragment advance is included in its prepaid header work. Each command
+crosses at most one contiguous range, without a scan or binary search. The next
+command's owner is therefore already current before mapping prepayment can fail.
+Mask cursors retain their defining owner; paused payload/allocation work retains
+the selected main owner. Error reporting itself only reads the stored cursor.
+Per-command range validation is still prepaid. Minimum indivisible advance costs
+are reported through `minimum_units`; the work ledger is deliberately updated to
+cover the additional cursor work, so old numerical failure cutoffs may move.
+
+The regression sweeps total allowances 0..95 with slice allowances 1 and 64,
+covering adjacent parent/child draws and the first draw belonging to an Inline
+child of a nondrawing fragment owner: 384 public builds per profile. Every actual
+command's Work owner is checked against its painter, aggregate/per-slice units
+remain within allowance, and failure/finished-frame drop releases output and
+candidate eligibility. Each configuration reaches 21 child-owned Work failures
+and successful publication. The final one-past-stream probe is an end marker,
+not an actual command. [Debug](evidence/r01-work-owner/debug-tests.log) and
+[release](evidence/r01-work-owner/release-tests.log) pass 14 R01 cases, the original
+24 U02 contracts, zero-allocation dispatch, 12 core and six render contracts.
+[Strict Clippy](evidence/r01-work-owner/clippy.log), fmt and
+[recorded commands](evidence/r01-work-owner/checks.log) pass. Real Parley retains
+one run / 14 positioned glyphs in [debug](evidence/r01-work-owner/parley-debug.log)
+and [release](evidence/r01-work-owner/parley-release.log). No Masonry production
+source/dependency changes were needed; its [source audit](evidence/r01-work-owner/source-audit.log)
+remains 94 fixed files, one existing local source and 212,652 diff bytes.
+
+Two isolated processes per original workload, each with 20 warm samples, remeasure
+complete export including setup, all steps and finish/source cleanup:
+
+| Observed wall time after owner-cursor repair | Rectangles | Large paths |
+| --- | ---: | ---: |
+| Warm complete build p50 | 0.368–0.375 ms | 2.471–2.582 ms |
+| Warm complete build p95 | 0.469–0.494 ms | 2.675–2.739 ms |
+| Cold complete export | 0.490–0.492 ms | 3.033–3.088 ms |
+| Maximum cold step | 5.583–24.876 µs | 38.793–45.181 µs |
+| Finish/source cleanup | 16.023–16.486 µs | 3.120–3.310 µs |
+| Paused cancellation | 2.569–2.873 µs | 2.217–2.393 µs |
+| Isolated source Drop | 2.053–2.458 µs | 2.189–2.249 µs |
+
+The range index adds eight bytes per bounded Cursor: the configured 32-cursor
+scratch reservation and actual setup allocation increase by 256 bytes. Full
+export still uses 11 / 27 allocation calls and zero reallocations, now requesting
+303,896 / 1,858,072 bytes with 258 / 901 steps. Frame accounting is
+305,056 / 1,859,232 against its continuous 16MiB ticket. Measured record residency
+and source Drop are unchanged; live requested-byte phase peaks are now
+1,142,232 / 7,414,488, with the extra scratch freed at finish. Immutable-frame
+residency remains 856,328 / 5,558,536; source Drop still frees
+277,192 / 1,847,240 bytes in eight / 24 deallocations. These source/private,
+physical allocator observations remain distinct from output reservations.
+[Rectangles 1](evidence/r01-work-owner/residency-rect-1.log),
+[rectangles 2](evidence/r01-work-owner/residency-rect-2.log),
+[paths 1](evidence/r01-work-owner/residency-path-1.log),
+[paths 2](evidence/r01-work-owner/residency-path-2.log) and the
+[RSS launch control](evidence/r01-work-owner/rss-launch-control.log) retain the
+full observations. This does not establish a wall-clock deadline or GPU behavior.
+Previous repair evidence below remains unchanged. The same draft branch is used;
+owner independent revalidation remains pending, with no execution blocker.
+
+## Initial review repairs (`411cc753`, 2026-10-09)
 
 All five Issue #25 findings were reproduced against `73589e9` with actual
 Masonry records and the public consumers: every new check failed as expected.
@@ -48,7 +117,7 @@ constructor/step/finish failure and cancel/drop explicitly invalidate qualificat
 even with an outstanding notice. U02 identity, ordering, first-frame, capture,
 clear and epoch gates remain intact. No upload/build completion accepts input.
 
-Final debug and release runs pass 12 core, 24 unchanged U02 behavioral contracts,
+At `411cc753`, debug and release runs pass 12 core, 24 unchanged U02 behavioral contracts,
 the zero-allocation pointer-dispatch contract, 13 R01 cases and six render cases.
 Real Parley independently passes both profiles with one run / 14 original glyphs.
 Workspace and selected masonry_core/tree_arena strict all-target Clippy, both fmt
@@ -66,11 +135,11 @@ production diff. [Normal](evidence/r01-review/normal-dependencies.log) and
 single-source dependency boundaries. Both guide editions and the latest full
 architecture were updated together; their Aside snippets remain identical.
 
-Final isolated release probes use the original workloads, slicing, allocator
+The `411cc753` isolated release probes use the original workloads, slicing, allocator
 instrumentation and 20 warm samples per process, two processes per workload.
 Full export includes setup, every step, finish and source cleanup:
 
-| Final observed wall time | 512 rectangles | 16 × (move + 2,048 lines) |
+| Observed wall time at `411cc753` | 512 rectangles | 16 × (move + 2,048 lines) |
 | --- | ---: | ---: |
 | Cold real record | 0.356–0.499 ms | 1.418–2.352 ms |
 | Cold complete export | 0.521–0.604 ms | 3.305–3.698 ms |

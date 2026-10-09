@@ -22,6 +22,7 @@ pub struct RecordWidget {
     pub mode: PaintLayerMode,
     pub token: u64,
     pub scroll: Vec2,
+    pub clip: bool,
 }
 impl RecordWidget {
     pub fn new(own: Scene) -> Self {
@@ -37,6 +38,7 @@ impl RecordWidget {
             mode: PaintLayerMode::Inline,
             token: 0,
             scroll: Vec2::ZERO,
+            clip: true,
         }
     }
 }
@@ -56,7 +58,10 @@ impl Widget for RecordWidget {
         self.inner.measure(c, p, a, l, n)
     }
     fn layout(&mut self, c: &mut LayoutCtx<'_>, p: &PropertiesRef<'_>, s: Size) {
-        self.inner.layout(c, p, s)
+        self.inner.layout(c, p, s);
+        if !self.clip {
+            c.clear_clip_path();
+        }
     }
     fn compose(&mut self, c: &mut ComposeCtx<'_>) {
         for (child, _, _) in &mut self.inner.children {

@@ -307,6 +307,36 @@ struct Cursor {
     clips: Vec<usize>,
     groups: Vec<usize>,
     owner: WidgetId,
+    owner_range: usize,
+}
+impl Cursor {
+    fn advance_command(&mut self, plan: &masonry_core::app::VisualLayerPlan) {
+        self.position += 1;
+        if self.stream.is_some() {
+            return;
+        }
+        let layer = &plan.layers[self.layer];
+        // Ranges are contiguous producer metadata. At most one neighbor is read
+        // per prepaid commit; never scan after work exhaustion to diagnose it.
+        if layer.command_owners[self.owner_range].commands.end == self.position {
+            self.owner_range += 1;
+            self.owner = layer
+                .command_owners
+                .get(self.owner_range)
+                .map_or(layer.widget_id, |r| r.owner);
+        }
+    }
+    fn advance_fragment(&mut self, plan: &masonry_core::app::VisualLayerPlan) {
+        self.layer += 1;
+        self.position = 0;
+        self.owner_range = 0;
+        if let Some(layer) = plan.layers.get(self.layer) {
+            self.owner = layer
+                .command_owners
+                .first()
+                .map_or(layer.widget_id, |r| r.owner);
+        }
+    }
 }
 #[derive(Debug)]
 struct MaskMapping {
@@ -371,11 +401,10 @@ impl FrameBuild {
             fragment: 0,
             command: 0,
             mask_depth: 0,
-            owner: source
-                .plan
-                .layers
-                .first()
-                .map_or_else(|| source.geometry.records()[0].id, |l| l.widget_id),
+            owner: source.plan.layers.first().map_or_else(
+                || source.geometry.records()[0].id,
+                |l| l.command_owners.first().map_or(l.widget_id, |r| r.owner),
+            ),
         };
         let error = |kind| {
             source.key.identity.cancelled.store(true, Ordering::Release);
@@ -445,6 +474,7 @@ impl FrameBuild {
             clips: Vec::with_capacity(limits.max_depth),
             groups: Vec::with_capacity(limits.max_depth),
             owner: at.owner,
+            owner_range: 0,
         };
         let mut cursors = Vec::with_capacity(limits.max_depth);
         cursors.push(cursor);
@@ -638,9 +668,10 @@ impl Building {
                     self.job = Some(job);
                     continue;
                 }
-                let commit_units = self.cursors.last().unwrap().scopes.len() as u64
-                    + self.cursors.last().unwrap().path.len() as u64
-                    + 1;
+                let cursor = self.cursors.last().unwrap();
+                let commit_units = cursor.scopes.len() as u64
+                    + cursor.path.len() as u64
+                    + if cursor.stream.is_none() { 3 } else { 1 };
                 if !self.spend(&mut p, &b, commit_units, 0)? {
                     p.minimum_units = commit_units;
                     self.job = Some(job);
@@ -668,7 +699,7 @@ impl Building {
                 self.complete = true;
                 break;
             }
-            // Prepay even the source-path probe, owner/group searches and External
+            // Prepay even the source-path probe, owner validation/group search and External
             // resource/ink lookup. Credit survives a slice too small for the lookup.
             let group_search = u64::from(
                 usize::BITS
@@ -677,23 +708,22 @@ impl Building {
                         .len()
                         .leading_zeros(),
             );
-            let owner_search = if c.stream.is_none() {
-                u64::from(
-                    usize::BITS
-                        - self.source.plan.layers[c.layer]
-                            .command_owners
-                            .len()
-                            .leading_zeros(),
-                )
-            } else {
+            let owner_work = if c.stream.is_some() {
                 0
+            } else if matches!(
+                self.source.plan.layers[c.layer].kind,
+                VisualLayerKind::External { .. }
+            ) {
+                3
+            } else {
+                1
             };
             let mapping_work = 2 * self.mappings.len() as u64
                 + 4 * c.path.len() as u64
                 + 2 * self.resources.leases().len() as u64
                 + c.scopes.len() as u64
                 + group_search
-                + owner_search
+                + owner_work
                 + 8;
             let available = (mapping_work - self.start_credit).min(b.max_units - p.units);
             self.spend(&mut p, &b, available, 0)?;
@@ -705,7 +735,9 @@ impl Building {
             let c = self.cursors.last().unwrap();
             if let Some(scene) = Self::scene(&self.source, c) {
                 if c.position == scene.commands().len() {
-                    if !self.spend(&mut p, &b, 1, 0)? {
+                    let advance_units = if c.stream.is_none() { 3 } else { 1 };
+                    if !self.spend(&mut p, &b, advance_units, 0)? {
+                        p.minimum_units = advance_units;
                         break;
                     }
                     self.start_credit = 0;
@@ -716,12 +748,10 @@ impl Building {
                         }
                         self.cursors.pop();
                     } else {
-                        let c = self.cursors.last_mut().unwrap();
-                        c.layer += 1;
-                        c.position = 0;
-                        if let Some(layer) = self.source.plan.layers.get(c.layer) {
-                            c.owner = layer.widget_id;
-                        }
+                        self.cursors
+                            .last_mut()
+                            .unwrap()
+                            .advance_fragment(&self.source.plan);
                     }
                     continue;
                 }
@@ -731,8 +761,6 @@ impl Building {
                     break;
                 }
                 self.start_credit = 0;
-                let c = self.cursors.last_mut().unwrap();
-                c.owner = self.source.plan.layers[c.layer].widget_id;
                 let c = self.cursors.last().unwrap();
                 if self.command_count >= self.limits.max_commands {
                     return Err(self.error(BuildErrorKind::Capacity));
@@ -775,9 +803,10 @@ impl Building {
                 self.commands.push(command);
                 self.command_count += 1;
                 p.commands += 1;
-                let c = self.cursors.last_mut().unwrap();
-                c.layer += 1;
-                c.position = 0;
+                self.cursors
+                    .last_mut()
+                    .unwrap()
+                    .advance_fragment(&self.source.plan);
                 continue;
             }
             if self.allocation_need.is_none() {
@@ -785,21 +814,18 @@ impl Building {
                     p.minimum_bytes = size_of::<FrameCommand>() as u64;
                     break;
                 }
-                // Lookup once after header payment, retaining this owner while
-                // payload-capacity credits accumulate over subsequent slices.
+                // Validate the already selected range once after prepayment.
+                // Owner was advanced by the prior commit, before any new spend.
                 let c = self.cursors.last().unwrap();
                 if c.stream.is_none() {
                     let layer = &self.source.plan.layers[c.layer];
-                    let index = layer
+                    layer
                         .command_owners
-                        .partition_point(|range| range.commands.end <= c.position);
-                    let owner = layer
-                        .command_owners
-                        .get(index)
-                        .filter(|range| range.commands.start <= c.position)
-                        .ok_or_else(|| self.error(BuildErrorKind::InvalidRecord))?
-                        .owner;
-                    self.cursors.last_mut().unwrap().owner = owner;
+                        .get(c.owner_range)
+                        .filter(|range| {
+                            range.commands.contains(&c.position) && range.owner == c.owner
+                        })
+                        .ok_or_else(|| self.error(BuildErrorKind::InvalidRecord))?;
                 }
                 self.allocation_need = Some(self.next_allocation()?);
             }
@@ -1088,7 +1114,10 @@ impl Building {
         };
         self.program(stream).push(job.command);
         self.command_count += 1;
-        self.cursors.last_mut().unwrap().position += 1;
+        self.cursors
+            .last_mut()
+            .unwrap()
+            .advance_command(&self.source.plan);
         if let Some((mask, index)) = job.descend.take() {
             let parent = self.cursors.last().unwrap();
             let mut path = Vec::with_capacity(self.limits.max_depth);
@@ -1104,6 +1133,7 @@ impl Building {
                 clips: Vec::with_capacity(self.limits.max_depth),
                 groups: Vec::with_capacity(self.limits.max_depth),
                 owner,
+                owner_range: 0,
             });
         }
         Ok(())
