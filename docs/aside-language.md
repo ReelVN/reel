@@ -450,3 +450,5 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 - slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
 - 增量回收参考：https://github.com/kyren/gc-arena
 
+
+实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
