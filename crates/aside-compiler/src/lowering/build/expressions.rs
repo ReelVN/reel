@@ -147,11 +147,7 @@ impl FunctionBuilder<'_, '_> {
             }
             (H::Tuple | H::Array, Form::Sequence) => self.sequence(n, depth),
             (H::Object, Form::Sequence) => self.table(n, depth),
-            (H::Index, _) => self.index(n, depth - 1),
-            (H::Member, _) => Err(self.l.b.error(
-                ErrorKind::Unsupported,
-                "member access awaits member/callable lowering",
-            )),
+            (H::Index | H::Member, _) => self.position_value(n, depth - 1),
             (H::Prefix, Form::Unary { operator, value }) => {
                 // Treat the negative int64 minimum as a single source constant.
                 if operator.kind == K::Minus

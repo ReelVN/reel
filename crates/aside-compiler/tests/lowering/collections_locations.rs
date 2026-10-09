@@ -2,18 +2,18 @@
 use super::*;
 use aside_compiler::{DiagnosticCode, byte_range};
 
-fn pcs(f: &bc::FunctionDef, opcode: bc::Opcode) -> Vec<usize> {
+pub(super) fn pcs(f: &bc::FunctionDef, opcode: bc::Opcode) -> Vec<usize> {
     f.code
         .iter()
         .enumerate()
         .filter_map(|(pc, i)| (i.opcode == opcode as u16).then_some(pc))
         .collect()
 }
-fn text<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef, pc: usize) -> &'a str {
+pub(super) fn text<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef, pc: usize) -> &'a str {
     let span = f.source_map[pc].span;
     &p.sources[span.file.index()].text[span.start as usize..span.end as usize]
 }
-fn calls<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef) -> Vec<&'a str> {
+pub(super) fn calls<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef) -> Vec<&'a str> {
     pcs(f, bc::Opcode::Call)
         .into_iter()
         .map(|pc| text(p, f, pc))
@@ -29,12 +29,12 @@ fn writes(f: &bc::FunctionDef, pc: usize, reg: u32) -> bool {
         .unwrap();
     found
 }
-fn definition(f: &bc::FunctionDef, reg: u32, before: usize) -> usize {
+pub(super) fn definition(f: &bc::FunctionDef, reg: u32, before: usize) -> usize {
     (0..before)
         .rfind(|&pc| writes(f, pc, reg))
         .expect("register definition")
 }
-fn assert_live(f: &bc::FunctionDef, reg: u32, from: usize, to: usize) {
+pub(super) fn assert_live(f: &bc::FunctionDef, reg: u32, from: usize, to: usize) {
     for pc in from + 1..to {
         assert!(
             !writes(f, pc, reg),
@@ -42,7 +42,7 @@ fn assert_live(f: &bc::FunctionDef, reg: u32, from: usize, to: usize) {
         );
     }
 }
-fn assert_cleared(f: &bc::FunctionDef, reg: u32, after: usize) {
+pub(super) fn assert_cleared(f: &bc::FunctionDef, reg: u32, after: usize) {
     let next = (after + 1..f.code.len())
         .find(|&pc| writes(f, pc, reg))
         .unwrap();
@@ -492,12 +492,10 @@ fn conditional_fallthrough_keeps_prepared_values_and_shared_cfg_dominance() {
 }
 
 #[test]
-fn deferred_collection_member_optional_and_pattern_forms_are_located() {
+fn deferred_collection_optional_and_pattern_forms_are_located() {
     for (source, span, detail) in [
         ("fn f(a){[...a]}", "...a", "spread"),
         ("fn f(a){({...a})}", "...a", "spread"),
-        ("fn f(a){a.x}", "a.x", "member"),
-        ("fn f(a){a.x=1;}", "a.x", "member"),
         ("fn f(a){a?[0]}", "a?[0]", "optional"),
         ("fn f(a){a?[0][1]}", "a?[0][1]", "optional"),
         ("fn f(a){(a?[0])[1]}", "a?[0]", "optional"),

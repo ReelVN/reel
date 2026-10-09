@@ -362,3 +362,34 @@ above; actual Cell execution/lifetime acceptance remains pending. Full-language
 deferred scopes and external-environment link boundaries are listed in
 [LOWERING.md](LOWERING.md). The owner maintains language/index/guide status;
 integration-owner source review and acceptance remain separate from this report.
+
+## 2026-10-09 nonoptional members (L07)
+
+Implementation [c428a329](https://github.com/jhq223/reel/commit/c428a3293258d82cc93d3d22bd43d3d39cf61c05),
+Issue #42 / PR #43, builds on main fd12d144. The author's Rust 1.96.0
+static checks report 146 compiler tests per debug/release profile (56 lowering,
+including 12 Member tests), and 51 B01 tests per profile. fmt and compiler
+all-target clippy with warnings denied passed. Independent acceptance is
+recorded separately in the PR.
+
+The existing lowering_probe now has a members mode. Its source repeats a mixed
+Name/Member/Index chain with a receiver-rebinding RHS, Member compound assignment
+and dynamic member call. Fresh processes at N=1 and N=1000 passed the retained
+allocation checks; the maximum function register count was 9 in both.
+At N=1000 the author measured 66,027 instructions and 5,409,572 retained bytes,
+equal to the actual retained allocation counter. This is a capacity/structure
+measurement, not a speedup comparison or runtime execution result.
+
+Reproduce the static workload:
+
+```sh
+cargo build -p aside-compiler --example lowering_probe --release --locked
+target/release/examples/lowering_probe 1 members
+target/release/examples/lowering_probe 1000 members
+cargo test -p aside-compiler --test lowering members --locked
+cargo test -p aside-compiler --test lowering members --release --locked
+```
+
+No V03, source execution or bytecode interpretation is involved. Actual member
+binding, setter/metamethod effects, GC and restoration remain outside these
+measurements. Generated evidence belongs under ignored target/reel-artifacts.

@@ -1,4 +1,4 @@
-//! A prepared index keeps its receiver/key live until the final read/write.
+//! Prepared positions keep receiver values live until the final read/write.
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -10,6 +10,11 @@ enum PreparedLocation {
     Index {
         object: bc::Reg,
         key: bc::Reg,
+        node: h::NodeId,
+    },
+    Member {
+        object: bc::Reg,
+        symbol: bc::SymbolId,
         node: h::NodeId,
     },
 }
@@ -70,10 +75,33 @@ impl FunctionBuilder<'_, '_> {
                         "optional index/chain awaits optional-chain lowering",
                     ));
                 }
+                (
+                    H::Member,
+                    Form::Member {
+                        object,
+                        key,
+                        optional: false,
+                        chain: false,
+                    },
+                ) => {
+                    let symbol =
+                        self.l.name(self.l.m.hir().name(key.name.ok_or_else(|| {
+                            self.l.b.error(ErrorKind::InvalidIr, "member name identity")
+                        })?))?;
+                    let Some(object) = self.value(object, depth + 1)? else {
+                        return Ok(None);
+                    };
+                    // Capture the object value and name, never a slot or setter.
+                    return Ok(Some(PreparedLocation::Member {
+                        object,
+                        symbol,
+                        node: n,
+                    }));
+                }
                 (H::Member, _) => {
                     return Err(self.l.b.error(
                         ErrorKind::Unsupported,
-                        "member assignment awaits member position lowering",
+                        "optional member/chain awaits optional-chain lowering",
                     ));
                 }
                 _ => {
@@ -97,6 +125,17 @@ impl FunctionBuilder<'_, '_> {
                 self.op(bc::Opcode::IndexGet, out.0, object.0, key.0, node)?;
                 Ok(out)
             }
+            PreparedLocation::Member {
+                object,
+                symbol,
+                node,
+            } => {
+                self.l.b.span = self.span(node);
+                let out = self.temp()?;
+                // B01 binds class methods only; callable values are not rewritten.
+                self.op(bc::Opcode::MemberGet, out.0, object.0, symbol.0, node)?;
+                Ok(out)
+            }
         }
     }
     fn write_location(&mut self, location: PreparedLocation, value: bc::Reg) -> Result<(), Error> {
@@ -108,13 +147,25 @@ impl FunctionBuilder<'_, '_> {
             PreparedLocation::Index { object, key, node } => {
                 self.op(bc::Opcode::IndexSet, object.0, key.0, value.0, node)
             }
+            PreparedLocation::Member {
+                object,
+                symbol,
+                node,
+            } => self.op(bc::Opcode::MemberSet, object.0, value.0, symbol.0, node),
         }
     }
     fn release_location(&mut self, location: PreparedLocation) -> Result<(), Error> {
-        if let PreparedLocation::Index { object, key, node } = location {
-            self.l.b.span = self.span(node);
-            self.release(object)?;
-            self.release(key)?;
+        match location {
+            PreparedLocation::Index { object, key, node } => {
+                self.l.b.span = self.span(node);
+                self.release(object)?;
+                self.release(key)?;
+            }
+            PreparedLocation::Member { object, node, .. } => {
+                self.l.b.span = self.span(node);
+                self.release(object)?;
+            }
+            PreparedLocation::Name { .. } => (),
         }
         Ok(())
     }
@@ -126,7 +177,11 @@ impl FunctionBuilder<'_, '_> {
         self.l.b.release(locations);
         Ok(())
     }
-    pub(super) fn index(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+    pub(super) fn position_value(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Error> {
         let Some(location) = self.prepare_location(n, depth)? else {
             return Ok(None);
         };

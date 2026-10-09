@@ -1603,14 +1603,18 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
         }
         if matches!(
             node.form,
-            Form::Index { optional: true, .. } | Form::Index { chain: true, .. }
+            Form::Member { optional: true, .. }
+                | Form::Member { chain: true, .. }
+                | Form::Index { optional: true, .. }
+                | Form::Index { chain: true, .. }
         ) {
             return Err(b.error(
                 ErrorKind::Unsupported,
-                "optional index/chain awaits optional-chain lowering",
+                "optional member/index/chain awaits optional-chain lowering",
             ));
         }
         if let Form::Call { optional: true, .. }
+        | Form::Call { chain: true, .. }
         | Form::Condition {
             pattern: Some(_), ..
         } = node.form
@@ -1621,9 +1625,22 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             ));
         }
         if node.kind == H::Member {
+            b.work(m.external_bindings().len() as u64)?;
+            if !m
+                .external_bindings()
+                .iter()
+                .any(|e| e.node == Some(h::NodeId(i as u32)))
+            {
+                // Ordinary runtime members use B01 MemberGet/MemberSet. Resolved
+                // namespace exports retain the trusted direct-native exception.
+                continue;
+            }
             // Only a resolved, trusted namespace-qualified direct native callee
             // may bypass member evaluation. Arbitrary member reads never do.
             let mut callee = h::NodeId(i as u32);
+            // Groups advance the expression without changing the member node
+            // whose resolved identity must match the trusted native link.
+            let mut expression = callee;
             let mut parent = node.parent;
             let mut count = 0;
             let call = loop {
@@ -1640,18 +1657,18 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                         object,
                         optional: false,
                         ..
-                    } if object == callee => {
+                    } if object == expression => {
                         callee = id;
+                        expression = id;
                         parent = m.hir().node(id).parent;
                     }
                     Form::Single { child }
-                        if m.hir().node(id).kind == H::Group && child == callee =>
+                        if m.hir().node(id).kind == H::Group && child == expression =>
                     {
+                        expression = id;
                         parent = m.hir().node(id).parent;
                     }
-                    Form::Call { callee: target, .. }
-                        if target == callee || m.hir().node(target).kind == H::Group =>
-                    {
+                    Form::Call { callee: target, .. } if target == expression => {
                         break Some(callee);
                     }
                     _ => break None,
@@ -1660,7 +1677,7 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             let Some(callee) = call else {
                 return Err(b.error(
                     ErrorKind::Unsupported,
-                    "member values await member/callable lowering",
+                    "namespace member values await native callable/full module linkage",
                 ));
             };
             b.work(m.external_bindings().len() as u64)?;

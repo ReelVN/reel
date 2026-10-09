@@ -15,7 +15,7 @@
 - 作者接口仍在实现：指南中的剧情、节点绑定、保存/回滚和 CLI 示例是目标合同。语法或语义分析通过不等于能够执行剧情；Rust 渲染诊断不等于完整游戏播放器。
 - 设备验证按具体目标记录。CPU/null 模拟、软件 Vulkan、32 位或 Windows 交叉编译均不能替代相应物理设备的运行验收。
 
-当前已合入基线为 `6203ee138242baa74847f41c66e92382147aa5b1`，包含 UI 整合、R04 和 L05；本次 L06 能力随 PR #41 的实现一同合入后生效。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
+本次 L07 的开发基线为 `fd12d1441fab0a06a5030e89001cc54abefebe6d`，已包含 UI 整合、R04、L05 和 L06；L07 非可选成员编译位于 PR #43，最终合并状态以该 PR 为准。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
 
 仓库结构与验证工具整改已合入：[PR #29](https://github.com/jhq223/reel/pull/29) 曾将 UI 借用代码纳入 crates 和统一 workspace，第一方验证工具迁入 [reel-dev](../tools/reel-dev/README.md)，可再生成结果移至忽略的 target/reel-artifacts；Quirrel 的必要来源与测试输入继续保留。Linux 独立验收通过；Rust 上游观测桥的真实 Quirrel 重跑及 Windows 进程终止路径仍未验证。
 
@@ -31,7 +31,7 @@
 
 [初始化局部绑定编译（#39）](https://github.com/jhq223/reel/pull/39) 将模块根 global 与 initializer-local 明确分离，支持局部闭包与转捕获、入口 Cell 重建的静态生成，并通过 B01 验证/编解码检查。尚未提供的外部 Value/Cell 链接仍定位拒绝。运行时 Cell 共享与重入隔离、GC/宿主恢复及完整脚本模块初始化仍需各自验收。
 
-[固定集合与索引编译（#41）](https://github.com/jhq223/reel/pull/41) 已完成独立静态验收：tuple/array/table、有序键值求值、普通索引、混合位置赋值链与复合赋值生成通过 CFG/寄存器身份、B01 验证/编解码及账本检查。右值重绑 receiver/key 后仍使用预先保存的位置。尚未实现的成员/可选链/spread/模式继续拒绝；生成正确结构不等于实际集合运行或完整作者示例已接通。
+[固定集合与索引编译（#41）](https://github.com/jhq223/reel/pull/41) 已完成独立静态验收：tuple/array/table、有序键值求值、普通索引、混合位置赋值链与复合赋值生成通过 CFG/寄存器身份、B01 验证/编解码及账本检查。右值重绑 receiver/key 后仍使用预先保存的位置。可选链/spread/模式继续拒绝；生成正确结构不等于实际集合运行或完整作者示例已接通。
 
 接下来继续打磨预算内质量选择和渲染资源复用，并连接语言、舞台、输入、渲染与音频，推进会话、持久化和完整剧情体验。后续每次验收同步本节及受影响的双语指南，不用测试数量代替能力状态。
 
@@ -55,3 +55,5 @@
 ## Reading order
 
 Game authors can start with the [English creator guide](guide/en.md). Engine contributors should also read the architecture and Aside language specification. The creator APIs are design targets until marked as implemented for a specific version.
+
+[非可选成员编译（#43）](https://github.com/jhq223/reel/pull/43) 扩展 MemberGet/MemberSet、Name/Index/Member 混合位置和十种复合赋值；普通成员调用复用动态 Call，不由编译器注入 self。简单写入不提前读取目标，位置保存原对象值与符号。class/super、native 函数值、完整统一 callable 和实际运行验收仍未完成。
