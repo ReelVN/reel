@@ -276,8 +276,6 @@ struct TaskState {
     task_owner: Option<RootOwner>,
     task_id: Option<TaskId>,
     root_owner: RootOwner,
-    cancel_roots: u32,
-    release_external: bool,
     fault_build: Option<FaultBuild>,
     blocked: Option<ResourceBlocked>,
     cooperative_cancel: bool,
@@ -332,8 +330,6 @@ impl TaskState {
             task_owner: None,
             task_id: None,
             root_owner: RootOwner(u64::MAX),
-            cancel_roots: 0,
-            release_external: false,
             fault_build: None,
             blocked: None,
             cooperative_cancel: false,
@@ -1547,18 +1543,17 @@ impl Vm {
         self.active.task_id = None;
         Ok(())
     }
+    /// Invalidate this task's tickets immediately and schedule budgeted frame cleanup.
+    /// Independently retained host roots remain the host's responsibility.
     pub fn cancel_task(&mut self, task: TaskId) -> Result<(), VmError> {
         self.select_task(task)?;
-        self.cancel_active(false)
+        self.cancel_active()
     }
-    fn cancel_active(&mut self, external: bool) -> Result<(), VmError> {
+    fn cancel_active(&mut self) -> Result<(), VmError> {
         if self.active.cancelling {
-            self.active.release_external |= external;
             return Ok(());
         }
         self.active.cancelling = true;
-        self.active.cancel_roots = 0;
-        self.active.release_external = external;
         self.active.fault_build = None;
         self.active.blocked = None;
         self.active.cooperative_cancel = false;
@@ -1569,13 +1564,17 @@ impl Vm {
         }
         Ok(())
     }
+    /// Hard-cancel every matching task; subsequent slices reclaim task-owned state.
+    /// Idle means no matching task, not that the owner's resources are retired.
+    /// The host must reject new work for a revoked owner and separately release
+    /// its host roots (individually or with Heap::release_owner_step) and resources.
     pub fn cancel(&mut self, owner: RootOwner) -> Result<(), VmError> {
         self.restore_active();
         let mut found = false;
         for slot in 0..self.tasks.data.len() {
             if self.tasks.data[slot].task_owner == Some(owner) {
                 self.select_slot(slot);
-                self.cancel_active(true)?;
+                self.cancel_active()?;
                 self.restore_active();
                 found = true;
             }
@@ -1692,18 +1691,6 @@ impl Vm {
                     }
                     self.release_frame(f)?;
                     self.active.frames.data.pop();
-                    continue;
-                }
-                if self.active.release_external && self.active.cancel_roots < self.heap.root_slots()
-                {
-                    if !m.take(0, 1, 0) {
-                        return Ok(RunOutcome::BudgetYield(m.usage));
-                    }
-                    self.heap.release_owner_step(
-                        self.active.task_owner.unwrap(),
-                        &mut self.active.cancel_roots,
-                        1,
-                    );
                     continue;
                 }
                 self.active.cancelling = false;

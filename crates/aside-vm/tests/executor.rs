@@ -398,6 +398,158 @@ fn cancellation_is_bounded_and_invalidates_ticket_immediately() {
     assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
 }
 
+// Integration regressions: compiled only while independent VM execution is blocked.
+#[test]
+fn owner_cancellation_preserves_host_roots_and_isolates_other_tasks() {
+    let mut v = vm(fixtures::helper_native());
+    let object = v.heap_mut().alloc_array(&[Value::int(7)]).unwrap();
+    let root = v
+        .heap_mut()
+        .add_root(OWNER, RootKind::Host, object)
+        .unwrap();
+    let other_owner = RootOwner(18);
+    let other_root = v
+        .heap_mut()
+        .add_root(other_owner, RootKind::Host, Value::int(99))
+        .unwrap();
+    let hole = v
+        .heap_mut()
+        .add_root(OWNER, RootKind::Host, Value::NULL)
+        .unwrap();
+    v.heap_mut().release_root(hole).unwrap();
+    let issued = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let waiting = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let other = v
+        .start(fixtures::ENTRY, &[], other_owner, Context::Ordinary)
+        .unwrap();
+    let issued_ticket = task_ticket(&mut v, issued);
+    let waiting_ticket = task_ticket(&mut v, waiting);
+    v.respond(
+        waiting_ticket,
+        HostResponse::Pending(waiting_ticket.wait_id()),
+    )
+    .unwrap();
+    let other_ticket = task_ticket(&mut v, other);
+
+    // Repeating task cancellation through the owner path uses the same teardown.
+    v.cancel_task(issued).unwrap();
+    v.cancel(OWNER).unwrap();
+    v.cancel(OWNER).unwrap();
+    assert!(matches!(
+        v.respond(issued_ticket, HostResponse::Ready(Value::NULL)),
+        Err(VmError::InvalidTicket)
+    ));
+    assert!(matches!(
+        v.complete(waiting_ticket.wait_id(), Completion::Ready(Value::NULL)),
+        Err(VmError::InvalidWait)
+    ));
+    assert_eq!(
+        v.host_arguments(other_ticket).unwrap()[0].as_int(),
+        Some(fixtures::ECHO_ARGUMENT)
+    );
+
+    let RunOutcome::BudgetYield(usage) = v
+        .run_slice(
+            issued,
+            SliceBudget {
+                work: 1,
+                ..SliceBudget::default()
+            },
+            || 0,
+        )
+        .unwrap()
+    else {
+        panic!("frame release must wait for sufficient work");
+    };
+    assert_eq!(usage.work, 0);
+    assert!(usage.required_work > 1);
+    for task in [issued, waiting] {
+        let mut finished = false;
+        for _ in 0..100 {
+            match v.run_slice(task, SliceBudget::default(), || 0) {
+                Ok(RunOutcome::BudgetYield(_)) => {}
+                Err(VmError::Idle) => {
+                    finished = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(finished, "cancelled task must finish budgeted cleanup");
+    }
+    assert!(matches!(v.cancel(OWNER), Err(VmError::Idle)));
+    assert!(!v.is_idle(), "another owner's task remains active");
+    collect(&mut v);
+    assert!(v.heap().root_value(root).unwrap().same_bits(object));
+    assert_eq!(v.heap().get_field(object, 0).unwrap().as_int(), Some(7));
+
+    // Host cleanup proceeds even though the cancelled owner has no TaskId.
+    // Descriptor holes consume work too; the return value counts released roots.
+    let end = v.heap().root_slots();
+    let mut cursor = 0;
+    let mut released = 0;
+    while cursor < end {
+        let before = cursor;
+        released += v.heap_mut().release_owner_step(OWNER, &mut cursor, 1);
+        assert_eq!(cursor - before, 1);
+        assert_eq!(v.heap().root_value(other_root).unwrap().as_int(), Some(99));
+    }
+    assert_eq!(released, 1);
+    assert!(matches!(
+        v.heap().root_value(root),
+        Err(HeapError::InvalidRoot)
+    ));
+    collect(&mut v);
+    assert!(v.heap().info(object).is_err());
+    v.respond(
+        other_ticket,
+        HostResponse::Ready(Value::int(fixtures::ECHO_RESULT)),
+    )
+    .unwrap();
+    let delivery = task_finish(&mut v, other);
+    assert_eq!(
+        v.delivery_value(delivery).unwrap().as_int(),
+        Some(fixtures::ECHO_RESULT)
+    );
+    v.discard_delivery(delivery).unwrap();
+    v.heap_mut().release_root(other_root).unwrap();
+    assert!(v.is_idle());
+}
+
+#[test]
+fn owner_with_only_a_fault_root_requires_explicit_host_cleanup() {
+    let mut v = vm(fixtures::uninitialized_cell_read());
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let delivery = task_finish(&mut v, task);
+    let root = v.take_fault_delivery(delivery, OWNER).unwrap();
+    let fault = root.id();
+    assert!(v.is_idle());
+    assert!(matches!(v.cancel(OWNER), Err(VmError::Idle)));
+    collect(&mut v);
+    assert_eq!(root.info(v.heap()).unwrap().id, fault);
+
+    let end = v.heap().root_slots();
+    let mut cursor = 0;
+    let mut released = 0;
+    while cursor < end {
+        let before = cursor;
+        released += v.heap_mut().release_owner_step(OWNER, &mut cursor, 1);
+        assert_eq!(cursor - before, 1);
+    }
+    assert_eq!(released, 1);
+    assert!(matches!(root.info(v.heap()), Err(HeapError::InvalidRoot)));
+    collect(&mut v);
+    assert!(v.heap().fault_info(fault).is_err());
+    // The host retires this invalidated wrapper rather than releasing it twice.
+    drop(root);
+}
+
 #[test]
 fn native_default_type_failure_and_partial_preparation_resource_failure_never_issue_entry() {
     for limited_frames in [false, true] {
@@ -1454,6 +1606,9 @@ fn frame_continuation_work_pools_and_inline_control_share_one_budget() {
             o => panic!("{o:?}"),
         }
     }
+    // Task teardown does not retire independently retained host roots.
+    assert_eq!(v.heap().root_value(root).unwrap().tag(), ValueTag::Null);
+    v.heap_mut().release_root(root).unwrap();
     assert!(v.heap().root_value(root).is_err());
     assert!(matches!(
         v.respond(id, HostResponse::Ready(Value::int(42))),
