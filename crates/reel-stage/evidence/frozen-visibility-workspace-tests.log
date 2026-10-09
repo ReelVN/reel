@@ -1,0 +1,82 @@
+   Compiling masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+   Compiling masonry v0.4.0 (/workspace/reel/third_party/masonry/masonry)
+   Compiling reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.93s
+     Running unittests src/lib.rs (target/debug/deps/reel_core-a70f5b0127c1331a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contracts.rs (target/debug/deps/contracts-b54ef1e0f90c67f2)
+
+running 12 tests
+test configured_default_full_work_queue_makes_progress_and_delivers_every_payload ... ok
+test continuous_reads_deliver_a_ready_save_within_two_single_event_polls ... ok
+test cooperative_deadline_priority_partial_cancel_and_checksum_failure ... ok
+test fixed_versions_ranges_failures_and_stale_scope_keep_owned_output ... ok
+test moving_tickets_charge_capacity_and_return_once_across_a_thread ... ok
+test queue_byte_limits_apply_even_when_request_slots_remain ... ok
+test read_pending_cancel_is_unique_and_rejection_keeps_original_under_backpressure ... ok
+test save_pending_cancel_and_cancel_after_settlement_preserve_actual_commit ... ok
+test service_ids_survive_adapter_replacement_and_exhaust_without_accepting ... ok
+test wake_clones_coalesce_and_acknowledge_before_drain_preserves_racing_wake ... ok
+test work_cancel_after_settlement_keeps_owned_terminal_under_backpressure ... ok
+test work_rejects_unregistered_kind_and_unreserved_output_or_temporary ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/reel_stage-4966c60782e8ef19)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contracts.rs (target/debug/deps/contracts-5618c6dae84ebe25)
+
+running 23 tests
+test accepting_frozen_hidden_target_or_ancestor_cancels_old_visible_capture_once ... ok
+test actual_bridge_record_and_input_measurements ... ok
+test callback_deletion_in_live_and_presented_hover_and_active ... ok
+test hover_ancestor_removes_target_before_cursor ... ok
+test live_stashing_and_missing_new_view_cancel_alive_capture_once ... ok
+test missing_children_and_frozen_widgetref_order_include_stashed ... ok
+test production_input_measurements ... ok
+test raw_mut_missing_and_animation_live_with_complete_geometry_getters ... ok
+test real_record_gate_first_frame_failures_identity_order_clear_and_epoch ... ok
+test retired_candidate_keys_keep_identity_allocations_bounded_and_charged ... ok
+test snapshot_keeps_one_maximum_ticket_until_last_view_drops ... ok
+test snapshot_node_path_capacity_and_lease_recovery ... ok
+test support::checks::ancestor_removes_child_after_terminal_delivery ... ok
+test support::checks::base_layer_transform_boundary ... ok
+test support::checks::disabled_child_bubbles_to_consuming_parent ... ok
+test support::checks::real_upstream_groups ... ok
+test support::presentation::actual_button_topology_and_skin ... ok
+test support::presentation::actual_slider_cancellation ... ok
+test support::presentation::actual_slider_dpi ... ok
+test support::presentation::actual_slider_frozen_input ... ok
+test support::presentation::cursor_update_and_raw_share_selected_geometry ... ok
+test support::presentation::singular_transform_is_not_hittable ... ok
+test view_change_notifies_only_differences_and_uses_old_exit_geometry ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s
+
+     Running tests/pointer_allocations.rs (target/debug/deps/pointer_allocations-e644b744647b7b37)
+
+running 1 test
+test real_uncaptured_pointer_dispatch_allocations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+   Doc-tests reel_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reel_stage
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

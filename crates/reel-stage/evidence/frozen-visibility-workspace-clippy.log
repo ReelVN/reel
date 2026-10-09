@@ -1,0 +1,5 @@
+    Checking tree_arena v0.2.0 (/workspace/reel/third_party/masonry/tree_arena)
+    Checking masonry_core v0.4.0 (/workspace/reel/third_party/masonry/masonry_core)
+    Checking masonry v0.4.0 (/workspace/reel/third_party/masonry/masonry)
+    Checking reel-stage v0.1.0 (/workspace/reel/crates/reel-stage)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.40s
