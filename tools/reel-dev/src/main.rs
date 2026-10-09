@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use reel_dev::{fixtures, maintenance, root, upstream};
+use reel_dev::{audio, fixtures, maintenance, root, upstream};
 use std::{env, fs, path::Path};
 
 fn main() -> Result<()> {
@@ -49,6 +49,11 @@ fn main() -> Result<()> {
             );
         }
         ["deps"] => maintenance::dependencies(None)?,
+        ["audit-kira"] => audio::audit_kira(None)?,
+        ["audit-kira", source] => audio::audit_kira(Some(Path::new(source)))?,
+        ["audio-regression"] => audio::regression(false)?,
+        ["audio-regression", "--release"] => audio::regression(true)?,
+        ["audio-probe"] => audio::probes()?,
         ["deps", manifest] => maintenance::dependencies(Some(Path::new(manifest)))?,
         ["audit-masonry", upstream] => maintenance::audit_masonry(Path::new(upstream))?,
         ["prepare-masonry", upstream] => maintenance::prepare_experiment(Path::new(upstream))?,
@@ -59,7 +64,7 @@ fn main() -> Result<()> {
             maintenance::measure(Path::new(build), target, &args[3..])?
         }
         _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|convert --write|inventory|verify-results DIR [--t01-baseline]|run-upstream --sq PATH --out NEW_DIR --work NEW_DIR|deps [MANIFEST]|audit-masonry UPSTREAM|prepare-masonry UPSTREAM|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
+            "Usage: cargo run -p reel-dev -- <check|convert --write|inventory|verify-results DIR [--t01-baseline]|run-upstream --sq PATH --out NEW_DIR --work NEW_DIR|deps [MANIFEST]|audit-masonry UPSTREAM|audit-kira [UPSTREAM]|audio-regression [--release]|audio-probe|prepare-masonry UPSTREAM|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
             root().display()
         ),
     }

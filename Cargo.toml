@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/*", "tools/reel-dev"]
 resolver = "3"
-exclude = ["tools/masonry-contract-check"]
+exclude = ["tools/masonry-contract-check", "third_party/kira"]
 
 [workspace.package]
 version = "0.1.0"
