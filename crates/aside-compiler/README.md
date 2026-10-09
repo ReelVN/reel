@@ -1,4 +1,4 @@
-# Aside source frontend and semantic analysis
+# Aside frontend, semantic analysis and lowering
 
 Design 1.1 / Issue #8. One Logos scanner and one recursive descent/Pratt parser
 produce a rowan lossless tree. Includes tuple/group, object/computed keys/spread,
@@ -6,8 +6,12 @@ arrays, calls/named arguments/children, closures, all defined operators,
 functions/classes/imports, patterns, control flow, exceptions and interpolation.
 L03 adds source-owned typed HIR, lexical/module binding, initialization-aware
 captures, conservative type/effect checks and injected module resolution.
-No lowering, bytecode format or executor is implemented. Syntax success does not
-imply analysis success, and analysis success does not imply execution.
+L04 adds bounded lowering from AnalyzedModule through register IR to the shared
+B01 VerifiedProgram; see [LOWERING.md](LOWERING.md) for supported constructs,
+limits and explicit rejections. B01's bytecode format and verifier live in
+aside-vm. No bytecode executor is included in this compiler. Syntax success does
+not imply analysis success; verified bytecode does not establish execution or
+full-language support.
 
 The workspace comes from D01 `c03226a`; only this directory and compiler lockfile
 entries change relative to that base. [INTERFACE.md](INTERFACE.md) records the
