@@ -124,8 +124,13 @@ pub(super) fn lower<'a>(
     lower.contracts.fill(any);
     lower.b.work(symbol_count as u64)?;
     for (i, symbol) in m.symbols().iter().enumerate() {
-        if !matches!(symbol.kind, h::SymbolKind::Host | h::SymbolKind::Import) {
-            let owner = symbol.owner.map_or(m.functions().len(), |id| id.0 as usize);
+        lower.b.span = symbol.declaration;
+        let owner = match symbol.origin {
+            h::BindingOrigin::FunctionLocal(id) => Some(id.0 as usize),
+            h::BindingOrigin::EntryLocal => Some(m.functions().len()),
+            h::BindingOrigin::ModuleGlobal | h::BindingOrigin::External => None,
+        };
+        if let Some(owner) = owner {
             lower
                 .b
                 .push(&mut lower.owned[owner], h::SymbolId(i as u32))?;
@@ -162,9 +167,13 @@ pub(super) fn lower<'a>(
         globals: Vec::new(),
         initializer: None,
     };
-    for owned_index in 0..lower.owned[m.functions().len()].len() {
-        let sym = lower.owned[m.functions().len()][owned_index];
-        let s = &m.symbols()[sym.0 as usize];
+    lower.b.work(symbol_count as u64)?;
+    for (index, s) in m.symbols().iter().enumerate() {
+        if s.origin != h::BindingOrigin::ModuleGlobal {
+            continue;
+        }
+        lower.b.span = s.declaration;
+        let sym = h::SymbolId(index as u32);
         let id = bc::GlobalId(module.globals.len() as u32);
         lower.globals[sym.0 as usize] = Some(id);
         let name = lower.name(m.hir().name(s.name))?;
@@ -991,6 +1000,27 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
                 parameter,
             } => (Some(function), parameter as usize),
         };
+        let owned = owner.map_or(l.m.functions().len(), |id| id.0 as usize);
+        let span = l.m.hir().node(node).span;
+        // Admit fixed slots before allocating their BindingDef/local tables.
+        let mut fixed = prefix;
+        l.b.work(l.owned[owned].len() as u64)?;
+        for &sym in &l.owned[owned] {
+            let symbol = &l.m.symbols()[sym.0 as usize];
+            if body_binding(symbol, &origin, span) {
+                l.b.span = symbol.declaration;
+                fixed += 1;
+                if fixed > l.b.limits.max_registers as usize {
+                    return Err(l
+                        .b
+                        .error(ErrorKind::Limit, "fixed register slots exceed limit"));
+                }
+            }
+        }
+        let fixed = u32::try_from(fixed).map_err(|_| {
+            l.b.error(ErrorKind::Limit, "fixed register slot count overflow")
+        })?;
+        let registers = Registers::new(fixed, &l.b)?;
         let mut locals = Vec::new();
         let mut captures = Vec::new();
         if let Some(owner) = owner {
@@ -1016,48 +1046,42 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
                 )?;
                 l.b.push(&mut locals, (param.symbol, id))?;
             }
-            let span = l.m.hir().node(node).span;
-            l.b.work(l.owned[owner.0 as usize].len() as u64)?;
-            for owned_index in 0..l.owned[owner.0 as usize].len() {
-                let sym = l.owned[owner.0 as usize][owned_index];
-                let symbol = &l.m.symbols()[sym.0 as usize];
-                if symbol.initialization == h::Initialization::Parameter {
-                    continue;
-                }
-                if matches!(origin, Origin::Default { .. })
-                    && !span.contains_range(symbol.declaration)
-                {
-                    continue;
-                }
-                let name = l.name(l.m.hir().name(symbol.name))?;
-                let id = bc::BindingId(def.bindings.len() as u32);
-                let reg = bc::Reg(id.0);
-                l.b.push(
-                    &mut def.bindings,
-                    bc::BindingDef {
-                        name,
-                        ty: l.contracts[sym.0 as usize],
-                        mutable: symbol.mutable,
-                        storage: if symbol.storage == h::Storage::SharedCell {
-                            bc::BindingStorage::Cell(reg)
-                        } else {
-                            bc::BindingStorage::Value(reg)
-                        },
-                        initialization: bc::BindingInitialization::Explicit,
-                    },
-                )?;
-                l.b.push(&mut locals, (sym, id))?;
-            }
             for (i, capture) in f.captures.iter().enumerate() {
                 l.b.push(&mut captures, (capture.symbol, bc::CaptureId(i as u32)))?;
             }
+        }
+        l.b.work(l.owned[owned].len() as u64)?;
+        for owned_index in 0..l.owned[owned].len() {
+            let sym = l.owned[owned][owned_index];
+            let symbol = &l.m.symbols()[sym.0 as usize];
+            if !body_binding(symbol, &origin, span) {
+                continue;
+            }
+            l.b.span = symbol.declaration;
+            let name = l.name(l.m.hir().name(symbol.name))?;
+            let id = bc::BindingId(def.bindings.len() as u32);
+            let reg = bc::Reg(id.0);
+            l.b.push(
+                &mut def.bindings,
+                bc::BindingDef {
+                    name,
+                    ty: l.contracts[sym.0 as usize],
+                    mutable: symbol.mutable,
+                    storage: if symbol.storage == h::Storage::SharedCell {
+                        bc::BindingStorage::Cell(reg)
+                    } else {
+                        bc::BindingStorage::Value(reg)
+                    },
+                    initialization: bc::BindingInitialization::Explicit,
+                },
+            )?;
+            l.b.push(&mut locals, (sym, id))?;
         }
         let sort_work = (locals.len() + captures.len()) as u64 * (usize::BITS as u64);
         l.b.work(sort_work)?;
         locals.sort_unstable_by_key(|(s, _)| *s);
         captures.sort_unstable_by_key(|(s, _)| *s);
-        let registers = Registers::new(def.bindings.len() as u32, &l.b)?;
-        let span = l.m.hir().node(node).span;
+        debug_assert_eq!(def.bindings.len(), fixed as usize);
         let mut out = Self {
             l,
             def,
@@ -1383,6 +1407,13 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
     }
 }
 
+fn body_binding(symbol: &h::Symbol, origin: &Origin, span: TextRange) -> bool {
+    !matches!(
+        symbol.initialization,
+        h::Initialization::Parameter | h::Initialization::External
+    ) && (!matches!(origin, Origin::Default { .. }) || span.contains_range(symbol.declaration))
+}
+
 fn binary(operator: K) -> Option<bc::Opcode> {
     Some(match operator {
         K::Plus | K::PlusEq => bc::Opcode::Add,
@@ -1469,14 +1500,50 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
     })?;
     b.work(m.symbols().len() as u64)?;
     for symbol in m.symbols() {
-        if symbol.owner.is_none()
+        b.span = symbol.declaration;
+        if symbol.owner != symbol.origin.function() {
+            return Err(b.error(
+                ErrorKind::InvalidIr,
+                "binding origin/function owner mismatch",
+            ));
+        }
+        if symbol.initialization == h::Initialization::External
             && !matches!(symbol.kind, h::SymbolKind::Host | h::SymbolKind::Import)
-            && (symbol.scope != root_scope || symbol.per_iteration)
+        {
+            return Err(b.error(
+                ErrorKind::MissingLink,
+                format!("enclosing lexical binding {} requires a real external Value/Cell link; native metadata does not initialize it", m.hir().name(symbol.name)),
+            ));
+        }
+        if symbol.origin == h::BindingOrigin::ModuleGlobal
+            && (m.entry_context() != crate::semantic::AnalysisContext::Module
+                || symbol.scope != root_scope
+                || symbol.per_iteration)
+        {
+            return Err(b.error(
+                ErrorKind::InvalidIr,
+                "global is not a root module declaration",
+            ));
+        }
+        if symbol.origin == h::BindingOrigin::EntryLocal
+            && m.entry_context() != crate::semantic::AnalysisContext::Module
+        {
+            return Err(b.error(
+                ErrorKind::Unsupported,
+                "entry-local bindings require a module initializer or a real author function; ownerless NoWait fragments are unsupported",
+            ));
+        }
+    }
+    b.work(m.exports().len() as u64)?;
+    for &sym in m.exports() {
+        let symbol = &m.symbols()[sym.0 as usize];
+        if m.entry_context() != crate::semantic::AnalysisContext::Module
+            || symbol.scope != root_scope
         {
             b.span = symbol.declaration;
             return Err(b.error(
                 ErrorKind::Unsupported,
-                "module block/loop bindings require initializer-local lifetime lowering; only root-scope globals are supported",
+                "only root module declarations may be exported",
             ));
         }
     }

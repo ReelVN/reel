@@ -134,6 +134,7 @@ struct Binder<'a> {
     diagnostics: Vec<Diagnostic>,
     exhausted: bool,
     scope: ScopeId,
+    root_scope: ScopeId,
     maps: Vec<HashMap<NameId, SymbolId>>,
     names: HashMap<String, NameId>,
     types: HashMap<Type, TypeId>,
@@ -240,6 +241,7 @@ pub(super) fn analyze(
         diagnostics: Vec::new(),
         exhausted: false,
         scope: ScopeId(0),
+        root_scope: ScopeId(0),
         maps: Vec::new(),
         names,
         types: type_map,
@@ -311,23 +313,26 @@ pub(super) fn analyze(
         }
     }
     b.scope = b.new_scope(Some(ScopeId(0)), ctx.function, span);
+    b.root_scope = b.scope;
     for binding in &options.enclosing {
         if !b.budget(NodeId(0)) {
             break;
         }
         let name = b.intern_name(&binding.symbol.name);
         let ty = b.hint(&binding.symbol.ty);
-        if let Some(symbol) = b.declare(Declaration {
-            name,
-            span: TextRange::empty(span.start()),
-            kind: SymbolKind::Local,
-            mutable: binding.mutable,
-            ty,
-            owner: ctx.function,
-            iteration: false,
-        }) {
+        if let Some(symbol) = b.declare_binding(
+            Declaration {
+                name,
+                span: TextRange::empty(span.start()),
+                kind: SymbolKind::Local,
+                mutable: binding.mutable,
+                ty,
+                owner: ctx.function,
+                iteration: false,
+            },
+            Initialization::External,
+        ) {
             b.initialized[symbol.0 as usize] = true;
-            b.out.symbols[symbol.0 as usize].initialization = Initialization::External;
             b.external.insert(symbol, Arc::new(binding.symbol.clone()));
         }
     }
@@ -479,6 +484,21 @@ impl Binder<'_> {
         id
     }
     fn declare(&mut self, declaration: Declaration) -> Option<SymbolId> {
+        let initialization = match declaration.kind {
+            SymbolKind::Function => Initialization::ScopeEntry,
+            SymbolKind::Parameter | SymbolKind::Receiver | SymbolKind::Super => {
+                Initialization::Parameter
+            }
+            SymbolKind::Host | SymbolKind::Import => Initialization::External,
+            _ => Initialization::Declaration,
+        };
+        self.declare_binding(declaration, initialization)
+    }
+    fn declare_binding(
+        &mut self,
+        declaration: Declaration,
+        initialization: Initialization,
+    ) -> Option<SymbolId> {
         let Declaration {
             name,
             span,
@@ -513,28 +533,38 @@ impl Binder<'_> {
             return None;
         }
         let id = SymbolId(self.out.symbols.len() as u32);
+        let origin = if matches!(kind, SymbolKind::Host | SymbolKind::Import) {
+            BindingOrigin::External
+        } else if let Some(owner) = owner {
+            BindingOrigin::FunctionLocal(owner)
+        } else if self.options.context == AnalysisContext::Module
+            && self.scope == self.root_scope
+            && initialization != Initialization::External
+            && matches!(
+                kind,
+                SymbolKind::Local | SymbolKind::Function | SymbolKind::Class
+            )
+        {
+            BindingOrigin::ModuleGlobal
+        } else {
+            BindingOrigin::EntryLocal
+        };
         self.out.symbols.push(Symbol {
             name,
             declaration: span,
             scope: self.scope,
-            owner,
+            origin,
+            owner: origin.function(),
             kind,
             mutable,
             ty,
-            storage: if owner.is_none() && kind != SymbolKind::Host {
+            storage: if origin == BindingOrigin::ModuleGlobal {
                 Storage::Module
             } else {
                 Storage::Local
             },
             per_iteration: iteration,
-            initialization: match kind {
-                SymbolKind::Function => Initialization::ScopeEntry,
-                SymbolKind::Parameter | SymbolKind::Receiver | SymbolKind::Super => {
-                    Initialization::Parameter
-                }
-                SymbolKind::Host | SymbolKind::Import => Initialization::External,
-                _ => Initialization::Declaration,
-            },
+            initialization,
         });
         self.initialized.push(false);
         self.capture_users.push(Vec::new());
@@ -558,7 +588,7 @@ impl Binder<'_> {
             if let Some(&symbol) = self.maps[id.0 as usize].get(&name) {
                 let binding = &self.out.symbols[symbol.0 as usize];
                 let hidden = self.default_boundaries.iter().any(|&(owner, boundary)| {
-                    binding.owner == Some(owner)
+                    binding.origin.function() == Some(owner)
                         && (binding.kind == SymbolKind::Super
                             || (matches!(
                                 binding.kind,
@@ -975,7 +1005,7 @@ impl Binder<'_> {
                 let binding = &self.out.symbols[symbol.0 as usize];
                 self.default_boundaries.iter().any(|&(owner, boundary)| {
                     ctx.function == Some(owner)
-                        && binding.owner == Some(owner)
+                        && binding.origin.function() == Some(owner)
                         && matches!(binding.kind, SymbolKind::Parameter | SymbolKind::Receiver)
                         && symbol.0 >= boundary.0
                 })
@@ -1002,7 +1032,7 @@ impl Binder<'_> {
             self.check(n, RuntimeChecks::INITIALIZED);
         }
         if !self.initialized[s.0 as usize] {
-            if symbol.owner == ctx.function {
+            if symbol.origin.same_frame(ctx.function) {
                 self.error(
                     D::UninitializedBinding,
                     token.span,
@@ -1012,7 +1042,7 @@ impl Binder<'_> {
                 self.check(n, RuntimeChecks::INITIALIZED);
             }
         }
-        if write && ctx.derived && symbol.owner != ctx.function && !ctx.conditional {
+        if write && ctx.derived && !symbol.origin.same_frame(ctx.function) && !ctx.conditional {
             self.error(
                 D::InvalidEffect,
                 token.span,
@@ -1034,12 +1064,18 @@ impl Binder<'_> {
     }
     fn capture(&mut self, s: SymbolId, span: TextRange, ctx: &Context) {
         let symbol = self.out.symbols[s.0 as usize].clone();
-        if symbol.kind == SymbolKind::Host || symbol.owner.is_none() {
+        if matches!(
+            symbol.origin,
+            BindingOrigin::ModuleGlobal | BindingOrigin::External
+        ) {
             return;
         }
         let mut function = ctx.function;
         while let Some(f) = function {
-            if Some(f) == symbol.owner {
+            if !self.charge_at(span, 1) {
+                return;
+            }
+            if symbol.origin == BindingOrigin::FunctionLocal(f) {
                 break;
             }
             if let Some(&index) = self.capture_maps[f.0 as usize].get(&s) {
@@ -1063,7 +1099,10 @@ impl Binder<'_> {
                 } else {
                     CaptureMode::Value
                 };
-                if needs_cell {
+                if needs_cell && self.out.symbols[s.0 as usize].storage != Storage::SharedCell {
+                    if !self.charge_at(span, self.capture_users[s.0 as usize].len()) {
+                        return;
+                    }
                     for &(user, index) in &self.capture_users[s.0 as usize] {
                         self.out.functions[user.0 as usize].captures[index].mode =
                             CaptureMode::Cell;
@@ -1947,7 +1986,9 @@ impl Binder<'_> {
                     self.check(n, RuntimeChecks::WRITE_EFFECT);
                     let object = self.children(n).first().copied();
                     if let Some(symbol) = object.and_then(|o| self.root_symbol(o)) {
-                        if self.out.symbols[symbol.0 as usize].owner != ctx.function
+                        if !self.out.symbols[symbol.0 as usize]
+                            .origin
+                            .same_frame(ctx.function)
                             && !ctx.conditional
                         {
                             self.error(
@@ -2230,14 +2271,15 @@ impl Binder<'_> {
             // Labelled while already installed this exact target in loop_node.
             inner.loops.push((n, None, ctx.finally.len()));
         }
+        if is_loop {
+            // Both the condition and body are reentered through the loop head.
+            inner.iteration = true;
+        }
         let value = self.visit(condition, if is_loop { &inner } else { ctx });
         if pattern.is_none() {
             self.require(condition, value, BOOL, "condition");
         }
         let previous = self.scope;
-        if is_loop {
-            inner.iteration = true;
-        }
         self.scope = self.new_scope(Some(previous), ctx.function, self.span(n));
         if let Some(p) = pattern {
             self.bind_pattern(p, value, &inner, PatternUse::Branch, false);

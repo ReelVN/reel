@@ -184,11 +184,40 @@ pub enum Initialization {
     Parameter,
     External,
 }
+/// Lexical ownership, independent of ValueCapture/SharedCell promotion.
+/// EntryLocal belongs to this analyzed entry: lowering currently admits it
+/// only for a module initializer, never as a module global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingOrigin {
+    ModuleGlobal,
+    EntryLocal,
+    FunctionLocal(FunctionId),
+    /// Host/import metadata. An enclosing lexical binding is still local,
+    /// with Initialization::External, and can be captured through functions.
+    External,
+}
+impl BindingOrigin {
+    pub fn function(self) -> Option<FunctionId> {
+        match self {
+            Self::FunctionLocal(id) => Some(id),
+            _ => None,
+        }
+    }
+    pub(crate) fn same_frame(self, function: Option<FunctionId>) -> bool {
+        match self {
+            Self::ModuleGlobal | Self::EntryLocal => function.is_none(),
+            Self::FunctionLocal(id) => function == Some(id),
+            Self::External => false,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: NameId,
     pub declaration: TextRange,
     pub scope: ScopeId,
+    pub origin: BindingOrigin,
+    /// Compatibility projection of origin.function(); None does not mean global.
     pub owner: Option<FunctionId>,
     pub kind: SymbolKind,
     pub mutable: bool,

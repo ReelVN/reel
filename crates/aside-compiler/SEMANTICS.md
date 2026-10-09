@@ -15,6 +15,35 @@ runtime checks and explicit control transfers through finally regions.
 which is produced only with a valid parse and no unresolved error diagnostics.
 Syntax/analysis success never claims execution.
 
+Issue [#37](https://github.com/jhq223/reel/issues/37) adds one public HIR field,
+`Symbol.origin: BindingOrigin`, without changing the analysis entry signatures
+or renumbering source FunctionId/SymbolId. `BindingOrigin` describes ownership,
+not capture storage: ModuleGlobal, EntryLocal, FunctionLocal(FunctionId), External.
+ModuleGlobal requires AnalysisContext::Module and a genuine root declaration;
+blocks, while conditions/bodies and handlers belong to the entry. A NoWait-only
+entry does not turn its declarations into globals. The centralized declaration
+path maintains `Symbol.owner == Symbol.origin.function()`; owner=None is no
+longer a global test. Existing consumers reading owner keep the function-owner
+projection; consumers constructing Symbol literals must add origin.
+
+EntryLocal in a module has the initializer as its frame owner. Function-parent
+chains end at that entry without synthesizing a source function. Reads within
+the same frame retain the uninitialized diagnostic; deferred reads retain the
+INITIALIZED runtime obligation. Mutable, forward read-only and recursive
+captures use the established shared Cell promotion across all prior users;
+initialized immutable expression captures may retain Value mode. The capture
+walk and one-time promotion scans are charged before work, and origin remains
+unchanged by storage promotion. Both while condition and body bindings carry
+per_iteration, including nested handlers and finally scopes. Capture limits and
+symbol retained-byte accounting include the new paths/field.
+
+External origin identifies host/import metadata only. options.enclosing remains
+Local + Initialization::External with its real lexical function/entry owner,
+empty external declaration range, descriptor identity and transitive captures.
+It is not a fabricated global or host registration. Lowering currently has no
+external Value/Cell environment link and rejects such bindings before table
+admission; analysis success does not supply that link.
+
 Algorithm:
 
 1. Admit bounded, successful CST; project each node/token once. Keep syntax-error

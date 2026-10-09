@@ -1,4 +1,4 @@
-# L04 lowering contract (IR v1, bytecode v1)
+# L04/L05 lowering contract (IR v1, bytecode v1)
 
 Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
 `AnalyzedModule`; it does not analyze a second semantic model or execute programs.
@@ -9,8 +9,10 @@ from L03 `4500f788c5cd56bd431d6f75424f0c8a756a540d` (PR #20) and B01
 `57ff60e635b2f81f0ccbcf323ce420e45b908ce8` (PR #21). No V03 implementation is
 copied or merged. Dependency acceptance remains the integration owner's decision.
 
-Allowed edits: aside-compiler and its Cargo.lock dependency entry, with the owner's
-language baseline and matching default-boundary clarification in both guides.
+Issue [#37](https://github.com/jhq223/reel/issues/37) continues from main
+`9e0e10b856a1a6995da0a9268b605cd508e3ad71`. Its allowed edits are compiler
+semantic/lowering, static tests/measurements and technical documentation. The
+integration owner maintains the language specification, index and both guides.
 No VM dispatch, host execution tests, Actions, remote merge, ready transition,
 release or acceptance comment belongs to this task.
 
@@ -49,10 +51,10 @@ inferred function types do not create structural signature contracts.
 Supported lowering includes ordinary functions/closures, scalar/string literals,
 bindings/assignments, arithmetic/comparisons, return/tail values, if, strict boolean
 short circuit, null coalescing, positional/named calls, defaults, trusted direct
-native calls, forward shared Cells, and try/catch/finally/throw/rethrow. Ordinary
-function loops and cleanup-aware break/continue are also supported. Uninitialized
+native calls, forward shared Cells, and try/catch/finally/throw/rethrow. Module
+initializer and ordinary function loops with cleanup-aware break/continue are supported. Uninitialized
 bindings stay distinct from null. Aggregate/tuple/pattern/spread/member-value
-access, full script-module initialization, structural callable annotations, native
+access, full script imports/linking, structural callable annotations, native
 values, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
@@ -67,13 +69,63 @@ The compiler guard for a future unrepresentable declaration is retained.
 While targets are installed before lowering the condition. Break records an exit
 edge even when the complete condition terminates; continue targets the condition
 head. Targets are retired before the next source statement/loop. Loops without an
-exit edge do not fabricate a fallthrough path. Root-scope module globals remain
-supported. Ownerless bindings in module blocks, loop conditions/bodies, catch, or
-ownerless block fragments are rejected at their declaration before table admission;
-initializer-local lifetime and per-entry Cell identity are not modeled yet. This
-prevents shadowing collisions and repeated initialize-once GlobalInit. Ordinary
-function locals keep their established lowering. These boundaries do not imply
-full-language completion.
+exit edge do not fabricate a fallthrough path.
+
+## Initializer-local bindings (L05)
+
+The semantic `Symbol.origin` is authoritative for binding ownership. Only
+ModuleGlobal enters ModuleDef.globals/exports; EntryLocal is allocated in the
+module initializer's BindingDef table, with the existing SymbolId-to-BindingId
+metadata. FunctionLocal keeps its source function owner; External host/import
+metadata keeps the trusted-link boundary. `lowering::ir::Origin` still identifies
+Module/Function/Default code bodies and has no new variant. Source function IDs,
+bytecode format v1, CaptureSource and the executor interface are unchanged.
+
+Each lexical entry prepares all its explicit slots before creating any named
+closure: CellNew(BindingId) creates the uninitialized Cell, while Clear resets
+a Value slot. Named functions then initialize their slots with MakeClosure and
+BindInit; ordinary declarations initialize later. Mutable/forward/recursive
+captures in the same entry reference the same binding, and intervening functions
+forward CaptureSource::Capture. Reentering a block through a loop evaluates its
+entry again, replacing the slot's Cell handle rather than reinitializing a prior
+Cell. Fixed BindingId and register slots are reused; there is no dynamic binding
+version, renamed global or frame-address upvalue. Catch retains its dedicated
+CellNew/Clear + BindInit prefix before entering the body, avoiding double creation.
+
+While condition scopes are per-entry too. Continue returns to the condition head;
+all source-defined finally cleanup continues to use shared Leave/EndFinally
+regions. Defaults receive the definition capture layout and the original bound
+parameter prefix; they never recreate the initializer's definition-environment
+Cells. Default-local bindings retain their existing call-local scope behavior.
+Initialized immutable expression captures may remain Value captures.
+
+options.enclosing is Local + Initialization::External, retaining real lexical
+ownership/capture and external descriptor identity. No external Value/Cell link
+exists in current Linkage, so lowering rejects it at its external declaration
+range with MissingLink before allocating output. A native registration cannot
+substitute for that environment. Trusted host/import native links remain supported.
+NoWait-only ownerless declarations and non-root exports likewise retain located
+rejections before table admission. Module-context block fragments use initializer
+locals. Complete script imports, collections/patterns, unified callable/standard
+library and engine sessions remain separate tasks.
+
+[Initializer contracts](tests/lowering/initializer_locals.rs) check actual source
+through parse/analysis/IR/B01 verification/codec/disassembly, not only successful
+verification. Static checks include:
+
+| Source scope | Required structure |
+| --- | --- |
+| Root globals/exports and nested shadowing | Exact SymbolId metadata; initializer locals excluded from globals |
+| Blocks, conditions, while bodies, catch | One static reset per used binding; reset dominates BindInit/read/capture |
+| Forward read-only / mutual recursion | Uninitialized Cell before closure construction; later declaration initializes it |
+| Sibling and transitive closures / defaults | Exact Binding/Capture source identity and complete Value/Cell layouts |
+| Labels and finally | Correct condition-head destination and B01 cleanup selection; handler entry prepares its own binding |
+| Enclosing / NoWait / nested pub / quotas | Located refusal before output admission or before the failing allocation/emission |
+
+The dominance graph conservatively includes ordinary, shared exception/cleanup
+and Leave-continuation edges. These are structural compilation checks: they do
+not establish actual closure sharing, reentry isolation, GC/host restoration,
+module publication or playable-story behavior. No V03/Aside execution is run.
 
 ## Limits and verification
 
@@ -86,7 +138,7 @@ Compiler and bytecode checks use independent limits; B01's verification allocati
 limit is capped to the compiler's remaining capacity. `capacity_peak_bytes` is a
 conservative upper bound, not an RSS measurement.
 
-The 22 lowering integration tests compile actual source through L03, inspect IR
+The 29 lowering integration tests compile actual source through L03, inspect IR
 and register liveness/order, verify with B01, encode/decode, disassemble and check
 all source-map boundaries. They cover Cell/capture identity, trusted native
 defaults and namespace links, cleanup regions, Context preservation, inferred
@@ -96,16 +148,17 @@ or invoke a native host function. Execution acceptance remains pending V03.
 Reproducible commands (Rust 1.96.0):
 
 ```sh
-cargo fmt --all --check
+cargo fmt -p aside-compiler --check
 cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
-cargo test -p aside-compiler --all-targets --locked
-cargo test -p aside-compiler --all-targets --release --locked
+cargo test -p aside-compiler --lib --tests --locked
+cargo test -p aside-compiler --lib --tests --release --locked
 cargo build -p aside-compiler --example lowering_probe --release --locked
 target/release/examples/lowering_probe 1000 plain
 target/release/examples/lowering_probe 10000 temporaries
 target/release/examples/lowering_probe 1000 captures
 target/release/examples/lowering_probe 1000 named
 target/release/examples/lowering_probe 1000 loops
+target/release/examples/lowering_probe 1000 initializer
 ```
 
 The probe measures parse/analysis/lower/emit+verify/codec separately, checks the
