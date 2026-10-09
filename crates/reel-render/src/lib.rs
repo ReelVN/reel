@@ -1,9 +1,11 @@
-//! Backend contract and bounded semantic consumers. No GPU or window implementation.
+//! Backend contracts, bounded semantic consumers, and an optional real wgpu adapter.
 #![allow(
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
 pub mod color;
+#[cfg(feature = "wgpu")]
+pub mod gpu;
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket, OwnedBytes, QueueLimits},
     identity::{FrameId, ResourceVersion, Scope, SurfaceEpoch},

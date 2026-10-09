@@ -3,6 +3,7 @@ target/
 /target/reel-artifacts/
 # Prevent obsolete output locations from being accidentally committed again.
 /crates/reel-stage/evidence/
+/crates/reel-render/evidence/
 /crates/reel-media/tests/evidence/
 /crates/aside-compiler/bench-results/
 /crates/aside-vm/LOAD-RESULTS.txt
