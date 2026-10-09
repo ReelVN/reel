@@ -23,6 +23,8 @@
 
 [窗口/GPU 呈现（#28）](https://github.com/jhq223/reel/pull/28) 已通过软件 Vulkan（llvmpipe）及 Xvfb/X11 的独立组合验收：描边参数拒绝与定位、预算压力完成后重试、永久错误停止重复准备、恢复能力重新协商和系统 Expose 后无输入恢复画面均通过。永久坏模型只重绘已接受的冻结帧，不重新编译坏模型或替换输入几何。debug/release 的 GPU、窗口、音频及相关契约检查通过；物理 GPU、真实设备切换/热拔、OS 挂起、Wayland 和原生 Windows/macOS 仍待验。见[渲染验证范围](../crates/reel-render/R02-REPORT.md)。
 
+[有界管线复用（#33）](https://github.com/jhq223/reel/pull/33) 已通过 native wgpu-core 的独立验收：每个 Renderer 按 format/samples 最多惰性维护三套管线，同档重复准备不重建。构造错误须完成内部错误作用域确认后才允许入缓存；外层作用域、跨档并发、sticky 故障和 Pending 拒绝路径已覆盖。仅内部 GPU 对象复用，未新增作者 API，未改变质量选择或帧/资源预算；driver 内存不属于硬字节保证。浏览器 WebGPU 与物理设备故障仍未验。
+
 接下来继续打磨预算内质量选择和渲染资源复用，并连接语言、舞台、输入、渲染与音频，推进会话、持久化和完整剧情体验。后续每次验收同步本节及受影响的双语指南，不用测试数量代替能力状态。
 
 ## 本次定稿

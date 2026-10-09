@@ -121,3 +121,61 @@ The diagnostic profile explicitly requires an sRGB surface format, opaque alpha,
 FIFO presentation and render-attachment usage. An incompatible set is refused;
 old configuration is never reused. Surface epoch/candidate invalidation precedes
 negotiation, including failure; a recreated device advances generation independently.
+
+## Renderer-local pipeline reuse (Issue #32)
+
+`prepare(&self)` and `crossfade` lazily reuse the complete paint/composite
+Pipelines in exactly three instance-owned slots: Rgba16Float/4x,
+Rgba16Float/1x and Rgba8Unorm/1x. Slot identity uses actual format and samples;
+the diagnostic `degraded` flag is not an identity. Quality negotiation and all
+budgets remain unchanged. A per-slot mutex serializes first construction under
+concurrent preparations; one additional instance-owned cold-construction mutex
+serializes the complete error-scope transaction across all three slots. Warm
+lookup/replay does not acquire that construction mutex or manipulate scopes;
+replay uses an Arc after releasing the slot mutex. Unused
+tiers allocate no GPU pipeline objects. Each initialized slot creates two
+shaders, two bind-group layouts, two pipeline layouts, two render pipelines and
+one sampler once. SurfacePass remains independently rebuilt after negotiation.
+
+Slots belong to one Renderer/Gpu, never to a global generation-number map. A
+fresh Renderer starts empty even with the same caller-supplied generation.
+Prepared ownership validation still rejects old/foreign preparations. Slots
+hold only immutable pipeline objects, no RenderFrame, source lease, target,
+upload, texture, bind group or budget ticket. Valid pipeline construction may
+remain cached after a later record/budget refusal, but every partial preparation
+reservation still releases. Drop Prepared and observed submission completion
+return the same application usage baseline while initialized slots remain.
+Renderer drop drains pending work as before and drops its slots.
+
+Gpu's sticky loss/error state is checked before lookup, after acquiring the
+initialization mutex and cold-construction mutex, and after construction before
+publishing a slot. Construction owns nested Validation, Internal and OutOfMemory
+scopes and pops all three in reverse order before returning. Only three confirmed
+error-free results and Gpu::check permit publication. Captured construction errors
+enter Gpu's existing sticky Driver state; DeviceLost retains priority. A
+construction fault is returned without publishing; a later asynchronous driver
+fault denies cached hits, preparation, submission and readback through the
+existing checks. Slots in a lost/faulted Renderer are unusable and are released
+when that instance drops. Driver-private pipeline memory remains outside the
+measurable application budgets; the three-slot bound is an object-count bound,
+not an engine-wide memory or latency guarantee. This change adds no white-texture,
+atlas, mesh/image/glyph reuse or scene-wide quality negotiation.
+
+Caller error scopes are reachable through `Renderer::gpu().device` and may
+normally enclose prepare/crossfade, including a group of concurrent preparations.
+Inner construction errors are reported as Driver by Renderer, even when a
+matching outer scope exists; outer scopes retain their own previously captured
+errors. Caller-captured errors from other raw-device operations remain the
+caller's responsibility and do not automatically enter Gpu's uncaptured state.
+wgpu 26 native scopes share one device stack. The caller must pair its push/pop
+and avoid interleaving stack mutations with Renderer's construction transaction
+or other callers' scope transactions; private locks cannot coordinate arbitrary
+public-device push/pop from another thread. Parallel Renderer preparations are
+still supported, with cold construction serialized across tiers.
+
+The native wgpu-core 26 backend returns immediately ready scope-pop futures.
+Confirmation polls each future once and never waits for submitted GPU work. This
+is not a WebGPU Promise guarantee: an unresolved pop causes a permanent Device
+refusal, drops the attempted Pipelines and publishes no slot. Supporting a backend
+that requires asynchronous confirmation needs a separately agreed asynchronous
+preparation contract; it is not implemented by blocking `prepare(&self)`.

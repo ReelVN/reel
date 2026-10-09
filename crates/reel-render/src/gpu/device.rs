@@ -157,6 +157,14 @@ impl Gpu {
             Ok(())
         }
     }
+    /// Constructor-owned scopes must publish their errors to the same sticky
+    /// state as uncaptured errors, even when a caller has an outer scope.
+    pub(super) fn capture_driver_error(&self, error: wgpu::Error) {
+        let mut first = self.fault.lock().expect("device error state poisoned");
+        if first.is_none() {
+            *first = Some(Arc::new(error));
+        }
+    }
     pub fn quality(&self, size: [u32; 2]) -> Result<Quality, GpuError> {
         self.check()?;
         let max = self.device.limits().max_texture_dimension_2d;
