@@ -99,7 +99,11 @@ the budget probe's 15-second bound. Both have short-deadline mock regression tes
 Semantic failures save exact stdout/stderr byte files, exit/signal and timeout
 records before failing, and a timeout terminates the whole owned process group.
 
-UI measurements resolve the exact package/target executable from Cargo JSON:
+UI measurements resolve the local workspace package, integration-test source and
+release test profile against Cargo metadata. Foreign manifests and duplicate
+candidate artifacts fail before launch. The selected harness must list the
+required measurement tests, and a real run must report each one's successful
+completion; empty selections and skipped probes fail:
 
 ```sh
 mkdir -p target/reel-artifacts
@@ -111,7 +115,8 @@ REEL_R01_PROBE_CASE=path cargo run --locked -p reel-dev -- measure target/reel-a
 cargo run --locked -p reel-dev -- measure target/reel-artifacts/r01-build.jsonl r01_measurements --launch-control
 ```
 
-The launch control runs `/bin/true` through the same GNU time launcher. Child exit
+The standalone launch control also validates the selected Cargo artifact and
+test inventory, then runs `/bin/true` through the same GNU time launcher. Child exit
 failures propagate. RSS excludes the Cargo/compiler process. Deep-tree tests build
 on a separate large stack and exclude destruction; both profiles together retain
 the six small-stack find/find_mut cases, with capacities 1/32/128/depth and zero

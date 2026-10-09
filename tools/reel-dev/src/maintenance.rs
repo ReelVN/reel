@@ -373,37 +373,160 @@ fn negative_test(
     Ok(())
 }
 
-pub fn measure(build: &Path, target: &str, arguments: &[String]) -> Result<()> {
-    let package = if matches!(target, "contracts" | "r01_measurements") {
-        "reel-ui"
-    } else {
-        bail!("measurement supports only UI contracts/r01_measurements")
-    };
+fn measurement_tests(target: &str) -> Result<&'static [&'static str]> {
+    match target {
+        "contracts" => Ok(&[
+            "production_input_measurements",
+            "actual_bridge_record_and_input_measurements",
+        ]),
+        "r01_measurements" => Ok(&["record_paused_finish_cancel_and_source_drop_cost"]),
+        _ => bail!("measurement supports only UI contracts/r01_measurements"),
+    }
+}
+
+fn measurement_executable(
+    build: &str,
+    target: &str,
+    metadata: &serde_json::Value,
+) -> Result<PathBuf> {
+    measurement_tests(target)?;
+    let package = metadata["packages"]
+        .as_array()
+        .context("packages")?
+        .iter()
+        .find(|package| package["name"] == "reel-ui")
+        .context("local UI package missing")?;
+    ensure!(
+        package["manifest_path"].as_str() == root().join("crates/reel-ui/Cargo.toml").to_str()
+            && package["source"].is_null()
+            && metadata["workspace_members"]
+                .as_array()
+                .context("workspace members")?
+                .contains(&package["id"]),
+        "measurement requires the local UI workspace package"
+    );
+    let source = root().join(format!("crates/reel-ui/tests/{target}.rs"));
+    let directory = Path::new(
+        metadata["target_directory"]
+            .as_str()
+            .context("Cargo target directory")?,
+    )
+    .join("release/deps");
     let mut executable = None;
-    for line in fs::read_to_string(build)?.lines() {
+    for line in build.lines() {
         let row: serde_json::Value = serde_json::from_str(line)?;
         if row["reason"] == "compiler-artifact"
             && row["target"]["name"] == target
-            && row["manifest_path"]
-                .as_str()
-                .is_some_and(|s| s.contains(&format!("/{package}/")))
             && let Some(path) = row["executable"].as_str()
         {
-            executable = Some(path.to_owned());
+            ensure!(
+                row["manifest_path"] == package["manifest_path"]
+                    && row["package_id"] == package["id"],
+                "foreign manifest/package for UI measurement"
+            );
+            ensure!(
+                row["target"]["kind"] == serde_json::json!(["test"])
+                    && row["target"]["src_path"].as_str() == source.to_str()
+                    && row["profile"]["test"] == true
+                    && row["profile"]["opt_level"] == "3"
+                    && row["profile"]["debug_assertions"] == false,
+                "measurement requires the selected UI integration test in release profile"
+            );
+            let path = PathBuf::from(path);
+            ensure!(
+                path.parent() == Some(directory.as_path())
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&format!("{target}-")))
+                    && row["filenames"]
+                        .as_array()
+                        .context("artifact filenames")?
+                        .contains(&serde_json::json!(path)),
+                "executable must be the Cargo release test artifact"
+            );
+            ensure!(executable.is_none(), "ambiguous UI measurement artifacts");
+            executable = Some(path);
         }
     }
-    let executable = executable.context("test executable missing from Cargo JSON")?;
+    executable.context("test executable missing from Cargo JSON")
+}
+
+fn verify_measurement_tests(list: &str, target: &str) -> Result<()> {
+    for test in measurement_tests(target)? {
+        ensure!(
+            list.lines().any(|line| line == format!("{test}: test")),
+            "measurement selection is missing required test {test}"
+        );
+    }
+    Ok(())
+}
+
+fn verify_measurement_results(results: &str, target: &str) -> Result<()> {
+    for test in measurement_tests(target)? {
+        let completed = results
+            .split_once(&format!("test {test} ... "))
+            .and_then(|(_, tail)| tail.split("\ntest ").next())
+            .is_some_and(|block| {
+                let block = block.trim_end();
+                block == "ok" || block.ends_with("\nok") || block.ends_with(" ok")
+            });
+        ensure!(
+            completed,
+            "required measurement test {test} did not complete"
+        );
+    }
+    Ok(())
+}
+
+pub fn measure(build: &Path, target: &str, arguments: &[String]) -> Result<()> {
+    measurement_tests(target)?;
+    let control = arguments.iter().any(|arg| arg == "--launch-control");
+    ensure!(
+        !control || arguments.len() == 1,
+        "launch control cannot be combined with test arguments"
+    );
+    ensure!(
+        !arguments.iter().any(|arg| matches!(
+            arg.split('=').next(),
+            Some("--list" | "--format" | "--quiet" | "-q" | "--help" | "-h")
+        )),
+        "measurement must run tests with their named results"
+    );
+    ensure!(
+        control
+            || target != "r01_measurements"
+            || arguments
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--ignored" | "--include-ignored")),
+        "r01_measurements requires --ignored or --include-ignored"
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_str(&output(Command::new("cargo").current_dir(root()).args([
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--no-deps",
+        ]))?)?;
+    let executable = measurement_executable(&fs::read_to_string(build)?, target, &metadata)?;
+    let mut listing = Command::new(&executable);
+    if !control {
+        listing.args(arguments);
+    }
+    verify_measurement_tests(
+        &output(listing.args(["--list", "--format", "terse"]))?,
+        target,
+    )?;
     let path = artifacts()?.join(format!("{target}-{}.log", std::process::id()));
     let log = fs::File::create(&path)?;
     let mut command = Command::new("time"); // GNU time measures this child only, excluding Cargo.
-    command
-        .args(["-v", "--"])
-        .arg(if arguments.iter().any(|s| s == "--launch-control") {
-            "/bin/true"
-        } else {
-            &executable
-        });
-    if !arguments.iter().any(|s| s == "--launch-control") {
+    command.args(["-v", "--"]).arg(if control {
+        Path::new("/bin/true")
+    } else {
+        &executable
+    });
+    if !control {
         command
             .args(arguments)
             .args(["--test-threads=1", "--nocapture"]);
@@ -415,6 +538,10 @@ pub fn measure(build: &Path, target: &str, arguments: &[String]) -> Result<()> {
         .context("GNU time must be installed")?;
     println!("{}: {status}", path.display());
     ensure!(status.success(), "measurement failed");
+    if !control {
+        verify_measurement_results(&fs::read_to_string(&path)?, target)
+            .with_context(|| format!("measurement results: {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -635,6 +762,86 @@ mod tests {
         changed["resolve"]["nodes"][0]["deps"] =
             json!([{"pkg": "wgpu", "dep_kinds": [{"kind": "dev"}]}]);
         validate_ui_metadata(&changed).unwrap();
+    }
+
+    #[test]
+    fn measurement_selection_rejects_foreign_manifest_and_ambiguous_artifacts() {
+        let mut metadata = ui_metadata();
+        metadata["target_directory"] = json!(root().join("target"));
+        let target = "r01_measurements";
+        let executable = root().join(format!("target/release/deps/{target}-fixture"));
+        let artifact = json!({
+            "reason": "compiler-artifact", "package_id": "reel-ui",
+            "manifest_path": root().join("crates/reel-ui/Cargo.toml"),
+            "target": {"name": target, "kind": ["test"],
+                "src_path": root().join(format!("crates/reel-ui/tests/{target}.rs"))},
+            "profile": {"test": true, "opt_level": "3", "debug_assertions": false},
+            "executable": executable, "filenames": [executable],
+        });
+        assert_eq!(
+            measurement_executable(&artifact.to_string(), target, &metadata).unwrap(),
+            executable
+        );
+        let mut foreign = artifact.clone();
+        foreign["manifest_path"] = json!("/tmp/foreign/reel-ui/Cargo.toml");
+        foreign["executable"] = json!("/bin/true");
+        assert!(
+            measurement_executable(&foreign.to_string(), target, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("foreign manifest")
+        );
+        let ambiguous = format!("{artifact}\n{artifact}\n");
+        assert!(
+            measurement_executable(&ambiguous, target, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        for (field, value) in [
+            ("package_id", json!("foreign")),
+            ("target", json!({"name": target, "kind": ["bin"]})),
+            (
+                "profile",
+                json!({"test": true, "opt_level": "0", "debug_assertions": true}),
+            ),
+            (
+                "profile",
+                json!({"test": false, "opt_level": "3", "debug_assertions": false}),
+            ),
+            ("executable", json!("/bin/true")),
+        ] {
+            let mut changed = artifact.clone();
+            changed[field] = value;
+            assert!(
+                measurement_executable(&changed.to_string(), target, &metadata).is_err(),
+                "accepted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn measurement_requires_named_tests_to_be_selected_and_completed() {
+        let target = "r01_measurements";
+        let test = measurement_tests(target).unwrap()[0];
+        verify_measurement_tests(&format!("{test}: test\n"), target).unwrap();
+        for list in ["", "other_test: test\n"] {
+            assert!(verify_measurement_tests(list, target).is_err());
+        }
+        for results in [
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed",
+            &format!("test {test} ... ignored\ntest other_test ... ok\ntest result: ok"),
+        ] {
+            assert!(verify_measurement_results(results, target).is_err());
+        }
+        for results in [
+            format!("test {test} ... ok\ntest result: ok. 1 passed"),
+            format!(
+                "test {test} ... phase=recorded\nphase=complete\nok\ntest result: ok. 1 passed"
+            ),
+        ] {
+            verify_measurement_results(&results, target).unwrap();
+        }
     }
 
     #[test]
