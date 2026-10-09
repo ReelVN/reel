@@ -1,3 +1,4 @@
+mod chains;
 mod collections;
 mod expressions;
 mod locations;
@@ -1601,27 +1602,69 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                 "spread awaits ordered builder lowering",
             ));
         }
-        if matches!(
-            node.form,
-            Form::Member { optional: true, .. }
-                | Form::Member { chain: true, .. }
-                | Form::Index { optional: true, .. }
-                | Form::Index { chain: true, .. }
-        ) {
-            return Err(b.error(
-                ErrorKind::Unsupported,
-                "optional member/index/chain awaits optional-chain lowering",
-            ));
+        if let Form::Binary { left, .. } = node.form
+            && node.kind == H::Assignment
+        {
+            let mut target = left;
+            let mut depth = 0;
+            while let (H::Group, Form::Single { child }) =
+                (m.hir().node(target).kind, m.hir().node(target).form)
+            {
+                b.work(1)?;
+                depth += 1;
+                if depth >= b.limits.max_depth.min(128) {
+                    return Err(b.error(ErrorKind::Limit, "assignment target depth exceeded"));
+                }
+                target = child;
+            }
+            if matches!(
+                m.hir().node(target).form,
+                Form::Member { chain: true, .. } | Form::Index { chain: true, .. }
+            ) {
+                b.span = m.hir().node(target).span;
+                return Err(b.error(
+                    ErrorKind::Unsupported,
+                    "optional chain assignment target is unsupported",
+                ));
+            }
         }
-        if let Form::Call { optional: true, .. }
-        | Form::Call { chain: true, .. }
-        | Form::Condition {
+        if let Form::Call {
+            callee,
+            chain: true,
+            ..
+        } = node.form
+        {
+            let mut target = callee;
+            let mut depth = 0;
+            while let (H::Group, Form::Single { child }) =
+                (m.hir().node(target).kind, m.hir().node(target).form)
+            {
+                b.work(1)?;
+                depth += 1;
+                if depth >= b.limits.max_depth.min(128) {
+                    return Err(b.error(ErrorKind::Limit, "optional callee depth exceeded"));
+                }
+                target = child;
+            }
+            let symbol = m.facts()[target.0 as usize].symbol;
+            b.work(m.external_bindings().len() as u64)?;
+            if m.external_bindings().iter().any(|e| {
+                (e.node == Some(target) || symbol.is_some_and(|s| e.symbol == Some(s)))
+                    && e.descriptor.reference.is_some()
+            }) {
+                return Err(b.error(
+                    ErrorKind::Unsupported,
+                    "optional native calls await native callable values",
+                ));
+            }
+        }
+        if let Form::Condition {
             pattern: Some(_), ..
         } = node.form
         {
             return Err(b.error(
                 ErrorKind::Unsupported,
-                "optional calls and conditional patterns await later lowering",
+                "conditional patterns await later lowering",
             ));
         }
         if node.kind == H::Member {
@@ -1634,6 +1677,12 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                 // Ordinary runtime members use B01 MemberGet/MemberSet. Resolved
                 // namespace exports retain the trusted direct-native exception.
                 continue;
+            }
+            if matches!(node.form, Form::Member { chain: true, .. }) {
+                return Err(b.error(
+                    ErrorKind::Unsupported,
+                    "optional namespace members await native callable/full module linkage",
+                ));
             }
             // Only a resolved, trusted namespace-qualified direct native callee
             // may bypass member evaluation. Arbitrary member reads never do.
@@ -1656,6 +1705,7 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                     Form::Member {
                         object,
                         optional: false,
+                        chain: false,
                         ..
                     } if object == expression => {
                         callee = id;
@@ -1668,7 +1718,12 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                         expression = id;
                         parent = m.hir().node(id).parent;
                     }
-                    Form::Call { callee: target, .. } if target == expression => {
+                    Form::Call {
+                        callee: target,
+                        optional: false,
+                        chain: false,
+                        ..
+                    } if target == expression => {
                         break Some(callee);
                     }
                     _ => break None,
