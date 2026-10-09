@@ -362,6 +362,9 @@ fn arrive(node, destination_x, seconds = 0.5) {
 同一个 arrive 可以用于人物、标题按钮或整组文字。更换图片、布局和动作参数即可形成自己的组件库。自定义节点通过宿主注册参与相同的属性、输入、绘制与恢复协议。新增语言关键字只用于普通组合确实难以表达、且多个创作场景共同需要的规则。
 
 ## 十四 文字 媒体与扩展入口
+
+实现状态（M01 / PR #14）：Rust 音频层已实现 Kira 桥、可选 CPAL 输出、有界回收和设备失败通知。Linux 离线真实 Kira、默认/关闭输出 feature 的契约检查及 Windows 交叉编译已独立通过；实体设备、硬件时钟、热插拔和原生启停/挂起仍未验收，CPAL 时钟为 Unavailable。以下作者 audio/video 接口、剧情等待与会话恢复仍是设计目标，不能由 Rust 探针通过推导为已接通。[音频验证范围](../../crates/reel-media/VERIFICATION.md)。
+
 PlainText 表示普通文字，RichText 表示显式样式结构，LocalText 由 tr(id, fallback, params) 创建。翻译模板先解析结构，再把参数作为文字填入；参数中的标记字符保留为文字。当前对白组保持提交时的文字与语音，下组采用新语言，NVL 页在清页后切换；UI 和历史即时使用当前语言。reel loc 提取/更新目录并检查缺译和参数。
 video 是普通节点，audio 提供音轨、队列、循环区间、滤镜与同步组。play 返回可等待活动，stop 停在当前状态，finish 用于有终点的活动。轨道与资源由稳定身份管理，设备重建和 seek 保留或重新绑定逻辑等待；错误有明确终态。
 custom_node 可以直接注册 Aside 的 state、measure、record、route 和 event。measure/record 是受预算的只读布局/绘制回调；route 同步决定消费、捕获与焦点，然后 event 作为普通可暂停任务执行。这样小游戏节点能够阻止同次输入推进剧情，也能在业务回调中等待资源。新的底层图形/平台能力通过 native 模块注册。
