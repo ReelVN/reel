@@ -84,7 +84,7 @@ export PATH="$CARGO_HOME/bin:$PATH"
 | `cargo run -p aside-vm --release --locked --example storage_load` | All original seven graph/buffer loads passed, GC allocated nothing and all final payload/objects reclaimed |
 | `cargo run -p aside-vm --release --locked --example frame_slots_load` | Numeric API/initialization and window lifecycle costs measured; all allocator/charge and stored-result checks passed |
 | `bash crates/aside-vm/tests/support/run_root_range_dealloc_probe.sh` | Debug/release actual System-dealloc observations passed |
-| `python3 crates/aside-vm/tests/support/run_root_range_negative_controls.py` | Nine expected failures in a temporary source copy; production source digests unchanged |
+| `cargo run --locked -p reel-dev -- root-negative` | Nine expected failures in a temporary source copy; production source digests unchanged |
 | `git diff --check` | Exit 0 |
 
 Native behavior tests interleave writes, swaps, moves, push/pop, partial-scan
@@ -115,7 +115,7 @@ observed the 1,024-byte scratch buffer still charged at zero remaining quota.
 The old registered window then remained usable. Cancellation/reuse caused no
 physical frees or refunds. Heap teardown held its charge through every buffer
 free, invalidated pool access, and left only the observer's physical 64-byte book.
-Raw logs are retained in [ROOT-RANGES-RESULTS.txt](ROOT-RANGES-RESULTS.txt).
+Raw logs are retained in [ROOT-RANGES-RESULTS.txt](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-vm/ROOT-RANGES-RESULTS.txt).
 
 The independent controls removed just the write, swap or move barrier in isolated
 source copies: debug/release then failed when reading the real child with

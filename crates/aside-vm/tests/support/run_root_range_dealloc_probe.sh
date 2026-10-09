@@ -3,7 +3,8 @@ set -euo pipefail
 
 probe_script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "$probe_script_dir/../../../.." && pwd)"
-probe_target_dir="$(mktemp -d "${TMPDIR:-/tmp}/aside-root-dealloc.XXXXXX")"
+mkdir -p "$repo_root/target/reel-artifacts"
+probe_target_dir="$(mktemp -d "$repo_root/target/reel-artifacts/aside-root-dealloc.XXXXXX")"
 trap 'rm -rf -- "$probe_target_dir"' EXIT
 cd -- "$repo_root"
 for profile in debug release; do

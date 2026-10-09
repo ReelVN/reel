@@ -10,10 +10,10 @@ default = []
 
 [dependencies]
 reel-core = { path = "../reel-core" }
-masonry_core = { path = "../../third_party/masonry/masonry_core", default-features = false }
+masonry_core = { workspace = true }
 
 [dev-dependencies]
-masonry = { path = "../../third_party/masonry/masonry", default-features = false }
+masonry = { workspace = true }
 imaging_vello_cpu = "=0.0.1"
 stats_alloc = "=0.1.10"
 

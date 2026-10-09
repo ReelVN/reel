@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# The manifest path does not change rustup's working-directory toolchain choice.
-# Pin child Cargo/Python processes even when invoked from a root using Rust 1.90.
 export RUSTUP_TOOLCHAIN=1.96.0
 probe_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cargo --version
-rustc --version
+repo_root="$(cd -- "$probe_dir/../.." && pwd)"
+cd -- "$repo_root"
+: "${1:?usage: check.sh /path/to/extracted-xilem-271a27a6}"
+export CARGO_TARGET_DIR="$repo_root/target/reel-artifacts/masonry-build"
+experiment="$repo_root/target/reel-artifacts/masonry-experiment/Cargo.toml"
 cargo fmt --manifest-path "$probe_dir/Cargo.toml" --check
 cargo clippy --locked --manifest-path "$probe_dir/Cargo.toml" --all-targets -- -D warnings
 cargo test --locked --manifest-path "$probe_dir/Cargo.toml"
 cargo run --locked --manifest-path "$probe_dir/Cargo.toml"
-python3 "$probe_dir/scripts/prepare.py" "$@"
-cargo clippy --locked --manifest-path "$probe_dir/experiment/Cargo.toml" --features experimental --all-targets --target-dir "$probe_dir/target" -- -D warnings
-cargo test --locked --manifest-path "$probe_dir/experiment/Cargo.toml" --features experimental --target-dir "$probe_dir/target"
-cargo run --locked --release --manifest-path "$probe_dir/experiment/Cargo.toml" --features experimental --target-dir "$probe_dir/target"
-python3 "$probe_dir/scripts/check-deps.py"
+cargo run --locked -p reel-dev -- prepare-masonry "$1"
+cargo clippy --locked --manifest-path "$experiment" --features experimental --all-targets -- -D warnings
+cargo test --locked --manifest-path "$experiment" --features experimental
+cargo run --locked --release --manifest-path "$experiment" --features experimental
+cargo run --locked -p reel-dev -- deps "$probe_dir/Cargo.toml"
+cargo run --locked -p reel-dev -- deps "$experiment"
