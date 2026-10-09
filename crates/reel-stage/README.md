@@ -1,10 +1,33 @@
 # U02 production geometry and acceptance bridge
 
 Implements Issue #11 against architecture §15 at `31b9430`, with D01
-`c03226a` identities/budgets. Draft PR #12 targets PR #7's
-`task/issue-3-masonry-contract`; this branch combines both dependencies locally.
-Integrate PR #7 and D01 before moving this task onto the shared production base.
-No remote main update, merge or Actions invocation is part of this task.
+`c03226a` identities/budgets. The independently reviewed U02 implementation is
+`8dc242891be199ef2e6da7bc88a6ffdaf80cc403`.
+
+PR #12's original branch now includes main
+`d06943bfdb0487626c5d6c99c2ab1be78f40a112` through a normal merge, after PR #7
+and the core, storage, frontend, semantic and Quirrel compatibility work landed.
+The production bridge, Masonry source and U02 tests remain identical to the
+reviewed U02 commit; the current main specifications and both creator guides
+are preserved. No R01 render implementation or V03 execution implementation is
+included. Retargeting and merging PR #12 into main is a separate integration step.
+
+The only merge conflict was Cargo.lock. The combined lock retains both dependency
+sets, with `proc-macro2 1.0.106` and `quote 1.0.45` required by the selected
+Masonry closure's exact pins. Main's compiler dependencies also accept these
+versions. Cargo normalized the combined graph; relative to the reviewed U02
+lock, only main's required package entries and dependency disambiguation were
+added, with no U02 dependency version changes.
+
+The merged workspace passes debug and release tests (138 checks per profile),
+workspace all-target Clippy with `-D warnings`, and both workspace/Masonry fmt
+checks. This includes the 24 U02 input contracts and six warmed whole-dispatch
+cases (32/256/1024 controls, first-child hit and wide miss), all with zero
+allocations and reallocations. Workspace testing covers the already integrated
+Aside storage and compiler contracts; it does not execute V03. Direct
+`masonry_core`/`tree_arena` debug and release tests (5 + 4), strict all-target
+Clippy, no-default-features safe-tree tests and the current-source small-stack
+lookup probes also pass.
 
 The bridge records a real Masonry rewrite/layout/compose/paint cycle, replays
 its complete VisualLayerPlan into an owned Imaging Scene and pairs it with that

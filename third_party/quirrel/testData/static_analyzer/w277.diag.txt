@@ -1,0 +1,56 @@
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:4:0
+
+ 
+^
+//expect:w277
+
+
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:6:0
+
+//expect:w277
+ 
+^
+//expect:w277 
+
+
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:7:13
+
+//expect:w277 
+             ^
+
+
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:11:17
+
+function _foo() { 
+                 ^
+  return 10
+
+
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:16:14
+
+//expect:w277
+let _z = @"abc 
+              ^
+"
+
+
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:21:9
+
+/*    aas 
+         ^
+*/
+
+
+WARNING: w277 (space-at-eol) Whitespace at the end of line.
+testData/static_analyzer/w277.nut:24:0
+
+ 
+^
+
+

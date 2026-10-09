@@ -1,0 +1,7 @@
+WARNING: w200 (potentially-nulled-ops) Arithmetic operation with potentially nullable expression.
+testData/static_analyzer/w200_special_func_name.nut:6:7
+
+return ::a.b.c.indexof("x") + 6;
+       ^-------------------
+
+

@@ -1,0 +1,17 @@
+WARNING: w210 (potentially-nulled-index) Potentially nullable expression used as array index.
+testData/static_analyzer/w210_complex.nut:13:6
+
+foo(x[y])
+      ^
+foo(x?[y])
+
+
+WARNING: w210 (potentially-nulled-index) Potentially nullable expression used as array index.
+testData/static_analyzer/w210_complex.nut:17:12
+
+foo(x.y?[10].y?[y])
+foo(x.y.z.u[y])
+            ^
+foo(x.y?.z.u[y])
+
+
