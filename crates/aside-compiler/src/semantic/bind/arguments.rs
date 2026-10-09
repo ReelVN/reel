@@ -29,6 +29,13 @@ impl Binder<'_> {
     }
 
     pub(super) fn check_argument_spread(&mut self, node: NodeId) {
+        // Terminal transfers have no value to expand; their inferred null is
+        // only a placeholder, not a source value supplied to ArgsSpread.
+        if let Form::Spread { value } = self.out.hir.node(node).form
+            && !self.falls_through(value)
+        {
+            return;
+        }
         let ty = self.ty(node);
         if !self.spread_type_possible(node, ty) {
             self.error(

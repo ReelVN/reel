@@ -67,6 +67,48 @@ fn only_array_tuple_or_uncertain_types_can_spread_into_calls() {
 }
 
 #[test]
+fn spread_checks_apply_only_when_its_source_can_continue_with_a_value() {
+    for expression in [
+        "if flag{return [];}else{return [];}",
+        "(if flag{return [];}else{return [];})",
+        "if flag{throw 1;}else{throw 2;}",
+        "if flag{try{throw 1;}finally{0;}}else{try{throw 2;}finally{0;}}",
+        "if flag{return [];}else{[]}",
+        "if flag{[]}else{return [];}",
+        "if flag{throw 1;}else{()}",
+        "if flag{()}else{throw 2;}",
+    ] {
+        valid(&format!(
+            "fn target(...rest){{rest}}fn f(flag){{target(1,...{expression},2)}}"
+        ));
+    }
+    for expression in [
+        "null",
+        "1",
+        "true",
+        "\"bad\"",
+        "{x:1}",
+        "if flag{null}else{null}",
+        "if flag{1}else{2}",
+        "if flag{return [];}else{null}",
+        "if flag{null}else{return [];}",
+        "if flag{throw 1;}else{null}",
+        "if flag{null}else{throw 2;}",
+    ] {
+        let source = format!("fn target(...rest){{rest}}fn f(flag){{target(1,...{expression},2)}}");
+        let a = analyze_code(&source);
+        let d = a
+            .diagnostics
+            .iter()
+            .find(|d| d.code == DiagnosticCode::TypeMismatch)
+            .unwrap();
+        assert!(d.message.contains("array or tuple"));
+        assert_eq!(&source[byte_range(d.range)], format!("...{expression}"));
+        assert!(a.module().is_none());
+    }
+}
+
+#[test]
 fn external_rest_names_follow_the_same_positional_only_rule() {
     let host = ExternalSymbol::function(
         "host",

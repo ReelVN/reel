@@ -244,6 +244,105 @@ fn terminal_arguments_stop_append_call_and_preserve_shared_cleanup() {
 }
 
 #[test]
+fn terminal_spread_sources_omit_pending_append_call_and_preserve_cleanup() {
+    for expression in [
+        "if flag{return [];}else{return [];}",
+        "(if flag{return [];}else{return [];})",
+        "if flag{throw 1;}else{throw 2;}",
+        "if flag{try{throw 1;}finally{0;}}else{try{throw 2;}finally{0;}}",
+    ] {
+        let source = format!(
+            "fn target(...rest){{rest}}fn later(){{2}}fn clean(){{null}}fn f(flag){{try{{target(1,...{expression},later())}}finally{{clean();}}}}"
+        );
+        let c = compiled(&source);
+        let p = c.program.package();
+        let f = function(p, "f");
+        assert_eq!(calls(p, f), ["clean()"]);
+        assert_eq!(pcs(f, bc::Opcode::ArgsNew).len(), 1);
+        assert_eq!(pcs(f, bc::Opcode::ArgsPush).len(), 1);
+        assert!(pcs(f, bc::Opcode::ArgsSpread).is_empty());
+        let id =
+            bc::FunctionId(p.functions.iter().position(|v| std::ptr::eq(v, f)).unwrap() as u32);
+        let finally = f.regions[0].finally.unwrap().start;
+        for pc in pcs(f, bc::Opcode::Return) {
+            assert_eq!(
+                c.program
+                    .cleanup_handler(id, bc::Pc(pc as u32), bc::CleanupDestination::Return, None)
+                    .unwrap()
+                    .unwrap()
+                    .pc,
+                finally
+            );
+        }
+        for pc in pcs(f, bc::Opcode::Throw) {
+            let mut consumed = None;
+            let mut handlers = Vec::new();
+            while let Some(h) = c
+                .program
+                .exception_handler(id, bc::Pc(pc as u32), consumed)
+                .unwrap()
+            {
+                handlers.push(h.pc);
+                consumed = Some(h.region);
+            }
+            assert_eq!(handlers.last(), Some(&finally));
+        }
+    }
+    for expression in [
+        "if flag{return [];}else{[]}",
+        "if flag{[]}else{return [];}",
+        "if flag{throw 1;}else{()}",
+        "if flag{()}else{throw 2;}",
+    ] {
+        let c = compiled(&format!(
+            "fn target(...rest){{rest}}fn later(){{2}}fn clean(){{null}}fn f(flag){{try{{target(1,...{expression},later())}}finally{{clean();}}}}"
+        ));
+        let p = c.program.package();
+        let f = function(p, "f");
+        assert_eq!(
+            calls(p, f),
+            [
+                "later()",
+                format!("target(1,...{expression},later())").as_str(),
+                "clean()"
+            ]
+        );
+        let spread = pcs(f, bc::Opcode::ArgsSpread)[0];
+        let id =
+            bc::FunctionId(p.functions.iter().position(|v| std::ptr::eq(v, f)).unwrap() as u32);
+        let dom = dominators(&c, id);
+        let cp = pcs(f, bc::Opcode::Call);
+        assert!(dom[cp[0]][spread] && dom[cp[1]][spread]);
+        let branch = &f.code[pcs(f, bc::Opcode::BranchBool)[0]];
+        let terminal_then =
+            expression.starts_with("if flag{return") || expression.starts_with("if flag{throw");
+        let terminal = reachable(
+            f,
+            branch.operands[if terminal_then { 1 } else { 2 }] as usize,
+        );
+        let continued = reachable(
+            f,
+            branch.operands[if terminal_then { 2 } else { 1 }] as usize,
+        );
+        for pc in [spread, cp[0], cp[1]] {
+            assert!(!terminal[pc] && continued[pc]);
+        }
+        assert_eq!(
+            c.program
+                .exception_handler(id, bc::Pc(spread as u32), None)
+                .unwrap()
+                .unwrap()
+                .pc,
+            f.regions[0].finally.unwrap().start
+        );
+        let bc::Arguments::Packed(builder) = descriptor(f, cp[1]).arguments else {
+            panic!("packed")
+        };
+        assert_cleared(f, builder.0, cp[1]);
+    }
+}
+
+#[test]
 fn sequential_builders_clear_and_reuse_registers_without_argument_windows() {
     let statement = "g(1,...xs,中文:2);g?(...xs);";
     let once = compiled(&format!("fn f(g,xs){{{statement}}}"));
