@@ -1,0 +1,8 @@
+WARNING: w254 (bool-passed-to-strange) Boolean passed to 'in' operator.
+testData/static_analyzer/w254.nut:6:4
+
+if (!"weapModSlotName" in ::item)
+    ^---------------------------
+  return null
+
+

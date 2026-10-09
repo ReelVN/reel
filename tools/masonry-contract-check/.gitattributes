@@ -1,0 +1,4 @@
+# Unified diff blank context lines intentionally contain a leading space.
+patches/*.patch -whitespace
+# Preserve raw Cargo output, including its trailing blank lines.
+evidence/*.log -whitespace

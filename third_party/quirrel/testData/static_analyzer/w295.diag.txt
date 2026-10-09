@@ -1,0 +1,8 @@
+WARNING: w307 (global-id-redef) Redefinition of existing global name 'g'.
+testData/static_analyzer/w295.nut:7:0
+
+
+WARNING: w307 (global-id-redef) Redefinition of existing global name 'g'.
+testData/static_analyzer/w295.nut:8:0
+
+

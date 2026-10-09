@@ -1,0 +1,239 @@
+{
+  "source": "doc/examples/pages/language/errors-rethrow.nut",
+  "source_sha256": "07ef2a8d524c2e735ed349a31adace1fc295bfedd04ee98c9542fdd32d56e9bb",
+  "aside_sha256": "adf2709fb1d0f908cd3180e0ac4c5323cf95571afdd2ace19da3eabe9e3ec0fe",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
+  "segments": [
+    {
+      "original": [
+        0,
+        0
+      ],
+      "aside": [
+        0,
+        237
+      ],
+      "kind": "generated_header"
+    },
+    {
+      "original": [
+        0,
+        128
+      ],
+      "aside": [
+        237,
+        365
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        128,
+        152
+      ],
+      "aside": [
+        365,
+        383
+      ],
+      "kind": "reviewed_edit",
+      "reason": "named function declaration"
+    },
+    {
+      "original": [
+        152,
+        153
+      ],
+      "aside": [
+        383,
+        384
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        153,
+        193
+      ],
+      "aside": [
+        384,
+        425
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        193,
+        202
+      ],
+      "aside": [
+        425,
+        434
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        202,
+        233
+      ],
+      "aside": [
+        434,
+        466
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        233,
+        234
+      ],
+      "aside": [
+        466,
+        467
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        234,
+        249
+      ],
+      "aside": [
+        467,
+        480
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        249,
+        250
+      ],
+      "aside": [
+        480,
+        481
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        250,
+        275
+      ],
+      "aside": [
+        481,
+        507
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        275,
+        276
+      ],
+      "aside": [
+        507,
+        508
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        276,
+        287
+      ],
+      "aside": [
+        508,
+        520
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        287,
+        301
+      ],
+      "aside": [
+        520,
+        534
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        301,
+        316
+      ],
+      "aside": [
+        534,
+        550
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        316,
+        317
+      ],
+      "aside": [
+        550,
+        551
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        317,
+        330
+      ],
+      "aside": [
+        551,
+        562
+      ],
+      "kind": "reviewed_edit",
+      "reason": "catch binding removes Quirrel parameter delimiters"
+    },
+    {
+      "original": [
+        330,
+        331
+      ],
+      "aside": [
+        562,
+        563
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        331,
+        370
+      ],
+      "aside": [
+        563,
+        603
+      ],
+      "kind": "reviewed_edit",
+      "reason": "terminate this complete reviewed statement with a semicolon"
+    },
+    {
+      "original": [
+        370,
+        373
+      ],
+      "aside": [
+        603,
+        606
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": []
+}
