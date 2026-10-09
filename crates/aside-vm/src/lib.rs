@@ -1,5 +1,6 @@
 //! Aside's storage milestone. No parser, execution scheduler or native callbacks.
 #![forbid(unsafe_code)]
+pub mod bytecode;
 mod gc;
 mod heap;
 mod payload;
