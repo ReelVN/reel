@@ -101,3 +101,23 @@ Default-expression capture layouts and module identity are shared with the calle
 `fixtures::parameter_cell_default()` starts with x=41. Its owner has mutable x in Parameter(0)/Cell(Reg(0)); y's default function shares that prefix, increments x and returns a closure capturing its cell. The owner's body increments x again. Main also calls the same default FunctionDef normally with the original author value 41. The V03 semantic expectation is an owner pair (43, closure reading 43) and an ordinary-call closure reading 42 from its independent invocation cell. B01 verifies the package, rejects owner/default name/type/mutable/storage/register/duplicate-binding/module conflicts, tests matching readonly Value/Cell prefixes and rest Cells, and prints the bindings. It has not executed that expectation or performed V03 independent acceptance.
 
 `fixtures::native_parameter_defaults()` declares native x/y/z/rest. Its two Plain/NoWait defaults share mutable x in Cell; the second captures readonly y in Cell and calls that nested closure. Derived storage is Cell/Cell/Value/Value. V03's expected author arguments after sequential defaults are x=43, y=42, z=42, rest=[]; tickets expose author values and keep Cell identities internal. B01 verifies/roundtrips/disassembles this package, rejects mutable Value prefixes and inconsistent readonly prefixes in either direction, checks names/types/mutable/slots/duplicate records, and confirms 100 native declarations sharing the signature retain one 16-byte cache. V03's current native-script-default load rejection requires its own implementation coordination; validation success does not establish execution support.
+
+## L09 argument contracts
+
+Expanded compiler calls use existing ArgsNew/ArgsPush/ArgsNamed/ArgsSpread and
+Packed, with empty CallDesc.names; ordinary calls still use Window. Rest remains
+Signature.rest with the subsequent Parameter slot and matching binding contract.
+It receives a fresh outer array of surplus positional values, including empty;
+the type constrains that array, not its elements. A rest name cannot be supplied
+as a named argument or silently redirected into PropertyBagTail. Other tail-bag
+names keep the existing contract.
+
+ArgsSpread shallowly captures only array/tuple at its source point. Invalid
+source/copy/quota failures occur during capture; dynamic binding conflicts and
+defaults occur after all actual arguments. Across budget slices, mutable array
+capture requires an unchanged full content version, including element writes;
+change fails with ConcurrentModification before target invocation. Captured
+outer values are independent of later source edits while object references remain
+shared. Partial builder/cursor/version state needs roots, capacity accounting and
+failure cleanup. These are consumer requirements, not a claim that V03 implements
+or has independently executed them. No wire-format change is made.

@@ -385,66 +385,6 @@ impl FunctionBuilder<'_, '_> {
             )),
         }
     }
-    /// The caller owns the callee register across every source-order argument.
-    pub(super) fn call_with_target(
-        &mut self,
-        n: h::NodeId,
-        arguments: Option<h::NodeId>,
-        target: bc::CallTarget,
-        depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
-        self.l
-            .b
-            .work(arguments.map_or(0, |args| self.l.m.hir().elements(args).len()) as u64)?;
-        let count = arguments.map_or(0, |args| self.l.m.hir().children(args).count());
-        let window = self.registers.get(
-            u32::try_from(count).map_err(|_| {
-                self.l
-                    .b
-                    .error(ErrorKind::Limit, "call window length overflow")
-            })?,
-            &mut self.l.b,
-        )?;
-        let mut names = Vec::new();
-        if let Some(arguments) = arguments {
-            for (i, arg) in self.l.m.hir().children(arguments).enumerate() {
-                let Form::Argument { name, value } = self.l.m.hir().node(arg).form else {
-                    return Err(self.l.b.error(
-                        ErrorKind::Unsupported,
-                        "spread requires ordered argument builder lowering",
-                    ));
-                };
-                let Some(value) = self.value(value, depth)? else {
-                    self.l.b.release(names);
-                    self.release_window(window, n)?;
-                    return Ok(None);
-                };
-                self.op(bc::Opcode::Move, window.start.0 + i as u32, value.0, 0, arg)?;
-                self.release(value)?;
-                if let Some(name) = name {
-                    let name = self
-                        .l
-                        .name(self.l.m.hir().name(name.name.expect("argument name")))?;
-                    self.l.b.push(
-                        &mut names,
-                        bc::NamedArg {
-                            name,
-                            offset: i as u32,
-                        },
-                    )?;
-                }
-            }
-        }
-        let descriptor = self.descriptor(bc::Descriptor::Call(bc::CallDesc {
-            target,
-            arguments: bc::Arguments::Window(window),
-            names,
-        }))?;
-        let out = self.temp()?;
-        self.op(bc::Opcode::Call, out.0, descriptor.0, 0, n)?;
-        self.release_window(window, n)?;
-        Ok(Some(out))
-    }
     fn short_circuit(
         &mut self,
         n: h::NodeId,

@@ -508,7 +508,7 @@ fn optional_assignment_and_deferred_children_spread_and_class_are_located_reject
         );
     }
     for (source, detail) in [
-        ("fn f(a){a?(...a)}", "spread"),
+        ("fn f(a){a?([...a])}", "spread"),
         ("fn f(a){null?() { a; }}", "Children"),
         ("class A{}", "Class"),
         ("fn f(){let [a]=[1];}", "pattern"),

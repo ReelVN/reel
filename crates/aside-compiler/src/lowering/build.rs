@@ -1,3 +1,4 @@
+mod arguments;
 mod chains;
 mod collections;
 mod expressions;
@@ -574,15 +575,10 @@ impl Lowerer<'_> {
                 ));
             }
             let mut parameters = Vec::new();
+            let mut rest = None;
             let mut defaults = Vec::new();
             self.b.work(f.parameters.len() as u64)?;
             for p in &f.parameters {
-                if p.rest {
-                    return Err(self.b.error(
-                        ErrorKind::Unsupported,
-                        "rest parameters belong to full callable lowering",
-                    ));
-                }
                 let symbol = &self.m.symbols()[p.symbol.0 as usize];
                 let ty = p
                     .annotation
@@ -591,15 +587,18 @@ impl Lowerer<'_> {
                     .unwrap_or(self.builtin(bc::BuiltinType::Any)?);
                 self.contracts[p.symbol.0 as usize] = ty;
                 let name = self.name(self.m.hir().name(symbol.name))?;
-                self.b.push(
-                    &mut parameters,
-                    bc::Parameter {
-                        name,
-                        ty,
-                        mutable: symbol.mutable,
-                        default: None,
-                    },
-                )?;
+                let parameter = bc::Parameter {
+                    name,
+                    ty,
+                    mutable: symbol.mutable,
+                    default: None,
+                };
+                if p.rest {
+                    self.b.record()?;
+                    rest = Some(parameter);
+                } else {
+                    self.b.push(&mut parameters, parameter)?;
+                }
                 self.b.push(&mut defaults, None)?;
             }
             let result = if matches!(
@@ -628,6 +627,7 @@ impl Lowerer<'_> {
                 bc::Context::Ordinary
             };
             let signature = self.signature(parameters, result, context)?;
+            self.package.signatures[signature.index()].rest = rest;
             let name = match self.m.hir().node(f.node).form {
                 Form::Function {
                     name: Some(token), ..
@@ -1596,7 +1596,11 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                 format!("{:?} is outside L04 lowering support", node.kind),
             ));
         }
-        if node.kind == H::Spread {
+        if node.kind == H::Spread
+            && node
+                .parent
+                .is_none_or(|parent| m.hir().node(parent).kind != H::Arguments)
+        {
             return Err(b.error(
                 ErrorKind::Unsupported,
                 "spread awaits ordered builder lowering",
