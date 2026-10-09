@@ -9,6 +9,8 @@
 
 实现边界：编译器已提供词法、语法、语义分析和部分构造的字节码生成；VM 存储、根区、字节码验证及 Rust 舞台/渲染契约也已落地。这些基础能力不代表本指南的作者接口、CLI 或完整剧情已可运行。已合入与待验收内容见[当前实现状态](../README.md#当前状态)，各节的具体状态优先于示例中的目标用法。
 
+实现状态（R02 / PR #28）：内部 Rust wgpu 消费者和 winit 诊断窗口已在软件 Vulkan 与 Xvfb/X11 上独立通过 debug/release 验收，覆盖预算压力重试、永久坏帧隔离、系统重绘和恢复能力重新协商。此诊断程序尚未接通本指南的 Aside 剧情、节点绑定或完整游戏会话。物理 GPU、设备热拔与原生平台生命周期仍待验。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
+
 ## 一 最小项目与共同写法
 项目起步只需 game.toml、main.aside 和 assets/。ui/、story/ 等目录按创作规模自行拆分。配置指定入口 main::main 与逻辑画布 1920×1080。reel dev 运行源码并显示定位到文件的错误；reel build 生成字节码和资源包；精简播放器运行构建产物。这些命令属于实现目标。build 输出 .asb 字节码包、.rpk 资源包及 release.json；资源可以按素材类别分包，发布播放器按清单装载。更新剧情与更新素材分别构建。
 game.toml 使用 [game] 表的 entry 与 title，以及 [display] 表的 width、height、scale。entry 写 "main::main"；width=1920、height=1080、scale="contain" 作为默认值。contain 等比例缩放并保留边缘留空，输入坐标按同一缩放换算。game:: 模块从 game.toml 所在目录解析 .aside 文件。文件名与目录名必须可作模块标识符；外部源码模块通过 [modules] 的别名到相对目录映射导入，game 与 reel 是保留别名。
