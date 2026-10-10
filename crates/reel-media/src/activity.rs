@@ -429,6 +429,9 @@ impl AudioActivityService {
     /// faults; Cancelled never resumes business. At most limit
     /// slots are visited, and the caller's Vec NEVER grows beyond its capacity.
     /// Revalidate identity once more at actual business delivery if it is delayed.
+    /// A full destination retains deliverable records but does not stop scanning.
+    /// After one complete scan, consumer backpressure alone requests no wake:
+    /// call drain again when destination capacity is freed (or explicitly scheduled).
     pub fn drain(
         &mut self,
         out: &mut Vec<AudioActivityEvent>,
@@ -443,19 +446,21 @@ impl AudioActivityService {
             {
                 let deliver =
                     terminal != AudioActivityTerminal::Cancelled && is_live(e.id, e.epoch, e.scope);
-                if deliver && out.len() == out.capacity() {
-                    break;
-                }
-                let e = slot.take().expect("terminal owns slot");
-                self.occupied -= 1;
-                self.descriptor_bytes -= e.resource.key.0.capacity() as u64;
-                if deliver {
-                    out.push(AudioActivityEvent {
-                        id: e.id,
-                        epoch: e.epoch,
-                        scope: e.scope,
-                        terminal,
-                    });
+                // Backpressure retains this terminal but cannot block disposal
+                // of cancelled/stale records in later slots. Charge and advance
+                // even when the caller has no room for a deliverable event.
+                if !deliver || out.len() < out.capacity() {
+                    let e = slot.take().expect("terminal owns slot");
+                    self.occupied -= 1;
+                    self.descriptor_bytes -= e.resource.key.0.capacity() as u64;
+                    if deliver {
+                        out.push(AudioActivityEvent {
+                            id: e.id,
+                            epoch: e.epoch,
+                            scope: e.scope,
+                            terminal,
+                        });
+                    }
                 }
             }
             self.drain_cursor = (self.drain_cursor + 1) % self.entries.len();

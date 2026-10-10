@@ -6,6 +6,10 @@ use reel_core::{
     wake::WakeSignal,
 };
 use reel_media::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 fn scope(owner: u64) -> Scope {
     Scope::Session {
@@ -20,13 +24,21 @@ struct Rig {
     activities: Option<AudioActivityService>,
     pool: BudgetPool,
     wake: WakeSignal,
+    control_wakes: Arc<AtomicUsize>,
 }
 impl Rig {
     fn new(slots: u32, key_bytes: u64) -> Self {
         Self::with_mixer_capacity(slots, key_bytes, 64)
     }
     fn with_mixer_capacity(slots: u32, key_bytes: u64, max_sounds: usize) -> Self {
-        let wake = WakeSignal::new(|| {});
+        let control_wakes = Arc::new(AtomicUsize::new(0));
+        let count = control_wakes.clone();
+        let control_thread = std::thread::current().id();
+        let wake = WakeSignal::new(move || {
+            if std::thread::current().id() == control_thread {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        });
         let reclaim = AudioReclaimService::new(ReclaimLimits::default(), wake.clone()).unwrap();
         let mut output = OfflineOutput::new(
             AudioDeviceConfig {
@@ -65,6 +77,7 @@ impl Rig {
             output,
             activities: Some(activities),
             wake,
+            control_wakes,
             pool: BudgetPool::new(
                 BudgetCategory::CpuOutput,
                 QueueLimits {
@@ -138,7 +151,8 @@ fn content_terminal_once_without_claiming_presentation_and_without_vector_growth
     assert!(!rig.service().stop(id));
     let mut no_capacity = Vec::new();
     let p = rig.service().drain(&mut no_capacity, 2, |_, _, _| true);
-    assert!(p.needs_turn);
+    assert_eq!(p.inspected, 2);
+    assert!(!p.needs_turn);
     assert_eq!(no_capacity.capacity(), 0);
     let mut out = Vec::with_capacity(1);
     rig.service().drain(&mut out, 2, |_, _, _| true);
@@ -424,7 +438,7 @@ fn completed_before_fault_survives_backpressure_and_exact_wait_validation_once()
     let mut full = Vec::new();
     let exact =
         |actual_id, epoch, owner| actual_id == id && epoch == MediaEpoch(7) && owner == scope(1);
-    assert!(rig.service().drain(&mut full, 2, exact).needs_turn);
+    assert!(!rig.service().drain(&mut full, 2, exact).needs_turn);
     assert_eq!(rig.service().snapshot(id).unwrap().terminal, Some(terminal));
     let mut events = Vec::with_capacity(1);
     rig.service().drain(&mut events, 2, exact);
@@ -454,5 +468,38 @@ fn stale_exact_wait_is_disposed_without_discarding_another_live_old_epoch_wait()
     });
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].id, live);
+    assert_eq!(rig.service().occupied(), 0);
+}
+
+#[test]
+fn full_destination_cannot_starve_cancelled_slots_or_self_wake_after_a_scan() {
+    let mut rig = Rig::new(2, 100);
+    let blocked = rig.play(1, true);
+    let cancelled = rig.play(2, true);
+    rig.service().stop(blocked);
+    rig.service()
+        .cancel_owner(&mut AudioOwnerCancellation::new(scope(2)), 2);
+    let mut out = Vec::new();
+    for round in 0..8 {
+        rig.wake.acknowledge();
+        let notifications = rig.control_wakes.load(Ordering::Relaxed);
+        let progress = rig.service().drain(&mut out, 1, |_, _, _| true);
+        if round % 2 == 1 {
+            assert_eq!(rig.control_wakes.load(Ordering::Relaxed), notifications);
+        }
+        assert_eq!(progress.inspected, 1);
+        assert_eq!(progress.needs_turn, round % 2 == 0);
+        if round >= 1 {
+            assert!(rig.service().snapshot(cancelled).is_none());
+        }
+        assert!(rig.service().snapshot(blocked).is_some());
+    }
+    assert!(rig.service().poll_after().is_none());
+    out.reserve_exact(1); // Consumer makes space and explicitly schedules drain.
+    for _ in 0..2 {
+        rig.service().drain(&mut out, 1, |_, _, _| true);
+    }
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].id, blocked);
     assert_eq!(rig.service().occupied(), 0);
 }
