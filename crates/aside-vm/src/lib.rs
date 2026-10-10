@@ -25,6 +25,7 @@ pub use frame_slots::{
 pub use gc::{GcBudget, GcPhase, GcProgress};
 pub use heap::{
     Heap, HeapError, HeapLimits, HeapStats, ObjectInfo, ObjectKind, RootKind, RootOwner, RootToken,
+    TableLookupProgress, TableLookupStatus, TableStringLookup,
 };
 pub use payload::{
     BYTE_CHUNK_BYTES, BYTE_CHUNK_LEN, CHUNK_METADATA_BYTES, VALUE_CHUNK_BYTES, VALUE_CHUNK_LEN,
