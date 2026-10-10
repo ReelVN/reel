@@ -47,7 +47,9 @@ Rust tests cover identity, atomic admission, input filtering, history/completion
 retirement and allocation-free accepted hot paths. See PR #50 for actual counts
 and independent acceptance. PR #55 connects VM waits, deliveries and native registration in source, preserving
 BudgetYield/ResourceBlocked. Runtime acceptance and restore remain outstanding.
-No test in this increment executes or simulates Aside bytecode.
+The S01 Rust-model tests do not execute or simulate Aside bytecode.
+PR #55 adds real compiler/VM regression test sources; these have only been
+compiled, not executed.
 
 Local input dispatch uses Session::handle_local_input(owner, action), which
 allocates the next sequence from the Session's current high-water mark at dispatch
