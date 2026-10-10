@@ -771,3 +771,200 @@ fn uninitialized_table_operands_enter_catch_and_finally_instead_of_escaping_slic
         vm.heap_mut().release_root(root).unwrap();
     }
 }
+
+fn packed_destination_package(len: u32, opcode: Opcode) -> BytecodePackage {
+    let mut code = (0..len)
+        .map(|reg| op(Opcode::LoadConst, reg, 0, 0))
+        .collect::<Vec<_>>();
+    code.extend([
+        op(Opcode::MakeArray, len, 0, 0),
+        op(Opcode::MakeArray, len + 1, 1, 0),
+        op(
+            opcode,
+            len,
+            len + 1,
+            if opcode == Opcode::ArgsNamed { 4 } else { 0 },
+        ),
+        op(Opcode::Return, len, 0, 0),
+    ]);
+    package(
+        vec![Const::Int(9)],
+        code,
+        vec![
+            Descriptor::Sequence(RegWindow { start: Reg(0), len }),
+            Descriptor::Sequence(RegWindow {
+                start: Reg(0),
+                len: 1,
+            }),
+        ],
+        len + 2,
+    )
+}
+fn reach_packed_append(vm: &mut Vm, task: TaskId, len: u32) -> Value {
+    for _ in 0..10000 {
+        if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied() {
+            if s.pc == Pc(len + 2) && matches!(s.phase, ScriptPhase::Body) {
+                return vm.value(s.regs, len).unwrap();
+            }
+        }
+        assert!(matches!(tick(vm, task), RunOutcome::BudgetYield(_)));
+    }
+    panic!("did not reach packed append");
+}
+#[test]
+fn forged_odd_packed_destinations_fail_before_any_half_pair_or_allocation() {
+    for opcode in [Opcode::ArgsPush, Opcode::ArgsNamed, Opcode::ArgsSpread] {
+        let mut vm = load(packed_destination_package(63, opcode));
+        let task = vm
+            .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let packed = reach_packed_append(&mut vm, task, 63);
+        let before = vm.heap().info(packed).unwrap();
+        let chunks = vm.heap().stats().chunk_allocations;
+        let RunOutcome::BudgetYield(usage) = vm
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work: 2,
+                    allocation_bytes: 0,
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(usage.allocation_bytes, 0);
+        assert_eq!(vm.heap().stats().chunk_allocations, chunks);
+        let after = vm.heap().info(packed).unwrap();
+        assert_eq!(after.len, 63);
+        assert_eq!(after.content_version, before.content_version);
+        fault(&mut vm, task, FaultKind::Type);
+    }
+}
+#[test]
+fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
+    for opcode in [Opcode::ArgsPush, Opcode::ArgsNamed, Opcode::ArgsSpread] {
+        let mut vm = load(packed_destination_package(64, opcode));
+        let task = vm
+            .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let packed = reach_packed_append(&mut vm, task, 64);
+        let version = vm.heap().info(packed).unwrap().content_version;
+        for _ in 0..3 {
+            let RunOutcome::BudgetYield(usage) = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: 3,
+                        allocation_bytes: VALUE_CHUNK_BYTES - 1,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(usage.allocation_bytes, 0);
+            assert_eq!(usage.required_allocation, VALUE_CHUNK_BYTES);
+            let info = vm.heap().info(packed).unwrap();
+            assert_eq!(info.len, 64);
+            assert_eq!(info.content_version, version);
+            gc(&mut vm);
+        }
+        let RunOutcome::BudgetYield(usage) = vm
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work: 2,
+                    allocation_bytes: VALUE_CHUNK_BYTES,
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(usage.allocation_bytes, VALUE_CHUNK_BYTES);
+        assert_eq!(vm.heap().info(packed).unwrap().len, 66);
+        assert_eq!(
+            vm.heap().sequence_get(packed, 64).unwrap().as_int(),
+            Some(if opcode == Opcode::ArgsNamed { 4 } else { -1 })
+        );
+        assert!(vm.heap().sequence_get(packed, 65).is_ok());
+    }
+}
+#[test]
+fn spread_destination_overwrite_and_odd_append_invalidate_resume() {
+    for append in [false, true] {
+        let mut vm = load(spread_rest_package());
+        let task = vm
+            .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let mut packed = None;
+        for _ in 0..1000 {
+            let Some(Frame::Script(s)) = vm.active.frames.data.last().copied() else {
+                panic!()
+            };
+            if s.pc == Pc(4) && matches!(s.phase, ScriptPhase::Body) {
+                vm.run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: 3,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+                let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
+                    panic!()
+                };
+                assert!(matches!(s.phase, ScriptPhase::Spread { index: 1, .. }));
+                packed = Some(vm.value(s.env, 1).unwrap());
+                break;
+            }
+            tick(&mut vm, task);
+        }
+        let packed = packed.expect("spread capture pause");
+        if append {
+            vm.heap_mut().array_push(packed, Value::int(99)).unwrap();
+        } else {
+            vm.heap_mut().set_field(packed, 1, Value::int(99)).unwrap();
+        }
+        let root = vm
+            .heap_mut()
+            .add_root(RootOwner(9), RootKind::Host, packed)
+            .unwrap();
+        let before = vm.heap().info(packed).unwrap();
+        fault(&mut vm, task, FaultKind::ConcurrentModification);
+        let after = vm.heap().info(packed).unwrap();
+        assert_eq!(after.len, before.len);
+        assert_eq!(after.content_version, before.content_version);
+        vm.heap_mut().release_root(root).unwrap();
+    }
+}
+#[test]
+fn packed_pair_barrier_failure_keeps_payload_versions_and_charge_unchanged() {
+    let mut heap = Heap::new(SessionEpoch(91), HeapLimits::default()).unwrap();
+    let mut foreign = Heap::new(SessionEpoch(91), HeapLimits::default()).unwrap();
+    let packed = heap.alloc_array(&[Value::NULL; 64]).unwrap();
+    let invalid = foreign.alloc_array(&[]).unwrap();
+    let before = heap.info(packed).unwrap();
+    let bytes = heap.stats().charged_bytes;
+    assert_eq!(
+        heap.packed_pair_push(packed, Value::int(-1), invalid),
+        Err(HeapError::WrongHeap)
+    );
+    let after = heap.info(packed).unwrap();
+    assert_eq!(after.len, before.len);
+    assert_eq!(after.content_version, before.content_version);
+    assert_eq!(after.structure_version, before.structure_version);
+    assert_eq!(heap.stats().charged_bytes, bytes);
+}

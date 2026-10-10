@@ -396,12 +396,21 @@ impl Vm {
         index: u32,
         len: u32,
         version: u64,
+        destination_version: u64,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         let packed = self.value(s.env, 1)?;
         let source = self.value(s.env, 2)?;
-        let packed_len = self.heap.info(packed)?.len;
-        let extra = if index < len && (packed_len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
+        let destination = self.heap.info(packed)?;
+        let changed = destination.content_version != destination_version
+            || self.heap.info(source)?.content_version != version;
+        let shape = self.heap.packed_array_len(packed);
+        let extra = if !changed
+            && index < len
+            && shape
+                .as_ref()
+                .is_ok_and(|length| (*length as usize).is_multiple_of(VALUE_CHUNK_LEN))
+        {
             VALUE_CHUNK_BYTES
         } else {
             0
@@ -409,8 +418,12 @@ impl Vm {
         if !meter.take(0, 2, extra) {
             return Ok(false);
         }
-        if self.heap.info(source)?.content_version != version {
+        if changed {
             self.collection_fault(s, FaultKind::ConcurrentModification)?;
+        } else if let Err(error) = shape {
+            self.collection_fault(s, heap_fault(error))?;
+        } else if shape.unwrap() / 2 >= self.limits.max_arguments && index < len {
+            self.collection_fault(s, FaultKind::Resource)?;
         } else if index == len {
             self.clear(s.env, 1)?;
             self.clear(s.env, 2)?;
@@ -418,20 +431,14 @@ impl Vm {
             s.phase = ScriptPhase::Body;
         } else {
             let value = self.heap.sequence_get(source, index)?;
-            // Preflight both appends. Private packed arrays always have even len.
-            let result = self
-                .heap
-                .budget_usage()
-                .ensure(extra)
-                .and_then(|()| self.heap.root_insertion_barrier(value))
-                .and_then(|()| self.heap.array_push(packed, Value::int(-1)))
-                .and_then(|()| self.heap.array_push(packed, value));
+            let result = self.heap.packed_pair_push(packed, Value::int(-1), value);
             match result {
                 Ok(()) => {
                     s.phase = ScriptPhase::Spread {
                         index: index + 1,
                         len,
                         version,
+                        destination_version: self.heap.info(packed)?.content_version,
                     }
                 }
                 Err(error) => self.collection_fault(s, heap_fault(error))?,

@@ -113,6 +113,7 @@ enum ScriptPhase {
         index: u32,
         len: u32,
         version: u64,
+        destination_version: u64,
     },
     KeyPath {
         index: u32,
@@ -2160,8 +2161,9 @@ impl Vm {
                 index,
                 len,
                 version,
+                destination_version,
             } => {
-                if !self.spread_step(&mut s, index, len, version, m)? {
+                if !self.spread_step(&mut s, index, len, version, destination_version, m)? {
                     return Ok(false);
                 }
             }
@@ -2369,7 +2371,9 @@ impl Vm {
                 let count = match d.arguments {
                     Arguments::Window(w) => w.len,
                     Arguments::Packed(r) => {
-                        self.heap.info(self.slots.read(at(s.regs, r.0))?)?.len / 2
+                        self.heap
+                            .packed_array_len(self.slots.read(at(s.regs, r.0))?)?
+                            / 2
                     }
                 };
                 let cost = match d.target {
@@ -2404,7 +2408,7 @@ impl Vm {
             Opcode::ArgsNew => (1, 0),
             Opcode::ArgsPush | Opcode::ArgsNamed => {
                 let packed = self.slots.read(at(s.regs, _a))?;
-                let len = self.heap.info(packed)?.len;
+                let len = self.heap.packed_array_len(packed)?;
                 (
                     2,
                     if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
@@ -2734,30 +2738,21 @@ impl Vm {
             Opcode::ArgsPush | Opcode::ArgsNamed => {
                 let packed = self.read(*s, r(a))?;
                 let v = self.read(*s, r(b))?;
-                // Preflight two edges before the first append to keep pair publication atomic.
-                let len = self.heap.info(packed).map_err(heap_fault)?.len;
+                let len = self.heap.packed_array_len(packed).map_err(heap_fault)?;
                 if len / 2 >= self.limits.max_arguments {
                     return Err(FaultKind::Resource);
                 }
                 self.heap
-                    .budget_usage()
-                    .ensure(if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-                        VALUE_CHUNK_BYTES
-                    } else {
-                        0
-                    })
-                    .map_err(heap_fault)?;
-                self.heap
-                    .array_push(
+                    .packed_pair_push(
                         packed,
                         Value::int(if op == Opcode::ArgsNamed {
                             c as i64
                         } else {
                             -1
                         }),
+                        v,
                     )
                     .map_err(heap_fault)?;
-                self.heap.array_push(packed, v).map_err(heap_fault)?;
             }
             Opcode::ArgsSpread => {
                 let packed = self.read(*s, r(a))?;
@@ -2768,7 +2763,9 @@ impl Vm {
                     return Err(FaultKind::Type);
                 }
                 let info = self.heap.info(source).map_err(heap_fault)?;
-                let count = self.heap.info(packed).map_err(heap_fault)?.len / 2;
+                let count = self.heap.packed_array_len(packed).map_err(heap_fault)? / 2;
+                let destination_version =
+                    self.heap.info(packed).map_err(heap_fault)?.content_version;
                 if info.len > self.limits.max_arguments.saturating_sub(count) {
                     return Err(FaultKind::Resource);
                 }
@@ -2778,6 +2775,7 @@ impl Vm {
                     index: 0,
                     len: info.len,
                     version: info.content_version,
+                    destination_version,
                 };
                 return Ok(false);
             }
@@ -2790,11 +2788,7 @@ impl Vm {
                     Arguments::Window(w) => w.len,
                     Arguments::Packed(r) => {
                         let v = self.read(*s, r)?;
-                        let info = self.heap.info(v).map_err(heap_fault)?;
-                        if info.kind != ObjectKind::Array || info.len % 2 != 0 {
-                            return Err(FaultKind::Type);
-                        }
-                        info.len / 2
+                        self.heap.packed_array_len(v).map_err(heap_fault)? / 2
                     }
                 };
                 let source = ArgSource::Caller {

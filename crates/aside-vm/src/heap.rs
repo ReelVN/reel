@@ -660,6 +660,52 @@ impl Heap {
         obj.structure_version = obj.structure_version.wrapping_add(1);
         Ok(())
     }
+    /// Packed arguments use alternating name/value entries. Validate shape at
+    /// every use: bytecode verification does not prove a private ArgsNew origin.
+    pub(crate) fn packed_array_len(&self, target: Value) -> Result<u32, HeapError> {
+        let obj = self.object(self.key(target)?)?;
+        if obj.kind != ObjectKind::Array {
+            return Err(HeapError::WrongKind);
+        }
+        let len = obj.payload.len();
+        if len % 2 != 0 {
+            return Err(HeapError::TypeMismatch);
+        }
+        Ok(len)
+    }
+    /// Publish a complete pair or leave the array untouched. Shape, arithmetic,
+    /// allocation and both values are checked before any payload mutation.
+    pub(crate) fn packed_pair_push(
+        &mut self,
+        target: Value,
+        name: Value,
+        value: Value,
+    ) -> Result<(), HeapError> {
+        let len = self.packed_array_len(target)?;
+        len.checked_add(2).ok_or(HeapError::OutOfBounds)?;
+        let extra = if (len as usize).is_multiple_of(crate::VALUE_CHUNK_LEN) {
+            VALUE_CHUNK_BYTES
+        } else {
+            0
+        };
+        self.ensure_bytes(extra)?;
+        self.validate_value(name)?;
+        self.validate_value(value)?;
+        let key = self.key(target)?;
+        self.shade(name);
+        self.shade(value);
+        self.charge(extra, u64::from(extra != 0));
+        let obj = self.objects.get_mut(key).unwrap();
+        let Payload::Values(values) = &mut obj.payload else {
+            unreachable!()
+        };
+        values.push(name);
+        values.push(value);
+        obj.charged += extra;
+        obj.content_version = obj.content_version.wrapping_add(1);
+        obj.structure_version = obj.structure_version.wrapping_add(1);
+        Ok(())
+    }
     pub fn array_pop(&mut self, target: Value) -> Result<Option<Value>, HeapError> {
         let key = self.key(target)?;
         let obj = self.object(key)?;
