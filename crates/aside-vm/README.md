@@ -184,8 +184,53 @@ cleanup complete. Invalidate host root records so later cleanup cannot double
 release or reuse revoked FaultRoot handles. Reclamation of now-unreachable
 objects remains separate budgeted GC work.
 
-Missing runtime support includes MakeArray/MakeTable, IndexGet/IndexSet and
-MemberGet/MemberSet, script rest/property-bag tails, class/pattern/task features,
-full module/library binding and snapshot/restore. Compiler support for these
-constructs does not mean Vm can load them. Source/compile-only integration must
-not be presented as a playable story or runtime/GC/restoration acceptance.
+PR #54 extends this integration branch with source implementations for sliced
+MakeTuple/MakeArray/MakeTable, IndexGet/IndexSet, MemberGet/MemberSet, tuple
+constants, positional ArgsSpread and script rest (including host-start calls).
+The draft has native/i686 all-targets cargo-check evidence only; no VM, Aside,
+runtime test or bytecode simulation was executed. Source review found deferred
+operand-fault and packed-argument admission defects; both fixes passed
+independent source recheck. This is not a playable-story or runtime/GC/restore
+acceptance claim.
+
+Remaining unsupported forms include delegates/hooks, classes, structural tuple
+types, property-bag tails, ArgsNamedSpread, collection spread, patterns, full
+module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
+
+### Collection host access and execution source boundaries (PR #54)
+
+sequence_len/get validate array/tuple kinds and bounds without exposing private
+storage layout. table_own_string_lookup(table, key) returns a borrowed-key cursor;
+table_own_string_step(cursor, work) reports Pending or Complete(Option<Value>) and
+actual charged entry/byte/completion work. Only own string keys are considered,
+without delegate or hook calls; missing differs from a stored null. The caller
+retains the table through a native ticket or explicit root: the cursor owns no
+root. Every step validates liveness and content version. Returned values require
+normal explicit retention when kept beyond the borrowed operation. Legacy raw
+alloc_record(Table) schemas are not language tables and are rejected by semantic
+lookup, rather than interpreted as alternating private fields.
+
+Language tables retain insertion order; overwriting an equal key replaces only
+the value and advances content version. Sequence indices are nonnegative ints;
+tuple mutation is rejected. Member and Index remain distinct B01 operations,
+and ordinary stored closures do not receive an implicit self. Numeric key
+comparison follows exact int/float equivalence; NaN and mutable nested keys
+reject. UnhashableKey details contain a zero-based tuple element path (empty for
+a top-level invalid key). Appended FaultKind IDs are OutOfBounds=14, MissingKey=15,
+UnhashableKey=16 and ConcurrentModification=17; prior IDs and B01 v1 are unchanged.
+
+Intermediate builders, comparison stacks and fault-detail paths retain roots
+until publication or budgeted cleanup. ArgsSpread captures array/tuple elements
+shallowly at the source argument position and validates source content version
+until capture completes. Packed destinations must satisfy shape and version
+invariants; both entries of each argument pair are preflighted/charged together.
+A fresh outer rest array is prepared for every call, including empty and host
+entry cases; existing default/type/Cell rules then apply. Authored tests are
+compiled only, so these are source contracts, not established runtime behavior.
+
+Table lookup is resumable linear search: O(entries plus compared content), with
+potentially quadratic repeated construction. No hash-index or scalability claim
+is made. Runtime sequence construction is sliced; synchronous tuple constants
+still obey the strict per-constant max_mutation_values limit, and loading remains
+synchronous. Existing comparison-stack capacity limits still apply. Owner root
+retirement and provider-aware GC responsibilities above are unchanged.
