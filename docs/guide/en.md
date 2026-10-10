@@ -45,7 +45,7 @@ let fixes a variable's binding while leaving node properties mutable. Use let mu
 
 ### Current Single-Module Tool Progress (PR #52)
 
-The check path is submitted; build and the shared .asb container are being implemented and independently reviewed in the same PR. These are the agreed command interfaces for this increment.
+check, build and the shared .asb container are implemented in the same draft PR; entry-validation fixes are undergoing independent re-review. These commands compile and validate without running a story.
 
 ```sh
 reel check main.aside --format human
@@ -53,7 +53,7 @@ reel check main.aside --format json
 reel build main.aside --output main.asb --entry main::main
 ```
 
-check performs lexing, parsing, analysis, bytecode generation and B01 encoding/decoding verification without running the story. build packages bytecode, module metadata, the initializer and an explicitly selected startup function into one .asb. Omitting --entry produces a module-only artifact, not a launchable game. The entry may be private but must be an ordinary module-level function with no required arguments. Output does not overwrite by default; --overwrite explicitly permits atomic replacement.
+check performs lexing, parsing, analysis, bytecode generation and B01 encoding/decoding verification without running the story. build packages bytecode, module metadata, the initializer and an explicitly selected startup function into one .asb. Omitting --entry produces a module-only artifact, not a launchable game. The entry may be private but must be a capture-free module-level function in the Ordinary context with no required arguments. The reader checks its binding against a restricted compiler initializer prologue; matching names or metadata claims alone cannot establish a module-level entry. Output does not overwrite by default; --overwrite explicitly permits atomic replacement.
 
 This increment handles one standalone source module and rejects unconnected imports/natives. Full game.toml project builds, resource packages and release.json remain incomplete, and this does not establish player loading or execution. Input reads are capped at 8 MiB, with potentially tighter compiler/bytecode budgets applied afterward. JSON diagnostics preserve UTF-8 byte ranges and zero-based byte/scalar/UTF-16 coordinates.
 

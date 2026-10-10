@@ -205,7 +205,7 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 发布产物分为字节码包 .asb 与资源包 .rpk，随目标平台播放器和 release.json 清单发布。一个游戏可以有多个代码模块包与多个资源分包；脚本修订和图片/音频更新独立构建。此分层借鉴 YU-RIS 的脚本二进制与资源归档组织，格式由 Reel 自行定义。
 .asb 保存入口、模块/函数/导入导出、常量、稳定内容与恢复标识、语言/字节码/宿主 ABI 版本和所需能力。源码映射可作为独立调试包，去掉源码后仍运行完整字节码语义。.rpk 保存 AssetKey、内容版本、目录索引、块表、编码/压缩信息和数据；索引与 offset/len 使用固定宽度，range read 支持流式音视频。已压缩媒体可原样储存，通用数据按独立 zstd frame 压缩，避免为一个 seek 解压整包。
 
-### ASB v1 单模块容器（PR #52，实现与验收进行中）
+### ASB v1 单模块容器（PR #52，已实现，修复独立复验中）
 
 共享容器由 reel-package 定义，只依赖便携 B01 格式与必要序列化/摘要库，不依赖编译器、UI 或 GPU；编译器 HIR 到便携元数据的转换和文件写入由 reel-cli 完成。B01 继续是代码、模块、函数、导入导出、常量、ABI 与能力表的唯一数据来源，容器不复制另一套同义表。
 
@@ -213,7 +213,7 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 元数据保存 schema 版本、唯一模块引用及规范路径、源码版本/摘要/范围、source symbol 范围、函数/绑定/global 的必要映射，和分别命名的 initializer 与可空 game_entry。记录使用稳定 DTO 与精确整数，不序列化 Rust Debug、Arc、裸 HIR 节点或内存容量。函数映射不包含编译器生成的全部默认 thunk 或 initializer，不能以其条数等同 B01 函数数。读取端交叉验证模块/函数归属、范围、映射键唯一性、源码 UTF-8 边界及精确 B01 摘要；元数据里的源槽与效果摘要仅为编译器声明，不可替代 B01 验证、可信 native 注册或运行期效果检查。JSON 输入同时受字节、深度、字符串/记录和工作量限制，重复字段拒绝。
 
-Compilation.entry 对应模块 initializer，不是游戏启动函数。build 显式 --entry main::name 才选择普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口；声明经 HIR/编译器输出映射到 B01 FunctionId，不能依赖通常为空的 GlobalDef.linked_function。未指定 --entry 时 game_entry=null，产物仅为编译模块。消费者必须先完成 initializer，再启动选定函数；CLI 编译与验证不执行这些步骤。当前 producer 限单模块、空 import/external/native 链接，不支持的链接必须报错。
+Compilation.entry 对应模块 initializer，不是游戏启动函数。build 显式 --entry main::name 才选择普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口；声明经 HIR/编译器输出映射到 B01 FunctionId，不能依赖通常为空的 GlobalDef.linked_function。未指定 --entry 时 game_entry=null，产物仅为编译模块。reader 也独立要求入口 context=Ordinary，而非仅凭元数据声明普通函数。消费者必须先完成 initializer，再启动选定函数；CLI 编译与验证不执行这些步骤。当前 producer 限单模块、空 import/external/native 链接，不支持的链接必须报错。
 
 命令为 reel check <source> [--format human|json] 与 reel build <source> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]。build 在目标同目录完成唯一暂存文件，编码与验证成功后以原子不覆盖操作发布；只有显式 --overwrite 允许原子替换。先检查 exists 再 rename 不构成不覆盖保证；失败保留已有目标且只清理本次暂存。原子可见与断电持久性分别说明，不能把普通成功当持久存档承诺。
 
@@ -372,3 +372,11 @@ PR #50 在既有职责边界新增 reel-engine，管理有界 Session/Epoch/owne
 owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
 
 本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。
+
+### ASB 声明映射验证边界
+
+PR #52 的 reader 从已验证 B01 initializer 开头连续的 MakeClosure → GlobalInit → Clear 三指令结构恢复真实 global/function 绑定；要求同一寄存器、模块、名称、不可变 global、无捕获及唯一关联，并与声明元数据交叉核对。所有 PC 操作数与异常区间不得进入该前缀；还扫描所有函数，禁止相同声明 global 在前缀外被初始化或改写。扫描和有序表操作计入工作额度，不能证明的结构明确拒绝。
+
+这是当前编译器单模块输出 profile 的保守结构验证，不执行或模拟字节码，不重新编译内嵌源码，也不证明任意 B01 与源码语义等价。仅修改元数据把入口指向同名嵌套函数不能通过。以后编译器改变声明前缀时，必须同步 profile 规则和兼容验收，不能默许降级。
+
+5138fa9 的作者静态测试为 37 项；两个独立入口反例的修复仍待独立复验。Linux x86_64/overlayfs 上已独立观察 12 路不覆盖竞争仅一个完整产物胜出、80 次覆盖的并发读取只见完整旧/新文件；这些结果不代表其他文件系统、平台或断电持久性，也不构成 VM/剧情运行验收。

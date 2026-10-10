@@ -64,4 +64,4 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 
 [调用展开与 rest（#47）](https://github.com/jhq223/reel/pull/47) 增加源码顺序参数 builder、Packed 调用及 rest 参数身份；集合展开仍待独立设计。静态编译不等于 V03 支持或剧情会话已接通，真实浅捕获、并发修改、缺省执行及 GC/恢复尚未验收。
 
-[作者检查与构建（#52）](https://github.com/jhq223/reel/pull/52) 正在独立草稿 PR 中实现。check 提供带位置的人读/JSON 诊断和非执行编译验证；build 按 ASB v1 保存模块元数据、initializer 和可选游戏入口。完整项目/资源发行、native/import 链接与实际玩家运行不属于当前已完成范围。详见架构中的 ASB v1 单模块容器及双语指南。
+[作者检查与构建（#52）](https://github.com/jhq223/reel/pull/52) 已在草稿 PR 中实现，入口校验修复正在独立复验。check 提供带位置的人读/JSON 诊断和非执行编译验证；build 按 ASB v1 保存模块元数据、initializer 和可选游戏入口。完整项目/资源发行、native/import 链接与实际玩家运行不属于当前已完成范围。详见架构中的 ASB v1 单模块容器及双语指南。

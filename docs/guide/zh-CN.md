@@ -45,7 +45,7 @@ let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另�
 
 ### 当前单模块工具进展（PR #52）
 
-check 路径已提交；build 与共享 .asb 容器正在同一 PR 实现和独立验收，下列为本轮确认的命令接口。
+check、build 与共享 .asb 容器已在同一草稿 PR 实现；入口校验修复正在独立复验。下列命令只编译和验证，不运行剧情。
 
 ```sh
 reel check main.aside --format human
@@ -53,7 +53,7 @@ reel check main.aside --format json
 reel build main.aside --output main.asb --entry main::main
 ```
 
-check 只做词法、语法、语义、字节码生成及 B01 编解码验证，不运行剧情。build 将字节码、模块元数据、初始化函数和显式选择的启动函数封装到单个 .asb；省略 --entry 时只产出模块，不声称可启动游戏。入口可以私有，但必须是普通模块级、无必需参数的函数。文件默认不覆盖，--overwrite 才允许原子替换。
+check 只做词法、语法、语义、字节码生成及 B01 编解码验证，不运行剧情。build 将字节码、模块元数据、初始化函数和显式选择的启动函数封装到单个 .asb；省略 --entry 时只产出模块，不声称可启动游戏。入口可以私有，但必须是 Ordinary 上下文的模块级、无捕获且无必需参数的函数。reader 会按限定编译器的初始化前缀核对真实声明绑定，不凭同名或元数据自述接受嵌套入口。文件默认不覆盖，--overwrite 才允许原子替换。
 
 此增量只处理独立单模块源码，未接通的 import/native 会明确报错。它尚未完成 game.toml 全项目构建、资源包或 release.json，也不证明播放器已能加载/运行。输入最多读取 8 MiB，编译及字节码仍各自受更紧预算约束。JSON 错误位置保留 UTF-8 字节范围和零起始 byte/scalar/UTF-16 坐标。
 
