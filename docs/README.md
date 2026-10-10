@@ -66,4 +66,4 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 
 [音频活动账本（#53）](https://github.com/jhq223/reel/pull/53) 在独立草稿 PR 中提供稳定媒体身份、Scope 取消、精确等待过滤、有界维护与终态保留。Rust 内容消费完成不等于硬件播放完成或 PCM 释放；尚未接脚本会话、完整恢复或作者音频 API。离线 Kira 检查及限定 Rust 范围独立验收通过；仍为尚未合并的草稿。[接口和调度边界](../crates/reel-media/README.md#logical-audio-activities-pr-53)。
 
-[音频物理退休（#56）](https://github.com/jhq223/reel/pull/56) 基于 #53 增加有界 owner/活动资源释放凭据，区分逻辑完成、实际 PCM/票据释放和描述符释放。已发布实现与作者限定测试，独立验收进行中；尚未接入脚本等待或会话外部退休门。[接口与容量边界](../crates/reel-media/README.md#physical-owner-retirement-pr-56)。
+[音频物理退休（#56）](https://github.com/jhq223/reel/pull/56) 基于 #53 增加有界 owner/活动资源释放凭据，区分逻辑完成、实际 PCM/票据释放和描述符释放。已通过限定音频 Rust 独立验收；尚未接入脚本等待或会话外部退休门。[接口与容量边界](../crates/reel-media/README.md#physical-owner-retirement-pr-56)。

@@ -394,7 +394,7 @@ S01 implementation status: the Rust session host now connects to a real dialogue
 
 Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
 
-Audio retirement progress (PR #56, Rust layer, independent acceptance pending):
+Audio retirement progress (PR #56, independently accepted for the limited Rust scope):
 requests use a registered AudioOwner. Closing admission starts bounded cancellation;
 owner retirement additionally waits for actual PCM/budget-ticket and activity
 descriptor release. Stopping playback or receiving a logical terminal is not

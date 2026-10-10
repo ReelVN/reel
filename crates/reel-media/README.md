@@ -127,6 +127,9 @@ No elapsed-time guarantee or hardware-presentation assertion follows.
 
 At b64ae9d the author reports 44 tests under both default and feature-off builds,
 strict Clippy and i686 checking, including a 64 MiB allocator witness. Independent
-acceptance is pending. This increment supplies Rust resource evidence only:
+limited Rust acceptance passed at documentation head 654a899e: default and
+feature-off each passed 44 existing and 37 reviewer tests (16 independent
+additions/history counterexamples), plus three actual 64 MiB destruction paths.
+Independent Clippy/i686 repetition was not performed; those remain author checks. This increment supplies Rust resource evidence only:
 SessionVm external-resource gates, script media activities and player audio
 assembly are not yet connected.
