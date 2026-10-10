@@ -19,6 +19,31 @@ pub struct CompiledStory {
     pub entry: bc::FunctionId,
 }
 
+impl CompiledStory {
+    /// Validate host entry metadata in addition to B01 verification. Native
+    /// admission remains exclusively the responsibility of SessionVm::load.
+    pub fn validate(&self) -> Result<(), SourceError> {
+        let p = self.program.package();
+        let function = p
+            .functions
+            .get(self.entry.index())
+            .ok_or(SourceError::Entry)?;
+        let signature = &p.signatures[function.signature.index()];
+        if !function.captures.is_empty()
+            || function.kind != bc::FunctionKind::Plain
+            || function.context != bc::Context::Ordinary
+            || signature
+                .parameters
+                .iter()
+                .any(|parameter| parameter.default.is_none())
+            || p.modules[function.module.index()].initializer != Some(self.initializer)
+        {
+            return Err(SourceError::Entry);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub enum SourceError {
     Source(aside_compiler::SourceTooLarge),
@@ -200,7 +225,6 @@ pub fn compile_story(
         },
     )
     .map_err(SourceError::Lowering)?;
-    let p = compiled.program.package();
     // The compiler initializes module function globals at runtime; their
     // GlobalDef.linked_function is intentionally None. Select the real HIR
     // declaration/output mapping, not that optional prelinked-closure field.
@@ -221,23 +245,13 @@ pub fn compile_story(
         .position(|function| module.facts()[function.node.0 as usize].symbol == Some(declared))
         .ok_or(SourceError::Entry)?;
     let entry = compiled.metadata.functions[function_index].output;
-    let function = &p.functions[entry.index()];
-    let signature = &p.signatures[function.signature.index()];
-    if !function.captures.is_empty()
-        || function.kind != bc::FunctionKind::Plain
-        || function.context != bc::Context::Ordinary
-        || signature
-            .parameters
-            .iter()
-            .any(|parameter| parameter.default.is_none())
-    {
-        return Err(SourceError::Entry);
-    }
-    Ok(CompiledStory {
+    let story = CompiledStory {
         program: compiled.program,
         initializer: compiled.entry,
         entry,
-    })
+    };
+    story.validate()?;
+    Ok(story)
 }
 
 impl From<SourceError> for AdapterError {

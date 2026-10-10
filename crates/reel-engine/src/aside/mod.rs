@@ -18,13 +18,13 @@ use crate::{
     SessionIdentity,
 };
 pub use aside_vm::executor::{
-    FaultKind, HostTicket, RunOutcome, SliceBudget, TaskId, VmError, VmLimits,
+    DeliveryId, FaultKind, HostTicket, RunOutcome, SliceBudget, TaskId, VmError, VmLimits,
 };
-pub use aside_vm::{GcBudget, GcProgress};
+pub use aside_vm::{FaultInfo, GcBudget, GcProgress};
 use aside_vm::{
     HeapError, RootKind, RootOwner, RootToken, SessionEpoch, Value,
     bytecode::{Context, Effects, FunctionId, VerifiedProgram},
-    executor::{Completion as VmCompletion, DeliveryId, HostResponse, NativeInput, Vm, WaitId},
+    executor::{Completion as VmCompletion, HostResponse, NativeInput, Vm, WaitId},
 };
 
 #[derive(Debug)]

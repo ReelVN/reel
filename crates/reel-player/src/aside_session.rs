@@ -2,7 +2,8 @@
 //! this source is not executed by the existing Rust diagnostic window.
 use crate::session::{ProjectionStamp, SessionUi, SessionWidget};
 use reel_engine::aside::{
-    GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits, source,
+    DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionVm,
+    SliceBudget, VmLimits, source,
 };
 use reel_engine::{InteractionId, InteractionView, Session};
 use reel_ui::{
@@ -22,9 +23,20 @@ pub enum StoryProgress {
     },
     /// A host admission/argument/effect error was delivered at the native call.
     NativeFault(String),
-    /// Waiting, BudgetYield, ResourceBlocked and Fault retain their exact VM IDs.
+    /// Nonterminal Waiting, BudgetYield and ResourceBlocked preserve VM IDs.
     Vm(RunOutcome),
+    Faulted(DeliveryId),
     Finished,
+    Cancelled,
+}
+
+/// Fault delivery remains rooted until explicit cancellation and cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoryState {
+    Running,
+    Faulted(DeliveryId),
+    Finished,
+    Cancelled,
 }
 
 /// Owns both sides so UI cancel cannot invoke the pure Rust zero-obligation
@@ -34,7 +46,7 @@ pub struct AsideSessionUi {
     vm: SessionVm,
     entry: Option<source::StoryFunction>,
     locale: String,
-    finished: bool,
+    state: StoryState,
 }
 
 impl AsideSessionUi {
@@ -47,10 +59,22 @@ impl AsideSessionUi {
         locale: &str,
         limits: VmLimits,
     ) -> Result<Self, Error> {
+        let story = source::compile_story(text, module, version, entry_name)?;
+        Self::from_compiled(session, story, locale, limits)
+    }
+
+    /// Assemble a verified bytecode asset with its host-selected entry metadata.
+    /// B01 decoding happens upstream; trusted native admission happens here.
+    pub fn from_compiled(
+        session: Session,
+        story: source::CompiledStory,
+        locale: &str,
+        limits: VmLimits,
+    ) -> Result<Self, Error> {
         if locale.is_empty() {
             return Err("empty page locale".into());
         }
-        let story = source::compile_story(text, module, version, entry_name)?;
+        story.validate()?;
         let ui = SessionUi::new(session)?;
         let mut vm = SessionVm::load(ui.session(), story.program, limits)?;
         vm.start(ui.session(), story.initializer)?;
@@ -59,8 +83,19 @@ impl AsideSessionUi {
             vm,
             entry: Some(story.entry),
             locale: locale.into(),
-            finished: false,
+            state: StoryState::Running,
         })
+    }
+    pub fn state(&self) -> StoryState {
+        self.state
+    }
+    /// Ephemeral inspection: valid while Faulted, including across GC ticks.
+    /// Cancellation invalidates the delivery; this does not create a host root.
+    pub fn fault(&self) -> Result<Option<FaultInfo>, Error> {
+        match self.state {
+            StoryState::Faulted(id) => Ok(self.vm.vm().delivery_fault(id)?),
+            _ => Ok(None),
+        }
     }
     pub fn ui(&self) -> &SessionUi {
         &self.ui
@@ -118,8 +153,11 @@ impl AsideSessionUi {
         host_work: u32,
         now: impl FnMut() -> u64,
     ) -> Result<StoryProgress, Error> {
-        if self.finished {
-            return Ok(StoryProgress::Finished);
+        match self.state {
+            StoryState::Faulted(id) => return Ok(StoryProgress::Faulted(id)),
+            StoryState::Finished => return Ok(StoryProgress::Finished),
+            StoryState::Cancelled => return Ok(StoryProgress::Cancelled),
+            StoryState::Running => {}
         }
         let outcome = self.vm.step(self.ui.session_mut(), budget, now)?;
         match outcome {
@@ -130,7 +168,7 @@ impl AsideSessionUi {
                     Ok(StoryProgress::Initialized)
                 } else {
                     self.vm.finish(self.ui.session_mut())?;
-                    self.finished = true;
+                    self.state = StoryState::Finished;
                     self.ui.clear_presented();
                     Ok(StoryProgress::Finished)
                 }
@@ -153,13 +191,23 @@ impl AsideSessionUi {
                     }
                 }
             }
+            RunOutcome::Fault(id) => {
+                self.state = StoryState::Faulted(id);
+                self.ui.clear_presented();
+                Ok(StoryProgress::Faulted(id))
+            }
             other => Ok(StoryProgress::Vm(other)),
         }
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {
+        if matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
+            return Ok(());
+        }
         self.ui.clear_presented();
         self.vm.revoke(self.ui.session_mut())?;
+        self.entry = None;
+        self.state = StoryState::Cancelled;
         Ok(())
     }
     pub fn cleanup_step(
@@ -173,3 +221,6 @@ impl AsideSessionUi {
             .cleanup_step(self.ui.session_mut(), root_work, budget, now)?)
     }
 }
+
+#[cfg(test)]
+mod tests;
