@@ -205,28 +205,20 @@ pub fn compile_story(
     // GlobalDef.linked_function is intentionally None. Select the real HIR
     // declaration/output mapping, not that optional prelinked-closure field.
     let root_scope = module.facts()[0].scope.ok_or(SourceError::Entry)?;
-    let declared = module.symbols().iter().any(|symbol| {
-        symbol.scope == root_scope
-            && module.hir().name(symbol.name) == entry_name
-            && symbol.kind == aside_compiler::hir::SymbolKind::Function
-    });
-    if !declared {
-        return Err(SourceError::Entry);
-    }
+    let declared = module
+        .symbols()
+        .iter()
+        .position(|symbol| {
+            symbol.scope == root_scope
+                && module.hir().name(symbol.name) == entry_name
+                && symbol.kind == aside_compiler::hir::SymbolKind::Function
+        })
+        .map(|index| aside_compiler::hir::SymbolId(index as u32))
+        .ok_or(SourceError::Entry)?;
     let function_index = module
         .functions()
         .iter()
-        .position(|function| {
-            function.parent.is_none()
-                && match module.hir().node(function.node).form {
-                    aside_compiler::hir::Form::Function {
-                        name: Some(token), ..
-                    } => token
-                        .name
-                        .is_some_and(|name| module.hir().name(name) == entry_name),
-                    _ => false,
-                }
-        })
+        .position(|function| module.facts()[function.node.0 as usize].symbol == Some(declared))
         .ok_or(SourceError::Entry)?;
     let entry = compiled.metadata.functions[function_index].output;
     let function = &p.functions[entry.index()];

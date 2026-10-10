@@ -83,6 +83,26 @@ fn private_entry_and_optional_parameters_use_real_function_mapping() {
 }
 
 #[test]
+fn entry_mapping_uses_root_declaration_identity_despite_same_named_block_function() {
+    let code = "if true { fn opening(required) { required } } fn opening() { 2 }";
+    let story = source::compile_story(code, "story", 7, "opening").unwrap();
+    let p = story.program.package();
+    let function = &p.functions[story.entry.index()];
+    assert!(
+        p.signatures[function.signature.index()]
+            .parameters
+            .is_empty()
+    );
+    let root_start = code.rfind("fn opening()").unwrap() as u32;
+    assert!(
+        function
+            .source_map
+            .iter()
+            .any(|entry| entry.span.start >= root_start)
+    );
+}
+
+#[test]
 fn malformed_duplicate_and_oversized_choices_leave_no_publication_or_decoder_roots() {
     for options in [
         "[{key: \"a\", label: \"A\"}, {key: \"a\", label: \"again\"}]",
