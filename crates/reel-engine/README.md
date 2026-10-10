@@ -99,3 +99,15 @@ reviews at 1bfdcd8 found no definite new defect; the later exact-symbol entry
 change at 6fd0708 also passed source-only review. Regression sources have not been executed. Character
 objects, multiline say, UI callback tasks, observable script UI, media waits and
 save/restore are not implemented by this adapter.
+
+### Known compiler-linkage integration defect
+
+A subsequent pure-static build of a story using imported choose/narrator exposed
+`LinkContract: ambiguous native binding` in this PR's source linkage. The analyzer
+records both the imported symbol and its name-use node; the current adapter emits
+both links, while lowering rejects multiple matches for one call. A narrowly
+scoped same-symbol/same-native deduplication is implemented and statically reviewed
+in the unpublished ASB integration workspace, but is not part of this branch.
+Its integration/publication is pending. Native Rust compilation and the earlier
+source reviews did not detect this defect; they do not establish that the
+story examples compile or run. No VM execution was used to identify it.

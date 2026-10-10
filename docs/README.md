@@ -69,3 +69,5 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 [集合执行增量（#54）](https://github.com/jhq223/reel/pull/54) 基于 #49 提供分片集合构造、索引/成员、tuple 常量及调用 spread/rest 的执行源码，并公开有界宿主集合读取接口。原生/i686 all-targets 编译通过；异常路径与 packed 计费缺陷已修，并通过独立源码复审。测试仅编译未执行，实际语义、GC/取消和性能仍未验收。线性 table 查找与同步 tuple 常量单项额度明确保留。[状态和接口](../crates/aside-vm/README.md#collection-host-access-and-execution-source-boundaries-pr-54)。
 
 [Aside 会话适配（#55）](https://github.com/jhq223/reel/pull/55) 在 #54 之上连接真实编译入口、可信 native 注册、等待/交付根和 SessionUi，支持当前 narrator/choose 子集。原生/i686 编译与独立源码审查不等于运行验收；现有窗口命令仍使用 Rust 请求，尚无 .asb 播放入口。角色、作者自定义脚本 UI、媒体和保存恢复仍属后续完整目标。[适配契约](../crates/reel-engine/README.md#aside-session-adapter-pr-55) · [播放器边界](../crates/reel-player/README.md#aside-session-library-assembly-pr-55)。
+
+当前 #55 已知编译链缺陷：静态构建 imported choose/narrator 剧情会触发 native binding 歧义，原因是 symbol 与其使用 node 重复生成链接。修复已在未发布的 ASB 集成工作区完成并源码复核，尚未纳入本分支；不能据 Rust cargo check 或此前源码审查声称该剧情已可编译/运行。
