@@ -5,56 +5,8 @@ use aside_compiler::{
 };
 use aside_vm::bytecode as bc;
 use serde_json::{Value, json};
-use std::{io::Read, path::Path};
-
-pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-
-/// The bounded read also checks growth after metadata was obtained.
-pub fn read_source(path: &Path) -> Result<String, String> {
-    let metadata = std::fs::metadata(path).map_err(|e| format!("cannot inspect source: {e}"))?;
-    if !metadata.is_file() {
-        return Err("source must be a regular file".into());
-    }
-    if metadata.len() > MAX_SOURCE_BYTES as u64 {
-        return Err(format!("source exceeds {MAX_SOURCE_BYTES} byte limit"));
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // A regular file swapped for a FIFO between stat/open must not block.
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = options
-        .open(path)
-        .map_err(|e| format!("cannot open source: {e}"))?;
-    if !file
-        .metadata()
-        .map_err(|e| format!("cannot inspect open source: {e}"))?
-        .is_file()
-    {
-        return Err("source must be a regular file".into());
-    }
-    read_utf8(file)
-}
-
-fn read_utf8(reader: impl Read) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    reader
-        .take((MAX_SOURCE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read source: {e}"))?;
-    if bytes.len() > MAX_SOURCE_BYTES {
-        return Err(format!("source exceeds {MAX_SOURCE_BYTES} byte limit"));
-    }
-    String::from_utf8(bytes).map_err(|e| {
-        format!(
-            "source is not UTF-8 at byte {}",
-            e.utf8_error().valid_up_to()
-        )
-    })
-}
+mod input;
+pub use input::{InputError, MAX_SOURCE_BYTES, read_source};
 
 #[derive(Debug)]
 pub struct Failure {
@@ -181,16 +133,6 @@ pub fn diagnostic_json(diagnostic: &Diagnostic, map: &SourceMap<'_>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn read_limits_and_utf8() {
-        assert!(read_utf8(&[0xff][..]).unwrap_err().contains("byte 0"));
-        assert!(read_utf8(std::io::repeat(b' ').take(MAX_SOURCE_BYTES as u64)).is_ok());
-        assert!(
-            read_utf8(std::io::repeat(b' '))
-                .unwrap_err()
-                .contains("limit")
-        );
-    }
     #[test]
     fn complete_pipeline_is_static() {
         let checked = check("fn main() { loop {} }").unwrap();

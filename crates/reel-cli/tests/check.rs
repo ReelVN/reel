@@ -97,9 +97,11 @@ fn imports_natives_and_unsupported_lowering_fail_honestly() {
 fn usage_io_and_invalid_utf8_are_machine_readable() {
     let case = Case::new();
     let output = case.run(&[0xff], "json");
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["stage"], "input");
+    assert_eq!(report["diagnostics"][0]["range"]["byte_start"], 0);
+    assert_eq!(report["diagnostics"][0]["range"]["byte_end"], 1);
     assert!(
         report["diagnostics"][0]["message"]
             .as_str()
@@ -154,5 +156,106 @@ fn compiler_related_locations_and_fixes_survive_json_rendering() {
             .unwrap()
             .iter()
             .any(|d| d["fix"]["replacement"] == ";")
+    );
+}
+
+#[test]
+fn option_terminator_help_and_duplicate_options() {
+    let case = Case::new();
+    fs::write(case.dir.join("-source.aside"), "let value = 1;").unwrap();
+    for args in [
+        vec!["check", "--help"],
+        vec!["check", "--format", "json", "--", "-source.aside"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_reel"))
+            .current_dir(&case.dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_reel"))
+        .current_dir(&case.dir)
+        .args(["check", "--", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("exactly one")
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_reel"))
+        .current_dir(&case.dir)
+        .args([
+            "check",
+            "input.aside",
+            "--format",
+            "json",
+            "--format",
+            "human",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let report = serde_json::from_slice::<Value>(&output.stdout).unwrap();
+    assert_eq!(report["stage"], "usage");
+    assert!(
+        report["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only be specified once")
+    );
+}
+
+#[test]
+fn bytecode_budget_rejects_source_within_the_io_limit() {
+    let case = Case::new();
+    let mut source =
+        vec![b'x'; aside_vm::bytecode::Limits::default().max_string_bytes as usize + 1];
+    source[..2].copy_from_slice(b"//");
+    let output = case.run(&source, "json");
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["stage"], "lower");
+    assert!(
+        report["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("string-byte limit")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_non_utf8_paths_and_special_files_without_opening_them() {
+    use std::os::unix::{ffi::OsStringExt, net::UnixListener};
+    let case = Case::new();
+    let path = case.dir.join(std::ffi::OsString::from_vec(vec![0xff]));
+    fs::write(&path, "let value = 1;").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_reel"))
+        .arg("check")
+        .arg(&path)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("path must be UTF-8")
+    );
+    let socket = case.dir.join("socket.aside");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    assert_eq!(
+        reel_cli::read_source(&socket).unwrap_err().code,
+        "REEL-INPUT-FILE"
     );
 }

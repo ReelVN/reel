@@ -48,6 +48,15 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     })
 }
 
+/// Error reporting still respects the option terminator, including invalid argv.
+fn requested_json(raw: &[OsString]) -> bool {
+    raw.iter()
+        .take_while(|arg| *arg != "--")
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair[0] == "--format" && pair[1] == "json")
+}
+
 fn report_json(value: &Value) -> io::Result<()> {
     let mut output = io::stdout().lock();
     serde_json::to_writer(&mut output, value)?;
@@ -72,7 +81,9 @@ fn failure(json_format: bool, stage: &str, path: Option<&str>, message: &str) ->
 
 fn run() -> io::Result<u8> {
     let raw: Vec<_> = std::env::args_os().skip(1).collect();
-    if raw.len() == 1 && (raw[0] == "--help" || raw[0] == "-h") {
+    if (raw.len() == 1 && (raw[0] == "--help" || raw[0] == "-h"))
+        || (raw.len() == 2 && raw[0] == "check" && (raw[1] == "--help" || raw[1] == "-h"))
+    {
         write!(io::stdout().lock(), "{HELP}")?;
         return Ok(0);
     }
@@ -87,7 +98,7 @@ fn run() -> io::Result<u8> {
     let parsed = match args(&raw) {
         Ok(args) => args,
         Err(message) => {
-            let json_format = raw.windows(2).any(|v| v[0] == "--format" && v[1] == "json");
+            let json_format = requested_json(&raw);
             failure(json_format, "usage", None, &message)?;
             return Ok(2);
         }
@@ -97,15 +108,27 @@ fn run() -> io::Result<u8> {
             parsed.json,
             "input",
             None,
-            "source path must be UTF-8 for compiler source identity",
+            "source path must be UTF-8 for diagnostic reporting",
         )?;
         return Ok(2);
     };
     let source = match read_source(&parsed.source) {
         Ok(source) => source,
-        Err(message) => {
-            failure(parsed.json, "input", Some(path), &message)?;
-            return Ok(2);
+        Err(error) => {
+            if parsed.json {
+                report_json(
+                    &json!({"schema_version": 1, "status": "error", "source": path,
+                    "stage": "input", "executed": false, "diagnostics": [{
+                        "code": error.code, "severity": "error", "message": error.message,
+                        "range": error.byte_range.as_ref().map(|range| json!({
+                            "byte_start": range.start, "byte_end": range.end, "start": null, "end": null
+                        }))
+                    }]}),
+                )?;
+            } else {
+                failure(false, "input", Some(path), &error.message)?;
+            }
+            return Ok(error.exit_code);
         }
     };
     match check(&source) {
