@@ -98,9 +98,15 @@ The embedding application must continue cleanup until its obligations retire.
 
 This is reusable library wiring, not a window/CLI source-file launch path or an
 ASB loader. The existing diagnostic/session-host commands remain Rust-only.
-At 7d5d987, StoryState distinguishes Running, Faulted(DeliveryId), Finished and
-Cancelled. Repeated terminal ticks return the same terminal category without
-stepping the VM. fault() offers ephemeral fault inspection while delivery remains
+At 110b984, StoryState distinguishes Running, StartingEntry, Finishing,
+HostFailed(stage), Faulted(DeliveryId), Finished and Cancelled. Repeated terminal ticks return the same terminal category without
+stepping the VM or calling the clock. Entry is consumed only after successful
+start; a start-capacity error becomes HostFailed(StartEntry), not a script Fault
+or an unserviceable Running state. host_failure() retains the original host error
+for inspection, including after later cancellation. Drive/finish/cancel errors
+have their own stages. Cancel retry preserves recorded retirement obligations;
+this is not proof of recovery from arbitrary internal VM corruption.
+fault() offers ephemeral fault inspection while delivery remains
 rooted; cancellation invalidates it and starts bounded cleanup. Cancel after
 normal completion preserves Finished. A terminal state does not mean cleanup has
 finished: continue cleanup_step while cleanup_pending reports work.
