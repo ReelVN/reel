@@ -180,7 +180,10 @@ impl Vm {
             s.pc.0 += 1;
             s.phase = ScriptPhase::Body;
         } else {
-            let key = self.value(s.regs, fields[field as usize][0].0)?;
+            let key = match self.read(*s, fields[field as usize][0]) {
+                Ok(key) => key,
+                Err(kind) => return self.collection_fault(s, kind),
+            };
             if let Err(kind) = self.start_table(
                 s,
                 table,
@@ -349,7 +352,10 @@ impl Vm {
                 self.put(s.regs, dest.0, value)?;
             }
             TableAction::Set(reg) => {
-                let value = self.value(s.regs, reg.0)?;
+                let value = match self.read(*s, reg) {
+                    Ok(value) => value,
+                    Err(kind) => return self.collection_fault(s, kind),
+                };
                 if let Err(error) = self.heap.table_store(table, work.entry, key, value) {
                     return self.collection_fault(s, heap_fault(error));
                 }
@@ -364,7 +370,10 @@ impl Vm {
                 .descriptors[descriptor.index()] else {
                     unreachable!()
                 };
-                let value = self.value(s.regs, fields[field as usize][1].0)?;
+                let value = match self.read(*s, fields[field as usize][1]) {
+                    Ok(value) => value,
+                    Err(kind) => return self.collection_fault(s, kind),
+                };
                 if let Err(error) = self.heap.table_store(table, work.entry, key, value) {
                     return self.collection_fault(s, heap_fault(error));
                 }

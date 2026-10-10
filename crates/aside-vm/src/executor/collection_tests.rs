@@ -684,3 +684,90 @@ fn synchronous_tuple_constant_load_respects_the_heap_mutation_bound() {
     );
     assert!(matches!(result, Err(VmError::Limit)));
 }
+
+#[test]
+fn uninitialized_table_operands_enter_catch_and_finally_instead_of_escaping_slice() {
+    // The verifier bounds register indices but intentionally does not prove
+    // definite assignment. Exercise the deferred reads after a successful
+    // first field and after key validation/lookup, including both setter forms.
+    for case in 0..4 {
+        let mut code = vec![
+            op(Opcode::LoadConst, 1, 0, 0),
+            op(Opcode::LoadConst, 2, 1, 0),
+            op(Opcode::LoadConst, 3, 2, 0),
+            op(Opcode::MakeTable, 6, 0, 0),
+        ];
+        let fields = match case {
+            0 => vec![[Reg(3), Reg(2)], [Reg(4), Reg(2)]],
+            1 => vec![[Reg(3), Reg(4)]],
+            _ => vec![],
+        };
+        match case {
+            2 => code.push(op(Opcode::IndexSet, 6, 3, 4)),
+            3 => code.push(op(Opcode::MemberSet, 6, 4, 4)),
+            _ => {}
+        }
+        code.push(op(Opcode::Return, 6, 0, 0));
+        let catch_start = code.len() as u32;
+        code.push(op(Opcode::Return, 5, 0, 0));
+        let finally_start = code.len() as u32;
+        code.push(op(Opcode::IndexSet, 0, 1, 2));
+        code.push(op(Opcode::EndFinally, 0, 0, 0));
+        let finally_end = code.len() as u32;
+        code.push(op(Opcode::Return, 5, 0, 0));
+        let mut p = package(
+            vec![Const::Int(0), Const::Int(1), Const::Utf8("x".into())],
+            code,
+            vec![Descriptor::Table(fields)],
+            7,
+        );
+        p.signatures[0].parameters.push(Parameter {
+            name: SymbolId(4),
+            ty: TypeId(0),
+            mutable: false,
+            default: None,
+        });
+        p.functions[0].regions = vec![ExceptionRegion {
+            protected: PcRange {
+                start: Pc(0),
+                end: Pc(catch_start),
+            },
+            catch: Some(CatchRegion {
+                range: PcRange {
+                    start: Pc(catch_start),
+                    end: Pc(finally_start),
+                },
+                exception: Reg(5),
+            }),
+            finally: Some(PcRange {
+                start: Pc(finally_start),
+                end: Pc(finally_end),
+            }),
+        }];
+        let mut vm = load(p);
+        let marker = vm.heap_mut().alloc_array(&[Value::int(0)]).unwrap();
+        let root = vm
+            .heap_mut()
+            .add_root(RootOwner(9), RootKind::Host, marker)
+            .unwrap();
+        let task = vm
+            .start(FunctionId(0), &[marker], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        // The driver interleaves bounded slices with provider-aware GC. Its
+        // unwrap also asserts these author errors never return VmError::Heap.
+        let error = returned(&mut vm, task);
+        assert_eq!(
+            vm.heap().core_error_info(error).unwrap().code.kind,
+            FaultKind::Uninitialized,
+            "case {case}"
+        );
+        assert_eq!(
+            vm.heap().sequence_get(marker, 0).unwrap().as_int(),
+            Some(1),
+            "finally case {case}"
+        );
+        assert!(vm.active.equality_cursors.data.is_empty());
+        assert_eq!(vm.stats().frames, 0);
+        vm.heap_mut().release_root(root).unwrap();
+    }
+}
