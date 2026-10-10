@@ -358,7 +358,7 @@ owner 退休记录在创建时预留，单根游标、任务和外部资源分�
 
 本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。
 
-## Rust 音频活动层（PR #53，待独立验收）
+## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
 
 reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、完整 Scope、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。当前分组仅为元数据，循环取自输入声音配置。
 
@@ -368,4 +368,4 @@ Completed 表示通过 Playback 观察到内容消费结束，不是设备实际
 
 output、活动账本和 AudioReclaimService 共用 WakeSignal，宿主先 acknowledge，再排出全部来源，休眠前复核 pending。未扫完的有限工作立即续轮；仍有未结算活动时，poll_after 建议 10 ms 控制侧复查，以补足当前 Playback 缺少逐音轨完成订阅的通知空隙。没有未结算活动时不设置这个周期计时；音频检查不请求布局或呈现。10 ms 是后备调度间隔，不保证过载下完成延迟。
 
-本 PR 尚在独立验收，作者验证仅覆盖 Linux 离线真实 Kira、默认/关闭 CPAL 的 Rust 路径。seek/reload、保位置重建、单活动 pause/finish、分组混音、完整持久描述及脚本会话接线未实现；实体设备、硬件完成时钟与 0.5 ms 控制耗时目标未验收。
+本 PR 的限定 Rust 范围已通过独立验收，覆盖 Linux 离线真实 Kira、默认/关闭 CPAL 路径、终态保留与背压公平释放，以及后台 PCM 释放预算。seek/reload、保位置重建、单活动 pause/finish、分组混音、完整持久描述及脚本会话接线未实现；实体设备、硬件完成时钟与 0.5 ms 控制耗时目标未验收。
