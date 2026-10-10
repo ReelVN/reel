@@ -79,8 +79,11 @@ can complete through the normal presented Down/Up path in one advance.
 
 ## Aside session library assembly (PR #55)
 
-`AsideSessionUi` owns SessionUi and the real SessionVm adapter. It compiles
-source through the shared trusted registry, completes the module initializer,
+`AsideSessionUi` owns SessionUi and the real SessionVm adapter. `from_source`
+compiles through the shared trusted registry and delegates to `from_compiled`.
+The latter consumes a CompiledStory without recompiling source; validate checks
+entry constraints and its module initializer, then SessionVm::load performs
+independent trusted runtime admission. The driver completes the module initializer,
 retires that delivery, then starts the selected ordinary entry. A tick executes
 at most one VM slice; native publication never recursively runs the continuation.
 Waiting, BudgetYield and ResourceBlocked remain distinct. `host_work` meters
@@ -95,10 +98,14 @@ The embedding application must continue cleanup until its obligations retire.
 
 This is reusable library wiring, not a window/CLI source-file launch path or an
 ASB loader. The existing diagnostic/session-host commands remain Rust-only.
-At 6fd0708, Fault delivery stays rooted for inspection until discard/cancellation;
-callers must stop ordinary ticking after Fault rather than treat it as Waiting.
-A compiled-program constructor and explicit player terminal-state handling are
-being added separately in this draft.
+At 7d5d987, StoryState distinguishes Running, Faulted(DeliveryId), Finished and
+Cancelled. Repeated terminal ticks return the same terminal category without
+stepping the VM. fault() offers ephemeral fault inspection while delivery remains
+rooted; cancellation invalidates it and starts bounded cleanup. Cancel after
+normal completion preserves Finished. A terminal state does not mean cleanup has
+finished: continue cleanup_step while cleanup_pending reports work.
+The compiled-program constructor is available; decoding/loading an ASB file is
+still a separate integration increment.
 
 Native/i686 compile checks and independent source inspection are the available
 evidence. VM/Aside execution, player terminal-flow regression execution,
