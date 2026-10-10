@@ -311,7 +311,7 @@ impl Heap {
                 p.units += 1;
                 return true;
             }
-            Payload::Values(values) if !values.empty() => {
+            Payload::Values(values) | Payload::Table(values) if !values.empty() => {
                 let remaining = values.first_chunk_len() - values.release_cursor;
                 if remaining != 0 {
                     if p.release_edges == budget.release_edges {
