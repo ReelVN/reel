@@ -598,7 +598,12 @@ impl SessionVm {
     pub fn revoke(&mut self, session: &mut Session) -> Result<(), AdapterError> {
         self.same_session(session)?;
         if self.revoked {
-            return Ok(());
+            // Publication stays blocked, but a previous cancellation error must
+            // not turn a retry into a false success.
+            return match self.vm.cancel(self.root_owner) {
+                Ok(()) | Err(VmError::Idle) => Ok(()),
+                Err(error) => Err(error.into()),
+            };
         }
         // This adapter creates VM work only for the main owner. UI peer owners
         // belong to the pure Rust projection and have no VM/external resources.

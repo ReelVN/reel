@@ -25,6 +25,7 @@ pub enum StoryProgress {
     NativeFault(String),
     /// Nonterminal Waiting, BudgetYield and ResourceBlocked preserve VM IDs.
     Vm(RunOutcome),
+    HostFailed(HostFailureStage),
     Faulted(DeliveryId),
     Finished,
     Cancelled,
@@ -34,9 +35,28 @@ pub enum StoryProgress {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoryState {
     Running,
+    StartingEntry,
+    Finishing,
+    HostFailed(HostFailureStage),
     Faulted(DeliveryId),
     Finished,
     Cancelled,
+}
+
+/// Host failures never create a language Fault delivery. Fixed VM limits cannot
+/// be enlarged through this driver; inspect the error, then cancel and clean up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostFailureStage {
+    Drive,
+    StartEntry,
+    Finish,
+    Cancel,
+}
+
+#[derive(Debug)]
+pub struct HostFailure {
+    pub stage: HostFailureStage,
+    pub error: Error,
 }
 
 /// Owns both sides so UI cancel cannot invoke the pure Rust zero-obligation
@@ -47,6 +67,7 @@ pub struct AsideSessionUi {
     entry: Option<source::StoryFunction>,
     locale: String,
     state: StoryState,
+    host_failure: Option<HostFailure>,
 }
 
 impl AsideSessionUi {
@@ -65,6 +86,7 @@ impl AsideSessionUi {
 
     /// Assemble a verified bytecode asset with its host-selected entry metadata.
     /// B01 decoding happens upstream; trusted native admission happens here.
+    /// Construction errors return no driver; the owned VM and session are dropped.
     pub fn from_compiled(
         session: Session,
         story: source::CompiledStory,
@@ -84,10 +106,20 @@ impl AsideSessionUi {
             entry: Some(story.entry),
             locale: locale.into(),
             state: StoryState::Running,
+            host_failure: None,
         })
     }
     pub fn state(&self) -> StoryState {
         self.state
+    }
+    pub fn host_failure(&self) -> Option<&HostFailure> {
+        self.host_failure.as_ref()
+    }
+    fn fail_host(&mut self, stage: HostFailureStage, error: Error) -> StoryProgress {
+        self.host_failure = Some(HostFailure { stage, error });
+        self.state = StoryState::HostFailed(stage);
+        self.ui.clear_presented();
+        StoryProgress::HostFailed(stage)
     }
     /// Ephemeral inspection: valid while Faulted, including across GC ticks.
     /// Cancellation invalidates the delivery; this does not create a host root.
@@ -144,7 +176,8 @@ impl AsideSessionUi {
         Ok(())
     }
 
-    /// Exactly one bounded VM slice per call. A host call never recursively
+    /// At most one bounded VM slice per call. Host failures become inspectable
+    /// HostFailed progress; terminal calls perform no VM work. A host call never recursively
     /// executes its continuation; the next tick resumes it. Caller syncs and
     /// presents the new projection before allowing replacement UI input.
     pub fn tick(
@@ -154,19 +187,43 @@ impl AsideSessionUi {
         now: impl FnMut() -> u64,
     ) -> Result<StoryProgress, Error> {
         match self.state {
+            StoryState::HostFailed(stage) => return Ok(StoryProgress::HostFailed(stage)),
             StoryState::Faulted(id) => return Ok(StoryProgress::Faulted(id)),
             StoryState::Finished => return Ok(StoryProgress::Finished),
             StoryState::Cancelled => return Ok(StoryProgress::Cancelled),
-            StoryState::Running => {}
+            StoryState::Running | StoryState::StartingEntry | StoryState::Finishing => {}
         }
+        match self.drive(budget, host_work, now) {
+            Ok(progress) => Ok(progress),
+            Err(error) => {
+                let stage = match self.state {
+                    StoryState::StartingEntry => HostFailureStage::StartEntry,
+                    StoryState::Finishing => HostFailureStage::Finish,
+                    _ => HostFailureStage::Drive,
+                };
+                Ok(self.fail_host(stage, error))
+            }
+        }
+    }
+
+    fn drive(
+        &mut self,
+        budget: SliceBudget,
+        host_work: u32,
+        now: impl FnMut() -> u64,
+    ) -> Result<StoryProgress, Error> {
         let outcome = self.vm.step(self.ui.session_mut(), budget, now)?;
         match outcome {
             RunOutcome::Returned(_) => {
                 self.vm.discard_delivery(self.ui.session())?;
-                if let Some(entry) = self.entry.take() {
+                if let Some(entry) = self.entry {
+                    self.state = StoryState::StartingEntry;
                     self.vm.start(self.ui.session(), entry)?;
+                    self.entry = None;
+                    self.state = StoryState::Running;
                     Ok(StoryProgress::Initialized)
                 } else {
+                    self.state = StoryState::Finishing;
                     self.vm.finish(self.ui.session_mut())?;
                     self.state = StoryState::Finished;
                     self.ui.clear_presented();
@@ -205,7 +262,11 @@ impl AsideSessionUi {
             return Ok(());
         }
         self.ui.clear_presented();
-        self.vm.revoke(self.ui.session_mut())?;
+        if let Err(error) = self.vm.revoke(self.ui.session_mut()) {
+            let message = error.to_string();
+            self.fail_host(HostFailureStage::Cancel, error.into());
+            return Err(message.into());
+        }
         self.entry = None;
         self.state = StoryState::Cancelled;
         Ok(())

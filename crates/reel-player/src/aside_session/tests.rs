@@ -140,3 +140,55 @@ fn initializer_fault_does_not_start_story_entry() {
     assert!(d.entry.is_none());
     cleanup(&mut d);
 }
+
+#[test]
+fn entry_window_capacity_failure_is_a_stable_host_failure() {
+    // A real, legal large array expression creates a large entry register
+    // window while the module initializer stays small. No bytecode simulation.
+    let text = format!(
+        "fn main() {{ let values = [{}]; }}",
+        vec!["null"; 2048].join(",")
+    );
+    let story = source::compile_story(&text, "story", 1, "main").unwrap();
+    let p = story.program.package();
+    let entry_window = p.functions[story.entry.index()].register_count;
+    let init_window = p.functions[story.initializer.index()].register_count;
+    assert!(entry_window > 1024);
+    assert!(init_window < entry_window / 2);
+    let entry = story.entry;
+    let mut limits = VmLimits::default();
+    limits.max_tasks = 1;
+    limits.max_unwinds = 1;
+    limits.max_arguments = 2;
+    limits.max_continuation_values = 1;
+    // Each individual window is admissible at load. Permanent VM windows mean
+    // total free capacity cannot accommodate the entry's whole legal window.
+    limits.slots.initial_capacity = entry_window;
+    limits.slots.max_capacity = entry_window;
+    limits.slots.max_window_len = entry_window;
+    let mut d = AsideSessionUi::from_compiled(session(), story, "en", limits).unwrap();
+    terminal(&mut d);
+    assert_eq!(
+        d.state(),
+        StoryState::HostFailed(HostFailureStage::StartEntry)
+    );
+    assert_eq!(d.entry, Some(entry));
+    assert!(d.adapter().task().is_none());
+    assert!(d.fault().unwrap().is_none());
+    let failure = d.host_failure().unwrap();
+    assert_eq!(failure.stage, HostFailureStage::StartEntry);
+    assert!(matches!(
+        failure.error.downcast_ref::<reel_engine::aside::AdapterError>(),
+        Some(reel_engine::aside::AdapterError::Vm(reel_engine::aside::VmError::Heap(error)))
+            if format!("{error:?}") == "WindowCapacity"
+    ));
+    assert!(matches!(
+        d.tick(SliceBudget::default(), 1, || panic!("terminal clock"))
+            .unwrap(),
+        StoryProgress::HostFailed(HostFailureStage::StartEntry)
+    ));
+    d.cancel().unwrap();
+    assert_eq!(d.state(), StoryState::Cancelled);
+    cleanup(&mut d);
+    assert!(d.host_failure().is_some());
+}
