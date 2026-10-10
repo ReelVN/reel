@@ -1,7 +1,9 @@
-# Reel window / renderer diagnostic
+# Reel player assembly
 
 This is a thin native assembly using the production `RenderFrame` → wgpu path.
-It is **not an Aside story session** and does not execute the VM.
+The diagnostic binaries below use Rust requests and do not execute the VM.
+The separate Aside adapter described below is library assembly, not a new
+verified runnable story binary.
 
 ```sh
 # Optional: a real TTF/OTF font for Masonry/Parley text, registered before recording.
@@ -67,9 +69,37 @@ view can display them. Input in this version is mouse-only.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
-adaptation and actual source execution remain separate acceptance work.
+adaptation now exists in PR #55 source; actual source execution remains separate
+acceptance work.
 
 SessionUi dispatches through Session::handle_local_input rather than resetting
 a private input counter. Existing-session handoff and subsequent session_mut
 input preserve the same high-water sequence. Zero-line dialogue is accepted and
 can complete through the normal presented Down/Up path in one advance.
+
+## Aside session library assembly (PR #55)
+
+`AsideSessionUi` owns SessionUi and the real SessionVm adapter. It compiles
+source through the shared trusted registry, completes the module initializer,
+retires that delivery, then starts the selected ordinary entry. A tick executes
+at most one VM slice; native publication never recursively runs the continuation.
+Waiting, BudgetYield and ResourceBlocked remain distinct. `host_work` meters
+choice lookup only; synchronous text copying/publication have independent byte
+limits and are not a total dispatch-work meter.
+
+The existing presented-frame input gate and compact two-row/two-choice,
+mouse-only view remain. An oversized projection is rejected before publication.
+Cancellation routes through VM owner revocation and bounded root/task cleanup,
+never through the Rust model's zero-obligation shortcut. GC is provider-aware.
+The embedding application must continue cleanup until its obligations retire.
+
+This is reusable library wiring, not a window/CLI source-file launch path or an
+ASB loader. The existing diagnostic/session-host commands remain Rust-only.
+At 6fd0708, Fault delivery stays rooted for inspection until discard/cancellation;
+callers must stop ordinary ticking after Fault rather than treat it as Waiting.
+A compiled-program constructor and explicit player terminal-state handling are
+being added separately in this draft.
+
+Native/i686 compile checks and independent source inspection are the available
+evidence. VM/Aside execution, player terminal-flow regression execution,
+performance, hardware and full story acceptance remain unverified.

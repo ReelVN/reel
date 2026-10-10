@@ -390,8 +390,18 @@ The repository commit containing this guide is its version reference. Feature st
 The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.
 
 
-V03 integration status (PR #49): executor sources have been combined with the current compiler in a separate integration branch and passed native/32-bit compile checks, not independent execution acceptance. The subsequent draft PR #54 adds collection/index/member and script-rest execution source, but actual behavior, GC, exceptions and cancellation remain unaccepted. Host waits, delivery roots and full restoration remain unconnected. This does not establish runnable source scenarios from this guide.
+V03 integration status (PR #49): executor sources have been combined with the current compiler in a separate integration branch and passed native/32-bit compile checks, not independent execution acceptance. The subsequent draft PR #54 adds collection/index/member and script-rest execution source, but actual behavior, GC, exceptions and cancellation remain unaccepted. Host-wait and delivery-root adapter source is in PR #55; full restoration remains unconnected. This does not establish runnable source scenarios from this guide.
 
-S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adaptation, media and save/restore remain unconnected. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).
+S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adapter source is in PR #55; execution acceptance, media and save/restore remain outstanding. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).
 
 Collection execution progress (PR #54, source/compile stage): tuple/array/table construction, index/member access, call spread and a fresh rest array per call now have executor source. Evaluation order, missing/null distinctions, invalid keys and cancellation still require runtime acceptance. Tables currently use budgeted linear search, and large tuple constants retain a per-constant loading limit. This does not make the guide's stories verified runnable examples. Delegates/hooks, property-bag tails, complete modules/classes and save/restore remain unconnected.
+
+Aside integration progress (PR #55): real compiler/host adapter source supports
+prelude narrator(text) and choose(options), running the module initializer before
+the selected ordinary function with no required arguments. Private module-level
+entries are supported; captured entry environments are not. The compact view's
+two-row/two-choice limit is not the final author-composable UI capability.
+64 KiB bounds cumulative interaction text and metadata, not narrator payload
+alone; default VM constants have a separate 4096-byte admission limit. Story
+execution has not been verified and no new source/ASB window launch command is
+available. The full DSL examples remain the target specification.

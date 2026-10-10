@@ -1,7 +1,9 @@
 # Reel session host (S01)
 
 This crate owns the bounded Rust session model specified by architecture 1.1.
-It does not execute Aside, implement a VM adapter or provide snapshot/restore.
+The Rust model remains independently usable. PR #55 adds an Aside adapter in
+`aside`; snapshot/restore is not implemented. Adapter execution acceptance is
+pending: source inspection and compilation are not runtime evidence.
 PR #50 / Issue #48 introduces it as one substantive engine crate; UI remains
 in reel-ui and platform/window assembly remains in reel-player.
 
@@ -43,8 +45,8 @@ obligations. Retirement requires every recorded obligation to finish.
 
 Rust tests cover identity, atomic admission, input filtering, history/completion,
 retirement and allocation-free accepted hot paths. See PR #50 for actual counts
-and independent acceptance. Real VM waits, deliveries, native registration,
-BudgetYield/ResourceBlocked and restore remain unconnected and unverified.
+and independent acceptance. PR #55 connects VM waits, deliveries and native registration in source, preserving
+BudgetYield/ResourceBlocked. Runtime acceptance and restore remain outstanding.
 No test in this increment executes or simulates Aside bytecode.
 
 Local input dispatch uses Session::handle_local_input(owner, action), which
@@ -55,3 +57,43 @@ counter. handle_input remains the explicit-sequence replay/external path; local
 sequence exhaustion returns SequenceExhausted. A zero-line dialogue is a valid
 interaction and completes with one accepted Advance, retaining exactly-once
 history/completion semantics.
+
+## Aside session adapter (PR #55)
+
+The host-owned ABI v1 registry defines `reel.session` contracts independently
+of package claims. The compiler resolver/prelude and runtime admission consume
+the same descriptors; runtime checks exact signatures, ABI and capabilities.
+`source::compile_story` supports `use reel::prelude::*`, `narrator(text)`
+and `choose(options)`. Selection maps the exact module-level HIR function symbol
+to its emitted function, including private functions. It rejects required
+parameters, captures and nonordinary functions. The emitted module initializer
+must complete before the selected entry; default/rest binding remains VM-owned.
+
+`SessionVm` tracks the actual main TaskId. Native publication stages Session
+state and retained values, restores history/generation on rejection, and commits
+only after Pending acceptance. Resume delivery rechecks exact interaction, owner,
+task and wait identities. CleanupOnly never resumes a task. Choice rows read only
+own `key`/`label` slots through the public bounded collection cursor; no raw
+heap layout or delegate/hook lookup is used. The selected original immutable key
+Value stays explicitly rooted through completion instead of being reallocated.
+
+Text reads use chunks bounded by min(4096, heap mutation limit), with UTF-8
+decoding after the complete copy. The default 64 KiB interaction limit includes
+metadata, locale and generated content identity, so it is not a 64 KiB narrator
+payload guarantee. VM constant admission still defaults to 4096 bytes; the
+long-key regression source explicitly raises it. Choice lookup work is metered
+separately; string copying and publication are synchronous and byte-bounded, not
+charged as VM instructions or wholly covered by player `host_work`.
+
+Revocation first establishes all peer retirement obligations, then releases
+single roots against a frozen high-water end (including holes), and drives task
+cleanup independently. This adapter owns no non-task RootRange or external
+resource gate. GC uses the VM provider, not a heap-only substitute. Result delivery
+transfers its root before retirement; the retained result slot is reused by a
+later result, so an earlier bare Value is not a permanent host root.
+
+Native/i686 all-targets compile checks passed at 6fd0708. Independent source
+reviews at 1bfdcd8 found no definite new defect; the later exact-symbol entry
+change at 6fd0708 also passed source-only review. Regression sources have not been executed. Character
+objects, multiline say, UI callback tasks, observable script UI, media waits and
+save/restore are not implemented by this adapter.

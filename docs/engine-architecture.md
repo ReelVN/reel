@@ -365,3 +365,13 @@ owner 退休记录在创建时预留，单根游标、任务和外部资源分�
 本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。
 
 PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找复杂度和同步常量加载限制见 VM README；owner/RootRange/外部资源的有界退休责任不变。
+
+## Aside 会话适配源码边界（PR #55）
+
+共享的宿主 ABI v1 描述同时生成编译器 prelude/linkage 与运行时签名验证，包内声明不能授权自身能力。真实模块初始化器先于模块级普通入口运行；私有入口按精确 HIR SymbolId 映射输出函数，不通过尚未初始化的 global 猜测。当前 narrator 与 choose 仅属于主剧情 TaskId，尚无一般 UI 回调任务。
+
+交互先暂存并验证额度与紧凑视图容量；VM 接受 Pending 后才提交可见 Session 状态。实际恢复时复核 interaction、owner、task 和完整 wait 身份；选择的原始 key 保持显式根到交付。owner 撤销分别推进冻结高水位的单根扫描与任务清理，空洞也计费；无任务不等于无根。GC 经过 VM provider。
+
+host_work 仅计选择查找工作，文本复制及发布同步但有独立字节上限。默认 64 KiB 是含 locale/内容身份的累计交互额度，默认 VM 字符串常量准入仍为 4096 字节。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
+
+当前是编译与源码审查阶段，真实执行、取消/GC/终态及性能仍未验收；已有 Rust 窗口不自动变为可运行 Aside 播放器。脚本可组合 UI、角色、媒体等待、完整包消费与快照等最终目标仍须沿同一宿主/呈现边界继续接通。
