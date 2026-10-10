@@ -3,6 +3,8 @@
 
 mod activity;
 pub use activity::*;
+mod retirement;
+pub use retirement::{AudioActivityRetirement, AudioOwner};
 mod contracts;
 mod maintenance;
 mod mixer;

@@ -7,10 +7,13 @@
 //!
 //! IDs are unique within one service lifetime; the host supplies a fresh epoch
 //! when replacing a service. No seek/reload or hardware-completion claim is made.
+use crate::retirement::{ActivityState, DescriptorRelease, OwnerState, PhysicalRelease};
+use std::sync::{Arc, Weak, atomic::Ordering};
 use std::time::Duration;
 
 use crate::{
-    AudioError, AudioErrorKind, DecodedSound, KiraMixer, PcmFill, Playback, ReclaimProgress,
+    AudioActivityRetirement, AudioError, AudioErrorKind, AudioOwner, DecodedSound, KiraMixer,
+    PcmFill, Playback, ReclaimProgress,
 };
 use reel_core::{
     budget::{BudgetPool, BudgetTicket, QueueLimits},
@@ -35,7 +38,7 @@ pub enum AudioGroup {
 #[derive(Debug)]
 pub struct AudioActivityRequest {
     pub epoch: MediaEpoch,
-    pub scope: Scope,
+    pub owner: AudioOwner,
     pub resource: ResourceVersion,
     pub group: AudioGroup,
     pub sound: DecodedSound,
@@ -76,6 +79,12 @@ struct Entry {
     volume_db: f32,
     playback: Playback,
     terminal: Option<AudioActivityTerminal>,
+    // Last: native control handle/resource key must be gone before publication.
+    _descriptor: DescriptorRelease,
+}
+struct OwnerSlot {
+    state: Weak<OwnerState>,
+    cancellation_next: usize,
 }
 impl Entry {
     fn settle(&mut self, terminal: AudioActivityTerminal) -> bool {
@@ -115,12 +124,17 @@ pub struct AudioActivityMaintenance {
 }
 /// One preallocated slot reserves both playback ownership and its terminal.
 /// A terminal keeps that slot until drained (including filtered/discarded events).
-/// max_bytes charges fixed slot storage plus owned asset-key capacities. PCM is
-/// independently charged by the existing BudgetTicket/reclamation protocol.
+/// Additionally, max_requests bounds live owner registrations and physical
+/// activity evidence, including caller-held completed receipts. max_bytes charges
+/// their fixed storage plus owned asset-key capacities. PCM remains independently
+/// charged by the existing BudgetTicket/reclamation protocol.
 /// Limits: 1..=256 slots; every sweep/drain inspects at most min(limit, slots).
 pub struct AudioActivityService {
     mixer: KiraMixer,
     entries: Vec<Option<Entry>>,
+    owners: Vec<OwnerSlot>,
+    evidence: Vec<Weak<ActivityState>>,
+    identity: Arc<()>,
     limits: QueueLimits,
     descriptor_bytes: u64,
     occupied: usize,
@@ -154,6 +168,14 @@ impl AudioActivityService {
         Ok(Self {
             mixer,
             entries: (0..limits.max_requests).map(|_| None).collect(),
+            owners: (0..limits.max_requests)
+                .map(|_| OwnerSlot {
+                    state: Weak::new(),
+                    cancellation_next: 0,
+                })
+                .collect(),
+            evidence: (0..limits.max_requests).map(|_| Weak::new()).collect(),
+            identity: Arc::new(()),
             limits,
             descriptor_bytes: 0,
             occupied: 0,
@@ -169,7 +191,81 @@ impl AudioActivityService {
         })
     }
     pub fn slot_bytes(slots: u32) -> u64 {
-        u64::from(slots) * std::mem::size_of::<Option<Entry>>() as u64
+        // Fixed vectors and maximum live Arc payloads/control blocks. Allocator
+        // overhead is implementation-defined, as for the existing slot budget.
+        let per_slot = std::mem::size_of::<Option<Entry>>()
+            + std::mem::size_of::<OwnerSlot>()
+            + std::mem::size_of::<Weak<ActivityState>>()
+            + std::mem::size_of::<OwnerState>()
+            + std::mem::size_of::<ActivityState>()
+            + std::mem::size_of::<Option<PhysicalRelease>>()
+            + 4 * std::mem::size_of::<usize>();
+        u64::from(slots) * per_slot as u64 + 2 * std::mem::size_of::<usize>() as u64
+    }
+    /// At most max_requests live owner registrations. Existing complete Scope
+    /// matches return the same capability, including when closed. After ALL
+    /// capabilities/evidence/resources disappear, a later registration is new;
+    /// Session hosts must not recycle a retired Scope as the same logical owner.
+    pub fn register_owner(&mut self, scope: Scope) -> Result<AudioOwner, RejectReason> {
+        for slot in &self.owners {
+            if let Some(state) = slot.state.upgrade()
+                && state.scope == scope
+            {
+                return Ok(AudioOwner(state));
+            }
+        }
+        let slot = self
+            .owners
+            .iter_mut()
+            .find(|slot| slot.state.upgrade().is_none())
+            .ok_or_else(|| {
+                RejectReason::new(RejectCode::Busy, "owner receipt capacity exhausted")
+            })?;
+        // Weak keeps its allocation even after the payload is destroyed. Free
+        // the old block BEFORE allocating the replacement to respect the bound.
+        slot.state = Weak::new();
+        let owner = AudioOwner::new(scope, self.identity.clone());
+        slot.state = Arc::downgrade(&owner.0);
+        slot.cancellation_next = 0;
+        Ok(owner)
+    }
+    /// First close admission, then cancel with a persistent bounded cursor.
+    /// Revoke business waits before calling. Progress is only cancellation work;
+    /// owner.is_retired() additionally requires actual resource/descriptor drops.
+    /// Already settled terminals retain their original admitted identity/result.
+    pub fn retire_owner(
+        &mut self,
+        owner: &AudioOwner,
+        limit: usize,
+    ) -> Result<AudioActivityProgress, RejectReason> {
+        if !Arc::ptr_eq(&owner.0.service, &self.identity) {
+            return Err(RejectReason::new(
+                RejectCode::InvalidRequest,
+                "foreign audio owner",
+            ));
+        }
+        owner.0.closed.store(true, Ordering::Release);
+        let index = self
+            .owners
+            .iter()
+            .position(|slot| slot.state.ptr_eq(&Arc::downgrade(&owner.0)))
+            .expect("live capability retains registration");
+        let mut cursor = AudioOwnerCancellation {
+            scope: owner.scope(),
+            next: self.owners[index].cancellation_next,
+        };
+        let progress = self.cancel_owner(&mut cursor, limit);
+        self.owners[index].cancellation_next = cursor.next;
+        Ok(progress)
+    }
+    /// Obtain before draining the terminal. The receipt remains queryable even
+    /// after entry/service destruction and occupies one of max_requests slots.
+    pub fn retirement(&self, id: MediaId) -> Option<AudioActivityRetirement> {
+        self.evidence
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(AudioActivityRetirement)
+            .find(|receipt| receipt.id() == id)
     }
     pub fn epoch(&self) -> MediaEpoch {
         self.epoch
@@ -204,11 +300,16 @@ impl AudioActivityService {
         let bytes = request.resource.key.0.capacity() as u64;
         let reason = if self.failed.is_some() {
             Some((RejectCode::Unavailable, "output recovery is required"))
+        } else if !Arc::ptr_eq(&request.owner.0.service, &self.identity)
+            || request.owner.is_closed()
+        {
+            Some((RejectCode::InvalidRequest, "foreign or closed audio owner"))
         } else if request.epoch != self.epoch {
             Some((RejectCode::InvalidRequest, "stale media epoch"))
         } else if self.next_id.is_none() {
             Some((RejectCode::ServiceFault, "media ID space exhausted"))
         } else if self.occupied == self.entries.len()
+            || self.evidence.iter().all(|state| state.upgrade().is_some())
             || bytes
                 > self.limits.max_bytes
                     - Self::slot_bytes(self.limits.max_requests)
@@ -226,21 +327,33 @@ impl AudioActivityService {
         }
         let AudioActivityRequest {
             epoch,
-            scope,
+            owner,
             resource,
             group,
-            sound,
+            mut sound,
         } = request;
+        let scope = owner.scope();
+        let id = MediaId(self.next_id.expect("checked before acceptance"));
+        let evidence_slot = self
+            .evidence
+            .iter()
+            .position(|slot| slot.upgrade().is_none())
+            .expect("reserved physical evidence slot");
+        self.evidence[evidence_slot] = Weak::new();
+        let state = ActivityState::new(id, epoch, owner.clone());
+        let descriptor = DescriptorRelease(state.clone());
+        sound.track_retirement(PhysicalRelease(state.clone()));
         let playback = match self.mixer.play(sound) {
             Ok(playback) => playback,
             Err(Rejected {
-                request: sound,
+                request: mut sound,
                 reason,
             }) => {
+                sound.untrack_retirement();
                 return Err(Rejected {
                     request: AudioActivityRequest {
                         epoch,
-                        scope,
+                        owner,
                         resource,
                         group,
                         sound,
@@ -249,8 +362,8 @@ impl AudioActivityService {
                 });
             }
         };
-        let id = MediaId(self.next_id.expect("checked before acceptance"));
         self.next_id = id.0.checked_add(1);
+        self.evidence[evidence_slot] = Arc::downgrade(&state);
         *self
             .entries
             .iter_mut()
@@ -264,6 +377,7 @@ impl AudioActivityService {
             volume_db: 0.0,
             playback,
             terminal: None,
+            _descriptor: descriptor,
         });
         self.maintenance_remaining = self.entries.len();
         self.occupied += 1;
@@ -482,9 +596,91 @@ impl AudioActivityService {
 }
 impl Drop for AudioActivityService {
     fn drop(&mut self) {
+        for owner in self.owners.iter().filter_map(|slot| slot.state.upgrade()) {
+            owner.closed.store(true, Ordering::Release);
+        }
         for e in self.entries.iter_mut().flatten() {
             e.playback.stop();
         }
         // Mixer Drop uses its reserved worker credits, never destroys PCM here.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AudioFormat, AudioReclaimService, ChannelLayout, MixerLimits, ReclaimLimits, SampleFormat,
+    };
+    use reel_core::{
+        budget::BudgetCategory,
+        identity::{AssetKey, ContentVersion},
+    };
+
+    #[test]
+    fn identity_exhaustion_never_wraps_and_receipt_keeps_admitted_epoch() {
+        let wake = WakeSignal::new(|| {});
+        let mut reclaim = AudioReclaimService::new(ReclaimLimits::default(), wake.clone()).unwrap();
+        let format =
+            AudioFormat::new(48_000, SampleFormat::F32, ChannelLayout::Stereo, 512).unwrap();
+        let mixer = KiraMixer::new(&format, MixerLimits::default(), &reclaim).unwrap();
+        let mut service = AudioActivityService::new(
+            mixer,
+            QueueLimits {
+                max_requests: 2,
+                max_bytes: AudioActivityService::slot_bytes(2) + 100,
+            },
+            MediaEpoch(u64::MAX - 1),
+            wake,
+        )
+        .ok()
+        .unwrap();
+        let pool = BudgetPool::new(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: 2,
+                max_bytes: 2048,
+            },
+        );
+        let owner = service.register_owner(Scope::Process).unwrap();
+        let request = || AudioActivityRequest {
+            epoch: MediaEpoch(u64::MAX - 1),
+            owner: owner.clone(),
+            resource: ResourceVersion {
+                key: AssetKey("tone".into()),
+                version: ContentVersion([0; 32]),
+            },
+            group: AudioGroup::Music,
+            sound: DecodedSound::new(48_000, vec![[0.0; 2]; 64], pool.reserve(1024).unwrap())
+                .unwrap(),
+        };
+        service.next_id = Some(u64::MAX);
+        let id = service.play(request()).unwrap();
+        assert_eq!(id, MediaId(u64::MAX));
+        let receipt = service.retirement(id).unwrap();
+        let rejected = service.play(request()).unwrap_err();
+        assert_eq!(rejected.reason.code, RejectCode::ServiceFault);
+        assert_eq!(service.occupied(), 1);
+        drop(rejected);
+        assert_eq!(
+            service.fail_output(AudioErrorKind::DeviceFailure).unwrap(),
+            MediaEpoch(u64::MAX)
+        );
+        assert_eq!(
+            service.fail_output(AudioErrorKind::DeviceFailure).unwrap(),
+            MediaEpoch(u64::MAX)
+        );
+        service.maintain(2, 2);
+        service.retire_owner(&owner, 2).unwrap();
+        let mut events = Vec::with_capacity(1);
+        service.drain(&mut events, 2, |_, _, _| true);
+        assert_eq!(events[0].epoch, MediaEpoch(u64::MAX - 1));
+        assert_eq!(receipt.epoch(), MediaEpoch(u64::MAX - 1));
+        assert_eq!(receipt.id(), id);
+        assert_eq!(receipt.scope(), Scope::Process);
+        drop(service);
+        reclaim.drain_and_join().unwrap();
+        assert!(receipt.is_retired());
+        assert!(owner.is_retired());
     }
 }
