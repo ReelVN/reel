@@ -1,14 +1,14 @@
 //! The bounded Rust session host, design baseline 1.1, host interface 0.1.
 //!
 //! This owns ADV dialogue, copied choice rows, input permission and one terminal
-//! record. It does not run Aside or implement a VM adapter. A later adapter can
-//! associate an interaction with its existing executor wait, then claim the
-//! completion record. Such an adapter must retain its own executor roots and
-//! must never resume an owner for a `CleanupOnly` record. A claimed `Resume`
-//! record is not perpetual delivery permission: the adapter must revalidate
-//! session/epoch, owner liveness and its real executor wait at actual delivery.
+//! record. The separate [`aside`] adapter binds this model to actual VM tickets
+//! and rooted waits; its source is integrated but runtime acceptance is pending.
+//! `CleanupOnly` never grants resume permission. A claimed `Resume` record must
+//! still be checked against session/epoch, owner liveness and the actual wait.
 
 use std::ops::Range;
+
+pub mod aside;
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
 use unicode_segmentation::UnicodeSegmentation;
