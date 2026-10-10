@@ -456,6 +456,8 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
-执行器整合状态（PR #49）：当前分支已接入 PR #23 的 V03 源码并通过原生与 32 位非执行编译检查；未运行独立 V03、Aside 或模拟器验收。编译器已支持的 array/table、Index/Member 六类操作及脚本 rest 等仍缺运行支持，包可能在 load 时拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+执行器整合状态（PR #49）：当前分支已接入 PR #23 的 V03 源码并通过原生与 32 位非执行编译检查；未运行独立 V03、Aside 或模拟器验收。独立草稿 PR #54 已补充 array/table、Index/Member、tuple 常量、调用展开和脚本 rest 的执行源码，并完成原生/32 位编译检查；未执行其运行测试。未支持的 delegate/hooks、结构 tuple 类型、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
 
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
+
+集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。此段描述源码实现及合同，仍未完成运行/GC/异常/取消验收。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
