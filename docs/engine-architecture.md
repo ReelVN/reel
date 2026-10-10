@@ -204,6 +204,21 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 ## 十二 字节码与资源分包发布
 发布产物分为字节码包 .asb 与资源包 .rpk，随目标平台播放器和 release.json 清单发布。一个游戏可以有多个代码模块包与多个资源分包；脚本修订和图片/音频更新独立构建。此分层借鉴 YU-RIS 的脚本二进制与资源归档组织，格式由 Reel 自行定义。
 .asb 保存入口、模块/函数/导入导出、常量、稳定内容与恢复标识、语言/字节码/宿主 ABI 版本和所需能力。源码映射可作为独立调试包，去掉源码后仍运行完整字节码语义。.rpk 保存 AssetKey、内容版本、目录索引、块表、编码/压缩信息和数据；索引与 offset/len 使用固定宽度，range read 支持流式音视频。已压缩媒体可原样储存，通用数据按独立 zstd frame 压缩，避免为一个 seek 解压整包。
+
+### ASB v1 单模块容器（PR #52，实现与验收进行中）
+
+共享容器由 reel-package 定义，只依赖便携 B01 格式与必要序列化/摘要库，不依赖编译器、UI 或 GPU；编译器 HIR 到便携元数据的转换和文件写入由 reel-cli 完成。B01 继续是代码、模块、函数、导入导出、常量、ABI 与能力表的唯一数据来源，容器不复制另一套同义表。
+
+所有整数小端、偏移为文件绝对字节位置。固定头 72 字节：magic[8]=REELASB 加零字节、major:u16=1、minor:u16=0、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。索引项固定 56 字节：kind:u32、flags:u32、offset:u64、len:u64、blake3[32]。v1 必需且唯一的区段为 kind=1 的既有 B01 字节流和 kind=2 的版本化 UTF-8 JSON 元数据；未定义的必需语义拒绝，已知 flags 外的位不默许。读入先检查总长度、索引长度可整除记录宽度、数量/字节/工作预算，以及 checked offset+len、区段重复和与头/索引的重叠，再验证摘要及内容。不会用磁盘长度直接进行无界分配。摘要检测完整性，不证明来源或授予宿主能力。
+
+元数据保存 schema 版本、唯一模块引用及规范路径、源码版本/摘要/范围、source symbol 范围、函数/绑定/global 的必要映射，和分别命名的 initializer 与可空 game_entry。记录使用稳定 DTO 与精确整数，不序列化 Rust Debug、Arc、裸 HIR 节点或内存容量。函数映射不包含编译器生成的全部默认 thunk 或 initializer，不能以其条数等同 B01 函数数。读取端交叉验证模块/函数归属、范围、映射键唯一性、源码 UTF-8 边界及精确 B01 摘要；元数据里的源槽与效果摘要仅为编译器声明，不可替代 B01 验证、可信 native 注册或运行期效果检查。JSON 输入同时受字节、深度、字符串/记录和工作量限制，重复字段拒绝。
+
+Compilation.entry 对应模块 initializer，不是游戏启动函数。build 显式 --entry main::name 才选择普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口；声明经 HIR/编译器输出映射到 B01 FunctionId，不能依赖通常为空的 GlobalDef.linked_function。未指定 --entry 时 game_entry=null，产物仅为编译模块。消费者必须先完成 initializer，再启动选定函数；CLI 编译与验证不执行这些步骤。当前 producer 限单模块、空 import/external/native 链接，不支持的链接必须报错。
+
+命令为 reel check <source> [--format human|json] 与 reel build <source> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]。build 在目标同目录完成唯一暂存文件，编码与验证成功后以原子不覆盖操作发布；只有显式 --overwrite 允许原子替换。先检查 exists 再 rename 不构成不覆盖保证；失败保留已有目标且只清理本次暂存。原子可见与断电持久性分别说明，不能把普通成功当持久存档承诺。
+
+静态检查读取上限目前为 8 MiB，后续编译/B01 仍各自执行更紧的预算；例如当前 B01 源码字符串限制为 1 MiB。诊断 JSON 保留字节范围及零起始 byte/scalar/UTF-16 坐标，人读输出用实际路径及可读位置。完整 .asb 的 BLAKE3 用于产物身份；占位 source_version="source" 或 content_version=1 不代表唯一内容。当前 B01 包含源码与映射，不能称作已剥离源码的发行包。.rpk、release.json、完整模块链接、播放器加载及实际剧情运行仍分别待实现或验收。
+
 release.json 使用 UTF-8 JSON，列出 release_id、入口、引擎/格式范围、必须能力、代码包与资源包的路径、大小和 BLAKE3 内容摘要。代码与资源头部各有魔数、major/minor、索引位置与长度；加载先检查清单及索引，再按需校验数据块。路径规范化到包命名空间，长度/偏移与解码预算在访问前验证。包格式不依赖 Rust struct 的内存布局。
 构建从干净输出目录生成产物，清单最后提交；更新先下载到候选目录并验证匹配关系，再原子切换活动 release 指针。失败保留原 release，用户存档、设置与 persistent 位于独立用户数据目录。代码包保留精确模块版本，资源引用带内容版本，防止静默混用旧代码与新索引。可选发行签名通过显式签名步骤完成，清单摘要用于完整性和缓存身份。
 发布验收包括：移除源码独立启动、只更换代码包、只更换资源包、范围读取媒体、损坏/错版本拒绝、更新中断恢复及旧存档恢复/迁移。各平台分包和更新使用同一逻辑协议及其已验证的存储提交能力。
