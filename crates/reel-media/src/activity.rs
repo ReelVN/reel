@@ -297,9 +297,6 @@ impl AudioActivityService {
             return false;
         };
         let terminal = if let Some(reason) = self.failed {
-            if e.terminal.is_none() {
-                e.epoch = self.epoch;
-            }
             AudioActivityTerminal::Failed(reason)
         } else {
             AudioActivityTerminal::Stopped {
@@ -361,9 +358,11 @@ impl AudioActivityService {
             needs_turn,
         }
     }
-    /// Called after the output faults or is stopped permanently. Invalidates old
-    /// queued events; live IDs survive to receive Failed in the new epoch during
-    /// bounded maintenance. This is NOT recovery. Host must fence/drop old fill.
+    /// Called after the output faults or is stopped permanently. Advances the
+    /// service generation, but never rewrites accepted request identities or
+    /// settled terminals. Live activities receive Failed with their ORIGINAL
+    /// epoch during bounded maintenance, so existing exact waits can settle.
+    /// This is NOT recovery. Host must fence/drop old fill.
     /// Repeated faults are idempotent; exhaustion refuses without wrapping.
     pub fn fail_output(&mut self, reason: AudioErrorKind) -> Result<MediaEpoch, AudioError> {
         if self.failed.is_some() {
@@ -389,7 +388,6 @@ impl AudioActivityService {
                 && e.terminal.is_none()
             {
                 let terminal = if let Some(reason) = self.failed {
-                    e.epoch = self.epoch;
                     Some(AudioActivityTerminal::Failed(reason))
                 } else if e.playback.is_stopped() {
                     Some(AudioActivityTerminal::Completed {
@@ -425,15 +423,17 @@ impl AudioActivityService {
             reclaim: self.mixer.reclaim_unused(reclaim_limit),
         }
     }
-    /// Drain owns disposal even for stale results. The predicate must revalidate
-    /// live Scope/wait identity; Cancelled never resumes business. At most limit
+    /// Drain owns disposal even for stale results. The predicate revalidates the
+    /// complete accepted (ID, epoch, Scope) against the live wait, NOT against
+    /// the service's current output generation. Settled terminals survive output
+    /// faults; Cancelled never resumes business. At most limit
     /// slots are visited, and the caller's Vec NEVER grows beyond its capacity.
     /// Revalidate identity once more at actual business delivery if it is delayed.
     pub fn drain(
         &mut self,
         out: &mut Vec<AudioActivityEvent>,
         limit: usize,
-        mut is_live: impl FnMut(MediaId, Scope) -> bool,
+        mut is_live: impl FnMut(MediaId, MediaEpoch, Scope) -> bool,
     ) -> AudioActivityProgress {
         let mut inspected = 0;
         while inspected < limit.min(self.drain_remaining) {
@@ -441,9 +441,8 @@ impl AudioActivityService {
             if let Some(e) = slot
                 && let Some(terminal) = e.terminal
             {
-                let deliver = e.epoch == self.epoch
-                    && terminal != AudioActivityTerminal::Cancelled
-                    && is_live(e.id, e.scope);
+                let deliver =
+                    terminal != AudioActivityTerminal::Cancelled && is_live(e.id, e.epoch, e.scope);
                 if deliver && out.len() == out.capacity() {
                     break;
                 }

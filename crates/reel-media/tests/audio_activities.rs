@@ -137,17 +137,17 @@ fn content_terminal_once_without_claiming_presentation_and_without_vector_growth
     ));
     assert!(!rig.service().stop(id));
     let mut no_capacity = Vec::new();
-    let p = rig.service().drain(&mut no_capacity, 2, |_, _| true);
+    let p = rig.service().drain(&mut no_capacity, 2, |_, _, _| true);
     assert!(p.needs_turn);
     assert_eq!(no_capacity.capacity(), 0);
     let mut out = Vec::with_capacity(1);
-    rig.service().drain(&mut out, 2, |_, _| true);
+    rig.service().drain(&mut out, 2, |_, _, _| true);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, id);
     assert_eq!(out[0].scope, scope(3));
     out.clear();
     rig.service().maintain(2, 1);
-    rig.service().drain(&mut out, 2, |_, _| true);
+    rig.service().drain(&mut out, 2, |_, _, _| true);
     assert!(out.is_empty());
 }
 
@@ -165,7 +165,7 @@ fn rejection_returns_original_request_and_terminal_reserves_slot_until_drain() {
     assert_eq!(rejected.request.sound.resident_bytes(), bytes);
     assert_eq!(rejected.request.scope, scope(2));
     let mut events = Vec::with_capacity(1);
-    rig.service().drain(&mut events, 1, |_, _| true);
+    rig.service().drain(&mut events, 1, |_, _, _| true);
     let next = rig.service().play(rejected.request).unwrap();
     assert_ne!(first, next);
     assert_eq!(
@@ -221,7 +221,7 @@ fn owner_sweep_is_bounded_preserves_prior_terminal_and_filters_revoked_results()
     ));
     let mut events = Vec::with_capacity(4);
     for _ in 0..4 {
-        rig.service().drain(&mut events, 1, |_, s| s == scope(2));
+        rig.service().drain(&mut events, 1, |_, _, s| s == scope(2));
     }
     assert!(events.is_empty());
     assert_eq!(rig.service().occupied(), 1);
@@ -230,7 +230,7 @@ fn owner_sweep_is_bounded_preserves_prior_terminal_and_filters_revoked_results()
 }
 
 #[test]
-fn epoch_fault_filters_old_terminal_and_fails_live_activity_once() {
+fn epoch_fault_preserves_settled_terminal_and_fails_live_activity_once() {
     let mut rig = Rig::new(3, 100);
     let old = rig.play(1, true);
     rig.service().stop(old);
@@ -252,13 +252,21 @@ fn epoch_fault_filters_old_terminal_and_fails_live_activity_once() {
     }
     let mut events = Vec::with_capacity(3);
     for _ in 0..3 {
-        rig.service().drain(&mut events, 1, |_, _| true);
+        rig.service().drain(&mut events, 1, |_, _, _| true);
     }
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].id, active);
-    assert_eq!(events[0].epoch, epoch);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].id, old);
+    assert_eq!(events[0].epoch, MediaEpoch(7));
     assert_eq!(
         events[0].terminal,
+        AudioActivityTerminal::Stopped {
+            position_seconds: 0.0
+        }
+    );
+    assert_eq!(events[1].id, active);
+    assert_eq!(events[1].epoch, MediaEpoch(7));
+    assert_eq!(
+        events[1].terminal,
         AudioActivityTerminal::Failed(AudioErrorKind::ReconfigureRequired)
     );
     let request = rig.request(1, false);
@@ -267,7 +275,7 @@ fn epoch_fault_filters_old_terminal_and_fails_live_activity_once() {
     drop(rejected);
     events.clear();
     rig.service().maintain(3, 3);
-    rig.service().drain(&mut events, 3, |_, _| true);
+    rig.service().drain(&mut events, 3, |_, _, _| true);
     assert!(events.is_empty());
 }
 
@@ -292,7 +300,7 @@ fn small_quota_scans_finish_and_suspend_retains_logical_position() {
         rig.wake.acknowledge();
         let p = rig.service().maintain(1, 1);
         assert_eq!(p.activities.needs_turn, i != 3);
-        let p = rig.service().drain(&mut events, 1, |_, _| true);
+        let p = rig.service().drain(&mut events, 1, |_, _, _| true);
         assert_eq!(p.needs_turn, i != 3);
     }
     assert!(events.is_empty());
@@ -334,7 +342,7 @@ fn cancellation_matches_complete_scope_and_stale_drain_needs_no_destination_spac
     );
     assert!(rig.service().snapshot(process).unwrap().terminal.is_none());
     let mut out = Vec::new();
-    rig.service().drain(&mut out, 4, |_, _| false);
+    rig.service().drain(&mut out, 4, |_, _, _| false);
     assert!(rig.service().snapshot(cancelled).is_none());
     assert_eq!(rig.service().occupied(), 2);
     assert_eq!(out.capacity(), 0);
@@ -342,7 +350,7 @@ fn cancellation_matches_complete_scope_and_stale_drain_needs_no_destination_spac
     rig.service().stop(newer_session);
     rig.service().stop(process);
     assert!(rig.service().poll_after().is_none());
-    rig.service().drain(&mut out, 4, |_, _| false);
+    rig.service().drain(&mut out, 4, |_, _, _| false);
     assert_eq!(rig.service().occupied(), 0);
 }
 
@@ -393,10 +401,58 @@ fn observed_output_failure_precedes_later_stop_and_volume_commands() {
     assert!(rig.service().stop(id));
     assert!(!rig.service().stop(id));
     let mut events = Vec::with_capacity(1);
-    rig.service().drain(&mut events, 2, |_, _| true);
-    assert_eq!(events[0].epoch, MediaEpoch(8));
+    rig.service().drain(&mut events, 2, |_, _, _| true);
+    assert_eq!(events[0].epoch, MediaEpoch(7));
     assert_eq!(
         events[0].terminal,
         AudioActivityTerminal::Failed(AudioErrorKind::DeviceFailure)
     );
+}
+
+#[test]
+fn completed_before_fault_survives_backpressure_and_exact_wait_validation_once() {
+    let mut rig = Rig::new(2, 100);
+    let id = rig.play(1, false);
+    rig.render();
+    rig.service().maintain(2, 1);
+    let terminal = rig.service().snapshot(id).unwrap().terminal.unwrap();
+    assert!(matches!(terminal, AudioActivityTerminal::Completed { .. }));
+    rig.output.stop().unwrap();
+    rig.service()
+        .fail_output(AudioErrorKind::DeviceFailure)
+        .unwrap();
+    let mut full = Vec::new();
+    let exact =
+        |actual_id, epoch, owner| actual_id == id && epoch == MediaEpoch(7) && owner == scope(1);
+    assert!(rig.service().drain(&mut full, 2, exact).needs_turn);
+    assert_eq!(rig.service().snapshot(id).unwrap().terminal, Some(terminal));
+    let mut events = Vec::with_capacity(1);
+    rig.service().drain(&mut events, 2, exact);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].terminal, terminal);
+    assert_eq!(events[0].epoch, MediaEpoch(7));
+    events.clear();
+    rig.service().maintain(2, 1);
+    rig.service().drain(&mut events, 2, exact);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn stale_exact_wait_is_disposed_without_discarding_another_live_old_epoch_wait() {
+    let mut rig = Rig::new(2, 100);
+    let stale = rig.play(1, true);
+    let live = rig.play(1, true);
+    rig.service().stop(stale);
+    rig.service().stop(live);
+    rig.output.stop().unwrap();
+    rig.service()
+        .fail_output(AudioErrorKind::DeviceFailure)
+        .unwrap();
+    let mut events = Vec::with_capacity(1);
+    rig.service().drain(&mut events, 2, |id, epoch, owner| {
+        id == live && epoch == MediaEpoch(7) && owner == scope(1)
+    });
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, live);
+    assert_eq!(rig.service().occupied(), 0);
 }
