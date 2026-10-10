@@ -45,7 +45,7 @@ let fixes a variable's binding while leaving node properties mutable. Use let mu
 
 ### Current Single-Module Tool Progress (PR #52)
 
-check, build and the shared .asb container are implemented in the same draft PR; entry-validation fixes are undergoing independent re-review. These commands compile and validate without running a story.
+check, build and the shared .asb container are implemented in the same draft PR; entry-validation fixes have passed independent acceptance for this static scope. These commands compile and validate without running a story.
 
 ```sh
 reel check main.aside --format human
