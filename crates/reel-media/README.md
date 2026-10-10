@@ -77,7 +77,9 @@ Generated transcripts and measurements belong under ignored `target/reel-artifac
 
 ## Logical audio activities (PR #53)
 
-The draft adds AudioActivityService over the existing Kira bridge. Requests own a ResourceVersion, complete core Scope, MediaEpoch, group metadata and DecodedSound. Fixed ledger slots reserve terminal capacity before play; refusals return the owned request. QueueLimits charges slot storage and asset-key capacity, while existing tickets retain PCM charges. IDs are unique within a service lifetime; the host must allocate a fresh epoch when replacing that service. Group is metadata only, and looping follows the supplied DecodedSound.
+The draft adds AudioActivityService over the existing Kira bridge. Requests own a ResourceVersion, MediaEpoch, group metadata and DecodedSound.
+PR #56 replaces the raw request Scope with a registered AudioOwner carrying the
+complete Scope and a service-local admission capability. Fixed ledger slots reserve terminal capacity before play; refusals return the owned request. QueueLimits charges slot storage and asset-key capacity, while existing tickets retain PCM charges. IDs are unique within a service lifetime; the host must allocate a fresh epoch when replacing that service. Group is metadata only, and looping follows the supplied DecodedSound.
 
 play/stop/set_volume_db/snapshot operate on logical activity identities. Completed observes content consumption through Playback; it does not certify hardware presentation or released PCM. Stopped settles a control command; AudioOutput still owns the supply fence and the reclaim service still owns physical destruction. This low-level terminal must not silently become the final creator media-wait completion contract.
 
@@ -86,3 +88,45 @@ Before cancel_owner, revoke business waits and prevent new plays for that comple
 Share a WakeSignal across output, this ledger and AudioReclaimService. Acknowledge before draining all sources and recheck pending before sleeping. Partial scans request an immediate next turn. While unsettled activities remain, poll_after recommends a 10 ms control-only timer because Playback has no per-handle completion subscription. No unsettled activity means no periodic timer from this API. This polling does not request layout or presentation and does not guarantee completion latency under overload.
 
 The corrected source at 8d3f5a2b passed independent default/feature-off real Kira/offline checks, including pre-fault terminal preservation, fair draining under backpressure, exact identity, ID/epoch bounds and worker-side PCM release accounting. The five-document revision at 888cc550 was independently checked against the same production code. This is limited Rust acceptance; the PR remains unmerged. No VM/Aside or physical device execution was performed. No seek/reload, position-preserving device reconstruction, per-activity pause/finish, group mixer, stream decoder, persisted restoration schema or engine/player binding is provided. AudioActivitySnapshot is borrowed inspection data, not a complete restore descriptor. Hardware completion and the 0.5 ms control-side target remain unverified.
+
+## Physical owner retirement (PR #56)
+
+Register the complete core Scope with `register_owner`, then pass the resulting
+AudioOwner in AudioActivityRequest.owner. A foreign-service or closed capability
+is rejected before play. Existing registrations for the same Scope return the
+same capability, including when closed. After every capability, resource and
+receipt for that registration disappears, registering that Scope creates a new
+registration; session hosts must not recycle a retired Scope as the same owner.
+
+First revoke business waits, then call `retire_owner(&owner, limit)`. It closes
+admission before a persistent, slot-budgeted cancellation scan. Repeat while the
+returned progress requests another turn. This progress describes cancellation,
+not physical completion. Continue ledger maintenance/drain and the existing
+worker reclamation. `AudioOwner::is_retired()` requires closed admission and
+zero resource and descriptor obligations.
+
+`retirement(MediaId)` obtains an AudioActivityRetirement receipt for an admitted
+activity while its evidence still exists; obtain it before draining if needed.
+It exposes admitted ID/epoch/full Scope plus resources_released,
+descriptor_released and is_retired. A logical Completed/Stopped/Failed event
+does not set either physical flag. Accepted PCM aliases share a Residency:
+all actual PCM references drop first, then the last BudgetTicket, then the
+resource-release marker. Entry Playback and owned resource key drop before its
+descriptor marker. Accepted large PCM destruction stays on the existing worker,
+not on the PCM callback. Failed admission returns an unaccepted request without
+leaving a published receipt or owner obligation.
+
+Owner registrations and activity evidence are separately bounded by max_requests.
+Cloned receipts share one slot, but retained completed receipts still prevent
+slot reuse; discard receipts no longer needed. Evidence storage is included in
+QueueLimits accounting. Atomics use pointer-width counters for 32-bit targets.
+Receipts remain queryable after service teardown, which closes all owners.
+A taken fill can still retain sound resources; suspended output can keep
+retirement pending until its stop/fence and normal worker cleanup finish.
+No elapsed-time guarantee or hardware-presentation assertion follows.
+
+At b64ae9d the author reports 44 tests under both default and feature-off builds,
+strict Clippy and i686 checking, including a 64 MiB allocator witness. Independent
+acceptance is pending. This increment supplies Rust resource evidence only:
+SessionVm external-resource gates, script media activities and player audio
+assembly are not yet connected.

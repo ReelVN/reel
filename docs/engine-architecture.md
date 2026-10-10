@@ -369,3 +369,11 @@ Completed 表示通过 Playback 观察到内容消费结束，不是设备实际
 output、活动账本和 AudioReclaimService 共用 WakeSignal，宿主先 acknowledge，再排出全部来源，休眠前复核 pending。未扫完的有限工作立即续轮；仍有未结算活动时，poll_after 建议 10 ms 控制侧复查，以补足当前 Playback 缺少逐音轨完成订阅的通知空隙。没有未结算活动时不设置这个周期计时；音频检查不请求布局或呈现。10 ms 是后备调度间隔，不保证过载下完成延迟。
 
 本 PR 的限定 Rust 范围已通过独立验收，覆盖 Linux 离线真实 Kira、默认/关闭 CPAL 路径、终态保留与背压公平释放，以及后台 PCM 释放预算。seek/reload、保位置重建、单活动 pause/finish、分组混音、完整持久描述及脚本会话接线未实现；实体设备、硬件完成时钟与 0.5 ms 控制耗时目标未验收。
+
+## 音频 owner 物理退休凭据（PR #56，独立验收中）
+
+AudioActivityRequest 使用服务注册的 AudioOwner 代替裸 Scope；凭据保留完整 Scope 与服务身份，外服务或已关闭 owner 不得准入。retire_owner 先关闭准入，再按持久游标分片取消；业务等待必须先撤销。游标完成仅代表取消扫描完成，不代表内存或描述符释放。
+
+每个已接纳活动分别计资源与描述符义务。全部 PCM 别名释放、最后共享 Residency 的 BudgetTicket 归还之后，才发布资源完成标记；Entry 的 Playback 和资源 key 析构后才发布描述符完成。AudioOwner::is_retired 还要求准入已经关闭。逻辑终态、排空队列、全局共享预算余额均不能替代该精确证据。服务析构关闭 owner，但已取走 fill 或挂起输出仍可能延长资源寿命；PCM 继续经原后台回收路径释放。
+
+owner 注册与活动凭据各有 max_requests 容量上限，保留已完成凭据仍占槽；克隆共享同一登记。相同 Scope 的现存关闭登记不会重开，所有引用消亡后的重新注册是新身份，Session 宿主不能把已退休 Scope 重用为原 owner。现阶段只提供 Rust 媒体侧证据，尚未接入 SessionVm 的外部资源退休门或作者媒体等待。作者限定测试和 32 位编译已通过，独立验收仍在进行，实体设备与回收时限未验收。
