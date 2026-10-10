@@ -7,6 +7,9 @@ use aside_vm::bytecode as bc;
 use serde_json::{Value, json};
 mod input;
 pub use input::{InputError, MAX_SOURCE_BYTES, read_source};
+mod artifact;
+pub mod output;
+pub use artifact::{Artifact, build, package_limits_json};
 
 #[derive(Debug)]
 pub struct Failure {
@@ -38,6 +41,7 @@ fn error(
 pub struct Checked {
     pub compilation: lowering::Compilation,
     pub bytes: Vec<u8>,
+    pub declarations: Vec<reel_package::Declaration>,
 }
 
 /// Run the complete supported static pipeline, retaining entry and metadata
@@ -105,7 +109,15 @@ pub fn check(source: &str) -> Result<Checked, Failure> {
             "B01 round trip changed program data".into(),
         ));
     }
-    Ok(Checked { compilation, bytes })
+    let declarations = artifact::declarations(
+        analyzed.module().expect("successful analysis"),
+        &compilation,
+    )?;
+    Ok(Checked {
+        compilation,
+        bytes,
+        declarations,
+    })
 }
 
 pub fn diagnostic_json(diagnostic: &Diagnostic, map: &SourceMap<'_>) -> Value {
