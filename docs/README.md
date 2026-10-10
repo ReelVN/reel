@@ -63,3 +63,5 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 [会话宿主与真实视图（#50）](https://github.com/jhq223/reel/pull/50) 位于独立集成 PR：reel-engine 的 Rust 会话模型接通真实 Label/Button、渐显推进、选择、取消和呈现输入门。使用显式 Rust 请求，尚未接 VM 剧情、音频或保存恢复；软件 GPU 验证不代表物理硬件通过。最终合并状态以 PR 为准。[接口与限制](../crates/reel-engine/README.md) · [窗口入口](../crates/reel-player/README.md#rust-session-host-window-s01)。
 
 [调用展开与 rest（#47）](https://github.com/jhq223/reel/pull/47) 增加源码顺序参数 builder、Packed 调用及 rest 参数身份；集合展开仍待独立设计。静态编译不等于 V03 支持或剧情会话已接通，真实浅捕获、并发修改、缺省执行及 GC/恢复尚未验收。
+
+[音频活动账本（#53）](https://github.com/jhq223/reel/pull/53) 在独立草稿 PR 中提供稳定媒体身份、Scope 取消、旧代过滤、有界维护与终态保留。Rust 内容消费完成不等于硬件播放完成或 PCM 释放；尚未接脚本会话、完整恢复或作者音频 API。作者离线 Kira 检查通过，独立验收进行中。[接口和调度边界](../crates/reel-media/README.md#logical-audio-activities-pr-53)。
