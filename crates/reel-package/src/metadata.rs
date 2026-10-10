@@ -289,6 +289,13 @@ impl Metadata {
         )?;
         let mut names = BTreeSet::new();
         let mut declaration_functions = BTreeSet::new();
+        let actual_declarations =
+            super::declarations::from_initializer(p, self.initializer.function_id, budget)?;
+        require(
+            actual_declarations.len() == self.declarations.len(),
+            Invalid,
+            "declarations do not cover initializer declaration prologue",
+        )?;
         for d in &self.declarations {
             let f = self
                 .functions
@@ -302,6 +309,11 @@ impl Metadata {
                 f.output == d.function_id && globals.get(&d.global_id) == Some(&d.source_symbol_id),
                 Invalid,
                 "declaration identity mismatch",
+            )?;
+            require(
+                actual_declarations.get(&d.global_id) == Some(&d.function_id),
+                Invalid,
+                "declaration does not match B01 initializer global/function binding",
             )?;
             let function = &p.functions[d.function_id as usize];
             require(
@@ -332,10 +344,11 @@ impl Metadata {
             budget.charge(signature.parameters.len())?;
             require(
                 function.kind == bc::FunctionKind::Plain
+                    && function.context == bc::Context::Ordinary
                     && function.captures.is_empty()
                     && signature.parameters.iter().all(|p| p.default.is_some()),
                 Invalid,
-                "game entry requires plain, capture-free function with zero required arguments",
+                "game entry requires Ordinary plain, capture-free function with zero required arguments",
             )?;
         }
         Ok(())

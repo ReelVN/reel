@@ -25,6 +25,9 @@ fn section(bytes: &[u8], index: usize) -> &[u8] {
 /// cross-validator rather than stopping at the outer integrity boundary.
 fn repack(original: &[u8], json: &[u8]) -> Vec<u8> {
     let b01 = section(original, 0);
+    assemble(b01, json)
+}
+fn assemble(b01: &[u8], json: &[u8]) -> Vec<u8> {
     let mut out = vec![0; rp::HEADER_LEN];
     out.extend_from_slice(b01);
     out.extend_from_slice(json);
@@ -47,6 +50,132 @@ fn repack(original: &[u8], json: &[u8]) -> Vec<u8> {
     out[32..40].copy_from_slice(&(2u64 * rp::INDEX_ENTRY_LEN as u64).to_le_bytes());
     repair_index(&mut out);
     out
+}
+
+#[test]
+fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
+    use aside_vm::bytecode as bc;
+    for context in [bc::Context::NoWait, bc::Context::Init, bc::Context::Derived] {
+        let mut checked = reel_cli::check("fn main() { 1 }").unwrap();
+        let original = reel_cli::build(&checked, Some("main::main")).unwrap();
+        let mut metadata: rp::Metadata =
+            serde_json::from_slice(section(&original.bytes, 1)).unwrap();
+        let entry = metadata.game_entry.as_ref().unwrap().function_id as usize;
+        let mut p = checked.compilation.program.package().clone();
+        p.functions[entry].context = context;
+        let signature = p.functions[entry].signature.index();
+        p.signatures[signature].effects.0 &= !bc::Effects::WAIT;
+        let declared = rp::DeclaredContext {
+            no_wait: true,
+            init: context == bc::Context::Init,
+            derived: context == bc::Context::Derived,
+        };
+        metadata.functions[0].declared_context = declared.clone();
+        let bytes = bc::encode(&p, bc::Limits::default()).unwrap();
+        metadata.bytecode_blake3 = rp::digest(&bytes);
+        let encoded = assemble(&bytes, &serde_json::to_vec(&metadata).unwrap());
+        let error = rp::decode(&encoded, Limits::default()).unwrap_err();
+        assert!(error.detail.contains("Ordinary"), "{context:?}: {error}");
+        checked.bytes = bytes;
+        checked.compilation.program = bc::verify(p, bc::Limits::default()).unwrap();
+        checked.compilation.metadata.functions[0].declared_context =
+            aside_compiler::hir::DeclaredContext {
+                no_wait: declared.no_wait,
+                init: declared.init,
+                derived: declared.derived,
+            };
+        let error = reel_cli::build(&checked, Some("main::main")).err().unwrap();
+        assert_eq!(error.stage, "entry");
+        assert!(error.diagnostics[0].message.contains("Ordinary"));
+        // Restricted-context helpers are still legal in a module-only artifact.
+        reel_cli::build(&checked, None).unwrap();
+    }
+}
+
+#[test]
+fn metadata_only_cannot_redirect_main_to_same_named_nested_function() {
+    let original = artifact(
+        "fn main(){1} fn outer(){fn main(){2} main()}",
+        Some("main::main"),
+    )
+    .bytes;
+    let mut metadata: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
+    assert_eq!(metadata["initializer"]["function_id"], 3);
+    for path in [
+        "/declarations/0/source_function_id",
+        "/declarations/0/function_id",
+        "/game_entry/function_id",
+    ] {
+        *metadata.pointer_mut(path).unwrap() = serde_json::json!(2);
+    }
+    let forged = repack(&original, &serde_json::to_vec(&metadata).unwrap());
+    assert_eq!(section(&original, 0), section(&forged, 0));
+    let error = rp::decode(&forged, Limits::default()).unwrap_err();
+    assert!(
+        error
+            .detail
+            .contains("B01 initializer global/function binding"),
+        "{error}"
+    );
+}
+
+#[test]
+fn declaration_prefix_rejects_control_entry_duplicate_and_later_global_writes() {
+    use aside_vm::bytecode as bc;
+    let original = artifact("fn main(){1}", Some("main::main")).bytes;
+    let decoded = rp::decode(&original, Limits::default()).unwrap();
+    for case in [
+        "jump",
+        "duplicate",
+        "overwrite",
+        "clear-register",
+        "omitted-metadata",
+    ] {
+        let mut p = decoded.program().package().clone();
+        let mut metadata = decoded.metadata().clone();
+        let init = &mut p.functions[metadata.initializer.function_id as usize];
+        match case {
+            "jump" => {
+                *init.code.last_mut().unwrap() = bc::Instruction::new(bc::Opcode::Jump, 1, 0, 0);
+            }
+            "duplicate" => {
+                let copy = init.code[..3].to_vec();
+                init.code.splice(3..3, copy);
+            }
+            "overwrite" => {
+                let write = init.code[1];
+                init.code.insert(init.code.len() - 1, write);
+            }
+            "clear-register" => {
+                init.code[2].operands[0] = init.register_count;
+                init.register_count += 1;
+            }
+            "omitted-metadata" => {
+                metadata.declarations.clear();
+                metadata.game_entry = None;
+            }
+            _ => unreachable!(),
+        }
+        init.source_map.clear();
+        let b01 = bc::encode(&p, bc::Limits::default()).unwrap();
+        metadata.bytecode_blake3 = rp::digest(&b01);
+        let bad = assemble(&b01, &serde_json::to_vec(&metadata).unwrap());
+        let error = rp::decode(&bad, Limits::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Metadata, "{case}: {error}");
+        assert!(error.detail.contains("declaration"), "{case}: {error}");
+    }
+}
+
+#[test]
+fn anonymous_module_closures_do_not_become_declarations_and_hoisted_functions_remain_valid() {
+    for source in [
+        "let f = || { 1 };",
+        "let f = || { 1 }; fn main(){2}",
+        "fn main(){1} if true { let local = 2; let f = || { local }; }",
+        "fn main(){1} loop {}",
+    ] {
+        artifact(source, None);
+    }
 }
 
 #[test]

@@ -111,10 +111,11 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
         let function = &p.functions[declaration.function_id as usize];
         let signature = &p.signatures[function.signature.index()];
         if function.kind != aside_vm::bytecode::FunctionKind::Plain
+            || function.context != aside_vm::bytecode::Context::Ordinary
             || !function.captures.is_empty()
             || signature.parameters.iter().any(|p| p.default.is_none())
         {
-            return Err(fail("entry", text_range(declaration.declaration_span), "game entry must be a plain module-level function without captures or required arguments".into()));
+            return Err(fail("entry", text_range(declaration.declaration_span), "game entry must be an Ordinary plain module-level function without captures or required arguments".into()));
         }
         Some(rp::GameEntry {
             module_id: 0,

@@ -1,6 +1,7 @@
 //! ASB 1.0 single-module containers. No compiler, runtime admission or IO.
 //! Integrity hashes are not signatures or host authorization.
 mod codec;
+mod declarations;
 mod metadata;
 use aside_vm::bytecode as bc;
 pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, decode, encode};
