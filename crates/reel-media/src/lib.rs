@@ -1,6 +1,8 @@
 //! AudioOutput and the Kira bridge, architecture contract 1.1.
 #![allow(clippy::result_large_err)]
 
+mod activity;
+pub use activity::*;
 mod contracts;
 mod maintenance;
 mod mixer;

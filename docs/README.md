@@ -64,4 +64,7 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 
 [调用展开与 rest（#47）](https://github.com/jhq223/reel/pull/47) 增加源码顺序参数 builder、Packed 调用及 rest 参数身份；集合展开仍待独立设计。静态编译不等于 V03 支持或剧情会话已接通，真实浅捕获、并发修改、缺省执行及 GC/恢复尚未验收。
 
+
+[音频活动账本（#53）](https://github.com/jhq223/reel/pull/53) 在独立草稿 PR 中提供稳定媒体身份、Scope 取消、精确等待过滤、有界维护与终态保留。Rust 内容消费完成不等于硬件播放完成或 PCM 释放；尚未接脚本会话、完整恢复或作者音频 API。离线 Kira 检查及限定 Rust 范围独立验收通过；仍为尚未合并的草稿。[接口和调度边界](../crates/reel-media/README.md#logical-audio-activities-pr-53)。
+
 [作者检查与构建（#52）](https://github.com/jhq223/reel/pull/52) 已在草稿 PR 中实现，入口校验修复已通过限定静态独立验收。check 提供带位置的人读/JSON 诊断和非执行编译验证；build 按 ASB v1 保存模块元数据、initializer 和可选游戏入口。完整项目/资源发行、native/import 链接与实际玩家运行不属于当前已完成范围。详见架构中的 ASB v1 单模块容器及双语指南。

@@ -406,3 +406,5 @@ core.error_info() 提供当前 catch 的错误码、原始位置、调用栈和�
 
 
 S01 实现状态：Rust 会话宿主已接入真实对白/选项窗口，具备字素渐显、推进、稳定选项过滤、取消和呈现输入门。当前鼠标投影最多两行或两个选项，使用显式 Rust 请求，未执行本指南的 Aside 剧情；VM 等待/根适配、媒体与保存恢复仍待接通。[启动及限制](../../crates/reel-player/README.md#rust-session-host-window-s01)。
+
+音频实现进展（PR #53，限定 Rust 范围已独立验收）：Rust 层新增有界播放活动账本、owner 取消、精确等待身份过滤和一次终态交付。设备故障不会吞掉已结算结果；接收队列满时，后续取消记录仍能释放。这里的内容消费完成与设备播放完毕、PCM 内存释放分别记录；尚未接通指南中的作者音频 API、剧情等待或保存恢复。seek/reload、单活动暂停与分组混音仍待实现。现有示例继续表示最终作者接口。[Rust 接口与边界](../../crates/reel-media/README.md#logical-audio-activities-pr-53)。

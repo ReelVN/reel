@@ -373,6 +373,19 @@ owner 退休记录在创建时预留，单根游标、任务和外部资源分�
 
 本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。
 
+
+## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
+
+reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、完整 Scope、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。当前分组仅为元数据，循环取自输入声音配置。
+
+Completed 表示通过 Playback 观察到内容消费结束，不是设备实际呈现，也不表示 PCM 已释放。Stopped 表示停止命令的逻辑结算；供给停止仍由 AudioOutput 的 fence/stop 协议保证，物理 PCM 回收仍经后台服务和预算票据。此 Rust 终态尚未接到作者的媒体等待；完整媒体完成继续遵守前文设备时钟与时间线合同，不能直接把低层 Completed 当作可听终点。
+
+撤销 owner 时，宿主先撤销业务等待并禁止该完整 Scope 新增播放，再用有配额的 cancel_owner 游标完成清理。维护、取消和排出按实际槽位（含空槽）计费。接收队列满时保留可交付记录，但继续计费推进游标，使后续取消/失效记录仍可释放。完成一次扫描后不因消费者背压反复自唤醒；消费者释放容量后重新排出。排出以接纳时的 (MediaId, MediaEpoch, Scope) 校验精确业务等待，过滤已失效等待和 Cancelled；输出故障后推进的当前代数不抹去已接纳活动的身份。已结算但尚未交付的 Completed/Stopped/Failed 保留原身份和结果；若延后实际交付，仍需再次校验等待身份。已结算终态不被后来的普通取消重写。输出故障由 fail_output 推进一次后续接纳代数，并通过分片维护将剩余活动按原接纳身份结算失败；宿主负责停止供给。它不代表保位置设备恢复。
+
+output、活动账本和 AudioReclaimService 共用 WakeSignal，宿主先 acknowledge，再排出全部来源，休眠前复核 pending。未扫完的有限工作立即续轮；仍有未结算活动时，poll_after 建议 10 ms 控制侧复查，以补足当前 Playback 缺少逐音轨完成订阅的通知空隙。没有未结算活动时不设置这个周期计时；音频检查不请求布局或呈现。10 ms 是后备调度间隔，不保证过载下完成延迟。
+
+本 PR 的限定 Rust 范围已通过独立验收，覆盖 Linux 离线真实 Kira、默认/关闭 CPAL 路径、终态保留与背压公平释放，以及后台 PCM 释放预算。seek/reload、保位置重建、单活动 pause/finish、分组混音、完整持久描述及脚本会话接线未实现；实体设备、硬件完成时钟与 0.5 ms 控制耗时目标未验收。
+
 ### ASB 声明映射验证边界
 
 PR #52 的 reader 从已验证 B01 initializer 开头连续的 MakeClosure → GlobalInit → Clear 三指令结构恢复真实 global/function 绑定；要求同一寄存器、模块、名称、不可变 global、无捕获及唯一关联，并与声明元数据交叉核对。所有 PC 操作数与异常区间不得进入该前缀；还扫描所有函数，禁止相同声明 global 在前缀外被初始化或改写。扫描和有序表操作计入工作额度，不能证明的结构明确拒绝。
