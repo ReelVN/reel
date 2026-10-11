@@ -11,6 +11,10 @@ use std::rc::Rc;
 
 mod api;
 #[cfg(test)]
+mod collection_tests;
+mod collections;
+use collections::{TableAction, TableWork};
+#[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
 mod exit_tests;
@@ -85,6 +89,7 @@ enum ScriptPhase {
         source: ArgSource,
         index: u32,
     },
+    Rest,
     Bind {
         index: u32,
         positional: u32,
@@ -104,6 +109,23 @@ enum ScriptPhase {
         binding: u32,
     },
     Body,
+    Spread {
+        index: u32,
+        len: u32,
+        version: u64,
+        destination_version: u64,
+    },
+    KeyPath {
+        index: u32,
+    },
+    TableValidate,
+    TableScan,
+    Sequence {
+        dest: Reg,
+        window: RegWindow,
+        index: u32,
+        tuple: bool,
+    },
     Equality {
         dest: Reg,
         negated: bool,
@@ -154,6 +176,7 @@ struct ScriptFrame {
     owner: RootOwner,
     ret: ReturnTo,
     phase: ScriptPhase,
+    table_work: Option<TableWork>,
 }
 #[derive(Clone, Copy)]
 enum NativePhase {
@@ -409,19 +432,6 @@ impl Vm {
                 ));
             }
         }
-        for c in &p.constants {
-            if !matches!(
-                c,
-                Const::Null
-                    | Const::Bool(_)
-                    | Const::Int(_)
-                    | Const::FloatBits(_)
-                    | Const::Utf8(_)
-                    | Const::Bytes(_)
-            ) {
-                return Err(VmError::Contract("tuple constant handler is not connected"));
-            }
-        }
         for sig in &p.signatures {
             if sig.property_bag_tail.is_some()
                 || sig.parameters.len() + usize::from(sig.rest.is_some())
@@ -433,9 +443,6 @@ impl Vm {
             }
         }
         for f in &p.functions {
-            if p.signatures[f.signature.index()].rest.is_some() {
-                return Err(VmError::Contract("script rest handler is not connected"));
-            }
             if f.kind != FunctionKind::Plain {
                 return Err(VmError::Contract(
                     "async/generator handler is not connected",
@@ -445,17 +452,6 @@ impl Vm {
                 || f.regions.len() as u64 * 2 + 3 > limits.slots.max_window_len as u64
             {
                 return Err(VmError::Limit);
-            }
-            for instruction in &f.code {
-                if instruction.opcode == Opcode::MakeTuple as u16 {
-                    let Descriptor::Sequence(w) = f.descriptors[instruction.operands[1] as usize]
-                    else {
-                        unreachable!()
-                    };
-                    if w.len > limits.heap.max_mutation_values {
-                        return Err(VmError::Limit);
-                    }
-                }
             }
         }
         let mut heap = Heap::new(epoch, limits.heap)?;
@@ -501,7 +497,13 @@ impl Vm {
             &mut heap,
             RootOwner(u64::MAX),
             RootKind::ModuleSet,
-            p.constants.len() as u32,
+            u32::try_from(
+                p.constants
+                    .len()
+                    .checked_add(p.symbols.len())
+                    .ok_or(VmError::Limit)?,
+            )
+            .map_err(|_| VmError::Limit)?,
         )?;
         for (i, c) in p.constants.iter().enumerate() {
             let value = match c {
@@ -511,9 +513,44 @@ impl Vm {
                 Const::FloatBits(v) => Value::float(f64::from_bits(*v)),
                 Const::Utf8(v) => heap.alloc_string(v)?,
                 Const::Bytes(v) => heap.alloc_bytes(v)?,
-                _ => unreachable!(),
+                Const::Tuple(elements) => {
+                    // Verified constant DAG references only earlier constants. The load
+                    // path has a strict per-constant limit, like UTF-8/byte
+                    // constants. Runtime MakeTuple instead uses resumable steps.
+                    if elements.len() > limits.heap.max_mutation_values as usize {
+                        return Err(VmError::Limit);
+                    }
+                    let tuple = heap.alloc_array(&[])?;
+                    slots.write(&mut heap, at(constants, i as u32), tuple)?;
+                    for element in elements {
+                        let value = slots.read(at(constants, element.0))?;
+                        heap.array_push(tuple, value)?;
+                    }
+                    heap.seal_tuple(tuple)?;
+                    tuple
+                }
             };
             slots.write(&mut heap, at(constants, i as u32), value)?;
+        }
+        // Only member operands need a runtime string. Other symbols remain
+        // metadata, avoiding an object allocation per unrelated identifier.
+        for function in &p.functions {
+            for instruction in &function.code {
+                if matches!(
+                    instruction_spec(instruction.opcode).unwrap().opcode,
+                    Opcode::MemberGet | Opcode::MemberSet
+                ) {
+                    let symbol = instruction.operands[2];
+                    let position = p.constants.len() as u32 + symbol;
+                    if matches!(
+                        slots.read(at(constants, position)),
+                        Err(HeapError::UninitializedSlot)
+                    ) {
+                        let value = heap.alloc_string(&p.symbols[symbol as usize])?;
+                        slots.write(&mut heap, at(constants, position), value)?;
+                    }
+                }
+            }
         }
         let globals = slots.open(
             &mut heap,
@@ -763,7 +800,12 @@ impl Vm {
             + count as u64 * 2
             + self.program.package().signatures[f.signature.index()]
                 .parameters
-                .len() as u64;
+                .len() as u64
+            + u64::from(
+                self.program.package().signatures[f.signature.index()]
+                    .rest
+                    .is_some(),
+            );
         self.window_push_cost(4, values) + 1
     }
     fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
@@ -804,9 +846,8 @@ impl Vm {
         let f = &self.program.package().functions[function.index()];
         let registers = f.register_count;
         let env_len = 3 + f.regions.len() as u32 * 2;
-        let n = self.program.package().signatures[f.signature.index()]
-            .parameters
-            .len() as u32;
+        let sig = &self.program.package().signatures[f.signature.index()];
+        let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let context = inherit(context, f.context);
         let effects = Effects(
             effects.0
@@ -873,6 +914,7 @@ impl Vm {
             owner,
             ret,
             phase: ScriptPhase::Copy { source, index: 0 },
+            table_work: None,
         };
         self.active.frames.data.push(Frame::Script(s));
         Ok(())
@@ -955,9 +997,17 @@ impl Vm {
             self.put(s.args, i as u32 * 2, Value::int(-1))?;
             self.put(s.args, i as u32 * 2 + 1, v)?;
         }
-        s.phase = ScriptPhase::Bind {
-            index: 0,
-            positional: 0,
+        let signature = self.program.package().functions[function.index()].signature;
+        s.phase = if self.program.package().signatures[signature.index()]
+            .rest
+            .is_some()
+        {
+            ScriptPhase::Rest
+        } else {
+            ScriptPhase::Bind {
+                index: 0,
+                positional: 0,
+            }
         };
         *self.active.frames.data.last_mut().unwrap() = Frame::Script(s);
         self.active.task_owner = Some(owner);
@@ -1852,10 +1902,35 @@ impl Vm {
                         }
                     }
                 } else {
-                    s.phase = ScriptPhase::Bind {
-                        index: 0,
-                        positional: 0,
+                    s.phase = if self.program.package().signatures[signature.index()]
+                        .rest
+                        .is_some()
+                    {
+                        ScriptPhase::Rest
+                    } else {
+                        ScriptPhase::Bind {
+                            index: 0,
+                            positional: 0,
+                        }
                     };
+                }
+            }
+            ScriptPhase::Rest => {
+                if !m.take(0, 1, 0) {
+                    return Ok(false);
+                }
+                let count = self.program.package().signatures[signature.index()]
+                    .parameters
+                    .len() as u32;
+                match self.heap.alloc_array(&[]) {
+                    Ok(rest) => {
+                        self.put(s.bound, count, rest)?;
+                        s.phase = ScriptPhase::Bind {
+                            index: 0,
+                            positional: 0,
+                        };
+                    }
+                    Err(error) => self.preparation_fault(&mut s, heap_fault(error))?,
                 }
             }
             ScriptPhase::Bind {
@@ -1865,7 +1940,22 @@ impl Vm {
                 let n = self.program.package().signatures[signature.index()]
                     .parameters
                     .len() as u64;
-                if !m.take(0, n + 2, 0) {
+                let tail = index < s.argument_count
+                    && !s.shared_parameters
+                    && self.program.package().signatures[signature.index()]
+                        .rest
+                        .is_some()
+                    && positional as u64 >= n
+                    && self.value(s.args, index * 2)?.as_int() == Some(-1);
+                let bytes = if tail
+                    && (self.heap.info(self.value(s.bound, n as u32)?)?.len as usize)
+                        .is_multiple_of(VALUE_CHUNK_LEN)
+                {
+                    VALUE_CHUNK_BYTES
+                } else {
+                    0
+                };
+                if !m.take(0, n + 3, bytes) {
                     return Ok(false);
                 }
                 if index < s.argument_count {
@@ -1873,6 +1963,11 @@ impl Vm {
                         self.value(s.args, index * 2 + 1)
                             .and_then(|value| self.put(s.bound, index, value))
                             .map_err(vm_fault)
+                    } else if tail {
+                        let rest = self.value(s.bound, n as u32)?;
+                        let value = self.value(s.args, index * 2 + 1)?;
+                        positional += 1;
+                        self.heap.array_push(rest, value).map_err(heap_fault)
                     } else {
                         self.bound_argument(signature, s.bound, s.args, index, &mut positional)
                     };
@@ -1897,7 +1992,7 @@ impl Vm {
                     return Ok(false);
                 }
                 let sig = &self.program.package().signatures[signature.index()];
-                if parameter as usize == sig.parameters.len() {
+                if parameter as usize == sig.parameters.len() + usize::from(sig.rest.is_some()) {
                     s.phase = ScriptPhase::Install { binding: 0 };
                 } else if self.slots.read(at(s.bound, parameter)).is_ok() {
                     let storage = f
@@ -1959,8 +2054,12 @@ impl Vm {
                 if !m.take(0, 4, bytes) {
                     return Ok(false);
                 }
-                let p = &self.program.package().signatures[signature.index()].parameters
-                    [parameter as usize];
+                let sig = &self.program.package().signatures[signature.index()];
+                let p = sig
+                    .parameters
+                    .get(parameter as usize)
+                    .or(sig.rest.as_ref())
+                    .unwrap();
                 let input = self.value(s.bound, parameter)?;
                 let contract = self.contract(ModuleId(s.parameter_module.0), p.ty, p.mutable);
                 let prepared = self.parameter_value(contract, input, storage, s.shared_parameters);
@@ -2058,6 +2157,36 @@ impl Vm {
                     }
                 }
             }
+            ScriptPhase::Spread {
+                index,
+                len,
+                version,
+                destination_version,
+            } => {
+                if !self.spread_step(&mut s, index, len, version, destination_version, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::KeyPath { index } => {
+                if !self.key_path_step(&mut s, index, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::TableValidate | ScriptPhase::TableScan => {
+                if !self.table_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::Sequence {
+                dest,
+                window,
+                index,
+                tuple,
+            } => {
+                if !self.sequence_step(&mut s, dest, window, index, tuple, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Equality { dest, negated } => {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
@@ -2078,27 +2207,31 @@ impl Vm {
                     self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
                     self.active.equality_cursors.data.pop();
                 } else {
-                    match result {
-                        Ok(equal) => {
-                            self.put(s.regs, dest.0, Value::bool(equal != negated))?;
-                            s.pc.0 += 1;
-                            s.phase = ScriptPhase::Body;
-                        }
-                        Err(kind) => {
-                            self.put(s.env, 1, Value::NULL)?;
-                            self.clear(s.env, 2)?;
-                            s.phase = ScriptPhase::Exit {
-                                origin: s.pc,
-                                reason: ExitReason::Throw(FaultSeed {
-                                    fault: None,
-                                    explicit: None,
-                                    author_value: false,
+                    if s.table_work.is_some() {
+                        self.table_comparison_done(&mut s, result)?;
+                    } else {
+                        match result {
+                            Ok(equal) => {
+                                self.put(s.regs, dest.0, Value::bool(equal != negated))?;
+                                s.pc.0 += 1;
+                                s.phase = ScriptPhase::Body;
+                            }
+                            Err(kind) => {
+                                self.put(s.env, 1, Value::NULL)?;
+                                self.clear(s.env, 2)?;
+                                s.phase = ScriptPhase::Exit {
+                                    origin: s.pc,
+                                    reason: ExitReason::Throw(FaultSeed {
+                                        fault: None,
+                                        explicit: None,
+                                        author_value: false,
 
-                                    kind,
-                                    location: self.loc(s, s.pc),
-                                }),
-                                skip: None,
-                            };
+                                        kind,
+                                        location: self.loc(s, s.pc),
+                                    }),
+                                    skip: None,
+                                };
+                            }
                         }
                     }
                 }
@@ -2238,7 +2371,9 @@ impl Vm {
                 let count = match d.arguments {
                     Arguments::Window(w) => w.len,
                     Arguments::Packed(r) => {
-                        self.heap.info(self.slots.read(at(s.regs, r.0))?)?.len / 2
+                        self.heap
+                            .packed_array_len(self.slots.read(at(s.regs, r.0))?)?
+                            / 2
                     }
                 };
                 let cost = match d.target {
@@ -2261,15 +2396,7 @@ impl Vm {
                         * VALUE_CHUNK_BYTES,
                 )
             }
-            Opcode::MakeTuple => {
-                let Descriptor::Sequence(w) = f.descriptors[b as usize] else {
-                    unreachable!()
-                };
-                (
-                    w.len as u64 + 1,
-                    (w.len as u64).div_ceil(VALUE_CHUNK_LEN as u64) * VALUE_CHUNK_BYTES,
-                )
-            }
+            Opcode::MakeTuple | Opcode::MakeArray => (1, 0),
             Opcode::Throw | Opcode::Rethrow => (
                 f.regions.len() as u64 + self.active.caught.data.len() as u64 + 3,
                 0,
@@ -2281,7 +2408,7 @@ impl Vm {
             Opcode::ArgsNew => (1, 0),
             Opcode::ArgsPush | Opcode::ArgsNamed => {
                 let packed = self.slots.read(at(s.regs, _a))?;
-                let len = self.heap.info(packed)?.len;
+                let len = self.heap.packed_array_len(packed)?;
                 (
                     2,
                     if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
@@ -2307,7 +2434,12 @@ impl Vm {
         let f = &self.program.package().functions[s.code.function.index()];
         if matches!(
             op,
-            Opcode::CellWrite | Opcode::BindWrite | Opcode::GlobalWrite | Opcode::GlobalInit
+            Opcode::CellWrite
+                | Opcode::BindWrite
+                | Opcode::GlobalWrite
+                | Opcode::GlobalInit
+                | Opcode::IndexSet
+                | Opcode::MemberSet
         ) && (s.context.derived || s.effects.0 & Effects::WRITE == 0)
         {
             return Err(FaultKind::Effect);
@@ -2317,24 +2449,73 @@ impl Vm {
             Opcode::CellNew
                 | Opcode::MakeClosure
                 | Opcode::MakeTuple
+                | Opcode::MakeArray
+                | Opcode::MakeTable
                 | Opcode::ArgsNew
                 | Opcode::ArgsPush
                 | Opcode::ArgsNamed
+                | Opcode::ArgsSpread
         ) && s.effects.0 & Effects::ALLOCATE == 0
         {
             return Err(FaultKind::Effect);
         }
         match op {
-            Opcode::MakeTuple => {
-                let Descriptor::Sequence(w) = f.descriptors[b as usize] else {
+            Opcode::MakeTuple | Opcode::MakeArray => {
+                let Descriptor::Sequence(window) = f.descriptors[b as usize] else {
                     unreachable!()
                 };
-                let values = self
-                    .slots
-                    .borrow_initialized_window(s.regs, w.start.0, w.len)
-                    .map_err(heap_fault)?;
-                let tuple = self.heap.alloc_tuple(values).map_err(heap_fault)?;
-                self.write(*s, r(a), tuple)?;
+                let builder = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                self.put(s.env, 1, builder).map_err(vm_fault)?;
+                s.phase = ScriptPhase::Sequence {
+                    dest: r(a),
+                    window,
+                    index: 0,
+                    tuple: op == Opcode::MakeTuple,
+                };
+                return Ok(false);
+            }
+            Opcode::MakeTable => {
+                let table = self.heap.alloc_table().map_err(heap_fault)?;
+                self.put(s.env, 1, table).map_err(vm_fault)?;
+                self.next_table_field(s, r(a), DescriptorId(b), 0)
+                    .map_err(vm_fault)?;
+                return Ok(false);
+            }
+            Opcode::MemberGet | Opcode::MemberSet => {
+                let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
+                let key = self
+                    .value(
+                        self.constants,
+                        self.program.package().constants.len() as u32 + c,
+                    )
+                    .map_err(vm_fault)?;
+                let action = if op == Opcode::MemberGet {
+                    TableAction::Get(r(a))
+                } else {
+                    TableAction::Set(r(b))
+                };
+                self.start_table(s, object, key, action)?;
+                return Ok(false);
+            }
+            Opcode::IndexGet => {
+                let object = self.read(*s, r(b))?;
+                let index = self.read(*s, r(c))?;
+                if self.is_text(object, ObjectKind::Table) {
+                    self.start_table(s, object, index, TableAction::Get(r(a)))?;
+                    return Ok(false);
+                }
+                let value = self.sequence_get(object, index)?;
+                self.write(*s, r(a), value)?;
+            }
+            Opcode::IndexSet => {
+                let object = self.read(*s, r(a))?;
+                let index = self.read(*s, r(b))?;
+                if self.is_text(object, ObjectKind::Table) {
+                    self.start_table(s, object, index, TableAction::Set(r(c)))?;
+                    return Ok(false);
+                }
+                let value = self.read(*s, r(c))?;
+                self.sequence_set(object, index, value)?;
             }
             Opcode::LoadConst => {
                 let v = self.slots.read(at(self.constants, b)).map_err(heap_fault)?;
@@ -2557,30 +2738,46 @@ impl Vm {
             Opcode::ArgsPush | Opcode::ArgsNamed => {
                 let packed = self.read(*s, r(a))?;
                 let v = self.read(*s, r(b))?;
-                // Preflight two edges before the first append to keep pair publication atomic.
-                let len = self.heap.info(packed).map_err(heap_fault)?.len;
+                let len = self.heap.packed_array_len(packed).map_err(heap_fault)?;
                 if len / 2 >= self.limits.max_arguments {
                     return Err(FaultKind::Resource);
                 }
                 self.heap
-                    .budget_usage()
-                    .ensure(if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-                        VALUE_CHUNK_BYTES
-                    } else {
-                        0
-                    })
-                    .map_err(heap_fault)?;
-                self.heap
-                    .array_push(
+                    .packed_pair_push(
                         packed,
                         Value::int(if op == Opcode::ArgsNamed {
                             c as i64
                         } else {
                             -1
                         }),
+                        v,
                     )
                     .map_err(heap_fault)?;
-                self.heap.array_push(packed, v).map_err(heap_fault)?;
+            }
+            Opcode::ArgsSpread => {
+                let packed = self.read(*s, r(a))?;
+                let source = self.read(*s, r(b))?;
+                if !self.is_text(source, ObjectKind::Array)
+                    && !self.is_text(source, ObjectKind::Tuple)
+                {
+                    return Err(FaultKind::Type);
+                }
+                let info = self.heap.info(source).map_err(heap_fault)?;
+                let count = self.heap.packed_array_len(packed).map_err(heap_fault)? / 2;
+                let destination_version =
+                    self.heap.info(packed).map_err(heap_fault)?.content_version;
+                if info.len > self.limits.max_arguments.saturating_sub(count) {
+                    return Err(FaultKind::Resource);
+                }
+                self.put(s.env, 1, packed).map_err(vm_fault)?;
+                self.put(s.env, 2, source).map_err(vm_fault)?;
+                s.phase = ScriptPhase::Spread {
+                    index: 0,
+                    len: info.len,
+                    version: info.content_version,
+                    destination_version,
+                };
+                return Ok(false);
             }
             Opcode::Call => {
                 let Descriptor::Call(desc) = &f.descriptors[b as usize] else {
@@ -2591,11 +2788,7 @@ impl Vm {
                     Arguments::Window(w) => w.len,
                     Arguments::Packed(r) => {
                         let v = self.read(*s, r)?;
-                        let info = self.heap.info(v).map_err(heap_fault)?;
-                        if info.kind != ObjectKind::Array || info.len % 2 != 0 {
-                            return Err(FaultKind::Type);
-                        }
-                        info.len / 2
+                        self.heap.packed_array_len(v).map_err(heap_fault)? / 2
                     }
                 };
                 let source = ArgSource::Caller {
@@ -2816,6 +3009,14 @@ impl Vm {
         dest: Reg,
         negated: bool,
     ) -> Result<(), VmError> {
+        if self.table_changed(*s)? {
+            s.phase = ScriptPhase::EqualityCleanup {
+                dest,
+                negated,
+                result: Err(FaultKind::ConcurrentModification),
+            };
+            return Ok(());
+        }
         let depth = self.active.equality_cursors.data.len() as u32 - 1;
         let offset = self.active.equality_cursors.data[depth as usize];
         let left = self.value(self.active.equality_roots.unwrap(), depth * 2)?;

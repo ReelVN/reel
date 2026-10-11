@@ -369,7 +369,7 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 
 宿主协调完整 owner 撤销。先将 owner 标为 Revoked，禁止新增任务、根、等待注册和过期完成交付；Vm::cancel(owner) 只取消匹配任务并使硬取消票据失效，后续按预算清理任务。Idle 仅表示没有匹配 Task，不能解释为宿主根或适配器已释放。宿主生命周期记录在 owner 创建时预留有界退休容量，撤销时保存 cursor=0 与 end=heap.root_slots()，每个主线程预算 turn 推进 release_owner_step，传入 slots=min(剩余 work, end-cursor)，该 API 不直接接收 end，以 cursor>=end 判定扫描完成；按游标实际增量计费，空洞同样消耗工作。没有 Task 也必须推进根扫描。该扫描仅释放单根，宿主持有的非任务 RootRange 需独立有界释放游标，不能遗漏。任务清理、根扫描和外部资源释放全部完成才进入 Retired，随后对象由预算 GC 回收；宿主根记录同步失效，避免重复释放或继续使用旧 FaultRoot。
 
-PR #49 是执行器源码整合与原生/32 位编译检查，不构成独立执行验收。当前执行器缺少集合/索引/成员 handlers、script rest/property-bag、完整模块/类和快照；编译器支持不等于运行器支持。会话宿主与真实 UI 可先验证其 Rust 模型和事件接线，不能把这些结果冒充 Aside 剧情、跨等待 GC 或恢复验收。正式运行验收继续单列。
+PR #49 是执行器源码整合与原生/32 位编译检查，不构成独立执行验收。独立草稿 PR #54 增加集合/索引/成员、调用展开与 script rest 的执行源码；property-bag、delegate/hooks、完整模块/类和快照仍未接通。当前证据仅为源码检查与原生/32 位编译，编译器支持和执行源码存在都不等于已通过运行验收。会话宿主与真实 UI 可先验证其 Rust 模型和事件接线，不能把这些结果冒充 Aside 剧情、跨等待 GC 或恢复验收。正式运行验收继续单列。
 
 ## S01 Rust 会话宿主实现状态
 
@@ -379,6 +379,7 @@ owner 退休记录在创建时预留，单根游标、任务和外部资源分�
 
 本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。
 
+PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找复杂度和同步常量加载限制见 VM README；owner/RootRange/外部资源的有界退休责任不变。
 
 ## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
 

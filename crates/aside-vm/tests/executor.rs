@@ -685,17 +685,12 @@ fn native_rest_collects_only_tail_positional_arguments_with_defaults_skipped() {
 #[test]
 fn load_rejects_unconnected_handlers_even_if_unreachable() {
     let mut p = fixtures::exception_regions();
-    let descriptor = p.functions[0].descriptors.len() as u32;
+    // MakeArray is now connected. Keep the unreachable-opcode rejection
+    // regression against named spread, which remains outside this milestone.
     p.functions[0].code.extend([
-        Instruction::new(Opcode::MakeArray, 0, descriptor, 0),
+        Instruction::new(Opcode::ArgsNamedSpread, 0, 0, 0),
         Instruction::new(Opcode::Return, 0, 0, 0),
     ]);
-    p.functions[0]
-        .descriptors
-        .push(Descriptor::Sequence(RegWindow {
-            start: Reg(0),
-            len: 0,
-        }));
     let program = verify(p, Limits::default()).unwrap();
     let err = Vm::load(
         program,

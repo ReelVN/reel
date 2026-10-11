@@ -64,6 +64,9 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 
 [调用展开与 rest（#47）](https://github.com/jhq223/reel/pull/47) 增加源码顺序参数 builder、Packed 调用及 rest 参数身份；集合展开仍待独立设计。静态编译不等于 V03 支持或剧情会话已接通，真实浅捕获、并发修改、缺省执行及 GC/恢复尚未验收。
 
+[执行器源码整合（#49）](https://github.com/jhq223/reel/pull/49) 基于含 L09 的 main，保留原 B01 与编译器成果；当前只有原生/i686 cargo check 证据，仍为独立执行待验的集成工作。集合/索引/成员及脚本 rest 的后续源码位于 [草稿 #54](https://github.com/jhq223/reel/pull/54)，仍只有编译与源码审查证据；property-bag、完整模块/类和快照等尚未接通，不代表完整剧情可运行。取消任务和宿主根退休的责任已明确分离。[VM 状态与生命周期](../crates/aside-vm/README.md#v03-source-integration-and-host-lifecycle)。
+
+[集合执行增量（#54）](https://github.com/jhq223/reel/pull/54) 基于 #49 提供分片集合构造、索引/成员、tuple 常量及调用 spread/rest 的执行源码，并公开有界宿主集合读取接口。原生/i686 all-targets 编译通过；异常路径与 packed 计费缺陷已修，并通过独立源码复审。测试仅编译未执行，实际语义、GC/取消和性能仍未验收。线性 table 查找与同步 tuple 常量单项额度明确保留。[状态和接口](../crates/aside-vm/README.md#collection-host-access-and-execution-source-boundaries-pr-54)。
 
 [执行器源码整合（#49）](https://github.com/jhq223/reel/pull/49) 基于含 L09 的 main，保留原 B01 与编译器成果；当前只有原生/i686 cargo check 证据，仍为独立执行待验的集成工作。缺少集合/索引/成员 handlers、脚本 rest/property-bag 与快照等，不代表完整剧情可运行。取消任务和宿主根退休的责任已明确分离。[VM 状态与生命周期](../crates/aside-vm/README.md#v03-source-integration-and-host-lifecycle)。
 

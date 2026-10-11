@@ -1,3 +1,4 @@
+mod table;
 use crate::HeapBudgetUsage;
 use crate::gc::Collector;
 use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, VALUE_CHUNK_BYTES, Values};
@@ -8,6 +9,7 @@ use slotmap::Key;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::rc::Rc;
+pub use table::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectKind {
@@ -131,6 +133,7 @@ pub enum HeapError {
     IdentityExhausted,
     CycleExhausted,
     CollectionInProgress,
+    ConcurrentModification,
     WrongHeap,
     WrongEpoch,
     InvalidHandle,
@@ -459,7 +462,9 @@ impl Heap {
     ) -> Value {
         // All capacity/budget/type validation and initial-edge barriers preceded this.
         let chunks = match &payload {
-            Payload::Values(v) => (v.len as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64),
+            Payload::Values(v) | Payload::Table(v) => {
+                (v.len as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64)
+            }
             Payload::Bytes(b) => (b.len as u64).div_ceil(crate::BYTE_CHUNK_LEN as u64),
             _ => 0,
         };
@@ -523,6 +528,15 @@ impl Heap {
     pub fn alloc_array(&mut self, values: &[Value]) -> Result<Value, HeapError> {
         self.allocate_values(ObjectKind::Array, values)
     }
+    // The executor alone owns the unpublished builder. No public tuple mutation.
+    pub(crate) fn seal_tuple(&mut self, builder: Value) -> Result<(), HeapError> {
+        let key = self.key(builder)?;
+        if self.object(key)?.kind != ObjectKind::Array {
+            return Err(HeapError::WrongKind);
+        }
+        self.objects.get_mut(key).unwrap().kind = ObjectKind::Tuple;
+        Ok(())
+    }
     pub fn alloc_tuple(&mut self, values: &[Value]) -> Result<Value, HeapError> {
         self.allocate_values(ObjectKind::Tuple, values)
     }
@@ -560,14 +574,17 @@ impl Heap {
         let obj = self.object(self.key(value)?)?;
         Ok(ObjectInfo {
             kind: obj.kind,
-            len: obj.payload.len(),
+            len: match &obj.payload {
+                Payload::Table(values) => values.len / 2,
+                _ => obj.payload.len(),
+            },
             content_version: obj.content_version,
             structure_version: obj.structure_version,
         })
     }
     pub fn get_field(&self, value: Value, position: u32) -> Result<Value, HeapError> {
         let obj = self.object(self.key(value)?)?;
-        if !obj.kind.values() {
+        if !obj.kind.values() || matches!(obj.payload, Payload::Table(_)) {
             return Err(HeapError::WrongKind);
         }
         if let Payload::Cell(cell) = &obj.payload {
@@ -580,7 +597,10 @@ impl Heap {
     }
     fn editable_values(&self, key: HeapKey) -> Result<&Object, HeapError> {
         let obj = self.object(key)?;
-        if !obj.kind.values() || matches!(obj.kind, ObjectKind::Tuple | ObjectKind::Closure) {
+        if !obj.kind.values()
+            || matches!(obj.payload, Payload::Table(_))
+            || matches!(obj.kind, ObjectKind::Tuple | ObjectKind::Closure)
+        {
             return Err(HeapError::WrongKind);
         }
         Ok(obj)
@@ -635,6 +655,52 @@ impl Heap {
         if let Payload::Values(values) = &mut obj.payload {
             values.push(value);
         }
+        obj.charged += extra;
+        obj.content_version = obj.content_version.wrapping_add(1);
+        obj.structure_version = obj.structure_version.wrapping_add(1);
+        Ok(())
+    }
+    /// Packed arguments use alternating name/value entries. Validate shape at
+    /// every use: bytecode verification does not prove a private ArgsNew origin.
+    pub(crate) fn packed_array_len(&self, target: Value) -> Result<u32, HeapError> {
+        let obj = self.object(self.key(target)?)?;
+        if obj.kind != ObjectKind::Array {
+            return Err(HeapError::WrongKind);
+        }
+        let len = obj.payload.len();
+        if len % 2 != 0 {
+            return Err(HeapError::TypeMismatch);
+        }
+        Ok(len)
+    }
+    /// Publish a complete pair or leave the array untouched. Shape, arithmetic,
+    /// allocation and both values are checked before any payload mutation.
+    pub(crate) fn packed_pair_push(
+        &mut self,
+        target: Value,
+        name: Value,
+        value: Value,
+    ) -> Result<(), HeapError> {
+        let len = self.packed_array_len(target)?;
+        len.checked_add(2).ok_or(HeapError::OutOfBounds)?;
+        let extra = if (len as usize).is_multiple_of(crate::VALUE_CHUNK_LEN) {
+            VALUE_CHUNK_BYTES
+        } else {
+            0
+        };
+        self.ensure_bytes(extra)?;
+        self.validate_value(name)?;
+        self.validate_value(value)?;
+        let key = self.key(target)?;
+        self.shade(name);
+        self.shade(value);
+        self.charge(extra, u64::from(extra != 0));
+        let obj = self.objects.get_mut(key).unwrap();
+        let Payload::Values(values) = &mut obj.payload else {
+            unreachable!()
+        };
+        values.push(name);
+        values.push(value);
         obj.charged += extra;
         obj.content_version = obj.content_version.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);

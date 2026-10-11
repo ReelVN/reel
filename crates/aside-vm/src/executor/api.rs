@@ -193,6 +193,10 @@ pub enum FaultKind {
     Resource = 11,
     InvalidState = 12,
     Cancelled = 13,
+    OutOfBounds = 14,
+    MissingKey = 15,
+    UnhashableKey = 16,
+    ConcurrentModification = 17,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -313,10 +317,17 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::BranchNull,
     Opcode::MakeClosure,
     Opcode::MakeTuple,
+    Opcode::MakeArray,
+    Opcode::MakeTable,
+    Opcode::MemberGet,
+    Opcode::MemberSet,
+    Opcode::IndexGet,
+    Opcode::IndexSet,
     Opcode::Call,
     Opcode::Return,
     Opcode::ArgsNew,
     Opcode::ArgsPush,
+    Opcode::ArgsSpread,
     Opcode::ArgsNamed,
     Opcode::Throw,
     Opcode::Rethrow,
@@ -341,6 +352,10 @@ impl FaultKind {
             Self::Resource => "resource capacity",
             Self::InvalidState => "invalid execution state",
             Self::Cancelled => "cooperative cancellation",
+            Self::OutOfBounds => "index out of bounds",
+            Self::MissingKey => "missing table key",
+            Self::UnhashableKey => "unhashable table key",
+            Self::ConcurrentModification => "collection modified during operation",
         }
     }
 }

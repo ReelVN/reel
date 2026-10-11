@@ -152,6 +152,7 @@ impl Vm {
                 let preparing = matches!(
                     s.phase,
                     ScriptPhase::Copy { .. }
+                        | ScriptPhase::Rest
                         | ScriptPhase::Bind { .. }
                         | ScriptPhase::Defaults { .. }
                         | ScriptPhase::DefaultCall { .. }
@@ -160,7 +161,10 @@ impl Vm {
                 );
                 self.active.abort_equality |= matches!(
                     s.phase,
-                    ScriptPhase::Equality { .. } | ScriptPhase::EqualityCleanup { .. }
+                    ScriptPhase::Equality { .. }
+                        | ScriptPhase::EqualityCleanup { .. }
+                        | ScriptPhase::TableValidate
+                        | ScriptPhase::KeyPath { .. }
                 );
                 let explicit = match s.phase {
                     ScriptPhase::Exit {
@@ -176,6 +180,7 @@ impl Vm {
                     } => seed.fault,
                     _ => None,
                 };
+                s.table_work = None;
                 self.put(s.env, 1, Value::NULL)?;
                 if let Some(id) = explicit {
                     self.put(s.env, 2, id.as_value())?;
@@ -379,10 +384,15 @@ impl Vm {
             BuildPhase::ErrorValue => {
                 if !build.seed.author_value && build.seed.kind != FaultKind::Thrown {
                     let code = FaultCode::core(build.seed.kind);
+                    let details = if build.seed.kind == FaultKind::UnhashableKey {
+                        self.value(roots, value_slot)?
+                    } else {
+                        Value::NULL
+                    };
                     match self.heap.alloc_fault_node(
                         ObjectKind::CoreError,
                         FaultData::Error(code),
-                        [Value::NULL; 3],
+                        [details, Value::NULL, Value::NULL],
                         self.program.clone(),
                     ) {
                         Ok(value) => self.put(roots, value_slot, value)?,
