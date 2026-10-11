@@ -1,5 +1,5 @@
-//! Actual compiler/VM-to-SessionUi assembly. Runtime acceptance is pending;
-//! this source is not executed by the existing Rust diagnostic window.
+//! Actual compiler/VM-to-SessionUi assembly. The existing Rust diagnostic window
+//! remains a separate host entry; library contracts execute in the tests.
 use crate::session::{ProjectionStamp, SessionUi, SessionWidget};
 use reel_engine::aside::{
     DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionVm,

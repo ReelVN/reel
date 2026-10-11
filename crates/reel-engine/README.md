@@ -46,10 +46,9 @@ obligations. Retirement requires every recorded obligation to finish.
 Rust tests cover identity, atomic admission, input filtering, history/completion,
 retirement and allocation-free accepted hot paths. See PR #50 for actual counts
 and independent acceptance. PR #55 connects VM waits, deliveries and native registration in source, preserving
-BudgetYield/ResourceBlocked. Runtime acceptance and restore remain outstanding.
+BudgetYield/ResourceBlocked. Native Windows execution checks cover this adapter; restore remains outstanding.
 The S01 Rust-model tests do not execute or simulate Aside bytecode.
-PR #55 adds real compiler/VM regression test sources; these have only been
-compiled, not executed.
+PR #55 compiler/VM regressions execute real bytecode and host transitions.
 
 Local input dispatch uses Session::handle_local_input(owner, action), which
 allocates the next sequence from the Session's current high-water mark at dispatch
@@ -94,20 +93,21 @@ resource gate. GC uses the VM provider, not a heap-only substitute. Result deliv
 transfers its root before retirement; the retained result slot is reused by a
 later result, so an earlier bare Value is not a permanent host root.
 
-Native/i686 all-targets compile checks passed at 6fd0708. Independent source
-reviews at 1bfdcd8 found no definite new defect; the later exact-symbol entry
-change at 6fd0708 also passed source-only review. Regression sources have not been executed. Character
-objects, multiline say, UI callback tasks, observable script UI, media waits and
-save/restore are not implemented by this adapter.
+Native Windows checks execute compiler/VM, wait/root, rejection, GC, cancellation
+and player terminal contracts. Character objects, multiline say, UI callback
+tasks, observable script UI, media waits and save/restore remain outside this adapter.
 
-### Known compiler-linkage integration defect
+### Source linkage and runnable contract
 
-A subsequent pure-static build of a story using imported choose/narrator exposed
-`LinkContract: ambiguous native binding` in this PR's source linkage. The analyzer
-records both the imported symbol and its name-use node; the current adapter emits
-both links, while lowering rejects multiple matches for one call. A narrowly
-scoped same-symbol/same-native deduplication is implemented and statically reviewed
-in the unpublished ASB integration workspace, but is not part of this branch.
-Its integration/publication is pending. Native Rust compilation and the earlier
-source reviews did not detect this defect; they do not establish that the
-story examples compile or run. No VM execution was used to identify it.
+The host seed carries the requested content_version; native ABI remains v1.
+Lowering coalesces symbol/node matches only when their independently checked
+registrations identify the same NativeId. Conflicting IDs still reject.
+
+```sh
+cargo test --locked -p aside-vm -p aside-compiler -p reel-engine -p reel-player
+cargo run --locked -p reel-engine --example story_contract
+```
+
+The [story](examples/story_contract.aside) and [headless host](examples/story_contract.rs)
+compile and execute narrator/choose, advance real waits and retire their owner.
+These are CPU/library checks, not a new window/ASB loader or hardware claim.

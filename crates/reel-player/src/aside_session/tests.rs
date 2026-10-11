@@ -1,5 +1,4 @@
-//! Unexecuted regression sources: VM/Aside execution is prohibited in this
-//! integration. cargo check --all-targets only checks these Rust types.
+//! Runtime regressions for compiled stories and stable terminal ownership.
 use super::*;
 use reel_engine::{Epoch, SessionId, SessionLimits};
 
@@ -156,16 +155,20 @@ fn entry_window_capacity_failure_is_a_stable_host_failure() {
     assert!(entry_window > 1024);
     assert!(init_window < entry_window / 2);
     let entry = story.entry;
-    let mut limits = VmLimits::default();
-    limits.max_tasks = 1;
-    limits.max_unwinds = 1;
-    limits.max_arguments = 2;
-    limits.max_continuation_values = 1;
-    // Each individual window is admissible at load. Permanent VM windows mean
-    // total free capacity cannot accommodate the entry's whole legal window.
-    limits.slots.initial_capacity = entry_window;
-    limits.slots.max_capacity = entry_window;
-    limits.slots.max_window_len = entry_window;
+    let mut limits = VmLimits {
+        max_tasks: 1,
+        max_unwinds: 1,
+        max_arguments: 2,
+        max_continuation_values: 1,
+        ..Default::default()
+    };
+    // Admit the actual constants/symbol window and the small initializer, but
+    // leave less than one entry window free after permanent roots are installed.
+    let module_window = (p.constants.len() + p.symbols.len()) as u32;
+    let capacity = module_window + entry_window / 2;
+    limits.slots.initial_capacity = capacity;
+    limits.slots.max_capacity = capacity;
+    limits.slots.max_window_len = module_window.max(entry_window);
     let mut d = AsideSessionUi::from_compiled(session(), story, "en", limits).unwrap();
     terminal(&mut d);
     assert_eq!(

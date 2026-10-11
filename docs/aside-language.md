@@ -260,6 +260,8 @@ invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最
 
 native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。
 
+可信链接包使用本次编译请求的 content_version；宿主 ABI 版本独立保持注册版本。一个调用同时匹配导入符号和名称使用节点时，各链接仍分别核对分析身份与签名；全部指向同一 NativeId 才视为同一注册，指向不同 NativeId 时给出 LinkContract，不能按匹配顺序选择。
+
 签名可显式声明 PropertyBagTail：先绑定普通已声明参数，再将余下具名参数按指定目标参数的实际 PropertySchema 验证。描述包含目标参数、允许属性集合/能力、值类型、读写与可动画要求；未知名、只读属性、类型错误和与保留参数冲突均报错。tween(target, x: 80, duration: 0.5) 中 duration 是普通参数，x 按 target 的可动画属性 schema 检查；s.override(node, visible: false) 按 node 的可覆盖属性 schema 检查。普通无此元数据的函数仍拒绝未知名。call(fn,positional:,named:) 使用同一绑定器，脚本包装器通过显式 properties/named 表接收再转发动态属性；普通 fn 只接收自己声明的参数，不会自动捕获任意未知具名项。全程使用同一绑定器。工具能从签名和目标类型生成属性补全。宿主类型声明身份/值语义、字段读写/版本、结构模式可见字段、可观察属性、克隆与迭代行为。脚本与 native 使用同一参数错误和类型诊断，不允许只有内建函数支持命名参数。
 
 借用 Value/字节视图只能在当前 native 调用中使用；保留对象须申请代际 root handle，跨线程只传拥有数据、ID 或真正不可变缓冲。Rust panic 不跨 FFI；native 非法实现视为扩展故障，不声称能恢复任意内存错误。能力检查在操作前完成，InitSafe/DerivedSafe 限制传递到 callback，注册标签不豁免效果检查。
@@ -449,15 +451,15 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 ## 参考来源
 - Value 实验：https://github.com/jhq223/reel/pull/2
-- 实验说明：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/TRACE.md
-- 实验结果：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/REPORT.md
+- 实验说明：https://github.com/jhq223/reel/blob/147c4cf788078c72b4ca5206270fce9dc29e12df/tools/value-layout-bench/TRACE.md
+- 实验结果：https://github.com/jhq223/reel/blob/147c4cf788078c72b4ca5206270fce9dc29e12df/tools/value-layout-bench/REPORT.md
 - slotmap 键契约：https://docs.rs/slotmap/1.1.1/slotmap/struct.KeyData.html
 - slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
-执行器整合状态（PR #49）：当前分支已接入 PR #23 的 V03 源码并通过原生与 32 位非执行编译检查；未运行独立 V03、Aside 或模拟器验收。独立草稿 PR #54 已补充 array/table、Index/Member、tuple 常量、调用展开和脚本 rest 的执行源码，并完成原生/32 位编译检查；未执行其运行测试。未支持的 delegate/hooks、结构 tuple 类型、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、结构 tuple 类型、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
 
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
 
-集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。此段描述源码实现及合同，仍未完成运行/GC/异常/取消验收。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
+集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。运行、GC、异常和取消合同已通过 Windows 原生 debug/release 验证。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。

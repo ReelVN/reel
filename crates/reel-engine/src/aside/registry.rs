@@ -55,7 +55,7 @@ pub(super) fn runtime_support(
             package
                 .types
                 .iter()
-                .position(|t| t == &TypeDef::Builtin(builtin.clone()))
+                .position(|t| t == &TypeDef::Builtin(*builtin))
                 .map(|i| TypeId(i as u32))
                 .ok_or(AdapterError::Input("native builtin type missing"))
         };

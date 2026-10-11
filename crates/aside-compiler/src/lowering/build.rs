@@ -846,7 +846,7 @@ impl Lowerer<'_> {
             if link.target == ExternalTarget::Node(node)
                 || symbol.is_some_and(|s| link.target == ExternalTarget::Symbol(s))
             {
-                if result.is_some() {
+                if result.is_some_and(|native| native != link.native) {
                     return Err(self
                         .b
                         .error(ErrorKind::LinkContract, "ambiguous native binding"));

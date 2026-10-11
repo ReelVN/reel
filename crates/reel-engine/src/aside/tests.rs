@@ -1,5 +1,4 @@
-//! Regression sources only. Not executed during this integration: VM/Aside
-//! execution remains prohibited. `cargo check --all-targets` only typechecks.
+//! Runtime regressions for real source compilation, waits, GC and cancellation.
 use super::*;
 use crate::{Epoch, InputAction, OwnerLifecycle, SessionId, SessionLimits};
 use aside_vm::bytecode as bc;
@@ -360,8 +359,10 @@ fn cancellation_cleans_host_roots_with_no_task_and_counts_holes() {
 
 #[test]
 fn text_read_chunks_can_split_utf8_and_accept_64k_without_a_large_heap_read() {
-    let mut limits = aside_vm::HeapLimits::default();
-    limits.max_mutation_bytes = 65536;
+    let limits = aside_vm::HeapLimits {
+        max_mutation_bytes: 65536,
+        ..Default::default()
+    };
     let mut heap = aside_vm::Heap::new(SessionEpoch(1), limits).unwrap();
     let text = format!("{}é{}", "a".repeat(4095), "b".repeat(65536 - 4097));
     let value = heap.alloc_string(&text).unwrap();

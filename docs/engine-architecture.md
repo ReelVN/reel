@@ -354,7 +354,7 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 
 宿主协调完整 owner 撤销。先将 owner 标为 Revoked，禁止新增任务、根、等待注册和过期完成交付；Vm::cancel(owner) 只取消匹配任务并使硬取消票据失效，后续按预算清理任务。Idle 仅表示没有匹配 Task，不能解释为宿主根或适配器已释放。宿主生命周期记录在 owner 创建时预留有界退休容量，撤销时保存 cursor=0 与 end=heap.root_slots()，每个主线程预算 turn 推进 release_owner_step，传入 slots=min(剩余 work, end-cursor)，该 API 不直接接收 end，以 cursor>=end 判定扫描完成；按游标实际增量计费，空洞同样消耗工作。没有 Task 也必须推进根扫描。该扫描仅释放单根，宿主持有的非任务 RootRange 需独立有界释放游标，不能遗漏。任务清理、根扫描和外部资源释放全部完成才进入 Retired，随后对象由预算 GC 回收；宿主根记录同步失效，避免重复释放或继续使用旧 FaultRoot。
 
-PR #49 是执行器源码整合与原生/32 位编译检查，不构成独立执行验收。独立草稿 PR #54 增加集合/索引/成员、调用展开与 script rest 的执行源码；property-bag、delegate/hooks、完整模块/类和快照仍未接通。当前证据仅为源码检查与原生/32 位编译，编译器支持和执行源码存在都不等于已通过运行验收。会话宿主与真实 UI 可先验证其 Rust 模型和事件接线，不能把这些结果冒充 Aside 剧情、跨等待 GC 或恢复验收。正式运行验收继续单列。
+PR #49/#54 的执行器与集合增量已通过 Windows 原生执行检查；源码贯通测试实际执行普通调用/缺省/闭包、异常/finally、索引/成员、可选链和 spread/rest，覆盖微小预算与交错 GC。PR #55 接通 narrator/choose 的真实等待、原 key 根交付、取消及播放器终态。property-bag、delegate/hooks、完整模块/类和快照保持未实现边界；平台设备和性能不由 CPU 契约检查推导。
 
 ## S01 Rust 会话宿主实现状态
 
@@ -374,4 +374,4 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 
 host_work 仅计选择查找工作，文本复制及发布同步但有独立字节上限。默认 64 KiB 是含 locale/内容身份的累计交互额度，默认 VM 字符串常量准入仍为 4096 字节。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
-当前是编译与源码审查阶段，真实执行、取消/GC/终态及性能仍未验收；已有 Rust 窗口不自动变为可运行 Aside 播放器。脚本可组合 UI、角色、媒体等待、完整包消费与快照等最终目标仍须沿同一宿主/呈现边界继续接通。
+Windows 原生 debug/release 已验证真实执行、取消、GC 与终态；性能与设备仍需各自验收。可运行入口为 cargo run --locked -p reel-engine --example story_contract，已有 Rust 窗口仍是独立诊断入口。脚本可组合 UI、角色、媒体等待、完整包消费与快照等最终目标仍须沿同一宿主/呈现边界继续接通。

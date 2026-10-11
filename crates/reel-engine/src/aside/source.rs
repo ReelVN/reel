@@ -75,8 +75,11 @@ fn reference(contract: &registry::NativeContract) -> SymbolReference {
     }
 }
 
-fn seed() -> Result<bc::VerifiedProgram, bc::Error> {
-    let mut package = bc::BytecodePackage::default();
+fn seed(content_version: u64) -> Result<bc::VerifiedProgram, bc::Error> {
+    let mut package = bc::BytecodePackage {
+        content_version,
+        ..Default::default()
+    };
     fn symbol(p: &mut bc::BytecodePackage, name: &str) -> bc::SymbolId {
         let index = p.symbols.iter().position(|s| s == name).unwrap_or_else(|| {
             p.symbols.push(name.into());
@@ -85,7 +88,7 @@ fn seed() -> Result<bc::VerifiedProgram, bc::Error> {
         bc::SymbolId(index as u32)
     }
     fn ty(p: &mut bc::BytecodePackage, builtin: &bc::BuiltinType) -> bc::TypeId {
-        let ty = bc::TypeDef::Builtin(builtin.clone());
+        let ty = bc::TypeDef::Builtin(*builtin);
         let index = p.types.iter().position(|t| t == &ty).unwrap_or_else(|| {
             p.types.push(ty);
             p.types.len() - 1
@@ -191,7 +194,7 @@ pub fn compile_story(
         .map_err(SourceError::Source)?
         .into_module()
         .map_err(SourceError::Analysis)?;
-    let seed = seed().map_err(SourceError::Format)?;
+    let seed = seed(content_version).map_err(SourceError::Format)?;
     let mut links = Vec::new();
     for binding in module.external_bindings() {
         let Some(reference) = binding.descriptor.reference.as_deref() else {

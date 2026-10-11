@@ -389,19 +389,16 @@ When an interface, behavior, default, or cancellation rule changes, the same PR 
 The repository commit containing this guide is its version reference. Feature status is marked by section; interface changes update the Chinese edition, English edition, and shared examples together.
 The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.
 
+## Verified Source Execution Scope
 
-V03 integration status (PR #49): executor sources have been combined with the current compiler in a separate integration branch and passed native/32-bit compile checks, not independent execution acceptance. The subsequent draft PR #54 adds collection/index/member and script-rest execution source, but actual behavior, GC, exceptions and cancellation remain unaccepted. Host-wait and delivery-root adapter source is in PR #55; full restoration remains unconnected. This does not establish runnable source scenarios from this guide.
+The V03 executor, L06–L09 collections/index/member and call spread/rest, and the narrator/choose session adapter pass native Windows execution checks. Coverage includes ordinary/default calls, shared closure Cells, exceptions/finally, tiny-budget progress, GC across waits, delivery of the original choice key, cancellation and stable terminal states. Tables use budgeted linear lookup; large tuple constants still have a per-constant admission limit.
 
-S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adapter source is in PR #55; execution acceptance, media and save/restore remain outstanding. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).
+Run the [minimal Aside story](../../crates/reel-engine/examples/story_contract.aside) with its [headless host](../../crates/reel-engine/examples/story_contract.rs):
 
-Collection execution progress (PR #54, source/compile stage): tuple/array/table construction, index/member access, call spread and a fresh rest array per call now have executor source. Evaluation order, missing/null distinctions, invalid keys and cancellation still require runtime acceptance. Tables currently use budgeted linear search, and large tuple constants retain a per-constant loading limit. This does not make the guide's stories verified runnable examples. Delegates/hooks, property-bag tails, complete modules/classes and save/restore remain unconnected.
+```sh
+cargo run --locked -p reel-engine --example story_contract
+```
 
-Aside integration progress (PR #55): real compiler/host adapter source supports
-prelude narrator(text) and choose(options), running the module initializer before
-the selected ordinary function with no required arguments. Private module-level
-entries are supported; captured entry environments are not. The compact view's
-two-row/two-choice limit is not the final author-composable UI capability.
-64 KiB bounds cumulative interaction text and metadata, not narrator payload
-alone; default VM constants have a separate 4096-byte admission limit. Story
-execution has not been verified and no new source/ASB window launch command is
-available. The full DSL examples remain the target specification.
+The host advances dialogue and selects the first option through actual compilation, module initialization, VM waiting/resumption and owner retirement. Symbol and name-use links to the same native coalesce; conflicting registrations still reject. The host linkage package uses the requested content version independently of native ABI v1.
+
+Entries must be ordinary module-level functions without required parameters or captured environments; private functions are supported. The compact view supports at most two rows or choices. The 64 KiB interaction budget includes text and metadata; default VM string constants have a separate 4096-byte limit. Existing window commands still use Rust requests; there is no source/.asb window launch command. This example does not provide characters, script-composed UI, media waits, full modules/classes, delegates/hooks, property-bag tails or save/restore. Those full DSL sections remain design targets. Physical devices and performance guarantees require separate measurements.

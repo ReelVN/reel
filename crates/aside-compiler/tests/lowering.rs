@@ -797,6 +797,56 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         &module.external_bindings()[0].descriptor,
         &result.metadata.external_bindings[0].descriptor
     ));
+    // A host's complete registration list can name both the imported/host
+    // symbol and each resolved use. They must agree, not become ambiguous just
+    // because the same NativeId is encountered more than once.
+    let mut aliases = Vec::new();
+    for external in module.external_bindings() {
+        for target in external
+            .symbol
+            .map(lowering::ExternalTarget::Symbol)
+            .into_iter()
+            .chain(external.node.map(lowering::ExternalTarget::Node))
+        {
+            aliases.push(lowering::NativeLink {
+                target,
+                ..native_links[0]
+            });
+        }
+    }
+    assert!(
+        aliases
+            .iter()
+            .any(|l| matches!(l.target, lowering::ExternalTarget::Node(_)))
+    );
+    let aliased = lowering::compile(
+        &module,
+        &Linkage {
+            package: Some(&seed),
+            natives: &aliases,
+        },
+        Options::default(),
+    )
+    .unwrap();
+    assert_eq!(aliased.program.package(), p);
+    let mut conflicting = seed.package().clone();
+    let mut other = conflicting.natives[0].clone();
+    other.symbol = bc::SymbolId(conflicting.symbols.len() as u32);
+    conflicting.symbols.push("different::native".into());
+    conflicting.natives.push(other);
+    let conflicting = bc::verify(conflicting, bc::Limits::default()).unwrap();
+    aliases.last_mut().unwrap().native = bc::NativeId(1);
+    let conflict = lowering::compile(
+        &module,
+        &Linkage {
+            package: Some(&conflicting),
+            natives: &aliases,
+        },
+        Options::default(),
+    )
+    .unwrap_err();
+    assert_eq!(conflict.kind, lowering::ErrorKind::LinkContract);
+    assert!(conflict.detail.contains("ambiguous native binding"));
     let no_link = lowering::compile(&module, &Linkage::default(), Options::default()).unwrap_err();
     assert_eq!(no_link.kind, lowering::ErrorKind::MissingLink);
     assert_eq!(&source[aside_compiler::byte_range(no_link.span)], "host");

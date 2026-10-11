@@ -1,4 +1,4 @@
-//! Session/VM coordination. Source integration only; runtime acceptance pending.
+//! Bounded session/VM coordination with trusted native admission.
 //!
 //! A player drives one bounded slice per turn and dispatches the returned native
 //! ticket through its trusted registry. The adapter owns the main TaskId, each

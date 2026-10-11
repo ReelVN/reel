@@ -69,8 +69,7 @@ view can display them. Input in this version is mouse-only.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
-adaptation now exists in PR #55 source; actual source execution remains separate
-acceptance work.
+adaptation and native Windows source execution are covered by PR #55 library tests.
 
 SessionUi dispatches through Session::handle_local_input rather than resetting
 a private input counter. Existing-session handoff and subsequent session_mut
@@ -113,6 +112,8 @@ finished: continue cleanup_step while cleanup_pending reports work.
 The compiled-program constructor is available; decoding/loading an ASB file is
 still a separate integration increment.
 
-Native/i686 compile checks and independent source inspection are the available
-evidence. VM/Aside execution, player terminal-flow regression execution,
-performance, hardware and full story acceptance remain unverified.
+Native Windows execution checks cover compiled input, initializer/entry ordering,
+fault retention across GC, cancellation, normal completion and stable host-capacity
+failure. Run `cargo test --locked -p reel-player --lib`. The headless source example
+is `cargo run --locked -p reel-engine --example story_contract`; performance,
+hardware, ASB window loading and the complete author-facing DSL remain separate.
