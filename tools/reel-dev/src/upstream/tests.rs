@@ -171,7 +171,11 @@ fn each_seed_is_archived_before_reuse_and_missing_goldens_stay_unasserted() {
     }
     assert_eq!(
         fs::read(dir.join("testData/exec/seeds.out")).unwrap(),
-        b"default\n"
+        if cfg!(windows) {
+            b"default\r\n".as_slice()
+        } else {
+            b"default\n".as_slice()
+        }
     );
     archive(&dir, &mut records).unwrap();
     assert!(!dir.join("raw").exists());
@@ -226,7 +230,7 @@ fn session_seals_mock_evidence_and_preserves_runner_and_bridge_exits() {
                     path.strip_prefix(&vendor)
                         .unwrap()
                         .to_string_lossy()
-                        .into_owned(),
+                        .replace('\\', "/"),
                     sha(&fs::read(&path).unwrap()),
                 )
             })

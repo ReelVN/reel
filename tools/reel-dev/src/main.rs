@@ -14,10 +14,10 @@ fn main() -> Result<()> {
         }
         ["check"] => {
             let assertions = fixtures::conversions(false)?;
-            fixtures::immutable_t01()?;
+            fixtures::check_t01()?;
             let inventory = fixtures::inventory()?;
             println!(
-                "{} fixtures; {assertions} preserved assertion calls; 10 immutable T01 sources/maps; no source execution",
+                "{} fixtures; {assertions} preserved assertion calls; T01 source maps and assertion tokens; no source execution",
                 inventory["fixtures"].as_array().unwrap().len()
             );
         }

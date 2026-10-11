@@ -1,0 +1,10 @@
+use reel::prelude::*;
+
+fn main() {
+    narrator("A short story.");
+    let answer = choose([
+        {key: "continue", label: "Continue"},
+        {key: "leave", label: "Leave"}
+    ]);
+    narrator(answer);
+}

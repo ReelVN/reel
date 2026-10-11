@@ -1,7 +1,9 @@
 # Reel session host (S01)
 
 This crate owns the bounded Rust session model specified by architecture 1.1.
-It does not execute Aside, implement a VM adapter or provide snapshot/restore.
+The Rust model remains independently usable. PR #55 adds an Aside adapter in
+`aside`; snapshot/restore is not implemented. Adapter execution acceptance is
+pending: source inspection and compilation are not runtime evidence.
 PR #50 / Issue #48 introduces it as one substantive engine crate; UI remains
 in reel-ui and platform/window assembly remains in reel-player.
 
@@ -43,9 +45,10 @@ obligations. Retirement requires every recorded obligation to finish.
 
 Rust tests cover identity, atomic admission, input filtering, history/completion,
 retirement and allocation-free accepted hot paths. See PR #50 for actual counts
-and independent acceptance. Real VM waits, deliveries, native registration,
-BudgetYield/ResourceBlocked and restore remain unconnected and unverified.
-No test in this increment executes or simulates Aside bytecode.
+and independent acceptance. PR #55 connects VM waits, deliveries and native registration in source, preserving
+BudgetYield/ResourceBlocked. Native Windows execution checks cover this adapter; restore remains outstanding.
+The S01 Rust-model tests do not execute or simulate Aside bytecode.
+PR #55 compiler/VM regressions execute real bytecode and host transitions.
 
 Local input dispatch uses Session::handle_local_input(owner, action), which
 allocates the next sequence from the Session's current high-water mark at dispatch
@@ -55,3 +58,57 @@ counter. handle_input remains the explicit-sequence replay/external path; local
 sequence exhaustion returns SequenceExhausted. A zero-line dialogue is a valid
 interaction and completes with one accepted Advance, retaining exactly-once
 history/completion semantics.
+
+## Aside session adapter (PR #55)
+
+The host-owned ABI v1 registry defines `reel.session` contracts independently
+of package claims. The compiler resolver/prelude and runtime admission consume
+the same descriptors; runtime checks exact signatures, ABI and capabilities.
+`source::compile_story` supports `use reel::prelude::*`, `narrator(text)`
+and `choose(options)`. Selection maps the exact module-level HIR function symbol
+to its emitted function, including private functions. It rejects required
+parameters, captures and nonordinary functions. The emitted module initializer
+must complete before the selected entry; default/rest binding remains VM-owned.
+
+`SessionVm` tracks the actual main TaskId. Native publication stages Session
+state and retained values, restores history/generation on rejection, and commits
+only after Pending acceptance. Resume delivery rechecks exact interaction, owner,
+task and wait identities. CleanupOnly never resumes a task. Choice rows read only
+own `key`/`label` slots through the public bounded collection cursor; no raw
+heap layout or delegate/hook lookup is used. The selected original immutable key
+Value stays explicitly rooted through completion instead of being reallocated.
+
+Text reads use chunks bounded by min(4096, heap mutation limit), with UTF-8
+decoding after the complete copy. The default 64 KiB interaction limit includes
+metadata, locale and generated content identity, so it is not a 64 KiB narrator
+payload guarantee. VM constant admission still defaults to 4096 bytes; the
+long-key regression source explicitly raises it. Dialogue/choice counts use SessionLimits without a smaller player-specific cap.
+Choice lookup work is metered
+separately; string copying and publication are synchronous and byte-bounded, not
+charged as VM instructions or wholly covered by player `host_work`.
+
+Revocation first establishes all peer retirement obligations, then releases
+single roots against a frozen high-water end (including holes), and drives task
+cleanup independently. This adapter owns no non-task RootRange or external
+resource gate. GC uses the VM provider, not a heap-only substitute. Result delivery
+transfers its root before retirement; the retained result slot is reused by a
+later result, so an earlier bare Value is not a permanent host root.
+
+Native Windows checks execute compiler/VM, wait/root, rejection, GC, cancellation
+and player terminal contracts. Character objects, multiline say, UI callback
+tasks, observable script UI, media waits and save/restore remain outside this adapter.
+
+### Source linkage and runnable contract
+
+The host seed carries the requested content_version; native ABI remains v1.
+Lowering coalesces symbol/node matches only when their independently checked
+registrations identify the same NativeId. Conflicting IDs still reject.
+
+```sh
+cargo test --locked -p aside-vm -p aside-compiler -p reel-engine -p reel-player
+cargo run --locked -p reel-engine --example story_contract
+```
+
+The [story](examples/story_contract.aside) and [headless host](examples/story_contract.rs)
+compile and execute narrator/choose, advance real waits and retire their owner.
+These are CPU/library checks, not a new window/ASB loader or hardware claim.

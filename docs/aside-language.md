@@ -13,18 +13,9 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 完成条件同时覆盖语言、标准库、扩展契约、调试工具和 Reel 作者场景。只运行一段剧情、只解析全部语法或只通过旧语言测试，都不算完整 Aside。
 
-实现状态（L05 / PR #39）：模块初始化的局部绑定、闭包捕获与重入入口已具备静态编译实现，验证链为源码解析、语义、IR、B01 验证与编解码。根 global 与 initializer-local 的身份分离；这不等于完整脚本模块初始化、闭包运行、GC 保活或剧情会话已通过执行验收。具体支持与限制见[编译接口](../crates/aside-compiler/LOWERING.md)。
+实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、固定 tuple/array/table、索引/成员及混合赋值、可选取值链和位置调用 spread/rest。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
-实现状态（L06 / PR #41）：固定 tuple/array/table 字面量、普通索引读取及名称/索引位置的赋值链和复合赋值已支持静态编译与 B01 验证/编解码。集合展开、模式及完整模块仍按各自未实现边界拒绝；点成员和可选取值链状态见下文 L07/L08。未执行这些集合操作，实际 hash、边界、别名、GC 与恢复行为仍需执行验收。
-
-实现状态（L07 / PR #43）：非可选点成员读取、写入、名称/索引/成员混合赋值链及十种复合赋值已具备静态编译实现。位置保存对象值与成员符号，简单写入不提前读取最终目标；MemberGet 结果可供现有动态 Call 使用，编译器不额外注入 self。Member 与 Index 保持独立；可信命名空间直接 native 调用仍核对原有链接契约。class/super、native 函数值和完整统一 callable 尚未接通；真实方法绑定、setter/钩子、GC 和恢复仍需执行验收。
-
-实现状态（L08 / PR #45）：可选 Member/Index/Call 取值链已具备静态编译实现。只有显式可选段检查 null，短路跳过同链后续索引和实参；括号结束传播，嵌套链分别汇合。非 null 路径保留原读/调用及异常，不吞掉缺失成员或 hook 错误。同链可选赋值目标、可选 native 值/调用仍定位拒绝；括号外普通位置和前置可信 native 直接调用保持既有规则。实际副作用顺序、hook、GC 与恢复尚未执行验收。
-
-实现状态（L09 / PR #47）：调用位置展开与普通函数/闭包 rest 已具备静态编译实现。无展开保持 Window；有展开按源码顺序生成私有 Args builder，再单次 Packed Call。Signature.rest、参数 Cell、缺省前缀及转捕获保留既有身份。集合展开、children、native 函数值和完整动态转发仍未接通。真实新 array、浅捕获、版本冲突、缺省执行、GC 与恢复仍未执行验收。
-
-
-
+class/super、native 函数值、完整统一 callable、集合/具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 ## 二 语法与求值顺序
 
@@ -260,6 +251,8 @@ invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最
 
 native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。
 
+可信链接包使用本次编译请求的 content_version；宿主 ABI 版本独立保持注册版本。一个调用同时匹配导入符号和名称使用节点时，各链接仍分别核对分析身份与签名；全部指向同一 NativeId 才视为同一注册，指向不同 NativeId 时给出 LinkContract，不能按匹配顺序选择。
+
 签名可显式声明 PropertyBagTail：先绑定普通已声明参数，再将余下具名参数按指定目标参数的实际 PropertySchema 验证。描述包含目标参数、允许属性集合/能力、值类型、读写与可动画要求；未知名、只读属性、类型错误和与保留参数冲突均报错。tween(target, x: 80, duration: 0.5) 中 duration 是普通参数，x 按 target 的可动画属性 schema 检查；s.override(node, visible: false) 按 node 的可覆盖属性 schema 检查。普通无此元数据的函数仍拒绝未知名。call(fn,positional:,named:) 使用同一绑定器，脚本包装器通过显式 properties/named 表接收再转发动态属性；普通 fn 只接收自己声明的参数，不会自动捕获任意未知具名项。全程使用同一绑定器。工具能从签名和目标类型生成属性补全。宿主类型声明身份/值语义、字段读写/版本、结构模式可见字段、可观察属性、克隆与迭代行为。脚本与 native 使用同一参数错误和类型诊断，不允许只有内建函数支持命名参数。
 
 借用 Value/字节视图只能在当前 native 调用中使用；保留对象须申请代际 root handle，跨线程只传拥有数据、ID 或真正不可变缓冲。Rust panic 不跨 FFI；native 非法实现视为扩展故障，不声称能恢复任意内存错误。能力检查在操作前完成，InitSafe/DerivedSafe 限制传递到 callback，注册标签不豁免效果检查。
@@ -338,7 +331,7 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 
 默认采用显式标签，依据是完整 int64 内联、无需窄化对象身份、简单的数值访问，以及当前有界解释执行实验的结果。8 字节 NaN-boxing 在通用 Value 数组容量上更省空间；完整引擎需要同时衡量运行时间、存储、回收和平台成本。
 
-2026-10-08 的实验保存在 tools/value-layout-bench，审查版本为 perf/value-layout-bench 的 91e87ad。三种表示执行同一动态指令流、动态类型检查和宿主调用；两轮各 11 个样本。连续槽 NaN 候选相对显式标签的执行时间，在剧情分支、UI 属性计算、浮点动画中分别约为 1.40、1.75、2.05 倍。该组负载没有范围外整数分配。原始数据、环境、汇编检查和复现命令见实验报告。
+2026-10-08 的实验保存在[固定实验提交](https://github.com/jhq223/reel/tree/147c4cf788078c72b4ca5206270fce9dc29e12df/tools/value-layout-bench)，原审查版本为 91e87ad。三种表示执行同一动态指令流、动态类型检查和宿主调用；两轮各 11 个样本。连续槽 NaN 候选相对显式标签的执行时间，在剧情分支、UI 属性计算、浮点动画中分别约为 1.40、1.75、2.05 倍。该组负载没有范围外整数分配。原始数据、环境、汇编检查和复现命令见实验报告。
 
 这个比较包含实现策略差异：NaN 候选为范围外整数维护引用计数，即使值未装箱，复制和覆盖仍检查 WIDE 标签；显式标签可消去这些检查。宿主属性使用公共原生标量，比较包含编码往返，未覆盖 NaN 布局在 VM 对象字段中的密度收益。正式堆采用追踪回收，因此上述倍率仅属于这组实验实现。小寄存器工作集和虚拟化 x64 测量也没有给出完整 VM、低端设备或 Vita 的性能结果。
 
@@ -449,15 +442,15 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 ## 参考来源
 - Value 实验：https://github.com/jhq223/reel/pull/2
-- 实验说明：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/TRACE.md
-- 实验结果：https://github.com/jhq223/reel/blob/perf/value-layout-bench/tools/value-layout-bench/REPORT.md
+- 实验说明：https://github.com/jhq223/reel/blob/147c4cf788078c72b4ca5206270fce9dc29e12df/tools/value-layout-bench/TRACE.md
+- 实验结果：https://github.com/jhq223/reel/blob/147c4cf788078c72b4ca5206270fce9dc29e12df/tools/value-layout-bench/REPORT.md
 - slotmap 键契约：https://docs.rs/slotmap/1.1.1/slotmap/struct.KeyData.html
 - slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
-执行器整合状态（PR #49）：当前分支已接入 PR #23 的 V03 源码并通过原生与 32 位非执行编译检查；未运行独立 V03、Aside 或模拟器验收。独立草稿 PR #54 已补充 array/table、Index/Member、tuple 常量、调用展开和脚本 rest 的执行源码，并完成原生/32 位编译检查；未执行其运行测试。未支持的 delegate/hooks、结构 tuple 类型、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、结构 tuple 类型、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
 
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
 
-集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。此段描述源码实现及合同，仍未完成运行/GC/异常/取消验收。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
+集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。运行、GC、异常和取消合同已通过 Windows 原生 debug/release 验证。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。

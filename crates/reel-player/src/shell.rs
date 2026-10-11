@@ -135,6 +135,19 @@ impl ApplicationHandler for App {
             } else {
                 PointerKind::Up
             }),
+            WindowEvent::MouseWheel { delta, .. } if state.session.is_some() => {
+                let delta = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        reel_ui::core::ScrollDelta::LineDelta(-x, -y)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(p) => {
+                        reel_ui::core::ScrollDelta::PixelDelta(reel_ui::dpi::PhysicalPosition::new(
+                            -p.x, -p.y,
+                        ))
+                    }
+                };
+                state.pointer_event(PointerKind::Scroll(delta))
+            }
             WindowEvent::MouseWheel { delta, .. } if state.session.is_none() => {
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 0.1,

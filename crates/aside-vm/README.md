@@ -143,12 +143,12 @@ are explicitly outside this storage milestone.
 
 ## V03 source integration and host lifecycle
 
-PR #49 ports the existing PR #23 executor onto main 244bf5c7, preserving current
-B01/compiler/UI/media/render sources and documentation. Native and i686 cargo
-check typechecked VM/compiler targets; tests and examples were not executed.
-The original source port contained 18 Rust files identical to PR #23; subsequent
-owner-cancellation changes are separately recorded in the PR. No run_slice,
-Aside program, VM test or bytecode simulation was used for acceptance.
+PR #49 ports the PR #23 executor onto the current shared B01/compiler baseline.
+Native Windows debug/release checks now execute the VM and the later #54/#55
+collection/session integration. Source-to-codec-to-VM checks cover tiny budgets
+with interleaved GC, calls/defaults, closures, exceptions and collections.
+Run `cargo test --locked -p aside-compiler --test execution` for the
+source pipeline, or `cargo test --locked -p aside-vm` for VM contracts.
 
 Vm::load takes a VerifiedProgram and independently trusted RuntimeSupport native
 metadata. It enforces the dispatcher's actual supported opcodes across all
@@ -187,11 +187,9 @@ objects remains separate budgeted GC work.
 PR #54 extends this integration branch with source implementations for sliced
 MakeTuple/MakeArray/MakeTable, IndexGet/IndexSet, MemberGet/MemberSet, tuple
 constants, positional ArgsSpread and script rest (including host-start calls).
-The draft has native/i686 all-targets cargo-check evidence only; no VM, Aside,
-runtime test or bytecode simulation was executed. Source review found deferred
+Native Windows debug/release tests execute the VM, collection and source pipeline. Source review found deferred
 operand-fault and packed-argument admission defects; both fixes passed
-independent source recheck. This is not a playable-story or runtime/GC/restore
-acceptance claim.
+independent source recheck. The checks cover runtime/GC/cancellation, but not snapshot restoration or devices.
 
 Remaining unsupported forms include delegates/hooks, classes, structural tuple
 types, property-bag tails, ArgsNamedSpread, collection spread, patterns, full
@@ -225,8 +223,7 @@ shallowly at the source argument position and validates source content version
 until capture completes. Packed destinations must satisfy shape and version
 invariants; both entries of each argument pair are preflighted/charged together.
 A fresh outer rest array is prepared for every call, including empty and host
-entry cases; existing default/type/Cell rules then apply. Authored tests are
-compiled only, so these are source contracts, not established runtime behavior.
+entry cases; existing default/type/Cell rules then apply. Runtime tests verify these contracts in native Windows debug/release builds.
 
 Table lookup is resumable linear search: O(entries plus compared content), with
 potentially quadratic repeated construction. No hash-index or scalability claim

@@ -116,7 +116,7 @@ impl Capture {
         deadline: Instant,
         child_exited: bool,
     ) -> io::Result<bool> {
-        let end = *self.end.get_or_insert_with(|| u64::MAX);
+        let end = *self.end.get_or_insert(u64::MAX);
         if child_exited && end == u64::MAX {
             self.end = Some(self.reader.metadata()?.len());
         }

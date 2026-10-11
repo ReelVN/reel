@@ -32,6 +32,11 @@ the numeric package version comes from `Options::content_version`. Original
 module/version/import/namespace/registration identities and source contexts remain
 in `Metadata`; they are not reconstructed by matching names.
 
+Symbol and name-use node links may both match a call. After each registration's
+identity/signature checks, matches to the same NativeId coalesce; different
+NativeIds remain a LinkContract error. The host seed uses the requested content
+version independently of its native ABI version.
+
 The IR reuses B01 instructions, bindings, captures, types and descriptors.
 It adds ordered basic blocks, explicit terminators and exact source spans.
 Parameters occupy fixed prefix slots. Lexical bindings retain stable slots;
@@ -346,7 +351,8 @@ and register liveness/order, verify with B01, encode/decode, disassemble and che
 all source-map boundaries. They cover Cell/capture identity, trusted native
 defaults and namespace links, cleanup regions, Context preservation, inferred
 types, temporary reuse and located limit failures. They do not dispatch bytecode
-or invoke a native host function. Execution acceptance remains pending V03.
+or invoke a native host function. The separate `execution` integration test
+executes emitted/decoded programs on the actual VM with tiny budgets and GC.
 
 Reproducible commands (Rust 1.96.0):
 
@@ -379,13 +385,12 @@ in `LOWERING_PERFORMANCE.md`; no VM execution measurement belongs to this report
 
 ## Executor integration boundary
 
-PR #49 combines executor sources with the main compiler after L09 using compile-only
-checks. The historical L04 statement above that no V03 implementation was merged
-refers to that original increment. B01 verification is still not execution
-acceptance. The separate PR #54 draft adds dispatcher source for fixed collections,
-Index/Member access, positional spread and script rest, including host entry.
+PR #49/#54 combines the executor and collection dispatcher with the compiler.
+Native Windows debug/release checks execute fixed collections, Index/Member,
+positional spread and script rest, including host entry. The `execution` test
+independently compiles source, round-trips B01 and checks ordinary/tiny slices
+with interleaved GC. B01 verification alone remains distinct from execution.
 Tuple constants remain subject to a synchronous per-constant limit. Property-bag
 tails, ArgsNamedSpread, delegates/hooks, structural tuple types and other unsupported
-forms still reject; registration cannot add missing handlers. Native/i686
-all-targets typechecking and regression source do not establish execution behavior.
-No independent VM or source-program execution was performed for this integration.
+forms still reject; registration cannot add missing handlers. These CPU checks
+do not establish snapshot restoration, device behavior or performance bounds.

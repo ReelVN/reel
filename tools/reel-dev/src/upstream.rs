@@ -550,7 +550,7 @@ pub fn run_cli(args: &[String]) -> Result<i32> {
     );
     let manifest = fixtures::snapshot()?;
     fixtures::conversions(false)?;
-    fixtures::immutable_t01()?;
+    fixtures::check_t01()?;
     let vendor = root().join("third_party/quirrel");
     Session {
         program: &program,

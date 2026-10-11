@@ -19,9 +19,12 @@ cargo test --locked -p reel-ui --no-default-features --lib
 cargo run --locked -p reel-dev -- root-negative
 ```
 
-`check` reads pinned source, recipes, derivatives and T01 maps without writing.
-`convert --write` explicitly regenerates reviewed derivatives; it rejects changed
-source hashes, token-interior edits and changed/reordered/removed assertion tokens.
+`check` reads provenance, recipes, derivatives and T01 maps without writing.
+It does not freeze imported source hashes, patch bytes or source directory layout.
+`convert --write` regenerates reviewed derivatives; edits must match the current
+source text at valid token boundaries and preserve original assertion tokens.
+Changed recipes/inputs require updated derivatives and maps, not a new source hash
+allowlist. Hashes in historical manifests describe their original imports.
 `inventory` writes a source inventory with six classifications, 1,296 fixtures
 and explicit `not_run`/`waiting_runtime` states. It never infers execution success.
 
@@ -71,7 +74,7 @@ The log is a Rust record listing rather than a copy of Python's console formatti
 platform/observer metadata identifies Rust instead of a Python interpreter.
 On Unix, owned process groups let a timeout terminate wrappers and descendants,
 and the deadline includes draining inherited pipes. Windows termination uses
-`taskkill /T /F`; Windows execution has not been verified.
+`taskkill /T /F`; native Windows subprocess regression checks pass.
 
 Migration checks use mock subprocesses and synthetic fixtures, including crashes,
 timeouts, spawn/decode errors, missing goldens, snapshot drift, byte/SHA/ZIP checks,
@@ -139,11 +142,10 @@ cargo run --locked -p reel-dev -- audio-regression --release
 cargo run --locked -p reel-dev -- audio-probe
 ```
 
-`audit-kira` pins the approved source manifest and patch independently of mutable
-JSON fields, reverses only the two approved files and checks every original byte
-hash, exact-VCS license/config sources and the Rust source closure. The optional
-directory compares the original crates.io package bytes as well. Negative tests
-reject changed sources, patches, licenses/config, forged records and extra Rust.
+`audit-kira` checks that origin, licenses and the local change record are present.
+Source edits and new modules are allowed; it does not reverse a frozen patch or
+compare a hard-coded file list. An optional upstream directory writes a source
+difference report under the artifact root without rejecting local modifications.
 
 `audio-regression` copies the exact fork into an isolated wrapper workspace under
 the artifact root, preserves imported manifests and uses the curated
@@ -175,7 +177,7 @@ limits above. The two upstream Python files are untouched and remain covered by
 
 | Former script | Replacement / retained coverage |
 | --- | --- |
-| media `verify_kira_fork.py` | `audit-kira`; reverse patch/all 126 original hashes/exact-VCS licenses and config, plus forged-record/extra-source rejection |
+| media `verify_kira_fork.py` | `audit-kira`; origin/licenses/change record; source edits and new modules allowed |
 | media `run_kira_regression.sh` | `audio-regression` in both profiles; unchanged real-Kira scheduling/quota/play assertions and isolated immutable test lock |
 | media `run_pcm_probe.sh` | `audio-probe`; exact Cargo libraries, original PCM assertions and physical-free/thread/budget-order checks; debug/release raw output retained in ignored artifacts |
 | compiler `bench-results/run_probe.py` | `compiler-probe frontend`; existing `frontend_probe.rs` assertions, child RSS/user/system time |
@@ -185,14 +187,14 @@ limits above. The two upstream Python files are untouched and remain covered by
 | compiler `bench-results/run_budget_probe.py` | `deep_process.rs`: explicit 5k/50k, 2 MiB stack checks and original 15-second bound; historical binary comparison retired |
 | compiler `bench-results/run_assignment_probe.py` | exact cases and both entries in `frontend.rs`; obsolete before-binary observation retired |
 | compiler `bench-results/run_pattern_trial_probe.py` | exact type/OR/location cases and both entries in `frontend.rs`, plus existing full pattern grammar trials |
-| compiler fixtures `check_integrity.py` | `fixtures::immutable_t01`, source/map pins, accepted T01, 10 sources/32 assertions/waiting_runtime |
+| compiler fixtures `check_integrity.py` | `fixtures::check_t01`, current source maps and original assertion tokens |
 | VM `run_root_range_negative_controls.py` | `root-negative`; all nine precise failure checks in an isolated copy, original files unchanged |
 | stage `audit-source.py` | `audit-ui`; original license/copyright, local provenance and single UI source/dependency ownership |
 | stage `check-tree-depth.py` | `reel-ui/tests/lookup_depth.rs`; all current stack/capacity/allocation cases |
 | stage `measure.py` / `measure-r01.py` | `measure`; exact Cargo executable, rect/path, launch control, child RSS/exit |
 | Masonry experiment `prepare.py` | Retired; [immutable U01 history](https://github.com/jhq223/reel/tree/7990c326f1acf3531a940134eab38bd55c66f214/tools/masonry-contract-check); production assertions live in reel-ui tests |
 | Masonry experiment `check-deps.py` | `deps`; single UI source/types and no reverse native normal/build dependency closure |
-| Quirrel `lexical.py` / `convert.py` | Rust byte scanner/converter; source pins, UTF-8, complete bidirectional maps and all assertion/boundary negative cases |
+| Quirrel `lexical.py` / `convert.py` | Rust byte scanner/converter; exact edit preimages, UTF-8, complete bidirectional maps and all assertion/boundary negative cases |
 | Quirrel `inventory.py` | `inventory` plus `verify-results`; six categories, exact 1,296 universe, faithful tested seed predicate, frontend/recipe checks |
 | Quirrel `test_integrity.py` | Rust fixture tests plus full `verify-results`; original ZIP/SHA/mismatch and all conversion checks |
 | Quirrel `check_frontend.py` | existing `semantic_quirrel` compiler integration tests; obsolete external fc418d9 project/lock retired |

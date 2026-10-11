@@ -1,7 +1,9 @@
-# Reel window / renderer diagnostic
+# Reel player assembly
 
 This is a thin native assembly using the production `RenderFrame` → wgpu path.
-It is **not an Aside story session** and does not execute the VM.
+The diagnostic binaries below use Rust requests and do not execute the VM.
+The separate Aside adapter described below is library assembly, not a new
+verified runnable story binary.
 
 ```sh
 # Optional: a real TTF/OTF font for Masonry/Parley text, registered before recording.
@@ -60,16 +62,61 @@ an unpresented successor. Choice release is consumed, not also a story advance.
 
 Full Parley text layout is kept while cluster/ligature masks reveal its prefix.
 Each 35 ms tick reveals at most one grapheme per line; a held gesture freezes
-reveal and wake-up does not replay a backlog. This compact 640×420 view supports
-at most two dialogue rows or two choice buttons; larger projections explicitly
-reject and clear input permission. The model's larger limits do not imply the
-view can display them. Input in this version is mouse-only.
+reveal and wake-up does not replay a backlog. Labels and buttons use their natural
+content height; mouse-wheel scrolling reaches every row within the viewport.
+SessionLimits configures row, choice and text resource capacities without an
+additional view cap. All choices share one projection owner, while ChoiceId
+preserves each business key. Scrolling invalidates the old input stamp and any
+held gesture; a new accepted frame must establish the new hit geometry.
+Input in this version uses mouse clicks and scrolling.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
-adaptation and actual source execution remain separate acceptance work.
+adaptation and native Windows source execution are covered by PR #55 library tests.
 
 SessionUi dispatches through Session::handle_local_input rather than resetting
 a private input counter. Existing-session handoff and subsequent session_mut
 input preserve the same high-water sequence. Zero-line dialogue is accepted and
 can complete through the normal presented Down/Up path in one advance.
+
+## Aside session library assembly (PR #55)
+
+`AsideSessionUi` owns SessionUi and the real SessionVm adapter. `from_source`
+compiles through the shared trusted registry and delegates to `from_compiled`.
+The latter consumes a CompiledStory without recompiling source; validate checks
+entry constraints and its module initializer, then SessionVm::load performs
+independent trusted runtime admission. The driver completes the module initializer,
+retires that delivery, then starts the selected ordinary entry. A tick executes
+at most one VM slice; native publication never recursively runs the continuation.
+Waiting, BudgetYield and ResourceBlocked remain distinct. `host_work` meters
+choice lookup only; synchronous text copying/publication have independent byte
+limits and are not a total dispatch-work meter.
+
+The existing presented-frame input gate applies to content and scroll position.
+Admission uses the configured session capacities, without a separate two-row cap.
+Cancellation routes through VM owner revocation and bounded root/task cleanup,
+never through the Rust model's zero-obligation shortcut. GC is provider-aware.
+The embedding application must continue cleanup until its obligations retire.
+
+This is reusable library wiring, not a window/CLI source-file launch path or an
+ASB loader. The existing diagnostic/session-host commands remain Rust-only.
+At 110b984, StoryState distinguishes Running, StartingEntry, Finishing,
+HostFailed(stage), Faulted(DeliveryId), Finished and Cancelled. Repeated terminal ticks return the same terminal category without
+stepping the VM or calling the clock. Entry is consumed only after successful
+start; a start-capacity error becomes HostFailed(StartEntry), not a script Fault
+or an unserviceable Running state. host_failure() retains the original host error
+for inspection, including after later cancellation. Drive/finish/cancel errors
+have their own stages. Cancel retry preserves recorded retirement obligations;
+this is not proof of recovery from arbitrary internal VM corruption.
+fault() offers ephemeral fault inspection while delivery remains
+rooted; cancellation invalidates it and starts bounded cleanup. Cancel after
+normal completion preserves Finished. A terminal state does not mean cleanup has
+finished: continue cleanup_step while cleanup_pending reports work.
+The compiled-program constructor is available; decoding/loading an ASB file is
+still a separate integration increment.
+
+Native Windows execution checks cover compiled input, initializer/entry ordering,
+fault retention across GC, cancellation, normal completion and stable host-capacity
+failure. Run `cargo test --locked -p reel-player --lib`. The headless source example
+is `cargo run --locked -p reel-engine --example story_contract`; performance,
+hardware, ASB window loading and the complete author-facing DSL remain separate.

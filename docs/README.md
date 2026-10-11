@@ -1,79 +1,31 @@
 # Reel 设计与开发文档
 
-三份主题文档共同规定实现依据。作者指南提供中英两版。
+设计版本 1.1。架构、语言规范与作者指南共同定义接口；规范中尚未实现的完整目标不等于当前产品能力。
 
-1. [引擎架构](engine-architecture.md)：模块、可替换平台接口、舞台、输入、媒体、持久化和性能要求。
-2. [Aside VM 与语言](aside-language.md)：统一语法、执行与暂停、字节码、宿主协议和快照。
-3. [游戏开发指南 中文](guide/zh-CN.md) / [Game creator guide English](guide/en.md)：用相同示例说明剧情、UI、演出和作者扩展。
+- [引擎架构](engine-architecture.md)：模块、舞台、输入、媒体、持久化和资源预算。
+- [Aside 语言](aside-language.md)：语法、执行、字节码、宿主协议和快照。
+- [中文作者指南](guide/zh-CN.md) / [English creator guide](guide/en.md)：相同代码示例与各功能的实现状态。
 
 ## 当前状态
 
-设计版本 1.1 是接口与行为的开发基线。代码已进入分模块实现和集成阶段；下列状态区分已合入 main 的 Rust 基础、尚在审查的分支，以及作者接口的设计目标。
+- **编译与执行**：L04–L09 源码编译接通 B01 和 V03，支持普通调用、缺省参数、共享闭包 Cell、异常/finally、固定集合、索引/成员、可选取值链及位置调用 spread/rest。Windows 调试与发布检查实际执行微小预算、交错 GC、等待、取消和终态交付。[编译接口](../crates/aside-compiler/LOWERING.md) · [VM 与资源边界](../crates/aside-vm/README.md)。
+- **剧情会话**：narrator/choose 接通可信 native 注册、模块初始化、真实 VM 等待/恢复、原选择 key 保活和 owner 退休。[可运行 Aside 示例](../crates/reel-engine/examples/story_contract.aside) · [无窗口宿主](../crates/reel-engine/examples/story_contract.rs) · [会话接口](../crates/reel-engine/README.md)。
+- **作者工具**：reel check/build 编译独立单模块并读写 ASB v1；提供源码定位与 JSON 诊断。完整项目资源发行和 ASB 窗口播放器尚未实现。[使用命令](guide/zh-CN.md#当前单模块工具进展pr-52)。
+- **UI 与渲染**：单一 reel-ui 包维护控件、布局、输入与呈现几何；reel-render/reel-player 保持 GPU 和窗口隔离。会话投影按内容布局并滚动，不另设两行或两个选项的功能上限。[窗口入口](../crates/reel-player/README.md) · [渲染验证范围](../crates/reel-render/R02-REPORT.md)。
+- **音频**：Kira/可选 CPAL 桥、有界活动账本和物理 owner 退休已实现。逻辑完成、PCM/预算票据实际释放、描述符释放分别观察。脚本媒体等待、完整恢复和硬件完成时钟尚未接通。[接口](../crates/reel-media/README.md) · [验证边界](../crates/reel-media/VERIFICATION.md)。
+- **开发工具**：第一方检查归入 Rust 测试和 reel-dev；Quirrel 保留固定来源、许可、原断言与转换映射。转换解析与真实执行分别记录。[可复现命令](../tools/reel-dev/README.md)。
 
-- 已合入 main：reel-core 的共享身份、预算与服务契约；aside-vm 的 Value、堆、增量 GC、连续根区与 B01 字节码格式/验证；aside-compiler 的词法、语法、语义分析及 L04 有界 lowering、L05 初始化局部绑定、L06 固定集合/索引编译、L07 非可选成员编译、L08 可选取值链及 L09 调用展开/rest 编译；reel-ui 的控件、布局、呈现几何与输入桥接；reel-render 的可移植帧、资源租约、记录型/null 消费者和 wgpu 消费者；reel-engine 的 Rust 会话模型及 reel-player 的真实会话 UI/诊断窗口；reel-media 的 Kira 音频桥、可选 CPAL 输出与有界后台 PCM 回收。能力边界见 [编译器](../crates/aside-compiler/README.md)、[L04 lowering](../crates/aside-compiler/LOWERING.md)、[VM 存储与根区](../crates/aside-vm/README.md)、[B01 字节码](../crates/aside-vm/src/bytecode/README.md)、[舞台](../crates/reel-ui/README.md)和[渲染契约](../crates/reel-render/README.md)。
-- 待集成验收：[执行器主线整合（#49）](https://github.com/jhq223/reel/pull/49) 已接入当前主线基础并通过原生/32 位非执行编译检查，仍为草稿；原始 [#23](https://github.com/jhq223/reel/pull/23) 保留历史上下文。运行验收尚未完成，未合并能力不属于 main。
-- 作者接口仍在实现：指南中的剧情、节点绑定、保存/回滚和 CLI 示例是目标合同。语法或语义分析通过不等于能够执行剧情；Rust 渲染诊断不等于完整游戏播放器。
-- 设备验证按具体目标记录。CPU/null 模拟、软件 Vulkan、32 位或 Windows 交叉编译均不能替代相应物理设备的运行验收。
+完整语言仍包括尚未实现的类/元方法、模式、集合与具名展开、完整模块/标准库、generator/thread/async，以及引擎节点绑定、媒体等待和保存恢复。具体拒绝边界以各模块契约为准。CPU/软件 GPU 检查不替代物理设备运行或性能测量。
 
-L09 调用 spread/rest 已经 [PR #47](https://github.com/jhq223/reel/pull/47) 独立静态验收并合入。L04 已支持部分源码到验证字节码的编译，不代表完整语言支持；尚不支持的构造见其接口文档。
+## 运行与维护
 
-仓库结构与验证工具整改已合入：[PR #29](https://github.com/jhq223/reel/pull/29) 曾将 UI 借用代码纳入 crates 和统一 workspace，第一方验证工具迁入 [reel-dev](../tools/reel-dev/README.md)，可再生成结果移至忽略的 target/reel-artifacts；Quirrel 的必要来源与测试输入继续保留。Linux 独立验收通过；Rust 上游观测桥的真实 Quirrel 重跑及 Windows 进程终止路径仍未验证。
+```sh
+cargo run --locked -p reel-engine --example story_contract
+cargo test --locked --workspace
+cargo run --locked -p reel-dev -- check
+```
 
-[音频适配（#14）](https://github.com/jhq223/reel/pull/14) 已完成整理后主线的独立集成验收：Linux 离线真实 Kira、default/feature-off 和 Windows 交叉编译通过；实体输出、时钟、热插拔及原生启停行为仍待目标设备验证，CPAL 时钟保持 Unavailable。见[音频验证边界](../crates/reel-media/VERIFICATION.md)。
-
-[窗口/GPU 呈现（#28）](https://github.com/jhq223/reel/pull/28) 已通过软件 Vulkan（llvmpipe）及 Xvfb/X11 的独立组合验收：描边参数拒绝与定位、预算压力完成后重试、永久错误停止重复准备、恢复能力重新协商和系统 Expose 后无输入恢复画面均通过。永久坏模型只重绘已接受的冻结帧，不重新编译坏模型或替换输入几何。debug/release 的 GPU、窗口、音频及相关契约检查通过；物理 GPU、真实设备切换/热拔、OS 挂起、Wayland 和原生 Windows/macOS 仍待验。见[渲染验证范围](../crates/reel-render/R02-REPORT.md)。
-
-[UI 模块整合（#35）](https://github.com/jhq223/reel/pull/35) 将原五个 UI 相关 crate 收敛为 reel-ui 内的职责模块，不保留转发壳或文档宏包。借用代码由 Reel 自主维护，保留原始许可和必要版权，不为上游同步保留目录、版本或核验流程。render/player 的后端和平台隔离保持。[模块说明](../crates/reel-ui/MIGRATION.md)。
-
-[有界管线复用（#33）](https://github.com/jhq223/reel/pull/33) 已通过 native wgpu-core 的独立验收：每个 Renderer 按 format/samples 最多惰性维护三套管线，同档重复准备不重建。构造错误须完成内部错误作用域确认后才允许入缓存；外层作用域、跨档并发、sticky 故障和 Pending 拒绝路径已覆盖。仅内部 GPU 对象复用，未新增作者 API，未改变质量选择或帧/资源预算；driver 内存不属于硬字节保证。浏览器 WebGPU 与物理设备故障仍未验。
-
-[单次准备白纹理复用（#38）](https://github.com/jhq223/reel/pull/38) 已独立验证：同一 prepare/crossfade 内的纯色绘制和裁剪按需共享一次白纹理上传，未使用时不创建；不同事务不共享。重复使用的保守应用资源账目只计一次 536B，提交/完成、取消和失败的寿命保持。该数字不代表 GPU 总内存，软件设备 CPU 测量不代表物理 GPU 性能。
-
-[初始化局部绑定编译（#39）](https://github.com/jhq223/reel/pull/39) 将模块根 global 与 initializer-local 明确分离，支持局部闭包与转捕获、入口 Cell 重建的静态生成，并通过 B01 验证/编解码检查。尚未提供的外部 Value/Cell 链接仍定位拒绝。运行时 Cell 共享与重入隔离、GC/宿主恢复及完整脚本模块初始化仍需各自验收。
-
-[固定集合与索引编译（#41）](https://github.com/jhq223/reel/pull/41) 已完成独立静态验收：tuple/array/table、有序键值求值、普通索引、混合位置赋值链与复合赋值生成通过 CFG/寄存器身份、B01 验证/编解码及账本检查。右值重绑 receiver/key 后仍使用预先保存的位置。集合展开/模式继续拒绝；可选取值链见 L08；生成正确结构不等于实际集合运行或完整作者示例已接通。
-
-当前并行实现真实脚本会话适配、集合/索引/成员执行、作者非执行检查与构建工具，以及媒体活动生命周期。各项按共同的身份、预算、取消与结果交付契约集成；实现中的分支不算已合入能力。继续连接语言、舞台、输入、渲染与音频，推进持久化和完整剧情体验。后续每次验收同步本节及受影响的双语指南，不用测试数量代替能力状态。
-
-## 本次定稿
-
-- 角色可直接调用，旁白显式使用 narrator；剧情和 UI 回调共享普通函数与等待语义。
-- 普通对象字面量、tuple、完整文本与缓冲、标准集合、异步和宿主续体纳入语言合同。
-- 节点、绑定、作用域、活动和持久变量采用统一的所有权、取消和恢复规则。
-- 引擎公共服务归入 reel-core；窗口、渲染、音频输出可独立替换。
-- VM 默认采用 16 字节显式标签、完整整数载荷和增量追踪回收；选型依据和测量范围见语言文档。
-- 发布产物分为 .asb 字节码、.rpk 资源包和 release.json。
-
-## 维护规则
-
-- 游戏开发者文档由项目负责人维护，中文与英文使用相同代码片段。
-- API、行为与默认值改变时，同一个 PR 更新对应规范、两版指南和示例。
-- 每个实现任务列明接口版本、允许目录、行为与性能要求，以及可复现验证方式。
-- 关键路径由负责人读代码、核对契约和重跑相关验证后合入。
-- 上游依赖默认按锁定版本使用；需要修改的源码快照另记来源、许可证与本地差异。
-
-## Reading order
-
-Game authors can start with the [English creator guide](guide/en.md). Engine contributors should also read the architecture and Aside language specification. The creator APIs are design targets until marked as implemented for a specific version.
-
-[非可选成员编译（#43）](https://github.com/jhq223/reel/pull/43) 已合入，扩展 MemberGet/MemberSet、Name/Index/Member 混合位置和十种复合赋值；普通成员调用复用动态 Call，不由编译器注入 self。简单写入不提前读取目标，位置保存原对象值与符号。class/super、native 函数值、完整统一 callable 和实际运行验收仍未完成。
-
-[可选取值链（#45）](https://github.com/jhq223/reel/pull/45) 使用既有 BranchNull 编译显式 null guard、同链后缀短路和独立嵌套汇合。Group 结束传播；非 null 读/调用继续使用原异常契约。同链可选赋值、可选 native 值/调用仍拒绝。静态 CFG 与寄存器检查不能替代实际副作用、hook、GC 和恢复验收。
-
-[会话宿主与真实视图（#50）](https://github.com/jhq223/reel/pull/50) 已独立验收并合入 main：reel-engine 的 Rust 会话模型接通真实 Label/Button、渐显推进、选择、取消和呈现输入门。使用显式 Rust 请求，尚未接 VM 剧情、音频或保存恢复；软件 GPU 验证不代表物理硬件通过。[接口与限制](../crates/reel-engine/README.md) · [窗口入口](../crates/reel-player/README.md#rust-session-host-window-s01)。
-
-[调用展开与 rest（#47）](https://github.com/jhq223/reel/pull/47) 增加源码顺序参数 builder、Packed 调用及 rest 参数身份；集合展开仍待独立设计。静态编译不等于 V03 支持或剧情会话已接通，真实浅捕获、并发修改、缺省执行及 GC/恢复尚未验收。
-
-[执行器源码整合（#49）](https://github.com/jhq223/reel/pull/49) 基于含 L09 的 main，保留原 B01 与编译器成果；当前只有原生/i686 cargo check 证据，仍为独立执行待验的集成工作。集合/索引/成员及脚本 rest 的后续源码位于 [草稿 #54](https://github.com/jhq223/reel/pull/54)，仍只有编译与源码审查证据；property-bag、完整模块/类和快照等尚未接通，不代表完整剧情可运行。取消任务和宿主根退休的责任已明确分离。[VM 状态与生命周期](../crates/aside-vm/README.md#v03-source-integration-and-host-lifecycle)。
-
-[集合执行增量（#54）](https://github.com/jhq223/reel/pull/54) 基于 #49 提供分片集合构造、索引/成员、tuple 常量及调用 spread/rest 的执行源码，并公开有界宿主集合读取接口。原生/i686 all-targets 编译通过；异常路径与 packed 计费缺陷已修，并通过独立源码复审。测试仅编译未执行，实际语义、GC/取消和性能仍未验收。线性 table 查找与同步 tuple 常量单项额度明确保留。[状态和接口](../crates/aside-vm/README.md#collection-host-access-and-execution-source-boundaries-pr-54)。
-
-[执行器源码整合（#49）](https://github.com/jhq223/reel/pull/49) 基于含 L09 的 main，保留原 B01 与编译器成果；当前只有原生/i686 cargo check 证据，仍为独立执行待验的集成工作。缺少集合/索引/成员 handlers、脚本 rest/property-bag 与快照等，不代表完整剧情可运行。取消任务和宿主根退休的责任已明确分离。[VM 状态与生命周期](../crates/aside-vm/README.md#v03-source-integration-and-host-lifecycle)。
-
-
-[音频活动账本（#53）](https://github.com/jhq223/reel/pull/53) 在独立草稿 PR 中提供稳定媒体身份、Scope 取消、精确等待过滤、有界维护与终态保留。Rust 内容消费完成不等于硬件播放完成或 PCM 释放；尚未接脚本会话、完整恢复或作者音频 API。离线 Kira 检查及限定 Rust 范围独立验收通过；仍为尚未合并的草稿。[接口和调度边界](../crates/reel-media/README.md#logical-audio-activities-pr-53)。
-
-
-[音频物理退休（#56）](https://github.com/jhq223/reel/pull/56) 基于 #53 增加有界 owner/活动资源释放凭据，区分逻辑完成、实际 PCM/票据释放和描述符释放。已通过限定音频 Rust 独立验收；尚未接入脚本等待或会话外部退休门。[接口与容量边界](../crates/reel-media/README.md#physical-owner-retirement-pr-56)。
-
-[作者检查与构建（#52）](https://github.com/jhq223/reel/pull/52) 已在草稿 PR 中实现，入口校验修复已通过限定静态独立验收。check 提供带位置的人读/JSON 诊断和非执行编译验证；build 按 ASB v1 保存模块元数据、initializer 和可选游戏入口。完整项目/资源发行、native/import 链接与实际玩家运行不属于当前已完成范围。详见架构中的 ASB v1 单模块容器及双语指南。
+- 作者指南两版使用相同 Aside 片段；API、默认值和行为改变时同步规范与指南。
+- 关键路径按身份、预算、取消和交付合同审查，并实际运行相关检查。
+- 普通依赖固定版本；导入源码保留来源、必要许可与修改记录。
+- 可再生成日志、测量和报告放入忽略的 target/reel-artifacts；历史结果链接固定提交。

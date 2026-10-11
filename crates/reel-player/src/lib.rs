@@ -10,4 +10,5 @@ mod surface;
 #[cfg(feature = "window")]
 mod window;
 
+pub mod aside_session;
 pub mod session;
