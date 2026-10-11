@@ -1,11 +1,12 @@
-# Aside storage, root ranges and bytecode (L01, V02 and B01)
+# Aside storage, bytecode and executor sources (L01, V02, B01 and V03)
 
 This crate implements Value storage, an object heap, explicit roots, continuous
 root ranges, one incremental tracing collector, and the B01 shared bytecode
 format, codec, verifier and disassembler. See [B01](src/bytecode/README.md) for
-program loading and validation boundaries. It does not implement the parser,
-bytecode execution, language collection operations, native adapters, or snapshot
-format on this main-branch baseline.
+program loading and validation boundaries. PR #49 integrates V03 executor sources from PR #23 onto the current baseline.
+This integration has compile-only evidence, not independent execution acceptance.
+It does not implement the parser, full language collection operations, platform
+native adapters or snapshot format.
 Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
 is maintained by the integration owner.
 
@@ -139,3 +140,52 @@ Immutable strings/Bytes are available with bounded construction, and large text
 or byte buffers are built by bounded appends. General Unicode editing, table
 key operations, tuple equality/hash, copying continuations and snapshot codecs
 are explicitly outside this storage milestone.
+
+## V03 source integration and host lifecycle
+
+PR #49 ports the existing PR #23 executor onto main 244bf5c7, preserving current
+B01/compiler/UI/media/render sources and documentation. Native and i686 cargo
+check typechecked VM/compiler targets; tests and examples were not executed.
+The original source port contained 18 Rust files identical to PR #23; subsequent
+owner-cancellation changes are separately recorded in the PR. No run_slice,
+Aside program, VM test or bytecode simulation was used for acceptance.
+
+Vm::load takes a VerifiedProgram and independently trusted RuntimeSupport native
+metadata. It enforces the dispatcher's actual supported opcodes across all
+functions. The host explicitly starts the initializer/entry; load does not run
+it. Do not reconstruct trusted registration by copying package signatures.
+HostTicket arguments/continuations borrow Vm; copied Value/FaultId do not retain
+objects. Preserve roots before mutable response, cancellation or GC.
+
+Returned/Fault delivery retains its task and roots until explicitly transferred
+or discarded. take_delivery_root publishes a successful value into an existing
+root before discard. take_fault_delivery retains the complete fault graph,
+which the host must later release. Reading a delivery does not release it.
+BudgetYield is not terminal. ResourceBlocked preserves intermediate roots/state;
+there is no live VmLimits growth API, and GC cannot remove active catch records.
+Use Vm's provider-aware gc_step rather than raw Heap::gc_step.
+
+Owner revocation is coordinated by the host. Vm::cancel(owner) cancels matching
+tasks only, immediately invalidating hard-cancelled tickets/waits; later budgeted
+slices reclaim task state. Idle means no matching task, not complete owner
+retirement. Host roots can outlive every task, especially after fault delivery.
+
+The host first marks the owner Revoked and rejects new tasks/roots/waits and old
+completion delivery. Its bounded owner lifecycle record is reserved at owner
+creation, not allocated without bounds during teardown. It captures cursor=0
+and end=heap.root_slots(), then advances Heap::release_owner_step each budget
+turn, passing slots = min(remaining work, end - cursor), since that API does
+not accept end. Completion is cursor >= end. This scan releases single roots
+only; host-owned non-task RootRanges require their own bounded release cursor.
+Charge the actual cursor increment, including empty descriptor slots,
+not the number of released roots. No-task owners still require this scan.
+Retire only after task cleanup, the captured single-root scan, any host range cleanup and external adapter
+cleanup complete. Invalidate host root records so later cleanup cannot double
+release or reuse revoked FaultRoot handles. Reclamation of now-unreachable
+objects remains separate budgeted GC work.
+
+Missing runtime support includes MakeArray/MakeTable, IndexGet/IndexSet and
+MemberGet/MemberSet, script rest/property-bag tails, class/pattern/task features,
+full module/library binding and snapshot/restore. Compiler support for these
+constructs does not mean Vm can load them. Source/compile-only integration must
+not be presented as a playable story or runtime/GC/restoration acceptance.

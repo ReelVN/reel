@@ -158,7 +158,7 @@ persistent(id,defaults) 是显式进程级数据根，跨游戏会话存储；de
 
 ## 七 VM 与会话接口
 会话管理主剧情、UI 回调任务、交互数据和活动所有权。启动与主剧情任务归会话所有，UI 回调归发出事件的节点所有；替换场景结束旧节点及其活动，主剧情任务继续。主剧情同一时刻只有一个交互。game 服务身份稳定，game.dialogue 属于当前会话，settings.music 属于全局设置。发言更新完整文本与显现范围并追加一次历史，再等待推进；文字未显示完时首次推进只完成文字，后续推进才结束等待。choose 将输入普通表复制成引擎拥有的只读可观察选项行，id、key 与 label 均可读，id 是 InteractionId 加 key 的不透明稳定标识，列表用 id 区分连续选择；select 接收带 InteractionId 的 option.id，验证后返回业务 key。入口与剧情 helper 均为普通 fn，剧情元数据按需附加；具体语法见语言与 DSL 文档。
-VM 的 run_slice 接收指令、分配和计时检查额度，返回完成、预算让出、宿主调用、等待或错误。宿主调用携带任务身份、参数和源码位置，返回 Ready、Pending、CallScript、Continue 或 ScriptError。Continue 保存 native 算法状态并于同 Task 下一预算片继续，无外部等待。CallScript 保存纯数据 native continuation，退出原生栈后在同一 Task 压入脚本回调帧；回调可按其效果上下文挂起，返回/异常恢复 continuation。Pending 先退出 Rust 调用，再建立显式恢复记录；恢复记录保留操作、可恢复参数、返回目的槽与下一指令位置。禁止把原生调用栈当作可保存续体。同步原生重入 VM 不得跨边界挂起，异步宿主算法使用显式状态机。
+VM 的 run_slice 接收指令、内部工作、分配和计时检查额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 保留帧、根和中间故障阶段；不能把它视为普通可丢弃错误，也不能假定 GC 会释放仍活跃的 catch/展开记录。宿主调用携带任务身份、参数和源码位置，返回 Ready、Pending、CallScript、Continue、Error(NewFault) 或 ForwardFault(FaultId)。Continue 保存 native 算法状态并于同 Task 下一预算片继续，无外部等待。CallScript 保存纯数据 native continuation，退出原生栈后在同一 Task 压入脚本回调帧；回调可按其效果上下文挂起，返回/异常恢复 continuation。Pending 先退出 Rust 调用，再建立显式恢复记录；恢复记录保留操作、可恢复参数、返回目的槽与下一指令位置。禁止把原生调用栈当作可保存续体。同步原生重入 VM 不得跨边界挂起，异步宿主算法使用显式状态机。
 SessionEpoch 在新游戏、读档和回滚时更新；任务、等待、节点、回调和活动各用独立代际身份。后台完成结果只有与仍存活的 SessionId/Epoch 及等待匹配时才交付一次。取消、节点销毁和会话替换使旧结果失效。
 ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终值完成。stop 保留当前值返回 Stopped；finish 对有限活动执行到终态返回 Completed；无限重复没有完成终点，由 stop 或 owner 结束。终态为 Completed、Stopped、Cancelled、Failed，只提交一次；前两者返回相应结果，后两者在等待位置产生取消或脚本错误。所有者取消任务时直接终止该等待。所有 VM 任务遵循同一可等待对象契约，恢复身份进入快照。主剧情输入权限仍由会话管理，与函数声明形式分离。
 演出描述先纯构造，再由 run 在显式所有者下启动；顺序组合不接收已运行句柄。动作激活时读取起值。run 先计算完整动作树的属性写集合，包括 sequence 后续段、repeat 和暂停阶段，并原子保留到根活动终止。sequence 内重复属性按顺序使用；parallel 各分支的写集合必须互斥。保留冲突时保持已有活动并在 run 处报错。直接给已保留的属性赋值时先停止对应根活动，再采用赋值，即使该属性的分段尚未激活也遵守这一规则。显式 stop 使根活动及余下子动作返回 Stopped；任一子动作 Failed 则结束整组并返回错误。节点与效果目标以非拥有型代际句柄引用，run 校验目标有效；任一目标销毁使整个根活动 Cancelled，释放全部保留并向仍存活的等待者交付取消错误。所有终态只提交一次，均释放保留。持久活动图包含子活动、进度与等待关系，并提供可序列化恢复描述。描述中不保存闭包，事件回调排入普通任务。接口见 DSL 文档。
@@ -364,6 +364,12 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 [14] Kira Backend https://docs.rs/kira/latest/kira/backend/trait.Backend.html
 [15] Kira Frame https://docs.rs/kira/latest/kira/struct.Frame.html
 
+
+## Owner 撤销与执行器整合边界
+
+宿主协调完整 owner 撤销。先将 owner 标为 Revoked，禁止新增任务、根、等待注册和过期完成交付；Vm::cancel(owner) 只取消匹配任务并使硬取消票据失效，后续按预算清理任务。Idle 仅表示没有匹配 Task，不能解释为宿主根或适配器已释放。宿主生命周期记录在 owner 创建时预留有界退休容量，撤销时保存 cursor=0 与 end=heap.root_slots()，每个主线程预算 turn 推进 release_owner_step，传入 slots=min(剩余 work, end-cursor)，该 API 不直接接收 end，以 cursor>=end 判定扫描完成；按游标实际增量计费，空洞同样消耗工作。没有 Task 也必须推进根扫描。该扫描仅释放单根，宿主持有的非任务 RootRange 需独立有界释放游标，不能遗漏。任务清理、根扫描和外部资源释放全部完成才进入 Retired，随后对象由预算 GC 回收；宿主根记录同步失效，避免重复释放或继续使用旧 FaultRoot。
+
+PR #49 是执行器源码整合与原生/32 位编译检查，不构成独立执行验收。当前执行器缺少集合/索引/成员 handlers、script rest/property-bag、完整模块/类和快照；编译器支持不等于运行器支持。会话宿主与真实 UI 可先验证其 Rust 模型和事件接线，不能把这些结果冒充 Aside 剧情、跨等待 GC 或恢复验收。正式运行验收继续单列。
 
 ## S01 Rust 会话宿主实现状态
 

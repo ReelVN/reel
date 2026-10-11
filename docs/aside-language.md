@@ -456,4 +456,6 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
+执行器整合状态（PR #49）：当前分支已接入 PR #23 的 V03 源码并通过原生与 32 位非执行编译检查；未运行独立 V03、Aside 或模拟器验收。编译器已支持的 array/table、Index/Member 六类操作及脚本 rest 等仍缺运行支持，包可能在 load 时拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。

@@ -30,12 +30,24 @@ pub enum ObjectKind {
     Set,
     Range,
     Iterator,
+    FaultEnvelope,
+    FaultStack,
+    FaultCause,
+    CoreError,
 }
 impl ObjectKind {
     fn values(self) -> bool {
         !matches!(
             self,
-            Self::String | Self::Bytes | Self::TextBuffer | Self::ByteBuffer | Self::WeakRef
+            Self::String
+                | Self::Bytes
+                | Self::TextBuffer
+                | Self::ByteBuffer
+                | Self::WeakRef
+                | Self::FaultEnvelope
+                | Self::FaultStack
+                | Self::FaultCause
+                | Self::CoreError
         )
     }
     fn record(self) -> bool {
@@ -139,6 +151,10 @@ pub enum HeapError {
         actual: u32,
     },
     UninitializedSlot,
+    UninitializedCell,
+    AlreadyInitialized,
+    ReadOnly,
+    TypeMismatch,
     InvalidRangeCursor,
     AllocationFailure,
     HeapUnavailable,
@@ -213,6 +229,7 @@ pub struct Heap {
     pub(crate) objects: Slots<HeapKey, Object>,
     roots: Slots<RootKey, Root>,
     pub(crate) root_index: Vec<Option<RootKey>>,
+    pub(crate) root_scan_len: usize,
     pub(crate) ranges: Slots<RangeKey, RangeDescriptor>,
     pub(crate) range_index: Vec<Option<RangeKey>>,
     pub(crate) range_scan_len: usize,
@@ -283,6 +300,7 @@ impl Heap {
             objects: Slots::new(limits.max_objects as usize, retirement),
             roots: Slots::new(limits.max_roots as usize, retirement),
             root_index: vec![None; limits.max_roots as usize + 1],
+            root_scan_len: 0,
             ranges: Slots::new(limits.max_root_ranges as usize, retirement),
             range_index: vec![None; limits.max_root_ranges as usize + 1],
             range_scan_len: 0,
@@ -432,7 +450,7 @@ impl Heap {
         }
         Ok(())
     }
-    fn allocate(
+    pub(crate) fn allocate(
         &mut self,
         kind: ObjectKind,
         payload: Payload,
@@ -475,7 +493,15 @@ impl Heap {
         }
         if kind == ObjectKind::Cell {
             self.shade(input[0]);
-            return Ok(self.allocate(kind, Payload::Cell(Some(input[0])), None, 0));
+            return Ok(self.allocate(
+                kind,
+                Payload::Cell(crate::cell::CellState {
+                    value: Some(input[0]),
+                    contract: crate::CellContract::untyped_mutable(),
+                }),
+                None,
+                0,
+            ));
         }
         let chunks = (input.len() as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64);
         self.ensure_bytes(chunks * VALUE_CHUNK_BYTES)?;
@@ -544,11 +570,17 @@ impl Heap {
         if !obj.kind.values() {
             return Err(HeapError::WrongKind);
         }
+        if let Payload::Cell(cell) = &obj.payload {
+            if position != 0 {
+                return Err(HeapError::OutOfBounds);
+            }
+            return cell.value.ok_or(HeapError::UninitializedCell);
+        }
         obj.payload.edge(position).ok_or(HeapError::OutOfBounds)
     }
     fn editable_values(&self, key: HeapKey) -> Result<&Object, HeapError> {
         let obj = self.object(key)?;
-        if !obj.kind.values() || obj.kind == ObjectKind::Tuple {
+        if !obj.kind.values() || matches!(obj.kind, ObjectKind::Tuple | ObjectKind::Closure) {
             return Err(HeapError::WrongKind);
         }
         Ok(obj)
@@ -561,6 +593,12 @@ impl Heap {
         value: Value,
     ) -> Result<(), HeapError> {
         let key = self.key(target)?;
+        if self.object(key)?.kind == ObjectKind::Cell {
+            if position != 0 {
+                return Err(HeapError::OutOfBounds);
+            }
+            return self.cell_write(target, value);
+        }
         let obj = self.editable_values(key)?;
         if position >= obj.payload.len() {
             return Err(HeapError::OutOfBounds);
@@ -569,7 +607,7 @@ impl Heap {
         let obj = self.objects.get_mut(key).unwrap();
         match &mut obj.payload {
             Payload::Values(values) => values.set(position, value),
-            Payload::Cell(slot) => *slot = Some(value),
+            Payload::Cell(_) => unreachable!(),
             _ => unreachable!(),
         }
         obj.content_version = obj.content_version.wrapping_add(1);
@@ -785,6 +823,7 @@ impl Heap {
         self.barrier(value)?;
         let key = self.roots.insert(Root { value, owner, kind });
         self.root_index[index(key)] = Some(key);
+        self.root_scan_len = self.root_scan_len.max(index(key) + 1);
         Ok(RootToken {
             heap: self.id,
             epoch: self.epoch,
@@ -826,7 +865,7 @@ impl Heap {
         let mut released = 0;
         let end = (*cursor as usize)
             .saturating_add(slots as usize)
-            .min(self.root_index.len());
+            .min(self.root_scan_len);
         while (*cursor as usize) < end {
             let position = *cursor as usize;
             if let Some(key) = self.root_index[position]
@@ -840,8 +879,10 @@ impl Heap {
         }
         released
     }
+    /// Descriptor high-water bound, including sentinel and released holes.
+    /// Reserved capacity that has never been used is not a scan position.
     pub fn root_slots(&self) -> u32 {
-        self.root_index.len() as u32
+        self.root_scan_len as u32
     }
     pub(crate) fn scan_root(&mut self, position: usize) {
         if let Some(value) = self.root_index[position]

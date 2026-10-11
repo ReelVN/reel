@@ -104,6 +104,19 @@ fn publication_null_initialization_and_generation_reuse_have_real_distinct_work(
         f.borrow_initialized(range).unwrap_err(),
         HeapError::UninitializedSlot
     );
+    assert_eq!(
+        f.borrow_initialized_window(range, 0, 1).unwrap()[0].tag(),
+        ValueTag::Null
+    );
+    assert!(f.borrow_initialized_window(range, 3, 0).unwrap().is_empty());
+    assert_eq!(
+        f.borrow_initialized_window(range, 0, 2).unwrap_err(),
+        HeapError::UninitializedSlot
+    );
+    assert_eq!(
+        f.borrow_initialized_window(range, u32::MAX, 1).unwrap_err(),
+        HeapError::OutOfBounds
+    );
     let child = h.alloc_cell(Value::int(91)).unwrap();
     h.begin_collection().unwrap();
     single_roots(&mut h, &f);
@@ -118,6 +131,10 @@ fn publication_null_initialization_and_generation_reuse_have_real_distinct_work(
     assert_ne!(range, fresh);
     assert_eq!(
         f.read(at(range, 0)).unwrap_err(),
+        HeapError::InvalidRootRange
+    );
+    assert_eq!(
+        f.borrow_initialized_window(range, 0, 0).unwrap_err(),
         HeapError::InvalidRootRange
     );
     f.write(&mut h, at(fresh, 0), child).unwrap();

@@ -1,6 +1,9 @@
-//! Aside's storage milestone. No parser, execution scheduler or native callbacks.
+//! Aside storage, verified bytecode and a budgeted resumable execution core.
 #![forbid(unsafe_code)]
 pub mod bytecode;
+mod cell;
+pub mod executor;
+mod fault;
 mod frame_slots;
 mod gc;
 mod heap;
@@ -9,6 +12,12 @@ mod root_ranges;
 mod slots;
 mod value;
 
+pub use cell::{CellContract, CellInfo};
+pub use fault::{
+    CauseInfo, CauseKind, CloseKind, CoreErrorInfo, FaultCauseCursor, FaultCode, FaultGraphCursor,
+    FaultGraphStep, FaultId, FaultInfo, FaultRoot, FaultStackCursor, NewFault, ReplacedExit,
+    StackEntry, StackFrameKind,
+};
 pub use frame_slots::{
     FrameSlots, FrameSlotsLimits, FrameSlotsStats, RangePosition, RangeReleaseCursor,
     RangeReleaseProgress, RelocationCost, RootRanges,
