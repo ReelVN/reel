@@ -42,6 +42,21 @@ pub fn title() {
 See section 3 for opening in story/opening.aside. The examples' relative file locations match their import paths; the root module main.aside handles startup only.
 let fixes a variable's binding while leaving node properties mutable. Use let mut when the variable must be rebound to another value. Ordinary expressions are evaluated once when executed. bind(model.value) connects an observable property; derive(|| expression) connects a read-only value computed from other properties. See the second document for the complete language rules.
 
+
+### Current Single-Module Tool Progress (PR #52)
+
+check, build and the shared .asb container are implemented in the same draft PR; entry-validation fixes have passed independent acceptance for this static scope. These commands compile and validate without running a story.
+
+```sh
+reel check main.aside --format human
+reel check main.aside --format json
+reel build main.aside --output main.asb --entry main::main
+```
+
+check performs lexing, parsing, analysis, bytecode generation and B01 encoding/decoding verification without running the story. build packages bytecode, module metadata, the initializer and an explicitly selected startup function into one .asb. Omitting --entry produces a module-only artifact, not a launchable game. The entry may be private but must be a capture-free module-level function in the Ordinary context with no required arguments. The reader checks its binding against a restricted compiler initializer prologue; matching names or metadata claims alone cannot establish a module-level entry. Output does not overwrite by default; --overwrite explicitly permits atomic replacement.
+
+This increment handles one standalone source module and rejects unconnected imports/natives. Full game.toml project builds, resource packages and release.json remain incomplete, and this does not establish player loading or execution. Input reads are capped at 8 MiB, with potentially tighter compiler/bytecode budgets applied afterward. JSON diagnostics preserve UTF-8 byte ranges and zero-based byte/scalar/UTF-16 coordinates.
+
 ## 2 Describing the Whole Scene in Code
 stack layers its children from back to front in the order they are written; row arranges them horizontally, and column vertically. Ordinary nodes share position, size, opacity, visibility, transforms, and clipping. Absolute positions use logical canvas coordinates, with the origin at the top left, x increasing to the right, and y increasing downward. Layout containers arrange their children; a container's own x and y determine its position within its parent. When content extends beyond a container, a clip or scroll container determines the visible region.
 The following room places the background at the bottom, the character portrait above it, the CG above that, and the dialogue UI on top. The author's function returns named parts that the story needs to manipulate.
@@ -393,3 +408,13 @@ The core composition rules are ordinary functions, unified nodes, action values,
 V03 integration status (PR #49): executor sources have been combined with the current compiler in a separate integration branch and passed native/32-bit compile checks, not independent execution acceptance. Collections/index/member operations and script rest still have runtime support gaps; host waits, delivery roots and full restoration remain unconnected. This does not establish runnable source scenarios from this guide.
 
 S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adaptation, media and save/restore remain unconnected. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).
+
+Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
+
+Audio retirement progress (PR #56, independently accepted for the limited Rust scope):
+requests use a registered AudioOwner. Closing admission starts bounded cancellation;
+owner retirement additionally waits for actual PCM/budget-ticket and activity
+descriptor release. Stopping playback or receiving a logical terminal is not
+physical resource release. Retained completed receipts occupy bounded registration
+slots, and suspended output can delay retirement. Creator audio syntax, story
+waits and save/restore are not connected by this increment.

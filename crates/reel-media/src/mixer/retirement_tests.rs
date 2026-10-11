@@ -1,6 +1,10 @@
 use super::*;
+use crate::retirement::{
+    ActivityState, AudioActivityRetirement, AudioOwner, DescriptorRelease, PhysicalRelease,
+};
 use crate::{ChannelLayout, ReclaimLimits, SampleFormat, maintenance::JobKind};
 use reel_core::budget::{BudgetCategory, QueueLimits};
+use reel_core::identity::Scope;
 use std::{
     sync::{Barrier, atomic::AtomicUsize, mpsc},
     thread,
@@ -82,9 +86,19 @@ fn single_budget_a_to_b_waits_for_actual_background_release_and_wakes() {
         let mut mixer = KiraMixer::new(&format(), limits(1), &service).unwrap();
         let mut fill = mixer.take_fill().unwrap();
         let (_, a_ticket) = mixer.reserve_decode_budget(&pool, 1024, 1);
-        let a = DecodedSound::new(48_000, vec![[0.1, -0.2]; 64], a_ticket.unwrap()).unwrap();
+        let owner = AudioOwner::new(Scope::Process, Arc::new(()));
+        let state = ActivityState::new(crate::MediaId(1), crate::MediaEpoch(7), owner.clone());
+        let receipt = AudioActivityRetirement(state.clone());
+        let descriptor = DescriptorRelease(state.clone());
+        let mut a = DecodedSound::new(48_000, vec![[0.1, -0.2]; 64], a_ticket.unwrap()).unwrap();
+        a.track_retirement(PhysicalRelease(state));
         let a_handle = mixer.play(a).unwrap();
         wait(|| service.status().completed_accepted_data == 1);
+        owner.0.closed.store(true, Ordering::Release);
+        drop(descriptor);
+        assert!(receipt.descriptor_released());
+        assert!(!receipt.resources_released());
+        assert!(!owner.is_retired());
         wake.acknowledge();
         while wakes.try_recv().is_ok() {}
         let mut pcm = [0.0; 1024];
@@ -109,8 +123,13 @@ fn single_budget_a_to_b_waits_for_actual_background_release_and_wakes() {
         entered.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(b_ticket.is_err()); // transfer is NOT destruction or budget return
         assert_eq!(pool.usage().tickets, 1);
+        assert!(!receipt.resources_released());
+        assert!(!owner.is_retired());
         release.wait();
         wait(|| service.status().completed_sounds == 1);
+        assert!(receipt.is_retired());
+        assert!(owner.is_retired());
+        assert_eq!(pool.usage().tickets, 0);
         wakes.recv_timeout(Duration::from_secs(1)).unwrap();
         wake.acknowledge();
         let (progress, b_ticket) = mixer.reserve_decode_budget(&pool, 1024, 1);
@@ -241,7 +260,13 @@ fn accepted_original_cannot_become_last_pcm_reference_on_preempted_control() {
         entered_send.send(()).unwrap();
         control_release.wait();
     }));
-    let original = sound(&pool, 0.2);
+    let owner = AudioOwner::new(Scope::Process, Arc::new(()));
+    let evidence = ActivityState::new(crate::MediaId(1), crate::MediaEpoch(7), owner.clone());
+    let receipt = AudioActivityRetirement(evidence.clone());
+    let descriptor = DescriptorRelease(evidence.clone());
+    let mut original = sound(&pool, 0.2);
+    original.track_retirement(PhysicalRelease(evidence));
+    owner.0.closed.store(true, Ordering::Release);
     let control = thread::spawn(move || {
         mixer.play(original).unwrap();
         mixer
@@ -253,14 +278,25 @@ fn accepted_original_cannot_become_last_pcm_reference_on_preempted_control() {
     drop(fill);
     wait(|| service.status().completed_teardowns == 1); // actual Renderer/Sound already gone
     assert_eq!(pool.usage().tickets, 1); // the original owned request still holds actual PCM
+    assert!(!receipt.resources_released());
+    assert!(!receipt.is_retired());
+    assert!(!owner.is_retired());
     release.wait(); // success MUST move it to already reserved chunk, not drop on this thread
     let mixer = control.join().unwrap();
     wait(|| service.status().completed_accepted_data == 1);
     assert_eq!(pool.usage().tickets, 0);
+    assert!(receipt.resources_released());
+    assert!(!receipt.descriptor_released());
+    assert!(!owner.is_retired());
+    drop(descriptor);
+    for _ in 0..3 {
+        assert!(receipt.is_retired());
+        assert!(owner.is_retired());
+    }
     drop(mixer);
     service.drain_and_join().unwrap();
     println!(
-        "successful play preemption: worker destroys real Renderer first; original accepted DecodedSound remains charged, then moves as last PCM owner to worker; no control-thread last-reference release"
+        "successful play preemption: worker destroys real Renderer first; original accepted DecodedSound keeps physical receipt pending, then moves as last PCM owner to worker; resource evidence follows ticket release, owner evidence also waits for descriptor cleanup"
     );
 }
 
@@ -347,9 +383,20 @@ fn service_drop_detaches_and_retains_consumers_until_late_mixer_teardown() {
         },
     );
     let mut mixer = KiraMixer::new(&format(), limits(1), &service).unwrap();
-    mixer.play(sound(&pool, 0.1)).unwrap();
+    let owner = AudioOwner::new(Scope::Process, Arc::new(()));
+    let state = ActivityState::new(crate::MediaId(1), crate::MediaEpoch(7), owner.clone());
+    let receipt = AudioActivityRetirement(state.clone());
+    let mut sound = sound(&pool, 0.1);
+    sound.track_retirement(PhysicalRelease(state.clone()));
+    mixer.play(sound).unwrap();
+    owner.0.closed.store(true, Ordering::Release);
+    drop(DescriptorRelease(state));
     drop(service); // no join and no consumer destruction on this control thread
     assert_eq!(pool.usage().tickets, 1);
+    assert!(!receipt.resources_released());
+    assert!(!owner.is_retired());
     drop(mixer); // contains untaken fill and pending native Sound
-    wait(|| pool.usage().tickets == 0);
+    wait(|| owner.is_retired());
+    assert!(receipt.is_retired());
+    assert_eq!(pool.usage().tickets, 0);
 }
