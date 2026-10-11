@@ -578,7 +578,7 @@ pub(crate) struct SessionHostDiagnostic {
 }
 #[cfg(feature = "window")]
 impl SessionHostDiagnostic {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn diagnostic_step(&self) -> u8 {
         self.step
     }
