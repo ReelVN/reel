@@ -408,3 +408,11 @@ The core composition rules are ordinary functions, unified nodes, action values,
 S01 implementation status: the Rust session host now connects to a real dialogue/choice window with grapheme reveal, advancement, stable-choice filtering, cancellation and presentation-gated input. The current mouse view supports at most two rows or choices and uses explicit Rust requests, not the guide's Aside story. VM wait/root adaptation, media and save/restore remain unconnected. See [launch and limits](../../crates/reel-player/README.md#rust-session-host-window-s01).
 
 Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
+
+Audio retirement progress (PR #56, independently accepted for the limited Rust scope):
+requests use a registered AudioOwner. Closing admission starts bounded cancellation;
+owner retirement additionally waits for actual PCM/budget-ticket and activity
+descriptor release. Stopping playback or receiving a logical terminal is not
+physical resource release. Retained completed receipts occupy bounded registration
+slots, and suspended output can delay retirement. Creator audio syntax, story
+waits and save/restore are not connected by this increment.

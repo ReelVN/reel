@@ -31,6 +31,9 @@ impl Rig {
         Self::with_mixer_capacity(slots, key_bytes, 64)
     }
     fn with_mixer_capacity(slots: u32, key_bytes: u64, max_sounds: usize) -> Self {
+        Self::with_fill(slots, key_bytes, max_sounds, true)
+    }
+    fn with_fill(slots: u32, key_bytes: u64, max_sounds: usize, take_fill: bool) -> Self {
         let control_wakes = Arc::new(AtomicUsize::new(0));
         let count = control_wakes.clone();
         let control_thread = std::thread::current().id();
@@ -70,8 +73,10 @@ impl Rig {
         )
         .ok()
         .unwrap();
-        assert!(output.start(activities.take_fill().unwrap()).is_ok());
-        assert!(activities.take_fill().is_none());
+        if take_fill {
+            assert!(output.start(activities.take_fill().unwrap()).is_ok());
+            assert!(activities.take_fill().is_none());
+        }
         Self {
             reclaim,
             output,
@@ -90,7 +95,7 @@ impl Rig {
     fn service(&mut self) -> &mut AudioActivityService {
         self.activities.as_mut().unwrap()
     }
-    fn request(&self, owner: u64, looping: bool) -> AudioActivityRequest {
+    fn request(&mut self, owner: u64, looping: bool) -> AudioActivityRequest {
         let frames = vec![[0.25, -0.25]; 64];
         let ticket = self
             .pool
@@ -99,7 +104,7 @@ impl Rig {
         let sound = DecodedSound::new(48_000, frames, ticket).unwrap();
         AudioActivityRequest {
             epoch: MediaEpoch(7),
-            scope: scope(owner),
+            owner: self.service().register_owner(scope(owner)).unwrap(),
             resource: ResourceVersion {
                 key: AssetKey("tone".into()),
                 version: ContentVersion([9; 32]),
@@ -166,22 +171,24 @@ fn content_terminal_once_without_claiming_presentation_and_without_vector_growth
 }
 
 #[test]
-fn rejection_returns_original_request_and_terminal_reserves_slot_until_drain() {
+fn rejection_returns_original_request_and_physical_release_reserves_slot_after_drain() {
     let mut rig = Rig::new(1, 4);
     let first = rig.play(1, true);
     assert!(rig.service().stop(first));
-    let request = rig.request(2, false);
+    let request = rig.request(1, false);
     let ptr = request.resource.key.0.as_ptr();
     let bytes = request.sound.resident_bytes();
     let rejected = rig.service().play(request).unwrap_err();
     assert_eq!(rejected.reason.code, RejectCode::Busy);
     assert_eq!(rejected.request.resource.key.0.as_ptr(), ptr);
     assert_eq!(rejected.request.sound.resident_bytes(), bytes);
-    assert_eq!(rejected.request.scope, scope(2));
+    assert_eq!(rejected.request.owner.scope(), scope(1));
     let mut events = Vec::with_capacity(1);
     rig.service().drain(&mut events, 1, |_, _, _| true);
-    let next = rig.service().play(rejected.request).unwrap();
-    assert_ne!(first, next);
+    let still_resident = rig.service().play(rejected.request).unwrap_err();
+    assert_eq!(still_resident.reason.code, RejectCode::Busy);
+    drop(still_resident);
+    assert!(rig.service().retirement(first).is_some());
     assert_eq!(
         events[0].terminal,
         AudioActivityTerminal::Stopped {
@@ -249,12 +256,17 @@ fn epoch_fault_preserves_settled_terminal_and_fails_live_activity_once() {
     let old = rig.play(1, true);
     rig.service().stop(old);
     let active = rig.play(1, true);
+    let receipt = rig.service().retirement(active).unwrap();
+    assert_eq!(receipt.epoch(), MediaEpoch(7));
+    assert_eq!(receipt.scope(), scope(1));
     rig.output.stop().unwrap();
     let epoch = rig
         .service()
         .fail_output(AudioErrorKind::ReconfigureRequired)
         .unwrap();
     assert_eq!(epoch, MediaEpoch(8));
+    assert_eq!(receipt.epoch(), MediaEpoch(7));
+    assert_eq!(receipt.scope(), scope(1));
     assert_eq!(
         rig.service()
             .fail_output(AudioErrorKind::DeviceFailure)
@@ -334,14 +346,17 @@ fn cancellation_matches_complete_scope_and_stale_drain_needs_no_destination_spac
     let mut rig = Rig::new(4, 100);
     let cancelled = rig.play(1, true);
     let mut request = rig.request(1, true);
-    request.scope = Scope::Session {
-        session_id: SessionId(1),
-        epoch: Epoch(3),
-        owner_id: OwnerId(1),
-    };
+    request.owner = rig
+        .service()
+        .register_owner(Scope::Session {
+            session_id: SessionId(1),
+            epoch: Epoch(3),
+            owner_id: OwnerId(1),
+        })
+        .unwrap();
     let newer_session = rig.service().play(request).unwrap();
     let mut request = rig.request(1, true);
-    request.scope = Scope::Process;
+    request.owner = rig.service().register_owner(Scope::Process).unwrap();
     let process = rig.service().play(request).unwrap();
     rig.wake.acknowledge();
     let mut cancel = AudioOwnerCancellation::new(scope(1));
@@ -393,6 +408,7 @@ fn underlying_kira_rejection_preserves_owned_request_without_ledger_acceptance()
     let mut rig = Rig::with_mixer_capacity(3, 100, 1);
     rig.play(1, true);
     let request = rig.request(2, false);
+    let owner = request.owner.clone();
     let key_pointer = request.resource.key.0.as_ptr();
     let pcm_bytes = request.sound.resident_bytes();
     let rejected = rig.service().play(request).unwrap_err();
@@ -400,6 +416,16 @@ fn underlying_kira_rejection_preserves_owned_request_without_ledger_acceptance()
     assert_eq!(rejected.request.resource.key.0.as_ptr(), key_pointer);
     assert_eq!(rejected.request.sound.resident_bytes(), pcm_bytes);
     assert_eq!(rig.service().occupied(), 1);
+    rig.service().retire_owner(&owner, 3).unwrap();
+    assert!(
+        owner.is_retired(),
+        "rejected request is not an admitted obligation"
+    );
+    assert_eq!(
+        rig.pool.usage().tickets,
+        2,
+        "rejection still owns its original PCM"
+    );
     drop(rejected);
 }
 
@@ -502,4 +528,238 @@ fn full_destination_cannot_starve_cancelled_slots_or_self_wake_after_a_scan() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, blocked);
     assert_eq!(rig.service().occupied(), 0);
+}
+
+#[test]
+fn suspended_stop_and_cancel_do_not_publish_physical_retirement() {
+    let mut rig = Rig::new(2, 100);
+    let owner = rig.service().register_owner(scope(1)).unwrap();
+    let alias = owner.clone();
+    let id = rig.play(1, true);
+    let receipt = rig.service().retirement(id).unwrap();
+    let repeated = rig.service().retirement(id).unwrap();
+    assert_eq!(receipt.id(), id);
+    assert_eq!(receipt.epoch(), MediaEpoch(7));
+    assert_eq!(receipt.scope(), scope(1));
+    rig.output.suspend().unwrap();
+    assert!(rig.service().stop(id));
+    assert_eq!(rig.service().retire_owner(&owner, 0).unwrap().inspected, 0);
+    assert!(alias.is_closed());
+    assert!(!alias.is_retired());
+    for _ in 0..2 {
+        assert_eq!(rig.service().retire_owner(&owner, 1).unwrap().inspected, 1);
+    }
+    assert_eq!(rig.service().retire_owner(&owner, 1).unwrap().inspected, 0);
+    let mut events = Vec::with_capacity(1);
+    rig.service().drain(&mut events, 2, |_, _, _| true);
+    rig.service().maintain(2, 2);
+    assert!(receipt.descriptor_released());
+    assert!(!receipt.resources_released());
+    assert!(!repeated.is_retired());
+    assert!(!owner.is_retired());
+    let request = rig.request(1, false);
+    assert!(request.owner.is_closed());
+    let rejected = rig.service().play(request).unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::InvalidRequest);
+    drop(rejected);
+    rig.output.stop().unwrap();
+    drop(rig.activities.take());
+    rig.reclaim.drain_and_join().unwrap();
+    assert!(receipt.resources_released());
+    assert!(repeated.is_retired());
+    assert!(alias.is_retired());
+}
+
+#[test]
+fn owner_identity_includes_all_scope_fields_and_process() {
+    let mut rig = Rig::new(5, 100);
+    let target = rig.service().register_owner(scope(1)).unwrap();
+    let scopes = [
+        Scope::Session {
+            session_id: SessionId(2),
+            epoch: Epoch(2),
+            owner_id: OwnerId(1),
+        },
+        Scope::Session {
+            session_id: SessionId(1),
+            epoch: Epoch(3),
+            owner_id: OwnerId(1),
+        },
+        scope(2),
+        Scope::Process,
+    ];
+    let id = rig.play(1, true);
+    let others: Vec<_> = scopes
+        .into_iter()
+        .map(|scope| {
+            let mut request = rig.request(1, true);
+            request.owner = rig.service().register_owner(scope).unwrap();
+            let owner = request.owner.clone();
+            (rig.service().play(request).unwrap(), owner)
+        })
+        .collect();
+    rig.service().retire_owner(&target, usize::MAX).unwrap();
+    assert_eq!(
+        rig.service().snapshot(id).unwrap().terminal,
+        Some(AudioActivityTerminal::Cancelled)
+    );
+    for (id, owner) in others {
+        assert!(!owner.is_closed());
+        assert!(rig.service().snapshot(id).unwrap().terminal.is_none());
+    }
+}
+
+#[test]
+fn foreign_owner_is_rejected_without_consuming_pcm() {
+    let mut left = Rig::new(1, 100);
+    let mut right = Rig::new(1, 100);
+    let foreign = left.service().register_owner(scope(1)).unwrap();
+    let mut request = right.request(1, false);
+    request.owner = foreign.clone();
+    let bytes = request.sound.resident_bytes();
+    let rejected = right.service().play(request).unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::InvalidRequest);
+    assert_eq!(rejected.request.sound.resident_bytes(), bytes);
+    drop(rejected);
+    assert!(right.service().retire_owner(&foreign, 1).is_err());
+    assert!(!foreign.is_closed());
+}
+
+#[test]
+fn held_owner_and_activity_receipts_bound_capacity_until_dropped() {
+    let mut rig = Rig::new(1, 100);
+    let owner = rig.service().register_owner(scope(1)).unwrap();
+    assert_eq!(
+        rig.service().register_owner(scope(2)).unwrap_err().code,
+        RejectCode::Busy
+    );
+    let id = rig.play(1, false);
+    let receipt = rig.service().retirement(id).unwrap();
+    rig.render();
+    rig.service().maintain(1, 1);
+    let mut events = Vec::with_capacity(1);
+    rig.service().drain(&mut events, 1, |_, _, _| true);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !receipt.resources_released() {
+        rig.render();
+        rig.service().maintain(1, 1);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not release offline sound"
+        );
+        std::thread::yield_now();
+    }
+    assert!(receipt.is_retired());
+    assert!(!owner.is_retired(), "open admission keeps owner live");
+    let request = rig.request(1, false);
+    let rejected = rig.service().play(request).unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::Busy);
+    drop(rejected);
+    rig.service().retire_owner(&owner, 1).unwrap();
+    assert!(owner.is_retired());
+    drop(receipt);
+    assert!(rig.service().register_owner(scope(2)).is_err());
+    drop(owner);
+    let replacement = rig.service().register_owner(scope(2)).unwrap();
+    assert!(!replacement.is_closed());
+    assert!(!replacement.is_retired());
+}
+
+#[test]
+fn owner_retirement_is_independent_of_other_owners_sharing_budget_pool() {
+    let mut rig = Rig::new(2, 100);
+    let first = rig.service().register_owner(scope(1)).unwrap();
+    let second = rig.service().register_owner(scope(2)).unwrap();
+    let a = rig.play(1, true);
+    let b = rig.play(2, true);
+    let a_receipt = rig.service().retirement(a).unwrap();
+    let b_receipt = rig.service().retirement(b).unwrap();
+    rig.service().retire_owner(&first, 2).unwrap();
+    let mut ignored = Vec::new();
+    rig.service().drain(&mut ignored, 2, |_, _, _| false);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !first.is_retired() {
+        rig.render();
+        rig.service().maintain(2, 2);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owner failed to retire"
+        );
+        std::thread::yield_now();
+    }
+    assert!(a_receipt.is_retired());
+    assert!(!b_receipt.resources_released());
+    assert!(!second.is_closed());
+    assert!(!second.is_retired());
+    assert!(rig.pool.usage().bytes > 0);
+    assert!(rig.service().snapshot(b).unwrap().terminal.is_none());
+}
+
+#[test]
+fn service_drop_seals_owner_but_retained_output_fill_defers_resources() {
+    let mut rig = Rig::new(1, 100);
+    let owner = rig.service().register_owner(scope(1)).unwrap();
+    let id = rig.play(1, true);
+    let receipt = rig.service().retirement(id).unwrap();
+    rig.render(); // Move the accepted Sound into the retained renderer arena.
+    drop(rig.activities.take());
+    assert!(owner.is_closed());
+    assert!(receipt.descriptor_released());
+    assert!(!receipt.resources_released());
+    assert!(!owner.is_retired());
+    rig.output.stop().unwrap();
+    rig.reclaim.drain_and_join().unwrap();
+    assert!(owner.is_retired());
+    assert!(receipt.is_retired());
+}
+
+#[test]
+fn service_drop_with_untaken_fill_releases_pcm_and_descriptor_on_worker() {
+    let mut rig = Rig::with_fill(1, 100, 1, false);
+    let owner = rig.service().register_owner(scope(1)).unwrap();
+    let id = rig.play(1, true);
+    let receipt = rig.service().retirement(id).unwrap();
+    assert!(!receipt.resources_released());
+    drop(rig.activities.take());
+    assert!(owner.is_closed());
+    rig.reclaim.drain_and_join().unwrap();
+    assert!(receipt.descriptor_released());
+    assert!(receipt.resources_released());
+    assert!(receipt.is_retired());
+    assert!(owner.is_retired());
+    assert_eq!(rig.pool.usage().bytes, 0);
+}
+
+#[test]
+fn physical_release_alone_cannot_retire_owner_with_undrained_descriptor() {
+    let mut rig = Rig::new(1, 100);
+    let owner = rig.service().register_owner(scope(1)).unwrap();
+    let id = rig.play(1, false);
+    let receipt = rig.service().retirement(id).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !receipt.resources_released() {
+        rig.render();
+        rig.service().maintain(1, 1);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not release PCM"
+        );
+        std::thread::yield_now();
+    }
+    rig.service().retire_owner(&owner, 1).unwrap();
+    assert!(matches!(
+        rig.service().snapshot(id).unwrap().terminal,
+        Some(AudioActivityTerminal::Completed { .. })
+    ));
+    assert_eq!(rig.pool.usage().bytes, 0);
+    assert!(!receipt.descriptor_released());
+    assert!(!receipt.is_retired());
+    assert!(!owner.is_retired());
+    let mut full = Vec::new();
+    rig.service().drain(&mut full, 1, |_, _, _| true);
+    assert!(!owner.is_retired());
+    rig.service().drain(&mut full, 1, |_, _, _| false);
+    assert!(receipt.descriptor_released());
+    assert!(receipt.is_retired());
+    assert!(owner.is_retired());
 }

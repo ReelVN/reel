@@ -67,4 +67,7 @@ Game authors can start with the [English creator guide](guide/en.md). Engine con
 
 [音频活动账本（#53）](https://github.com/jhq223/reel/pull/53) 在独立草稿 PR 中提供稳定媒体身份、Scope 取消、精确等待过滤、有界维护与终态保留。Rust 内容消费完成不等于硬件播放完成或 PCM 释放；尚未接脚本会话、完整恢复或作者音频 API。离线 Kira 检查及限定 Rust 范围独立验收通过；仍为尚未合并的草稿。[接口和调度边界](../crates/reel-media/README.md#logical-audio-activities-pr-53)。
 
+
+[音频物理退休（#56）](https://github.com/jhq223/reel/pull/56) 基于 #53 增加有界 owner/活动资源释放凭据，区分逻辑完成、实际 PCM/票据释放和描述符释放。已通过限定音频 Rust 独立验收；尚未接入脚本等待或会话外部退休门。[接口与容量边界](../crates/reel-media/README.md#physical-owner-retirement-pr-56)。
+
 [作者检查与构建（#52）](https://github.com/jhq223/reel/pull/52) 已在草稿 PR 中实现，入口校验修复已通过限定静态独立验收。check 提供带位置的人读/JSON 诊断和非执行编译验证；build 按 ASB v1 保存模块元数据、initializer 和可选游戏入口。完整项目/资源发行、native/import 链接与实际玩家运行不属于当前已完成范围。详见架构中的 ASB v1 单模块容器及双语指南。
