@@ -1,4 +1,4 @@
-//! Execution regressions supplied as source only. This task does not run them.
+//! Execution regressions for bounded collections, spread/rest and their GC roots.
 use super::*;
 
 fn op(opcode: Opcode, a: u32, b: u32, c: u32) -> Instruction {
@@ -481,25 +481,26 @@ fn spread_detects_overwrite_between_capture_steps() {
         .unwrap();
     let mut source = None;
     for _ in 0..1000 {
-        if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied() {
-            if matches!(s.phase, ScriptPhase::Body) && s.pc == Pc(4) {
-                vm.run_slice(
-                    task,
-                    SliceBudget {
-                        instructions: 1,
-                        work: 1,
-                        ..SliceBudget::default()
-                    },
-                    || 0,
-                )
-                .unwrap();
-                let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
-                    panic!()
-                };
-                assert!(matches!(s.phase, ScriptPhase::Spread { .. }));
-                source = Some(vm.value(s.env, 2).unwrap());
-                break;
-            }
+        if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied()
+            && matches!(s.phase, ScriptPhase::Body)
+            && s.pc == Pc(4)
+        {
+            vm.run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work: 1,
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap();
+            let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
+                panic!()
+            };
+            assert!(matches!(s.phase, ScriptPhase::Spread { .. }));
+            source = Some(vm.value(s.env, 2).unwrap());
+            break;
         }
         // Exactly one instruction admission ends at the spread phase.
         tick(&mut vm, task);
@@ -602,11 +603,12 @@ fn table_lookup_version_change_and_cooperative_cancel_release_key_stack() {
             .unwrap();
         let mut target = None;
         for _ in 0..1000 {
-            if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied() {
-                if s.table_work.is_some() && matches!(s.phase, ScriptPhase::Equality { .. }) {
-                    target = Some(vm.value(s.env, 1).unwrap());
-                    break;
-                }
+            if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied()
+                && s.table_work.is_some()
+                && matches!(s.phase, ScriptPhase::Equality { .. })
+            {
+                target = Some(vm.value(s.env, 1).unwrap());
+                break;
             }
             tick(&mut vm, task);
         }
@@ -802,10 +804,11 @@ fn packed_destination_package(len: u32, opcode: Opcode) -> BytecodePackage {
 }
 fn reach_packed_append(vm: &mut Vm, task: TaskId, len: u32) -> Value {
     for _ in 0..10000 {
-        if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied() {
-            if s.pc == Pc(len + 2) && matches!(s.phase, ScriptPhase::Body) {
-                return vm.value(s.regs, len).unwrap();
-            }
+        if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied()
+            && s.pc == Pc(len + 2)
+            && matches!(s.phase, ScriptPhase::Body)
+        {
+            return vm.value(s.regs, len).unwrap();
         }
         assert!(matches!(tick(vm, task), RunOutcome::BudgetYield(_)));
     }
