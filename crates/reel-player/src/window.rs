@@ -395,14 +395,15 @@ impl State {
             .frame
             .checked_add(1)
             .ok_or("frame identity exhausted")?;
-        self.recorded_projection = self
-            .session
-            .as_ref()
-            .map(|session| session.ui.projection_stamp());
         let source = self
             .bridge
             .record(FrameId(self.frame))
             .map_err(|e| format!("record: {e:?}"))?;
+        // Recording lays out the viewport and may clamp its scroll offset.
+        self.recorded_projection = self
+            .session
+            .as_ref()
+            .map(|session| session.ui.projection_stamp());
         let snapshot = self
             .registry
             .freeze(&self.resources, &self.pool)
@@ -526,6 +527,11 @@ impl State {
                 button: Some(PointerButton::Primary),
             }),
             PointerKind::Cancel => PointerEvent::Cancel(pointer),
+            PointerKind::Scroll(delta) => PointerEvent::Scroll(PointerScrollEvent {
+                pointer,
+                state,
+                delta,
+            }),
         };
         if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
             eprintln!(
@@ -614,6 +620,7 @@ pub(crate) enum PointerKind {
     Down,
     Up,
     Cancel,
+    Scroll(ScrollDelta),
 }
 
 impl Drop for State {

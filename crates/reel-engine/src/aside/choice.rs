@@ -37,8 +37,10 @@ impl ChoiceReader {
             return Err(AdapterError::Input("choose requires an array"));
         }
         let count = heap.sequence_len(array)?;
-        if count == 0 || count as usize > max_rows.min(2) {
-            return Err(AdapterError::Input("player requires one or two choices"));
+        if count == 0 || count as usize > max_rows {
+            return Err(AdapterError::Input(
+                "choice count exceeds session capacity or is empty",
+            ));
         }
         let mut roots = Vec::new();
         roots

@@ -403,9 +403,6 @@ impl SessionVm {
         locale: &str,
     ) -> Result<InteractionId, AdapterError> {
         self.check_wait(session, ticket)?;
-        if lines.len() > 2 {
-            return Err(AdapterError::Input("player dialogue limit"));
-        }
         let publication =
             publication::Publication::stage(session, |s| s.begin_say(self.owner, lines, locale))?;
         let interaction = publication.id();
@@ -423,8 +420,8 @@ impl SessionVm {
     ) -> Result<InteractionId, AdapterError> {
         self.check_wait(session, ticket)?;
         let limits = session.limits();
-        if rows.len() > limits.max_choices.min(2) {
-            return Err(AdapterError::Input("player choice count limit"));
+        if rows.len() > limits.max_choices {
+            return Err(AdapterError::Input("session choice count limit"));
         }
         let mut decoded = Vec::new();
         decoded

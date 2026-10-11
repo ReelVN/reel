@@ -2,6 +2,7 @@ use crate::maintenance::{
     AudioReclaimService, DeferredManager, DeferredRenderer, Envelope, Job, RetirementSignal,
     TeardownCredit, try_producer,
 };
+use crate::retirement::PhysicalRelease;
 use crate::{AudioError, AudioErrorKind, AudioFormat, PcmFill};
 use kira::{
     AudioManager, AudioManagerSettings, Frame, Tween,
@@ -86,7 +87,14 @@ impl Default for MixerLimits {
 #[derive(Debug)]
 pub struct DecodedSound {
     data: StaticSoundData,
-    budget: Arc<BudgetTicket>,
+    budget: Arc<Residency>,
+}
+/// Every internal PCM alias owns this same reservation. Declaration order ensures
+/// the actual ticket is returned before the final physical-release publication.
+#[derive(Debug)]
+struct Residency {
+    ticket: BudgetTicket,
+    release: Option<PhysicalRelease>,
 }
 pub type DecodedSoundRequest = (u32, Vec<[f32; 2]>, BudgetTicket);
 pub const MAX_DECODED_FRAMES: usize = 8_388_608;
@@ -123,7 +131,10 @@ impl DecodedSound {
         };
         Ok(Self {
             data,
-            budget: Arc::new(ticket),
+            budget: Arc::new(Residency {
+                ticket,
+                release: None,
+            }),
         })
     }
     /// Loop the decoded region using Kira's transport, without duplicating PCM.
@@ -132,19 +143,33 @@ impl DecodedSound {
         self
     }
     pub fn resident_bytes(&self) -> u64 {
-        self.budget.bytes()
+        self.budget.ticket.bytes()
+    }
+    /// Called before admission while this request has no internal PCM aliases.
+    pub(crate) fn track_retirement(&mut self, release: PhysicalRelease) {
+        let residency =
+            Arc::get_mut(&mut self.budget).expect("unaccepted request uniquely owns its residency");
+        assert!(residency.release.is_none(), "request already tracked");
+        residency.release = Some(release);
+    }
+    /// Failed admission has already discarded every temporary Kira alias. The
+    /// caller discards its provisional evidence; returned PCM remains unaccepted.
+    pub(crate) fn untrack_retirement(&mut self) {
+        let residency =
+            Arc::get_mut(&mut self.budget).expect("rejected request uniquely owns its residency");
+        drop(residency.release.take());
     }
 }
 struct BudgetedData {
     data: StaticSoundData,
-    budget: Arc<BudgetTicket>,
+    budget: Arc<Residency>,
     signal: Arc<RetirementSignal>,
 }
 struct BudgetedSound {
     // Rust drops fields in declaration order: native Sound/PCM FIRST, ticket
     // SECOND. The private frame Arc has no externally held Weak references.
     sound: Box<dyn Sound>,
-    _budget: Arc<BudgetTicket>,
+    _budget: Arc<Residency>,
     signal: Arc<RetirementSignal>,
 }
 impl Sound for BudgetedSound {

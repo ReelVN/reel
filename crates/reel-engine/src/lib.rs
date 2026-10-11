@@ -2,7 +2,7 @@
 //!
 //! This owns ADV dialogue, copied choice rows, input permission and one terminal
 //! record. The separate [`aside`] adapter binds this model to actual VM tickets
-//! and rooted waits; its source is integrated but runtime acceptance is pending.
+//! and rooted waits, covered by real compiler/VM execution checks.
 //! `CleanupOnly` never grants resume permission. A claimed `Resume` record must
 //! still be checked against session/epoch, owner liveness and the actual wait.
 

@@ -158,6 +158,21 @@ Those samples report parse, analysis and `execution=waiting_runtime` separately.
 [SEMANTIC_PERFORMANCE.md](SEMANTIC_PERFORMANCE.md) records large-module timing,
 allocation/retained storage, named-signature scaling and bounded diagnostics.
 
+## Source execution
+
+The earlier L04–L09 reports above describe their original static acceptance.
+Current `tests/execution.rs` compiles source, round-trips B01, initializes a module
+and runs its entry on the real V03 VM, including tiny slices with interleaved GC.
+It checks arithmetic, shared captures, defaults, finally, prepared index targets,
+members, optional short-circuiting, spread/rest and loops against scalar results.
+
+```sh
+cargo test --locked -p aside-compiler --test execution
+cargo test --locked -p aside-compiler --test execution --release
+```
+
+Full-language coverage and T01 fixture execution remain separate from this matrix.
+
 ## Call spread/rest (L09)
 
 Issue #46 / PR #47 adds source-order ArgsNew/Push/Named/Spread followed by a

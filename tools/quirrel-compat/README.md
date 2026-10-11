@@ -16,7 +16,7 @@ cargo test --locked -p aside-compiler --test semantic_quirrel
 ```
 
 需要主动再生成已审查衍生文件时使用 `cargo run --locked -p reel-dev -- convert --write`。
-Rust 检查器覆盖源 SHA、token 边界、原断言完整保留、完整双向 UTF-8 映射、
+Rust 检查器覆盖编辑原文匹配、token 边界、原断言完整保留、完整双向 UTF-8 映射、
 1,296 个 fixtures 的六类分类，以及 accepted T01 的 10 个源文件/32 处断言映射。
 源码 inventory 明确标记 `original_run=not_run`、`aside_parse=not_run` 和
 `aside_execution=waiting_runtime`；原始运行、解析/分析、Aside 执行相互独立。
@@ -65,10 +65,10 @@ Unix 超时终止自有进程组中的包装器及后代，并限制等待管道
 
 ## 转换和分类
 
-`recipes.json` 是 **10 份固定 hash 的人工逐项审查清单**，不是全库自动转换器。
+`recipes.json` 是 **首批 10 份人工逐项审查清单**，不是全库自动转换器。
 每个编辑写明原 UTF-8 字节范围、完整原文本、新文本和具体语法/绑定理由。
 `tools/reel-dev/src/fixtures.rs` 的 Rust 扫描器 区分 token、字符串、注释和空白，禁止切开 token；只处理已审查的源文件。
-它不宣称实现完整 Quirrel grammar。未匹配 hash、重叠范围、错误原文本或断言变化均直接失败。
+它不宣称实现完整 Quirrel grammar。重叠范围、错误原文本或断言变化均直接失败；正常源码修改不受历史哈希锁定，更新转换规则时同步衍生源码和映射。
 没有全库 regex 替换；上游 runner 自身的 seed 选择 heuristic 原样保留。
 
 已审查转换包括声明/闭包参数边界、对象字段、catch 绑定、完整语句分号，以及具体常量

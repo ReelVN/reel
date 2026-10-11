@@ -82,7 +82,8 @@ Text reads use chunks bounded by min(4096, heap mutation limit), with UTF-8
 decoding after the complete copy. The default 64 KiB interaction limit includes
 metadata, locale and generated content identity, so it is not a 64 KiB narrator
 payload guarantee. VM constant admission still defaults to 4096 bytes; the
-long-key regression source explicitly raises it. Choice lookup work is metered
+long-key regression source explicitly raises it. Dialogue/choice counts use SessionLimits without a smaller player-specific cap.
+Choice lookup work is metered
 separately; string copying and publication are synchronous and byte-bounded, not
 charged as VM instructions or wholly covered by player `host_work`.
 

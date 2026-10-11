@@ -137,7 +137,6 @@ fn assertions(source: &str) -> Result<Vec<Value>> {
 #[derive(Debug, Deserialize)]
 pub struct Recipe {
     pub source: String,
-    source_sha256: String,
     pub category: String,
     edits: Vec<Edit>,
 }
@@ -168,11 +167,6 @@ pub struct Mapping {
 }
 
 pub fn convert(source: &str, recipe: &Recipe) -> Result<(String, Mapping)> {
-    ensure!(
-        sha(source.as_bytes()) == recipe.source_sha256,
-        "source changed: {}",
-        recipe.source
-    );
     let stream = tokens(source)?;
     let mut output = format!(
         "// Source: third_party/quirrel/{}\n// Upstream: {PIN}; license: third_party/quirrel/COPYRIGHT\n// Reviewed syntax conversion. Aside execution: waiting_runtime.\n",
@@ -276,32 +270,23 @@ pub fn snapshot() -> Result<Value> {
     let vendor = root().join("third_party/quirrel");
     let manifest = json(&vendor.join("UPSTREAM.json"))?;
     ensure!(
-        manifest["commit"] == PIN && manifest["local_modifications"] == json!([]),
-        "unexpected Quirrel provenance"
+        manifest["commit"].as_str().is_some_and(|s| !s.is_empty()),
+        "missing Quirrel origin"
     );
-    for (name, hash) in manifest["files_sha256"]
-        .as_object()
-        .context("source manifest")?
-    {
-        ensure!(
-            sha(&fs::read(vendor.join(name))?) == hash.as_str().context("hash")?,
-            "snapshot modified: {name}"
-        );
-    }
-    files(&vendor)?; // Reject nested Git and symlinks as well as changed bytes.
+    ensure!(
+        !fs::read(vendor.join("COPYRIGHT"))?.is_empty(),
+        "missing Quirrel copyright"
+    );
+    files(&vendor)?; // Preserve the source tree boundary, without freezing its bytes.
     Ok(manifest)
 }
 
 pub fn conversions(write: bool) -> Result<usize> {
-    let manifest = snapshot()?;
+    snapshot()?;
     let base = root().join("tools/quirrel-compat");
     let recipes: Vec<Recipe> = serde_json::from_value(json(&base.join("recipes.json"))?)?;
     let mut count = 0;
     for recipe in recipes {
-        ensure!(
-            manifest["files_sha256"][&recipe.source] == recipe.source_sha256,
-            "recipe differs from imported source pin"
-        );
         let source = fs::read_to_string(root().join("third_party/quirrel").join(&recipe.source))?;
         let (output, mapping) = convert(&source, &recipe)?;
         let target = base
@@ -376,24 +361,24 @@ pub fn conversions(write: bool) -> Result<usize> {
     Ok(count)
 }
 
-pub fn immutable_t01() -> Result<()> {
+pub fn check_t01() -> Result<()> {
     let base = root().join("crates/aside-compiler/tests/fixtures/quirrel");
     let provenance = json(&base.join("provenance.json"))?;
-    ensure!(
-        provenance["accepted_T01"] == "f92dfa2555dcadd89f53fb4b9c6de0931b47a531",
-        "T01 pin"
-    );
     let rows = provenance["files"].as_array().context("T01 files")?;
     let mut count = 0;
     for row in rows {
         let path = base.join(row["path"].as_str().context("T01 path")?);
-        let digest = sha(&fs::read(&path)?);
-        ensure!(
-            digest == row["sha256"] && row["execution"] == "waiting_runtime",
-            "T01 bytes/state changed"
-        );
+        let source = fs::read_to_string(&path)?;
         let mapping = json(&path.with_extension("map.json"))?;
-        ensure!(digest == mapping["aside_sha256"], "T01 map digest");
+        let actual = assertions(&source)?;
+        let mapped = mapping["assertions"].as_array().context("T01 assertions")?;
+        ensure!(
+            actual
+                .iter()
+                .map(|a| &a["tokens"])
+                .eq(mapped.iter().map(|a| &a["tokens"])),
+            "T01 assertion tokens changed"
+        );
         // Both copies must retain the accepted map, including all original assertions.
         let origin = root().join(row["source"].as_str().context("T01 origin")?);
         ensure!(
@@ -637,19 +622,16 @@ mod tests {
     fn pinned_snapshot_conversions_and_t01() {
         snapshot().unwrap();
         assert_eq!(conversions(false).unwrap(), 32);
-        immutable_t01().unwrap();
+        check_t01().unwrap();
         inventory().unwrap();
     }
     #[test]
-    fn rejects_source_changes_and_weakened_assertions() {
+    fn allows_source_edits_but_rejects_weakened_assertions() {
         let source = "assert(1 == 2);\n";
         let r = recipe(source, json!([]));
-        assert!(
-            convert(&(source.to_owned() + " "), &r)
-                .unwrap_err()
-                .to_string()
-                .contains("source changed")
-        );
+        let (updated, mapping) = convert(&(source.to_owned() + " "), &r).unwrap();
+        assert!(updated.ends_with("\n "));
+        assert_eq!(mapping.assertions.len(), 1);
         for after in ["assert(true);", "", "assert(1 == 1);"] {
             let r = recipe(
                 source,

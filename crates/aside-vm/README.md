@@ -147,7 +147,7 @@ PR #49 ports the PR #23 executor onto the current shared B01/compiler baseline.
 Native Windows debug/release checks now execute the VM and the later #54/#55
 collection/session integration. Source-to-codec-to-VM checks cover tiny budgets
 with interleaved GC, calls/defaults, closures, exceptions and collections.
-Run `cargo test --locked -p aside-vm -p aside-compiler --test execution` for the
+Run `cargo test --locked -p aside-compiler --test execution` for the
 source pipeline, or `cargo test --locked -p aside-vm` for VM contracts.
 
 Vm::load takes a VerifiedProgram and independently trusted RuntimeSupport native

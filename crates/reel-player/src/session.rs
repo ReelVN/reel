@@ -16,12 +16,16 @@ use reel_ui::{
     bridge::PresentationBridge,
     core::*,
     imaging::Painter,
-    kurbo::{Axis, Point, Rect, Size},
-    layout::{LenReq, Length},
+    kurbo::{Axis, Point, Rect, Size, Vec2},
+    layout::{LenDef, LenReq, Length, SizeDef},
     peniko::Color,
     widgets::{Button, ButtonPress, Label},
 };
-use std::{cell::RefCell, ops::Range, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -31,6 +35,7 @@ type Error = Box<dyn std::error::Error>;
 pub struct ProjectionStamp {
     revision: u64,
     interaction: Option<InteractionId>,
+    scroll_bits: u64,
 }
 #[derive(Default)]
 struct InputBinding {
@@ -64,15 +69,6 @@ struct Projection {
 impl Projection {
     fn from_session(session: &Session) -> Result<Self, Error> {
         let view = session.view();
-        match view.interaction {
-            Some(InteractionView::Dialogue(dialogue)) if dialogue.lines().len() > 2 => {
-                return Err("the compact session view supports at most two dialogue rows".into());
-            }
-            Some(InteractionView::Choice(choice)) if choice.options().len() > 2 => {
-                return Err("the compact session view supports at most two choice buttons".into());
-            }
-            _ => {}
-        }
         let mut projection = Self {
             interaction: None,
             lines: vec![],
@@ -136,6 +132,10 @@ pub struct SessionWidget {
     lines: Vec<LineWidgets>,
     choices: Vec<ChoiceWidget>,
     background: Color,
+    scroll: Rc<Cell<f64>>,
+    content_height: f64,
+    viewport: Size,
+    dialogue_rect: Rect,
 }
 impl SessionWidget {
     fn new(ui: &SessionUi) -> Self {
@@ -145,16 +145,24 @@ impl SessionWidget {
             source_owner: ui.source_owner,
             binding: ui.binding.clone(),
             inputs: ui.inputs.clone(),
-            title: WidgetPod::new(Label::new(
-                "Rust session host diagnostic — no Aside execution",
-            )),
+            title: WidgetPod::new(Label::new("Reel")),
             status: WidgetPod::new(Label::new(ui.status_text())),
             lines: vec![],
             choices: vec![],
             background: ui.background,
+            scroll: ui.scroll.clone(),
+            content_height: 420.,
+            viewport: Size::new(640., 420.),
+            dialogue_rect: Rect::new(30., 245., 610., 380.),
         };
         widget.make_children(&ui.choice_owners);
         widget
+    }
+    fn current_stamp(&self) -> ProjectionStamp {
+        ProjectionStamp {
+            scroll_bits: self.scroll.get().to_bits(),
+            ..self.stamp
+        }
     }
     fn make_children(&mut self, owners: &[OwnerHandle]) {
         self.lines = self
@@ -172,7 +180,7 @@ impl SessionWidget {
             .projection
             .choices
             .iter()
-            .zip(owners)
+            .zip(owners.iter().cycle())
             .map(|(row, owner)| ChoiceWidget {
                 id: row.id.clone(),
                 owner: *owner,
@@ -182,6 +190,9 @@ impl SessionWidget {
     }
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
         let same_interaction = this.widget.projection.interaction == ui.projection.interaction;
+        if !same_interaction {
+            this.widget.scroll.set(0.);
+        }
         if same_interaction && this.widget.lines.len() == ui.projection.lines.len() {
             for (widgets, row) in this.widget.lines.iter_mut().zip(&ui.projection.lines) {
                 if let Some(mut label) = this.ctx.get_mut(&mut widgets.text) {
@@ -207,7 +218,7 @@ impl SessionWidget {
         this.widget.projection = ui.projection.clone();
         this.widget.stamp = ui.stamp;
         this.widget.background = ui.background;
-        this.ctx.request_paint_only();
+        this.ctx.request_layout();
     }
 }
 impl Widget for SessionWidget {
@@ -218,6 +229,24 @@ impl Widget for SessionWidget {
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
+        if let PointerEvent::Scroll(event) = event {
+            let delta = match event.delta {
+                ScrollDelta::LineDelta(_, y) => f64::from(y) * 40.,
+                ScrollDelta::PageDelta(_, y) => f64::from(y) * self.viewport.height,
+                ScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor(),
+            };
+            if delta.is_finite() {
+                let offset = (self.scroll.get() + delta)
+                    .clamp(0., (self.content_height - self.viewport.height).max(0.));
+                if offset != self.scroll.get() {
+                    self.scroll.set(offset);
+                    *self.binding.borrow_mut() = InputBinding::default();
+                    ctx.request_layout();
+                    ctx.set_handled();
+                }
+            }
+            return;
+        }
         // Choice controls own their click. It cannot fall through into a dialogue
         // that is installed after this dispatch completes.
         if !self.choices.is_empty() {
@@ -229,16 +258,18 @@ impl Widget for SessionWidget {
         match event {
             PointerEvent::Down(e)
                 if ctx.target() == ctx.widget_id()
-                    && Rect::new(30., 245., 610., 380.)
-                        .contains(ctx.local_position(e.state.position)) =>
+                    && self.dialogue_rect.contains(
+                        ctx.local_position(e.state.position) + Vec2::new(0., self.scroll.get()),
+                    ) =>
             {
                 ctx.capture_pointer();
                 ctx.set_handled();
             }
             PointerEvent::Up(e) if ctx.is_active() => {
-                if self.binding.borrow().permits(self.stamp)
-                    && Rect::new(30., 245., 610., 380.)
-                        .contains(ctx.local_position(e.state.position))
+                if self.binding.borrow().permits(self.current_stamp())
+                    && self.dialogue_rect.contains(
+                        ctx.local_position(e.state.position) + Vec2::new(0., self.scroll.get()),
+                    )
                 {
                     self.inputs.borrow_mut().get_or_insert(UiInput {
                         owner: self.source_owner,
@@ -264,7 +295,7 @@ impl Widget for SessionWidget {
         if action.downcast_ref::<ButtonPress>().is_some()
             && let Some(choice) = self.choices.iter().find(|row| row.button.id() == source)
         {
-            if self.binding.borrow().permits(self.stamp) {
+            if self.binding.borrow().permits(self.current_stamp()) {
                 self.inputs.borrow_mut().get_or_insert(UiInput {
                     owner: choice.owner,
                     action: InputAction::Select(choice.id.clone()),
@@ -289,60 +320,74 @@ impl Widget for SessionWidget {
         _: &mut MeasureCtx<'_>,
         _: &PropertiesRef<'_>,
         axis: Axis,
-        _: LenReq,
+        request: LenReq,
         _: Option<Length>,
     ) -> Length {
-        Length::px(if axis == Axis::Horizontal { 640. } else { 420. })
-    }
-    fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, _: Size) {
-        ctx.run_layout(&mut self.title, Size::new(580., 36.));
-        ctx.place_child(&mut self.title, Point::new(30., 20.));
-        ctx.run_layout(&mut self.status, Size::new(580., 30.));
-        ctx.place_child(&mut self.status, Point::new(30., 385.));
-        let height = 125. / self.lines.len().max(1) as f64;
-        for (index, line) in self.lines.iter_mut().enumerate() {
-            let y = 250. + index as f64 * height;
-            ctx.run_layout(&mut line.speaker, Size::new(540., 24.));
-            ctx.place_child(&mut line.speaker, Point::new(45., y));
-            ctx.run_layout(&mut line.text, Size::new(540., height - 24.));
-            ctx.place_child(&mut line.text, Point::new(45., y + 24.));
+        match request {
+            LenReq::FitContent(space) => space,
+            _ => Length::px(if axis == Axis::Horizontal { 640. } else { 420. }),
         }
-        for (index, choice) in self.choices.iter_mut().enumerate() {
-            ctx.run_layout(&mut choice.button, Size::new(500., 45.));
-            ctx.place_child(
-                &mut choice.button,
-                Point::new(70., 250. + index as f64 * 55.),
-            );
+    }
+    fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
+        self.viewport = size;
+        ctx.set_clip_path(size.to_rect());
+        let text_width = (size.width - 90.).max(0.);
+        let button_width = (size.width - 140.).max(0.);
+        let preferred = |width| SizeDef::new(LenDef::Fixed(Length::px(width)), LenDef::MaxContent);
+        let mut y = 250.;
+        let mut positions = Vec::with_capacity(self.lines.len() + self.choices.len());
+        for line in &mut self.lines {
+            let speaker = ctx.compute_size(&mut line.speaker, preferred(text_width), size.into());
+            let text = ctx.compute_size(&mut line.text, preferred(text_width), size.into());
+            let speaker_height = speaker.height.max(24.);
+            let text_height = text.height.max(28.);
+            ctx.run_layout(&mut line.speaker, Size::new(text_width, speaker_height));
+            ctx.run_layout(&mut line.text, Size::new(text_width, text_height));
+            positions.push((y, speaker_height));
+            y += speaker_height + text_height + 10.;
+        }
+        for choice in &mut self.choices {
+            let preferred =
+                ctx.compute_size(&mut choice.button, preferred(button_width), size.into());
+            let height = preferred.height.max(45.);
+            ctx.run_layout(&mut choice.button, Size::new(button_width, height));
+            positions.push((y, height));
+            y += height + 10.;
+        }
+        let bottom = y.max(380.);
+        self.dialogue_rect = Rect::new(30., 245., (size.width - 30.).max(30.), bottom);
+        self.content_height = bottom + 40.;
+        let offset = self
+            .scroll
+            .get()
+            .clamp(0., (self.content_height - size.height).max(0.));
+        self.scroll.set(offset);
+        ctx.run_layout(&mut self.title, Size::new((size.width - 60.).max(0.), 36.));
+        ctx.place_child(&mut self.title, Point::new(30., 20. - offset));
+        ctx.run_layout(&mut self.status, Size::new((size.width - 60.).max(0.), 30.));
+        ctx.place_child(&mut self.status, Point::new(30., bottom + 5. - offset));
+        for (line, &(y, height)) in self.lines.iter_mut().zip(&positions) {
+            ctx.place_child(&mut line.speaker, Point::new(45., y - offset));
+            ctx.place_child(&mut line.text, Point::new(45., y + height - offset));
+        }
+        for (choice, &(y, _)) in self.choices.iter_mut().zip(&positions[self.lines.len()..]) {
+            ctx.place_child(&mut choice.button, Point::new(70., y - offset));
         }
     }
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
-        painter.fill_rect(Rect::new(0., 0., 640., 420.), self.background);
+        painter.fill_rect(self.viewport.to_rect(), self.background);
+        let offset = Vec2::new(0., -self.scroll.get());
         painter.fill_rect(
-            Rect::new(30., 70., 610., 235.),
+            Rect::new(30., 70., (self.viewport.width - 30.).max(30.), 235.) + offset,
             Color::from_rgb8(122, 151, 157),
         );
-        painter.fill_rect(
-            Rect::new(390., 85., 580., 225.),
-            Color::from_rgb8(187, 222, 225),
-        );
-        painter.fill_rect(Rect::new(30., 245., 610., 380.), Color::WHITE);
-        for index in 0..self.choices.len() {
-            painter.fill_rect(
-                Rect::new(
-                    70.,
-                    250. + index as f64 * 55.,
-                    570.,
-                    295. + index as f64 * 55.,
-                ),
-                Color::from_rgb8(219, 230, 238),
-            );
-        }
+        painter.fill_rect(self.dialogue_rect + offset, Color::WHITE);
     }
     fn accessibility_role(&self) -> Role {
         Role::GenericContainer
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_label("Rust session host diagnostic; click dialogue to reveal then advance, or select a choice");
+        node.set_label("Story; scroll to see all content, click dialogue to reveal then advance, or select a choice");
     }
     fn children_ids(&self) -> ChildrenIds {
         let mut ids = ChildrenIds::from_slice(&[self.title.id(), self.status.id()]);
@@ -359,6 +404,8 @@ impl Widget for SessionWidget {
 }
 
 fn allocate_choice_owners(session: &mut Session, count: usize) -> Result<Vec<OwnerHandle>, Error> {
+    // A choice projection shares one lifetime. ChoiceId still identifies each row.
+    let count = usize::from(count != 0);
     let mut owners = Vec::with_capacity(count);
     for _ in 0..count {
         match session.create_owner() {
@@ -376,8 +423,8 @@ fn allocate_choice_owners(session: &mut Session, count: usize) -> Result<Vec<Own
 
 /// Owns a real Session and maps accepted UI events to its public host boundary.
 /// The future executor adapter can drain Session completions independently.
-/// This compact 640×420 view accepts up to two dialogue rows or choice buttons;
-/// larger host interactions are rejected before replacing the displayed view.
+/// Content uses natural heights and scrolling within the presented viewport.
+/// Session resource settings are the only row/choice admission bounds.
 pub struct SessionUi {
     session: Session,
     projection: Projection,
@@ -387,6 +434,7 @@ pub struct SessionUi {
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
     background: Color,
+    scroll: Rc<Cell<f64>>,
 }
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
@@ -396,6 +444,7 @@ impl SessionUi {
         let stamp = ProjectionStamp {
             revision: 1,
             interaction: projection.interaction,
+            scroll_bits: 0_f64.to_bits(),
         };
         Ok(Self {
             session,
@@ -406,6 +455,7 @@ impl SessionUi {
             binding: Rc::new(RefCell::new(InputBinding::default())),
             inputs: Rc::new(RefCell::new(None)),
             background: Color::from_rgb8(35, 54, 74),
+            scroll: Rc::new(Cell::new(0.)),
         })
     }
     pub fn session(&self) -> &Session {
@@ -421,7 +471,10 @@ impl SessionUi {
         SessionWidget::new(self)
     }
     pub fn projection_stamp(&self) -> ProjectionStamp {
-        self.stamp
+        ProjectionStamp {
+            scroll_bits: self.scroll.get().to_bits(),
+            ..self.stamp
+        }
     }
     /// Call only after PresentationBridge accepted the matching actual frame.
     pub fn presented(&mut self, stamp: ProjectionStamp) {
@@ -436,7 +489,7 @@ impl SessionUi {
     }
     fn status_text(&self) -> String {
         format!(
-            "{} | history: {} | click dialogue twice; Escape cancels",
+            "{} | history: {} | scroll for more; click dialogue twice; Escape cancels",
             self.projection.status, self.projection.history_count
         )
     }
@@ -975,50 +1028,108 @@ mod tests {
         assert_eq!(ui.session().view().history.len(), 2);
     }
 
+    fn scroll(ui: &mut SessionUi, bridge: &mut PresentationBridge, delta: f32) {
+        let PointerEvent::Down(event) = mouse("down", (100., 300.)) else {
+            unreachable!()
+        };
+        ui.handle_pointer(
+            bridge,
+            PointerEvent::Scroll(PointerScrollEvent {
+                pointer: event.pointer,
+                state: event.state,
+                delta: ScrollDelta::LineDelta(0., delta),
+            }),
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn oversized_host_interactions_are_rejected_before_compact_view_layout() {
+    fn many_dialogue_rows_retain_full_text_and_scroll_without_negative_layout() {
         let mut ui = SessionUi::new(session()).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
+        let text = "A complete long dialogue line. ".repeat(40);
         let line = DialogueLineInput {
             speaker_id: None,
             speaker_name: "",
             content_id: "large-group",
-            text: "A real host row",
+            text: &text,
         };
         ui.session
             .begin_say(ui.session.root_owner(), &[line; 6], "en")
             .unwrap();
-        assert!(ui.sync(&mut bridge, root).is_err());
-        assert!(ui.projection.lines.is_empty());
-        assert!(ui.binding.borrow().accepted.is_none());
-        let InteractionView::Dialogue(dialogue) = ui.session.view().interaction.unwrap() else {
-            panic!("the host group must remain intact");
-        };
-        assert_eq!(dialogue.lines().len(), 6);
-        assert_eq!(ui.session.view().history.len(), 1);
+        ui.sync(&mut bridge, root).unwrap();
+        accept(&mut ui, &mut bridge, 2);
+        assert_eq!(ui.projection.lines.len(), 6);
+        assert!(ui.projection.lines.iter().all(|row| row.text == text));
+        scroll(&mut ui, &mut bridge, 100_000.);
+        accept(&mut ui, &mut bridge, 3);
+        assert!(ui.scroll.get() > 0.);
+        click(&mut ui, &mut bridge, (100., 300.));
+        ui.sync(&mut bridge, root).unwrap();
+        assert!(
+            ui.projection
+                .lines
+                .iter()
+                .all(|row| row.visible.end == text.len())
+        );
+        accept(&mut ui, &mut bridge, 4);
+        click(&mut ui, &mut bridge, (100., 300.));
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+        assert_eq!(ui.session.view().history[0].lines().len(), 6);
+    }
 
-        let mut choice_session = session();
-        choice_session
-            .begin_choice(
-                choice_session.root_owner(),
-                &[
-                    ChoiceInput {
-                        key: "a",
-                        label: "A",
-                    },
-                    ChoiceInput {
-                        key: "b",
-                        label: "B",
-                    },
-                    ChoiceInput {
-                        key: "c",
-                        label: "C",
-                    },
-                ],
-            )
+    #[test]
+    fn all_configured_choices_are_reachable_and_scroll_requires_new_presented_geometry() {
+        let mut session = session();
+        let count = session.limits().max_choices;
+        let keys: Vec<_> = (0..count).map(|i| format!("choice-{i}")).collect();
+        let rows: Vec<_> = keys
+            .iter()
+            .map(|key| ChoiceInput { key, label: key })
+            .collect();
+        session.begin_choice(session.root_owner(), &rows).unwrap();
+        let mut ui = SessionUi::new(session).unwrap();
+        assert_eq!(
+            ui.choice_owners.len(),
+            1,
+            "one projection lifetime, not one owner per option"
+        );
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, 1);
+        ui.handle_pointer(&mut bridge, mouse("down", (100., 270.)))
             .unwrap();
-        assert!(SessionUi::new(choice_session).is_err());
+        scroll(&mut ui, &mut bridge, 100_000.);
+        assert!(ui.binding.borrow().accepted.is_none());
+        click(&mut ui, &mut bridge, (100., 350.));
+        assert!(ui.session.take_completion().is_none());
+        accept(&mut ui, &mut bridge, 2);
+        ui.handle_pointer(&mut bridge, mouse("up", (100., 350.)))
+            .unwrap();
+        assert!(ui.session.take_completion().is_none());
+        let widget = bridge
+            .root()
+            .get_widget(root)
+            .unwrap()
+            .downcast::<SessionWidget>()
+            .unwrap();
+        let last = widget.choices.last().unwrap().button.id();
+        let reel_ui::app::InputGeometrySource::Presented(Some(geometry)) =
+            bridge.root().input_geometry_source()
+        else {
+            panic!()
+        };
+        assert_eq!(geometry.hit_test(Point::new(100., 350.)), Some(last));
+        click(&mut ui, &mut bridge, (100., 350.));
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Selected(keys.last().unwrap().clone())
+        );
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(ui.scroll.get(), 0.);
     }
 
     #[test]
@@ -1027,7 +1138,7 @@ mod tests {
             SessionId(42),
             Epoch(3),
             SessionLimits {
-                max_owners: 3,
+                max_owners: 2,
                 ..SessionLimits::default()
             },
         )
@@ -1053,11 +1164,8 @@ mod tests {
         assert!(ui.sync(&mut bridge, root).is_err());
         assert!(ui.projection.choices.is_empty());
         assert!(ui.binding.borrow().accepted.is_none());
-        let available = ui
-            .session
-            .create_owner()
-            .expect("the partial new button owner was revoked");
-        ui.session.revoke_owner(available).unwrap();
+        assert!(ui.session.create_owner().is_err());
+        assert!(ui.choice_owners.is_empty());
         assert!(ui.session.is_owner_live(ui.source_owner));
     }
 }

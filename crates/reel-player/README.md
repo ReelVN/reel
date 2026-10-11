@@ -62,10 +62,13 @@ an unpresented successor. Choice release is consumed, not also a story advance.
 
 Full Parley text layout is kept while cluster/ligature masks reveal its prefix.
 Each 35 ms tick reveals at most one grapheme per line; a held gesture freezes
-reveal and wake-up does not replay a backlog. This compact 640×420 view supports
-at most two dialogue rows or two choice buttons; larger projections explicitly
-reject and clear input permission. The model's larger limits do not imply the
-view can display them. Input in this version is mouse-only.
+reveal and wake-up does not replay a backlog. Labels and buttons use their natural
+content height; mouse-wheel scrolling reaches every row within the viewport.
+SessionLimits configures row, choice and text resource capacities without an
+additional view cap. All choices share one projection owner, while ChoiceId
+preserves each business key. Scrolling invalidates the old input stamp and any
+held gesture; a new accepted frame must establish the new hit geometry.
+Input in this version uses mouse clicks and scrolling.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
@@ -89,8 +92,8 @@ Waiting, BudgetYield and ResourceBlocked remain distinct. `host_work` meters
 choice lookup only; synchronous text copying/publication have independent byte
 limits and are not a total dispatch-work meter.
 
-The existing presented-frame input gate and compact two-row/two-choice,
-mouse-only view remain. An oversized projection is rejected before publication.
+The existing presented-frame input gate applies to content and scroll position.
+Admission uses the configured session capacities, without a separate two-row cap.
 Cancellation routes through VM owner revocation and bounded root/task cleanup,
 never through the Rust model's zero-obligation shortcut. GC is provider-aware.
 The embedding application must continue cleanup until its obligations retire.

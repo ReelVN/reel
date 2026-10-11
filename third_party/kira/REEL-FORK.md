@@ -49,9 +49,10 @@ It is restored unchanged (hard_tabs = true), with URL/hash in
 UPSTREAM-CONFIG-SOURCES.json; no unmodified imported source is reformatted.
 
 From the repository root, `cargo run -p reel-dev --locked -- audit-kira` checks
-all 126 original hashes after reversing the approved patch, exact-VCS
-licenses/config and the Rust source closure. An optional official package
-directory adds independent original-byte comparisons. `audio-regression` (also
-with `--release`) runs the unchanged real-Kira scheduling/quota/play test in an
-isolated copy using the curated media test lock. Generated logs/copies remain
-under ignored `target/reel-artifacts/`; see [Rust tooling](../../tools/reel-dev/README.md).
+that origin, licenses and this local change record are present. Local source edits
+and new modules do not require source hash repinning or a frozen reverse patch.
+An optional upstream directory produces a comparison report. The original hash
+manifests and patch remain historical provenance, not a development gate.
+`audio-regression` (also with `--release`) runs the real-Kira scheduling/quota/play
+test in an isolated copy using the curated media test lock. Generated logs/copies
+remain under ignored `target/reel-artifacts/`; see [Rust tooling](../../tools/reel-dev/README.md).

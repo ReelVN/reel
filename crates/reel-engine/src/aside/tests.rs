@@ -102,10 +102,9 @@ fn entry_mapping_uses_root_declaration_identity_despite_same_named_block_functio
 }
 
 #[test]
-fn malformed_duplicate_and_oversized_choices_leave_no_publication_or_decoder_roots() {
+fn malformed_duplicate_choices_leave_no_publication_or_decoder_roots() {
     for options in [
         "[{key: \"a\", label: \"A\"}, {key: \"a\", label: \"again\"}]",
-        "[{key: \"a\", label: \"A\"}, {key: \"b\", label: \"B\"}, {key: \"c\", label: \"C\"}]",
         "[{key: \"a\"}]",
         "[{key: \"a\", label: 1}]",
     ] {
@@ -130,7 +129,7 @@ fn malformed_duplicate_and_oversized_choices_leave_no_publication_or_decoder_roo
 fn choice_decode_yields_with_roots_and_returns_original_key_once() {
     let (mut s, mut vm) = setup(
         "use reel::prelude::*; fn opening() {\n\
-        let answer = choose([{ key: \"a\", label: \"A\" }, { key: \"b\", label: \"B\" }]);\n\
+        let answer = choose([{ key: \"a\", label: \"A\" }, { key: \"b\", label: \"B\" }, { key: \"c\", label: \"C\" }, { key: \"d\", label: \"D\" }]);\n\
         narrator(answer); }",
         Context::Ordinary,
     );
@@ -156,13 +155,13 @@ fn choice_decode_yields_with_roots_and_returns_original_key_once() {
     let original = vm
         .vm
         .heap()
-        .root_value(vm.pending.as_ref().unwrap().keys[1].root)
+        .root_value(vm.pending.as_ref().unwrap().keys[3].root)
         .unwrap();
     collect(&mut vm);
     let crate::InteractionView::Choice(choice) = s.view().interaction.unwrap() else {
         panic!("choice")
     };
-    let selected = choice.options()[1].id().clone();
+    let selected = choice.options()[3].id().clone();
     s.handle_local_input(s.root_owner(), InputAction::Select(selected.clone()))
         .unwrap();
     assert!(
