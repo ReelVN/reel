@@ -3,7 +3,7 @@ use reel_ui::frame::{FrameDraw, RecordLocation, RenderFrame};
 use reel_ui::{
     imaging::record::{Clip, Geometry},
     kurbo::{Affine, Rect},
-    peniko::{Brush, Extend, Fill},
+    peniko::{Brush, Extend, Fill, color::LinearSrgb},
 };
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -127,9 +127,11 @@ impl Context<'_> {
         let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
         let (image, uv, color) = match brush {
             Brush::Solid(c) => {
-                let rgba = c.components.map(f64::from);
-                let color =
-                    crate::color::linear_premultiplied(rgba).map(|v| v as f32 * composite.alpha);
+                let color = c
+                    .convert::<LinearSrgb>()
+                    .premultiply()
+                    .components
+                    .map(|v| v * composite.alpha);
                 (self.white()?, Affine::IDENTITY, color)
             }
             Brush::Image(brush) => {
@@ -227,8 +229,11 @@ impl Context<'_> {
                 record: "glyph stroke or glyph transform",
             });
         }
-        let color = crate::color::linear_premultiplied(color.components.map(f64::from))
-            .map(|x| x as f32 * run.composite.alpha);
+        let color = color
+            .convert::<LinearSrgb>()
+            .premultiply()
+            .components
+            .map(|x| x * run.composite.alpha);
         for index in 0..run.glyphs.len() {
             let available = self
                 .gpu

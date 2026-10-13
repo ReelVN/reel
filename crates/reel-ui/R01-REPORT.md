@@ -15,7 +15,7 @@ frame. Export/upload completion leaves input on the last accepted geometry.
 The review boundaries are [stage/frame.rs](src/frame.rs),
 [stage/resources.rs](src/resources.rs), [stage/lib.rs](src/lib.rs),
 [render/lib.rs](../reel-render/src/lib.rs) and
-[render/color.rs](../reel-render/src/color.rs). The small licensed Masonry fork
+[independent color reference](../reel-render/tests/support/color.rs). The small licensed Masonry fork
 change covers External order/token, reliable group owner/effect metadata and
 full forward origin/scroll transforms. [R01-INTERFACE.md](R01-INTERFACE.md)
 specifies ownership, quotas, cancellation and the portable profile;

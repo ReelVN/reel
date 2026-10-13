@@ -479,6 +479,8 @@ The same arrive function can be used for characters, title-screen buttons, or en
 
 Basic text currently uses real text layout. The rich-text types, localization, media and custom drawing interfaces in this section remain future creator capabilities.
 
+Rust custom drawing shares linear-premultiplied color conversion for solid colors, text and images. Both strokes and geometric clips support dashes, including curves, closed paths and dash offsets. An all-zero dash pattern draws a solid line; small miter limits use bevel joins. These capabilities belong to the existing Rust drawing interface; the Aside custom drawing entry point is still pending.
+
 
 Implementation status (M01 / PR #14): the Rust audio layer implements the Kira bridge, optional CPAL output, bounded reclamation and device-failure notification. Independent checks cover actual Kira with offline Linux output, default/output-feature-off contracts and Windows cross compilation. Physical devices, hardware clocks, hot-plug and native start/stop/suspend behavior are not accepted; the CPAL clock remains Unavailable. The author-facing audio/video APIs, story waits and session recovery below remain design targets; passing Rust probes does not establish their integration. See [audio verification scope](../../crates/reel-media/VERIFICATION.md).
 

@@ -1,4 +1,7 @@
 #![cfg(feature = "wgpu")]
+#[allow(dead_code, reason = "independent reference shared with contract tests")]
+#[path = "support/color.rs"]
+mod color;
 #[allow(dead_code, reason = "shared actual Masonry fixture")]
 #[path = "../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
@@ -255,7 +258,7 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
     drop(frame);
     assert!(!weak.is_released());
     let pixels = renderer.readback(prepared).unwrap();
-    let expected = (reel_render::color::srgb_to_linear(128. / 255.) * 128. / 255.) as f32;
+    let expected = (color::srgb_to_linear(128. / 255.) * 128. / 255.) as f32;
     close(
         pixel(&pixels, 100, 100),
         [expected, expected, expected, 128. / 255.],
@@ -495,4 +498,110 @@ fn transformed_path_clip_has_geometric_coverage() {
     }
     close(pixel(&rendered[0], 100, 130), [1.; 4]);
     assert_eq!(rendered[0], rendered[1]);
+}
+
+#[test]
+#[ignore = "requires an actual graphics adapter"]
+fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+    };
+    let mut renderer = device();
+    let pool = pool();
+    for encoding in [ColorEncoding::Srgb, ColorEncoding::Linear] {
+        for alpha_type in [ImageAlphaType::Alpha, ImageAlphaType::AlphaPremultiplied] {
+            let mut bytes = Vec::new();
+            let mut expected = Vec::new();
+            let mut scene = Scene::new();
+            for n in 0..=255u8 {
+                let mut channels = [n, 255 - n, 128, n];
+                if alpha_type == ImageAlphaType::AlphaPremultiplied {
+                    for c in &mut channels[..3] {
+                        *c = (u16::from(*c) * u16::from(n) / 255) as u8;
+                    }
+                }
+                if n == 0 {
+                    channels = [255, 128, 64, 0];
+                }
+                bytes.extend(channels);
+                let a = f64::from(n) / 255.;
+                let mut linear = [0.; 4];
+                for i in 0..3 {
+                    let c = f64::from(channels[i]) / 255.;
+                    let straight = if alpha_type == ImageAlphaType::AlphaPremultiplied && a > 0. {
+                        c / a
+                    } else {
+                        c
+                    };
+                    linear[i] = if encoding == ColorEncoding::Srgb {
+                        color::srgb_to_linear(straight) * a
+                    } else {
+                        straight * a
+                    };
+                }
+                linear[3] = a;
+                expected.push(linear.map(|c| c as f32));
+                // Solids exercise the same library through the drawing path.
+                scene.draw(Draw::Fill {
+                    transform: Affine::IDENTITY,
+                    fill_rule: Default::default(),
+                    brush: Brush::Solid(Color::from_rgba8(n, 255 - n, 128, n)),
+                    brush_transform: None,
+                    shape: Geometry::Rect(Rect::new(f64::from(n), 2., f64::from(n) + 1., 3.)),
+                    composite: Composite::default(),
+                });
+            }
+            let mut registry = ResourceRegistry::new(1, 8192).unwrap();
+            let size = bytes.len();
+            let handle = registry
+                .register_image(
+                    ResourceVersion {
+                        key: AssetKey("color-matrix".into()),
+                        version: ContentVersion([1; 32]),
+                    },
+                    OwnedBytes::new(bytes, pool.reserve(size as u64).unwrap()).unwrap(),
+                    [256, 1],
+                    ImageFormat::Rgba8,
+                    alpha_type,
+                    encoding,
+                )
+                .unwrap();
+            let lease = registry.acquire(handle).unwrap();
+            let ResourceData::Image { image, .. } = lease.data() else {
+                unreachable!()
+            };
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Image(ImageBrush::new(image.clone())),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 256., 1.)),
+                composite: Composite::default(),
+            });
+            let mut bridge = widget_bridge(RecordWidget::new(scene), Affine::IDENTITY);
+            let frame = build(
+                bridge.record(FrameId(1)).unwrap(),
+                registry.freeze(&[handle], &pool).unwrap(),
+                &pool,
+            );
+            let prepared = renderer.prepare(&frame).unwrap();
+            let pixels = renderer.readback(prepared).unwrap();
+            for (x, expected) in expected.into_iter().enumerate() {
+                close(pixel(&pixels, x, 0), expected);
+                let n = x as f64 / 255.;
+                close(
+                    pixel(&pixels, x, 2),
+                    color::linear_premultiplied([n, 1. - n, 128. / 255., n]).map(|c| c as f32),
+                );
+            }
+            assert_eq!(renderer.usage().targets, 0);
+            assert_eq!(renderer.usage().resources, 0);
+            assert_eq!(renderer.usage().transient, 0);
+        }
+    }
 }

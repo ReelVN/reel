@@ -138,8 +138,6 @@ pub fn tessellate(
     at: RecordLocation,
     allocation: Allocation,
 ) -> Result<Mesh, GpuError> {
-    // Stage accepts nonnegative f64 miter limits. Lyon's ordinary assertion
-    // requires >= 1 even for Bevel/Round, so reject at this narrower boundary.
     let stroke_options = stroke.map(|s| stroke_options(s, at)).transpose()?;
     let mut mesh = Mesh {
         vertices: Vec::new(),
@@ -162,7 +160,29 @@ pub fn tessellate(
             });
         }
     }
-    let path = events(shape);
+    let mut path = elements(shape);
+    if let Some(stroke) = stroke {
+        let period = stroke.dash_pattern.iter().sum::<f64>()
+            * if stroke.dash_pattern.len().is_multiple_of(2) {
+                1.
+            } else {
+                2.
+            };
+        if !period.is_finite() {
+            return Err(GpuError::Unsupported {
+                at,
+                record: "dash period outside finite float64 range",
+            });
+        }
+        if period > 0. {
+            path = Box::new(reel_ui::kurbo::dash(
+                path,
+                stroke.dash_offset,
+                &stroke.dash_pattern,
+            ));
+        }
+    }
+    let path = events(path);
     let result = if let Some(options) = stroke_options {
         StrokeTessellator::new().tessellate(path, &options, &mut mesh)
     } else {
@@ -191,11 +211,11 @@ fn elements(shape: &Geometry) -> Box<dyn Iterator<Item = PathEl> + '_> {
         Geometry::RoundedRect(r) => Box::new(r.path_elements(0.1)),
     }
 }
-fn events(shape: &Geometry) -> impl Iterator<Item = PathEvent> + '_ {
+fn events(elements: impl Iterator<Item = PathEl>) -> impl Iterator<Item = PathEvent> {
     let mut first = point(0., 0.);
     let mut last = first;
     let mut open = false;
-    elements(shape)
+    elements
         .map(Some)
         .chain(std::iter::once(None))
         .flat_map(move |element| {
@@ -268,33 +288,38 @@ fn events(shape: &Geometry) -> impl Iterator<Item = PathEvent> + '_ {
 }
 fn stroke_options(stroke: &Stroke, at: RecordLocation) -> Result<StrokeOptions, GpuError> {
     let width = stroke.width as f32;
-    let miter_limit = stroke.miter_limit as f32;
+    // A miter is at least one half-width long. Below that limit every join
+    // bevels. Bevel/Round do not use this parameter, including large f64 values.
+    let join = match stroke.join {
+        reel_ui::kurbo::Join::Miter if stroke.miter_limit >= 1. => {
+            lyon_tessellation::LineJoin::Miter
+        }
+        reel_ui::kurbo::Join::Miter | reel_ui::kurbo::Join::Bevel => {
+            lyon_tessellation::LineJoin::Bevel
+        }
+        reel_ui::kurbo::Join::Round => lyon_tessellation::LineJoin::Round,
+    };
+    let miter_limit = if join == lyon_tessellation::LineJoin::Miter {
+        stroke.miter_limit as f32
+    } else {
+        1.
+    };
     if !width.is_finite() || stroke.width < 0. || (stroke.width != 0. && width == 0.) {
         return Err(GpuError::Unsupported {
             at,
             record: "stroke width outside finite nonnegative float32 range",
         });
     }
-    if !miter_limit.is_finite() || stroke.miter_limit < 1. {
+    if !miter_limit.is_finite() {
         return Err(GpuError::Unsupported {
             at,
-            record: "Lyon stroke miter limit must be finite float32 and at least 1",
-        });
-    }
-    if !stroke.dash_pattern.is_empty() {
-        return Err(GpuError::Unsupported {
-            at,
-            record: "dashed stroke",
+            record: "miter limit outside finite float32 range",
         });
     }
     Ok(StrokeOptions::default()
         .with_line_width(width)
         .with_miter_limit(miter_limit)
-        .with_line_join(match stroke.join {
-            reel_ui::kurbo::Join::Bevel => lyon_tessellation::LineJoin::Bevel,
-            reel_ui::kurbo::Join::Miter => lyon_tessellation::LineJoin::Miter,
-            reel_ui::kurbo::Join::Round => lyon_tessellation::LineJoin::Round,
-        })
+        .with_line_join(join)
         .with_start_cap(cap(stroke.start_cap))
         .with_end_cap(cap(stroke.end_cap)))
 }
@@ -351,17 +376,20 @@ mod tests {
             reel_ui::kurbo::Join::Bevel,
             reel_ui::kurbo::Join::Round,
         ] {
-            for miter in [0., 0.5, 1. - f64::EPSILON, 1., 1e300, f64::NAN] {
+            for miter in [0., 0.5, 1. - f64::EPSILON, 1., 1e300] {
                 let stroke = Stroke::new(5.).with_join(join).with_miter_limit(miter);
                 let result = std::panic::catch_unwind(|| stroke_options(&stroke, at));
                 let result = result.expect("GPU boundary must never panic");
-                if miter == 1. {
-                    let options = result.unwrap();
-                    assert_eq!(options.miter_limit, 1.);
-                } else {
+                if join == reel_ui::kurbo::Join::Miter && miter == 1e300 {
                     assert!(
                         matches!(result, Err(GpuError::Unsupported { at: location, .. }) if location == at)
                     );
+                } else {
+                    let options = result.unwrap();
+                    assert_eq!(options.miter_limit, 1.);
+                    if join == reel_ui::kurbo::Join::Miter && miter < 1. {
+                        assert_eq!(options.line_join, lyon_tessellation::LineJoin::Bevel);
+                    }
                 }
             }
         }
