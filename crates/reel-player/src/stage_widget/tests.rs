@@ -209,7 +209,10 @@ fn affine(actual: Affine, expected: [f64; 6]) {
 
 #[test]
 fn structural_edits_keep_retained_widgets_and_remove_retired_geometry() {
-    let mut f = Fixture::new(None);
+    let font = std::env::var_os("REEL_SESSION_FONT")
+        .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
+    eprintln!("actual font supplied={}", font.is_some());
+    let mut f = Fixture::new(font);
     let first = f.record();
     f.accept(&first);
     let original = f.layouts();
@@ -236,6 +239,10 @@ fn structural_edits_keep_retained_widgets_and_remove_retired_geometry() {
     assert_eq!(
         after[&f.blue].1, original[&f.blue].1,
         "unchanged text keeps its layout"
+    );
+    eprintln!(
+        "retained_widgets=3, unchanged_text_additional_layouts={}",
+        after[&f.blue].1 - original[&f.blue].1
     );
     f.stage.remove(f.red).unwrap();
     let removed = f.record();

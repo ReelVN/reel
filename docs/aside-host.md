@@ -15,7 +15,7 @@ fn add(left: i64, #[aside(default = 2)] right: i64) -> i64 {
 let binding = add::binding();
 ```
 
-The original Rust function remains callable. Its same-named module provides `SYMBOL`, `binding()` and `invoke()`. The binding contains a `NativeContract` and a direct function pointer. A host builds these declarations during compilation/loading, then dispatches each admitted `NativeId` to its handler. Calling `invoke` does not rebuild the registry, look up parameter names or allocate a parameter vector.
+The original Rust function remains callable. Its body keeps the compiler's original tokens and delimiter spans; only the declaration is parsed to generate the interface. Its same-named module provides `SYMBOL`, `binding()` and `invoke()`. The binding contains a `NativeContract` and a direct function pointer. A host builds these declarations during compilation/loading, then dispatches each admitted `NativeId` to its handler. Calling `invoke` does not rebuild the registry, look up parameter names or allocate a parameter vector.
 
 `NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates B01 native linkage and constant default functions. `aside_host::runtime_support()` resolves the host's independently supplied contracts against the package; pass its result to `Vm::load`. A package cannot supply its own authority to call native code. B01/ASB v1 and native ABI v1 are unchanged.
 

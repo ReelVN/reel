@@ -2,9 +2,7 @@
 #![forbid(unsafe_code)]
 
 use moxy::ast::*;
-use moxy::token::{
-    Delim, Group, LitStr, LitVerbatim, Span, Spanner, ToTokenStream, TokenStream, TokenTree,
-};
+use moxy::token::{Delim, Group, LitStr, LitVerbatim, Span, Spanner, ToTokenStream, TokenStream};
 
 fn literal(value: impl std::fmt::Display) -> moxy::token::Lit {
     LitVerbatim::new(&value.to_string(), Span::call_site()).into()
@@ -108,31 +106,38 @@ pub fn native(
     meta: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    match native_impl(meta.into(), item.into()) {
-        Ok(tokens) => tokens.into(),
+    // Keep the original compiler group, including distinct opening/closing spans.
+    // Converting the opaque body through an AST/token library can lose those spans.
+    let mut tokens: Vec<_> = item.into_iter().collect();
+    let Some(proc_macro::TokenTree::Group(body)) = tokens.pop() else {
+        return ParseError::new(Span::call_site(), "native requires a function body")
+            .to_compile_error()
+            .into();
+    };
+    if body.delimiter() != proc_macro::Delimiter::Brace {
+        return ParseError::new(body.span().into(), "native requires a function body")
+            .to_compile_error()
+            .into();
+    }
+    let signature: proc_macro::TokenStream = tokens.into_iter().collect();
+    let mut signature: TokenStream = signature.into();
+    signature.extend([Group::new(Delim::Brace, TokenStream::new()).into_token_tree()]);
+    match native_impl(meta.into(), signature) {
+        Ok((head, bindings)) => {
+            let mut output: proc_macro::TokenStream = head.into();
+            output.extend([proc_macro::TokenTree::Group(body)]);
+            output.extend(proc_macro::TokenStream::from(bindings));
+            output
+        }
         Err(error) => error.to_compile_error().into(),
     }
 }
-fn native_impl(meta: TokenStream, item: TokenStream) -> Result<TokenStream, ParseError> {
+fn native_impl(
+    meta: TokenStream,
+    item: TokenStream,
+) -> Result<(TokenStream, TokenStream), ParseError> {
     let opts = options(meta, &["symbol", "abi", "effects", "capabilities"])?;
-    // The implementation body is opaque Rust. Preserve it byte-for-token rather
-    // than parsing/reprinting unrelated native implementation syntax.
-    let mut tokens: Vec<_> = item.into_iter().collect();
-    let Some(TokenTree::Group(body)) = tokens.pop() else {
-        return Err(ParseError::new(
-            Span::call_site(),
-            "native requires a function body",
-        ));
-    };
-    if body.delim != Delim::Brace {
-        return Err(ParseError::new(
-            body.span(),
-            "native requires a function body",
-        ));
-    }
-    tokens.push(Group::new(Delim::Brace, TokenStream::new()).into_token_tree());
-    let signature: TokenStream = tokens.into_iter().collect();
-    let mut function: ItemFn = moxy::parse!(signature)?;
+    let mut function: ItemFn = moxy::parse!(item)?;
     if function.sig.asyncness.is_some()
         || function.sig.safety.is_some()
         || !function.sig.generics.params.is_empty()
@@ -285,8 +290,8 @@ fn native_impl(meta: TokenStream, item: TokenStream) -> Result<TokenStream, Pars
     } else {
         TokenStream::new()
     };
-    Ok(moxy::template! {
-        {{ attrs }} {{ vis }} {{ signature }} {{ body }}
+    let head = moxy::template! { {{ attrs }} {{ vis }} {{ signature }} };
+    let bindings = moxy::template! {
         @for gate in &gates { {{ gate }} }
         {{ vis }} mod {{ name }} {
             use super::*;
@@ -320,7 +325,8 @@ fn native_impl(meta: TokenStream, item: TokenStream) -> Result<TokenStream, Pars
                 Ok(())
             }
         }
-    })
+    };
+    Ok((head, bindings))
 }
 
 /// Describe a stable, fieldless property identity enum without duplicating UI data.
