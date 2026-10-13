@@ -261,6 +261,7 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
         first.geometry().get(root).unwrap().window_transform,
         [0., 2., -1., 0., 240., 0.],
     );
+    drop(first);
     f.edit(f.root, |p| {
         p.x = 200.;
         p.rotation = 90.;
@@ -274,6 +275,7 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
         [0., 2., -1., 0., 240., -100.],
     );
     assert!(f.layouts()[&f.root].1 > before[&f.root].1);
+    drop(resized);
     // Singular transforms preserve the model and identities, and compose back normally.
     let layouts = f.layouts();
     f.edit(f.root, |p| p.scale_x = 0.);
@@ -289,6 +291,7 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
         0.
     );
     assert_eq!(f.layouts(), layouts);
+    drop(collapsed);
     f.edit(f.root, |p| p.scale_x = -2.);
     let restored = f.record();
     f.accept(&restored);
@@ -302,6 +305,83 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
             < 0.
     );
     assert_eq!(f.layouts(), layouts);
+    drop(restored);
+
+    // Container flow measures the original boxes, irrespective of their transforms.
+    let left = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(20.),
+                height: Some(10.),
+                scale_x: 3.,
+                rotation: 90.,
+                anchor_x: 0.5,
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let right = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(20.),
+                height: Some(10.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let row = f
+        .stage
+        .create(
+            NodeKind::Row,
+            NodeProps {
+                x: 100.,
+                y: 50.,
+                gap: 8.,
+                padding: 4.,
+                ..Default::default()
+            },
+            vec![left, right],
+        )
+        .unwrap();
+    f.stage.replace(row).unwrap();
+    let flow = f.record();
+    f.accept(&flow);
+    let ids = f.layouts();
+    assert_eq!(
+        flow.geometry().get(ids[&row].0).unwrap().size,
+        Size::new(56., 18.)
+    );
+    affine(
+        flow.geometry().get(ids[&left].0).unwrap().window_transform,
+        [0., 3., -1., 0., 104., 24.],
+    );
+    affine(
+        flow.geometry().get(ids[&right].0).unwrap().window_transform,
+        [1., 0., 0., 1., 132., 54.],
+    );
+    drop(flow);
+    f.edit(left, |p| p.visible = false);
+    let hidden = f.record();
+    f.accept(&hidden);
+    assert_eq!(
+        hidden.geometry().get(ids[&row].0).unwrap().size,
+        Size::new(28., 18.)
+    );
+    affine(
+        hidden
+            .geometry()
+            .get(ids[&right].0)
+            .unwrap()
+            .window_transform,
+        [1., 0., 0., 1., 104., 54.],
+    );
+    assert!(hidden.geometry().get(ids[&left].0).unwrap().is_stashed);
 }
 
 #[cfg(feature = "window")]

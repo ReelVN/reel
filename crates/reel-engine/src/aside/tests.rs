@@ -803,26 +803,30 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
 
     // An uncaught property error names the actual assignment, with the same
     // behavior for a not-yet-mounted node and a one-instruction VM budget.
-    let code = "fn opening() { let node = text(\"Fault\"); node.opacity = \"invalid\"; }";
-    let (mut session, mut vm) = setup(code, Context::Ordinary);
-    loop {
-        match next(&mut vm, &mut session) {
-            RunOutcome::HostCall(ticket) => {
-                vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+    for property in ["opacity", "rotation"] {
+        let code = format!(
+            "fn opening() {{ let node = text(\"Fault\"); node.{property} = \"invalid\"; }}"
+        );
+        let (mut session, mut vm) = setup(&code, Context::Ordinary);
+        loop {
+            match next(&mut vm, &mut session) {
+                RunOutcome::HostCall(ticket) => {
+                    vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+                }
+                RunOutcome::Fault(delivery) => {
+                    let fault = vm.vm.delivery_fault(delivery).unwrap().unwrap();
+                    assert_eq!(fault.kind, FaultKind::Type);
+                    let span = fault.location.source.unwrap();
+                    assert_eq!(
+                        &code[span.start as usize..span.end as usize],
+                        format!("node.{property}")
+                    );
+                    vm.discard_delivery(&session).unwrap();
+                    vm.finish(&mut session).unwrap();
+                    break;
+                }
+                other => panic!("expected property assignment fault: {other:?}"),
             }
-            RunOutcome::Fault(delivery) => {
-                let fault = vm.vm.delivery_fault(delivery).unwrap().unwrap();
-                assert_eq!(fault.kind, FaultKind::Type);
-                let span = fault.location.source.unwrap();
-                assert_eq!(
-                    &code[span.start as usize..span.end as usize],
-                    "node.opacity"
-                );
-                vm.discard_delivery(&session).unwrap();
-                vm.finish(&mut session).unwrap();
-                break;
-            }
-            other => panic!("expected property assignment fault: {other:?}"),
         }
     }
 }

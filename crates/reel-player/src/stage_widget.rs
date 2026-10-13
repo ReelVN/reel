@@ -111,19 +111,15 @@ impl StageWidget {
         {
             SceneWidget::sync(&mut child, node);
         }
-        if this.widget.root_props.visible
-            != view
-                .root
-                .as_ref()
-                .is_none_or(|root| root.node.props.visible)
-        {
-            this.ctx.request_layout();
-        }
-        this.widget.root_props = view
+        let props = view
             .root
             .as_ref()
             .map(|node| node.node.props.clone())
             .unwrap_or_default();
+        if this.widget.root_props.visible != props.visible {
+            this.ctx.request_layout();
+        }
+        this.widget.root_props = props;
         this.ctx.request_compose();
     }
 }

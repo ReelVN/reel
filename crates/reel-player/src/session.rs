@@ -241,8 +241,6 @@ impl SessionWidget {
             Label::set_text(&mut status, ui.status_text());
         }
         this.widget.projection = ui.projection.clone();
-        this.widget.stamp = ui.stamp;
-        this.widget.background = ui.background;
         this.ctx.request_layout();
     }
 }

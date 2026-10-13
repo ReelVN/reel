@@ -137,7 +137,7 @@ fn main() {
 fn main() {
     let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
                      rotation: -12, scale_x: 1.25, scale_y: 1.25,
-                      gap: 12, padding: 16, background: "#183048") {
+                     gap: 12, padding: 16, background: "#183048") {
         image("assets/panels.png");
         text("A scene is one component");
     };
