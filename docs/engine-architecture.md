@@ -200,6 +200,10 @@ persistent(id,defaults) 是显式进程级数据根，跨游戏会话存储；de
 
 ## 七 VM 与会话接口
 
+宿主 Awaitable 复用 Aside 的 native 等待帧，不另建引擎专用 VM 等待系统。共享活动由 adapter 保存一次终态及登记顺序；每个消费者拥有独立 WaitId，取消消费者只解除其订阅。活动目标/owner 的取消由活动自身账本负责，再向仍有效的消费者交付结果。Await 的对象、返回槽、继续位置和故障源都由既有 VM 根持有。此阶段只交付通用宿主协议，Reel run/tween 及其逻辑时钟随后接入。
+
+本次范围：aside-compiler 的 await 降低与源码合同、aside-vm 的可信宿主绑定/NativeFrame/故障图、规范和双语指南。沿用 B01 的 Await 指令和 ASB v1，无新增依赖。验证源码/字节码往返、已完成与未完成等待、共享对象多个消费者、故障定位/原因、受限上下文、微小预算下 GC 与取消、旧完成过滤。每次等待复用一个 native 帧，不扫描其他任务或复制宿主 payload；资源收费使用已有堆、FrameSlots 和 native fault 预算。
+
 宿主函数也是可保存、传递、返回和可选调用的普通函数值。编译器保留可信注册身份，VM 在模块常量根区持有函数对象，重复取值不分配、不增加作者全局变量。动态调用直接进入 NativeFrame，与直接调用共享参数、缺省 Cell、效果和等待处理；不插入脚本转发帧。`text` 可作为组件工厂参数，`narrator` 经变量调用仍产生原来的交互等待，完整源码与 ASB 示例见 [function_values.aside](../examples/function_values.aside)。
 会话管理主剧情、UI 回调任务、交互数据和活动所有权。启动与主剧情任务归会话所有，UI 回调归发出事件的节点所有；替换场景结束旧节点及其活动，主剧情任务继续。主剧情同一时刻只有一个交互。game 服务身份稳定，game.dialogue 属于当前会话，settings.music 属于全局设置。发言更新完整文本与显现范围并追加一次历史，再等待推进；文字未显示完时首次推进只完成文字，后续推进才结束等待。choose 将输入普通表复制成引擎拥有的只读可观察选项行，id、key 与 label 均可读，id 是 InteractionId 加 key 的不透明稳定标识，列表用 id 区分连续选择；select 接收带 InteractionId 的 option.id，验证后返回业务 key。入口与剧情 helper 均为普通 fn，剧情元数据按需附加；具体语法见语言与 DSL 文档。
 VM 的 run_slice 接收指令、内部工作、分配和计时检查额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 保留帧、根和中间故障阶段；不能把它视为普通可丢弃错误，也不能假定 GC 会释放仍活跃的 catch/展开记录。宿主调用携带任务身份、参数和源码位置，返回 Ready、Pending、CallScript、Continue、Error(NewFault) 或 ForwardFault(FaultId)。Continue 保存 native 算法状态并于同 Task 下一预算片继续，无外部等待。CallScript 保存纯数据 native continuation，退出原生栈后在同一 Task 压入脚本回调帧；回调可按其效果上下文挂起，返回/异常恢复 continuation。Pending 先退出 Rust 调用，再建立显式恢复记录；恢复记录保留操作、可恢复参数、返回目的槽与下一指令位置。禁止把原生调用栈当作可保存续体。同步原生重入 VM 不得跨边界挂起，异步宿主算法使用显式状态机。

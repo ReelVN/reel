@@ -88,6 +88,7 @@ impl Vm {
                 fault: None,
                 explicit: None,
                 author_value: false,
+                awaited: None,
             }),
             skip: None,
         };

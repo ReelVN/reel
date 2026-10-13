@@ -197,6 +197,7 @@ impl Vm {
                     fault: None,
                     explicit,
                     author_value: false,
+                    awaited: None,
                 });
                 s.phase = if preparing {
                     ScriptPhase::Release { reason }
@@ -223,6 +224,7 @@ impl Vm {
                     fault: None,
                     explicit,
                     author_value: false,
+                    awaited: None,
                 });
                 n.phase = NativePhase::Commit(true);
                 self.active.frames.data[top] = Frame::Native(n);
@@ -360,6 +362,7 @@ impl Vm {
             BuildPhase::Cause if build.seed.explicit.or(build.implicit).is_some() => {
                 crate::fault::FAULT_NODE_BYTES
             }
+            BuildPhase::Awaited if build.seed.awaited.is_some() => crate::fault::FAULT_NODE_BYTES,
             _ => 0,
         };
         let work = match build.phase {
@@ -467,6 +470,31 @@ impl Vm {
                         self.program.clone(),
                     ) {
                         self.block_heap(e)?;
+                        return Ok(true);
+                    }
+                }
+                build.phase = if build.seed.awaited.is_some() {
+                    BuildPhase::Awaited
+                } else {
+                    BuildPhase::Complete
+                };
+            }
+            BuildPhase::Awaited => {
+                if let Some((source, activation)) = build.seed.awaited {
+                    let envelope = self.value(self.active.delivery.unwrap(), 0)?;
+                    let id = FaultId(self.heap.handle(envelope)?);
+                    if let Err(error) = self.heap.append_fault_cause(
+                        id,
+                        CauseInfo {
+                            event: activation,
+                            kind: CauseKind::AwaitedFault { activation },
+                            location: build.seed.location,
+                            fault: Some(source),
+                            value: Value::NULL,
+                        },
+                        self.program.clone(),
+                    ) {
+                        self.block_heap(error)?;
                         return Ok(true);
                     }
                 }

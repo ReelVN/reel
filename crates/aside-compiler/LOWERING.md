@@ -396,6 +396,14 @@ in `LOWERING_PERFORMANCE.md`; no VM execution measurement belongs to this report
 
 ## Executor integration boundary
 
+Ordinary-function `await value` lowers to the existing B01 Await instruction,
+with the expression's source span and normal register liveness. VM execution
+accepts a trusted host Awaitable binding and enters the existing native frame,
+including completed-result scheduling, pending waits, cancellation and fault
+propagation. `cargo test -p aside-compiler --test host_awaitables` exercises source,
+codec, ordinary/tiny budgets and interleaved GC. Generator yield and async
+function lowering remain unsupported.
+
 PR #49/#54 combines the executor and collection dispatcher with the compiler.
 Native Windows debug/release checks execute fixed collections, Index/Member,
 positional spread and script rest, including host entry. The `execution` test

@@ -216,6 +216,20 @@ Native function values are rooted code constants: repeated reads preserve
 identity without allocation and calls enter NativeFrame directly, including
 shared default-parameter Cells, waits and host callbacks.
 
+Host Awaitables use the same path. `Vm::bind_awaitable(object, native)` attaches a
+trusted unary adapter to a Host value; `await object` dispatches that adapter with
+the object as its only argument. `HostTicket::await_activation` identifies this
+wait execution. Ready resumes only on another VM run; Pending uses the existing
+WaitId/complete protocol. Hosts retain terminal results and serve subscribers in
+registration order, pruning cancelled subscriptions with `wait_is_pending`.
+Removing a subscriber must not cancel a shared producer. ForwardFault retains the
+producer envelope and creates a distinct consumer envelope at the await location;
+native continuations receive the original fault before deciding to forward it.
+No Rust stack or new polling scheduler is retained. Identity binding is local to
+the loaded package; snapshot/rebinding support, async functions and Future
+adoption are not yet implemented. Run the source/codec/GC/cancellation contract:
+`cargo test -p aside-compiler --test host_awaitables -- --nocapture`.
+
 Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, patterns, full
 module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
 
