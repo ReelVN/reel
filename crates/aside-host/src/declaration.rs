@@ -29,6 +29,8 @@ pub struct NativeContract {
     pub symbol: String,
     pub abi_version: u32,
     pub parameters: Vec<NativeParameter>,
+    /// Name of the fresh array containing remaining positional arguments.
+    pub rest: Option<String>,
     pub result: BuiltinType,
     pub effects: Effects,
     pub required_capabilities: Vec<String>,
@@ -53,6 +55,13 @@ impl NativeContract {
                         default: p.default.is_some(),
                         rest: false,
                     })
+                    .chain(self.rest.iter().map(|name| ExternalParameter {
+                        name: name.clone(),
+                        ty: hint(&BuiltinType::Array),
+                        mutable: false,
+                        default: false,
+                        rest: true,
+                    }))
                     .collect(),
                 result: hint(&self.result),
                 effect: if self.effects.0 & Effects::WAIT == 0 {
@@ -191,7 +200,18 @@ pub fn runtime_support(
             abi_version: contract.abi_version,
             signature: Signature {
                 parameters,
-                rest: None,
+                rest: contract
+                    .rest
+                    .as_ref()
+                    .map(|name| {
+                        Ok(Parameter {
+                            name: symbol(name)?,
+                            ty: ty(&BuiltinType::Array)?,
+                            mutable: false,
+                            default: None,
+                        })
+                    })
+                    .transpose()?,
                 return_type: ty(&contract.result)?,
                 effects: contract.effects,
                 property_bag_tail: None,
@@ -356,10 +376,16 @@ pub fn seed(
             });
         }
         let result = ty(&mut package, &contract.result);
+        let rest = contract.rest.as_ref().map(|name| bc::Parameter {
+            name: symbol(&mut package, name),
+            ty: ty(&mut package, &BuiltinType::Array),
+            mutable: false,
+            default: None,
+        });
         let signature = bc::SignatureId(package.signatures.len() as u32);
         package.signatures.push(bc::Signature {
             parameters,
-            rest: None,
+            rest,
             return_type: result,
             effects: contract.effects,
             property_bag_tail: None,
