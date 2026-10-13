@@ -1,6 +1,50 @@
 use super::*;
 
 impl Heap {
+    /// Commit a private collection work buffer without copying or freeing edges.
+    /// The caller roots both objects and checks its recorded content versions.
+    /// The old payload remains in `prepared` for incremental reclamation.
+    pub(crate) fn commit_collection(
+        &mut self,
+        target: Value,
+        prepared: Value,
+    ) -> Result<(), HeapError> {
+        let target = self.key(target)?;
+        let prepared = self.key(prepared)?;
+        let kind = self.object(target)?.kind;
+        if !matches!(kind, ObjectKind::Array | ObjectKind::Table)
+            || self.object(prepared)?.kind != kind
+        {
+            return Err(HeapError::WrongKind);
+        }
+        if target == prepared {
+            return Ok(());
+        }
+        let empty = || Payload::Values(crate::payload::Values::default());
+        let a = self.objects.get_mut(target).unwrap();
+        let payload = std::mem::replace(&mut a.payload, empty());
+        let charge = a.charged;
+        let b = self.objects.get_mut(prepared).unwrap();
+        let payload = std::mem::replace(&mut b.payload, payload);
+        let charge = std::mem::replace(&mut b.charged, charge);
+        let a = self.objects.get_mut(target).unwrap();
+        a.payload = payload;
+        a.charged = charge;
+        for key in [target, prepared] {
+            let object = self.objects.get_mut(key).unwrap();
+            object.content_version = object.content_version.wrapping_add(1);
+            object.structure_version = object.structure_version.wrapping_add(1);
+            if self.gc.phase == crate::GcPhase::Mark {
+                object.scan = 0;
+                object.mark = self.gc.cycle;
+                if !object.queued {
+                    object.queued = true;
+                    self.gray.push_back(key);
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn table_len(&self, table: Value) -> Result<u32, HeapError> {
         let Payload::Table(values) = &self.object(self.key(table)?)?.payload else {
             return Err(HeapError::WrongKind);
@@ -186,5 +230,49 @@ impl Heap {
                 None => TableLookupStatus::Pending,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn committing_into_a_black_object_requeues_moved_white_edges_without_allocation() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let target = heap.alloc_array(&[]).unwrap();
+        let child = heap.alloc_array(&[Value::int(42)]).unwrap();
+        let prepared = heap.alloc_array(&[child]).unwrap();
+        heap.add_root(RootOwner(1), RootKind::Host, target).unwrap();
+        heap.add_root(RootOwner(1), RootKind::Host, prepared)
+            .unwrap();
+        heap.begin_collection().unwrap();
+        let key = heap.key(target).unwrap();
+        loop {
+            heap.gc_step(crate::GcBudget {
+                units: 1,
+                ..Default::default()
+            })
+            .unwrap();
+            let object = heap.objects.get(key).unwrap();
+            if object.mark == heap.gc.cycle && !object.queued {
+                break;
+            }
+        }
+        assert_ne!(
+            heap.objects.get(heap.key(child).unwrap()).unwrap().mark,
+            heap.gc.cycle
+        );
+        let charge = heap.stats().charged_bytes;
+        let allocations =
+            allocation_counter::measure(|| heap.commit_collection(target, prepared).unwrap());
+        assert_eq!(allocations.count_total, 0);
+        assert_eq!(heap.stats().charged_bytes, charge);
+        while heap.phase() != crate::GcPhase::Idle {
+            heap.gc_step(crate::GcBudget::default()).unwrap();
+        }
+        assert!(heap.sequence_get(target, 0).unwrap().same_bits(child));
+        assert_eq!(heap.sequence_get(child, 0).unwrap().as_int(), Some(42));
+        assert_eq!(heap.sequence_len(prepared).unwrap(), 0);
     }
 }

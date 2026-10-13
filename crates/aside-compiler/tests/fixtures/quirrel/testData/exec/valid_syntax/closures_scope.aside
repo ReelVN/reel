@@ -65,7 +65,7 @@ fn make_stack() {
         push: |v| { data.append(v); },
         pop: || { return data.pop(); },
         size: || { return data.len(); },
-        peek: || { return data[data.len() - 1]; },
+        peek: || { return data.top(); },
     };
 }
 

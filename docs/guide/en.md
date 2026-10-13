@@ -88,6 +88,7 @@ for caption in captions {
 ### Organizing Component Data
 
 Arrays support insertion, removal, resizing, reversal, extension, clearing and swapping. Both tuples and arrays support range slices. Table keys/values/entries return new arrays of own fields; each entry is a `(key, value)` tuple. Bulk edits publish once on success and preserve the original array identity. New positions filled by resize share the supplied value; they do not deep-copy it.
+See [collection_editing.aside](../../examples/collection_editing.aside) for a complete runnable example. insert/remove use nonnegative zero-based indices; slice accepts `begin..end` or `begin..=last` and rejects out-of-bounds ranges instead of truncating them. remove returns the removed item, top returns the last item, and other mutating methods return the original container.
 
 ```aside
 let rows = ["序章", "第一章"];

@@ -223,6 +223,7 @@ pub(crate) struct Object {
     pub weak: Option<HeapHandle>,
     pub mark: u64,
     pub scan: u32,
+    pub queued: bool,
     pub dying: bool,
     pub content_version: u64,
     pub structure_version: u64,
@@ -429,6 +430,7 @@ impl Heap {
         {
             obj.mark = self.gc.cycle;
             obj.scan = 0;
+            obj.queued = true;
             assert!(self.gray.len() < self.limits.max_objects as usize);
             self.gray.push_back(key);
         }
@@ -490,6 +492,7 @@ impl Heap {
             weak,
             mark,
             scan: 0,
+            queued: self.gc.phase == GcPhase::Mark,
             dying: false,
             content_version: 0,
             structure_version: 0,

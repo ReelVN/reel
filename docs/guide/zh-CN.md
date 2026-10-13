@@ -88,6 +88,7 @@ for caption in captions {
 ### 组织组件数据
 
 数组支持插入、删除、扩缩、反转、扩展、清空和交换，tuple/array 可按范围切片。表的 keys/values/entries 返回自有字段的新数组；entries 每项是 `(key, value)`。批量编辑在成功时一次生效，原有数组引用保持有效；resize 的填充值在新增位置共享，不自动深复制。
+完整可运行示例见 [collection_editing.aside](../../examples/collection_editing.aside)。insert/remove 使用从零开始的非负索引；slice 接受 `begin..end` 或 `begin..=last`，不自动截断越界范围。remove 返回删除项，top 返回末项，其余修改方法返回原容器。
 
 ```aside
 let rows = ["序章", "第一章"];
