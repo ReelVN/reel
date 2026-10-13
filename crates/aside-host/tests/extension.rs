@@ -65,15 +65,22 @@ fn gauge(#[aside(context)] context: &mut CallContext<'_, Host>) -> Result<Value,
     Ok(heap.alloc_host(fields, &[], Some(Field::validate))?)
 }
 
+#[native(symbol = "sample::collect")]
+fn collect(#[aside(rest)] items: Value) -> Value {
+    items
+}
+
 #[test]
 fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let add = add::binding();
     let decorate = decorate::binding();
     let gauge = gauge::binding();
+    let collect = collect::binding();
     let contracts = [
         add.contract.clone(),
         decorate.contract.clone(),
         gauge.contract.clone(),
+        collect.contract.clone(),
     ];
     let capabilities = ["sample.text".to_string()];
     let module = aside_compiler::analyze_module(r#"fn main() {
@@ -88,6 +95,22 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         try { node.id = "new"; } catch error { rejected += 1; }
         try { decorate("reject"); } catch error { rejected += 1; }
         if rejected != 3 || node.x != 2.5 || node.visible || node.id != "stable" { throw "property schema"; }
+        let nested = [7];
+        let source = [1, nested];
+        let packed = collect(...source, 3);
+        if packed.len() != 3 || packed[0] != 1 || packed[2] != 3 { throw "native spread"; }
+        packed[0] = 9;
+        nested[0] = 8;
+        if source[0] != 1 || packed[1][0] != 8 { throw "fresh outer array, shared elements"; }
+        let a = collect();
+        let b = collect();
+        a.append(4);
+        if b.len() != 0 { throw "shared empty rest"; }
+        let gather = collect;
+        if gather(5, ...[6, 7]).len() != 3 { throw "dynamic native rest"; }
+        let mut bad_rest = false;
+        try { gather(items: [1]); } catch error { bad_rest = true; }
+        if !bad_rest { throw "named rest admitted"; }
         true
     }"#, &aside_compiler::AnalysisOptions {
         hosts: contracts.iter().map(NativeContract::external).collect(), ..Default::default()
@@ -98,6 +121,20 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
     let support =
         aside_host::runtime_support(program.package(), &contracts, &capabilities).unwrap();
+    let mut wrong_rest = contracts.to_vec();
+    wrong_rest[3].rest = None;
+    let wrong_support =
+        aside_host::runtime_support(program.package(), &wrong_rest, &capabilities).unwrap();
+    assert!(
+        Vm::load(
+            bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap(),
+            wrong_support,
+            VmLimits::default(),
+            SessionEpoch(2)
+        )
+        .is_err(),
+        "runtime admission must reject a different rest signature"
+    );
     let entry = bc::FunctionId(
         program
             .package()
@@ -132,6 +169,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
                         }
                     }
                     2 => (gauge.invoke)(&mut host, &mut vm, ticket).unwrap(),
+                    3 => (collect.invoke)(&mut (), &mut vm, ticket).unwrap(),
                     _ => unreachable!(),
                 },
                 RunOutcome::BudgetYield(_) => {}
@@ -139,6 +177,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
                     vm.discard_delivery(delivery).unwrap();
                     break;
                 }
+                RunOutcome::Fault(delivery) => panic!("{:?}", vm.delivery_fault(delivery).unwrap()),
                 other => panic!("{other:?}"),
             }
         }

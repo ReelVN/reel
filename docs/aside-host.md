@@ -36,6 +36,43 @@ cargo test --locked -p aside-host --test extension
 
 ## State, values and errors
 
+### Variadic native declarations
+
+Scope: aside-host declarations, aside-host-macros, their end-to-end checks, Reel's
+contract initializers and the shared specifications/guides. B01/ASB v1 and native
+ABI v1 stay unchanged; there are no new dependencies. `NativeContract::rest` is
+an optional parameter name. The compiler and runtime declare it as the ordinary
+array rest parameter. `#[aside(rest)] values: Value` must be the last script
+parameter and cannot have a default. The native wrapper receives the VM's fresh
+outer rest array, including an empty array when no remaining arguments are given.
+It does not copy the elements into a Rust vector. Positional spread, function
+values, bound receivers, GC, admission and source diagnostics reuse the existing
+binder and NativeFrame. The rest name cannot be supplied as a named argument.
+
+This supports ordinary variadic library calls without teaching the compiler
+about Reel. Validation covers source to B01,
+loading, empty and spread calls, defaults, bound methods, interleaved collection
+and mismatched runtime declarations. Work and allocations for packing arguments
+remain governed by VM slice/heap budgets; wrappers add no collection or copy.
+
+```rust
+use aside_host::{native, aside_vm::Value};
+
+#[native(symbol = "sample::collect")]
+fn collect(#[aside(rest)] items: Value) -> Value {
+    items
+}
+```
+
+Rust receives an array value through `FromValue`; use `Value` or an owned
+conversion that accepts an array. Read it through `Heap::sequence_len/get` when
+the operation needs its elements. The `#[aside(context)]` parameter does not
+count toward the script parameter order and may follow the rest parameter.
+The [extension host](../crates/aside-host/tests/extension.rs) executes empty,
+spread and function-value calls and checks fresh outer-array ownership. The
+[bound native host](../crates/aside-host/tests/bound_native.rs) exercises rest
+with defaults, a bound receiver, host entry/callback calls and incremental GC.
+
 Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`; they are ordinary B01 defaults, not a second Rust argument binder. The `abi` option defaults to 1.
 
 An optional `#[aside(context)] context: &mut CallContext<'_, Host>` parameter supplies mutable host state, the VM and the current ticket. It is omitted from the script signature. For example:

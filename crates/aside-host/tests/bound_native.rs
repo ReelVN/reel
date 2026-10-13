@@ -2,8 +2,18 @@ use aside_host::{CallContext, Error, NativeContract, NativeParameter, native};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
 #[native(symbol = "sample::decorate")]
-fn decorate(receiver: String, #[aside(default = "!")] suffix: String) -> String {
-    format!("{receiver}{suffix}")
+fn decorate(
+    receiver: String,
+    #[aside(default = "!")] suffix: String,
+    #[aside(rest)] extras: Value,
+    #[aside(context)] context: &mut CallContext<'_, ()>,
+) -> Result<String, Error> {
+    let count = context.vm.heap().sequence_len(extras)?;
+    Ok(if count == 0 {
+        format!("{receiver}{suffix}")
+    } else {
+        format!("{receiver}{suffix}{count}")
+    })
 }
 struct Host {
     decorate: bc::FunctionId,
@@ -36,6 +46,7 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
         decorate.contract.clone(),
         bind.contract.clone(),
         NativeContract {
+            rest: None,
             symbol: "sample::relay".into(),
             abi_version: 1,
             parameters: vec![NativeParameter {
@@ -51,6 +62,7 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
     let source = r#"fn main() {
         let method = bind("captured");
         if method() != "captured!" || method(suffix: "?") != "captured?" { throw "method arguments"; }
+        if method("?", ...[1, 2]) != "captured?2" { throw "bound native rest"; }
         if relay(method) != "captured!" { throw "host callback"; }
         let mut rejected = false;
         try { method(receiver: "replacement"); } catch error { rejected = true; }
@@ -104,7 +116,15 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
     for entry in [Some(compiled.entry), Some(main), None, Some(invalid)] {
         let task = match entry {
             Some(function) => vm.start(function, &[], RootOwner(1), bc::Context::Ordinary),
-            None => vm.start_closure(entry_method, &[], RootOwner(1), bc::Context::Ordinary),
+            None => {
+                let suffix = vm.heap_mut().alloc_string("?").unwrap();
+                vm.start_closure(
+                    entry_method,
+                    &[suffix, Value::int(11)],
+                    RootOwner(1),
+                    bc::Context::Ordinary,
+                )
+            }
         }
         .unwrap();
         loop {
@@ -154,7 +174,7 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
                         let actual =
                             <String as aside_host::FromValue>::from_value(vm.heap(), value)
                                 .unwrap();
-                        assert_eq!(actual, if entry.is_none() { "entry!" } else { "ok" });
+                        assert_eq!(actual, if entry.is_none() { "entry?1" } else { "ok" });
                     }
                     vm.discard_delivery(delivery).unwrap();
                     break;

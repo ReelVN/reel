@@ -178,6 +178,7 @@ fn native_impl(
     let mut host = moxy::template! { () };
     let mut context_seen = false;
     let mut params = Vec::new();
+    let mut rest = None;
     let mut reads = Vec::new();
     let mut arguments = Vec::new();
     let mut names = std::collections::BTreeSet::new();
@@ -195,7 +196,7 @@ fn native_impl(
             ));
         };
         let ident = pattern.ident.clone();
-        let opts = helper(&param.attrs, &["name", "default", "context"])?;
+        let opts = helper(&param.attrs, &["name", "default", "context", "rest"])?;
         param.attrs.retain(|a| !a.path.is_ident("aside"));
         if flag(&opts, "context")? {
             let Type::Reference(reference) = param.ty.as_ref() else {
@@ -222,6 +223,16 @@ fn native_impl(
             arguments.push(moxy::template! { &mut __aside_context });
             continue;
         }
+        if rest.is_some() {
+            return Err(ParseError::new(
+                param.span(),
+                "rest must be the final script parameter",
+            ));
+        }
+        let is_rest = flag(&opts, "rest")?;
+        if is_rest && find(&opts, "default").is_some() {
+            return Err(ParseError::new(param.span(), "rest cannot have a default"));
+        }
         let name = find(&opts, "name")
             .map(|m| m.parse::<String>())
             .transpose()?
@@ -242,10 +253,14 @@ fn native_impl(
             moxy::template! { None }
         };
         let index = literal(params.len());
-        params.push(moxy::template! {
-            ::aside_host::NativeParameter { name: {{ name }}.into(),
-                ty: <{{ ty }} as ::aside_host::FromValue>::TYPE, default: {{ default }} }
-        });
+        if is_rest {
+            rest = Some(name);
+        } else {
+            params.push(moxy::template! {
+                ::aside_host::NativeParameter { name: {{ name }}.into(),
+                    ty: <{{ ty }} as ::aside_host::FromValue>::TYPE, default: {{ default }} }
+            });
+        }
         reads.push(moxy::template! {
             let {{ &argument }} = <{{ ty }} as ::aside_host::FromValue>::from_value(__aside_vm.heap(),
                 __aside_arguments[{{ index }}])?;
@@ -278,7 +293,11 @@ fn native_impl(
     };
     let name = &function.sig.ident;
     let vis = &function.vis;
-    let count = literal(params.len());
+    let count = literal(params.len() + usize::from(rest.is_some()));
+    let rest = rest.map_or_else(
+        || moxy::template! { None },
+        |name| moxy::template! { Some({{ name }}.into()) },
+    );
     let attrs = &function.attrs;
     let gates: Vec<_> = attrs
         .iter()
@@ -301,6 +320,7 @@ fn native_impl(
                     contract: ::aside_host::NativeContract {
                         symbol: SYMBOL.into(), abi_version: {{ abi }},
                         parameters: vec![ @for p in &params { {{ p }}, } ],
+                        rest: {{ rest }},
                         result: <{{ result }} as ::aside_host::IntoValue>::TYPE,
                         effects: {{ effects }},
                         required_capabilities: ({{ capabilities }}).into_iter().map(|v: &str| v.into()).collect(),
@@ -423,6 +443,20 @@ mod tests {
 
     #[test]
     fn declaration_errors_point_to_invalid_options_before_codegen() {
+        for (input, message) in [
+            (
+                moxy::template! { fn wrong(#[aside(rest, default = null)] items: Value) {} },
+                "rest cannot have a default",
+            ),
+            (
+                moxy::template! { fn wrong(#[aside(rest)] items: Value, last: Value) {} },
+                "rest must be the final script parameter",
+            ),
+        ] {
+            let error =
+                native_impl(moxy::template! { symbol = "sample::wrong" }, input).unwrap_err();
+            assert!(error.to_string().contains(message));
+        }
         let error = native_impl(
             moxy::template! { symbol = "sample::wrong" },
             moxy::template! { fn wrong(#[aside(name = "same")] a: i64, #[aside(name = "same")] b: i64) {} },

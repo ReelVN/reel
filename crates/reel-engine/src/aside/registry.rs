@@ -19,6 +19,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     ]
     .into_iter()
     .map(|(name, parameter, input, result)| NativeContract {
+        rest: None,
         symbol: format!("reel::{name}"),
         abi_version: 1,
         parameters: vec![NativeParameter {
@@ -57,6 +58,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             });
         }
         contracts.push(NativeContract {
+            rest: None,
             symbol: format!("reel::{name}"),
             abi_version: 1,
             parameters,
@@ -66,6 +68,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     contracts.push(NativeContract {
+        rest: None,
         symbol: "reel::stage::replace".into(),
         abi_version: 1,
         parameters: vec![NativeParameter {
@@ -110,6 +113,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("activity::await", vec![parameter("activity", None)], true),
     ] {
         contracts.push(NativeContract {
+            rest: None,
             symbol: format!("reel::{name}"),
             abi_version: 1,
             parameters,
