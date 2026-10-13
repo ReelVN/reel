@@ -1,4 +1,6 @@
 # Reel 游戏开发指南
+
+需要用 Rust 扩展脚本接口的开发者可参阅 [Aside host SDK](../aside-host.md)。注册的宿主函数使用与普通 Aside 函数相同的命名参数、默认参数和错误位置规则。
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
 [English](en.md) · [文档目录 / Documentation index](../README.md)

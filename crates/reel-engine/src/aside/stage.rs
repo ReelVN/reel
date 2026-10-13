@@ -7,6 +7,46 @@ use aside_vm::{
 use reel_ui::stage::{NodeId, NodeKind, NodeProps, Stage};
 
 use super::{AdapterError, registry, text};
+use aside_host::PropertySchema;
+
+/// One host schema feeds construction, writes and animation; NodeProps remains in reel-ui.
+#[derive(aside_host::Properties)]
+pub(super) enum NodeProperty {
+    #[aside(name = "x", ty = Any, default = 0, validate = validate_number, animatable)]
+    X,
+    #[aside(name = "y", ty = Any, default = 0, validate = validate_number, animatable)]
+    Y,
+    #[aside(name = "width", ty = Any, default = null, validate = validate_dimension, animatable)]
+    Width,
+    #[aside(name = "height", ty = Any, default = null, validate = validate_dimension, animatable)]
+    Height,
+    #[aside(name = "opacity", ty = Any, default = 1, validate = validate_opacity, animatable)]
+    Opacity,
+    #[aside(name = "visible", ty = Bool, default = true)]
+    Visible,
+    #[aside(name = "clip", ty = Bool, default = false)]
+    Clip,
+    #[aside(name = "gap", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    Gap,
+    #[aside(name = "padding", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    Padding,
+    #[aside(name = "font_size", ty = Any, default = 24, validate = validate_nonnegative, animatable)]
+    FontSize,
+    #[aside(name = "color", ty = String, default = "#ffffff", validate = validate_color)]
+    Color,
+    #[aside(name = "background", ty = Any, default = null, validate = validate_background)]
+    Background,
+    #[aside(name = "rotation", ty = Any, default = 0, validate = validate_number, animatable)]
+    Rotation,
+    #[aside(name = "scale_x", ty = Any, default = 1, validate = validate_number, animatable)]
+    ScaleX,
+    #[aside(name = "scale_y", ty = Any, default = 1, validate = validate_number, animatable)]
+    ScaleY,
+    #[aside(name = "anchor_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    AnchorX,
+    #[aside(name = "anchor_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    AnchorY,
+}
 
 #[derive(Default)]
 pub(super) struct StageBinding {
@@ -74,12 +114,12 @@ impl StageBinding {
 
         let prefix = registry::node_prefix(symbol);
         let fields = heap.alloc_table()?;
-        let field_count = prefix.len() + registry::NODE_FIELDS.len();
+        let field_count = prefix.len() + NodeProperty::PROPERTIES.len();
         for (index, argument) in args.iter().take(field_count).enumerate() {
             let name = if index < prefix.len() {
                 prefix[index]
             } else {
-                registry::NODE_FIELDS[index - prefix.len()]
+                NodeProperty::PROPERTIES[index - prefix.len()].name
             };
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, index as u32, key, *argument)?;
@@ -360,49 +400,64 @@ pub(super) fn validate_layout_property(
     index: u32,
     value: Value,
 ) -> Result<(), HeapError> {
-    let result = match index {
-        0 | 1 => number(value).map(|_| ()),
-        2 | 3 => dimension(value).map(|_| ()),
-        4 => opacity(value).map(|_| ()),
-        5 | 6 => boolean(value).map(|_| ()),
-        7..=9 => nonnegative(value).map(|_| ()),
-        10 => color(heap, value).map(|_| ()),
-        11 if value.tag() == ValueTag::Null => Ok(()),
-        11 => color(heap, value).map(|_| ()),
-        12..=16 => number(value).map(|_| ()),
-        _ => return Err(HeapError::OutOfBounds),
-    };
-    result.map_err(|error| match error {
+    NodeProperty::validate(heap, index, value)
+}
+fn validation<T>(result: Result<T, AdapterError>) -> Result<(), HeapError> {
+    result.map(|_| ()).map_err(|error| match error {
         AdapterError::Heap(error) => error,
         _ => HeapError::TypeMismatch,
     })
 }
+fn validate_number(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(number(value))
+}
+fn validate_dimension(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(dimension(value))
+}
+fn validate_opacity(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(opacity(value))
+}
+fn validate_nonnegative(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(nonnegative(value))
+}
+fn validate_color(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(color(heap, value))
+}
+fn validate_background(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    if value.tag() == ValueTag::Null {
+        Ok(())
+    } else {
+        validate_color(heap, value)
+    }
+}
 fn read_props(heap: &Heap, fields: Value, offset: usize) -> Result<NodeProps, AdapterError> {
-    let get = |index: usize| -> Result<Value, AdapterError> {
-        Ok(heap.table_entry(fields, (index + offset) as u32)?.1)
+    let get = |property: NodeProperty| -> Result<Value, AdapterError> {
+        Ok(heap
+            .table_entry(fields, (property.index() + offset) as u32)?
+            .1)
     };
-    let background = get(11)?;
+    let background = get(NodeProperty::Background)?;
     Ok(NodeProps {
-        x: number(get(0)?)?,
-        y: number(get(1)?)?,
-        width: dimension(get(2)?)?,
-        height: dimension(get(3)?)?,
-        opacity: opacity(get(4)?)?,
-        visible: boolean(get(5)?)?,
-        clip: boolean(get(6)?)?,
-        gap: nonnegative(get(7)?)?,
-        padding: nonnegative(get(8)?)?,
-        font_size: nonnegative(get(9)?)?,
-        color: color(heap, get(10)?)?,
+        x: number(get(NodeProperty::X)?)?,
+        y: number(get(NodeProperty::Y)?)?,
+        width: dimension(get(NodeProperty::Width)?)?,
+        height: dimension(get(NodeProperty::Height)?)?,
+        opacity: opacity(get(NodeProperty::Opacity)?)?,
+        visible: boolean(get(NodeProperty::Visible)?)?,
+        clip: boolean(get(NodeProperty::Clip)?)?,
+        gap: nonnegative(get(NodeProperty::Gap)?)?,
+        padding: nonnegative(get(NodeProperty::Padding)?)?,
+        font_size: nonnegative(get(NodeProperty::FontSize)?)?,
+        color: color(heap, get(NodeProperty::Color)?)?,
         background: if background.tag() == ValueTag::Null {
             None
         } else {
             Some(color(heap, background)?)
         },
-        rotation: number(get(12)?)?,
-        scale_x: number(get(13)?)?,
-        scale_y: number(get(14)?)?,
-        anchor_x: number(get(15)?)?,
-        anchor_y: number(get(16)?)?,
+        rotation: number(get(NodeProperty::Rotation)?)?,
+        scale_x: number(get(NodeProperty::ScaleX)?)?,
+        scale_y: number(get(NodeProperty::ScaleY)?)?,
+        anchor_x: number(get(NodeProperty::AnchorX)?)?,
+        anchor_y: number(get(NodeProperty::AnchorY)?)?,
     })
 }

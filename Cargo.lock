@@ -195,6 +195,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aside-host"
+version = "0.1.0"
+dependencies = [
+ "aside-compiler",
+ "aside-host-macros",
+ "aside-vm",
+]
+
+[[package]]
+name = "aside-host-macros"
+version = "0.1.0"
+dependencies = [
+ "moxy",
+]
+
+[[package]]
 name = "aside-syntax"
 version = "0.1.0"
 dependencies = [
@@ -1731,6 +1747,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "moxy"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0508f3de0fb346df5b70d3535e477ee71692eb857e3a3a9b6ac8bb3fa529a5a3"
+dependencies = [
+ "moxy-ast",
+ "moxy-template",
+ "moxy-token",
+]
+
+[[package]]
+name = "moxy-ast"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abb1b8779c7cdf844c9706fdda948c8d4ea6e3d9ab24b426f6ed6704d745e325"
+dependencies = [
+ "moxy-token",
+]
+
+[[package]]
+name = "moxy-build"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "729d11e1b22d86ae1bd553c164ca4d18e6b78bb1193438aee4076b058c09a6b1"
+
+[[package]]
+name = "moxy-template"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6949d5c02f4665407440ad4f8bc19dcb1e0f505b0916f3695ebf459845da3a07"
+dependencies = [
+ "moxy-ast",
+ "moxy-token",
+]
+
+[[package]]
+name = "moxy-token"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0a429d8845a78c22ce4141054d7760e71ef77343260ed35c8bc57b1ccc7959"
+dependencies = [
+ "moxy-build",
+ "unicode-ident",
+]
+
+[[package]]
 name = "naga"
 version = "26.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2569,6 +2631,7 @@ name = "reel-engine"
 version = "0.1.0"
 dependencies = [
  "aside-compiler",
+ "aside-host",
  "aside-vm",
  "reel-core",
  "reel-ui",

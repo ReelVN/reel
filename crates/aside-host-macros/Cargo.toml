@@ -1,0 +1,16 @@
+[package]
+name = "aside-host-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Rust declaration macros for Aside host extensions"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+moxy = { version = "=0.5.4", default-features = false, features = ["ast", "token", "template"] }
+
+[lints]
+workspace = true

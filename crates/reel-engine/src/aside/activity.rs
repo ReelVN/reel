@@ -1,9 +1,11 @@
 //! Actions and running activities live in the VM heap. The active list is one
 //! traced root, not a second object store or an ever-growing terminal ledger.
 use super::{
-    AdapterError, FaultKind, HostTicket, registry,
-    stage::{self, StageBinding},
+    AdapterError, FaultKind, HostTicket,
+    stage::{self, NodeProperty, StageBinding},
 };
+use aside_host::{CallContext, PropertySchema};
+use aside_vm::bytecode::Effects;
 use aside_vm::executor::{Completion, HostResponse, Vm, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootOwner, RootToken, Value, ValueTag};
 
@@ -98,7 +100,12 @@ impl Activities {
             }
         };
         let goals = heap.alloc_array(&[])?;
-        for (&index, &value) in registry::ANIMATED_FIELDS.iter().zip(&args[3..]) {
+        for ((index, _), &value) in NodeProperty::PROPERTIES
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.animatable)
+            .zip(&args[3..])
+        {
             if value.tag() == ValueTag::Null {
                 continue;
             }
@@ -499,4 +506,36 @@ impl Activities {
         self.cursor = None;
         Ok(())
     }
+}
+
+#[aside_host::native(symbol = "reel::pause", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn pause(
+    #[aside(context)] context: &mut CallContext<'_, Activities>,
+    activity: Value,
+) -> Result<Value, AdapterError> {
+    context.host.control(context.vm, activity, pause::SYMBOL)
+}
+
+#[aside_host::native(symbol = "reel::resume", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn resume(
+    #[aside(context)] context: &mut CallContext<'_, Activities>,
+    activity: Value,
+) -> Result<Value, AdapterError> {
+    context.host.control(context.vm, activity, resume::SYMBOL)
+}
+
+#[aside_host::native(symbol = "reel::stop", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn stop(
+    #[aside(context)] context: &mut CallContext<'_, Activities>,
+    activity: Value,
+) -> Result<Value, AdapterError> {
+    context.host.control(context.vm, activity, stop::SYMBOL)
+}
+
+#[aside_host::native(symbol = "reel::finish", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn finish(
+    #[aside(context)] context: &mut CallContext<'_, Activities>,
+    activity: Value,
+) -> Result<Value, AdapterError> {
+    context.host.control(context.vm, activity, finish::SYMBOL)
 }

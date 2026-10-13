@@ -55,6 +55,23 @@ impl From<HeapError> for AdapterError {
         Self::Heap(e)
     }
 }
+impl From<aside_host::DeclarationError> for AdapterError {
+    fn from(error: aside_host::DeclarationError) -> Self {
+        Self::Input(error.0)
+    }
+}
+impl From<aside_host::Error> for AdapterError {
+    fn from(error: aside_host::Error) -> Self {
+        match error {
+            aside_host::Error::Heap(error) => Self::Heap(error),
+            aside_host::Error::Vm(error) => Self::Vm(error),
+            aside_host::Error::Allocation => Self::Allocation,
+            aside_host::Error::Arguments => {
+                Self::Input("native argument count differs from declaration")
+            }
+        }
+    }
+}
 impl From<SessionError> for AdapterError {
     fn from(e: SessionError) -> Self {
         Self::Session(e)
@@ -157,7 +174,7 @@ impl SessionVm {
         program: VerifiedProgram,
         limits: VmLimits,
     ) -> Result<Self, AdapterError> {
-        let support = registry::runtime_support(
+        let support = aside_host::runtime_support(
             program.package(),
             &registry::contracts(),
             &registry::capabilities(),
@@ -275,13 +292,7 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
-            "reel::tween"
-            | "reel::run"
-            | "reel::pause"
-            | "reel::resume"
-            | "reel::stop"
-            | "reel::finish"
-            | "reel::activity::await" => {
+            "reel::tween" | "reel::run" | "reel::activity::await" => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let value = match symbol.as_str() {
                     "reel::tween" => activity::Activities::describe(
@@ -303,9 +314,23 @@ impl SessionVm {
                         self.issued = None;
                         return Ok(NativeDispatch::Ready { work: 1 });
                     }
-                    _ => self.activities.control(&mut self.vm, args[0], &symbol)?,
+                    _ => unreachable!("registered activity constructor"),
                 };
                 self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            activity::pause::SYMBOL
+            | activity::resume::SYMBOL
+            | activity::stop::SYMBOL
+            | activity::finish::SYMBOL => {
+                let invoke = match symbol.as_str() {
+                    activity::pause::SYMBOL => activity::pause::invoke,
+                    activity::resume::SYMBOL => activity::resume::invoke,
+                    activity::stop::SYMBOL => activity::stop::invoke,
+                    _ => activity::finish::invoke,
+                };
+                invoke(&mut self.activities, &mut self.vm, ticket)?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }

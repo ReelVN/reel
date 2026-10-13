@@ -36,7 +36,8 @@ pub(crate) struct CellState {
 }
 
 impl Heap {
-    pub(crate) fn accepts_builtin(&self, ty: BuiltinType, value: Value) -> Result<bool, HeapError> {
+    /// Shared builtin value contract for script bindings and host properties.
+    pub fn accepts_builtin(&self, ty: BuiltinType, value: Value) -> Result<bool, HeapError> {
         use BuiltinType::*;
         let tag = value.tag();
         Ok(match ty {

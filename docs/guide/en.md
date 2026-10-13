@@ -1,4 +1,6 @@
 # Reel Game Creator Guide
+
+Developers extending script interfaces from Rust can refer to the [Aside host SDK](../aside-host.md). Registered host functions use the same named arguments, defaults and source-location rules as ordinary Aside functions.
 Design version 1.1 · Development baseline. Implementation status is stated in the guide.
 
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
