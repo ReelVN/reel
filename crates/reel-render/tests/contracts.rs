@@ -240,14 +240,13 @@ fn owned_font_storage_follows_producer_blob_aliases_after_retirement() {
     bytes.extend([1, 2, 3]);
     let capacity = bytes.capacity() as u64;
     let bytes = OwnedBytes::new(bytes, pool.reserve(capacity).unwrap()).unwrap();
-    let handle = registry.register_font(version(1), bytes, 2).unwrap();
+    let handle = registry.register_font(version(1), bytes).unwrap();
     let lease = registry.acquire(handle).unwrap();
     let ResourceData::Font(font) = lease.data() else {
         unreachable!()
     };
     let producer = font.clone();
-    assert_eq!(producer.index, 2);
-    assert_eq!(producer.data.as_ref(), &[1, 2, 3]);
+    assert_eq!(producer.as_ref(), &[1, 2, 3]);
     registry.retire(handle);
     drop(lease);
     drop(registry);

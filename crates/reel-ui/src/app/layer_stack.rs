@@ -361,7 +361,7 @@ mod input_tests {
                         size_policy: WindowSizePolicy::User,
                         size: PhysicalSize::new(100, 100),
                         scale_factor: 1.,
-                        test_font: None,
+                        default_font: None,
                     },
                 );
                 let (_, geometry) = root
@@ -432,7 +432,7 @@ mod input_tests {
                     size_policy: WindowSizePolicy::User,
                     size: PhysicalSize::new(100, 100),
                     scale_factor: 1.,
-                    test_font: None,
+                    default_font: None,
                 },
             );
             let limits = GeometryLimits {

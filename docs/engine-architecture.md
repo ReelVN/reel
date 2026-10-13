@@ -8,6 +8,23 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 本文规定运行时所有权、输入与渲染、媒体、持久化和开发顺序。《Aside VM 与完整语言规范》负责语法、值模型、执行帧、回收和语言兼容；《Reel 游戏开发指南》负责作者接口、组件组合与示例。跨文档的等待、绑定和恢复语义必须一致。三份文档交叉审查后成为 reel 仓库 docs/ 下的设计基线。预算与性能数字均为验收目标，尚未形成实测结论。
 
 ## 一 产品范围与实现原则
+作者能够以符合直觉的接口表达、组合和改变想象中的画面与交互，是实现和设计取舍的共同标准。可运行的小场景用于验证表达能力，不限定引擎最终范围。实现过程中发现不自然的接口，应同步改进规范和作者指南，不为维持尚未发布的内部接口引入兼容层。
+
+### 当前作者舞台实现合同
+脚本组合、共享节点和窗口宿主已接通。`reel-ui::stage` 持有唯一的作者节点模型，engine 管理脚本值和会话寿命，player 将同一模型投影到既有控件、呈现桥和渲染器。`text`、`row`、`column`、`stack` 返回具有稳定身份的未挂载节点；`stage.replace(root)` 挂载新根并结束旧子树。普通函数可返回节点，尾随 children、条件和集合循环按语言的收集规则组合子树。可运行源码为 [author_stage.aside](../examples/author_stage.aside)。当前验证覆盖源码、ASB、VM、实际控件和帧记录生成；Windows 上另使用 AMD Radeon RX 7900 GRE / Vulkan 完成中文作者画面的离屏 GPU 读回。此证据不覆盖原生窗口生命周期和设备热插拔。
+
+节点公开位置 x/y、可选 width/height、opacity、visible、clip、gap、padding、font_size、color 和 background。未指定宽高采用内容布局；位置默认 0，opacity 默认 1，visible 默认 true，clip 默认 false，gap/padding 默认 0，font_size 默认 24，color 默认白色，background 默认透明。row/column 顺序排布，stack 按书写顺序叠放；x/y 是布局位置上的局部偏移。属性赋值修改原节点，既有引用继续指向同一对象。节点身份、属性和子对象引用由真正的宿主对象承载，不能靠复制普通 table 冒充节点。单父关系、节点退休和根对象保活在挂载/会话边界处理。
+
+窗口入口为 `reel_player::shell::run_story(CompiledStory, StoryWindowOptions)`。选项包含标题、字体文件、locale 和原生窗口 logical_size；后者不冒充尚未接通的固定画布变换。窗口复用 SessionUi、PresentationBridge 和现有渲染路径，交替推进 VM 与增量 GC 工作片；等待玩家输入时完成当前回收周期后休眠，输入完成后继续。正常剧情结束保留画面；关闭执行任务取消及清理后退出。ResourceBlocked 保留执行状态，允许 GC 后重试，持续阻塞时停止忙等。源码和 ASB 入口共用编译/注册描述及运行宿主。新能力使用已有资源所有权和预算，不再叠加仅为演示设定的行数、选项或节点上限。
+
+作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v1 保存既有 B01 原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside> --font <font.ttf>` 运行源码，`reel run <file.asb> --font <font.ttf>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main，完整 game.toml 工程、多源码模块和资源包另行实现。
+
+一次窗口推进在既有 2 ms deadline 内连续处理同步调用与 VM/GC 工作，直到真实等待、终态或时间片耗尽，再同步画面。创建多个组件或同步替换场景不会被拆成每个 native 一次重绘；时间片包含宿主调用耗时。没有 deadline 的库级 tick 保留单片推进语义。
+
+节点组件的父子私有引用双向保活：持有任一节点都保持其未挂载组件有效，GC 不改变仍被作者持有节点的行为。显式替换舞台或撤销会话仍整体退休旧树，并清除全部私有强边。Host 属性通过只读堆的同步纯验证器在原赋值提交前验证，失败从作者赋值位置抛可捕获错误，原属性保持不变；呈现同步只解码并发布已验证值，不承担作者错误的延迟检测。
+
+RenderRootOptions.default_font 是正式默认字体输入，注册其字体族为 SystemUi 默认族，适用于字体实际覆盖的全部文字；它不再使用仅限 Latin 的测试回退。字体资源拥有整份字体文件或集合，FrameGlyphRun 单独携带 face 索引，各个 face 共享同一资源和内存；默认族按文件中的索引顺序选取，不受哈希遍历顺序影响。
+
 剧情按阅读顺序运行，在对话和选择处等待；角色身份、历史记录与显示组件分开。画面和 UI 共用节点、资源、布局、变换、裁剪和效果组。长期存在的节点通过属性更新，避免每次输入重建整个界面。参考 Ren’Py 的交互与屏幕复用经验。[1][2][3]
 核心提供存档、设置、历史、对话与选择的数据模型及操作接口。标题页、设置页和存档页由作者组合；项目脚手架只生成配置和入口，不附带一套完整内置 UI。用针对性契约用例验证这些能力，作者文档中的片段用于说明组合方式。
 初期使用一个工作区，先落地默认 winit 窗口适配和 wgpu 渲染器，窗口管理与渲染后端可以独立选择。完整目标包含视频、可替换的软件/硬件后端、文字与本地化、可访问性、二维/透视演出及扩展服务；阶段安排按依赖推进。静态子树缓存和增量快照是保持同一行为的优化。现有 ons-rs、krkr-rs 用作结构参考。[4]
@@ -24,7 +41,7 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 - reel-player：平台适配、窗口与事件循环，组装引擎、渲染和媒体输出。
 - reel-cli：检查、开发运行和构建，调用编译器与播放器库入口。
 依赖方向固定为 ui→core，render→ui/core，media→core，player→ui/render/core；后续 engine→aside-vm/ui/media/core，player→engine，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
-通用依赖直接使用锁定版本，不复制进仓库。Parley、winit、wgpu、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理。需修改的代码从明确来源借用后在仓库内维护；其余依赖继续锁定引用。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。借用的 Masonry 控件、布局与呈现几何代码整合到 reel-ui 后由 Reel 自主修改和维护，不以维持上游包图、同步或贡献为目标。Kira 0.12.5 的本地修改集中在退休 Sound 的有界纯移动接口和退休队列容量检查，支持后台 PCM 释放；其内部 atomic-arena 继续使用普通依赖。
+通用依赖直接使用锁定版本，不复制进仓库。winit、wgpu、image、serde、atomic-write-file 与 codespan-reporting 按普通依赖管理。Parley 0.8.0 使用 [third_party/parley](../third_party/parley/REEL-FORK.md) 的固定修改，接通并缓存 ICU 的中日分词与复杂文字换行模型；保留原始许可证和来源，不设源码哈希锁。需修改的代码从明确来源借用后在仓库内维护；其余依赖继续锁定引用。文本与集合优先复用 unicode-segmentation、unicode-normalization、indexmap；数学使用 glam；VM 对象槽存储复用 slotmap 1.1.1，增量追踪契约见语言文档；语言工具采用 Logos、rowan、单一递归下降/Pratt parser、codespan-reporting 和 lsp-server。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定的 FFmpeg；资源使用独立 zstd 块、Stored 媒体与 BLAKE3；C ABI 声明用 cbindgen，确需无锁 PCM 桥时使用 rtrb。GStreamer、另一套 parser、libloading 和替代压缩算法只有明确替换或平台理由才进入配置。借用的 Masonry 控件、布局与呈现几何代码整合到 reel-ui 后由 Reel 自主修改和维护，不以维持上游包图、同步或贡献为目标。Kira 0.12.5 的本地修改集中在退休 Sound 的有界纯移动接口和退休队列容量检查，支持后台 PCM 释放；其内部 atomic-arena 继续使用普通依赖。
 third_party/quirrel 保存 Quirrel 4.41 的固定源码与对应测试快照，基线为 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，用于规范核对与差分测试。它属于开发工具，不链接进发行播放器；Aside 编译器与 VM 是工作区自己的 Rust 实现。[6]
 UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88。[5] 当前仅维护 crates/reel-ui 一个 UI crate，版本跟随 Reel workspace；原 masonry、masonry_core、tree_arena、reel-stage 的实现按职责合为内部模块，不保留兼容转发包。安全树为私有模块，文档截图直接引用，不再保留 include_doc_path 宏包。许可、版权及必要来源说明保留；不要求与上游目录、版本或源码哈希持续一致。reel-render/reel-player 分别承担后端与平台组装，UI 不反向依赖它们。
 仓库内第三方源码采用固定快照，不递归保留嵌套 .git。每份快照记录上游地址、提交、版本、导入日期与本地修改，保留并核对许可证及版权声明；更新时可追溯差异。Quirrel 行为对照和 Kira 0.12.5 仍保留各自适用的来源记录。reel-ui 已是 Reel 自维护的借用代码，历史来源不再约束当前模块组织。Kira 当前保留原始许可证、导入版本的格式配置与已批准的修改记录；这些来源记录不构成向上游同步或贡献的承诺；音频清理线程和预算策略留在 reel-media 适配层。
@@ -213,11 +230,11 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 元数据保存 schema 版本、唯一模块引用及规范路径、源码版本/摘要/范围、source symbol 范围、函数/绑定/global 的必要映射，和分别命名的 initializer 与可空 game_entry。记录使用稳定 DTO 与精确整数，不序列化 Rust Debug、Arc、裸 HIR 节点或内存容量。函数映射不包含编译器生成的全部默认 thunk 或 initializer，不能以其条数等同 B01 函数数。读取端交叉验证模块/函数归属、范围、映射键唯一性、源码 UTF-8 边界及精确 B01 摘要；元数据里的源槽与效果摘要仅为编译器声明，不可替代 B01 验证、可信 native 注册或运行期效果检查。JSON 输入同时受字节、深度、字符串/记录和工作量限制，重复字段拒绝。
 
-Compilation.entry 对应模块 initializer，不是游戏启动函数。build 显式 --entry main::name 才选择普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口；声明经 HIR/编译器输出映射到 B01 FunctionId，不能依赖通常为空的 GlobalDef.linked_function。未指定 --entry 时 game_entry=null，产物仅为编译模块。reader 也独立要求入口 context=Ordinary，而非仅凭元数据声明普通函数。消费者必须先完成 initializer，再启动选定函数；CLI 编译与验证不执行这些步骤。当前 producer 限单模块、空 import/external/native 链接，不支持的链接必须报错。
+Compilation.entry 对应模块 initializer，不是游戏启动函数。CLI build 与 dev 默认选择 main::main，可用 --entry main::name 选择其他普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口；声明经 HIR/编译器输出映射到 B01 FunctionId，不能依赖通常为空的 GlobalDef.linked_function。CLI build 缺少有效入口时在源码位置报错，不生成无法启动的故事包。底层容器 API 仍可显式生成 game_entry=null 的模块产物。reader 也独立要求入口 context=Ordinary，而非仅凭元数据声明普通函数。消费者必须先完成 initializer，再启动选定函数；CLI 编译与验证不执行这些步骤。当前 producer 接受一个作者源码模块及编译器生成的宿主默认值模块，记录实际模块与源码 ID；已注册的 Reel native 经共享解析器链接。任意用户模块导入、外部绑定和完整工程构建仍待实现。
 
 命令为 reel check <source> [--format human|json] 与 reel build <source> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]。build 在目标同目录完成唯一暂存文件，编码与验证成功后以原子不覆盖操作发布；只有显式 --overwrite 允许原子替换。先检查 exists 再 rename 不构成不覆盖保证；失败保留已有目标且只清理本次暂存。原子可见与断电持久性分别说明，不能把普通成功当持久存档承诺。
 
-静态检查读取上限目前为 8 MiB，后续编译/B01 仍各自执行更紧的预算；例如当前 B01 源码字符串限制为 1 MiB。诊断 JSON 保留字节范围及零起始 byte/scalar/UTF-16 坐标，人读输出用实际路径及可读位置。完整 .asb 的 BLAKE3 用于产物身份；占位 source_version="source" 或 content_version=1 不代表唯一内容。当前 B01 包含源码与映射，不能称作已剥离源码的发行包。.rpk、release.json、完整模块链接、播放器加载及实际剧情运行仍分别待实现或验收。
+静态检查读取上限目前为 8 MiB，后续编译/B01 仍各自执行更紧的预算；例如当前 B01 源码字符串限制为 1 MiB。诊断 JSON 保留字节范围及零起始 byte/scalar/UTF-16 坐标，人读输出用实际路径及可读位置。逻辑模块标识（如 main）与物理源码路径独立；B01 SourceFile.path 保存调用方提供的源码路径，dev 与 ASB run 的故障使用包内来源和源码定位，不把逻辑模块名当文件名。完整 .asb 的 BLAKE3 用于产物身份；占位 source_version="source" 或 content_version=1 不代表唯一内容。当前 B01 包含源码与映射，不能称作已剥离源码的发行包。.rpk、release.json 与完整作者模块链接仍待实现；源码及 .asb 已接入真实剧情窗口，物理 GPU 的验证范围另行记录。
 
 release.json 使用 UTF-8 JSON，列出 release_id、入口、引擎/格式范围、必须能力、代码包与资源包的路径、大小和 BLAKE3 内容摘要。代码与资源头部各有魔数、major/minor、索引位置与长度；加载先检查清单及索引，再按需校验数据块。路径规范化到包命名空间，长度/偏移与解码预算在访问前验证。包格式不依赖 Rust struct 的内存布局。
 构建从干净输出目录生成产物，清单最后提交；更新先下载到候选目录并验证匹配关系，再原子切换活动 release 指针。失败保留原 release，用户存档、设置与 persistent 位于独立用户数据目录。代码包保留精确模块版本，资源引用带内容版本，防止静默混用旧代码与新索引。可选发行签名通过显式签名步骤完成，清单摘要用于完整性和缓存身份。
@@ -377,7 +394,7 @@ PR #50 在既有职责边界新增 reel-engine，管理有界 Session/Epoch/owne
 
 owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
 
-本阶段验证 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，不执行 Aside 或 VM。可信宿主注册、真实等待/交付根、BudgetYield/ResourceBlocked、音频逻辑和快照恢复尚未接通；不将当前窗口当作完整源码剧情会话。
+S01 的历史验证范围是 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，当时未执行 Aside 或 VM。后续 Aside 会话适配和作者舞台已接通可信宿主、真实等待及源码/ASB 窗口入口；作者音频与快照恢复仍未接通。
 
 PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找复杂度和同步常量加载限制见 VM README；owner/RootRange/外部资源的有界退休责任不变。
 
@@ -389,7 +406,7 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 
 host_work 仅计选择查找工作，文本复制及发布同步但有独立字节上限。默认 64 KiB 是含 locale/内容身份的累计交互额度，默认 VM 字符串常量准入仍为 4096 字节。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
-Windows 原生 debug/release 已验证真实执行、取消、GC 与终态；性能与设备仍需各自验收。可运行入口为 cargo run --locked -p reel-engine --example story_contract，已有 Rust 窗口仍是独立诊断入口。脚本可组合 UI、角色、媒体等待、完整包消费与快照等最终目标仍须沿同一宿主/呈现边界继续接通。
+PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/row/column/stack、children 组合和属性更新，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、图片节点、事件/绑定、动画、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
 ## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
 
 reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、注册 AudioOwner（包含完整 Scope）、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。当前分组仅为元数据，循环取自输入声音配置。

@@ -118,6 +118,10 @@ pub(super) enum TableAction {
     },
     Get(Reg),
     Set(Reg),
+    SetHost {
+        object: Reg,
+        value: Reg,
+    },
 }
 #[derive(Clone, Copy)]
 pub(super) struct TableWork {
@@ -217,12 +221,15 @@ impl Vm {
         let store = scan
             && (work.matched || work.entry == len)
             && !matches!(work.action, TableAction::Get(_));
-        let extra =
-            if store && work.entry == len && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN) {
-                VALUE_CHUNK_BYTES
-            } else {
-                0
-            };
+        let extra = if store
+            && !matches!(work.action, TableAction::SetHost { .. })
+            && work.entry == len
+            && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN)
+        {
+            VALUE_CHUNK_BYTES
+        } else {
+            0
+        };
         if !meter.take(0, 1, extra) {
             return Ok(false);
         }
@@ -351,11 +358,23 @@ impl Vm {
                 let (_, value) = self.heap.table_entry(table, work.entry)?;
                 self.put(s.regs, dest.0, value)?;
             }
-            TableAction::Set(reg) => {
+            TableAction::Set(reg) | TableAction::SetHost { value: reg, .. } => {
+                if matches!(work.action, TableAction::SetHost { .. }) && !work.matched {
+                    return self.collection_fault(s, FaultKind::MissingKey);
+                }
                 let value = match self.read(*s, reg) {
                     Ok(value) => value,
                     Err(kind) => return self.collection_fault(s, kind),
                 };
+                if let TableAction::SetHost { object, .. } = work.action {
+                    let host = match self.read(*s, object) {
+                        Ok(host) => host,
+                        Err(kind) => return self.collection_fault(s, kind),
+                    };
+                    if let Err(error) = self.heap.validate_host_property(host, work.entry, value) {
+                        return self.collection_fault(s, heap_fault(error));
+                    }
+                }
                 if let Err(error) = self.heap.table_store(table, work.entry, key, value) {
                     return self.collection_fault(s, heap_fault(error));
                 }

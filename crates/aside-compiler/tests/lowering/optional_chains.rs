@@ -480,7 +480,7 @@ fn defaults_initializer_and_forwarded_captures_use_the_existing_binding_model() 
 }
 
 #[test]
-fn optional_assignment_and_deferred_children_spread_and_class_are_located_rejections() {
+fn optional_assignment_and_deferred_spread_and_class_are_located_rejections() {
     for (source, expected) in [
         ("fn f(a){a?.b.c=1;}", "a?.b.c"),
         ("fn f(a){a?[0][1]+=1;}", "a?[0][1]"),
@@ -509,7 +509,6 @@ fn optional_assignment_and_deferred_children_spread_and_class_are_located_reject
     }
     for (source, detail) in [
         ("fn f(a){a?([...a])}", "spread"),
-        ("fn f(a){null?() { a; }}", "Children"),
         ("class A{}", "Class"),
         ("fn f(){let [a]=[1];}", "pattern"),
     ] {

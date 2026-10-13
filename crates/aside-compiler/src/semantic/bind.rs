@@ -225,6 +225,11 @@ pub(super) fn analyze(
         out: AnalyzedModule {
             entry_context: options.context,
             canonical_path: options.module.clone(),
+            source_path: options
+                .source_path
+                .as_ref()
+                .unwrap_or(&options.module)
+                .clone(),
             version: options.version.clone(),
             hir,
             facts,

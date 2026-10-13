@@ -101,9 +101,13 @@ RGBA8 images with linear conversion, monochrome filled Swash outlines from Parle
 whole-group alpha, geometric clips, nested alpha/luminance masks and frozen-frame
 crossfade. Rejected with RecordLocation: gradients, non-source-over blends,
 filters/blur, External producers, dashed strokes, non-bilinear/repeat image
-sampling, color glyph layers, glyph stroke/embolden/local glyph transform and
-sizes above 256. Font IDs, collection index, variation coordinates, hint and
-position are retained without shaping. This explicit profile does not remove any
+sampling, color glyph layers and glyph stroke/embolden/local glyph transform.
+Glyph raster extents are admitted against the current device's texture dimensions
+and the remaining resource upload budget, with no separate font-size ceiling.
+Font resources retain the complete file Blob, including every face of a TTC;
+the shaped glyph run independently supplies its collection index. Font IDs,
+collection index, variation coordinates, hint and position are retained without
+shaping. This explicit profile does not remove any
 architecture §16 feature from the full engine scope.
 
 Stroke width must convert to a finite, nonnegative f32 without nonzero underflow.

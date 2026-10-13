@@ -8,6 +8,7 @@ mod choice;
 mod publication;
 mod registry;
 pub mod source;
+mod stage;
 #[cfg(test)]
 mod tests;
 mod text;
@@ -35,6 +36,12 @@ pub enum AdapterError {
     Session(SessionError),
     Input(&'static str),
     Allocation,
+    Stage(reel_ui::stage::StageError),
+}
+impl From<reel_ui::stage::StageError> for AdapterError {
+    fn from(error: reel_ui::stage::StageError) -> Self {
+        Self::Stage(error)
+    }
 }
 impl From<VmError> for AdapterError {
     fn from(e: VmError) -> Self {
@@ -64,6 +71,7 @@ impl AdapterError {
         match self {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
             Self::Input(_) => Some(FaultKind::Type),
+            Self::Stage(_) => Some(FaultKind::Type),
             Self::Allocation
             | Self::Session(SessionError::Capacity(_) | SessionError::AllocationFailed) => {
                 Some(FaultKind::Resource)
@@ -77,6 +85,7 @@ impl AdapterError {
                 Some(FaultKind::ConcurrentModification)
             }
             Self::Heap(HeapError::WrongKind | HeapError::TypeMismatch) => Some(FaultKind::Type),
+            Self::Heap(HeapError::RetiredHost) => Some(FaultKind::InvalidState),
             Self::Heap(HeapError::OutOfBounds) => Some(FaultKind::OutOfBounds),
             Self::Heap(
                 HeapError::ObjectCapacity
@@ -102,6 +111,9 @@ struct PendingInteraction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeDispatch {
+    Ready {
+        work: u32,
+    },
     Decoding {
         work: u32,
     },
@@ -130,6 +142,7 @@ pub struct SessionVm {
     revoked: bool,
     root_cursor: u32,
     root_end: u32,
+    stage: stage::StageBinding,
 }
 
 impl SessionVm {
@@ -165,6 +178,7 @@ impl SessionVm {
             revoked: false,
             root_cursor: 0,
             root_end: 0,
+            stage: stage::StageBinding::default(),
         })
     }
 
@@ -184,8 +198,39 @@ impl SessionVm {
     pub fn vm(&self) -> &Vm {
         &self.vm
     }
+
+    /// Format a still-rooted fault's author value without traversing object graphs.
+    pub fn format_fault_value(&self, fault: FaultInfo) -> Result<String, AdapterError> {
+        use aside_vm::{ObjectKind, ValueTag};
+
+        let heap = self.vm.heap();
+        let value = heap.fault_value(fault.id)?;
+        Ok(match value.tag() {
+            ValueTag::Null => "null".into(),
+            ValueTag::Bool => value.as_bool().unwrap().to_string(),
+            ValueTag::Int => value.as_int().unwrap().to_string(),
+            ValueTag::Float => value.as_float().unwrap().to_string(),
+            ValueTag::Object => {
+                let info = heap.info(value)?;
+                if info.kind == ObjectKind::String {
+                    text::read_string(heap, value, info.len as usize, self.read_limit)?
+                } else {
+                    format!("<{:?}>", info.kind)
+                }
+            }
+        })
+    }
     pub fn task(&self) -> Option<TaskId> {
         self.task
+    }
+    pub fn stage(&self) -> &reel_ui::stage::Stage {
+        &self.stage.scene
+    }
+
+    /// Publish the properties of the same mounted objects after script work.
+    pub fn sync_stage(&mut self, session: &Session) -> Result<(), AdapterError> {
+        self.same_session(session)?;
+        self.stage.sync(self.vm.heap_mut(), self.read_limit)
     }
     pub fn cleanup_pending(&self) -> bool {
         self.revoked && (self.root_cursor < self.root_end || self.task.is_some())
@@ -200,7 +245,8 @@ impl SessionVm {
     ) -> Result<NativeDispatch, AdapterError> {
         self.check_ticket(session, ticket)?;
         let p = self.vm.program().package();
-        match p.symbols[p.natives[ticket.native.index()].symbol.index()].as_str() {
+        let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
+        match symbol.as_str() {
             "reel::narrator" => {
                 self.dispatch_narrator(session, ticket, locale)
                     .map(|interaction| NativeDispatch::Published {
@@ -209,6 +255,25 @@ impl SessionVm {
                     })
             }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
+            "reel::text"
+            | "reel::row"
+            | "reel::column"
+            | "reel::stack"
+            | "reel::stage::replace" => {
+                let arguments = self.vm.host_arguments(ticket)?.to_vec();
+                let value = self.stage.dispatch(
+                    self.vm.heap_mut(),
+                    self.root_owner,
+                    &symbol,
+                    &arguments,
+                    self.read_limit,
+                )?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready {
+                    work: arguments.len() as u32,
+                })
+            }
             _ => Err(AdapterError::Input("unregistered session native")),
         }
     }
@@ -612,6 +677,7 @@ impl SessionVm {
             }
         }
         self.root_end = self.vm.heap().root_slots();
+        self.stage.revoke(self.vm.heap_mut())?;
         session.revoke_owner_with_retirement(
             self.owner,
             OwnerRetirementRequirements {

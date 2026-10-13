@@ -54,6 +54,9 @@ pub struct EnclosingBinding {
 #[derive(Debug, Clone)]
 pub struct AnalysisOptions {
     pub module: String,
+    /// Display path retained in source maps, independent of the logical module.
+    /// In-memory callers may omit it and use the module name as their source label.
+    pub source_path: Option<String>,
     pub version: String,
     pub context: AnalysisContext,
     pub limits: AnalysisLimits,
@@ -65,6 +68,7 @@ impl Default for AnalysisOptions {
     fn default() -> Self {
         Self {
             module: "main".into(),
+            source_path: None,
             version: "source".into(),
             context: AnalysisContext::Module,
             limits: AnalysisLimits::default(),

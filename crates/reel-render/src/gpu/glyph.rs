@@ -15,6 +15,7 @@ pub fn rasterize(
     index: usize,
     at: RecordLocation,
     available: u64,
+    max_dimension: u32,
 ) -> Result<Option<GlyphBitmap>, GpuError> {
     let resource = frame
         .resources()
@@ -31,16 +32,16 @@ pub fn rasterize(
             record: "font resource type",
         });
     };
-    let font = swash::FontRef::from_index(font.data.data(), run.font_index as usize).ok_or(
+    let font = swash::FontRef::from_index(font.data(), run.font_index as usize).ok_or(
         GpuError::Unsupported {
             at,
             record: "font collection index",
         },
     )?;
-    if run.font_size > 256. || run.font_embolden != reel_ui::kurbo::Vec2::ZERO {
+    if run.font_embolden != reel_ui::kurbo::Vec2::ZERO {
         return Err(GpuError::Unsupported {
             at,
-            record: "glyph size above 256 or embolden",
+            record: "glyph embolden",
         });
     }
     let glyph = &run.glyphs[index];
@@ -65,10 +66,14 @@ pub fn rasterize(
         let bounds = outline.bounds();
         let width = bounds.width().ceil() + 4.;
         let height = bounds.height().ceil() + 4.;
-        if !width.is_finite() || !height.is_finite() || width > 4096. || height > 4096. {
+        if !width.is_finite()
+            || !height.is_finite()
+            || width > max_dimension as f32
+            || height > max_dimension as f32
+        {
             return Err(GpuError::Unsupported {
                 at,
-                record: "glyph raster extent",
+                record: "glyph raster exceeds device texture dimensions",
             });
         }
         let cost = super::resources::upload_cost([width.max(1.) as u32, height.max(1.) as u32])?;

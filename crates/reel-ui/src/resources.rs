@@ -29,7 +29,7 @@ pub enum ResourceData {
         image: ImageData,
         encoding: ColorEncoding,
     },
-    Font(FontData),
+    Font(Blob<u8>),
     External {
         token: u64,
     },
@@ -38,7 +38,7 @@ impl ResourceData {
     fn blob(&self) -> Option<&Blob<u8>> {
         match self {
             Self::Image { image, .. } => Some(&image.data),
-            Self::Font(font) => Some(&font.data),
+            Self::Font(font) => Some(font),
             Self::External { .. } => None,
         }
     }
@@ -54,7 +54,7 @@ impl ResourceData {
                     encoding: be,
                 },
             ) => ae == be && same_image(a, b),
-            (Self::Font(a), Self::Font(b)) => a.index == b.index && same_blob(&a.data, &b.data),
+            (Self::Font(a), Self::Font(b)) => same_blob(a, b),
             (Self::External { token: a }, Self::External { token: b }) => a == b,
             _ => false,
         }
@@ -242,14 +242,14 @@ impl ResourceRegistry {
         };
         self.register_inner(version, ResourceData::Image { image, encoding }, None)
     }
-    /// Prepare immutable font bytes without parsing or reshaping them.
+    /// Prepare a complete immutable font file or collection. Glyph runs select
+    /// their face independently, sharing these bytes and their allocation ticket.
     pub fn register_font(
         &mut self,
         version: ResourceVersion,
         bytes: OwnedBytes,
-        index: u32,
     ) -> Result<ResourceHandle, ResourceError> {
-        let font = FontData::new(self.owned_blob(bytes)?, index);
+        let font = self.owned_blob(bytes)?;
         self.register_inner(version, ResourceData::Font(font), None)
     }
     fn owned_blob(&self, bytes: OwnedBytes) -> Result<Blob<u8>, ResourceError> {
@@ -421,7 +421,10 @@ impl ResourceSnapshot {
         )
     }
     pub(crate) fn font(&self, font: &FontData) -> Option<ResourceHandle> {
-        self.matching(&font.data,|data| matches!(data,ResourceData::Font(other) if font.index==other.index && same_blob(&font.data,&other.data)))
+        self.matching(
+            &font.data,
+            |data| matches!(data, ResourceData::Font(other) if same_blob(&font.data, other)),
+        )
     }
     pub(crate) fn external(&self, token: u64) -> Option<ResourceHandle> {
         self.leases

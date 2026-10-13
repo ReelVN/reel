@@ -97,11 +97,12 @@ impl FunctionBuilder<'_, '_> {
                 }
                 Form::Call {
                     arguments,
-                    children: None,
+                    children,
                     ..
                 } => self.call_with_target(
                     node,
                     arguments,
+                    children,
                     bc::CallTarget::Register(receiver),
                     depth + 1,
                 )?,

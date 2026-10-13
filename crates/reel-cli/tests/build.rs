@@ -60,8 +60,8 @@ impl Drop for Case {
 }
 
 #[test]
-fn builds_module_only_and_explicit_private_entry_reproducibly() {
-    let case = Case::new("fn hidden(a = 1) { loop {} }");
+fn builds_default_and_explicit_private_entry_reproducibly() {
+    let case = Case::new("fn main() { 1 } fn hidden(a = 1) { loop {} }");
     let output = case.run(&[]);
     assert!(
         output.status.success(),
@@ -70,17 +70,20 @@ fn builds_module_only_and_explicit_private_entry_reproducibly() {
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "built");
-    assert_eq!(report["artifact"]["module_only"], true);
-    assert_eq!(report["artifact"]["game_entry"], Value::Null);
+    assert_eq!(report["artifact"]["module_only"], false);
+    assert!(report["artifact"]["game_entry"].is_object());
     assert_eq!(report["executed"], false);
     assert_eq!(report["artifact"]["power_loss_durability"], "not_promised");
     assert_eq!(report["artifact"]["blake3"], rp::digest(&case.bytes()));
-    assert!(
-        rp::decode(&case.bytes(), rp::Limits::default())
-            .unwrap()
-            .metadata()
-            .game_entry
-            .is_none()
+    let story = reel_cli::decode_story(&case.bytes()).unwrap();
+    let package = story.program.package();
+    assert_eq!(
+        package.symbols[package.functions[story.entry.index()].name.index()],
+        "main"
+    );
+    assert_eq!(
+        package.symbols[package.sources[0].path.index()],
+        "input.aside"
     );
     let output = case.run(&["--entry", "main::hidden", "--overwrite"]);
     assert!(
@@ -121,7 +124,7 @@ fn existing_output_survives_default_publication_and_all_source_failures() {
 #[test]
 fn bad_entry_has_source_location_and_never_publishes() {
     let case = Case::new("fn main(required) { required }");
-    let output = case.run(&["--entry", "main::main"]);
+    let output = case.run(&[]);
     assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["stage"], "entry");

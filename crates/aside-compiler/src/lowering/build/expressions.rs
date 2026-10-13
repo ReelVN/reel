@@ -2,7 +2,9 @@ use super::*;
 
 impl FunctionBuilder<'_, '_> {
     pub(super) fn value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+        let collector = self.collector.take();
         let value = self.expr(n, depth)?;
+        self.collector = collector;
         if value.is_none() && self.current.is_some() {
             return Err(self.l.b.error(
                 ErrorKind::Unsupported,
@@ -79,6 +81,17 @@ impl FunctionBuilder<'_, '_> {
                 },
             ) => {
                 let value = self.expr(expression, depth)?;
+                if let (Some(collector), Some(value)) = (self.collector, value)
+                    && self.collects(expression)
+                {
+                    self.op(
+                        bc::Opcode::ChildrenPush,
+                        collector.0,
+                        value.0,
+                        0,
+                        expression,
+                    )?;
+                }
                 if terminated {
                     if let Some(value) = value {
                         self.release(value)?;
@@ -105,7 +118,8 @@ impl FunctionBuilder<'_, '_> {
             ) => {
                 let symbol = self.pattern_symbol(pattern)?;
                 if let Some(initializer) = initializer {
-                    let Some(value) = self.value(initializer, depth)? else {
+                    let value = self.value(initializer, depth)?;
+                    let Some(value) = value else {
                         return Ok(None);
                     };
                     if let Some(symbol) = symbol {
@@ -241,7 +255,7 @@ impl FunctionBuilder<'_, '_> {
                 Form::Call {
                     callee,
                     arguments,
-                    children: None,
+                    children,
                     optional: false,
                     chain: false,
                 },
@@ -260,7 +274,7 @@ impl FunctionBuilder<'_, '_> {
                     (_, Some(callee)) => bc::CallTarget::Register(callee),
                     _ => unreachable!(),
                 };
-                let out = self.call_with_target(n, arguments, target, depth)?;
+                let out = self.call_with_target(n, arguments, children, target, depth)?;
                 if let Some(callee) = callee_value {
                     self.release(callee)?;
                 }
@@ -325,6 +339,18 @@ impl FunctionBuilder<'_, '_> {
                 self.loop_node(n, None, child, depth)?;
                 Ok(None)
             }
+            (
+                H::For,
+                Form::For {
+                    pattern,
+                    source,
+                    body,
+                    asynchronous: false,
+                },
+            ) => {
+                self.for_node(n, pattern, source, body, depth)?;
+                Ok(None)
+            }
             (H::Label, Form::Label { body, .. }) => self.expr(body, depth),
             (H::Break | H::Continue, _) => {
                 let target = self.l.m.facts()[n.0 as usize]
@@ -370,7 +396,7 @@ impl FunctionBuilder<'_, '_> {
             )),
         }
     }
-    fn pattern_symbol(&mut self, n: h::NodeId) -> Result<Option<h::SymbolId>, Error> {
+    pub(super) fn pattern_symbol(&mut self, n: h::NodeId) -> Result<Option<h::SymbolId>, Error> {
         self.l.b.span = self.span(n);
         self.l.b.work(1)?;
         match self.l.m.hir().node(n).form {

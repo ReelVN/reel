@@ -1,6 +1,9 @@
 use crate::diagnostic::Diagnostic;
 use crate::session::{ProjectionStamp, SessionHostDiagnostic};
 use crate::{
+    aside_session::AsideSessionUi, shell::StoryWindowOptions, window_session::WindowSession,
+};
+use crate::{
     demand::{Demand, Draw},
     surface::negotiate,
 };
@@ -50,9 +53,11 @@ pub(crate) struct State {
     pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
-    pub(crate) session: Option<SessionHostDiagnostic>,
+    pub(crate) session: Option<WindowSession>,
     recorded_projection: Option<ProjectionStamp>,
     next_reveal: Option<Instant>,
+    clock_origin: Instant,
+    closing: bool,
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
@@ -62,30 +67,63 @@ impl State {
         event_loop: &ActiveEventLoop,
         generation: u64,
     ) -> Result<Self, Error> {
-        Self::with_mode(event_loop, generation, GpuLimits::default(), true)
+        Self::with_mode(
+            event_loop,
+            generation,
+            GpuLimits::default(),
+            Some(WindowSession::Diagnostic(Box::new(
+                SessionHostDiagnostic::new()?,
+            ))),
+            None,
+        )
+    }
+    pub(crate) fn new_story(
+        event_loop: &ActiveEventLoop,
+        generation: u64,
+        driver: AsideSessionUi,
+        options: StoryWindowOptions,
+    ) -> Result<Self, Error> {
+        Self::with_mode(
+            event_loop,
+            generation,
+            GpuLimits::default(),
+            Some(WindowSession::aside(driver)),
+            Some(options),
+        )
     }
     fn with_limits(
         event_loop: &ActiveEventLoop,
         generation: u64,
         limits: GpuLimits,
     ) -> Result<Self, Error> {
-        Self::with_mode(event_loop, generation, limits, false)
+        Self::with_mode(event_loop, generation, limits, None, None)
     }
     fn with_mode(
         event_loop: &ActiveEventLoop,
         generation: u64,
         limits: GpuLimits,
-        session_host: bool,
+        session: Option<WindowSession>,
+        options: Option<StoryWindowOptions>,
     ) -> Result<Self, Error> {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
-                    .with_title(if session_host {
-                        "Reel Rust session host diagnostic — no Aside execution"
-                    } else {
-                        "Reel renderer diagnostic — drag shapes; no Aside session"
-                    })
-                    .with_inner_size(winit::dpi::LogicalSize::new(640., 420.)),
+                    .with_title(options.as_ref().map_or_else(
+                        || {
+                            if session.is_some() {
+                                "Reel Rust session host diagnostic — no Aside execution"
+                            } else {
+                                "Reel renderer diagnostic — drag shapes; no Aside session"
+                            }
+                        },
+                        |options| options.title.as_str(),
+                    ))
+                    .with_inner_size({
+                        let [width, height] = options
+                            .as_ref()
+                            .map_or([640, 420], |options| options.logical_size);
+                        winit::dpi::LogicalSize::new(width, height)
+                    }),
             )?,
         );
         let instance = wgpu::Instance::default();
@@ -142,7 +180,9 @@ impl State {
             unreachable!()
         };
         let mut resources = vec![image_handle];
-        let font_path = if session_host {
+        let font_path = if let Some(options) = &options {
+            Some(options.font.clone().into_os_string())
+        } else if session.is_some() {
             Some(std::env::var_os("REEL_SESSION_FONT").or_else(|| std::env::var_os("REEL_DIAGNOSTIC_FONT"))
                 .ok_or("set REEL_SESSION_FONT to a TTF/OTF file for the Rust session host diagnostic")?)
         } else {
@@ -151,9 +191,6 @@ impl State {
         let font = if let Some(path) = font_path {
             let mut file = std::fs::File::open(path)?;
             let length = file.metadata()?.len();
-            if length > 16 << 20 {
-                return Err("diagnostic font exceeds 16 MiB source budget".into());
-            }
             let ticket = pool
                 .reserve(length)
                 .map_err(|e| format!("font quota: {e:?}"))?;
@@ -164,7 +201,7 @@ impl State {
             }
             let bytes = OwnedBytes::new(bytes, ticket).map_err(|e| format!("font bytes: {e:?}"))?;
             let handle = registry
-                .register_font(version("diagnostic/font-v1", bytes.as_slice()), bytes, 0)
+                .register_font(version("diagnostic/font-v1", bytes.as_slice()), bytes)
                 .map_err(|e| format!("font: {e:?}"))?;
             resources.push(handle);
             let lease = registry
@@ -173,14 +210,13 @@ impl State {
             let reel_ui::resources::ResourceData::Font(font) = lease.data() else {
                 unreachable!()
             };
-            Some(font.data.clone())
+            Some(font.clone())
         } else {
             eprintln!("Set REEL_DIAGNOSTIC_FONT to a TTF/OTF file to include real Parley text.");
             None
         };
-        let session = session_host.then(SessionHostDiagnostic::new).transpose()?;
         let widget = if let Some(session) = &session {
-            session.ui.widget().prepare().erased()
+            session.ui().widget().prepare().erased()
         } else {
             Diagnostic::new(image.clone(), font.is_some())
                 .prepare()
@@ -196,7 +232,7 @@ impl State {
                 size_policy: WindowSizePolicy::User,
                 size: PhysicalSize::new(size.width, size.height),
                 scale_factor: window.scale_factor(),
-                test_font: font,
+                default_font: font,
             },
         );
         let bridge = PresentationBridge::new(
@@ -214,7 +250,7 @@ impl State {
             },
         )
         .map_err(|e| format!("bridge: {e:?}"))?;
-        Ok(Self {
+        let mut state = Self {
             surface: Some(surface),
             instance,
             renderer: Renderer::new(gpu),
@@ -235,8 +271,12 @@ impl State {
             zoom: 1.,
             session,
             recorded_projection: None,
-            next_reveal: session_host.then(|| Instant::now() + Duration::from_millis(35)),
-        })
+            next_reveal: None,
+            clock_origin: Instant::now(),
+            closing: false,
+        };
+        state.schedule_reveal();
+        Ok(state)
     }
     pub(crate) fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
         self.invalidate_surface(size)?;
@@ -266,7 +306,7 @@ impl State {
         self.next_reveal = None;
         self.accepted_frame = None;
         if let Some(session) = &mut self.session {
-            session.ui.clear_presented();
+            session.ui_mut().clear_presented();
         }
         Ok(())
     }
@@ -275,6 +315,56 @@ impl State {
         if self.demand.has_work() {
             self.window.request_redraw();
         }
+    }
+    pub(crate) fn is_diagnostic(&self) -> bool {
+        !matches!(self.session, Some(WindowSession::Aside(_)))
+    }
+    pub(crate) fn story_deadline(&self) -> Option<Instant> {
+        self.session
+            .as_ref()
+            .filter(|session| session.needs_tick())
+            .map(|_| Instant::now() + Duration::from_millis(1))
+    }
+    pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
+        if !session.needs_tick() {
+            return Ok(());
+        }
+        let origin = self.clock_origin;
+        let now = || u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let budget = reel_engine::aside::SliceBudget {
+            deadline_ns: Some(now().saturating_add(2_000_000)),
+            ..Default::default()
+        };
+        let before = session.ui().projection_stamp();
+        session.tick(budget, now)?;
+        if !self.closing {
+            session.sync(&mut self.bridge, self.root_id)?;
+            if before != session.ui().projection_stamp() {
+                self.schedule_reveal();
+                self.invalidate();
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn close(&mut self) -> Result<(), Error> {
+        self.closing = true;
+        self.next_reveal = None;
+        self.demand = Demand::idle();
+        self.bridge.clear();
+        if let Some(session) = &mut self.session {
+            session.close()?;
+        }
+        Ok(())
+    }
+    pub(crate) fn close_complete(&self) -> bool {
+        self.closing
+            && self
+                .session
+                .as_ref()
+                .is_none_or(WindowSession::close_complete)
     }
     pub(crate) fn poll_completions(&mut self) -> Result<(), GpuError> {
         let completed = self.renderer.poll()?;
@@ -318,7 +408,7 @@ impl State {
                 }) {
                     self.accepted_frame = None;
                     if let Some(session) = &mut self.session {
-                        session.ui.clear_presented();
+                        session.ui_mut().clear_presented();
                     }
                     self.demand.presented(draw);
                     return Ok(());
@@ -367,7 +457,7 @@ impl State {
             if result == reel_ui::bridge::NoticeResult::Accepted {
                 if let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
                 {
-                    session.ui.presented(stamp);
+                    session.ui_mut().presented(stamp);
                 }
                 self.accepted_frame = Some(frame);
             }
@@ -403,7 +493,7 @@ impl State {
         self.recorded_projection = self
             .session
             .as_ref()
-            .map(|session| session.ui.projection_stamp());
+            .map(|session| session.ui().projection_stamp());
         let snapshot = self
             .registry
             .freeze(&self.resources, &self.pool)
@@ -485,7 +575,7 @@ impl State {
         self.next_reveal = None;
         self.accepted_frame = None;
         if let Some(session) = &mut self.session {
-            session.ui.clear_presented();
+            session.ui_mut().clear_presented();
         }
     }
     pub(crate) fn is_suspended(&self) -> bool {
@@ -543,7 +633,7 @@ impl State {
             );
         }
         if let Some(session) = &mut self.session {
-            session.ui.handle_pointer(&mut self.bridge, event)?;
+            session.ui_mut().handle_pointer(&mut self.bridge, event)?;
             if matches!(kind, PointerKind::Up) {
                 session.after_input(&mut self.bridge, self.root_id)?;
             }
@@ -562,7 +652,7 @@ impl State {
             return;
         }
         self.next_reveal = self.session.as_ref().and_then(|session| {
-            match session.ui.session().view().interaction {
+            match session.ui().session().view().interaction {
                 Some(reel_engine::InteractionView::Dialogue(dialogue))
                     if dialogue.lines().iter().any(|line| {
                         let reveal = line.reveal();
@@ -586,25 +676,25 @@ impl State {
             return Ok(());
         }
         if let Some(session) = &mut self.session {
-            if session.ui.gesture_active() {
+            if session.ui().gesture_active() {
                 // Preserve the presented content bound at Down until Up/Cancel.
                 self.schedule_reveal();
                 return Ok(());
             }
             let interaction = session
-                .ui
+                .ui()
                 .session()
                 .view()
                 .interaction
                 .map(|interaction| interaction.id());
             if let Some(interaction) = interaction {
-                let owner = session.ui.session().root_owner();
+                let owner = session.ui().session().root_owner();
                 if session
-                    .ui
+                    .ui_mut()
                     .session_mut()
                     .reveal_more(owner, interaction, 1)?
                 {
-                    session.ui.sync(&mut self.bridge, self.root_id)?;
+                    session.sync(&mut self.bridge, self.root_id)?;
                     self.invalidate();
                 }
             }
@@ -626,7 +716,7 @@ pub(crate) enum PointerKind {
 impl Drop for State {
     fn drop(&mut self) {
         if let Some(session) = &mut self.session {
-            session.ui.cancel();
+            let _ = session.close();
         }
         self.bridge.clear();
         let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
@@ -867,7 +957,7 @@ mod tests {
             .session
             .as_ref()
             .unwrap()
-            .ui
+            .ui()
             .session()
             .view()
             .interaction
@@ -899,7 +989,7 @@ mod tests {
     }
     fn exercise_session(event_loop: &ActiveEventLoop) {
         let mut state = State::new_session(event_loop, 1).unwrap();
-        let identity = state.session.as_ref().unwrap().ui.session().identity();
+        let identity = state.session.as_ref().unwrap().ui().session().identity();
         session_click(&mut state, 100., 300.);
         assert_eq!(
             session_reveal(&state),
@@ -921,7 +1011,7 @@ mod tests {
                 .session
                 .as_ref()
                 .unwrap()
-                .ui
+                .ui()
                 .session()
                 .view()
                 .history
@@ -947,7 +1037,7 @@ mod tests {
         assert!(state.reveal_deadline().is_some());
         assert_eq!(session_reveal(&state), 1);
         assert_eq!(
-            state.session.as_ref().unwrap().ui.session().identity(),
+            state.session.as_ref().unwrap().ui().session().identity(),
             identity
         );
         state.render().unwrap();
@@ -983,7 +1073,7 @@ mod tests {
         state.render().unwrap();
         session_click(&mut state, 100., 320.); // actual second Button
         assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 3);
-        let session = state.session.as_ref().unwrap().ui.session();
+        let session = state.session.as_ref().unwrap().ui().session();
         assert_eq!(session.status(), reel_engine::SessionStatus::Ended);
         assert_eq!(session.view().history.len(), 2);
         assert!(session.view().interaction.is_none());
@@ -991,8 +1081,8 @@ mod tests {
         drop(state);
         let mut cancelled = State::new_session(event_loop, 1).unwrap();
         cancelled.render().unwrap();
-        assert!(cancelled.session.as_mut().unwrap().ui.cancel());
-        assert!(!cancelled.session.as_mut().unwrap().ui.cancel());
+        assert!(cancelled.session.as_mut().unwrap().ui_mut().cancel());
+        assert!(!cancelled.session.as_mut().unwrap().ui_mut().cancel());
         cancelled
             .session
             .as_mut()
@@ -1000,7 +1090,7 @@ mod tests {
             .after_input(&mut cancelled.bridge, cancelled.root_id)
             .unwrap();
         assert_eq!(
-            cancelled.session.as_ref().unwrap().ui.session().status(),
+            cancelled.session.as_ref().unwrap().ui().session().status(),
             reel_engine::SessionStatus::Cancelled
         );
         assert_eq!(
@@ -1008,7 +1098,7 @@ mod tests {
                 .session
                 .as_ref()
                 .unwrap()
-                .ui
+                .ui()
                 .session()
                 .view()
                 .history

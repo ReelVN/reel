@@ -1,5 +1,4 @@
-//! Actual compiler/VM-to-SessionUi assembly. The existing Rust diagnostic window
-//! remains a separate host entry; library contracts execute in the tests.
+//! Compiler/VM-to-SessionUi assembly shared by library hosts and the native window.
 use crate::session::{ProjectionStamp, SessionUi, SessionWidget};
 use reel_engine::aside::{
     DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionVm,
@@ -19,6 +18,10 @@ pub enum StoryProgress {
     Initialized,
     Interaction(InteractionId),
     Decoding {
+        work: u32,
+    },
+    /// A synchronous native operation updated the author stage.
+    Updated {
         work: u32,
     },
     /// A host admission/argument/effect error was delivered at the native call.
@@ -97,9 +100,10 @@ impl AsideSessionUi {
             return Err("empty page locale".into());
         }
         story.validate()?;
-        let ui = SessionUi::new(session)?;
+        let mut ui = SessionUi::new(session)?;
         let mut vm = SessionVm::load(ui.session(), story.program, limits)?;
         vm.start(ui.session(), story.initializer)?;
+        ui.set_stage(vm.stage());
         Ok(Self {
             ui,
             vm,
@@ -132,6 +136,10 @@ impl AsideSessionUi {
     pub fn ui(&self) -> &SessionUi {
         &self.ui
     }
+    #[cfg(feature = "window")]
+    pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
+        &mut self.ui
+    }
     pub fn adapter(&self) -> &SessionVm {
         &self.vm
     }
@@ -158,6 +166,10 @@ impl AsideSessionUi {
     }
 
     pub fn sync(&mut self, bridge: &mut PresentationBridge, root: WidgetId) -> Result<(), Error> {
+        if self.state != StoryState::Finished {
+            self.vm.sync_stage(self.ui.session())?;
+            self.ui.set_stage(self.vm.stage());
+        }
         self.ui.sync(bridge, root)
     }
     pub fn handle_pointer(
@@ -224,6 +236,10 @@ impl AsideSessionUi {
                     Ok(StoryProgress::Initialized)
                 } else {
                     self.state = StoryState::Finishing;
+                    // Capture the last property writes before retiring VM-owned nodes.
+                    // The window keeps this owned projection after a normal return.
+                    self.vm.sync_stage(self.ui.session())?;
+                    self.ui.set_stage(self.vm.stage());
                     self.vm.finish(self.ui.session_mut())?;
                     self.state = StoryState::Finished;
                     self.ui.clear_presented();
@@ -239,6 +255,7 @@ impl AsideSessionUi {
                         Ok(StoryProgress::Interaction(interaction))
                     }
                     Ok(NativeDispatch::Decoding { work }) => Ok(StoryProgress::Decoding { work }),
+                    Ok(NativeDispatch::Ready { work }) => Ok(StoryProgress::Updated { work }),
                     Err(error) => {
                         let Some(kind) = error.native_fault_kind() else {
                             return Err(error.into());

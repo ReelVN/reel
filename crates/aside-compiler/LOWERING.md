@@ -176,7 +176,7 @@ register windows are admitted before traversal/reservation/emission. Quota error
 identify the failing collection, target or subexpression. IR/bytecode v1, VM
 interfaces and RuntimeSupport are unchanged.
 
-Collection spread, patterns, children, classes, full script imports
+Collection spread, patterns, classes, full script imports
 and unified callable/library work retain located rejection. L07 extends the
 location machinery below with Member values/locations. Member is never
 rewritten as Index. The existing trusted namespace-qualified direct native call
@@ -326,7 +326,7 @@ skip builder/arguments/Call; terminated argument paths emit no pending append
 or Call and preserve existing cleanup routing. Trusted native direct calls
 retain exact symbol/node identity, version, ABI, capabilities and actual default
 implementation. Collection/tuple-literal spread, new named-spread syntax,
-children, optional native values and full dynamic forwarding remain deferred.
+optional native values and full dynamic forwarding remain deferred.
 
 The source matrix in tests/lowering/call_arguments.rs verifies instruction
 order, Packed descriptors, parameter/capture identity, optional and cleanup CFG,
@@ -394,3 +394,24 @@ Tuple constants remain subject to a synchronous per-constant limit. Property-bag
 tails, ArgsNamedSpread, delegates/hooks, structural tuple types and other unsupported
 forms still reject; registration cannot add missing handlers. These CPU checks
 do not establish snapshot restoration, device behavior or performance bounds.
+
+## Executable children composition
+
+Trailing children blocks produce a named `children` array after the written
+arguments. Standalone block calls may omit the semicolon; a following newline
+ends that statement, so a parenthesized expression on the next line starts a new
+statement. Ordinary calls and assignments retain their semicolon rules.
+
+Collectors follow independent expression statements through ordinary blocks,
+if/while/for control flow, and stop at value contexts and function boundaries.
+Nested trailing blocks have independent collectors. `ChildrenPush` accepts only
+host values declared composable and ignores null. `CallNoWait` carries the
+children restriction into ordinary helpers without introducing a hidden closure
+or changing return/capture semantics.
+
+Array/tuple for uses `IterInit`, `IterNext` and `IterClose`; every iteration resets
+its binding, and captured cells retain the corresponding iteration. The real
+source execution matrix exercises composition, iteration, shared host properties,
+normal and one-instruction slices with interleaved GC. Pure namespaces remain
+compile-time identities; resolved native members retain their individual trusted
+links, while taking a namespace as a runtime value is unsupported.

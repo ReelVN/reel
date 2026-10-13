@@ -7,13 +7,15 @@ impl FunctionBuilder<'_, '_> {
         &mut self,
         n: h::NodeId,
         arguments: Option<h::NodeId>,
+        children: Option<h::NodeId>,
         target: bc::CallTarget,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Error> {
         self.l
             .b
             .work(arguments.map_or(0, |args| self.l.m.hir().elements(args).len()) as u64)?;
-        let count = arguments.map_or(0, |args| self.l.m.hir().children(args).count());
+        let count = arguments.map_or(0, |args| self.l.m.hir().children(args).count())
+            + usize::from(children.is_some());
         self.l.b.work(count as u64)?;
         if arguments.is_some_and(|args| {
             self.l
@@ -22,7 +24,13 @@ impl FunctionBuilder<'_, '_> {
                 .children(args)
                 .any(|arg| self.l.m.hir().node(arg).kind == H::Spread)
         }) {
-            return self.packed_call(n, arguments.expect("spread argument list"), target, depth);
+            return self.packed_call(
+                n,
+                arguments.expect("spread argument list"),
+                children,
+                target,
+                depth,
+            );
         }
         let window = self.registers.get(
             u32::try_from(count).map_err(|_| {
@@ -62,13 +70,31 @@ impl FunctionBuilder<'_, '_> {
                 }
             }
         }
+        if let Some(children) = children {
+            let Some(value) = self.children_value(children, depth)? else {
+                self.l.b.release(names);
+                self.release_window(window, n)?;
+                return Ok(None);
+            };
+            let offset = count as u32 - 1;
+            self.op(
+                bc::Opcode::Move,
+                window.start.0 + offset,
+                value.0,
+                0,
+                children,
+            )?;
+            self.release(value)?;
+            let name = self.l.name("children")?;
+            self.l.b.push(&mut names, bc::NamedArg { name, offset })?;
+        }
         let descriptor = self.descriptor(bc::Descriptor::Call(bc::CallDesc {
             target,
             arguments: bc::Arguments::Window(window),
             names,
         }))?;
         let out = self.temp()?;
-        self.op(bc::Opcode::Call, out.0, descriptor.0, 0, n)?;
+        self.op(self.call_opcode(), out.0, descriptor.0, 0, n)?;
         self.release_window(window, n)?;
         Ok(Some(out))
     }
@@ -76,6 +102,7 @@ impl FunctionBuilder<'_, '_> {
         &mut self,
         n: h::NodeId,
         arguments: h::NodeId,
+        children: Option<h::NodeId>,
         target: bc::CallTarget,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Error> {
@@ -113,6 +140,15 @@ impl FunctionBuilder<'_, '_> {
             self.op(opcode, builder.0, value.0, symbol, arg)?;
             self.release(value)?;
         }
+        if let Some(children) = children {
+            let Some(value) = self.children_value(children, depth)? else {
+                self.release(builder)?;
+                return Ok(None);
+            };
+            let name = self.l.name("children")?;
+            self.op(bc::Opcode::ArgsNamed, builder.0, value.0, name.0, children)?;
+            self.release(value)?;
+        }
         self.l.b.span = self.span(n);
         let descriptor = self.descriptor(bc::Descriptor::Call(bc::CallDesc {
             target,
@@ -120,7 +156,7 @@ impl FunctionBuilder<'_, '_> {
             names: Vec::new(),
         }))?;
         let out = self.temp()?;
-        self.op(bc::Opcode::Call, out.0, descriptor.0, 0, n)?;
+        self.op(self.call_opcode(), out.0, descriptor.0, 0, n)?;
         self.release(builder)?;
         Ok(Some(out))
     }

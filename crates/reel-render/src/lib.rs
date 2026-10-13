@@ -429,7 +429,7 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
                 }
             }
             (UploadPayload::Font { bytes }, ResourceData::Font(font)) => {
-                if bytes.as_slice().len() != font.data.len() {
+                if bytes.as_slice().len() != font.len() {
                     return Err(RejectCode::InvalidRequest);
                 }
             }

@@ -75,6 +75,34 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             2,
         ),
         ("fn main() { let mut n=0; while n<3 { n+=1; } n }", 3),
+        ("fn main() { let mut n=0; null?() { n+=1; }; n }", 0),
+        (
+            "fn main() { let mut n=0; for value in [1,2,3,4] { if value==2 { continue; } n+=value; if value==3 { break; } } n }",
+            4,
+        ),
+        (
+            "fn main() { let callbacks=[null,null,null]; let mut i=0; for value in (1,2,3) { callbacks[i]=||value; i+=1; } callbacks[0]()*100+callbacks[1]()*10+callbacks[2]() }",
+            123,
+        ),
+        (
+            r#"fn main(node) {
+            fn collect(children=[]) { children }
+            fn helper() { node.x+=1; node; }
+            fn wrap(value=null, children=[]) { children[0] }
+            let children=collect() {
+                let ignored=helper();
+                node.x=10;
+                null;
+                for value in [1,2,3] { if (if true { value!=2 } else { false }) { node; } }
+                wrap(if true { "argument value" } else { "other" }) { node; };
+                { node; }
+                node
+            };
+            children[0]["x"]+=7;
+            if children[4]==node { node.x } else { 0 }
+        }"#,
+            17,
+        ),
     ];
     for (source, expected) in cases {
         let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
@@ -113,8 +141,17 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
                 .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
                 .unwrap();
             assert!(finish(&mut vm, init, tiny).same_bits(Value::NULL));
+            let mut arguments = Vec::new();
+            if source.contains("main(node)") {
+                let heap = vm.heap_mut();
+                let fields = heap.alloc_table().unwrap();
+                let name = heap.alloc_string("x").unwrap();
+                heap.table_store(fields, 0, name, Value::int(0)).unwrap();
+                let node = heap.alloc_composable_host(fields, &[], None).unwrap();
+                arguments.push(node);
+            }
             let task = vm
-                .start(entry, &[], RootOwner(1), bc::Context::Ordinary)
+                .start(entry, &arguments, RootOwner(1), bc::Context::Ordinary)
                 .unwrap();
             assert_eq!(
                 finish(&mut vm, task, tiny).as_int(),

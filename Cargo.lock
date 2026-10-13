@@ -1258,6 +1258,7 @@ version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82d07aafccd67af15d02512a6adf5896fbc5ed00f2e99b471d2efa14016db3db"
 dependencies = [
+ "core_maths",
  "icu_collections",
  "icu_locale_fallback",
  "icu_provider",
@@ -2201,8 +2202,6 @@ checksum = "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5"
 [[package]]
 name = "parley"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6c00ec192e1a402861526eff91a4b4690a2e5a17a4ae2deb772d72b49daf868"
 dependencies = [
  "accesskit",
  "fontique",
@@ -2505,7 +2504,9 @@ dependencies = [
  "atomic-write-file",
  "codespan-reporting 0.13.1",
  "libc",
+ "reel-engine",
  "reel-package",
+ "reel-player",
  "serde_json",
 ]
 
@@ -2531,6 +2532,7 @@ dependencies = [
  "aside-compiler",
  "aside-vm",
  "reel-core",
+ "reel-ui",
  "stats_alloc",
  "unicode-segmentation",
 ]

@@ -2,6 +2,7 @@
 //!
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
+use crate::stage_widget::{StageView, StageWidget};
 use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
 };
@@ -136,6 +137,9 @@ pub struct SessionWidget {
     content_height: f64,
     viewport: Size,
     dialogue_rect: Rect,
+    stage: WidgetPod<StageWidget>,
+    backdrop: WidgetPod<DialogueBackdrop>,
+    authored: bool,
 }
 impl SessionWidget {
     fn new(ui: &SessionUi) -> Self {
@@ -154,6 +158,9 @@ impl SessionWidget {
             content_height: 420.,
             viewport: Size::new(640., 420.),
             dialogue_rect: Rect::new(30., 245., 610., 380.),
+            stage: WidgetPod::new(StageWidget::new(ui.stage.as_ref())),
+            backdrop: WidgetPod::new(DialogueBackdrop { rect: Rect::ZERO }),
+            authored: ui.stage.is_some(),
         };
         widget.make_children(&ui.choice_owners);
         widget
@@ -189,6 +196,12 @@ impl SessionWidget {
             .collect();
     }
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
+        this.widget.authored = ui.stage.is_some();
+        if let Some(stage) = &ui.stage
+            && let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage)
+        {
+            StageWidget::sync(&mut widget, stage);
+        }
         let same_interaction = this.widget.projection.interaction == ui.projection.interaction;
         if !same_interaction {
             this.widget.scroll.set(0.);
@@ -305,6 +318,8 @@ impl Widget for SessionWidget {
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
+        ctx.register_child(&mut self.stage);
+        ctx.register_child(&mut self.backdrop);
         ctx.register_child(&mut self.title);
         ctx.register_child(&mut self.status);
         for line in &mut self.lines {
@@ -331,10 +346,14 @@ impl Widget for SessionWidget {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
         self.viewport = size;
         ctx.set_clip_path(size.to_rect());
+        ctx.run_layout(&mut self.stage, size);
+        ctx.place_child(&mut self.stage, Point::ORIGIN);
+        ctx.set_stashed(&mut self.title, self.authored);
+        ctx.set_stashed(&mut self.status, self.authored);
         let text_width = (size.width - 90.).max(0.);
         let button_width = (size.width - 140.).max(0.);
         let preferred = |width| SizeDef::new(LenDef::Fixed(Length::px(width)), LenDef::MaxContent);
-        let mut y = 250.;
+        let mut y = if self.authored { 16. } else { 250. };
         let mut positions = Vec::with_capacity(self.lines.len() + self.choices.len());
         for line in &mut self.lines {
             let speaker = ctx.compute_size(&mut line.speaker, preferred(text_width), size.into());
@@ -354,28 +373,60 @@ impl Widget for SessionWidget {
             positions.push((y, height));
             y += height + 10.;
         }
-        let bottom = y.max(380.);
-        self.dialogue_rect = Rect::new(30., 245., (size.width - 30.).max(30.), bottom);
+        let origin = if self.authored {
+            (size.height - y - 40.).max(24.)
+        } else {
+            0.
+        };
+        let bottom = if self.authored {
+            origin + y
+        } else {
+            y.max(380.)
+        };
+        self.dialogue_rect = Rect::new(
+            30.,
+            if self.authored { origin + 10. } else { 245. },
+            (size.width - 30.).max(30.),
+            bottom,
+        );
         self.content_height = bottom + 40.;
         let offset = self
             .scroll
             .get()
             .clamp(0., (self.content_height - size.height).max(0.));
         self.scroll.set(offset);
-        ctx.run_layout(&mut self.title, Size::new((size.width - 60.).max(0.), 36.));
-        ctx.place_child(&mut self.title, Point::new(30., 20. - offset));
-        ctx.run_layout(&mut self.status, Size::new((size.width - 60.).max(0.), 30.));
-        ctx.place_child(&mut self.status, Point::new(30., bottom + 5. - offset));
+        if !self.authored {
+            ctx.run_layout(&mut self.title, Size::new((size.width - 60.).max(0.), 36.));
+            ctx.place_child(&mut self.title, Point::new(30., 20. - offset));
+            ctx.run_layout(&mut self.status, Size::new((size.width - 60.).max(0.), 30.));
+            ctx.place_child(&mut self.status, Point::new(30., bottom + 5. - offset));
+        }
+        if let Some((backdrop, mut context)) = ctx.get_raw_mut(&mut self.backdrop) {
+            backdrop.rect = if self.authored && self.projection.interaction.is_some() {
+                self.dialogue_rect + Vec2::new(0., -offset)
+            } else {
+                Rect::ZERO
+            };
+            context.request_paint_only();
+        }
+        ctx.run_layout(&mut self.backdrop, size);
+        ctx.place_child(&mut self.backdrop, Point::ORIGIN);
         for (line, &(y, height)) in self.lines.iter_mut().zip(&positions) {
-            ctx.place_child(&mut line.speaker, Point::new(45., y - offset));
-            ctx.place_child(&mut line.text, Point::new(45., y + height - offset));
+            ctx.place_child(&mut line.speaker, Point::new(45., origin + y - offset));
+            ctx.place_child(
+                &mut line.text,
+                Point::new(45., origin + y + height - offset),
+            );
         }
         for (choice, &(y, _)) in self.choices.iter_mut().zip(&positions[self.lines.len()..]) {
-            ctx.place_child(&mut choice.button, Point::new(70., y - offset));
+            ctx.place_child(&mut choice.button, Point::new(70., origin + y - offset));
         }
     }
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
         painter.fill_rect(self.viewport.to_rect(), self.background);
+        if self.authored {
+            return;
+        }
         let offset = Vec2::new(0., -self.scroll.get());
         painter.fill_rect(
             Rect::new(30., 70., (self.viewport.width - 30.).max(30.), 235.) + offset,
@@ -390,7 +441,12 @@ impl Widget for SessionWidget {
         node.set_label("Story; scroll to see all content, click dialogue to reveal then advance, or select a choice");
     }
     fn children_ids(&self) -> ChildrenIds {
-        let mut ids = ChildrenIds::from_slice(&[self.title.id(), self.status.id()]);
+        let mut ids = ChildrenIds::from_slice(&[
+            self.stage.id(),
+            self.backdrop.id(),
+            self.title.id(),
+            self.status.id(),
+        ]);
         for line in &self.lines {
             ids.push(line.speaker.id());
             ids.push(line.text.id());
@@ -400,6 +456,42 @@ impl Widget for SessionWidget {
     }
     fn accepts_pointer_interaction(&self) -> bool {
         true
+    }
+}
+
+struct DialogueBackdrop {
+    rect: Rect,
+}
+impl AllowRawMut for DialogueBackdrop {}
+impl Widget for DialogueBackdrop {
+    type Action = NoAction;
+    fn register_children(&mut self, _: &mut RegisterCtx<'_>) {}
+    fn measure(
+        &mut self,
+        _: &mut MeasureCtx<'_>,
+        _: &PropertiesRef<'_>,
+        _: Axis,
+        request: LenReq,
+        _: Option<Length>,
+    ) -> Length {
+        match request {
+            LenReq::FitContent(space) => space,
+            _ => Length::ZERO,
+        }
+    }
+    fn layout(&mut self, _: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, _: Size) {}
+    fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+        painter.fill_rect(self.rect, Color::WHITE);
+    }
+    fn accessibility_role(&self) -> Role {
+        Role::GenericContainer
+    }
+    fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
+    fn children_ids(&self) -> ChildrenIds {
+        ChildrenIds::new()
+    }
+    fn accepts_pointer_interaction(&self) -> bool {
+        false
     }
 }
 
@@ -435,6 +527,8 @@ pub struct SessionUi {
     inputs: Rc<RefCell<Option<UiInput>>>,
     background: Color,
     scroll: Rc<Cell<f64>>,
+    stage: Option<StageView>,
+    stage_dirty: bool,
 }
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
@@ -456,6 +550,8 @@ impl SessionUi {
             inputs: Rc::new(RefCell::new(None)),
             background: Color::from_rgb8(35, 54, 74),
             scroll: Rc::new(Cell::new(0.)),
+            stage: None,
+            stage_dirty: false,
         })
     }
     pub fn session(&self) -> &Session {
@@ -469,6 +565,17 @@ impl SessionUi {
     }
     pub fn widget(&self) -> SessionWidget {
         SessionWidget::new(self)
+    }
+    pub fn set_stage(&mut self, stage: &reel_ui::stage::Stage) {
+        if self
+            .stage
+            .as_ref()
+            .is_none_or(|view| view.revision != stage.revision())
+        {
+            self.stage = Some(StageView::capture(stage));
+            self.stage_dirty = true;
+            self.clear_presented();
+        }
     }
     pub fn projection_stamp(&self) -> ProjectionStamp {
         ProjectionStamp {
@@ -505,7 +612,7 @@ impl SessionUi {
                 return Err(error);
             }
         };
-        if projection != self.projection {
+        if projection != self.projection || self.stage_dirty {
             if projection.interaction != self.projection.interaction {
                 let replacement =
                     match allocate_choice_owners(&mut self.session, projection.choices.len()) {
@@ -529,6 +636,7 @@ impl SessionUi {
             bridge.edit_widget(root_id, |mut widget| {
                 SessionWidget::sync(&mut widget.downcast::<SessionWidget>(), self)
             });
+            self.stage_dirty = false;
         }
         Ok(())
     }
@@ -677,6 +785,12 @@ mod tests {
             .unwrap()
     }
     fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
+        mount_with_font(ui, None)
+    }
+    fn mount_with_font(
+        ui: &SessionUi,
+        font: Option<reel_ui::peniko::Blob<u8>>,
+    ) -> (PresentationBridge, WidgetId) {
         let widget = ui.widget().prepare();
         let id = widget.id();
         let root = RenderRoot::new(
@@ -688,7 +802,7 @@ mod tests {
                 size_policy: WindowSizePolicy::User,
                 size: PhysicalSize::new(640, 420),
                 scale_factor: 1.,
-                test_font: None,
+                default_font: font,
             },
         );
         (
@@ -760,6 +874,206 @@ mod tests {
     }
     fn visible(ui: &SessionUi) -> usize {
         ui.projection.lines[0].visible.end
+    }
+
+    #[test]
+    fn author_scene_renders_edits_original_nodes_and_keeps_final_picture() {
+        use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
+        use reel_core::budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits};
+        use reel_core::identity::{AssetKey, ContentVersion, ResourceVersion};
+        use reel_engine::aside::{SliceBudget, VmLimits};
+        use reel_ui::frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget};
+        use reel_ui::resources::{ResourceData, ResourceHandle, ResourceRegistry};
+
+        fn labels(widget: WidgetRef<'_, dyn Widget>, out: &mut Vec<(WidgetId, String)>) {
+            if let Some(label) = widget.downcast::<Label>() {
+                out.push((widget.id(), label.text().to_string()));
+            }
+            for child in widget.children() {
+                labels(child, out);
+            }
+        }
+        fn present(
+            driver: &mut AsideSessionUi,
+            bridge: &mut PresentationBridge,
+            root: WidgetId,
+            frame: u64,
+            resources: (&ResourceRegistry, &[ResourceHandle]),
+        ) -> Vec<(WidgetId, String)> {
+            driver.sync(bridge, root).unwrap();
+            let source = bridge.record(FrameId(frame)).unwrap();
+            let key = source.key();
+            let pool = BudgetPool::new(
+                BudgetCategory::CpuOutput,
+                QueueLimits {
+                    max_requests: 16,
+                    max_bytes: 32 << 20,
+                },
+            );
+            let mut build = FrameBuild::new(
+                source,
+                resources.0.freeze(resources.1, &pool).unwrap(),
+                FrameInfo {
+                    logical_size: [640., 420.],
+                    physical_size: [640, 420],
+                },
+                BuildLimits {
+                    max_fragments: 1024,
+                    max_commands: 4096,
+                    max_masks: 64,
+                    max_depth: 32,
+                    max_bytes: 8 << 20,
+                    max_total_units: 4_000_000,
+                },
+                &pool,
+            )
+            .unwrap();
+            while !build
+                .step(StepBudget {
+                    max_commands: 64,
+                    max_units: 8192,
+                    max_bytes: 64 << 10,
+                })
+                .unwrap()
+                .complete
+            {}
+            let frame = build.finish().unwrap();
+            if std::env::var_os("REEL_SESSION_FONT").is_some() {
+                assert!(frame.commands().iter().any(|command| matches!(&command.op,
+                    FrameOp::Draw(FrameDraw::GlyphRun(run)) if run.font_size == 40. && !run.glyphs.is_empty()
+                )), "the Chinese title must produce real glyphs from the supplied font");
+            }
+            assert!(frame.commands().iter().any(|command| matches!(&command.op, FrameOp::PushGroup(group) if group.composite.alpha < 1.)));
+            assert_eq!(
+                bridge.resolve(PresentationNotice::new(
+                    key,
+                    SurfaceEpoch(1),
+                    PresentationOutcome::Accepted(frame.frame_id())
+                )),
+                NoticeResult::Accepted
+            );
+            driver.presented(driver.projection_stamp());
+            let root_widget = bridge
+                .root()
+                .get_widget(root)
+                .unwrap()
+                .downcast::<SessionWidget>()
+                .unwrap();
+            let mut output = Vec::new();
+            labels(
+                bridge.root().get_widget(root_widget.stage.id()).unwrap(),
+                &mut output,
+            );
+            output
+        }
+        fn advance(
+            driver: &mut AsideSessionUi,
+            bridge: &mut PresentationBridge,
+            root: WidgetId,
+            frame: &mut u64,
+            resources: (&ResourceRegistry, &[ResourceHandle]),
+        ) {
+            for _ in 0..2 {
+                let widget = bridge
+                    .root()
+                    .get_widget(root)
+                    .unwrap()
+                    .downcast::<SessionWidget>()
+                    .unwrap();
+                let point = widget.dialogue_rect.center() - Vec2::new(0., widget.scroll.get());
+                for kind in ["move", "down", "up"] {
+                    driver
+                        .handle_pointer(bridge, mouse(kind, (point.x, point.y)))
+                        .unwrap();
+                }
+                *frame += 1;
+                present(driver, bridge, root, *frame, resources);
+            }
+        }
+        fn run_to_wait(driver: &mut AsideSessionUi) {
+            for _ in 0..10_000 {
+                match driver.tick(SliceBudget::default(), 256, || 0).unwrap() {
+                    StoryProgress::Interaction(_) | StoryProgress::Finished => return,
+                    StoryProgress::HostFailed(stage) => {
+                        panic!("host failed: {stage:?}: {:?}", driver.host_failure())
+                    }
+                    StoryProgress::Faulted(_) => {
+                        panic!("script fault: {:?}", driver.fault().unwrap())
+                    }
+                    _ => {}
+                }
+            }
+            panic!("author example did not yield");
+        }
+        let mut driver = AsideSessionUi::from_source(
+            session(),
+            include_str!("../../../examples/author_stage.aside"),
+            "main",
+            1,
+            "main",
+            "zh-CN",
+            VmLimits::default(),
+        )
+        .unwrap();
+        let pool = BudgetPool::new(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: 32,
+                max_bytes: 128 << 20,
+            },
+        );
+        let mut registry = ResourceRegistry::new(16, 1 << 20).unwrap();
+        let mut handles = Vec::new();
+        let font = std::env::var_os("REEL_SESSION_FONT").map(|path| {
+            let bytes = std::fs::read(path).unwrap();
+            let ticket = pool.reserve(bytes.len() as u64).unwrap();
+            let handle = registry
+                .register_font(
+                    ResourceVersion {
+                        key: AssetKey("author-scene/font".into()),
+                        version: ContentVersion([1; 32]),
+                    },
+                    OwnedBytes::new(bytes, ticket).unwrap(),
+                )
+                .unwrap();
+            handles.push(handle);
+            let lease = registry.acquire(handle).unwrap();
+            let ResourceData::Font(font) = lease.data() else {
+                unreachable!()
+            };
+            font.clone()
+        });
+        let resources = (&registry, handles.as_slice());
+        let (mut bridge, root) = mount_with_font(driver.ui(), font);
+        let mut frame = 1;
+        run_to_wait(&mut driver);
+        let before = present(&mut driver, &mut bridge, root, frame, resources);
+        let title_id = before
+            .iter()
+            .find(|(_, text)| text == "画面，由你定义")
+            .unwrap()
+            .0;
+        advance(&mut driver, &mut bridge, root, &mut frame, resources);
+        run_to_wait(&mut driver);
+        frame += 1;
+        let after = present(&mut driver, &mut bridge, root, frame, resources);
+        assert!(
+            after
+                .iter()
+                .any(|(id, text)| *id == title_id && text == "同一幅画面，新的语气")
+        );
+        assert_eq!(
+            before.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            after.iter().map(|(id, _)| id).collect::<Vec<_>>()
+        );
+        advance(&mut driver, &mut bridge, root, &mut frame, resources);
+        run_to_wait(&mut driver);
+        assert_eq!(driver.state(), StoryState::Finished);
+        frame += 1;
+        assert_eq!(
+            present(&mut driver, &mut bridge, root, frame, resources),
+            after
+        );
     }
 
     #[test]

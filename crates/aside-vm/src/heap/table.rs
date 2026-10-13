@@ -1,13 +1,13 @@
 use super::*;
 
 impl Heap {
-    pub(crate) fn table_len(&self, table: Value) -> Result<u32, HeapError> {
+    pub fn table_len(&self, table: Value) -> Result<u32, HeapError> {
         let Payload::Table(values) = &self.object(self.key(table)?)?.payload else {
             return Err(HeapError::WrongKind);
         };
         Ok(values.len / 2)
     }
-    pub(crate) fn alloc_table(&mut self) -> Result<Value, HeapError> {
+    pub fn alloc_table(&mut self) -> Result<Value, HeapError> {
         self.input_values(&[])?;
         if self.objects.full() {
             return Err(HeapError::ObjectCapacity);
@@ -19,11 +19,7 @@ impl Heap {
             0,
         ))
     }
-    pub(crate) fn table_entry(
-        &self,
-        table: Value,
-        position: u32,
-    ) -> Result<(Value, Value), HeapError> {
+    pub fn table_entry(&self, table: Value, position: u32) -> Result<(Value, Value), HeapError> {
         let Payload::Table(values) = &self.object(self.key(table)?)?.payload else {
             return Err(HeapError::WrongKind);
         };
@@ -33,7 +29,7 @@ impl Heap {
             values.get(index + 1).ok_or(HeapError::OutOfBounds)?,
         ))
     }
-    pub(crate) fn table_store(
+    pub fn table_store(
         &mut self,
         table: Value,
         position: u32,

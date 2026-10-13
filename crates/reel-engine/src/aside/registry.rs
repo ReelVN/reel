@@ -1,19 +1,40 @@
 use aside_vm::bytecode::{
-    BuiltinType, BytecodePackage, Effects, NativeSupport, Parameter, RuntimeSupport, Signature,
-    SymbolId, TypeDef, TypeId,
+    self as bc, BuiltinType, BytecodePackage, Effects, NativeSupport, Parameter, RuntimeSupport,
+    Signature, SymbolId, TypeDef, TypeId,
 };
 
 use super::AdapterError;
 
+pub(super) const NODE_FIELDS: [&str; 12] = [
+    "x",
+    "y",
+    "width",
+    "height",
+    "opacity",
+    "visible",
+    "clip",
+    "gap",
+    "padding",
+    "font_size",
+    "color",
+    "background",
+];
+
 /// Host-owned metadata, supplied independently of the package being admitted.
 /// No package Signature/TypeId/FunctionId can be imported as a trust assertion.
-/// This first adapter supports required builtin-typed parameters, no defaults,
-/// rest, property tail or script callbacks. Other contracts fail admission.
+/// Parameter defaults are ordinary B01 default functions generated from these
+/// host-owned constants. Runtime admission resolves the same declarations.
+#[derive(Clone, Debug)]
+pub(super) struct NativeParameter {
+    pub name: String,
+    pub ty: BuiltinType,
+    pub default: Option<bc::Const>,
+}
 #[derive(Clone, Debug)]
 pub(super) struct NativeContract {
     pub symbol: String,
     pub abi_version: u32,
-    pub parameters: Vec<(String, BuiltinType)>,
+    pub parameters: Vec<NativeParameter>,
     pub result: BuiltinType,
     pub effects: Effects,
     pub required_capabilities: Vec<String>,
@@ -62,12 +83,17 @@ pub(super) fn runtime_support(
         let parameters = contract
             .parameters
             .iter()
-            .map(|(name, builtin)| {
+            .enumerate()
+            .map(|(index, parameter)| {
                 Ok(Parameter {
-                    name: symbol(name)?,
-                    ty: ty(builtin)?,
+                    name: symbol(&parameter.name)?,
+                    ty: ty(&parameter.ty)?,
                     mutable: false,
-                    default: None,
+                    default: parameter
+                        .default
+                        .as_ref()
+                        .map(|value| default_function(package, contract, index, value))
+                        .transpose()?,
                 })
             })
             .collect::<Result<Vec<_>, AdapterError>>()?;
@@ -92,7 +118,7 @@ pub(super) fn runtime_support(
 }
 
 pub(super) fn contracts() -> Vec<NativeContract> {
-    [
+    let mut contracts: Vec<_> = [
         ("narrator", "text", BuiltinType::String, BuiltinType::Null),
         ("choose", "options", BuiltinType::Array, BuiltinType::String),
     ]
@@ -100,14 +126,107 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     .map(|(name, parameter, input, result)| NativeContract {
         symbol: format!("reel::{name}"),
         abi_version: 1,
-        parameters: vec![(parameter.into(), input)],
+        parameters: vec![NativeParameter {
+            name: parameter.into(),
+            ty: input,
+            default: None,
+        }],
         result,
         effects: Effects::ALL,
         required_capabilities: capabilities(),
     })
-    .collect()
+    .collect();
+    for name in ["text", "row", "column", "stack"] {
+        let mut parameters = Vec::new();
+        if name == "text" {
+            parameters.push(NativeParameter {
+                name: "value".into(),
+                ty: BuiltinType::String,
+                default: None,
+            });
+        }
+        for (name, (ty, default)) in NODE_FIELDS.into_iter().zip([
+            (BuiltinType::Any, bc::Const::Int(0)),
+            (BuiltinType::Any, bc::Const::Int(0)),
+            (BuiltinType::Any, bc::Const::Null),
+            (BuiltinType::Any, bc::Const::Null),
+            (BuiltinType::Any, bc::Const::Int(1)),
+            (BuiltinType::Bool, bc::Const::Bool(true)),
+            (BuiltinType::Bool, bc::Const::Bool(false)),
+            (BuiltinType::Any, bc::Const::Int(0)),
+            (BuiltinType::Any, bc::Const::Int(0)),
+            (BuiltinType::Any, bc::Const::Int(24)),
+            (BuiltinType::String, bc::Const::Utf8("#ffffff".into())),
+            (BuiltinType::Any, bc::Const::Null),
+        ]) {
+            parameters.push(NativeParameter {
+                name: name.into(),
+                ty,
+                default: Some(default),
+            });
+        }
+        if name != "text" {
+            parameters.push(NativeParameter {
+                name: "children".into(),
+                ty: BuiltinType::Any,
+                default: Some(bc::Const::Null),
+            });
+        }
+        contracts.push(NativeContract {
+            symbol: format!("reel::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+            required_capabilities: vec!["reel.stage".into()],
+        });
+    }
+    contracts.push(NativeContract {
+        symbol: "reel::stage::replace".into(),
+        abi_version: 1,
+        parameters: vec![NativeParameter {
+            name: "root".into(),
+            ty: BuiltinType::Any,
+            default: None,
+        }],
+        result: BuiltinType::Null,
+        effects: Effects(Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    contracts
 }
 
 pub(super) fn capabilities() -> Vec<String> {
-    vec!["reel.session".into()]
+    vec!["reel.session".into(), "reel.stage".into()]
+}
+
+pub(super) fn default_name(contract: &NativeContract, index: usize) -> String {
+    format!("{}::default::{index}", contract.symbol)
+}
+
+fn default_function(
+    package: &BytecodePackage,
+    contract: &NativeContract,
+    index: usize,
+    value: &bc::Const,
+) -> Result<bc::FunctionId, AdapterError> {
+    let name = default_name(contract, index);
+    let (id, function) = package
+        .functions
+        .iter()
+        .enumerate()
+        .find(|(_, function)| package.symbols[function.name.index()] == name)
+        .ok_or(AdapterError::Input("native default missing"))?;
+    // A package cannot replace the registered constant default with script effects.
+    let valid = function.context == bc::Context::NoWait
+        && function.captures.is_empty()
+        && function.code.len() == 2
+        && function.code[0].opcode == bc::Opcode::LoadConst as u16
+        && function.code[1] == bc::Instruction::new(bc::Opcode::Return, index as u32, 0, 0)
+        && function.code[0].operands[0] == index as u32
+        && package.constants.get(function.code[0].operands[1] as usize) == Some(value);
+    if !valid {
+        return Err(AdapterError::Input("native default differs from registry"));
+    }
+    Ok(bc::FunctionId(id as u32))
 }

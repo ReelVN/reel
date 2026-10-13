@@ -14,6 +14,19 @@ Native defaults retain the no-script-capture rule and exact signature prefix che
 
 `Instruction {opcode: u16, flags: u16, operands: [u32;3]}` occupies exactly 16 encoded bytes, field-by-field little endian; flags and unused operands zero. PC is an instruction number. One shared `InstructionSpec` records operand kinds, reads/writes, descriptor kind, flow, may_throw and suspension category. Every instruction may BudgetYield at VM safe points. The table below lists only language suspension: `W` external wait, `Y` generator yield, `T` thread suspend, `-` none. Calls are W-capable in ordinary context but execute under the inherited dynamic effect/context boundary; NoWait contexts do not forbid a call that returns synchronously.
 
+The composition increment reserves CallNoWait (0048) and ChildrenPush (005c)
+within B01 v1; execution support is explicit in the opcode capability list.
+CallNoWait inherits the caller restrictions and adds NoWait only for its callee
+chain. ChildrenPush appends one composable Host to an array, ignores null and
+rejects other values. Host public fields are a shared Table, separate from its
+private payload; retirement makes public field access invalid. Host member writes
+update declared fields and report a missing property instead of creating one.
+Built-in array/tuple iteration uses IterInit/Next/Close; IterNext produces the
+internal tuple `(done, value)`, preserving null as an ordinary element. Arrays
+permit element replacement during iteration, but structural changes invalidate
+the cursor. The public Iterator protocol remains `{done, value}`; custom iterator
+adapters and asynchronous iteration are not implemented by this increment.
+
 Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` BindingId; `c` CaptureId; `g` Global descriptor; `q` typed descriptor; `p` Pc; unused trailing operands zero. Descriptor reads/writes are explicitly resolved by the shared accessor, including windows and pattern output registers. All potentially long structural operations can save internal budget stages.
 
 | Hex | Opcode | operands / typed descriptor | flow | throw | suspend |
@@ -46,6 +59,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 0045 | ArgsNamed | x,y,s | next (preserve ordered duplicate entries; final binding diagnoses) | yes | - |
 | 0046 | ArgsSpread | x,y | next (capture elements now) | yes | - |
 | 0047 | ArgsNamedSpread | x,y | next (capture string-keyed entries now) | yes | - |
+| 0048 | CallNoWait | d,q:Call | next after synchronous return; callees inherit NoWait | yes | - |
 | 0050 | MakeTuple | d,q:Sequence(window) | next | yes | - |
 | 0051 | MakeArray | d,q:Sequence | next | yes | - |
 | 0052 | MakeTable | d,q:Table(ordered key/value entries) | next | yes | - |
@@ -58,10 +72,11 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 0059 | MakeClass | d,q:Class(base,fields,methods,initializers) | next | yes | - |
 | 005a | SuperGet | d,x,q:Super(lexical base,symbol) | next | yes | - |
 | 005b | PropertyRef | d,x,q:Property(key,read/write) | next | yes | - |
+| 005c | ChildrenPush | x,y | append composable host value to array; ignore null | yes | - |
 | 0060 | Match | d,x,q:Pattern(nodes,outputs) | next (bool; outputs committed on success) | yes | - |
 | 0061 | PatternRequire | x | next (PatternMismatch on false) | yes | - |
 | 0062 | IterInit | d,x | next | yes | - |
-| 0063 | IterNext | d,x | next (step value) | yes | - |
+| 0063 | IterNext | d,x | next (internal tuple: done, value) | yes | - |
 | 0064 | IterClose | x | next | yes | - |
 | 0065 | AsyncIterInit | d,x | next | yes | - |
 | 0066 | AsyncIterNext | d,x | next (Awaitable; explicit Await follows) | yes | - |

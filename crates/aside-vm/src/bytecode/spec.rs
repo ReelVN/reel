@@ -149,6 +149,7 @@ instructions! {
     ArgsNamed = 0x0045 => [ReadReg, ReadReg, Symbol], Next, true, None;
     ArgsSpread = 0x0046 => [ReadReg, ReadReg, Unused], Next, true, None;
     ArgsNamedSpread = 0x0047 => [ReadReg, ReadReg, Unused], Next, true, None;
+    CallNoWait = 0x0048 => [WriteReg, Descriptor(D::Call), Unused], Next, true, None;
     MakeTuple = 0x0050 => [WriteReg, Descriptor(D::Sequence), Unused], Next, true, None;
     MakeArray = 0x0051 => [WriteReg, Descriptor(D::Sequence), Unused], Next, true, None;
     MakeTable = 0x0052 => [WriteReg, Descriptor(D::Table), Unused], Next, true, None;
@@ -161,6 +162,7 @@ instructions! {
     MakeClass = 0x0059 => [WriteReg, Descriptor(D::Class), Unused], Next, true, None;
     SuperGet = 0x005a => [WriteReg, ReadReg, Descriptor(D::Super)], Next, true, None;
     PropertyRef = 0x005b => [WriteReg, ReadReg, Descriptor(D::Property)], Next, true, None;
+    ChildrenPush = 0x005c => [ReadReg, ReadReg, Unused], Next, true, None;
     Match = 0x0060 => [WriteReg, ReadReg, Descriptor(D::Pattern)], Next, true, None;
     PatternRequire = 0x0061 => [ReadReg, Unused, Unused], Next, true, None;
     IterInit = 0x0062 => [WriteReg, ReadReg, Unused], Next, true, None;

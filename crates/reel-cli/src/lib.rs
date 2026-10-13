@@ -1,9 +1,7 @@
 //! Author-facing static compilation. No runtime admission or execution occurs.
-use aside_compiler::{
-    AnalysisOptions, Diagnostic, SourceMap, TextRange, analyze, lowering, parse,
-    semantic::NoModules,
-};
+use aside_compiler::{Diagnostic, SourceMap, TextRange, lowering};
 use aside_vm::bytecode as bc;
+use reel_engine::aside::source::{self, CompiledStory, SourceCompilation, SourceError};
 use serde_json::{Value, json};
 mod input;
 pub use input::{InputError, MAX_SOURCE_BYTES, read_source};
@@ -46,46 +44,11 @@ pub struct Checked {
 
 /// Run the complete supported static pipeline, retaining entry and metadata
 /// beside the raw B01 bytes. No on-disk release format is implied.
-pub fn check(source: &str) -> Result<Checked, Failure> {
-    let parsed = parse(source).map_err(|e| {
-        error(
-            "parse",
-            aside_compiler::DiagnosticCode::BudgetExceeded,
-            TextRange::empty(0.into()),
-            e.to_string(),
-        )
-    })?;
-    if !parsed.is_ok() {
-        return Err(Failure {
-            stage: "parse",
-            diagnostics: parsed.diagnostics().to_vec(),
-            code: None,
-        });
-    }
-    // Filesystem paths are not B01 module identities. This is one standalone
-    // logical `main` module, without a project/module resolver.
-    let options = AnalysisOptions::default();
-    let analyzed = analyze(&parsed, &options, &mut NoModules);
-    if !analyzed.is_ok() {
-        return Err(Failure {
-            stage: "analyze",
-            diagnostics: analyzed.diagnostics,
-            code: None,
-        });
-    }
-    let compilation = lowering::compile(
-        analyzed.module().expect("successful analysis"),
-        &lowering::Linkage::default(),
-        lowering::Options::default(),
-    )
-    .map_err(|e| {
-        error(
-            "lower",
-            aside_compiler::DiagnosticCode::InvalidHir,
-            e.span,
-            format!("{:?}: {}", e.kind, e.detail),
-        )
-    })?;
+pub fn check(source: &str, source_path: &str) -> Result<Checked, Failure> {
+    let SourceCompilation {
+        module,
+        compilation,
+    } = source::compile_module(source, "main", source_path, 1).map_err(source_failure)?;
     let limits = bc::Limits::default();
     let convert = |e: bc::Error| {
         let span = e
@@ -109,14 +72,80 @@ pub fn check(source: &str) -> Result<Checked, Failure> {
             "B01 round trip changed program data".into(),
         ));
     }
-    let declarations = artifact::declarations(
-        analyzed.module().expect("successful analysis"),
-        &compilation,
-    )?;
+    let declarations = artifact::declarations(&module, &compilation)?;
     Ok(Checked {
         compilation,
         bytes,
         declarations,
+    })
+}
+
+pub fn source_failure(failure: SourceError) -> Failure {
+    use aside_compiler::DiagnosticCode;
+    match failure {
+        SourceError::Analysis(failure) => {
+            Failure {
+                stage: if failure.diagnostics.iter().any(|d| {
+                    d.code.as_str().starts_with("ASP") || d.code.as_str().starts_with("ASL")
+                }) {
+                    "parse"
+                } else {
+                    "analyze"
+                },
+                diagnostics: failure.diagnostics,
+                code: None,
+            }
+        }
+        SourceError::Lowering(failure) => error(
+            "lower",
+            DiagnosticCode::InvalidHir,
+            failure.span,
+            failure.detail,
+        ),
+        SourceError::Format(failure) => error(
+            "bytecode",
+            DiagnosticCode::InvalidHir,
+            failure
+                .source
+                .map(|s| TextRange::new(s.start.into(), s.end.into()))
+                .unwrap_or_else(|| TextRange::empty(0.into())),
+            failure.to_string(),
+        ),
+        SourceError::Source(failure) => error(
+            "parse",
+            DiagnosticCode::BudgetExceeded,
+            TextRange::empty(0.into()),
+            failure.to_string(),
+        ),
+        SourceError::Entry => error(
+            "entry",
+            DiagnosticCode::InvalidCall,
+            TextRange::empty(0.into()),
+            "entry must be an ordinary module function with no required arguments".into(),
+        ),
+    }
+}
+
+pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failure> {
+    let entry = artifact::select_entry(&checked, Some(entry))?.expect("requested entry");
+    Ok(CompiledStory {
+        program: checked.compilation.program,
+        initializer: checked.compilation.entry,
+        entry: bc::FunctionId(entry.function_id),
+    })
+}
+
+pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> {
+    let (program, metadata) =
+        reel_package::decode(bytes, reel_package::Limits::default())?.into_parts();
+    let entry = metadata.game_entry.ok_or_else(|| reel_package::Error {
+        kind: reel_package::ErrorKind::Metadata,
+        detail: "this package contains only a module; use reel build <source.aside> --output <story.asb> to build a runnable story".into(),
+    })?;
+    Ok(CompiledStory {
+        program,
+        initializer: bc::FunctionId(metadata.initializer.function_id),
+        entry: bc::FunctionId(entry.function_id),
     })
 }
 
@@ -147,10 +176,13 @@ mod tests {
     use super::*;
     #[test]
     fn complete_pipeline_is_static() {
-        let checked = check("fn main() { loop {} }").unwrap();
+        let checked = check("fn main() { loop {} }", "story.aside").unwrap();
         assert_eq!(checked.compilation.metadata.canonical_path, "main");
+        let module = checked.compilation.program.package().functions
+            [checked.compilation.entry.index()]
+        .module;
         assert_eq!(
-            checked.compilation.program.package().modules[0].initializer,
+            checked.compilation.program.package().modules[module.index()].initializer,
             Some(checked.compilation.entry)
         );
         assert!(!checked.bytes.is_empty());
@@ -163,7 +195,7 @@ mod tests {
             ("use reel::story;", "analyze"),
             ("fn main() { [...[1]] }", "lower"),
         ] {
-            let failure = check(source).err().unwrap();
+            let failure = check(source, "story.aside").err().unwrap();
             assert_eq!(failure.stage, stage);
             assert!(!failure.diagnostics.is_empty());
         }
@@ -171,7 +203,7 @@ mod tests {
     #[test]
     fn unicode_coordinates_are_preserved() {
         let source = "let 中文 = 1;\r\nmissing();";
-        let failure = check(source).err().unwrap();
+        let failure = check(source, "story.aside").err().unwrap();
         let diagnostic = diagnostic_json(&failure.diagnostics[0], &SourceMap::new(source));
         assert_eq!(diagnostic["range"]["start"]["line"], 1);
         assert_eq!(diagnostic["range"]["start"]["utf16_column"], 0);
