@@ -66,7 +66,7 @@ impl Budgets {
             BudgetPool::new(
                 category,
                 QueueLimits {
-                    max_requests: 65_536,
+                    max_requests: u32::MAX,
                     max_bytes,
                 },
             )
@@ -205,21 +205,10 @@ impl Renderer {
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],
         );
-        let origin = |frame: &RenderFrame| {
-            frame.commands().first().map_or(
-                reel_ui::frame::RecordLocation {
-                    fragment: 0,
-                    command: 0,
-                    mask_depth: 0,
-                    owner: frame.geometry().root_id(),
-                },
-                |command| command.origin.at,
-            )
-        };
-        let mut output = ctx.stream(frame, frame.commands(), transform, 0, origin(frame))?;
+        let mut output = ctx.stream(frame, frame.commands(), transform)?;
         let mut frames = vec![frame.clone()];
         if let Some((second, progress)) = second {
-            let b = ctx.stream(second, second.commands(), transform, 0, origin(second))?;
+            let b = ctx.stream(second, second.commands(), transform)?;
             let mixed = ctx.target()?;
             ctx.combine(&mixed, &output.view, &b.view, 1., 3, progress)?;
             output = mixed;

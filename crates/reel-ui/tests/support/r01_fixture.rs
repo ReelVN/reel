@@ -95,12 +95,7 @@ impl Widget for RecordWidget {
 }
 pub fn limits() -> BuildLimits {
     BuildLimits {
-        max_fragments: 128,
-        max_commands: 8192,
-        max_masks: 64,
-        max_depth: 32,
         max_bytes: 16 * 1024 * 1024,
-        max_total_units: 4_000_000,
     }
 }
 pub fn step_budget() -> StepBudget {
@@ -125,9 +120,7 @@ pub fn bridge(root: RenderRoot) -> PresentationBridge {
         SurfaceEpoch(1),
         BridgeLimits {
             geometry: reel_ui::app::GeometryLimits {
-                max_nodes: 8192,
                 max_bytes: 4 * 1024 * 1024,
-                max_path: 128,
             },
             max_candidates: 4,
             max_bridge_bytes: 64 * 1024,
@@ -151,12 +144,19 @@ pub fn build(source: RecordedSource, snapshot: ResourceSnapshot, pool: &BudgetPo
         pool,
     )
     .unwrap();
+    let mut slice = step_budget();
     for _ in 0..100_000 {
-        let p = build.step(step_budget()).unwrap();
-        assert!(p.units <= 128 && p.bytes <= 4096 && p.commands <= 2);
+        let p = build.step(slice).unwrap();
+        assert!(
+            p.units <= slice.max_units
+                && p.bytes <= slice.max_bytes
+                && p.commands <= slice.max_commands
+        );
         if p.complete {
             return build.finish().unwrap();
         }
+        slice.max_units = slice.max_units.max(p.minimum_units);
+        slice.max_bytes = slice.max_bytes.max(p.minimum_bytes);
     }
     panic!("bounded build made no final progress")
 }

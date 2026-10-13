@@ -1,13 +1,13 @@
 # Reel session host (S01)
 
-This crate owns the bounded Rust session model specified by architecture 1.1.
+This crate owns the Rust session model specified by architecture 1.1.
 The Rust model remains independently usable. The `aside` adapter executes real
 source programs, owns story waits and publishes the common author stage.
 Snapshot/restore is not implemented.
 PR #50 / Issue #48 introduces it as one substantive engine crate; UI remains
 in reel-ui and platform/window assembly remains in reel-player.
 
-Session::new receives a caller-assigned unique SessionId/Epoch and SessionLimits.
+Session::new receives a caller-assigned unique SessionId/Epoch.
 The root owner alone submits the main interaction. begin_say atomically copies
 a complete plain-text ADV group, locale and content identities, computes grapheme
 boundaries and appends history once. reveal_more advances monotonically. First
@@ -20,12 +20,13 @@ take_completion; a successor cannot overwrite it. Cancellation produces
 CleanupOnly, never permission to resume. A claimed Resume must still be checked
 against live session/owner and the real executor wait at actual delivery.
 
-## Bounded ownership and retirement
+## Ownership and retirement
 
-Owner/history counts and interaction/history UTF-8 bytes are bounded; admission
-failure leaves identities and history unchanged. StorageUsage reports backing
-capacity, not allocator overhead. Live→Revoked→Retired records are reserved in
-owner slots. Non-retired slots cannot be reused.
+Owners, dialogue lines, choices, text and complete history grow with author
+content. Storage is reserved before publication; allocation or validation failure
+leaves identities and history unchanged. History is retained without eviction.
+StorageUsage reports backing capacity, not allocator overhead. Completed Retired
+owner slots are reused; live and revoked slots retain their ownership obligations.
 
 revoke_owner_with_retirement freezes the single-root high-water end plus task
 and external-resource gates. Expanded root teardown first requires retirement
@@ -78,14 +79,14 @@ task and wait identities. CleanupOnly never resumes a task. Choice rows read onl
 own `key`/`label` slots through the public bounded collection cursor; no raw
 heap layout or delegate/hook lookup is used. The selected original immutable key
 Value stays explicitly rooted through completion instead of being reallocated.
+Reader references and retained keys each use one rooted VM array, so option count
+does not consume one host root per row or key.
 
 Text reads use chunks bounded by min(4096, heap mutation limit), with UTF-8
-decoding after the complete copy. The default 64 KiB interaction limit includes
-metadata, locale and generated content identity, so it is not a 64 KiB narrator
-payload guarantee. VM constant admission still defaults to 4096 bytes; the
-long-key regression source explicitly raises it. Dialogue/choice counts use SessionLimits without a smaller player-specific cap.
-Choice lookup work is metered
-separately; string copying and publication are synchronous and byte-bounded, not
+decoding after the complete copy. This is a per-read chunk size, not a text length
+limit. VM values use the configured heap budget; Session copies reserve their
+actual storage. Choice lookup work is metered separately; string copying and
+publication are synchronous, not
 charged as VM instructions or wholly covered by player `host_work`.
 
 Revocation first establishes all peer retirement obligations, then releases

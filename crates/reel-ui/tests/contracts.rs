@@ -171,7 +171,7 @@ use support::fixture::*;
 
 #[test]
 fn independent_lookup_workspace_is_reserved_before_configuration() {
-    let capacity = support::limits().max_path;
+    let capacity = 0;
     let planned = reel_ui::app::RenderRoot::input_path_storage_bytes_for(capacity).unwrap();
     let mut limits = bridge_limits();
     limits.max_candidates = 0;
@@ -179,13 +179,54 @@ fn independent_lookup_workspace_is_reserved_before_configuration() {
     let bridge =
         PresentationBridge::new(SliderFixture::new().root, SurfaceEpoch(1), limits).unwrap();
     assert_eq!(bridge.root().input_path_storage_bytes(), planned);
-    assert_eq!(bridge.fixed_storage_bytes(), planned as u64);
+    assert_eq!(bridge.routing_storage_bytes(), planned as u64);
     limits.max_bridge_bytes -= 1;
     assert!(matches!(
         PresentationBridge::new(SliderFixture::new().root, SurfaceEpoch(1), limits),
         Err(RecordError::BridgeBudget)
     ));
     assert!(reel_ui::app::RenderRoot::input_path_storage_bytes_for(usize::MAX).is_none());
+
+    let trace = Rc::new(RefCell::new(vec![]));
+    let slider = reel_ui::widgets::Slider::new(0., 1., 0.).prepare();
+    let slider_id = slider.id();
+    let nested = |mut child: NewWidget<dyn Widget>, depth: usize| {
+        for _ in 0..depth {
+            let mut group = StageGroup::new(trace.clone(), 1., Rect::new(0., 0., 300., 200.));
+            group.add(child, Point::ZERO, Size::new(300., 200.));
+            child = group.prepare().erased();
+        }
+        child
+    };
+    let mut outer = StageGroup::new(trace.clone(), 1., Rect::new(0., 0., 300., 200.));
+    outer.add(
+        nested(slider.erased(), 70),
+        Point::ZERO,
+        Size::new(300., 200.),
+    );
+    let outer = outer.prepare();
+    let outer_id = outer.id();
+    let (root, _) = root(outer);
+    let mut bridge = PresentationBridge::new(root, SurfaceEpoch(1), bridge_limits()).unwrap();
+    let first = bridge.record(FrameId(1)).unwrap();
+    assert!(first.geometry().max_depth() > 64);
+    bridge.resolve(accept(&first));
+    bridge.handle_pointer_event(mouse("down", Point::new(150., 100.)));
+    assert_eq!(bridge.root().pointer_capture_target(), Some(slider_id));
+    let before = bridge.routing_storage_bytes();
+    let deeper = nested(image([255, 0, 0, 255]).prepare().erased(), 140);
+    bridge.edit_widget(outer_id, |mut widget| {
+        let mut group = widget.downcast::<StageGroup>();
+        group.widget.add(deeper, Point::ZERO, Size::new(300., 200.));
+        group.ctx.children_changed();
+    });
+    let second = bridge.record(FrameId(2)).unwrap();
+    assert!(second.geometry().max_depth() > 128);
+    assert!(bridge.routing_storage_bytes() > before);
+    assert_eq!(bridge.root().pointer_capture_target(), Some(slider_id));
+    bridge.resolve(accept(&second));
+    bridge.handle_pointer_event(mouse("up", Point::new(150., 100.)));
+    assert_eq!(bridge.root().pointer_capture_target(), None);
 }
 
 fn bridge_limits() -> BridgeLimits {
@@ -401,7 +442,7 @@ fn missing_children_and_frozen_widgetref_order_include_stashed() {
 }
 
 #[test]
-fn snapshot_node_path_capacity_and_lease_recovery() {
+fn snapshot_memory_path_storage_and_lease_recovery() {
     use std::time::Instant;
     let f = SliderFixture::new();
     let other = SliderFixture::new();
@@ -418,24 +459,8 @@ fn snapshot_node_path_capacity_and_lease_recovery() {
     ));
     let mut limits = support::limits();
     assert!(matches!(
-        f.root.capture_presented_geometry(GeometryLimits {
-            max_nodes: 2,
-            ..limits
-        }),
-        Err(GeometryError::Nodes)
-    ));
-    assert!(matches!(
-        f.root.capture_presented_geometry(GeometryLimits {
-            max_path: 2,
-            ..limits
-        }),
-        Err(GeometryError::Path)
-    ));
-    assert!(matches!(
-        f.root.capture_presented_geometry(GeometryLimits {
-            max_bytes: 1,
-            ..limits
-        }),
+        f.root
+            .capture_presented_geometry(GeometryLimits { max_bytes: 1 }),
         Err(GeometryError::Bytes)
     ));
     let v = f.root.capture_presented_geometry(limits).unwrap();
@@ -448,7 +473,7 @@ fn snapshot_node_path_capacity_and_lease_recovery() {
     path = Vec::with_capacity(3);
     v.path_into(f.slider, &mut path, 3).unwrap();
     assert_eq!(path.len(), 3);
-    limits.max_bytes = v.retained_bytes();
+    limits.max_bytes = v.retained_bytes() + v.scratch_peak_bytes();
     let bytes = limits.max_bytes as u64 + 256;
     let mut bridge = PresentationBridge::new(
         f.root,
@@ -845,13 +870,11 @@ fn actual_bridge_record_and_input_measurements() {
         let max_bytes = reel_ui::app::PresentedGeometryView::bytes_for_nodes(nodes).unwrap();
         let limits = BridgeLimits {
             geometry: GeometryLimits {
-                max_nodes: nodes,
-                max_bytes: max_bytes + 2 * nodes * size_of::<WidgetId>(),
-                max_path: 128,
+                max_bytes: 2 * max_bytes,
             },
             max_candidates: 2,
             max_bridge_bytes: 64 * 1024,
-            max_snapshot_bytes: (max_bytes * 3 + 1024) as u64,
+            max_snapshot_bytes: (max_bytes * 6 + 1024) as u64,
         };
         let scratch = root
             .capture_presented_geometry(limits.geometry)
@@ -900,7 +923,7 @@ fn actual_bridge_record_and_input_measurements() {
         inputs.sort_unstable();
         println!(
             "production bridge 1080p controls={count} actual_nodes={nodes} geometry_bytes={max_bytes} export_scratch_peak_bytes={scratch} fixed_route_registry_bytes={} snapshot_usage={:?}; record+replay p95={}ns max={}ns export p95={}ns max={}ns pointer p95={}ns max={}ns",
-            bridge.fixed_storage_bytes(),
+            bridge.routing_storage_bytes(),
             bridge.snapshot_usage(),
             records[94],
             records.last().unwrap(),

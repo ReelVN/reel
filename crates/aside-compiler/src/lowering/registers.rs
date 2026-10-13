@@ -10,7 +10,7 @@ pub(crate) struct Registers {
     free: Vec<RegWindow>,
 }
 impl Registers {
-    pub fn new(pinned: u32, b: &Budget) -> Result<Self, Error> {
+    pub fn new(pinned: u32, b: &Budget) -> Result<Self, Box<Error>> {
         if pinned > b.limits.max_registers {
             return Err(b.error(ErrorKind::Limit, "fixed register slots exceed limit"));
         }
@@ -20,7 +20,7 @@ impl Registers {
             free: Vec::new(),
         })
     }
-    pub fn get(&mut self, len: u32, b: &mut Budget) -> Result<RegWindow, Error> {
+    pub fn get(&mut self, len: u32, b: &mut Budget) -> Result<RegWindow, Box<Error>> {
         b.work(self.free.len() as u64 + 1)?;
         if len == 0 {
             return Ok(RegWindow {
@@ -46,10 +46,10 @@ impl Registers {
         self.high = end;
         Ok(RegWindow { start, len })
     }
-    pub fn temp(&mut self, b: &mut Budget) -> Result<Reg, Error> {
+    pub fn temp(&mut self, b: &mut Budget) -> Result<Reg, Box<Error>> {
         Ok(self.get(1, b)?.start)
     }
-    pub fn release(&mut self, window: RegWindow, b: &mut Budget) -> Result<(), Error> {
+    pub fn release(&mut self, window: RegWindow, b: &mut Budget) -> Result<(), Box<Error>> {
         if window.len == 0 {
             return Ok(());
         }
@@ -78,7 +78,7 @@ impl Registers {
         }
         Ok(())
     }
-    pub fn drop_temp(&mut self, reg: Reg, b: &mut Budget) -> Result<(), Error> {
+    pub fn drop_temp(&mut self, reg: Reg, b: &mut Budget) -> Result<(), Box<Error>> {
         self.release(RegWindow { start: reg, len: 1 }, b)
     }
     pub fn finish(self, b: &mut Budget) {

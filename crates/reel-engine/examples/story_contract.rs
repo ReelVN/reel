@@ -2,11 +2,11 @@
 use reel_engine::aside::{
     GcBudget, NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits, source,
 };
-use reel_engine::{Epoch, InputAction, InteractionView, Session, SessionId, SessionLimits};
+use reel_engine::{Epoch, InputAction, InteractionView, Session, SessionId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let story = source::compile_story(include_str!("story_contract.aside"), "story", 7, "main")?;
-    let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default())?;
+    let mut session = Session::new(SessionId(1), Epoch(1))?;
     let mut vm = SessionVm::load(&session, story.program, VmLimits::default())?;
     let mut entry = Some(story.entry);
     vm.start(&session, story.initializer)?;

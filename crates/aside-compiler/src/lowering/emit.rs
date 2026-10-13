@@ -2,7 +2,7 @@ use super::{Compilation, Error, ErrorKind, ir::*};
 use aside_vm::bytecode as bc;
 use std::mem::size_of;
 
-pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Error> {
+pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     let b = &mut ir.budget;
     for f in ir.functions.drain(..) {
         b.span = f.span;
@@ -150,7 +150,7 @@ fn source(file: bc::SourceId, span: crate::TextRange) -> bc::SourceSpan {
     }
 }
 
-fn target(pcs: &[Option<u32>], id: BlockId, b: &super::budget::Budget) -> Result<u32, Error> {
+fn target(pcs: &[Option<u32>], id: BlockId, b: &super::budget::Budget) -> Result<u32, Box<Error>> {
     pcs.get(id.0 as usize)
         .copied()
         .flatten()
@@ -160,7 +160,7 @@ fn range(
     boundaries: &[u32],
     r: std::ops::Range<u32>,
     b: &super::budget::Budget,
-) -> Result<bc::PcRange, Error> {
+) -> Result<bc::PcRange, Box<Error>> {
     match (
         boundaries.get(r.start as usize).copied(),
         boundaries.get(r.end as usize).copied(),

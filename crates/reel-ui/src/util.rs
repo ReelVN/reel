@@ -109,7 +109,7 @@ impl Sanitize for Option<f64> {
 pub(crate) type AnyMap = anymap3::Map<dyn anymap3::CloneAny + Send + Sync>;
 
 /// Convert a 2d rectangle from Parley to one used for drawing in Vello and other maths.
-pub fn bounding_box_to_rect(bb: parley::BoundingBox) -> kurbo::Rect {
+pub fn bounding_box_to_rect(bb: reel_text::BoundingBox) -> kurbo::Rect {
     kurbo::Rect {
         x0: bb.x0,
         y0: bb.y0,

@@ -341,10 +341,20 @@ Work, vector/string capacity, blocks, instructions, tables and register counts
 are charged before traversal, reservation or emission. Source/HIR and caller
 link inputs are borrowed; new retained and scratch storage are accounted
 together. Defaults are 16,777,216 work units, 64 MiB capacity, 1,000,000 records,
-200,000 instructions, 100,000 blocks, 65,536 registers per function and depth 128.
+200,000 instructions, 100,000 blocks, 65,536 registers per function and recursive
+depth 128. The depth budget is configurable without a hidden 128 clamp; flat
+binary and postfix segments consume work and scratch capacity, not recursive
+depth. Nested operands, parentheses and blocks retain their depth accounting.
 Compiler and bytecode checks use independent limits; B01's verification allocation
 limit is capped to the compiler's remaining capacity. `capacity_peak_bytes` is a
 conservative upper bound, not an RSS measurement.
+
+`lower`, `compile`, and `IrModule::emit` return `Box<Error>` on failure; `Error`
+retains its kind, source span, detail, and complete statistics. Internal lowering
+operations use the same representation. Only failures allocate an error object,
+so successful recursive composition does not reserve a full error value for every
+intermediate operation. Node dispatch and individual operations have separate
+stack frames; flat binary and postfix chains use explicit work lists.
 
 The lowering integration tests compile actual source through L03, inspect IR
 and register liveness/order, verify with B01, encode/decode, disassemble and check

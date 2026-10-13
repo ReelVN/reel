@@ -1,9 +1,9 @@
-# Kira retirement contract (AudioOutput 1.1)
+# reel-audio retirement contract (AudioOutput 1.1)
 
-The approved fork is described in [REEL-FORK.md](../../third_party/kira/REEL-FORK.md).
-Only `backend/resources.rs` and `track/main/handle.rs` modify upstream production
-source. The original 126 files, exact-VCS licenses/config and reversible patch
-remain auditable. Other upstream resources have zero capacities in Reel's bridge.
+The mixer is maintained in [reel-audio](../reel-audio/README.md), with original
+licenses and [source provenance](../reel-audio/PROVENANCE.md). Resource ownership
+and main-track control are ordinary workspace code. Unused mixer resource kinds
+have zero capacities in the device bridge.
 
 ## Legal interleaving and bounded transfer
 
@@ -19,19 +19,17 @@ play(C) performs no implicit old-Sound reclamation. The hook and module declarat
 are `cfg(test)` only. Current commands from the repository root:
 
 ```sh
-cargo run -p reel-dev --locked -- audit-kira
 cargo run -p reel-dev --locked -- audio-regression
 cargo run -p reel-dev --locked -- audio-regression --release
 cargo test -p reel-media --no-default-features --locked -- --nocapture
 ```
 
-The Rust runner copies the fork under `target/reel-artifacts/` and uses the curated
-`tests/support/kira-test.lock` in an isolated wrapper workspace. It preserves both
-imported manifests. No upstream ecosystem source or engine member is added.
+The Rust runner executes `cargo test -p reel-audio --lib --no-default-features`
+against the root workspace lock. Raw results stay under `target/reel-artifacts/`.
 
 Reel reserves a real destination queue chunk before taking unused Sound. Explicit
 `reclaim_unused(limit)` transfers at most min(limit,N); it runs no physical PCM
-free. A full/contended destination leaves Sound in Kira. Quota exhaustion,
+free. A full/contended destination leaves Sound in reel-audio. Quota exhaustion,
 including zero quota, conservatively requests another maintenance turn. A host
 must grant a positive quota to progress rather than spin within one tick.
 

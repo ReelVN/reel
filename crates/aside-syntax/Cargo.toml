@@ -1,0 +1,20 @@
+[package]
+name = "aside-syntax"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Aside lossless syntax tree ownership and traversal"
+readme = "README.md"
+
+[dependencies]
+rustc-hash = "=1.1.0"
+hashbrown = { version = "=0.14.5", features = ["inline-more"], default-features = false }
+text-size = "=1.1.1"
+memoffset = "=0.9.1"
+countme = "=3.0.1"
+serde = { version = "=1.0.229", optional = true, default-features = false }
+
+[features]
+serde1 = ["serde", "text-size/serde"]

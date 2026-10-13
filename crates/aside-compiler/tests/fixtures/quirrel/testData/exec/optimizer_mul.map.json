@@ -1,7 +1,5 @@
 {
   "source": "testData/exec/optimizer_mul.nut",
-  "source_sha256": "46133e8b1a494ebb70e98a7e7104f1cd59f4da7f9f3ed68a98c9972d7359cd7f",
-  "aside_sha256": "7b6a13827a5dc4d8a66c9df0f0117fc3d5d53a28022e6b6814004b80cda41e46",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        222
+        195
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         18
       ],
       "aside": [
-        222,
-        241
+        195,
+        214
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -34,8 +32,8 @@
         19
       ],
       "aside": [
-        241,
-        242
+        214,
+        215
       ],
       "kind": "copied"
     },
@@ -45,8 +43,8 @@
         32
       ],
       "aside": [
-        242,
-        256
+        215,
+        229
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -57,8 +55,8 @@
         33
       ],
       "aside": [
-        256,
-        257
+        229,
+        230
       ],
       "kind": "copied"
     },
@@ -68,8 +66,8 @@
         63
       ],
       "aside": [
-        257,
-        288
+        230,
+        261
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -80,8 +78,8 @@
         64
       ],
       "aside": [
-        288,
-        289
+        261,
+        262
       ],
       "kind": "copied"
     },
@@ -91,8 +89,8 @@
         107
       ],
       "aside": [
-        289,
-        333
+        262,
+        306
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -103,8 +101,8 @@
         108
       ],
       "aside": [
-        333,
-        334
+        306,
+        307
       ],
       "kind": "copied"
     }
@@ -116,8 +114,8 @@
         63
       ],
       "aside": [
-        257,
-        287
+        230,
+        260
       ],
       "tokens": [
         "assert",
@@ -136,8 +134,8 @@
         107
       ],
       "aside": [
-        289,
-        332
+        262,
+        305
       ],
       "tokens": [
         "assert",

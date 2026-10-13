@@ -107,8 +107,11 @@ permanently before wrap. Heap, Value and scoped tokens cannot cross threads.
 ## Storage and work accounting
 
 Defaults are configurable: 16,384 object slots, 1,024 root slots and a 32 MiB
-charged-byte ceiling. Constructors/individual mutation calls accept at most 256
-Values or 4,096 bytes by default. Allocation returns explicit capacity/resource
+charged-byte ceiling. Value constructors and individual mutations accept at most
+256 Values by default. Individual byte reads/appends use a 4,096-byte default
+copy budget; it does not limit a string's total length. String/byte constants are
+stored in charged chunks, and string concatenation copies through resumable
+rooted construction before publishing its immutable result. Allocation returns explicit capacity/resource
 errors rather than extending queues; the host can drive maintenance and retry.
 No method silently executes a whole collection to obtain space.
 

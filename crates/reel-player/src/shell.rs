@@ -1,7 +1,7 @@
 use crate::aside_session::AsideSessionUi;
 use crate::window::{PointerKind, State};
 use reel_engine::{
-    Epoch, Session, SessionId, SessionLimits,
+    Epoch, Session, SessionId,
     aside::{VmLimits, source::CompiledStory},
 };
 use reel_render::gpu::GpuError;
@@ -44,7 +44,7 @@ impl StoryWindowOptions {
 /// Run a prepared story using the production window and presented-input path.
 /// On close, VM task and root retirement finishes before the native window exits.
 pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<(), Error> {
-    let session = Session::new(SessionId(1), Epoch(1), SessionLimits::default())?;
+    let session = Session::new(SessionId(1), Epoch(1))?;
     let driver =
         AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?;
     run_mode(Mode::Story(Box::new((driver, options))))

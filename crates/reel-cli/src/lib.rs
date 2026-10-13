@@ -4,7 +4,7 @@ use aside_vm::bytecode as bc;
 use reel_engine::aside::source::{self, CompiledStory, SourceCompilation, SourceError};
 use serde_json::{Value, json};
 mod input;
-pub use input::{InputError, MAX_SOURCE_BYTES, read_source};
+pub use input::{InputError, read_source};
 mod artifact;
 pub mod output;
 pub use artifact::{Artifact, build, package_limits_json};

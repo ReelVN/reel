@@ -24,8 +24,10 @@ static CHECKS: AtomicUsize = AtomicUsize::new(0);
 static BAD_ORDER: AtomicUsize = AtomicUsize::new(0);
 static PCM_FREES: AtomicUsize = AtomicUsize::new(0);
 static BAD_THREAD: AtomicUsize = AtomicUsize::new(0);
-const PCM_BYTES: usize = MAX_DECODED_FRAMES * 8;
-const CHARGE: u64 = (MAX_DECODED_FRAMES as u64) * 16;
+// Cross the former per-sound ceiling while checking the same complete ownership path.
+const PCM_FRAMES: usize = 8_388_608 + 1;
+const PCM_BYTES: usize = PCM_FRAMES * 8;
+const CHARGE: u64 = (PCM_FRAMES as u64) * 16;
 // StaticSoundData uses Arc<[Frame]>: its exact allocation includes two counters.
 const PCM_LAYOUT: usize = PCM_BYTES + 2 * size_of::<usize>();
 thread_local! {
@@ -139,7 +141,7 @@ fn main() {
     );
     let sound = DecodedSound::new(
         48_000,
-        vec![[0.25, -0.25]; MAX_DECODED_FRAMES],
+        vec![[0.25, -0.25]; PCM_FRAMES],
         pool.reserve(CHARGE).unwrap(),
     )
     .unwrap()

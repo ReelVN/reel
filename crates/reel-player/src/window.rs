@@ -144,42 +144,10 @@ impl State {
         let pool = BudgetPool::new(
             BudgetCategory::CpuOutput,
             QueueLimits {
-                max_requests: 64,
+                max_requests: u32::MAX,
                 max_bytes: 64 << 20,
             },
         );
-        let mut registry =
-            ResourceRegistry::new(2, 64 << 10).map_err(|e| format!("registry: {e:?}"))?;
-        let version = |name: &str, bytes: &[u8]| ResourceVersion {
-            key: AssetKey(name.into()),
-            version: ContentVersion(*blake3::hash(bytes).as_bytes()),
-        };
-        let pixels = vec![
-            255, 255, 255, 255, 255, 100, 0, 255, 20, 100, 255, 255, 255, 255, 255, 255,
-        ];
-        let bytes = OwnedBytes::new(
-            pixels,
-            pool.reserve(16)
-                .map_err(|e| format!("image quota: {e:?}"))?,
-        )
-        .map_err(|e| format!("pixels: {e:?}"))?;
-        let image_handle = registry
-            .register_image(
-                version("diagnostic/checker-v1", bytes.as_slice()),
-                bytes,
-                [2, 2],
-                reel_ui::peniko::ImageFormat::Rgba8,
-                reel_ui::peniko::ImageAlphaType::Alpha,
-                reel_ui::resources::ColorEncoding::Srgb,
-            )
-            .map_err(|e| format!("image: {e:?}"))?;
-        let lease = registry
-            .acquire(image_handle)
-            .map_err(|e| format!("image lease: {e:?}"))?;
-        let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
-            unreachable!()
-        };
-        let mut resources = vec![image_handle];
         let font_path = if let Some(options) = &options {
             Some(options.font.clone().into_os_string())
         } else if session.is_some() {
@@ -187,6 +155,45 @@ impl State {
                 .ok_or("set REEL_SESSION_FONT to a TTF/OTF file for the Rust session host diagnostic")?)
         } else {
             std::env::var_os("REEL_DIAGNOSTIC_FONT")
+        };
+        let prepared_resources = u32::from(session.is_none()) + u32::from(font_path.is_some());
+        let mut registry = ResourceRegistry::new(prepared_resources, 64 << 10)
+            .map_err(|e| format!("registry: {e:?}"))?;
+        let mut resources = Vec::new();
+        let version = |name: &str, bytes: &[u8]| ResourceVersion {
+            key: AssetKey(name.into()),
+            version: ContentVersion(*blake3::hash(bytes).as_bytes()),
+        };
+        let image = if session.is_none() {
+            let pixels = vec![
+                255, 255, 255, 255, 255, 100, 0, 255, 20, 100, 255, 255, 255, 255, 255, 255,
+            ];
+            let bytes = OwnedBytes::new(
+                pixels,
+                pool.reserve(16)
+                    .map_err(|e| format!("image quota: {e:?}"))?,
+            )
+            .map_err(|e| format!("pixels: {e:?}"))?;
+            let image_handle = registry
+                .register_image(
+                    version("diagnostic/checker-v1", bytes.as_slice()),
+                    bytes,
+                    [2, 2],
+                    reel_ui::peniko::ImageFormat::Rgba8,
+                    reel_ui::peniko::ImageAlphaType::Alpha,
+                    reel_ui::resources::ColorEncoding::Srgb,
+                )
+                .map_err(|e| format!("image: {e:?}"))?;
+            let lease = registry
+                .acquire(image_handle)
+                .map_err(|e| format!("image lease: {e:?}"))?;
+            let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
+                unreachable!()
+            };
+            resources.push(image_handle);
+            Some(image.clone())
+        } else {
+            None
         };
         let font = if let Some(path) = font_path {
             let mut file = std::fs::File::open(path)?;
@@ -218,7 +225,7 @@ impl State {
         let widget = if let Some(session) = &session {
             session.ui().widget().prepare().erased()
         } else {
-            Diagnostic::new(image.clone(), font.is_some())
+            Diagnostic::new(image.expect("diagnostic image prepared"), font.is_some())
                 .prepare()
                 .erased()
         };
@@ -239,11 +246,7 @@ impl State {
             root,
             SurfaceEpoch(1),
             BridgeLimits {
-                geometry: reel_ui::app::GeometryLimits {
-                    max_nodes: 1024,
-                    max_bytes: 2 << 20,
-                    max_path: 64,
-                },
+                geometry: reel_ui::app::GeometryLimits { max_bytes: 2 << 20 },
                 max_candidates: 4,
                 max_bridge_bytes: 64 << 10,
                 max_snapshot_bytes: 16 << 20,
@@ -426,7 +429,6 @@ impl State {
                 error @ (GpuError::Budget { .. }
                 | GpuError::Unsupported { .. }
                 | GpuError::Geometry { .. }
-                | GpuError::DepthLimit { .. }
                 | GpuError::InvalidRecord { .. }),
             ) => {
                 eprintln!("frame refused; keeping last accepted view: {error}");
@@ -509,26 +511,23 @@ impl State {
                 ],
                 physical_size: [self.size.width, self.size.height],
             },
-            BuildLimits {
-                max_fragments: 1024,
-                max_commands: 4096,
-                max_masks: 64,
-                max_depth: 32,
-                max_bytes: 8 << 20,
-                max_total_units: 4_000_000,
-            },
+            BuildLimits { max_bytes: 8 << 20 },
             &self.pool,
         )
         .map_err(|e| format!("build: {e:?}"))?;
-        while !build
-            .step(StepBudget {
-                max_commands: 64,
-                max_units: 8192,
-                max_bytes: 64 << 10,
-            })
-            .map_err(|e| format!("compile: {e:?}"))?
-            .complete
-        {}
+        let mut budget = StepBudget {
+            max_commands: 64,
+            max_units: 8192,
+            max_bytes: 64 << 10,
+        };
+        loop {
+            let progress = build.step(budget).map_err(|e| format!("compile: {e:?}"))?;
+            if progress.complete {
+                break;
+            }
+            budget.max_units = budget.max_units.max(progress.minimum_units);
+            budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+        }
         Ok(build.finish().map_err(|e| format!("finish: {e:?}"))?)
     }
     pub(crate) fn recover_device(&mut self) -> Result<(), Error> {
@@ -933,7 +932,7 @@ mod tests {
                 ..Default::default()
             },
             GpuLimits {
-                max_depth: 1,
+                resource_bytes: 1,
                 ..Default::default()
             },
         ] {

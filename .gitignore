@@ -9,4 +9,3 @@ target/
 /crates/aside-vm/LOAD-RESULTS.txt
 /crates/aside-vm/ROOT-RANGES-BASELINE.txt
 /crates/aside-vm/ROOT-RANGES-RESULTS.txt
-/tools/quirrel-compat/results/

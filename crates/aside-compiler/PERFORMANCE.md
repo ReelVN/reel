@@ -3,7 +3,7 @@
 Historical observations below describe their original revisions. Raw evidence links
 point to the pre-cleanup Git revision; new generated output belongs under
 `target/reel-artifacts/`. Current maintenance commands are documented in
-[`tools/reel-dev`](../../tools/reel-dev/README.md).
+[`crates/reel-dev`](../reel-dev/README.md).
 
 Measured 2026-10-08 on Linux 6.18.44 x86_64, AMD EPYC 9V74, KVM (5 exposed CPUs),
 Rust 1.96.0 `ac68faa20`, release defaults. One synchronous source call per sample;
@@ -162,7 +162,7 @@ Trials borrow source/tokens and suppress tree emission and diagnostics. All
 trials, including nested defaults, share at most `16 * admitted_tokens` token
 advances. Completed grammar decisions are cached by significant token offset
 and pipe context; storage is bounded by twice the admitted token count.
-Recursion inherits caller depth and uses the same maximum 128 depth budget.
+Recursion inherits the caller's configured depth budget (128 by default).
 Resource exhaustion returns ASR001 at the real candidate without consuming
 caller input. A forced one-token unit test verifies this boundary, unchanged
 cursor/tree/flags, lossless tail and no failed-diagnostic leakage. Cache hits

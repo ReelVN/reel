@@ -402,7 +402,6 @@ fn unsupported_nodes_report_original_range() {
     for (source, node_text) in [
         ("fn f() { [1,...[]] }", "...[]"),
         ("fn f() { let (a,b)=(1,2); }", "(a,b)"),
-        ("fn f() { f\"value {1}\" }", "f\"value {1}\""),
     ] {
         let module = analyzed(source);
         let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
@@ -1327,24 +1326,22 @@ fn qualified_native_import_retains_namespace_and_registration_identity() {
 }
 
 #[test]
-fn output_string_admission_happens_before_source_copy() {
-    let source = "fn f(){\"a long string\"}";
-    let module = analyzed(source);
-    let error = lowering::lower(
+fn source_and_constants_use_the_package_budget() {
+    let source = format!("fn f(){{\"{}\"}}", "x".repeat(1024 * 1024 + 1));
+    let module = analyzed(&source);
+    let limits = bc::Limits::default();
+    let compiled = lowering::compile(
         &module,
         &Linkage::default(),
         Options {
-            bytecode_limits: bc::Limits {
-                max_string_bytes: 8,
-                ..Default::default()
-            },
+            bytecode_limits: limits,
             ..Default::default()
         },
     )
-    .unwrap_err();
-    assert_eq!(error.kind, lowering::ErrorKind::Limit);
-    assert_eq!(error.stats.capacity_bytes, 0);
-    assert_eq!(error.span, module.hir().node(hir::NodeId(0)).span);
+    .unwrap();
+    let bytes = bc::encode(compiled.program.package(), limits).unwrap();
+    let decoded = bc::VerifiedProgram::decode(&bytes, limits).unwrap();
+    assert_eq!(decoded.package().sources[0].text, source);
 }
 
 /// Definite initialization of temporary registers over the actual shared CFG.

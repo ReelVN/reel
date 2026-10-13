@@ -1,6 +1,6 @@
-// Source: third_party/quirrel/testData/exec/optimizer_mul.nut
-// Upstream: 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: third_party/quirrel/COPYRIGHT
-// Reviewed syntax conversion. Aside execution: waiting_runtime.
+// Source: original/testData/exec/optimizer_mul.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed Aside syntax conversion; parse and analysis fixture.
 let x = 0x100_0000;
 let y = 0x100;
 assert(x * y == 0x1_0000_0000);

@@ -1,0 +1,27 @@
+// Source: original/testData/exec/valid_syntax/variables.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let mut x = 10;
+let mut y = null;
+assert(x == 10);
+assert(y == null);
+let mut a = 1; let mut b = 2; let mut c = 3;
+assert(a == 1); assert(b == 2); assert(c == 3);
+let lx = 42; let ly = "hello";
+assert(lx == 42); assert(ly == "hello");
+let arr = [1, 2, 3]; arr[0] = 99;
+assert(arr[0] == 99);
+let tbl = {a: 1}; tbl.a = 2;
+assert(tbl.a == 2);
+{ let mut inner = 100; assert(inner == 100); }
+for i in 0..3 { assert(i >= 0); }
+let mut m1 = 1; let mut m2 = 2; m1 = 10; m2 = 20;
+assert(m1 == 10); assert(m2 == 20);
+let mut va = 5; let mut vb = va + 1;
+assert(vb == 6);
+let mut uninit = null;
+assert(uninit == null);
+let mut outer = "outer";
+{ let mut inner2 = "inner"; assert(inner2 == "inner"); assert(outer == "outer"); }
+assert(outer == "outer");
+print("variables: OK\n");

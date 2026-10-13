@@ -1,6 +1,6 @@
-// Source: third_party/quirrel/testData/exec/locals_chain.nut
-// Upstream: 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: third_party/quirrel/COPYRIGHT
-// Reviewed syntax conversion. Aside execution: waiting_runtime.
+// Source: original/testData/exec/locals_chain.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed Aside syntax conversion; parse and analysis fixture.
 let mut a=5; let mut b=a; let mut c=a; let mut d=b;
 println(f"{a}, {b}, {c}, {d}");
 

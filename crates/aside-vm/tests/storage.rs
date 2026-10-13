@@ -606,10 +606,8 @@ fn input_caps_and_failed_mutations_leave_content_unchanged() {
         h.alloc_tuple(&[Value::NULL; 3]),
         Err(HeapError::OperationLimit { .. })
     ));
-    assert!(matches!(
-        h.alloc_string("12345"),
-        Err(HeapError::OperationLimit { .. })
-    ));
+    let long = h.alloc_string("12345").unwrap();
+    assert_eq!(h.info(long).unwrap().len, 5);
     let text = h.alloc_text_buffer("é").unwrap();
     let before = h.info(text).unwrap().content_version;
     assert!(matches!(

@@ -1671,54 +1671,11 @@ impl Binder<'_> {
                 result
             }
             H::Prefix => self.prefix(n, &children, ctx),
-            H::Binary | H::Range => self.binary(n, &children, ctx),
+            H::Binary | H::Range | H::Member | H::Index | H::Call => self.chain(n, ctx),
             H::Assignment => {
                 self.assignment(n, ctx);
                 NULL
             }
-            H::Member => self.member(n, &children, ctx),
-            H::Index => {
-                let object = children.first().map_or(ANY, |&c| self.visit(c, ctx));
-                let mut index_ctx = ctx.clone();
-                let optional = matches!(
-                    self.out.hir.node(n).form,
-                    Form::Index { optional: true, .. } | Form::Index { chain: true, .. }
-                );
-                index_ctx.conditional |= optional && !self.definitely_nonnull(object);
-                let index = children.get(1).map_or(ANY, |&c| self.visit(c, &index_ctx));
-                if optional && object == NULL {
-                    return self.set_ty(n, NULL);
-                }
-                match self.out.types[object.0 as usize].clone() {
-                    Type::Tuple(ts) => {
-                        if let Some(&c) = children.get(1) {
-                            self.require(c, index, INT, "tuple index");
-                        }
-                        ts.into_iter()
-                            .reduce(|a, b| if a == b { a } else { ANY })
-                            .unwrap_or(ANY)
-                    }
-                    Type::Array => {
-                        if let Some(&c) = children.get(1) {
-                            self.require(c, index, INT, "array index");
-                        }
-                        ANY
-                    }
-                    Type::String => {
-                        self.error(
-                            D::TypeMismatch,
-                            self.span(n),
-                            "string has no ordinary index; use an explicit text view",
-                        );
-                        ANY
-                    }
-                    _ => {
-                        self.check(n, RuntimeChecks::TYPE);
-                        ANY
-                    }
-                }
-            }
-            H::Call => self.call(n, &children, ctx),
             H::Children => {
                 let mut c = ctx.clone();
                 c.no_wait = true;
@@ -1775,6 +1732,83 @@ impl Binder<'_> {
             }
         };
         self.set_ty(n, ty)
+    }
+    fn chain(&mut self, root: NodeId, ctx: &Context) -> TypeId {
+        let mut chain = Vec::new();
+        let mut node = root;
+        loop {
+            let receiver = match self.out.hir.node(node).form {
+                Form::Binary { left, .. }
+                    if matches!(self.kind(node), HirKind::Binary | HirKind::Range) =>
+                {
+                    left
+                }
+                Form::Member { object, .. } | Form::Index { object, .. } => object,
+                Form::Call { callee, .. } => callee,
+                _ => break,
+            };
+            if node != root {
+                if !self.budget(node) {
+                    return ANY;
+                }
+                self.out.facts[node.0 as usize].scope = Some(self.scope);
+            }
+            chain.push(node);
+            node = receiver;
+        }
+        let mut ty = self.visit(node, ctx);
+        for node in chain.into_iter().rev() {
+            let children = self.children(node);
+            ty = match self.kind(node) {
+                HirKind::Binary | HirKind::Range => self.binary(node, &children, ty, ctx),
+                HirKind::Member => self.member(node, &children, ty),
+                HirKind::Index => self.index(node, &children, ty, ctx),
+                HirKind::Call => self.call(node, ty, ctx),
+                _ => unreachable!(),
+            };
+            self.set_ty(node, ty);
+        }
+        ty
+    }
+    fn index(&mut self, n: NodeId, children: &[NodeId], object: TypeId, ctx: &Context) -> TypeId {
+        let mut index_ctx = ctx.clone();
+        let optional = matches!(
+            self.out.hir.node(n).form,
+            Form::Index { optional: true, .. } | Form::Index { chain: true, .. }
+        );
+        index_ctx.conditional |= optional && !self.definitely_nonnull(object);
+        let index = children.get(1).map_or(ANY, |&c| self.visit(c, &index_ctx));
+        if optional && object == NULL {
+            return self.set_ty(n, NULL);
+        }
+        match self.out.types[object.0 as usize].clone() {
+            Type::Tuple(ts) => {
+                if let Some(&c) = children.get(1) {
+                    self.require(c, index, INT, "tuple index");
+                }
+                ts.into_iter()
+                    .reduce(|a, b| if a == b { a } else { ANY })
+                    .unwrap_or(ANY)
+            }
+            Type::Array => {
+                if let Some(&c) = children.get(1) {
+                    self.require(c, index, INT, "array index");
+                }
+                ANY
+            }
+            Type::String => {
+                self.error(
+                    D::TypeMismatch,
+                    self.span(n),
+                    "string has no ordinary index; use an explicit text view",
+                );
+                ANY
+            }
+            _ => {
+                self.check(n, RuntimeChecks::TYPE);
+                ANY
+            }
+        }
     }
     fn literal(&self, n: NodeId) -> TypeId {
         for token in self.tokens(n) {
@@ -1857,8 +1891,7 @@ impl Binder<'_> {
             _ => ANY,
         }
     }
-    fn binary(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
-        let a = children.first().map_or(ANY, |&c| self.visit(c, ctx));
+    fn binary(&mut self, n: NodeId, children: &[NodeId], a: TypeId, ctx: &Context) -> TypeId {
         let op = self.tokens(n).first().map(|t| t.kind);
         let mut right_ctx = ctx.clone();
         right_ctx.conditional |= match op {
@@ -2036,8 +2069,7 @@ impl Binder<'_> {
             ),
         }
     }
-    fn member(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
-        let object = children.first().map_or(ANY, |&c| self.visit(c, ctx));
+    fn member(&mut self, n: NodeId, children: &[NodeId], object: TypeId) -> TypeId {
         let key = self
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
@@ -2101,7 +2133,7 @@ impl Binder<'_> {
         name: NameId,
         static_member: bool,
     ) -> Option<NodeId> {
-        for _ in 0..self.options.limits.max_depth.clamp(1, 128) {
+        for _ in 0..self.options.limits.max_depth.max(1) {
             if let Some(&node) = self
                 .class_members
                 .get(&class)
@@ -2113,7 +2145,7 @@ impl Binder<'_> {
         }
         None
     }
-    fn call(&mut self, n: NodeId, _children: &[NodeId], ctx: &Context) -> TypeId {
+    fn call(&mut self, n: NodeId, ty: TypeId, ctx: &Context) -> TypeId {
         let Form::Call {
             callee: target,
             arguments,
@@ -2124,8 +2156,6 @@ impl Binder<'_> {
         else {
             return ANY;
         };
-        let callee = Some(target);
-        let ty = callee.map_or(ANY, |c| self.visit(c, ctx));
         let descriptor = self.external_nodes.get(&target).cloned();
         if let Some(Intrinsic::Derive) = descriptor.as_ref().and_then(|d| d.intrinsic)
             && let Some(args) = arguments
@@ -2223,7 +2253,7 @@ impl Binder<'_> {
             Type::Function(f) | Type::BoundMethod(f) => Some(f),
             _ => constructor,
         };
-        let external = callee.and_then(|c| self.external_nodes.get(&c)).cloned();
+        let external = self.external_nodes.get(&target).cloned();
         let effect = external
             .as_ref()
             .and_then(|e| e.signature.as_ref())

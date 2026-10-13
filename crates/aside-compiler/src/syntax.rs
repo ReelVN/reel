@@ -1,5 +1,5 @@
 //! Leaf and node kinds shared by every frontend entry point.
-use rowan::Language;
+use aside_syntax::Language;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
@@ -187,15 +187,15 @@ impl SyntaxKind {
                 | Self::ShrEq
         )
     }
-    pub(crate) fn raw(self) -> rowan::SyntaxKind {
-        rowan::SyntaxKind(self as u16)
+    pub(crate) fn raw(self) -> aside_syntax::SyntaxKind {
+        aside_syntax::SyntaxKind(self as u16)
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AsideLanguage {}
 impl Language for AsideLanguage {
     type Kind = SyntaxKind;
-    fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
+    fn kind_from_raw(raw: aside_syntax::SyntaxKind) -> Self::Kind {
         const KINDS: &[SyntaxKind] = &[
             SyntaxKind::Eof,
             SyntaxKind::ErrorToken,
@@ -362,10 +362,10 @@ impl Language for AsideLanguage {
             .copied()
             .unwrap_or(SyntaxKind::Error)
     }
-    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
+    fn kind_to_raw(kind: Self::Kind) -> aside_syntax::SyntaxKind {
         kind.raw()
     }
 }
-pub type SyntaxNode = rowan::SyntaxNode<AsideLanguage>;
-pub type SyntaxToken = rowan::SyntaxToken<AsideLanguage>;
-pub type SyntaxElement = rowan::SyntaxElement<AsideLanguage>;
+pub type SyntaxNode = aside_syntax::SyntaxNode<AsideLanguage>;
+pub type SyntaxToken = aside_syntax::SyntaxToken<AsideLanguage>;
+pub type SyntaxElement = aside_syntax::SyntaxElement<AsideLanguage>;

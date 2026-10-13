@@ -7,8 +7,8 @@
 
 use crate::core::{DefaultProperties, PropertyStack, Selector, StyleProperty, StyleSet};
 use crate::layout::{AsUnit, Length};
-use crate::parley::{GenericFamily, LineHeight};
 use crate::peniko::Color;
+use crate::reel_text::{GenericFamily, LineHeight};
 
 // We use glob imports here to avoid frequent merge conflicts.
 use crate::properties::*;

@@ -1,3 +1,6 @@
+// Copyright 2026 Reel contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Author-owned scene composition, shared by the script host and presentation.
 use std::collections::{BTreeMap, BTreeSet};
 

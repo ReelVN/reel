@@ -1,7 +1,5 @@
 {
   "source": "testData/exec/for_loop_at_function_start.nut",
-  "source_sha256": "7aa24a2018d7a3c0485284f7ae923df0c5dcc24b1639a2c678a209eef75bd9dc",
-  "aside_sha256": "ea02ac1541e6d83a2022de13880c564f2e41a3a439095c73ed25293114182f5f",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        235
+        208
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         227
       ],
       "aside": [
-        235,
-        462
+        208,
+        435
       ],
       "kind": "copied"
     },
@@ -33,8 +31,8 @@
         250
       ],
       "aside": [
-        462,
-        479
+        435,
+        452
       ],
       "kind": "reviewed_edit",
       "reason": "named function declaration"
@@ -45,8 +43,8 @@
         251
       ],
       "aside": [
-        479,
-        480
+        452,
+        453
       ],
       "kind": "copied"
     },
@@ -56,8 +54,8 @@
         264
       ],
       "aside": [
-        480,
-        491
+        453,
+        464
       ],
       "kind": "reviewed_edit",
       "reason": "no initializer or update; b is bool in both calls"
@@ -68,8 +66,8 @@
         265
       ],
       "aside": [
-        491,
-        492
+        464,
+        465
       ],
       "kind": "copied"
     },
@@ -79,8 +77,8 @@
         277
       ],
       "aside": [
-        492,
-        509
+        465,
+        482
       ],
       "kind": "reviewed_edit",
       "reason": "brace the formerly single return body"
@@ -91,8 +89,8 @@
         278
       ],
       "aside": [
-        509,
-        510
+        482,
+        483
       ],
       "kind": "copied"
     },
@@ -102,8 +100,8 @@
         288
       ],
       "aside": [
-        510,
-        521
+        483,
+        494
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -114,8 +112,8 @@
         291
       ],
       "aside": [
-        521,
-        524
+        494,
+        497
       ],
       "kind": "copied"
     },
@@ -125,8 +123,8 @@
         316
       ],
       "aside": [
-        524,
-        550
+        497,
+        523
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -137,8 +135,8 @@
         317
       ],
       "aside": [
-        550,
-        551
+        523,
+        524
       ],
       "kind": "copied"
     },
@@ -148,8 +146,8 @@
         341
       ],
       "aside": [
-        551,
-        576
+        524,
+        549
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -160,8 +158,8 @@
         343
       ],
       "aside": [
-        576,
-        578
+        549,
+        551
       ],
       "kind": "copied"
     },
@@ -171,8 +169,8 @@
         354
       ],
       "aside": [
-        578,
-        592
+        551,
+        565
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -183,8 +181,8 @@
         355
       ],
       "aside": [
-        592,
-        593
+        565,
+        566
       ],
       "kind": "copied"
     },
@@ -194,8 +192,8 @@
         381
       ],
       "aside": [
-        593,
-        613
+        566,
+        586
       ],
       "kind": "reviewed_edit",
       "reason": "named function declaration"
@@ -206,8 +204,8 @@
         382
       ],
       "aside": [
-        613,
-        614
+        586,
+        587
       ],
       "kind": "copied"
     },
@@ -217,8 +215,8 @@
         398
       ],
       "aside": [
-        614,
-        622
+        587,
+        595
       ],
       "kind": "reviewed_edit",
       "reason": "infinite loop with update placed at end; no continue path in this fixture"
@@ -229,8 +227,8 @@
         399
       ],
       "aside": [
-        622,
-        623
+        595,
+        596
       ],
       "kind": "copied"
     },
@@ -240,8 +238,8 @@
         414
       ],
       "aside": [
-        623,
-        638
+        596,
+        611
       ],
       "kind": "reviewed_edit",
       "reason": "brace the single return branch"
@@ -252,8 +250,8 @@
         415
       ],
       "aside": [
-        638,
-        639
+        611,
+        612
       ],
       "kind": "copied"
     },
@@ -263,8 +261,8 @@
         429
       ],
       "aside": [
-        639,
-        660
+        612,
+        633
       ],
       "kind": "reviewed_edit",
       "reason": "return exits before increment as in original"
@@ -275,8 +273,8 @@
         430
       ],
       "aside": [
-        660,
-        661
+        633,
+        634
       ],
       "kind": "copied"
     },
@@ -286,8 +284,8 @@
         454
       ],
       "aside": [
-        661,
-        686
+        634,
+        659
       ],
       "kind": "reviewed_edit",
       "reason": "interpolation prefix; expressions unchanged; terminate this complete reviewed statement with a semicolon"
@@ -298,8 +296,8 @@
         455
       ],
       "aside": [
-        686,
-        687
+        659,
+        660
       ],
       "kind": "copied"
     },
@@ -309,8 +307,8 @@
         458
       ],
       "aside": [
-        687,
-        702
+        660,
+        675
       ],
       "kind": "reviewed_edit",
       "reason": "original for update executes exactly once after body on every non-return path"
@@ -321,8 +319,8 @@
         461
       ],
       "aside": [
-        702,
-        705
+        675,
+        678
       ],
       "kind": "copied"
     },
@@ -332,8 +330,8 @@
         485
       ],
       "aside": [
-        705,
-        730
+        678,
+        703
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -344,8 +342,8 @@
         486
       ],
       "aside": [
-        730,
-        731
+        703,
+        704
       ],
       "kind": "copied"
     }

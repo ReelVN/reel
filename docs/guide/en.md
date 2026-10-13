@@ -60,6 +60,19 @@ With window enabled, source and built packages use the real window, text layout 
 
 Each invocation currently handles one author source module. The host default-argument module inside a package does not establish support for projects with multiple source modules. game.toml, .rpk asset packages and release.json remain future capabilities.
 
+Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
+
+Left-associated operations and member or call chains compile in source order without consuming nesting allowance for each link. Actual nesting through parentheses, blocks and subexpressions uses the host's configured compiler resource budget.
+
+### Available Ranges, Collections and Interpolation
+Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
+```aside
+let values = [];
+for value in 1..=3 { values.append(value); }
+let latest = values.pop();
+text(f"剩余 {values.len()} 项，最后一项 {latest}");
+```
+
 ## 2 Describing the Whole Scene in Code
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
 
@@ -68,6 +81,8 @@ Component calls with a trailing children block may omit the ending semicolon whe
 Implemented: text, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. Rotation, scaling, a dedicated scroll container and image resources remain future creator capabilities.
+
+Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on image and game:: modules that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside
 use reel::prelude::*;
@@ -106,6 +121,8 @@ Keeping a reference to any node also keeps its unmounted parent component alive;
 ## 3 Story Code Is Ordinary Sequential Code
 
 narrator and choose currently support sequential waiting and resumption. The character API, bindable dialogue model, custom dialogue views and voice interfaces below remain design targets.
+
+Dialogue lines, choices, interaction text and session history grow with the content. History preserves the whole session; reaching a display cache capacity does not interrupt the story or discard earlier records. Actual allocation failure is reported.
 
 Define each character once in a module. Each line of dialogue calls the speaker object; narration calls narrator. A standalone string is still just a string. A character call updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
 ```aside
@@ -462,6 +479,8 @@ The host advances dialogue and selects the first option through actual compilati
 
 Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Character APIs, image nodes, animation, event bindings, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
 Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
+
+The current Rust audio layer accounts actual PCM memory without an additional per-sound frame or duration ceiling. Host-selected queue and sound capacities are no longer clamped by a second set of fixed numbers. Creator audio interfaces remain unconnected.
 
 Audio retirement progress (PR #56, independently accepted for the limited Rust scope):
 requests use a registered AudioOwner. Closing admission starts bounded cancellation;

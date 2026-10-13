@@ -15,7 +15,7 @@ use crate::tree_arena::{ArenaMut, ArenaMutList, ArenaRefList};
 use accesskit::{NodeId, TreeUpdate};
 use anymore::AnyDebug;
 use dpi::{LogicalPosition, PhysicalPosition};
-use parley::{FontContext, LayoutContext};
+use reel_text::{FontContext, LayoutContext};
 use tracing::{trace, warn};
 
 use crate::app::{MutateCallback, RenderRootSignal, RenderRootState};

@@ -24,11 +24,11 @@ impl FunctionBuilder<'_, '_> {
         &mut self,
         mut n: h::NodeId,
         mut depth: usize,
-    ) -> Result<Option<PreparedLocation>, Error> {
+    ) -> Result<Option<PreparedLocation>, Box<Error>> {
         loop {
             self.l.b.span = self.span(n);
             self.l.b.work(1)?;
-            if depth >= self.l.b.limits.max_depth.min(128) {
+            if depth >= self.l.b.limits.max_depth {
                 return Err(self
                     .l
                     .b
@@ -113,7 +113,7 @@ impl FunctionBuilder<'_, '_> {
             }
         }
     }
-    fn read_location(&mut self, location: PreparedLocation) -> Result<bc::Reg, Error> {
+    fn read_location(&mut self, location: PreparedLocation) -> Result<bc::Reg, Box<Error>> {
         match location {
             PreparedLocation::Name { symbol, node } => {
                 self.l.b.span = self.span(node);
@@ -138,7 +138,11 @@ impl FunctionBuilder<'_, '_> {
             }
         }
     }
-    fn write_location(&mut self, location: PreparedLocation, value: bc::Reg) -> Result<(), Error> {
+    fn write_location(
+        &mut self,
+        location: PreparedLocation,
+        value: bc::Reg,
+    ) -> Result<(), Box<Error>> {
         match location {
             PreparedLocation::Name { symbol, node } => {
                 self.l.b.span = self.span(node);
@@ -154,7 +158,7 @@ impl FunctionBuilder<'_, '_> {
             } => self.op(bc::Opcode::MemberSet, object.0, value.0, symbol.0, node),
         }
     }
-    fn release_location(&mut self, location: PreparedLocation) -> Result<(), Error> {
+    fn release_location(&mut self, location: PreparedLocation) -> Result<(), Box<Error>> {
         match location {
             PreparedLocation::Index { object, key, node } => {
                 self.l.b.span = self.span(node);
@@ -169,7 +173,7 @@ impl FunctionBuilder<'_, '_> {
         }
         Ok(())
     }
-    fn release_locations(&mut self, locations: Vec<PreparedLocation>) -> Result<(), Error> {
+    fn release_locations(&mut self, locations: Vec<PreparedLocation>) -> Result<(), Box<Error>> {
         self.l.b.work(locations.len() as u64)?;
         for &location in &locations {
             self.release_location(location)?;
@@ -177,19 +181,7 @@ impl FunctionBuilder<'_, '_> {
         self.l.b.release(locations);
         Ok(())
     }
-    pub(super) fn position_value(
-        &mut self,
-        n: h::NodeId,
-        depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
-        let Some(location) = self.prepare_location(n, depth)? else {
-            return Ok(None);
-        };
-        let out = self.read_location(location)?;
-        self.release_location(location)?;
-        Ok(Some(out))
-    }
-    pub(super) fn assignment(&mut self, n: h::NodeId, depth: usize) -> Result<(), Error> {
+    pub(super) fn assignment(&mut self, n: h::NodeId, depth: usize) -> Result<(), Box<Error>> {
         let mut targets = Vec::new();
         let mut current = n;
         let (rhs, compound) = loop {

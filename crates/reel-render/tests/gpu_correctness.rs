@@ -8,13 +8,13 @@ mod r01_fixture;
 use r01_fixture::*;
 use reel_core::identity::FrameId;
 use reel_render::gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer};
-use reel_ui::frame::{FrameOp, RenderFrame};
+use reel_ui::frame::{FrameBuild, FrameInfo, FrameOp, RenderFrame, StepBudget};
 use reel_ui::{
     imaging::{
         Composite, MaskMode,
         record::{AppliedMask, Clip, Draw, Geometry, Group, Mask, Scene},
     },
-    kurbo::{Affine, Join, Rect, Stroke},
+    kurbo::{Affine, BezPath, Join, Rect, Stroke},
     peniko::{Brush, Color},
 };
 
@@ -123,14 +123,37 @@ fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
     let mut renderer = renderer(limits);
     let pool = pool();
     let mut scene = Scene::new();
-    fill(&mut scene);
+    // One author path exceeds the old 1 MiB tessellation ceiling while the
+    // existing pressure checks still distinguish shared from permanent demand.
+    let mut path = BezPath::new();
+    for y in 0..64 {
+        for x in 0..128 {
+            let (x, y) = (f64::from(x) * 3., f64::from(y) * 4.);
+            path.move_to((x, y));
+            path.line_to((x + 2.9, y));
+            path.line_to((x + 2.9, y + 3.9));
+            path.line_to((x, y + 3.9));
+            path.close_path();
+        }
+    }
+    scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Solid(Color::WHITE),
+        brush_transform: None,
+        shape: Geometry::Path(path),
+        composite: Composite::default(),
+    });
     let simple = frame(scene, &pool);
     let mut held = Vec::new();
     let mut pressure = false;
     // Allow either quality fallback: even RGBA8/1x exhausts 8 MiB before 32 slots.
     for _ in 0..limits.max_inflight {
         match renderer.prepare(&simple) {
-            Ok(prepared) => held.push(prepared),
+            Ok(prepared) => {
+                assert!(renderer.usage().transient > 1 << 20);
+                held.push(prepared);
+            }
             Err(GpuError::Pressure {
                 domain: "targets", ..
             }) => {
@@ -189,44 +212,71 @@ fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
 }
 #[test]
 #[ignore = "requires actual graphics adapter"]
-fn recursive_mask_depth_reports_original_location_and_boundary() {
+fn deeply_nested_masks_use_target_budget_and_preserve_pixels() {
     let pool = pool();
     let mut scene = Scene::new();
-    let mut coverage = Scene::new();
-    let mut leaf = Scene::new();
-    fill(&mut leaf);
-    let inner = coverage.define_mask(Mask::new(MaskMode::Alpha, leaf));
-    coverage.push_group(Group {
-        mask: Some(AppliedMask::new(inner)),
-        ..Default::default()
-    });
-    fill(&mut coverage);
-    coverage.pop_group();
-    let mask = scene.define_mask(Mask::new(MaskMode::Alpha, coverage));
-    scene.push_group(Group {
-        mask: Some(AppliedMask::new(mask)),
-        ..Default::default()
-    });
     fill(&mut scene);
-    scene.pop_group();
-    let frame = frame(scene, &pool);
+    for _ in 0..96 {
+        let mut outer = Scene::new();
+        let mask = outer.define_mask(Mask::new(MaskMode::Alpha, scene));
+        outer.push_group(Group {
+            mask: Some(AppliedMask::new(mask)),
+            ..Default::default()
+        });
+        fill(&mut outer);
+        outer.pop_group();
+        scene = outer;
+    }
+    let mut widget = RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [16, 16],
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    let mut budget = StepBudget {
+        max_commands: 64,
+        max_units: 8192,
+        max_bytes: 64 << 10,
+    };
+    loop {
+        let progress = build.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
+    let frame = build.finish().unwrap();
     let low = renderer(GpuLimits {
-        max_depth: 2,
-        target_bytes: 256 << 20,
+        target_bytes: 8 << 10,
         ..Default::default()
     });
     let error = match low.prepare(&frame) {
         Err(e) => e,
-        Ok(_) => panic!("mask recursion must count root plus nested scopes"),
+        Ok(_) => panic!("nested masks must reserve actual targets"),
     };
-    assert!(matches!(error, GpuError::DepthLimit { at, limit: 2 } if at.mask_depth > 0));
+    assert!(matches!(
+        error,
+        GpuError::Budget {
+            domain: "targets",
+            ..
+        }
+    ));
     assert!(!error.is_retryable());
     assert_eq!(low.usage().targets, 0);
-    let mut exact = renderer(GpuLimits {
-        max_depth: 3,
-        target_bytes: 256 << 20,
-        ..Default::default()
-    });
+    assert_eq!(low.usage().transient, 0);
+    let mut exact = renderer(GpuLimits::default());
+    eprintln!("96 nested masks: {:?}", exact.gpu().adapter.get_info());
     let pixels = exact.readback(exact.prepare(&frame).unwrap()).unwrap();
     assert!(pixels.iter().any(|p| p[3] > 0.9));
+    assert_eq!(exact.usage().targets, 0);
+    assert_eq!(exact.usage().transient, 0);
 }

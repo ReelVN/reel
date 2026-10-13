@@ -200,7 +200,7 @@ impl StageBinding {
 }
 
 fn read_text(heap: &Heap, value: Value, read_limit: usize) -> Result<String, AdapterError> {
-    text::read_string(heap, value, usize::MAX, read_limit)
+    text::read_string(heap, value, read_limit)
 }
 
 fn number(value: Value) -> Result<f64, AdapterError> {

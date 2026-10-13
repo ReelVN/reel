@@ -17,8 +17,8 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Size};
 use crate::layout::{AsUnit, LenReq, Length};
-use crate::parley::{FontContext, Layout, LayoutAccessibility, LayoutContext};
 use crate::properties::{ContentColor, LineBreaking};
+use crate::reel_text::{FontContext, Layout, LayoutAccessibility, LayoutContext};
 use crate::theme::default_text_styles;
 use crate::{TextAlign, TextAlignOptions, theme};
 
@@ -173,7 +173,7 @@ impl Label {
     /// Creates a new label with the given text.
     ///
     // This is written out fully to appease rust-analyzer; StyleProperty is imported but not recognised.
-    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](crate::parley::StyleProperty::FontSize).
+    /// To change the font size, use `with_style`, setting [`StyleProperty::FontSize`](crate::reel_text::StyleProperty::FontSize).
     pub fn new(text: impl Into<ArcStr>) -> Self {
         let mut styles = StyleSet::new(theme::TEXT_SIZE_NORMAL);
         default_text_styles(&mut styles);
@@ -209,7 +209,7 @@ impl Label {
 
     /// Sets a style property for the new label.
     ///
-    /// Setting [`StyleProperty::Brush`](crate::parley::StyleProperty::Brush) is not supported.
+    /// Setting [`StyleProperty::Brush`](crate::reel_text::StyleProperty::Brush) is not supported.
     /// Use the [`ContentColor`] property instead.
     ///
     /// To set a style property on an active label, use [`insert_style`](Self::insert_style).
@@ -292,7 +292,7 @@ impl Label {
     // Note: These docs are lazy, but also have a decreased likelihood of going out of date.
     /// The runtime equivalent of [`with_style`](Self::with_style).
     ///
-    /// Setting [`StyleProperty::Brush`](crate::parley::StyleProperty::Brush) is not supported.
+    /// Setting [`StyleProperty::Brush`](crate::reel_text::StyleProperty::Brush) is not supported.
     /// Use the [`ContentColor`] property instead.
     pub fn insert_style(
         this: &mut WidgetMut<'_, Self>,
@@ -310,7 +310,7 @@ impl Label {
     /// Styles which are removed return to Parley's default values.
     /// In most cases, these are the defaults for this widget.
     ///
-    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::parley::StyleProperty::FontSize).
+    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::reel_text::StyleProperty::FontSize).
     pub fn retain_styles(this: &mut WidgetMut<'_, Self>, f: impl FnMut(&StyleProperty) -> bool) {
         this.widget.styles.retain(f);
 
@@ -327,7 +327,7 @@ impl Label {
     /// Styles which are removed return to Parley's default values.
     /// In most cases, these are the defaults for this widget.
     ///
-    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::parley::StyleProperty::FontSize).
+    /// Of note, behaviour is unspecified for unsetting the [`FontSize`](crate::reel_text::StyleProperty::FontSize).
     pub fn remove_style(
         this: &mut WidgetMut<'_, Self>,
         property: Discriminant<StyleProperty>,

@@ -709,10 +709,10 @@ pub fn bounded_pcm_queue(
     capacity_frames: usize,
     signal: UnderrunSignal,
 ) -> Result<(rtrb::Producer<[f32; 2]>, PcmFill), AudioError> {
-    if !(1..=96_000).contains(&capacity_frames) {
+    if capacity_frames == 0 || std::alloc::Layout::array::<[f32; 2]>(capacity_frames).is_err() {
         return Err(AudioError::new(
             AudioErrorKind::InvalidRequest,
-            "PCM queue must hold 1..=96000 frames",
+            "PCM queue requires a nonzero, representable frame capacity",
         ));
     }
     let (producer, mut consumer) = RingBuffer::<[f32; 2]>::new(capacity_frames);

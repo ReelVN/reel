@@ -1,0 +1,9 @@
+// Source: original/doc/examples/pages/language/control-flow-for.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let mut totalDamage = 0;
+for shot in 0..5 { totalDamage += 10 + shot; }
+println(f"total damage: {totalDamage}");
+{ let mut front = 0; let mut back = 4;
+  while front < back { println(f"swap {front} <-> {back}"); front += 1; back -= 1; }
+}

@@ -12,7 +12,7 @@ Use the existing module boundaries. Aside remains independent of Reel and platfo
 
 ## Dependencies
 
-Use pinned ordinary dependencies by default. Import upstream source only for a documented modification or the approved Quirrel reference/test snapshot. Preserve provenance, licenses, and a local change record. Avoid nested Git repositories and duplicate sources for the same UI types.
+Use pinned ordinary dependencies by default. Maintain required borrowed implementations in workspace crates, with provenance, licenses, and a concise local change record. Preserve the Quirrel test inputs and original oracles under compiler fixtures until their valuable behavior is migrated. Do not reintroduce third_party or duplicate runtime implementations. Avoid nested Git repositories and duplicate sources for the same UI types.
 
 ## Implementation quality
 
@@ -27,7 +27,7 @@ Use pinned ordinary dependencies by default. Import upstream source only for a d
 ## Repository hygiene
 
 - Maintain borrowed UI code in the single `crates/reel-ui` workspace package, organized by responsibility through modules. Reel owns subsequent changes; upstream synchronization, contribution, package versions and source-layout closure are not maintenance requirements. Preserve the original Apache license, necessary copyright/NOTICE and concise provenance. Keep production `unsafe_code = "forbid"` and native window/GPU dependencies outside UI.
-- First-party validation tooling belongs in Rust tests or `tools/reel-dev`. Keep unchanged upstream tools with their documented source snapshot; do not use them to hide a second first-party implementation.
+- First-party validation tooling belongs in Rust tests or `crates/reel-dev`. Keep unchanged upstream tools with their documented source snapshot; do not use them to hide a second first-party implementation.
 - Write reproducible logs, measurements, screenshots and generated reports under ignored `target/reel-artifacts/` or temporary storage. Track only source, concise contracts and necessary immutable test inputs. Update consumers and preserve assertions before retiring a fixture or validation tool.
 - Keep documentation linked to current commands; historical measurements use fixed commit links and are not current verification claims.
 

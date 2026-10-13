@@ -1,7 +1,7 @@
 # Aside frontend, semantic analysis and lowering
 
 Design 1.1 / Issue #8. One Logos scanner and one recursive descent/Pratt parser
-produce a rowan lossless tree. Includes tuple/group, object/computed keys/spread,
+produce an `aside-syntax` lossless tree. Includes tuple/group, object/computed keys/spread,
 arrays, calls/named arguments/children, closures, all defined operators,
 functions/classes/imports, patterns, control flow, exceptions and interpolation.
 L03 adds source-owned typed HIR, lexical/module binding, initialization-aware
@@ -85,14 +85,17 @@ Identifiers are checked with the pinned unicode-ident XID tables (exported
 for ASCII continuations and non-ASCII scalars, avoiding mismatched regex-table
 versions; no normalization changes the spelling.
 
-Default budgets: 8 MiB source, 1,000,000 tokens, 128 recursive/syntax levels,
-128 diagnostics. Ordinary token emission is capped exactly; one separate error-tail
+Default budgets: 1,000,000 tokens, 128 recursive/syntax levels and 128 diagnostics.
+Source length defaults to the u32 byte-offset format capacity, with no smaller
+8 MiB author limit; hosts may explicitly set a source admission budget. Ordinary token emission is capped exactly; one separate error-tail
 leaf may exceed that count to preserve unprocessed text. Source above admission limits returns `SourceTooLarge` before
 allocation. Other exhaustion marks `exhausted()`, emits `ASR001`, and preserves
-the remaining source as an error subtree. The configured depth is clamped to
-1..128 for Rust stack safety; unwind and the lossless error tail may add enclosing
-nodes after exhaustion. The parser checks tree height as well as call depth, so
-flat postfix/binary/union chains cannot bypass nesting limits. O(source + tokens)
+the remaining source as an error subtree. Recursive and structural depth default
+to 128; hosts can change these budgets without an implicit maximum clamp.
+Unwind and the lossless error tail may add enclosing nodes after exhaustion.
+Flat binary and postfix chains use iterative processing and do not consume one
+nesting level per operation. Parentheses, blocks, and nested operands retain
+their depth accounting. O(source + tokens)
 space is required by lossless ownership; exhaustion is not constant-space input
 streaming. A truncated UTF-8 byte stream must first be decoded by the caller;
 this API accepts valid `&str`, including every valid-boundary source prefix.
@@ -114,7 +117,7 @@ cargo run --locked -p reel-dev -- compiler-probe frontend named
 `ASIDE_DUMP_TREE=1` prints the actual CST in the check example. Source diagnostics
 cause exit status 1; source-admission/IO errors return failure.
 
-[tests/guide.rs](tests/guide.rs) maps all 24 scenarios to their actual module or
+[tests/guide.rs](tests/guide.rs) maps all 25 scenarios to their actual module or
 story-body contexts, extracts both live guides with line numbers, checks exact
 bilingual source equality, and parses both editions. No guide edits or fixture
 rewrites conceal discrepancies. [tests/frontend.rs](tests/frontend.rs) checks
@@ -145,16 +148,16 @@ plans. No compiler filesystem policy or VM dependency is introduced.
 
 Source checks live in `tests/semantics.rs`, `semantic_modules.rs`,
 `semantic_guides.rs`, `semantic_quirrel.rs`, and `semantic_depth.rs`.
-All 24 bilingual scenes are analyzed with actual module/story contexts, explicit
+All 25 bilingual scenes are analyzed with actual module/story contexts, explicit
 native symbols, and source enclosing bindings (including capture of story `view`).
-Accepted T01 fixture bytes/maps/license are immutable and locally hash-checked:
+Reviewed Quirrel migrations retain original assertion tokens, source maps, licenses and output:
 
 ```sh
 cargo run --locked -p reel-dev -- check
 cargo test -p aside-compiler --test semantic_quirrel -- --nocapture
 ```
 
-Those samples report parse, analysis and `execution=waiting_runtime` separately.
+`quirrel_vm.rs` executes all 24 migrated samples through B01 and the real VM, both normally and with tiny slices interleaved with GC. It checks the original stdout, while `semantic_quirrel.rs` verifies all 52 original assertion call sites. The complete original test corpus remains available for further migration.
 [SEMANTIC_PERFORMANCE.md](SEMANTIC_PERFORMANCE.md) records large-module timing,
 allocation/retained storage, named-signature scaling and bounded diagnostics.
 

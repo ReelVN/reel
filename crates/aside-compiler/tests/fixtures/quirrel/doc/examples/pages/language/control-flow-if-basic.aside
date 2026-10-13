@@ -1,0 +1,9 @@
+// Source: original/doc/examples/pages/language/control-flow-if-basic.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let hitPoints = 40;
+if hitPoints < 100 { println("damaged"); }
+if hitPoints > 0 { println("alive"); } else { println("destroyed"); }
+if hitPoints > 75 { println("condition: green"); }
+else if hitPoints > 25 { println("condition: yellow"); }
+else { println("condition: red"); }

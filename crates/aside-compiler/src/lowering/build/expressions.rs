@@ -1,7 +1,11 @@
 use super::*;
 
 impl FunctionBuilder<'_, '_> {
-    pub(super) fn value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+    pub(super) fn value(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         let collector = self.collector.take();
         let value = self.expr(n, depth)?;
         self.collector = collector;
@@ -13,10 +17,14 @@ impl FunctionBuilder<'_, '_> {
         }
         Ok(value)
     }
-    pub(super) fn expr(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+    pub(super) fn expr(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         self.l.b.span = self.span(n);
         self.l.b.work(1)?;
-        if depth >= self.l.b.limits.max_depth.min(128) {
+        if depth >= self.l.b.limits.max_depth {
             return Err(self
                 .l
                 .b
@@ -32,75 +40,14 @@ impl FunctionBuilder<'_, '_> {
                 | Form::Index { chain: true, .. }
                 | Form::Call { chain: true, .. },
             ) => self.optional_chain(n, depth - 1),
-            (H::Module | H::Block, _) => {
-                self.enter_scope(n)?;
-                let tail = match form {
-                    Form::Block { tail } => tail,
-                    _ if kind == H::Module
-                        && self.l.m.entry_context() != crate::semantic::AnalysisContext::Module =>
-                    {
-                        self.l.b.work(self.l.m.hir().elements(n).len() as u64)?;
-                        self.l.m.hir().children(n).last().filter(|&last| {
-                            matches!(
-                                self.l.m.hir().node(last).form,
-                                Form::Statement {
-                                    terminated: false,
-                                    ..
-                                }
-                            ) || matches!(self.l.m.hir().node(last).kind, H::Block | H::If)
-                        })
-                    }
-                    _ => None,
-                };
-                let mut result = None;
-                self.l.b.work(self.l.m.hir().elements(n).len() as u64)?;
-                for child in self.l.m.hir().children(n) {
-                    if self.current.is_none() {
-                        break;
-                    }
-                    if let Some(old) = result.take() {
-                        self.release(old)?;
-                    }
-                    let value = self.expr(child, depth)?;
-                    if tail == Some(child) {
-                        result = value;
-                    } else if let Some(value) = value {
-                        self.release(value)?;
-                    }
-                }
-                if self.current.is_some() && result.is_none() && kind == H::Block {
-                    result = Some(self.constant(bc::Const::Null, n)?);
-                }
-                Ok(result)
-            }
+            (H::Module | H::Block, _) => self.block_value(n, kind, form, depth),
             (
                 H::ExpressionStatement,
                 Form::Statement {
                     expression,
                     terminated,
                 },
-            ) => {
-                let value = self.expr(expression, depth)?;
-                if let (Some(collector), Some(value)) = (self.collector, value)
-                    && self.collects(expression)
-                {
-                    self.op(
-                        bc::Opcode::ChildrenPush,
-                        collector.0,
-                        value.0,
-                        0,
-                        expression,
-                    )?;
-                }
-                if terminated {
-                    if let Some(value) = value {
-                        self.release(value)?;
-                    }
-                    Ok(None)
-                } else {
-                    Ok(value)
-                }
-            }
+            ) => self.statement_value(expression, terminated, depth),
             (H::Group, Form::Single { child })
             | (
                 H::ModifiedDeclaration,
@@ -115,20 +62,7 @@ impl FunctionBuilder<'_, '_> {
                     initializer,
                     ..
                 },
-            ) => {
-                let symbol = self.pattern_symbol(pattern)?;
-                if let Some(initializer) = initializer {
-                    let value = self.value(initializer, depth)?;
-                    let Some(value) = value else {
-                        return Ok(None);
-                    };
-                    if let Some(symbol) = symbol {
-                        self.write(symbol, value, true, n)?;
-                    }
-                    self.release(value)?;
-                }
-                Ok(None)
-            }
+            ) => self.binding_value(n, pattern, initializer, depth),
             (H::Function, _) | (H::Import, _) => Ok(None),
             (H::Name, _) => {
                 let symbol = self.l.m.facts()[n.0 as usize].symbol.ok_or_else(|| {
@@ -146,84 +80,23 @@ impl FunctionBuilder<'_, '_> {
                 })?;
                 Ok(Some(self.closure(function, n)?))
             }
-            (H::Literal, Form::Literal { token }) => {
-                let constant = match token.kind {
-                    K::Null => bc::Const::Null,
-                    K::True => bc::Const::Bool(true),
-                    K::False => bc::Const::Bool(false),
-                    K::Number => self.number(self.l.m.hir().text(token.span), false)?,
-                    _ => {
-                        return Err(self
-                            .l
-                            .b
-                            .error(ErrorKind::Unsupported, "unsupported scalar literal"));
-                    }
-                };
-                Ok(Some(self.constant(constant, n)?))
-            }
-            (H::String, _) => {
-                let text = self.string(n)?;
-                Ok(Some(self.constant(bc::Const::Utf8(text), n)?))
-            }
+            (H::Literal, Form::Literal { token }) => self.literal_value(n, token),
+            (H::String, _) => self.string_value(n, depth),
             (H::Tuple | H::Array, Form::Sequence) => self.sequence(n, depth),
             (H::Object, Form::Sequence) => self.table(n, depth),
-            (H::Index | H::Member, _) => self.position_value(n, depth - 1),
+            (H::Index | H::Member, _) => self.flat_chain(n, depth),
             (H::Prefix, Form::Unary { operator, value }) => {
-                // Treat the negative int64 minimum as a single source constant.
-                if operator.kind == K::Minus
-                    && let Form::Literal { token } = self.l.m.hir().node(value).form
-                    && token.kind == K::Number
-                {
-                    let constant = self.number(self.l.m.hir().text(token.span), true)?;
-                    return Ok(Some(self.constant(constant, n)?));
-                }
-                let opcode = match operator.kind {
-                    K::Minus => bc::Opcode::Neg,
-                    K::Plus => bc::Opcode::Pos,
-                    K::Bang => bc::Opcode::Not,
-                    K::Tilde => bc::Opcode::BitNot,
-                    _ => {
-                        return Err(self.l.b.error(
-                            ErrorKind::Unsupported,
-                            "await/yield require later task lowering",
-                        ));
-                    }
-                };
-                let Some(input) = self.value(value, depth)? else {
-                    return Ok(None);
-                };
-                let out = self.temp()?;
-                self.op(opcode, out.0, input.0, 0, n)?;
-                self.release(input)?;
-                Ok(Some(out))
+                self.prefix_value(n, operator, value, depth)
             }
+            (H::Binary, _) => self.flat_chain(n, depth),
             (
-                H::Binary,
+                H::Range,
                 Form::Binary {
                     left,
                     operator,
                     right,
                 },
             ) => {
-                if operator.kind == K::Is {
-                    let Some(left) = self.value(left, depth)? else {
-                        return Ok(None);
-                    };
-                    let ty = self.l.ty(self.l.m.facts()[right.0 as usize].ty, 0)?;
-                    let out = self.temp()?;
-                    self.op(bc::Opcode::Is, out.0, left.0, ty.0, n)?;
-                    self.release(left)?;
-                    return Ok(Some(out));
-                }
-                if matches!(operator.kind, K::AndAnd | K::OrOr | K::QuestionQuestion) {
-                    return self.short_circuit(n, left, operator.kind, right, depth);
-                }
-                let opcode = binary(operator.kind).ok_or_else(|| {
-                    self.l.b.error(
-                        ErrorKind::Unsupported,
-                        "binary operator awaits later lowering",
-                    )
-                })?;
                 let Some(left) = self.value(left, depth)? else {
                     return Ok(None);
                 };
@@ -232,7 +105,17 @@ impl FunctionBuilder<'_, '_> {
                     return Ok(None);
                 };
                 let out = self.temp()?;
-                self.op(opcode, out.0, left.0, right.0, n)?;
+                self.op(
+                    if operator.kind == K::RangeInclusive {
+                        bc::Opcode::MakeRangeInclusive
+                    } else {
+                        bc::Opcode::MakeRange
+                    },
+                    out.0,
+                    left.0,
+                    right.0,
+                    n,
+                )?;
                 self.release(left)?;
                 self.release(right)?;
                 Ok(Some(out))
@@ -250,68 +133,9 @@ impl FunctionBuilder<'_, '_> {
                     otherwise,
                 },
             ) => self.condition(n, condition, body, otherwise, depth),
-            (
-                H::Call,
-                Form::Call {
-                    callee,
-                    arguments,
-                    children,
-                    optional: false,
-                    chain: false,
-                },
-            ) => {
-                let native = self.l.native(callee)?;
-                let callee_value = if native.is_none() {
-                    let Some(callee) = self.value(callee, depth)? else {
-                        return Ok(None);
-                    };
-                    Some(callee)
-                } else {
-                    None
-                };
-                let target = match (native, callee_value) {
-                    (Some(native), _) => bc::CallTarget::Native(native),
-                    (_, Some(callee)) => bc::CallTarget::Register(callee),
-                    _ => unreachable!(),
-                };
-                let out = self.call_with_target(n, arguments, children, target, depth)?;
-                if let Some(callee) = callee_value {
-                    self.release(callee)?;
-                }
-                Ok(out)
-            }
-            (H::Return, Form::Transfer { value, .. }) => {
-                if matches!(self.ir.origin, Origin::Default { .. }) {
-                    return Err(self.l.b.error(
-                        ErrorKind::InvalidIr,
-                        "explicit return crossed the analyzed parameter-default boundary",
-                    ));
-                }
-                let value = match value {
-                    Some(value) => {
-                        let Some(value) = self.value(value, depth)? else {
-                            return Ok(None);
-                        };
-                        value
-                    }
-                    None => self.constant(bc::Const::Null, n)?,
-                };
-                self.terminate(Terminator::Return(value), n)?;
-                self.release(value)?;
-                Ok(None)
-            }
-            (H::Throw, Form::Transfer { value, .. }) => {
-                if let Some(value) = value {
-                    let Some(value) = self.value(value, depth)? else {
-                        return Ok(None);
-                    };
-                    self.terminate(Terminator::Throw(value), n)?;
-                    self.release(value)?;
-                } else {
-                    self.terminate(Terminator::Rethrow, n)?;
-                }
-                Ok(None)
-            }
+            (H::Call, Form::Call { chain: false, .. }) => self.flat_chain(n, depth),
+            (H::Return, Form::Transfer { value, .. }) => self.return_value(n, value, depth),
+            (H::Throw, Form::Transfer { value, .. }) => self.throw_value(n, value, depth),
             (
                 H::Try,
                 Form::Try {
@@ -352,51 +176,279 @@ impl FunctionBuilder<'_, '_> {
                 Ok(None)
             }
             (H::Label, Form::Label { body, .. }) => self.expr(body, depth),
-            (H::Break | H::Continue, _) => {
-                let target = self.l.m.facts()[n.0 as usize]
-                    .control
-                    .as_ref()
-                    .and_then(|c| c.target)
-                    .ok_or_else(|| {
-                        self.l
-                            .b
-                            .error(ErrorKind::InvalidIr, "loop transfer lacks analyzed target")
-                    })?;
-                self.l.b.work(self.loops.len() as u64)?;
-                let target = self
-                    .loops
-                    .iter_mut()
-                    .rev()
-                    .find(|entry| entry.node == target)
-                    .ok_or_else(|| {
-                        self.l
-                            .b
-                            .error(ErrorKind::InvalidIr, "analyzed loop target not active")
-                    })?;
-                let loop_depth = target.protected_depth;
-                let target = if kind == H::Break {
-                    target.has_break = true;
-                    target.end
-                } else {
-                    target.next
-                };
-                self.terminate(
-                    if self.protected_depth > loop_depth {
-                        Terminator::Leave(target)
-                    } else {
-                        Terminator::Jump(target)
-                    },
-                    n,
-                )?;
-                Ok(None)
-            }
+            (H::Break | H::Continue, _) => self.loop_transfer(n, kind),
             _ => Err(self.l.b.error(
                 ErrorKind::Unsupported,
                 format!("{kind:?} is outside L04 lowering support"),
             )),
         }
     }
-    pub(super) fn pattern_symbol(&mut self, n: h::NodeId) -> Result<Option<h::SymbolId>, Error> {
+    fn block_value(
+        &mut self,
+        n: h::NodeId,
+        kind: H,
+        form: Form,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        self.enter_scope(n)?;
+        let tail = match form {
+            Form::Block { tail } => tail,
+            _ if kind == H::Module
+                && self.l.m.entry_context() != crate::semantic::AnalysisContext::Module =>
+            {
+                self.l.b.work(self.l.m.hir().elements(n).len() as u64)?;
+                self.l.m.hir().children(n).last().filter(|&last| {
+                    matches!(
+                        self.l.m.hir().node(last).form,
+                        Form::Statement {
+                            terminated: false,
+                            ..
+                        }
+                    ) || matches!(self.l.m.hir().node(last).kind, H::Block | H::If)
+                })
+            }
+            _ => None,
+        };
+        let mut result = None;
+        self.l.b.work(self.l.m.hir().elements(n).len() as u64)?;
+        for child in self.l.m.hir().children(n) {
+            if self.current.is_none() {
+                break;
+            }
+            if let Some(old) = result.take() {
+                self.release(old)?;
+            }
+            let value = self.expr(child, depth)?;
+            if tail == Some(child) {
+                result = value;
+            } else if let Some(value) = value {
+                self.release(value)?;
+            }
+        }
+        if self.current.is_some() && result.is_none() && kind == H::Block {
+            result = Some(self.constant(bc::Const::Null, n)?);
+        }
+        Ok(result)
+    }
+    fn statement_value(
+        &mut self,
+        expression: h::NodeId,
+        terminated: bool,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let value = self.expr(expression, depth)?;
+        if let (Some(collector), Some(value)) = (self.collector, value)
+            && self.collects(expression)
+        {
+            self.op(
+                bc::Opcode::ChildrenPush,
+                collector.0,
+                value.0,
+                0,
+                expression,
+            )?;
+        }
+        if terminated {
+            if let Some(value) = value {
+                self.release(value)?;
+            }
+            Ok(None)
+        } else {
+            Ok(value)
+        }
+    }
+    fn binding_value(
+        &mut self,
+        n: h::NodeId,
+        pattern: h::NodeId,
+        initializer: Option<h::NodeId>,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let symbol = self.pattern_symbol(pattern)?;
+        if let Some(initializer) = initializer {
+            let value = self.value(initializer, depth)?;
+            let Some(value) = value else {
+                return Ok(None);
+            };
+            if let Some(symbol) = symbol {
+                self.write(symbol, value, true, n)?;
+            }
+            self.release(value)?;
+        }
+        Ok(None)
+    }
+    fn literal_value(
+        &mut self,
+        n: h::NodeId,
+        token: h::HirToken,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let constant = match token.kind {
+            K::Null => bc::Const::Null,
+            K::True => bc::Const::Bool(true),
+            K::False => bc::Const::Bool(false),
+            K::Number => self.number(self.l.m.hir().text(token.span), false)?,
+            _ => {
+                return Err(self
+                    .l
+                    .b
+                    .error(ErrorKind::Unsupported, "unsupported scalar literal"));
+            }
+        };
+        Ok(Some(self.constant(constant, n)?))
+    }
+    fn prefix_value(
+        &mut self,
+        n: h::NodeId,
+        operator: h::HirToken,
+        value: h::NodeId,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        // Treat the negative int64 minimum as a single source constant.
+        if operator.kind == K::Minus
+            && let Form::Literal { token } = self.l.m.hir().node(value).form
+            && token.kind == K::Number
+        {
+            let constant = self.number(self.l.m.hir().text(token.span), true)?;
+            return Ok(Some(self.constant(constant, n)?));
+        }
+        let opcode = match operator.kind {
+            K::Minus => bc::Opcode::Neg,
+            K::Plus => bc::Opcode::Pos,
+            K::Bang => bc::Opcode::Not,
+            K::Tilde => bc::Opcode::BitNot,
+            _ => {
+                return Err(self.l.b.error(
+                    ErrorKind::Unsupported,
+                    "await/yield require later task lowering",
+                ));
+            }
+        };
+        let Some(input) = self.value(value, depth)? else {
+            return Ok(None);
+        };
+        let out = self.temp()?;
+        self.op(opcode, out.0, input.0, 0, n)?;
+        self.release(input)?;
+        Ok(Some(out))
+    }
+    pub(super) fn binary_value(
+        &mut self,
+        n: h::NodeId,
+        left: bc::Reg,
+        operator: h::HirToken,
+        right: h::NodeId,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        if operator.kind == K::Is {
+            let ty = self.l.ty(self.l.m.facts()[right.0 as usize].ty, 0)?;
+            let out = self.temp()?;
+            self.op(bc::Opcode::Is, out.0, left.0, ty.0, n)?;
+            self.release(left)?;
+            return Ok(Some(out));
+        }
+        if matches!(operator.kind, K::AndAnd | K::OrOr | K::QuestionQuestion) {
+            return self.short_circuit(n, left, operator.kind, right, depth);
+        }
+        let opcode = binary(operator.kind).ok_or_else(|| {
+            self.l.b.error(
+                ErrorKind::Unsupported,
+                "binary operator awaits later lowering",
+            )
+        })?;
+        let Some(right) = self.value(right, depth)? else {
+            self.release(left)?;
+            return Ok(None);
+        };
+        let out = self.temp()?;
+        self.op(opcode, out.0, left.0, right.0, n)?;
+        self.release(left)?;
+        self.release(right)?;
+        Ok(Some(out))
+    }
+    fn return_value(
+        &mut self,
+        n: h::NodeId,
+        value: Option<h::NodeId>,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        if matches!(self.ir.origin, Origin::Default { .. }) {
+            return Err(self.l.b.error(
+                ErrorKind::InvalidIr,
+                "explicit return crossed the analyzed parameter-default boundary",
+            ));
+        }
+        let value = match value {
+            Some(value) => {
+                let Some(value) = self.value(value, depth)? else {
+                    return Ok(None);
+                };
+                value
+            }
+            None => self.constant(bc::Const::Null, n)?,
+        };
+        self.terminate(Terminator::Return(value), n)?;
+        self.release(value)?;
+        Ok(None)
+    }
+    fn throw_value(
+        &mut self,
+        n: h::NodeId,
+        value: Option<h::NodeId>,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        if let Some(value) = value {
+            let Some(value) = self.value(value, depth)? else {
+                return Ok(None);
+            };
+            self.terminate(Terminator::Throw(value), n)?;
+            self.release(value)?;
+        } else {
+            self.terminate(Terminator::Rethrow, n)?;
+        }
+        Ok(None)
+    }
+    fn loop_transfer(&mut self, n: h::NodeId, kind: H) -> Result<Option<bc::Reg>, Box<Error>> {
+        let target = self.l.m.facts()[n.0 as usize]
+            .control
+            .as_ref()
+            .and_then(|c| c.target)
+            .ok_or_else(|| {
+                self.l
+                    .b
+                    .error(ErrorKind::InvalidIr, "loop transfer lacks analyzed target")
+            })?;
+        self.l.b.work(self.loops.len() as u64)?;
+        let target = self
+            .loops
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.node == target)
+            .ok_or_else(|| {
+                self.l
+                    .b
+                    .error(ErrorKind::InvalidIr, "analyzed loop target not active")
+            })?;
+        let loop_depth = target.protected_depth;
+        let target = if kind == H::Break {
+            target.has_break = true;
+            target.end
+        } else {
+            target.next
+        };
+        self.terminate(
+            if self.protected_depth > loop_depth {
+                Terminator::Leave(target)
+            } else {
+                Terminator::Jump(target)
+            },
+            n,
+        )?;
+        Ok(None)
+    }
+    pub(super) fn pattern_symbol(
+        &mut self,
+        n: h::NodeId,
+    ) -> Result<Option<h::SymbolId>, Box<Error>> {
         self.l.b.span = self.span(n);
         self.l.b.work(1)?;
         match self.l.m.hir().node(n).form {
@@ -414,14 +466,11 @@ impl FunctionBuilder<'_, '_> {
     fn short_circuit(
         &mut self,
         n: h::NodeId,
-        left: h::NodeId,
+        left: bc::Reg,
         operator: K,
         right: h::NodeId,
         depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
-        let Some(left) = self.value(left, depth)? else {
-            return Ok(None);
-        };
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         let out = self.temp()?;
         self.op(bc::Opcode::Move, out.0, left.0, 0, n)?;
         let rhs = self.block()?;
@@ -475,7 +524,7 @@ impl FunctionBuilder<'_, '_> {
         yes: h::NodeId,
         no: Option<h::NodeId>,
         depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         let Some(condition) = self.value(condition, depth)? else {
             return Ok(None);
         };
@@ -524,7 +573,7 @@ impl FunctionBuilder<'_, '_> {
         condition: Option<h::NodeId>,
         body: h::NodeId,
         depth: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<Error>> {
         let head = self.block()?;
         let body_block = self.block()?;
         let end = self.block()?;
@@ -580,7 +629,7 @@ impl FunctionBuilder<'_, '_> {
         catch: Option<h::NodeId>,
         finally: Option<h::NodeId>,
         depth: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<Error>> {
         let region = bc::RegionId(self.ir.regions.len() as u32);
         self.l.b.push(
             &mut self.ir.regions,
@@ -671,7 +720,7 @@ impl FunctionBuilder<'_, '_> {
         }
         Ok(())
     }
-    fn number(&mut self, text: &str, negative: bool) -> Result<bc::Const, Error> {
+    fn number(&mut self, text: &str, negative: bool) -> Result<bc::Const, Box<Error>> {
         let mut bytes = Vec::new();
         self.l.b.work(text.len() as u64)?;
         self.l.b.reserve(&mut bytes, text.len())?;
@@ -707,38 +756,62 @@ impl FunctionBuilder<'_, '_> {
         self.l.b.release(bytes);
         Ok(value)
     }
-    fn string(&mut self, n: h::NodeId) -> Result<String, Error> {
-        if self.l.m.hir().children(n).next().is_some() {
-            return Err(self.l.b.error(
-                ErrorKind::Unsupported,
-                "interpolation requires standard string conversion linkage",
-            ));
-        }
-        let mut bytes = Vec::new();
-        self.l
-            .b
-            .reserve(&mut bytes, usize::from(self.span(n).len()))?;
-        let raw = self
-            .l
-            .m
-            .hir()
-            .tokens(n)
-            .next()
-            .is_some_and(|t| self.l.m.hir().text(t.span).starts_with('r'));
-        let format = self
-            .l
-            .m
-            .hir()
-            .tokens(n)
-            .next()
-            .is_some_and(|t| self.l.m.hir().text(t.span).starts_with('f'));
-        for token in self.l.m.hir().tokens(n).filter(|t| t.kind == K::StringText) {
-            let text = self.l.m.hir().text(token.span);
-            self.l.b.work(text.len() as u64)?;
-            if raw {
-                bytes.extend_from_slice(text.as_bytes());
-                continue;
+    fn string_value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Box<Error>> {
+        let first = self.l.m.hir().tokens(n).next();
+        let raw = first.is_some_and(|t| self.l.m.hir().text(t.span).starts_with('r'));
+        let format = first.is_some_and(|t| self.l.m.hir().text(t.span).starts_with('f'));
+        let interpolated = self.l.m.hir().children(n).next().is_some();
+        if !interpolated {
+            let mut bytes = Vec::new();
+            for token in self.l.m.hir().tokens(n).filter(|t| t.kind == K::StringText) {
+                let piece = self.string_piece(token, raw, format)?;
+                self.l.b.reserve(&mut bytes, piece.len())?;
+                self.l.b.work(piece.len() as u64)?;
+                bytes.extend_from_slice(piece.as_bytes());
+                self.l.b.release_bytes(piece.capacity());
             }
+            let value = String::from_utf8(bytes).expect("decoded unicode");
+            return Ok(Some(self.constant(bc::Const::Utf8(value), n)?));
+        }
+        let out = self.temp()?;
+        self.op(bc::Opcode::TextNew, out.0, 0, 0, n)?;
+        for element in self.l.m.hir().elements(n) {
+            let value = match *element {
+                h::HirElement::Token(token) if token.kind == K::StringText => {
+                    let text = self.string_piece(token, raw, format)?;
+                    Some(self.constant(bc::Const::Utf8(text), n)?)
+                }
+                h::HirElement::Node(node) => {
+                    let Form::Single { child } = self.l.m.hir().node(node).form else {
+                        unreachable!("interpolation")
+                    };
+                    self.value(child, depth)?
+                }
+                _ => continue,
+            };
+            let Some(value) = value else {
+                self.release(out)?;
+                return Ok(None);
+            };
+            self.op(bc::Opcode::TextPush, out.0, value.0, 0, n)?;
+            self.release(value)?;
+        }
+        self.op(bc::Opcode::TextFinish, out.0, out.0, 0, n)?;
+        Ok(Some(out))
+    }
+    fn string_piece(
+        &mut self,
+        token: h::HirToken,
+        raw: bool,
+        format: bool,
+    ) -> Result<String, Box<Error>> {
+        let text = self.l.m.hir().text(token.span);
+        let mut bytes = Vec::new();
+        self.l.b.reserve(&mut bytes, text.len())?;
+        self.l.b.work(text.len() as u64)?;
+        if raw {
+            bytes.extend_from_slice(text.as_bytes());
+        } else {
             let mut chars = text.chars();
             while let Some(ch) = chars.next() {
                 let ch = if ch == '\\' {

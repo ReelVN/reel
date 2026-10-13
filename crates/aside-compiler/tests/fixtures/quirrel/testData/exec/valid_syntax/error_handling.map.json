@@ -1,7 +1,5 @@
 {
   "source": "testData/exec/valid_syntax/error_handling.nut",
-  "source_sha256": "b2ecd25bd8a8e1b85b08fbcd7fc68c14885566acd7953e01146d1c8ac324ff6c",
-  "aside_sha256": "d347dc7be4828e479c4860a794ef9be4f5adab52e5ea8a424422324353fdcd1f",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        236
+        209
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         70
       ],
       "aside": [
-        236,
-        306
+        209,
+        279
       ],
       "kind": "copied"
     },
@@ -33,8 +31,8 @@
         89
       ],
       "aside": [
-        306,
-        328
+        279,
+        301
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -45,8 +43,8 @@
         96
       ],
       "aside": [
-        328,
-        335
+        301,
+        308
       ],
       "kind": "copied"
     },
@@ -56,8 +54,8 @@
         118
       ],
       "aside": [
-        335,
-        358
+        308,
+        331
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -68,8 +66,8 @@
         119
       ],
       "aside": [
-        358,
-        359
+        331,
+        332
       ],
       "kind": "copied"
     },
@@ -79,8 +77,8 @@
         132
       ],
       "aside": [
-        359,
-        370
+        332,
+        343
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -91,8 +89,8 @@
         133
       ],
       "aside": [
-        370,
-        371
+        343,
+        344
       ],
       "kind": "copied"
     },
@@ -102,8 +100,8 @@
         147
       ],
       "aside": [
-        371,
-        386
+        344,
+        359
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -114,8 +112,8 @@
         150
       ],
       "aside": [
-        386,
-        389
+        359,
+        362
       ],
       "kind": "copied"
     },
@@ -125,8 +123,8 @@
         180
       ],
       "aside": [
-        389,
-        420
+        362,
+        393
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -137,8 +135,8 @@
         209
       ],
       "aside": [
-        420,
-        449
+        393,
+        422
       ],
       "kind": "copied"
     },
@@ -148,8 +146,8 @@
         232
       ],
       "aside": [
-        449,
-        475
+        422,
+        448
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -160,8 +158,8 @@
         239
       ],
       "aside": [
-        475,
-        482
+        448,
+        455
       ],
       "kind": "copied"
     },
@@ -171,8 +169,8 @@
         253
       ],
       "aside": [
-        482,
-        497
+        455,
+        470
       ],
       "kind": "reviewed_edit",
       "reason": "terminate empty object initializer as ordinary let statement"
@@ -183,8 +181,8 @@
         254
       ],
       "aside": [
-        497,
-        498
+        470,
+        471
       ],
       "kind": "copied"
     },
@@ -194,8 +192,8 @@
         288
       ],
       "aside": [
-        498,
-        533
+        471,
+        506
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -206,8 +204,8 @@
         289
       ],
       "aside": [
-        533,
-        534
+        506,
+        507
       ],
       "kind": "copied"
     },
@@ -217,8 +215,8 @@
         302
       ],
       "aside": [
-        534,
-        545
+        507,
+        518
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -229,8 +227,8 @@
         303
       ],
       "aside": [
-        545,
-        546
+        518,
+        519
       ],
       "kind": "copied"
     },
@@ -240,8 +238,8 @@
         323
       ],
       "aside": [
-        546,
-        567
+        519,
+        540
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -252,8 +250,8 @@
         326
       ],
       "aside": [
-        567,
-        570
+        540,
+        543
       ],
       "kind": "copied"
     },
@@ -263,8 +261,8 @@
         343
       ],
       "aside": [
-        570,
-        588
+        543,
+        561
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -275,8 +273,8 @@
         362
       ],
       "aside": [
-        588,
-        607
+        561,
+        580
       ],
       "kind": "copied"
     },
@@ -286,8 +284,8 @@
         382
       ],
       "aside": [
-        607,
-        630
+        580,
+        603
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -298,8 +296,8 @@
         389
       ],
       "aside": [
-        630,
-        637
+        603,
+        610
       ],
       "kind": "copied"
     },
@@ -309,8 +307,8 @@
         401
       ],
       "aside": [
-        637,
-        650
+        610,
+        623
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -321,8 +319,8 @@
         402
       ],
       "aside": [
-        650,
-        651
+        623,
+        624
       ],
       "kind": "copied"
     },
@@ -332,8 +330,8 @@
         415
       ],
       "aside": [
-        651,
-        662
+        624,
+        635
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -344,8 +342,8 @@
         416
       ],
       "aside": [
-        662,
-        663
+        635,
+        636
       ],
       "kind": "copied"
     },
@@ -355,8 +353,8 @@
         431
       ],
       "aside": [
-        663,
-        679
+        636,
+        652
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -367,8 +365,8 @@
         434
       ],
       "aside": [
-        679,
-        682
+        652,
+        655
       ],
       "kind": "copied"
     },
@@ -378,8 +376,8 @@
         455
       ],
       "aside": [
-        682,
-        704
+        655,
+        677
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -390,8 +388,8 @@
         471
       ],
       "aside": [
-        704,
-        720
+        677,
+        693
       ],
       "kind": "copied"
     },
@@ -401,8 +399,8 @@
         498
       ],
       "aside": [
-        720,
-        750
+        693,
+        723
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -413,8 +411,8 @@
         505
       ],
       "aside": [
-        750,
-        757
+        723,
+        730
       ],
       "kind": "copied"
     },
@@ -424,8 +422,8 @@
         519
       ],
       "aside": [
-        757,
-        772
+        730,
+        745
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -436,8 +434,8 @@
         520
       ],
       "aside": [
-        772,
-        773
+        745,
+        746
       ],
       "kind": "copied"
     },
@@ -447,8 +445,8 @@
         533
       ],
       "aside": [
-        773,
-        784
+        746,
+        757
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -459,8 +457,8 @@
         534
       ],
       "aside": [
-        784,
-        785
+        757,
+        758
       ],
       "kind": "copied"
     },
@@ -470,8 +468,8 @@
         550
       ],
       "aside": [
-        785,
-        802
+        758,
+        775
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -482,8 +480,8 @@
         553
       ],
       "aside": [
-        802,
-        805
+        775,
+        778
       ],
       "kind": "copied"
     },
@@ -493,8 +491,8 @@
         577
       ],
       "aside": [
-        805,
-        830
+        778,
+        803
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -505,8 +503,8 @@
         594
       ],
       "aside": [
-        830,
-        847
+        803,
+        820
       ],
       "kind": "copied"
     },
@@ -516,8 +514,8 @@
         614
       ],
       "aside": [
-        847,
-        870
+        820,
+        843
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -528,8 +526,8 @@
         621
       ],
       "aside": [
-        870,
-        877
+        843,
+        850
       ],
       "kind": "copied"
     },
@@ -539,8 +537,8 @@
         666
       ],
       "aside": [
-        877,
-        921
+        850,
+        894
       ],
       "kind": "reviewed_edit",
       "reason": "object field separators; thrown value and fields retained"
@@ -551,8 +549,8 @@
         667
       ],
       "aside": [
-        921,
-        922
+        894,
+        895
       ],
       "kind": "copied"
     },
@@ -562,8 +560,8 @@
         680
       ],
       "aside": [
-        922,
-        933
+        895,
+        906
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -574,8 +572,8 @@
         681
       ],
       "aside": [
-        933,
-        934
+        906,
+        907
       ],
       "kind": "copied"
     },
@@ -585,8 +583,8 @@
         696
       ],
       "aside": [
-        934,
-        950
+        907,
+        923
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -597,8 +595,8 @@
         699
       ],
       "aside": [
-        950,
-        953
+        923,
+        926
       ],
       "kind": "copied"
     },
@@ -608,8 +606,8 @@
         726
       ],
       "aside": [
-        953,
-        981
+        926,
+        954
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -620,8 +618,8 @@
         748
       ],
       "aside": [
-        981,
-        1003
+        954,
+        976
       ],
       "kind": "copied"
     },
@@ -631,8 +629,8 @@
         773
       ],
       "aside": [
-        1003,
-        1031
+        976,
+        1004
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -643,8 +641,8 @@
         774
       ],
       "aside": [
-        1031,
-        1032
+        1004,
+        1005
       ],
       "kind": "copied"
     },
@@ -654,8 +652,8 @@
         799
       ],
       "aside": [
-        1032,
-        1060
+        1005,
+        1033
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -666,8 +664,8 @@
         816
       ],
       "aside": [
-        1060,
-        1077
+        1033,
+        1050
       ],
       "kind": "copied"
     },
@@ -677,8 +675,8 @@
         837
       ],
       "aside": [
-        1077,
-        1099
+        1050,
+        1072
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -689,8 +687,8 @@
         838
       ],
       "aside": [
-        1099,
-        1100
+        1072,
+        1073
       ],
       "kind": "copied"
     },
@@ -700,8 +698,8 @@
         855
       ],
       "aside": [
-        1100,
-        1115
+        1073,
+        1088
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -712,8 +710,8 @@
         856
       ],
       "aside": [
-        1115,
-        1116
+        1088,
+        1089
       ],
       "kind": "copied"
     },
@@ -723,8 +721,8 @@
         880
       ],
       "aside": [
-        1116,
-        1141
+        1089,
+        1114
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -735,8 +733,8 @@
         881
       ],
       "aside": [
-        1141,
-        1142
+        1114,
+        1115
       ],
       "kind": "copied"
     },
@@ -746,8 +744,8 @@
         902
       ],
       "aside": [
-        1142,
-        1164
+        1115,
+        1137
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -758,8 +756,8 @@
         909
       ],
       "aside": [
-        1164,
-        1171
+        1137,
+        1144
       ],
       "kind": "copied"
     },
@@ -769,8 +767,8 @@
         922
       ],
       "aside": [
-        1171,
-        1182
+        1144,
+        1155
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -781,8 +779,8 @@
         923
       ],
       "aside": [
-        1182,
-        1183
+        1155,
+        1156
       ],
       "kind": "copied"
     },
@@ -792,8 +790,8 @@
         943
       ],
       "aside": [
-        1183,
-        1204
+        1156,
+        1177
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -804,8 +802,8 @@
         946
       ],
       "aside": [
-        1204,
-        1207
+        1177,
+        1180
       ],
       "kind": "copied"
     },
@@ -815,8 +813,8 @@
         977
       ],
       "aside": [
-        1207,
-        1239
+        1180,
+        1212
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -827,8 +825,8 @@
         978
       ],
       "aside": [
-        1239,
-        1240
+        1212,
+        1213
       ],
       "kind": "copied"
     },
@@ -838,8 +836,8 @@
         1009
       ],
       "aside": [
-        1240,
-        1272
+        1213,
+        1245
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -850,8 +848,8 @@
         1042
       ],
       "aside": [
-        1272,
-        1305
+        1245,
+        1278
       ],
       "kind": "copied"
     },
@@ -861,8 +859,8 @@
         1061
       ],
       "aside": [
-        1305,
-        1327
+        1278,
+        1300
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -873,8 +871,8 @@
         1068
       ],
       "aside": [
-        1327,
-        1334
+        1300,
+        1307
       ],
       "kind": "copied"
     },
@@ -884,8 +882,8 @@
         1082
       ],
       "aside": [
-        1334,
-        1349
+        1307,
+        1322
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -896,8 +894,8 @@
         1083
       ],
       "aside": [
-        1349,
-        1350
+        1322,
+        1323
       ],
       "kind": "copied"
     },
@@ -907,8 +905,8 @@
         1096
       ],
       "aside": [
-        1350,
-        1361
+        1323,
+        1334
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -919,8 +917,8 @@
         1097
       ],
       "aside": [
-        1361,
-        1362
+        1334,
+        1335
       ],
       "kind": "copied"
     },
@@ -930,8 +928,8 @@
         1115
       ],
       "aside": [
-        1362,
-        1381
+        1335,
+        1354
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -942,8 +940,8 @@
         1118
       ],
       "aside": [
-        1381,
-        1384
+        1354,
+        1357
       ],
       "kind": "copied"
     },
@@ -953,8 +951,8 @@
         1132
       ],
       "aside": [
-        1384,
-        1399
+        1357,
+        1372
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -965,8 +963,8 @@
         1161
       ],
       "aside": [
-        1399,
-        1428
+        1372,
+        1401
       ],
       "kind": "copied"
     },
@@ -976,8 +974,8 @@
         1184
       ],
       "aside": [
-        1428,
-        1445
+        1401,
+        1418
       ],
       "kind": "reviewed_edit",
       "reason": "named function declaration"
@@ -988,8 +986,8 @@
         1185
       ],
       "aside": [
-        1445,
-        1446
+        1418,
+        1419
       ],
       "kind": "copied"
     },
@@ -999,8 +997,8 @@
         1225
       ],
       "aside": [
-        1446,
-        1489
+        1419,
+        1462
       ],
       "kind": "reviewed_edit",
       "reason": "brace formerly single throw branch"
@@ -1011,8 +1009,8 @@
         1226
       ],
       "aside": [
-        1489,
-        1490
+        1462,
+        1463
       ],
       "kind": "copied"
     },
@@ -1022,8 +1020,8 @@
         1242
       ],
       "aside": [
-        1490,
-        1507
+        1463,
+        1480
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1034,8 +1032,8 @@
         1246
       ],
       "aside": [
-        1507,
-        1511
+        1480,
+        1484
       ],
       "kind": "copied"
     },
@@ -1045,8 +1043,8 @@
         1272
       ],
       "aside": [
-        1511,
-        1538
+        1484,
+        1511
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1057,8 +1055,8 @@
         1274
       ],
       "aside": [
-        1538,
-        1540
+        1511,
+        1513
       ],
       "kind": "copied"
     },
@@ -1068,8 +1066,8 @@
         1294
       ],
       "aside": [
-        1540,
-        1563
+        1513,
+        1536
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -1080,8 +1078,8 @@
         1301
       ],
       "aside": [
-        1563,
-        1570
+        1536,
+        1543
       ],
       "kind": "copied"
     },
@@ -1091,8 +1089,8 @@
         1318
       ],
       "aside": [
-        1570,
-        1588
+        1543,
+        1561
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1103,8 +1101,8 @@
         1319
       ],
       "aside": [
-        1588,
-        1589
+        1561,
+        1562
       ],
       "kind": "copied"
     },
@@ -1114,8 +1112,8 @@
         1332
       ],
       "aside": [
-        1589,
-        1600
+        1562,
+        1573
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -1126,8 +1124,8 @@
         1333
       ],
       "aside": [
-        1600,
-        1601
+        1573,
+        1574
       ],
       "kind": "copied"
     },
@@ -1137,8 +1135,8 @@
         1348
       ],
       "aside": [
-        1601,
-        1617
+        1574,
+        1590
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1149,8 +1147,8 @@
         1351
       ],
       "aside": [
-        1617,
-        1620
+        1590,
+        1593
       ],
       "kind": "copied"
     },
@@ -1160,8 +1158,8 @@
         1388
       ],
       "aside": [
-        1620,
-        1658
+        1593,
+        1631
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1172,8 +1170,8 @@
         1411
       ],
       "aside": [
-        1658,
-        1681
+        1631,
+        1654
       ],
       "kind": "copied"
     },
@@ -1183,8 +1181,8 @@
         1434
       ],
       "aside": [
-        1681,
-        1707
+        1654,
+        1680
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -1195,8 +1193,8 @@
         1435
       ],
       "aside": [
-        1707,
-        1708
+        1680,
+        1681
       ],
       "kind": "copied"
     },
@@ -1206,8 +1204,8 @@
         1466
       ],
       "aside": [
-        1708,
-        1723
+        1681,
+        1696
       ],
       "kind": "reviewed_edit",
       "reason": "reviewed constant integer loop; no shared capture or continue"
@@ -1218,8 +1216,8 @@
         1477
       ],
       "aside": [
-        1723,
-        1734
+        1696,
+        1707
       ],
       "kind": "copied"
     },
@@ -1229,8 +1227,8 @@
         1519
       ],
       "aside": [
-        1734,
-        1779
+        1707,
+        1752
       ],
       "kind": "reviewed_edit",
       "reason": "brace formerly single throw branch"
@@ -1241,8 +1239,8 @@
         1520
       ],
       "aside": [
-        1779,
-        1780
+        1752,
+        1753
       ],
       "kind": "copied"
     },
@@ -1252,8 +1250,8 @@
         1537
       ],
       "aside": [
-        1780,
-        1795
+        1753,
+        1768
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -1264,8 +1262,8 @@
         1538
       ],
       "aside": [
-        1795,
-        1796
+        1768,
+        1769
       ],
       "kind": "copied"
     },
@@ -1275,8 +1273,8 @@
         1561
       ],
       "aside": [
-        1796,
-        1823
+        1769,
+        1796
       ],
       "kind": "reviewed_edit",
       "reason": "increment result unused"
@@ -1287,8 +1285,8 @@
         1570
       ],
       "aside": [
-        1823,
-        1832
+        1796,
+        1805
       ],
       "kind": "copied"
     },
@@ -1298,8 +1296,8 @@
         1607
       ],
       "aside": [
-        1832,
-        1870
+        1805,
+        1843
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1310,8 +1308,8 @@
         1620
       ],
       "aside": [
-        1870,
-        1883
+        1843,
+        1856
       ],
       "kind": "copied"
     },
@@ -1321,8 +1319,8 @@
         1641
       ],
       "aside": [
-        1883,
-        1907
+        1856,
+        1880
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -1333,8 +1331,8 @@
         1658
       ],
       "aside": [
-        1907,
-        1924
+        1880,
+        1897
       ],
       "kind": "copied"
     },
@@ -1344,8 +1342,8 @@
         1682
       ],
       "aside": [
-        1924,
-        1949
+        1897,
+        1922
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1356,8 +1354,8 @@
         1683
       ],
       "aside": [
-        1949,
-        1950
+        1922,
+        1923
       ],
       "kind": "copied"
     },
@@ -1367,8 +1365,8 @@
         1700
       ],
       "aside": [
-        1950,
-        1965
+        1923,
+        1938
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -1379,8 +1377,8 @@
         1701
       ],
       "aside": [
-        1965,
-        1966
+        1938,
+        1939
       ],
       "kind": "copied"
     },
@@ -1390,8 +1388,8 @@
         1727
       ],
       "aside": [
-        1966,
-        1993
+        1939,
+        1966
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1402,8 +1400,8 @@
         1734
       ],
       "aside": [
-        1993,
-        2000
+        1966,
+        1973
       ],
       "kind": "copied"
     },
@@ -1413,8 +1411,8 @@
         1747
       ],
       "aside": [
-        2000,
-        2011
+        1973,
+        1984
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -1425,8 +1423,8 @@
         1748
       ],
       "aside": [
-        2011,
-        2012
+        1984,
+        1985
       ],
       "kind": "copied"
     },
@@ -1436,8 +1434,8 @@
         1764
       ],
       "aside": [
-        2012,
-        2029
+        1985,
+        2002
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1448,8 +1446,8 @@
         1767
       ],
       "aside": [
-        2029,
-        2032
+        2002,
+        2005
       ],
       "kind": "copied"
     },
@@ -1459,8 +1457,8 @@
         1797
       ],
       "aside": [
-        2032,
-        2063
+        2005,
+        2036
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1471,8 +1469,8 @@
         1799
       ],
       "aside": [
-        2063,
-        2065
+        2036,
+        2038
       ],
       "kind": "copied"
     },
@@ -1482,8 +1480,8 @@
         1828
       ],
       "aside": [
-        2065,
-        2095
+        2038,
+        2068
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -1494,8 +1492,8 @@
         1829
       ],
       "aside": [
-        2095,
-        2096
+        2068,
+        2069
       ],
       "kind": "copied"
     }
@@ -1507,8 +1505,8 @@
         180
       ],
       "aside": [
-        389,
-        419
+        362,
+        392
       ],
       "tokens": [
         "assert",
@@ -1525,8 +1523,8 @@
         343
       ],
       "aside": [
-        570,
-        587
+        543,
+        560
       ],
       "tokens": [
         "assert",
@@ -1541,8 +1539,8 @@
         455
       ],
       "aside": [
-        682,
-        703
+        655,
+        676
       ],
       "tokens": [
         "assert",
@@ -1559,8 +1557,8 @@
         577
       ],
       "aside": [
-        805,
-        829
+        778,
+        802
       ],
       "tokens": [
         "assert",
@@ -1577,8 +1575,8 @@
         726
       ],
       "aside": [
-        953,
-        980
+        926,
+        953
       ],
       "tokens": [
         "assert",
@@ -1597,8 +1595,8 @@
         977
       ],
       "aside": [
-        1207,
-        1238
+        1180,
+        1211
       ],
       "tokens": [
         "assert",
@@ -1615,8 +1613,8 @@
         1009
       ],
       "aside": [
-        1240,
-        1271
+        1213,
+        1244
       ],
       "tokens": [
         "assert",
@@ -1633,8 +1631,8 @@
         1132
       ],
       "aside": [
-        1384,
-        1398
+        1357,
+        1371
       ],
       "tokens": [
         "assert",
@@ -1649,8 +1647,8 @@
         1272
       ],
       "aside": [
-        1511,
-        1537
+        1484,
+        1510
       ],
       "tokens": [
         "assert",
@@ -1672,8 +1670,8 @@
         1388
       ],
       "aside": [
-        1620,
-        1657
+        1593,
+        1630
       ],
       "tokens": [
         "assert",
@@ -1690,8 +1688,8 @@
         1596
       ],
       "aside": [
-        1832,
-        1858
+        1805,
+        1831
       ],
       "tokens": [
         "assert",
@@ -1708,8 +1706,8 @@
         1797
       ],
       "aside": [
-        2032,
-        2062
+        2005,
+        2035
       ],
       "tokens": [
         "assert",

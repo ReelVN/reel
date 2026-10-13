@@ -1,7 +1,5 @@
 {
   "source": "testData/exec/locals_chain.nut",
-  "source_sha256": "b1e47aa003981278194f4dbcb73240a1eed8ec05ced49d8d7e6b8e5b4c6e5029",
-  "aside_sha256": "2ed505c0f9691dd5adfeacfafbe6cc125951ce5c62350e52474395c358936592",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        221
+        194
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         24
       ],
       "aside": [
-        221,
-        272
+        194,
+        245
       ],
       "kind": "reviewed_edit",
       "reason": "split sequential declarators in original evaluation order"
@@ -34,8 +32,8 @@
         25
       ],
       "aside": [
-        272,
-        273
+        245,
+        246
       ],
       "kind": "copied"
     },
@@ -45,8 +43,8 @@
         55
       ],
       "aside": [
-        273,
-        304
+        246,
+        277
       ],
       "kind": "reviewed_edit",
       "reason": "interpolation prefix; expressions unchanged; terminate this complete reviewed statement with a semicolon"
@@ -57,8 +55,8 @@
         57
       ],
       "aside": [
-        304,
-        306
+        277,
+        279
       ],
       "kind": "copied"
     },
@@ -68,8 +66,8 @@
         79
       ],
       "aside": [
-        306,
-        341
+        279,
+        314
       ],
       "kind": "reviewed_edit",
       "reason": "split sequential declarators in original evaluation order"
@@ -80,8 +78,8 @@
         80
       ],
       "aside": [
-        341,
-        342
+        314,
+        315
       ],
       "kind": "copied"
     },
@@ -91,8 +89,8 @@
         110
       ],
       "aside": [
-        342,
-        373
+        315,
+        346
       ],
       "kind": "reviewed_edit",
       "reason": "interpolation prefix; expressions unchanged; terminate this complete reviewed statement with a semicolon"
@@ -103,8 +101,8 @@
         111
       ],
       "aside": [
-        373,
-        374
+        346,
+        347
       ],
       "kind": "copied"
     }

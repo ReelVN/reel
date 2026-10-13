@@ -365,11 +365,7 @@ mod input_tests {
                     },
                 );
                 let (_, geometry) = root
-                    .record_presented_geometry(GeometryLimits {
-                        max_nodes: 8,
-                        max_bytes: 4096,
-                        max_path: 8,
-                    })
+                    .record_presented_geometry(GeometryLimits { max_bytes: 4096 })
                     .unwrap();
                 if presented {
                     root.set_input_geometry_source(InputGeometrySource::Presented(Some(Arc::new(
@@ -435,11 +431,7 @@ mod input_tests {
                     default_font: None,
                 },
             );
-            let limits = GeometryLimits {
-                max_nodes: 8,
-                max_bytes: 4096,
-                max_path: 8,
-            };
+            let limits = GeometryLimits { max_bytes: 4096 };
             root.record_presented_geometry(limits).unwrap();
             let stash = |root: &mut RenderRoot, stashed| {
                 root.edit_widget(root.root_id(), |mut w| {

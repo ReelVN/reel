@@ -406,7 +406,6 @@ fn budgets_cover_recursion_flat_chains_lexing_diagnostics_and_source_admission()
     for source in [
         format!("{}0{}", "(".repeat(5000), ")".repeat(5000)),
         format!("{}0", "!".repeat(5000)),
-        format!("a{}", " + a".repeat(5000)),
         format!("{}0{}", "[".repeat(5000), "]".repeat(5000)),
         format!("{}0{}", "f\"{".repeat(1000), "}\"".repeat(1000)),
     ] {
@@ -416,6 +415,30 @@ fn budgets_cover_recursion_flat_chains_lexing_diagnostics_and_source_admission()
         ranges(&p, &source);
         drop(p);
     }
+    let source = format!("a{}", " + a".repeat(5000));
+    let p = at(&source, E::Expression);
+    assert!(p.is_ok(), "{:?}", p.diagnostics());
+    ranges(&p, &source);
+    let first = p.green().clone();
+    let second = first.clone();
+    let cursor = p.syntax();
+    drop(p);
+    assert_eq!(cursor.text().to_string(), source);
+    drop(cursor);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let other_barrier = barrier.clone();
+    let thread = std::thread::spawn(move || {
+        other_barrier.wait();
+        drop(first);
+    });
+    barrier.wait();
+    drop(second);
+    thread.join().unwrap();
+    // A retained red-tree cursor can also own the final green-tree reference.
+    let p = at(&source, E::Expression);
+    let cursor = p.syntax();
+    drop(p);
+    drop(cursor);
     for limits in [
         Limits {
             max_tokens: 2,

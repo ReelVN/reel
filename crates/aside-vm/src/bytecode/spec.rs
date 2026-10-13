@@ -138,6 +138,9 @@ instructions! {
     Not = 0x0022 => [WriteReg, ReadReg, Unused], Next, true, None;
     BitNot = 0x0023 => [WriteReg, ReadReg, Unused], Next, true, None;
     Is = 0x0024 => [WriteReg, ReadReg, Type], Next, true, None;
+    TextNew = 0x0025 => [WriteReg, Unused, Unused], Next, true, None;
+    TextPush = 0x0026 => [ReadReg, ReadReg, Unused], Next, true, None;
+    TextFinish = 0x0027 => [WriteReg, ReadReg, Unused], Next, true, None;
     Jump = 0x0030 => [Pc, Unused, Unused], Jump, false, None;
     BranchBool = 0x0031 => [ReadReg, Pc, Pc], Branch, true, None;
     BranchNull = 0x0032 => [ReadReg, Pc, Pc], Branch, false, None;
@@ -163,6 +166,8 @@ instructions! {
     SuperGet = 0x005a => [WriteReg, ReadReg, Descriptor(D::Super)], Next, true, None;
     PropertyRef = 0x005b => [WriteReg, ReadReg, Descriptor(D::Property)], Next, true, None;
     ChildrenPush = 0x005c => [ReadReg, ReadReg, Unused], Next, true, None;
+    MakeRange = 0x005d => [WriteReg, ReadReg, ReadReg], Next, true, None;
+    MakeRangeInclusive = 0x005e => [WriteReg, ReadReg, ReadReg], Next, true, None;
     Match = 0x0060 => [WriteReg, ReadReg, Descriptor(D::Pattern)], Next, true, None;
     PatternRequire = 0x0061 => [ReadReg, Unused, Unused], Next, true, None;
     IterInit = 0x0062 => [WriteReg, ReadReg, Unused], Next, true, None;
@@ -171,6 +176,7 @@ instructions! {
     AsyncIterInit = 0x0065 => [WriteReg, ReadReg, Unused], Next, true, None;
     AsyncIterNext = 0x0066 => [WriteReg, ReadReg, Unused], Next, true, None;
     AsyncIterClose = 0x0067 => [WriteReg, ReadReg, Unused], Next, true, None;
+    IterAdvance = 0x0068 => [WriteReg, ReadReg, WriteReg], Next, true, None;
     Throw = 0x0070 => [ReadReg, Unused, Unused], Throw, true, None;
     Rethrow = 0x0071 => [Unused, Unused, Unused], Throw, true, None;
     Leave = 0x0072 => [Pc, Unused, Unused], Leave, true, None;

@@ -1,6 +1,6 @@
-// Source: third_party/quirrel/doc/examples/types/table/rawin.nut
-// Upstream: 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: third_party/quirrel/COPYRIGHT
-// Reviewed syntax conversion. Aside execution: waiting_runtime.
+// Source: original/doc/examples/types/table/rawin.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed Aside syntax conversion; parse and analysis fixture.
 let t = {a:1, b:null};
 println("t.rawin(\"a\") =", t.has_own("a"));
 println("t.rawin(\"missing\") =", t.has_own("missing"));

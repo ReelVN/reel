@@ -8,6 +8,14 @@ use reel_ui::{
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 impl Context<'_> {
+    fn mesh_allocation(&self) -> mesh::Allocation {
+        mesh::Allocation::new(
+            self.budgets,
+            &self.budget_scope,
+            self.gpu.limits.transient_bytes,
+            self.gpu.device.limits().max_buffer_size,
+        )
+    }
     pub(super) fn clip(
         &mut self,
         target: &Target,
@@ -27,14 +35,7 @@ impl Context<'_> {
                 stroke,
             } => (*transform, shape, Fill::NonZero, Some(stroke)),
         };
-        let _scratch = reserve(
-            &self.budgets.transient,
-            &self.budget_scope.transient,
-            2 << 20,
-            self.gpu.limits.transient_bytes,
-            "mesh scratch",
-        )?;
-        let mut mesh = mesh::tessellate(shape, fill, stroke, at, 1 << 20)?;
+        let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
         mesh::transform(
             &mut mesh,
             outer * transform,
@@ -123,14 +124,7 @@ impl Context<'_> {
             }
         };
         self.composite_supported(composite, at)?;
-        let _scratch = reserve(
-            &self.budgets.transient,
-            &self.budget_scope.transient,
-            2 << 20,
-            self.gpu.limits.transient_bytes,
-            "mesh scratch",
-        )?;
-        let mut mesh = mesh::tessellate(shape, fill, stroke, at, 1 << 20)?;
+        let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
         let (image, uv, color) = match brush {
             Brush::Solid(c) => {
                 let rgba = c.components.map(f64::from);
@@ -259,14 +253,8 @@ impl Context<'_> {
                 bitmap.x + f64::from(bitmap.size[0]),
                 bitmap.y + f64::from(bitmap.size[1]),
             ));
-            let _scratch = reserve(
-                &self.budgets.transient,
-                &self.budget_scope.transient,
-                8192,
-                self.gpu.limits.transient_bytes,
-                "glyph mesh scratch",
-            )?;
-            let mut mesh = mesh::tessellate(&shape, Fill::NonZero, None, at, 4096)?;
+            let mut mesh =
+                mesh::tessellate(&shape, Fill::NonZero, None, at, self.mesh_allocation())?;
             let uv = Affine::scale_non_uniform(
                 1. / f64::from(bitmap.size[0]),
                 1. / f64::from(bitmap.size[1]),

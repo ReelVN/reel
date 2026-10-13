@@ -13,6 +13,7 @@ use std::{
 mod allocation_observer;
 use allocation_observer::*;
 const SAMPLES: usize = 16;
+const MEASURED_FRAMES: usize = 8_388_608;
 fn wait(mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done() {
@@ -83,7 +84,7 @@ fn main() {
     .unwrap();
     let mut fill = mixer.take_fill().unwrap();
     let mut block = [0.0f32; 1024];
-    for frames in [64, 48_000, MAX_DECODED_FRAMES] {
+    for frames in [64, 48_000, MEASURED_FRAMES] {
         let bytes = frames as u64 * 16;
         let pool = BudgetPool::new(
             BudgetCategory::CpuOutput,
@@ -160,8 +161,8 @@ fn main() {
     drop(fill);
     drop(mixer);
     wait(|| service.status().live_generations == 0);
-    // A live maximum-size Sound at stop, rather than only retired garbage.
-    let frames = MAX_DECODED_FRAMES;
+    // A live 64MiB Sound at stop, rather than only retired garbage.
+    let frames = MEASURED_FRAMES;
     let bytes = frames as u64 * 16;
     let pool = BudgetPool::new(
         BudgetCategory::CpuOutput,

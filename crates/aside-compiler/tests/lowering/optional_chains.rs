@@ -525,7 +525,7 @@ fn optional_assignment_and_deferred_spread_and_class_are_located_rejections() {
 }
 
 #[test]
-fn flattened_chains_preserve_absolute_depth_and_exact_budget_boundaries() {
+fn flattened_chains_charge_only_nested_operands_and_preserve_exact_budgets() {
     for source in [
         format!("fn f(a){{a?.x{}}}", ".x".repeat(20)),
         format!("fn f(a){{a?.x{}?[a?.y{}]}}", ".x".repeat(8), ".z".repeat(8)),
@@ -547,7 +547,7 @@ fn flattened_chains_preserve_absolute_depth_and_exact_budget_boundaries() {
                 .is_ok()
             })
             .unwrap();
-        assert!(minimum > 12);
+        assert!(minimum <= 6, "flat chain consumed depth {minimum}");
         let e = lowering::lower(
             &m,
             &Linkage::default(),

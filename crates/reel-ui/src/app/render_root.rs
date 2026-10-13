@@ -9,8 +9,8 @@ use crate::tree_arena::{ArenaMut, TreeArena};
 use accesskit::{ActionRequest, NodeId, TreeId, TreeUpdate};
 use dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use kurbo::{Point, Rect, Size};
-use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, FontInfo, SourceCache};
-use parley::{FontContext, LayoutContext};
+use reel_text::fontique::{Blob, Collection, CollectionOptions, FamilyId, FontInfo, SourceCache};
+use reel_text::{FontContext, LayoutContext};
 use tracing::{debug, info_span, warn};
 
 use crate::app::VisualLayerPlan;
@@ -411,7 +411,7 @@ impl RenderRoot {
                 .font_context
                 .collection
                 .set_generic_families(
-                    parley::GenericFamily::SystemUi,
+                    reel_text::GenericFamily::SystemUi,
                     families.iter().map(|(family, _)| *family),
                 );
         }

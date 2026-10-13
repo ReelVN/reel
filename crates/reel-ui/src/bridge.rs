@@ -24,7 +24,7 @@ use std::sync::{
 pub struct BridgeLimits {
     pub geometry: GeometryLimits,
     pub max_candidates: u32,
-    /// Fixed route arrays and pending identity registry, reserved before allocation.
+    /// Route arrays and pending identity registry, reserved before allocation.
     pub max_bridge_bytes: u64,
     /// Each external/accepted geometry lease keeps the maximum export reservation
     /// plus host overhead until its final drop. Aggregate capacity is conservative.
@@ -233,6 +233,8 @@ pub struct PresentationBridge {
     pending: Vec<Pending>,
     limits: BridgeLimits,
     snapshots: BudgetPool,
+    route_depth: usize,
+    registry_bytes: usize,
     _routes: BudgetTicket,
 }
 impl PresentationBridge {
@@ -241,8 +243,8 @@ impl PresentationBridge {
         epoch: SurfaceEpoch,
         limits: BridgeLimits,
     ) -> Result<Self, RecordError> {
-        let route_bytes = RenderRoot::input_path_storage_bytes_for(limits.geometry.max_path)
-            .ok_or(RecordError::BridgeBudget)?;
+        let route_bytes =
+            RenderRoot::input_path_storage_bytes_for(0).ok_or(RecordError::BridgeBudget)?;
         let storage_bytes = route_bytes
             .checked_add(
                 (limits.max_candidates as usize)
@@ -266,7 +268,7 @@ impl PresentationBridge {
             .reserve(storage_bytes as u64)
             .map_err(|_| RecordError::BridgeBudget)?;
         root.set_input_geometry_source(InputGeometrySource::Presented(None));
-        root.configure_input_path_storage(limits.geometry.max_path);
+        root.configure_input_path_storage(0);
         let snapshots = BudgetPool::new(
             BudgetCategory::Snapshot,
             QueueLimits {
@@ -282,6 +284,8 @@ impl PresentationBridge {
             pending: Vec::with_capacity(limits.max_candidates as usize),
             limits,
             snapshots,
+            route_depth: 0,
+            registry_bytes: storage_bytes - route_bytes,
             _routes: ticket,
         })
     }
@@ -308,8 +312,8 @@ impl PresentationBridge {
     pub fn handle_window_event(&mut self, event: WindowEvent) -> Handled {
         self.root.handle_window_event(event)
     }
-    /// Charged fixed route/registry storage, separate from snapshot leases.
-    pub fn fixed_storage_bytes(&self) -> u64 {
+    /// Charged route/registry storage, separate from snapshot leases.
+    pub fn routing_storage_bytes(&self) -> u64 {
         self._routes.bytes()
     }
     pub fn snapshot_usage(&self) -> BudgetUsage {
@@ -347,6 +351,16 @@ impl PresentationBridge {
             .root
             .record_presented_geometry(self.limits.geometry)
             .map_err(RecordError::Geometry)?;
+        if geometry.max_depth() > self.route_depth {
+            let route_bytes = RenderRoot::input_path_storage_bytes_for(geometry.max_depth())
+                .and_then(|bytes| bytes.checked_add(self.registry_bytes))
+                .ok_or(RecordError::BridgeBudget)?;
+            self._routes
+                .resize(route_bytes as u64)
+                .map_err(|_| RecordError::BridgeBudget)?;
+            self.root.configure_input_path_storage(geometry.max_depth());
+            self.route_depth = geometry.max_depth();
+        }
         let lease = Arc::new(CandidateIdentity {
             cancelled: AtomicBool::new(false),
             owners: AtomicUsize::new(1),

@@ -11,41 +11,30 @@ struct Row {
     key: Option<Value>,
 }
 
-/// One native entry remains issued during decoding. Independent roots also
-/// protect every cursor target and each completed key/label between turns.
+/// One native entry remains issued during decoding. A rooted reference array
+/// protects cursor targets and completed keys/labels between turns.
 /// No raw table layout, hooks or nested VM execution appear in this reader.
 pub(super) struct ChoiceReader {
     array: Value,
     version: u64,
     count: u32,
-    owner: RootOwner,
-    roots: Vec<RootToken>,
+    root: RootToken,
+    references: Value,
     tables: Vec<(Value, u64)>,
     pub rows: Vec<(Value, Value)>,
     current: Option<Row>,
 }
 
 impl ChoiceReader {
-    pub fn new(
-        heap: &mut Heap,
-        array: Value,
-        owner: RootOwner,
-        max_rows: usize,
-    ) -> Result<Self, AdapterError> {
+    pub fn new(heap: &mut Heap, array: Value, owner: RootOwner) -> Result<Self, AdapterError> {
         let info = heap.info(array)?;
         if info.kind != ObjectKind::Array {
             return Err(AdapterError::Input("choose requires an array"));
         }
         let count = heap.sequence_len(array)?;
-        if count == 0 || count as usize > max_rows {
-            return Err(AdapterError::Input(
-                "choice count exceeds session capacity or is empty",
-            ));
+        if count == 0 {
+            return Err(AdapterError::Input("choose requires at least one option"));
         }
-        let mut roots = Vec::new();
-        roots
-            .try_reserve_exact(1 + count as usize * 3)
-            .map_err(|_| AdapterError::Allocation)?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(count as usize)
             .map_err(|_| AdapterError::Allocation)?;
@@ -53,13 +42,14 @@ impl ChoiceReader {
         tables
             .try_reserve_exact(count as usize)
             .map_err(|_| AdapterError::Allocation)?;
-        roots.push(heap.add_root(owner, RootKind::Host, array)?);
+        let references = heap.alloc_array(&[array])?;
+        let root = heap.add_root(owner, RootKind::Host, references)?;
         Ok(Self {
             array,
             version: info.content_version,
             count,
-            owner,
-            roots,
+            root,
+            references,
             tables,
             rows,
             current: None,
@@ -68,7 +58,7 @@ impl ChoiceReader {
 
     /// A sequence slot costs one unit, and the shared lookup reports each slot,
     /// key byte and completion unit. Per-unit root bookkeeping is constant.
-    /// String payload copies are separately bounded by Session's text limit.
+    /// Strings are copied through the heap's chunked read interface.
     pub fn step(&mut self, heap: &mut Heap, budget: u32) -> Result<(bool, u32), AdapterError> {
         if heap.info(self.array)?.content_version != self.version {
             return Err(HeapError::ConcurrentModification.into());
@@ -85,8 +75,7 @@ impl ChoiceReader {
                 let table = heap.sequence_get(self.array, self.rows.len() as u32)?;
                 let lookup = heap.table_own_string_lookup(table, "key")?;
                 let version = heap.info(table)?.content_version;
-                self.roots
-                    .push(heap.add_root(self.owner, RootKind::Host, table)?);
+                heap.array_push(self.references, table)?;
                 self.tables.push((table, version));
                 self.current = Some(Row {
                     table,
@@ -111,8 +100,7 @@ impl ChoiceReader {
                     if heap.info(value)?.kind != ObjectKind::String {
                         return Err(AdapterError::Input("choice key and label must be strings"));
                     }
-                    self.roots
-                        .push(heap.add_root(self.owner, RootKind::Host, value)?);
+                    heap.array_push(self.references, value)?;
                     if let Some(key) = row.key {
                         self.rows.push((key, value));
                         self.current = None;
@@ -127,9 +115,7 @@ impl ChoiceReader {
     }
 
     pub fn release(self, heap: &mut Heap) -> Result<(), AdapterError> {
-        for root in self.roots {
-            heap.release_root(root)?;
-        }
+        heap.release_root(self.root)?;
         Ok(())
     }
 }

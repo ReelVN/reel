@@ -16,20 +16,18 @@ cargo clippy -p reel-media --all-targets --locked -- -D warnings
 cargo clippy -p reel-media --no-default-features --all-targets --locked -- -D warnings
 cargo check -p reel-media --all-targets --target x86_64-pc-windows-gnu --locked
 cargo tree -p reel-media --no-default-features --edges normal --locked
-cargo run -p reel-dev --locked -- audit-kira
 cargo run -p reel-dev --locked -- audio-regression
 cargo run -p reel-dev --locked -- audio-regression --release
 cargo run -p reel-dev --locked -- audio-probe
 cargo run -p reel-media --example device_probe --locked
 ```
 
-The [Rust validation tool](../../tools/reel-dev/README.md) replaces the first-party
-Python audit and shell launchers without deleting their assertions. `audit-kira`
-checks the provenance, licenses and local change record. Local source edits and
-new modules are supported; historical source hashes are not a development gate.
-An optional upstream crate directory produces a comparison report.
+The [Rust validation tool](../../crates/reel-dev/README.md) runs the workspace
+audio-library regressions and actual PCM probes. `audio-regression` directly tests
+`reel-audio`; no copied workspace, separate lock or source comparison is required.
+Original licenses and provenance remain in that crate.
 
-Actual Kira/Renderer checks cover mixing and declared stereo→8ch conversion,
+Actual reel-audio/Renderer checks cover mixing and declared stereo→8ch conversion,
 finite-value handling, saturation, block splitting, malformed buffers, shortages,
 suspend/resume, explicit retirement and budget pressure. The lifecycle fixture
 uses the production gate/slot implementation with controlled native failures;

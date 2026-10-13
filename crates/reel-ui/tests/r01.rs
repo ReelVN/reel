@@ -280,7 +280,7 @@ fn ticket(pool: &BudgetPool, n: usize) -> reel_core::budget::BudgetTicket {
 }
 
 #[test]
-fn work_exhaustion_before_inline_child_mapping_has_the_child_owner() {
+fn small_work_slices_keep_inline_child_ownership() {
     let pool = pool();
     for (slice_units, parent_draw) in [(1, true), (64, true), (1, false), (64, false)] {
         let mut parent = RecordWidget::new(if parent_draw {
@@ -297,93 +297,55 @@ fn work_exhaustion_before_inline_child_mapping_has_the_child_owner() {
         let parent = parent.prepare();
         let parent_id = parent.id();
         let mut bridge = bridge(fixture::root(parent).0);
-        let mut child_failures = 0;
-        let mut complete_builds = 0;
-        for allowance in 0..96 {
-            let source = bridge.record(FrameId(allowance + 1)).unwrap();
-            assert_eq!(source.plan().layers.len(), 1);
-            let reel_ui::app::VisualLayerKind::Scene(scene) = &source.plan().layers[0].kind else {
-                panic!("scene fragment missing")
-            };
-            let command_count = if parent_draw { 2 } else { 1 };
-            assert_eq!(scene.commands().len(), command_count);
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            FrameInfo {
+                logical_size: [400., 300.],
+                physical_size: [400, 300],
+            },
+            limits(),
+            &pool,
+        )
+        .unwrap();
+        let mut slice = StepBudget {
+            max_commands: 1,
+            max_units: slice_units,
+            max_bytes: 4096,
+        };
+        let mut complete = false;
+        for _ in 0..256 {
+            let progress = build.step(slice).unwrap();
             assert!(
-                scene
-                    .commands()
-                    .iter()
-                    .all(|c| matches!(c, record::Command::Draw(_)))
+                progress.units <= slice.max_units
+                    && progress.bytes <= slice.max_bytes
+                    && progress.commands <= 1
             );
-            let mut caps = limits();
-            caps.max_total_units = allowance;
-            let mut build = FrameBuild::new(
-                source,
-                empty_snapshot(&pool),
-                FrameInfo {
-                    logical_size: [400., 300.],
-                    physical_size: [400, 300],
-                },
-                caps,
-                &pool,
-            )
-            .unwrap();
-            let mut units = 0;
-            let mut slice = StepBudget {
-                max_commands: 1,
-                max_units: slice_units,
-                max_bytes: 4096,
-            };
-            for _ in 0..256 {
-                match build.step(slice) {
-                    Err(error) => {
-                        assert_eq!(error.kind, BuildErrorKind::Work);
-                        assert!(
-                            error.at.fragment <= 1,
-                            "the final probe may report the one-past-fragment marker"
-                        );
-                        assert_eq!(error.at.mask_depth, 0);
-                        if error.at.fragment == 0 && error.at.command < command_count {
-                            let expected = if parent_draw {
-                                [parent_id, child_id][error.at.command]
-                            } else {
-                                child_id
-                            };
-                            assert_eq!(
-                                error.at.owner, expected,
-                                "allowance={allowance}, slice={slice_units}, command={}",
-                                error.at.command
-                            );
-                            child_failures += usize::from(expected == child_id);
-                        }
-                        break;
-                    }
-                    Ok(progress) => {
-                        assert!(
-                            progress.units <= slice.max_units
-                                && progress.bytes <= slice.max_bytes
-                                && progress.commands <= 1
-                        );
-                        units += progress.units;
-                        assert!(units <= allowance);
-                        if progress.complete {
-                            drop(build.finish().unwrap());
-                            complete_builds += 1;
-                            break;
-                        }
-                        slice.max_units = slice_units.max(progress.minimum_units);
-                    }
-                }
+            if progress.complete {
+                complete = true;
+                break;
             }
-            assert_eq!(
-                pool.usage().bytes,
-                0,
-                "every Work failure/complete frame releases output"
-            );
-            assert_eq!(bridge.pending_count(), 0);
+            slice.max_units = slice.max_units.max(progress.minimum_units);
+            slice.max_bytes = slice.max_bytes.max(progress.minimum_bytes);
         }
-        assert!(child_failures > 0 && complete_builds > 0);
-        println!(
-            "Work owner sweep parent_draw={parent_draw} slice_units={slice_units} allowances=0..95 child_failures={child_failures} complete_builds={complete_builds}"
+        assert!(complete);
+        let frame = build.finish().unwrap();
+        let expected = if parent_draw {
+            vec![parent_id, child_id]
+        } else {
+            vec![child_id]
+        };
+        assert_eq!(
+            frame
+                .commands()
+                .iter()
+                .map(|c| c.origin.at.owner)
+                .collect::<Vec<_>>(),
+            expected
         );
+        drop(frame);
+        assert_eq!(pool.usage().bytes, 0);
+        assert_eq!(bridge.pending_count(), 0);
     }
 }
 fn affine_agrees(actual: Affine, expected: Affine) {
@@ -936,49 +898,39 @@ fn blob_collision_is_not_a_content_version_and_old_registry_handles_are_foreign(
     assert_eq!(bridge.pending_count(), 0);
 }
 #[test]
-fn hard_byte_and_total_work_limits_fail_before_publication() {
+fn byte_exhaustion_fails_before_publication() {
     let pool = pool();
     let mut bridge = widget_bridge(RecordWidget::new(fill(Color::WHITE)), Affine::IDENTITY);
-    let mut small = limits();
-    small.max_bytes = 1;
-    assert!(
-        FrameBuild::new(
-            bridge.record(FrameId(1)).unwrap(),
-            empty_snapshot(&pool),
-            FrameInfo {
-                logical_size: [400., 300.],
-                physical_size: [400, 300]
-            },
-            small,
-            &pool
-        )
-        .is_err()
-    );
-    assert_eq!(bridge.pending_count(), 0);
-    assert_eq!(pool.usage().bytes, 0);
-    small = limits();
-    small.max_total_units = 1;
-    let mut b = FrameBuild::new(
-        bridge.record(FrameId(2)).unwrap(),
+    let error = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
         empty_snapshot(&pool),
         FrameInfo {
             logical_size: [400., 300.],
             physical_size: [400, 300],
         },
-        small,
+        BuildLimits { max_bytes: 1 },
         &pool,
     )
+    .err()
     .unwrap();
-    assert_eq!(
-        b.step(step_budget()).unwrap_err().kind,
-        BuildErrorKind::Work
-    );
+    assert_eq!(error.kind, BuildErrorKind::Bytes);
+    assert_eq!(bridge.pending_count(), 0);
     assert_eq!(pool.usage().bytes, 0);
 }
 #[test]
-fn nested_masks_use_a_bounded_explicit_stack_and_small_work_slices() {
-    let mut scene = fill(Color::WHITE);
-    for _ in 0..12 {
+fn large_scene_and_nested_masks_use_growing_stacks_and_small_work_slices() {
+    let mut scene = Scene::new();
+    for _ in 0..4097 {
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: peniko::Fill::NonZero,
+            brush: Brush::Solid(Color::WHITE),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(0., 0., 20., 20.)),
+            composite: Composite::default(),
+        });
+    }
+    for _ in 0..96 {
         let mut parent = Scene::new();
         let mask = parent.define_mask(Mask::new(MaskMode::Alpha, scene));
         parent.push_group(Group {
@@ -995,27 +947,10 @@ fn nested_masks_use_a_bounded_explicit_stack_and_small_work_slices() {
         empty_snapshot(&pool),
         &pool,
     );
-    assert_eq!(frame.masks().len(), 12);
+    assert_eq!(frame.masks().len(), 96);
+    assert_eq!(frame.masks().last().unwrap().commands.len(), 4097);
+    assert!(frame.accounted_bytes() <= frame.reserved_bytes());
     drop(frame);
-    let mut short = limits();
-    short.max_depth = 4;
-    let mut b = FrameBuild::new(
-        bridge.record(FrameId(2)).unwrap(),
-        empty_snapshot(&pool),
-        FrameInfo {
-            logical_size: [400., 300.],
-            physical_size: [400, 300],
-        },
-        short,
-        &pool,
-    )
-    .unwrap();
-    let e = loop {
-        if let Err(e) = b.step(step_budget()) {
-            break e;
-        }
-    };
-    assert_eq!(e.kind, BuildErrorKind::Capacity);
     assert_eq!(bridge.pending_count(), 0);
     assert_eq!(pool.usage().bytes, 0);
 }

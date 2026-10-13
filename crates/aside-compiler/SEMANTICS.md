@@ -123,10 +123,11 @@ incremental changes after L02 `a50f1f7` (PR #9 dependency). The only L02 parser 
 in a type atom, as required by §3 value categories / §10 basic type annotations:
 `let value: class = class {};`. No expression/control grammar changed.
 
-Actual source checks include 24 paired author scenes in their documented context,
-10 immutable accepted T01 conversions from `f92dfa2`, and 32 intact assertion
-calls. Quirrel parse/analysis status is separate from `execution=waiting_runtime`.
-Performance measurements and full debug/release validation are reported separately.
+Current source checks include 25 paired author scenes in their documented contexts.
+The 24 reviewed Quirrel migrations retain 52 original assertion call sites and
+run through B01 on the real VM; parsing/analysis and execution have separate
+checks. See `tests/fixtures/quirrel/README.md` for the runnable command and the
+unmigrated corpus boundary.
 
 Limits are 1,000,000 HIR nodes, 200,000 symbols/captures, 16,000,000 work units,
 10,000 imports/modules, 128 source levels/diagnostics and 32 MiB total project

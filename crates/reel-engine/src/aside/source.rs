@@ -49,7 +49,7 @@ impl CompiledStory {
 pub enum SourceError {
     Source(aside_compiler::SourceTooLarge),
     Analysis(aside_compiler::semantic::AnalysisFailure),
-    Lowering(lowering::Error),
+    Lowering(Box<lowering::Error>),
     Format(bc::Error),
     Entry,
 }

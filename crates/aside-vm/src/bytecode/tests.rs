@@ -298,10 +298,6 @@ fn budgets_include_retained_capacity_and_aggregate_nested_data() {
             max_registers: 1,
             ..limits()
         },
-        Limits {
-            max_string_bytes: 2,
-            ..limits()
-        },
     ] {
         assert_eq!(
             VerifiedProgram::decode(&bytes, tight).unwrap_err().kind,

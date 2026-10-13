@@ -3,16 +3,8 @@
 
 use reel_engine::*;
 
-fn session(max_owners: usize) -> Session {
-    Session::new(
-        SessionId(11),
-        Epoch(4),
-        SessionLimits {
-            max_owners,
-            ..SessionLimits::default()
-        },
-    )
-    .unwrap()
+fn session() -> Session {
+    Session::new(SessionId(11), Epoch(4)).unwrap()
 }
 
 fn requirements() -> OwnerRetirementRequirements {
@@ -39,8 +31,8 @@ fn begin_dialogue(session: &mut Session) -> InteractionId {
 }
 
 #[test]
-fn revoked_slot_remains_bounded_and_cannot_reuse_until_all_categories_complete() {
-    let mut session = session(2);
+fn revoked_slot_cannot_be_reused_until_all_categories_complete() {
+    let mut session = session();
     let root = session.root_owner();
     let owner = session.create_owner().unwrap();
     let id = begin_dialogue(&mut session);
@@ -58,9 +50,11 @@ fn revoked_slot_remains_bounded_and_cannot_reuse_until_all_categories_complete()
     );
     assert!(!session.is_owner_live(owner));
     assert!(session.is_owner_live(root));
+    let fresh = session.create_owner().unwrap();
+    assert!(session.is_owner_live(fresh));
     assert_eq!(
-        session.create_owner(),
-        Err(SessionError::Capacity(CapacityKind::Owners))
+        session.owner_lifecycle(owner),
+        Some(OwnerLifecycle::Revoked)
     );
     let usage = session.storage_usage();
     assert_eq!(
@@ -145,7 +139,7 @@ fn revoked_slot_remains_bounded_and_cannot_reuse_until_all_categories_complete()
         Ok(OwnerLifecycle::Retired)
     );
     let replacement = session.create_owner().unwrap();
-    assert_eq!(replacement.owner_id(), OwnerId(3));
+    assert_eq!(replacement.owner_id(), OwnerId(4));
     assert!(session.is_owner_live(replacement));
     assert_eq!(session.owner_lifecycle(owner), None);
     assert_eq!(
@@ -168,7 +162,7 @@ fn revoked_slot_remains_bounded_and_cannot_reuse_until_all_categories_complete()
 
 #[test]
 fn root_revoke_conflict_is_transactional_until_all_live_peers_declared() {
-    let mut session = session(3);
+    let mut session = session();
     let root = session.root_owner();
     let first = session.create_owner().unwrap();
     let second = session.create_owner().unwrap();
@@ -239,7 +233,7 @@ fn root_revoke_conflict_is_transactional_until_all_live_peers_declared() {
 
 #[test]
 fn duplicate_revoke_never_replaces_or_shortcuts_pending_requirements() {
-    let mut session = session(2);
+    let mut session = session();
     let owner = session.create_owner().unwrap();
     session
         .revoke_owner_with_retirement(owner, requirements())
@@ -257,16 +251,18 @@ fn duplicate_revoke_never_replaces_or_shortcuts_pending_requirements() {
         session.owner_lifecycle(owner),
         Some(OwnerLifecycle::Revoked)
     );
+    let fresh = session.create_owner().unwrap();
+    assert!(session.is_owner_live(fresh));
     assert_eq!(
-        session.create_owner(),
-        Err(SessionError::Capacity(CapacityKind::Owners))
+        session.owner_lifecycle(owner),
+        Some(OwnerLifecycle::Revoked)
     );
 }
 
 #[test]
 fn pure_rust_shortcuts_preserve_previously_declared_pending_records() {
     for shortcut in [0, 1, 2] {
-        let mut session = session(2);
+        let mut session = session();
         let root = session.root_owner();
         let owner = session.create_owner().unwrap();
         session
@@ -309,7 +305,7 @@ fn pure_rust_shortcuts_preserve_previously_declared_pending_records() {
 
 #[test]
 fn cleanup_reports_reject_live_and_foreign_owners_without_mutation() {
-    let mut session = session(2);
+    let mut session = session();
     let root = session.root_owner();
     let before = session.storage_usage();
     assert_eq!(
@@ -324,9 +320,7 @@ fn cleanup_reports_reject_live_and_foreign_owners_without_mutation() {
         session.confirm_owner_resources_released(root),
         Err(SessionError::OwnerNotRevoked)
     );
-    let foreign = Session::new(SessionId(12), Epoch(4), SessionLimits::default())
-        .unwrap()
-        .root_owner();
+    let foreign = Session::new(SessionId(12), Epoch(4)).unwrap().root_owner();
     assert_eq!(
         session.revoke_owner_with_retirement(foreign, requirements()),
         Err(SessionError::ForeignOwner)
@@ -349,7 +343,7 @@ fn cleanup_reports_reject_live_and_foreign_owners_without_mutation() {
 
 #[test]
 fn cursor_budget_and_bound_checks_use_differences_without_overflow() {
-    let mut session = session(2);
+    let mut session = session();
     let owner = session.create_owner().unwrap();
     session
         .revoke_owner_with_retirement(
@@ -386,7 +380,7 @@ fn cursor_budget_and_bound_checks_use_differences_without_overflow() {
 
 #[test]
 fn already_completed_main_result_becomes_cleanup_only_on_extended_revoke() {
-    let mut session = session(1);
+    let mut session = session();
     let root = session.root_owner();
     let id = session.begin_say(root, &[], "en").unwrap();
     session

@@ -3,64 +3,124 @@
   "upstream": "19f17df9b6ee43c91ef5c635fd45970ec76c5dbe",
   "files": [
     {
+      "path": "doc/examples/pages/language/bindings-basic.aside",
+      "source": "original/doc/examples/pages/language/bindings-basic.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/bindings-scope.aside",
+      "source": "original/doc/examples/pages/language/bindings-scope.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/containers-basic.aside",
+      "source": "original/doc/examples/pages/language/containers-basic.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/control-flow-closures.aside",
+      "source": "original/doc/examples/pages/language/control-flow-closures.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/control-flow-for.aside",
+      "source": "original/doc/examples/pages/language/control-flow-for.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/control-flow-foreach-array.aside",
+      "source": "original/doc/examples/pages/language/control-flow-foreach-array.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/control-flow-if-basic.aside",
+      "source": "original/doc/examples/pages/language/control-flow-if-basic.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/control-flow-while.aside",
+      "source": "original/doc/examples/pages/language/control-flow-while.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
       "path": "doc/examples/pages/language/errors-rethrow.aside",
-      "source": "tools/quirrel-compat/converted/doc/examples/pages/language/errors-rethrow.aside",
-      "sha256": "adf2709fb1d0f908cd3180e0ac4c5323cf95571afdd2ace19da3eabe9e3ec0fe",
-      "execution": "waiting_runtime"
+      "source": "original/doc/examples/pages/language/errors-rethrow.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "doc/examples/pages/language/functions-minimal.aside",
-      "source": "tools/quirrel-compat/converted/doc/examples/pages/language/functions-minimal.aside",
-      "sha256": "c5d2920f1a70f3486ccdb0833aa8bc664e48dcda37feae0ca47bea66e49e09fb",
-      "execution": "waiting_runtime"
+      "source": "original/doc/examples/pages/language/functions-minimal.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/lexical-comments.aside",
+      "source": "original/doc/examples/pages/language/lexical-comments.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/operators-precedence.aside",
+      "source": "original/doc/examples/pages/language/operators-precedence.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/strings-escapes.aside",
+      "source": "original/doc/examples/pages/language/strings-escapes.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "doc/examples/pages/language/strings-interpolation.aside",
+      "source": "original/doc/examples/pages/language/strings-interpolation.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "doc/examples/types/array/len.aside",
-      "source": "tools/quirrel-compat/converted/doc/examples/types/array/len.aside",
-      "sha256": "93f10b212e672d21266a374dc599ffab08ea226b98df016deef696e539ac875d",
-      "execution": "waiting_runtime"
+      "source": "original/doc/examples/types/array/len.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "doc/examples/types/table/rawin.aside",
-      "source": "tools/quirrel-compat/converted/doc/examples/types/table/rawin.aside",
-      "sha256": "cdcc0abc6a563cf00097f90f461f75251d5477b3efc4000ee69f6b459b56d018",
-      "execution": "waiting_runtime"
+      "source": "original/doc/examples/types/table/rawin.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "testData/exec/basics.aside",
-      "source": "tools/quirrel-compat/converted/testData/exec/basics.aside",
-      "sha256": "7df7a2db4a8007f1d51c69e39cc701307d5a2d6b32d44c73c8544f69251f8e0c",
-      "execution": "waiting_runtime"
+      "source": "original/testData/exec/basics.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "testData/exec/for_loop_at_function_start.aside",
-      "source": "tools/quirrel-compat/converted/testData/exec/for_loop_at_function_start.aside",
-      "sha256": "ea02ac1541e6d83a2022de13880c564f2e41a3a439095c73ed25293114182f5f",
-      "execution": "waiting_runtime"
+      "source": "original/testData/exec/for_loop_at_function_start.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "testData/exec/locals_chain.aside",
-      "source": "tools/quirrel-compat/converted/testData/exec/locals_chain.aside",
-      "sha256": "2ed505c0f9691dd5adfeacfafbe6cc125951ce5c62350e52474395c358936592",
-      "execution": "waiting_runtime"
+      "source": "original/testData/exec/locals_chain.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/optimizer_add.aside",
+      "source": "original/testData/exec/optimizer_add.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "testData/exec/optimizer_mul.aside",
-      "source": "tools/quirrel-compat/converted/testData/exec/optimizer_mul.aside",
-      "sha256": "7b6a13827a5dc4d8a66c9df0f0117fc3d5d53a28022e6b6814004b80cda41e46",
-      "execution": "waiting_runtime"
+      "source": "original/testData/exec/optimizer_mul.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "testData/exec/valid_syntax/closures_scope.aside",
-      "source": "tools/quirrel-compat/converted/testData/exec/valid_syntax/closures_scope.aside",
-      "sha256": "927c98d55ff2c89424fcad282bfa67f7de88595891ff79e7d45fd7a0411b3c39",
-      "execution": "waiting_runtime"
+      "source": "original/testData/exec/valid_syntax/closures_scope.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     },
     {
       "path": "testData/exec/valid_syntax/error_handling.aside",
-      "source": "tools/quirrel-compat/converted/testData/exec/valid_syntax/error_handling.aside",
-      "sha256": "d347dc7be4828e479c4860a794ef9be4f5adab52e5ea8a424422324353fdcd1f",
-      "execution": "waiting_runtime"
+      "source": "original/testData/exec/valid_syntax/error_handling.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/valid_syntax/variables.aside",
+      "source": "original/testData/exec/valid_syntax/variables.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     }
   ]
 }

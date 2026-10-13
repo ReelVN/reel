@@ -239,9 +239,6 @@ impl Wire for String {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let count = u32::get(r)?;
-        if count > r.limits.max_string_bytes {
-            return Err(r.error(ErrorKind::Limit, "string byte limit"));
-        }
         r.charge(1, count as usize)?;
         let materialize = r.materialize;
         let mut out = String::new();

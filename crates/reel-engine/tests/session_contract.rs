@@ -1,7 +1,7 @@
 use reel_engine::*;
 
 fn session() -> Session {
-    Session::new(SessionId(7), Epoch(3), SessionLimits::default()).unwrap()
+    Session::new(SessionId(7), Epoch(3)).unwrap()
 }
 
 fn line(text: &str) -> DialogueLineInput<'_> {
@@ -315,23 +315,11 @@ fn only_root_submits_and_dead_ui_owner_cannot_advance_or_poison_sequence() {
 
 #[test]
 fn owner_slots_reuse_storage_but_never_identity() {
-    let mut session = Session::new(
-        SessionId(1),
-        Epoch(1),
-        SessionLimits {
-            max_owners: 2,
-            ..SessionLimits::default()
-        },
-    )
-    .unwrap();
+    let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let root = session.root_owner();
     let first = session.create_owner().unwrap();
     let usage = session.storage_usage();
     assert_eq!(first.owner_id(), OwnerId(2));
-    assert_eq!(
-        session.create_owner(),
-        Err(SessionError::Capacity(CapacityKind::Owners))
-    );
     assert_eq!(session.storage_usage(), usage);
     session.revoke_owner(first).unwrap();
     let second = session.create_owner().unwrap();
@@ -357,7 +345,7 @@ fn new_epoch_and_new_session_reject_old_owner_interaction_and_reveal() {
     let old_root = old.root_owner();
     let old_id = old.begin_say(old_root, &[line("old")], "en").unwrap();
     for identity in [(SessionId(7), Epoch(4)), (SessionId(8), Epoch(3))] {
-        let mut current = Session::new(identity.0, identity.1, SessionLimits::default()).unwrap();
+        let mut current = Session::new(identity.0, identity.1).unwrap();
         let root = current.root_owner();
         let id = current.begin_say(root, &[line("current")], "en").unwrap();
         assert_eq!(id.generation(), old_id.generation());
@@ -391,32 +379,11 @@ fn new_epoch_and_new_session_reject_old_owner_interaction_and_reveal() {
 }
 
 #[test]
-fn dialogue_capacity_failures_preserve_storage_history_and_generation() {
+fn dialogue_validation_preserves_storage_history_and_generation() {
     let input = line("x");
-    // en + mio + Mio + opening.1 + x = 18 copied source bytes.
-    let exact_bytes = "en".len() + "mio".len() + "Mio".len() + "opening.1".len() + 1;
-    let mut session = Session::new(
-        SessionId(1),
-        Epoch(1),
-        SessionLimits {
-            max_lines_per_dialogue: 1,
-            max_history_groups: 1,
-            max_history_text_bytes: exact_bytes,
-            max_interaction_text_bytes: exact_bytes,
-            ..SessionLimits::default()
-        },
-    )
-    .unwrap();
+    let mut session = session();
     let root = session.root_owner();
     let before = session.storage_usage();
-    assert_eq!(
-        session.begin_say(root, &[input, input], "en"),
-        Err(SessionError::Capacity(CapacityKind::DialogueLines))
-    );
-    assert_eq!(
-        session.begin_say(root, &[line("xx")], "en"),
-        Err(SessionError::Capacity(CapacityKind::InteractionTextBytes))
-    );
     assert_eq!(
         session.begin_say(root, &[input], ""),
         Err(SessionError::EmptyLocale)
@@ -434,71 +401,52 @@ fn dialogue_capacity_failures_preserve_storage_history_and_generation() {
     assert!(session.view().interaction.is_none());
     let id = session.begin_say(root, &[input], "en").unwrap();
     assert_eq!(id.generation(), 1);
-    assert_eq!(
-        session.storage_usage().retained_history_text_bytes,
-        exact_bytes
-    );
-    assert!(session.storage_usage().allocated_capacity_bytes > exact_bytes * 2);
+    assert_eq!(session.storage_usage().retained_history_text_bytes, 18);
     advance(&mut session, root, 1, id).unwrap();
     advance(&mut session, root, 2, id).unwrap();
     session.take_completion().unwrap();
-    let after = session.storage_usage();
     assert_eq!(
-        session.begin_say(root, &[input], "en"),
-        Err(SessionError::Capacity(CapacityKind::HistoryGroups))
+        session.begin_choice(root, &choices()).unwrap().generation(),
+        2
     );
-    assert_eq!(session.storage_usage(), after);
-    assert_eq!(
-        session.begin_choice(root, &choices()),
-        Err(SessionError::Capacity(CapacityKind::InteractionTextBytes))
-    );
-    let next = session
-        .begin_choice(
-            root,
-            &[ChoiceInput {
-                key: "k",
-                label: "l",
-            }],
-        )
-        .unwrap();
-    assert_eq!(next.generation(), 2);
 }
-
 #[test]
-fn history_byte_limit_is_independent_and_atomic() {
-    let mut session = Session::new(
-        SessionId(1),
-        Epoch(1),
-        SessionLimits {
-            max_history_text_bytes: 1,
-            ..SessionLimits::default()
-        },
-    )
-    .unwrap();
+fn dialogue_lines_text_and_complete_history_grow_with_author_content() {
+    let mut session = session();
     let root = session.root_owner();
-    let before = session.storage_usage();
+    let text = "雨".repeat(22_000);
+    let lines = vec![line(&text); 17];
+    let id = session.begin_say(root, &lines, "zh-CN").unwrap();
+    assert_eq!(dialogue(&session).lines().len(), 17);
+    assert_eq!(dialogue(&session).lines()[16].id().index(), 16_usize);
+    session
+        .handle_local_input(root, InputAction::Advance(id))
+        .unwrap();
+    session
+        .handle_local_input(root, InputAction::Advance(id))
+        .unwrap();
+    session.take_completion().unwrap();
+    for _ in 1..300 {
+        let id = session.begin_say(root, &[line("continued")], "en").unwrap();
+        session
+            .handle_local_input(root, InputAction::Advance(id))
+            .unwrap();
+        session
+            .handle_local_input(root, InputAction::Advance(id))
+            .unwrap();
+        session.take_completion().unwrap();
+    }
+    assert_eq!(session.view().history.len(), 300);
     assert_eq!(
-        session.begin_say(root, &[line("bounded")], "en"),
-        Err(SessionError::Capacity(CapacityKind::HistoryTextBytes))
+        session.view().history[0].lines()[16].content().fallback(),
+        text
     );
-    assert_eq!(session.storage_usage(), before);
-    assert!(session.view().history.is_empty());
-    let id = session.begin_choice(root, &choices()).unwrap();
-    assert_eq!(id.generation(), 1);
+    assert_eq!(session.view().history[299].text(), "continued");
+    assert!(session.storage_usage().retained_history_text_bytes > 1024 * 1024);
 }
-
 #[test]
 fn choice_validation_is_atomic_and_duplicate_keys_are_not_normalized() {
-    let mut session = Session::new(
-        SessionId(1),
-        Epoch(1),
-        SessionLimits {
-            max_choices: 2,
-            max_interaction_text_bytes: 32,
-            ..SessionLimits::default()
-        },
-    )
-    .unwrap();
+    let mut session = session();
     let root = session.root_owner();
     let before = session.storage_usage();
     let option = ChoiceInput {
@@ -517,53 +465,44 @@ fn choice_validation_is_atomic_and_duplicate_keys_are_not_normalized() {
         session.begin_choice(root, &[option, option]),
         Err(SessionError::DuplicateChoiceKey)
     );
-    assert_eq!(
-        session.begin_choice(root, &[option, option, option]),
-        Err(SessionError::Capacity(CapacityKind::Choices))
-    );
-    assert_eq!(
-        session.begin_choice(
-            root,
-            &[ChoiceInput {
-                key: "k",
-                label: "a label longer than the permitted byte budget"
-            }]
-        ),
-        Err(SessionError::Capacity(CapacityKind::InteractionTextBytes))
-    );
-    let oversized_duplicate = ChoiceInput {
-        key: "duplicate key longer than the permitted byte budget",
+    let long_key = "key".repeat(22_000);
+    let duplicate = ChoiceInput {
+        key: &long_key,
         label: "",
     };
     assert_eq!(
-        session.begin_choice(root, &[oversized_duplicate, oversized_duplicate]),
-        Err(SessionError::Capacity(CapacityKind::InteractionTextBytes))
+        session.begin_choice(root, &[duplicate, duplicate]),
+        Err(SessionError::DuplicateChoiceKey)
     );
     assert_eq!(session.storage_usage(), before);
     assert!(session.view().history.is_empty());
-    // Exact UTF-8 sequence is the key contract, not implicit normalization.
-    let id = session
-        .begin_choice(
-            root,
-            &[
-                ChoiceInput {
-                    key: "é",
-                    label: "one",
-                },
-                ChoiceInput {
-                    key: "e\u{301}",
-                    label: "two",
-                },
-            ],
-        )
-        .unwrap();
+    let keys: Vec<_> = (0..1023).map(|i| format!("option-{i}")).collect();
+    let label = "label".repeat(14_000);
+    let mut options: Vec<_> = keys
+        .iter()
+        .map(|key| ChoiceInput {
+            key,
+            label: "choice",
+        })
+        .collect();
+    options.extend([
+        ChoiceInput {
+            key: "é",
+            label: &label,
+        },
+        ChoiceInput {
+            key: "e\u{301}",
+            label: "two",
+        },
+    ]);
+    let id = session.begin_choice(root, &options).unwrap();
     assert_eq!(id.generation(), 1);
+    assert_eq!(choice(&session).options().len(), 1025);
     assert_ne!(
-        choice(&session).options()[0].id(),
-        choice(&session).options()[1].id()
+        choice(&session).options()[1023].id(),
+        choice(&session).options()[1024].id()
     );
 }
-
 #[test]
 fn cancel_keeps_history_and_commits_cleanup_once() {
     let mut session = session();
@@ -679,33 +618,21 @@ fn empty_group_projects_zero_and_end_requires_an_idle_claimed_session() {
 }
 
 #[test]
-fn invalid_and_impossible_storage_limits_fail_explicitly() {
+fn owners_grow_without_a_fixed_slot_count_and_keep_retirement_identity() {
+    let mut session = session();
+    let owners: Vec<_> = (0..100).map(|_| session.create_owner().unwrap()).collect();
+    assert!(owners.iter().all(|owner| session.is_owner_live(*owner)));
+    let before = session.storage_usage();
+    session.revoke_owner(owners[50]).unwrap();
+    let replacement = session.create_owner().unwrap();
+    assert_ne!(replacement, owners[50]);
+    assert_eq!(session.owner_lifecycle(owners[50]), None);
+    assert!(session.is_owner_live(replacement));
     assert_eq!(
-        Session::new(
-            SessionId(1),
-            Epoch(1),
-            SessionLimits {
-                max_owners: 0,
-                ..SessionLimits::default()
-            }
-        )
-        .unwrap_err(),
-        SessionError::InvalidLimits
-    );
-    assert_eq!(
-        Session::new(
-            SessionId(1),
-            Epoch(1),
-            SessionLimits {
-                max_owners: usize::MAX,
-                ..SessionLimits::default()
-            }
-        )
-        .unwrap_err(),
-        SessionError::AllocationFailed
+        session.storage_usage().reserved_owner_slots,
+        before.reserved_owner_slots
     );
 }
-
 #[test]
 fn input_sequence_high_water_is_shared_by_all_live_ui_owners() {
     let mut session = session();
@@ -796,7 +723,7 @@ fn local_input_exhaustion_never_wraps_and_dead_or_foreign_sources_cannot_poison_
     let root = session.root_owner();
     let dead = session.create_owner().unwrap();
     session.revoke_owner(dead).unwrap();
-    let mut foreign = Session::new(SessionId(99), Epoch(1), SessionLimits::default()).unwrap();
+    let mut foreign = Session::new(SessionId(99), Epoch(1)).unwrap();
     let foreign_owner = foreign.root_owner();
     let foreign_interaction = foreign
         .begin_say(foreign_owner, &[line("foreign")], "en")

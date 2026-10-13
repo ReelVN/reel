@@ -146,7 +146,14 @@ fn moving_tickets_charge_capacity_and_return_once_across_a_thread() {
     .join()
     .unwrap();
     assert_eq!(p.usage().bytes, 0);
-    let t = p.reserve(128).unwrap();
+    let mut t = p.reserve(32).unwrap();
+    t.resize(128).unwrap();
+    assert_eq!(t.resize(129).unwrap_err().code, RejectCode::Busy);
+    assert_eq!(t.bytes(), 128);
+    assert_eq!(p.usage().bytes, 128);
+    t.resize(16).unwrap();
+    assert_eq!(p.usage().bytes, 16);
+    assert_eq!(p.usage().tickets, 1);
     assert_eq!(p.usage().peak_bytes, 128);
     drop(t);
     assert_eq!(p.usage().tickets, 0);

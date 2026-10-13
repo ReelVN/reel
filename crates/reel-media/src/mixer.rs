@@ -4,7 +4,7 @@ use crate::maintenance::{
 };
 use crate::retirement::PhysicalRelease;
 use crate::{AudioError, AudioErrorKind, AudioFormat, PcmFill};
-use kira::{
+use reel_audio::{
     AudioManager, AudioManagerSettings, Frame, Tween,
     backend::{Backend, Renderer},
     info::Info,
@@ -97,7 +97,6 @@ struct Residency {
     release: Option<PhysicalRelease>,
 }
 pub type DecodedSoundRequest = (u32, Vec<[f32; 2]>, BudgetTicket);
-pub const MAX_DECODED_FRAMES: usize = 8_388_608;
 impl DecodedSound {
     pub fn new(
         sample_rate_hz: u32,
@@ -107,11 +106,7 @@ impl DecodedSound {
         let required = (frames.capacity() as u64)
             .checked_add(frames.len() as u64)
             .and_then(|n| n.checked_mul(8));
-        if sample_rate_hz == 0
-            || frames.is_empty()
-            || frames.len() > MAX_DECODED_FRAMES
-            || required.is_none_or(|n| n > ticket.bytes())
-        {
+        if sample_rate_hz == 0 || frames.is_empty() || required.is_none_or(|n| n > ticket.bytes()) {
             return Err(Rejected {
                 request: (sample_rate_hz, frames, ticket),
                 reason: RejectReason::new(
@@ -227,8 +222,9 @@ impl KiraMixer {
         service: &AudioReclaimService,
     ) -> Result<Self, AudioError> {
         format.validate()?;
-        if !(1..=256).contains(&limits.max_sounds)
-            || !(1..=4096).contains(&limits.internal_buffer_frames)
+        if limits.max_sounds == 0
+            || limits.internal_buffer_frames == 0
+            || std::alloc::Layout::array::<Frame>(limits.internal_buffer_frames).is_err()
         {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidRequest,
@@ -238,7 +234,7 @@ impl KiraMixer {
         let (signal, renderer_credit, manager_credit) = service.reserve_generation()?;
         let manager = AudioManager::<Bridge>::new(AudioManagerSettings {
             backend_settings: (format.sample_rate_hz, signal.clone(), renderer_credit),
-            capacities: kira::Capacities {
+            capacities: reel_audio::Capacities {
                 sub_track_capacity: 0,
                 send_track_capacity: 0,
                 clock_capacity: 0,

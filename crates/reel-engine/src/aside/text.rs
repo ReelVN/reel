@@ -8,7 +8,6 @@ use super::AdapterError;
 pub(super) fn read_string(
     heap: &Heap,
     value: Value,
-    max_bytes: usize,
     read_limit: usize,
 ) -> Result<String, AdapterError> {
     let info = heap.info(value)?;
@@ -16,8 +15,8 @@ pub(super) fn read_string(
         return Err(AdapterError::Input("expected immutable string"));
     }
     let len = info.len as usize;
-    if len > max_bytes || read_limit == 0 {
-        return Err(AdapterError::Input("string byte limit"));
+    if read_limit == 0 {
+        return Err(AdapterError::Input("string read chunk must be nonzero"));
     }
     let mut bytes = Vec::new();
     bytes

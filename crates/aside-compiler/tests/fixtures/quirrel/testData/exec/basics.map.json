@@ -1,7 +1,5 @@
 {
   "source": "testData/exec/basics.nut",
-  "source_sha256": "bbab6557d13b1a87add74f4a1bc0df9d7f13c6dfca07d79fdb6bf7b3793c4f69",
-  "aside_sha256": "7df7a2db4a8007f1d51c69e39cc701307d5a2d6b32d44c73c8544f69251f8e0c",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        215
+        188
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         54
       ],
       "aside": [
-        215,
-        269
+        188,
+        242
       ],
       "kind": "copied"
     },
@@ -33,8 +31,8 @@
         65
       ],
       "aside": [
-        269,
-        279
+        242,
+        252
       ],
       "kind": "reviewed_edit",
       "reason": "literal constant used as immutable binding; terminate this complete reviewed statement with a semicolon"
@@ -45,8 +43,8 @@
         66
       ],
       "aside": [
-        279,
-        280
+        252,
+        253
       ],
       "kind": "copied"
     },
@@ -56,8 +54,8 @@
         75
       ],
       "aside": [
-        280,
-        290
+        253,
+        263
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -68,8 +66,8 @@
         76
       ],
       "aside": [
-        290,
-        291
+        263,
+        264
       ],
       "kind": "copied"
     },
@@ -79,8 +77,8 @@
         87
       ],
       "aside": [
-        291,
-        305
+        264,
+        278
       ],
       "kind": "reviewed_edit",
       "reason": "mutable lexical binding; terminate this complete reviewed statement with a semicolon"
@@ -91,8 +89,8 @@
         88
       ],
       "aside": [
-        305,
-        306
+        278,
+        279
       ],
       "kind": "copied"
     },
@@ -102,8 +100,8 @@
         94
       ],
       "aside": [
-        306,
-        313
+        279,
+        286
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -114,8 +112,8 @@
         95
       ],
       "aside": [
-        313,
-        314
+        286,
+        287
       ],
       "kind": "copied"
     },
@@ -125,8 +123,8 @@
         106
       ],
       "aside": [
-        314,
-        326
+        287,
+        299
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -137,8 +135,8 @@
         107
       ],
       "aside": [
-        326,
-        327
+        299,
+        300
       ],
       "kind": "copied"
     },
@@ -148,8 +146,8 @@
         113
       ],
       "aside": [
-        327,
-        334
+        300,
+        307
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -160,8 +158,8 @@
         114
       ],
       "aside": [
-        334,
-        335
+        307,
+        308
       ],
       "kind": "copied"
     },
@@ -171,8 +169,8 @@
         120
       ],
       "aside": [
-        335,
-        342
+        308,
+        315
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -183,8 +181,8 @@
         121
       ],
       "aside": [
-        342,
-        343
+        315,
+        316
       ],
       "kind": "copied"
     },
@@ -194,8 +192,8 @@
         124
       ],
       "aside": [
-        343,
-        350
+        316,
+        323
       ],
       "kind": "reviewed_edit",
       "reason": "post-increment result is unused in this statement; terminate this complete reviewed statement with a semicolon"
@@ -206,8 +204,8 @@
         125
       ],
       "aside": [
-        350,
-        351
+        323,
+        324
       ],
       "kind": "copied"
     },
@@ -217,8 +215,8 @@
         128
       ],
       "aside": [
-        351,
-        358
+        324,
+        331
       ],
       "kind": "reviewed_edit",
       "reason": "post-decrement result is unused in this statement; terminate this complete reviewed statement with a semicolon"
@@ -229,8 +227,8 @@
         129
       ],
       "aside": [
-        358,
-        359
+        331,
+        332
       ],
       "kind": "copied"
     },
@@ -240,8 +238,8 @@
         138
       ],
       "aside": [
-        359,
-        369
+        332,
+        342
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -252,8 +250,8 @@
         139
       ],
       "aside": [
-        369,
-        370
+        342,
+        343
       ],
       "kind": "copied"
     },
@@ -263,8 +261,8 @@
         148
       ],
       "aside": [
-        370,
-        380
+        343,
+        353
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -275,8 +273,8 @@
         150
       ],
       "aside": [
-        380,
-        382
+        353,
+        355
       ],
       "kind": "copied"
     },
@@ -286,8 +284,8 @@
         156
       ],
       "aside": [
-        382,
-        389
+        355,
+        362
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -298,8 +296,8 @@
         157
       ],
       "aside": [
-        389,
-        390
+        362,
+        363
       ],
       "kind": "copied"
     },
@@ -309,8 +307,8 @@
         163
       ],
       "aside": [
-        390,
-        397
+        363,
+        370
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -321,8 +319,8 @@
         164
       ],
       "aside": [
-        397,
-        398
+        370,
+        371
       ],
       "kind": "copied"
     },
@@ -332,8 +330,8 @@
         173
       ],
       "aside": [
-        398,
-        408
+        371,
+        381
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -344,8 +342,8 @@
         174
       ],
       "aside": [
-        408,
-        409
+        381,
+        382
       ],
       "kind": "copied"
     },
@@ -355,8 +353,8 @@
         183
       ],
       "aside": [
-        409,
-        419
+        382,
+        392
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -367,8 +365,8 @@
         184
       ],
       "aside": [
-        419,
-        420
+        392,
+        393
       ],
       "kind": "copied"
     },
@@ -378,8 +376,8 @@
         199
       ],
       "aside": [
-        420,
-        436
+        393,
+        409
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -390,8 +388,8 @@
         200
       ],
       "aside": [
-        436,
-        437
+        409,
+        410
       ],
       "kind": "copied"
     },
@@ -401,8 +399,8 @@
         212
       ],
       "aside": [
-        437,
-        450
+        410,
+        423
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -413,8 +411,8 @@
         214
       ],
       "aside": [
-        450,
-        452
+        423,
+        425
       ],
       "kind": "copied"
     },
@@ -424,8 +422,8 @@
         230
       ],
       "aside": [
-        452,
-        469
+        425,
+        442
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -436,8 +434,8 @@
         231
       ],
       "aside": [
-        469,
-        470
+        442,
+        443
       ],
       "kind": "copied"
     }
@@ -449,8 +447,8 @@
         230
       ],
       "aside": [
-        452,
-        468
+        425,
+        441
       ],
       "tokens": [
         "assert",

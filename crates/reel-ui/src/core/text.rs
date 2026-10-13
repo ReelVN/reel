@@ -21,20 +21,20 @@ pub type ArcStr = std::sync::Arc<str>;
 /// This enables updating of brush details without performing relayouts;
 /// the inner values are indexes into the `brushes` argument to [`render_text()`].
 ///
-/// [`Brush`]: parley::Brush
+/// [`Brush`]: reel_text::Brush
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct BrushIndex(pub usize);
 
 /// A style property specialised for use within Masonry.
-pub type StyleProperty = parley::StyleProperty<'static, BrushIndex>;
+pub type StyleProperty = reel_text::StyleProperty<'static, BrushIndex>;
 
 /// A set of styles specialised for use within Masonry.
-pub type StyleSet = parley::StyleSet<BrushIndex>;
+pub type StyleSet = reel_text::StyleSet<BrushIndex>;
 
 use accesskit::{TextDecoration, TextDecorationStyle};
 use kurbo::{Affine, Line, Stroke};
-use parley::{Layout, PositionedLayoutItem, Style};
 use peniko::{Brush, Fill};
+use reel_text::{Layout, PositionedLayoutItem, Style};
 use smallvec::SmallVec;
 
 use crate::imaging::{PaintSink, Painter, record::Glyph};
@@ -300,7 +300,7 @@ fn render_text_inner(
 /// continuations precede the start in logical order. Group in visual order, then
 /// restore logical indexing; no prefix scan repeats for a ligature or style run.
 fn revealed_clusters(
-    run: &parley::Run<'_, BrushIndex>,
+    run: &reel_text::Run<'_, BrushIndex>,
     visible: &std::ops::Range<usize>,
 ) -> SmallVec<[bool; 64]> {
     let mut masks = SmallVec::new();
@@ -376,8 +376,8 @@ pub fn set_accesskit_brush_properties(
 mod reveal_tests {
     use super::*;
     use crate::imaging::record::{Command, Draw, Scene};
-    use crate::parley::{FontContext, LayoutContext};
     use crate::peniko::{Blob, Color};
+    use crate::reel_text::{FontContext, LayoutContext};
 
     fn layout(text: &str, styled: bool) -> Layout<BrushIndex> {
         let bytes = std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect(
@@ -385,10 +385,12 @@ mod reveal_tests {
         ))
         .unwrap();
         let mut fonts = FontContext {
-            collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
-                system_fonts: false,
-                ..Default::default()
-            }),
+            collection: reel_text::fontique::Collection::new(
+                reel_text::fontique::CollectionOptions {
+                    system_fonts: false,
+                    ..Default::default()
+                },
+            ),
             source_cache: Default::default(),
         };
         let families = fonts.collection.register_fonts(Blob::from(bytes), None);
@@ -399,14 +401,14 @@ mod reveal_tests {
             .to_owned();
         let mut context = LayoutContext::new();
         let mut builder = context.ranged_builder(&mut fonts, text, 1., false);
-        builder.push_default(parley::StyleProperty::FontFamily(family.as_str().into()));
-        builder.push_default(parley::StyleProperty::FontSize(24.));
+        builder.push_default(reel_text::StyleProperty::FontFamily(family.as_str().into()));
+        builder.push_default(reel_text::StyleProperty::FontSize(24.));
         if styled {
-            builder.push_default(parley::StyleProperty::Underline(true));
-            builder.push_default(parley::StyleProperty::Strikethrough(true));
+            builder.push_default(reel_text::StyleProperty::Underline(true));
+            builder.push_default(reel_text::StyleProperty::Strikethrough(true));
             for (index, (byte, ch)) in text.char_indices().enumerate() {
                 builder.push(
-                    parley::StyleProperty::Brush(BrushIndex(index % 2)),
+                    reel_text::StyleProperty::Brush(BrushIndex(index % 2)),
                     byte..byte + ch.len_utf8(),
                 );
             }

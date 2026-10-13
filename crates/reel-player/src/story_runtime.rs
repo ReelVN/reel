@@ -150,14 +150,13 @@ impl StoryRuntime {
 mod tests {
     use super::*;
     use reel_engine::{
-        Epoch, InputAction, InteractionView, OwnerLifecycle, Session, SessionId, SessionLimits,
-        aside::VmLimits,
+        Epoch, InputAction, InteractionView, OwnerLifecycle, Session, SessionId, aside::VmLimits,
     };
 
     fn runtime(text: &str) -> StoryRuntime {
         StoryRuntime::new(
             AsideSessionUi::from_source(
-                Session::new(SessionId(73), Epoch(1), SessionLimits::default()).unwrap(),
+                Session::new(SessionId(73), Epoch(1)).unwrap(),
                 text,
                 "window_story",
                 1,

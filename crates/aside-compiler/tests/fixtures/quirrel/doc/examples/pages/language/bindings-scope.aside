@@ -1,0 +1,10 @@
+// Source: original/doc/examples/pages/language/bindings-scope.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+fn announce(range) { println(f"contact at {range}m"); }
+{ let range = 400; announce(range); }
+{ let range = 250; announce(range); }
+let range = 999;
+fn closest(range) { return range; }
+println("closest(10) =", closest(10));
+println("range =", range);

@@ -1,0 +1,7 @@
+// Source: original/doc/examples/pages/language/control-flow-foreach-array.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let squadMembers = ["driver", "gunner", "loader"];
+println("squadMembers roles:");
+for role in squadMembers { println(role); }
+for seat in 0..squadMembers.len() { let role = squadMembers[seat]; println(f"seat {seat}: {role}"); }

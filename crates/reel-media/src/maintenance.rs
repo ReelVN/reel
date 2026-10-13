@@ -3,7 +3,7 @@ use crate::{
     AudioError, AudioErrorKind,
     mixer::{Bridge, DecodedSound},
 };
-use kira::{AudioManager, backend::Renderer, sound::Sound};
+use reel_audio::{AudioManager, backend::Renderer, sound::Sound};
 use reel_core::wake::WakeSignal;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
@@ -26,16 +26,6 @@ impl Default for ReclaimLimits {
             max_generations: 4,
             queued_work: 64,
         }
-    }
-}
-impl ReclaimLimits {
-    /// Conservative unique PCM bound, before the caller's tighter real pools.
-    pub fn resident_pcm_bound_bytes(self) -> u64 {
-        (self.max_generations as u64)
-            .saturating_mul(2 * 256)
-            .saturating_add(self.queued_work as u64)
-            .saturating_add(1)
-            .saturating_mul(crate::MAX_DECODED_FRAMES as u64 * 8)
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,14 +108,20 @@ pub struct AudioReclaimService {
 }
 impl AudioReclaimService {
     pub fn new(limits: ReclaimLimits, wake: WakeSignal) -> Result<Self, AudioError> {
-        if !(1..=64).contains(&limits.max_generations) || !(1..=256).contains(&limits.queued_work) {
+        let teardown_capacity = limits.max_generations.checked_mul(2);
+        if limits.max_generations == 0
+            || limits.queued_work == 0
+            || std::alloc::Layout::array::<Envelope>(limits.queued_work).is_err()
+            || teardown_capacity
+                .is_none_or(|capacity| std::alloc::Layout::array::<Envelope>(capacity).is_err())
+        {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidRequest,
                 "invalid reclamation limits",
             ));
         }
         let (normal, normal_consumer) = RingBuffer::new(limits.queued_work);
-        let (teardown, teardown_consumer) = RingBuffer::new(2 * limits.max_generations);
+        let (teardown, teardown_consumer) = RingBuffer::new(teardown_capacity.unwrap());
         let shared = Arc::new(ServiceShared {
             limits,
             normal: Mutex::new(normal),

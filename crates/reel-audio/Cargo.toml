@@ -1,0 +1,45 @@
+[package]
+name = "reel-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Reel host-driven audio mixing and sound rendering"
+
+[lib]
+name = "reel_audio"
+
+[features]
+default = []
+aac = ["symphonia", "symphonia/aac"]
+adpcm = ["symphonia", "symphonia/adpcm"]
+aiff = ["symphonia", "symphonia/aiff"]
+alac = ["symphonia", "symphonia/alac"]
+caf = ["symphonia", "symphonia/caf"]
+flac = ["symphonia", "symphonia/flac"]
+isomp4 = ["symphonia", "symphonia/isomp4"]
+mkv = ["symphonia", "symphonia/mkv"]
+mp1 = ["symphonia", "symphonia/mp1"]
+mp2 = ["symphonia", "symphonia/mp2"]
+mp3 = ["symphonia", "symphonia/mp3"]
+mpa = ["symphonia", "symphonia/mpa"]
+ogg = ["symphonia", "symphonia/ogg"]
+pcm = ["symphonia", "symphonia/pcm"]
+vorbis = ["symphonia", "symphonia/vorbis"]
+wav = ["symphonia", "symphonia/wav"]
+
+[dependencies]
+atomic-arena = "=0.1.2"
+glam = { version = "=0.33.12", features = ["mint"] }
+mint = "=0.5.9"
+pastey = "=0.2.3"
+rtrb = "=0.4.0"
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
+symphonia = { version = "=0.6.1", optional = true, default-features = false }
+triple_buffer = "=9.0.0"
+
+[dev-dependencies]
+approx = "=0.5.1"
+
+[lints]
+workspace = true
