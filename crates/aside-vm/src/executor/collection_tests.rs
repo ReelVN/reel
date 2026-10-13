@@ -929,7 +929,10 @@ fn spread_destination_overwrite_and_odd_append_invalidate_resume() {
                 let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
                     panic!()
                 };
-                assert!(matches!(s.phase, ScriptPhase::Spread { index: 1, .. }));
+                assert!(matches!(
+                    s.phase,
+                    ScriptPhase::Spread(collections::SequenceSpread { index: 1, .. })
+                ));
                 packed = Some(vm.value(s.env, 1).unwrap());
                 break;
             }
@@ -952,6 +955,310 @@ fn spread_destination_overwrite_and_odd_append_invalidate_resume() {
         assert_eq!(after.content_version, before.content_version);
         vm.heap_mut().release_root(root).unwrap();
     }
+}
+
+fn collection_copy(table: bool) -> BytecodePackage {
+    let mut p = package(
+        vec![],
+        vec![
+            op(
+                if table {
+                    Opcode::MakeTable
+                } else {
+                    Opcode::MakeArray
+                },
+                1,
+                0,
+                0,
+            ),
+            op(
+                if table {
+                    Opcode::TableSpread
+                } else {
+                    Opcode::ArraySpread
+                },
+                1,
+                0,
+                0,
+            ),
+            op(Opcode::Return, 1, 0, 0),
+        ],
+        vec![if table {
+            Descriptor::Table(vec![])
+        } else {
+            Descriptor::Sequence(RegWindow {
+                start: Reg(1),
+                len: 0,
+            })
+        }],
+        2,
+    );
+    p.signatures[0].parameters.push(Parameter {
+        name: SymbolId(4),
+        ty: TypeId(0),
+        mutable: false,
+        default: None,
+    });
+    p
+}
+
+fn copy_source(vm: &mut Vm, table: bool, len: u32) -> Value {
+    let value = if table {
+        vm.heap_mut().alloc_table().unwrap()
+    } else {
+        vm.heap_mut().alloc_array(&[]).unwrap()
+    };
+    for index in 0..len {
+        if table {
+            vm.heap_mut()
+                .table_store(
+                    value,
+                    index,
+                    Value::int(index as i64),
+                    Value::int(index as i64),
+                )
+                .unwrap();
+        } else {
+            vm.heap_mut()
+                .array_push(value, Value::int(index as i64))
+                .unwrap();
+        }
+    }
+    value
+}
+
+#[test]
+fn collection_copy_cost_is_linear_and_allocates_only_payload_chunks() {
+    for table in [false, true] {
+        let mut measurements = vec![];
+        for len in [1024, 4096, 16384] {
+            let mut vm = load(collection_copy(table));
+            let source = copy_source(&mut vm, table, len);
+            let task = vm
+                .start(FunctionId(0), &[source], RootOwner(9), Context::Ordinary)
+                .unwrap();
+            let before = vm.heap().stats().chunk_allocations;
+            let now = std::time::Instant::now();
+            let mut work = 0;
+            loop {
+                let outcome = vm.run_slice(task, SliceBudget::default(), || 0).unwrap();
+                work += vm.stats().usage.work;
+                match outcome {
+                    RunOutcome::BudgetYield(_) => {}
+                    RunOutcome::Returned(delivery) => {
+                        let copy = vm.delivery_value(delivery).unwrap();
+                        assert!(!copy.same_bits(source));
+                        assert_eq!(vm.heap().info(copy).unwrap().len, len);
+                        for index in 0..len {
+                            if table {
+                                let (key, value) = vm.heap().table_entry(copy, index).unwrap();
+                                assert_eq!(key.as_int(), Some(index as i64));
+                                assert_eq!(value.as_int(), Some(index as i64));
+                            } else {
+                                assert_eq!(
+                                    vm.heap().sequence_get(copy, index).unwrap().as_int(),
+                                    Some(index as i64)
+                                );
+                            }
+                        }
+                        break;
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            let chunks = vm.heap().stats().chunk_allocations - before;
+            assert_eq!(
+                chunks,
+                (len as usize * if table { 2 } else { 1 }).div_ceil(VALUE_CHUNK_LEN) as u64
+            );
+            println!(
+                "collection_copy table={table} len={len} work={work} chunks={chunks} elapsed={:?}",
+                now.elapsed()
+            );
+            measurements.push(work);
+        }
+        assert_eq!(measurements[1] - measurements[0], 2 * (4096 - 1024));
+        assert_eq!(measurements[2] - measurements[1], 2 * (16384 - 4096));
+    }
+}
+
+#[test]
+fn collection_spread_detects_source_and_destination_mutation_and_cancels() {
+    for mode in 0..3 {
+        let table = mode != 0;
+        for action in 0..3 {
+            let mut vm = load(collection_copy(table));
+            let source = copy_source(&mut vm, table, 130);
+            let task = vm
+                .start(FunctionId(0), &[source], RootOwner(9), Context::Ordinary)
+                .unwrap();
+            let builder = loop {
+                assert!(matches!(tick(&mut vm, task), RunOutcome::BudgetYield(_)));
+                let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
+                    panic!()
+                };
+                if mode == 2 && s.pc == Pc(1) && matches!(s.phase, ScriptPhase::Body) {
+                    // Force the merge path and suspend inside its key scan.
+                    let builder = vm.value(s.regs, 1).unwrap();
+                    vm.heap_mut()
+                        .table_store(builder, 0, Value::int(-1), Value::NULL)
+                        .unwrap();
+                }
+                if matches!(
+                    s.phase,
+                    ScriptPhase::Spread(_) | ScriptPhase::TableSpread(_)
+                ) || (mode == 2 && s.table_work.is_some())
+                {
+                    let builder = vm.value(s.env, 1).unwrap();
+                    if vm.heap().info(builder).unwrap().len > 0 {
+                        break builder;
+                    }
+                }
+            };
+            if action == 2 {
+                vm.cancel(RootOwner(9)).unwrap();
+                loop {
+                    match vm.run_slice(task, SliceBudget::default(), || 0) {
+                        Ok(RunOutcome::BudgetYield(_)) => gc(&mut vm),
+                        Err(VmError::Idle) => break,
+                        other => panic!("cancel: {other:?}"),
+                    }
+                }
+                assert_eq!(vm.stats().frames, 0);
+            } else {
+                let target = if action == 0 { source } else { builder };
+                if table {
+                    vm.heap_mut()
+                        .table_store(target, 0, Value::int(0), Value::NULL)
+                        .unwrap();
+                } else {
+                    vm.heap_mut().set_field(target, 0, Value::NULL).unwrap();
+                }
+                fault(&mut vm, task, FaultKind::ConcurrentModification);
+                assert_eq!(vm.stats().frames, 0);
+            }
+            while vm.heap().phase() != GcPhase::Idle {
+                gc(&mut vm);
+            }
+            vm.begin_collection().unwrap();
+            while vm.heap().phase() != GcPhase::Idle {
+                gc(&mut vm);
+            }
+            assert!(
+                vm.heap().info(builder).is_err(),
+                "partial copy must not escape"
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_self_spread_uses_the_initial_sequence_or_existing_table_slots() {
+    for table in [false, true] {
+        let mut p = collection_copy(table);
+        p.functions[0].code = vec![
+            op(
+                if table {
+                    Opcode::TableSpread
+                } else {
+                    Opcode::ArraySpread
+                },
+                0,
+                0,
+                0,
+            ),
+            op(Opcode::Return, 0, 0, 0),
+        ];
+        p.functions[0].source_map.clear();
+        let mut vm = load(p);
+        let source = copy_source(&mut vm, table, 3);
+        let task = vm
+            .start(FunctionId(0), &[source], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let result = returned(&mut vm, task);
+        assert!(result.same_bits(source));
+        assert_eq!(
+            vm.heap().info(result).unwrap().len,
+            if table { 3 } else { 6 }
+        );
+        if !table {
+            for index in 0..6 {
+                assert_eq!(
+                    vm.heap().sequence_get(result, index).unwrap().as_int(),
+                    Some((index % 3) as i64)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn table_merge_scans_only_the_original_prefix_and_retains_overwrite_order() {
+    let mut measurements = vec![];
+    for len in [1024, 4096, 16384] {
+        let mut p = collection_copy(true);
+        let name = SymbolId(p.symbols.len() as u32);
+        p.symbols.push("target".into());
+        p.signatures[0].parameters.push(Parameter {
+            name,
+            ty: TypeId(0),
+            mutable: false,
+            default: None,
+        });
+        p.functions[0].code.remove(0);
+        p.functions[0].source_map.clear();
+        let mut vm = load(p);
+        let source = copy_source(&mut vm, true, len);
+        let target = vm.heap_mut().alloc_table().unwrap();
+        // One overlapping key and one prefix-only key. Both keep their order.
+        vm.heap_mut()
+            .table_store(target, 0, Value::int((len - 1) as i64), Value::NULL)
+            .unwrap();
+        vm.heap_mut()
+            .table_store(target, 1, Value::int(-1), Value::NULL)
+            .unwrap();
+        let task = vm
+            .start(
+                FunctionId(0),
+                &[source, target],
+                RootOwner(9),
+                Context::Ordinary,
+            )
+            .unwrap();
+        let mut work = 0;
+        loop {
+            let outcome = vm.run_slice(task, SliceBudget::default(), || 0).unwrap();
+            work += vm.stats().usage.work;
+            match outcome {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::Returned(delivery) => {
+                    assert!(vm.delivery_value(delivery).unwrap().same_bits(target));
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(vm.heap().table_len(target).unwrap(), len + 1);
+        assert_eq!(
+            vm.heap().table_entry(target, 0).unwrap().1.as_int(),
+            Some((len - 1) as i64)
+        );
+        assert_eq!(
+            vm.heap().table_entry(target, 1).unwrap().0.as_int(),
+            Some(-1)
+        );
+        for index in 0..len - 1 {
+            let (key, value) = vm.heap().table_entry(target, index + 2).unwrap();
+            assert_eq!(key.as_int(), Some(index as i64));
+            assert_eq!(value.as_int(), Some(index as i64));
+        }
+        println!("table_merge prefix=2 len={len} work={work}");
+        measurements.push(work);
+    }
+    assert_eq!(
+        measurements[2] - measurements[1],
+        4 * (measurements[1] - measurements[0])
+    );
 }
 #[test]
 fn packed_pair_barrier_failure_keeps_payload_versions_and_charge_unchanged() {

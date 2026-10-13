@@ -1,0 +1,7 @@
+// Quirrel testData/exec/type_inference/test_complex_nullcoalesce_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+fn maybe_int()->int|null {return 42;}
+let mut x:int=maybe_int()??0; return null;
+
+}
+migrated_script();

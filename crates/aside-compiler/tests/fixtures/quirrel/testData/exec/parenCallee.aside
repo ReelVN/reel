@@ -1,0 +1,3 @@
+// Quirrel testData/exec/parenCallee.nut; complete reviewed migration, original oracle retained.
+let f = |v| v + 1;
+fn foo() { return ((((f))))(10); }

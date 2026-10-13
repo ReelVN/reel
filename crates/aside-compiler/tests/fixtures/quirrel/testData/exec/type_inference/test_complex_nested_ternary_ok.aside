@@ -1,0 +1,8 @@
+// Quirrel testData/exec/type_inference/test_complex_nested_ternary_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut flag1=true; let mut flag2=false;
+let mut x:int|float|string=if flag1 {if flag2 {42} else {3.14}} else {"hello"};
+return x;
+
+}
+migrated_script();

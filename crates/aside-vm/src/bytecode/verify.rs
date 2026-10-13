@@ -1265,6 +1265,18 @@ fn validate_descriptor(
                 reg(f, pair[1])?;
             }
         }
+        Descriptor::TableSources(sources) => {
+            for source in sources {
+                b.work(1)?;
+                match source {
+                    TableSource::Pair(pair) => {
+                        reg(f, pair[0])?;
+                        reg(f, pair[1])?;
+                    }
+                    TableSource::Spread(source) => reg(f, *source)?,
+                }
+            }
+        }
         Descriptor::Class(c) => {
             if let Some(base) = c.base {
                 reg(f, base)?;

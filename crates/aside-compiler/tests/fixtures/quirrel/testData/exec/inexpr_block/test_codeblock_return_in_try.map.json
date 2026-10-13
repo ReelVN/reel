@@ -1,0 +1,31 @@
+{
+  "source": "testData/exec/inexpr_block/test_codeblock_return_in_try.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; original assertions and stdout preserved",
+  "segments": [
+    {
+      "original": [
+        0,
+        163
+      ],
+      "aside": [
+        0,
+        271
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declarations, closures, loops, expression-valued blocks, type names, terminators; explicit function scope for top-level script return"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        89,
+        104
+      ],
+      "aside": [
+        196,
+        211
+      ]
+    }
+  ]
+}

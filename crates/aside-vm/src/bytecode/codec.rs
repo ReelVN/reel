@@ -658,6 +658,7 @@ impl Wire for PatternNode {
         }
     }
 }
+tuple_enum!(TableSource { 0 => Pair(pair), 1 => Spread(reg) });
 impl Wire for Descriptor {
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
         match self {
@@ -681,6 +682,10 @@ impl Wire for Descriptor {
             }
             Self::Table(x) => {
                 4u8.put(w)?;
+                x.put(w)?
+            }
+            Self::TableSources(x) => {
+                10u8.put(w)?;
                 x.put(w)?
             }
             Self::Class(x) => {
@@ -724,6 +729,7 @@ impl Wire for Descriptor {
             2 => Ok(Self::Call(Wire::get(r)?)),
             3 => Ok(Self::Sequence(Wire::get(r)?)),
             4 => Ok(Self::Table(Wire::get(r)?)),
+            10 => Ok(Self::TableSources(Wire::get(r)?)),
             5 => Ok(Self::Class(Wire::get(r)?)),
             6 => Ok(Self::Super {
                 base: Wire::get(r)?,

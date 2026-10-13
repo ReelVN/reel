@@ -2,6 +2,8 @@
 //! return/work slot. PC advances only after publication; cancellation uses the
 //! existing frame/return-slot teardown, so partially built values never escape.
 use super::*;
+mod spread;
+pub(super) use spread::{SequenceSpread, TableFinish, TableSpread};
 
 impl Vm {
     pub(super) fn concat_step(
@@ -175,6 +177,7 @@ impl Vm {
 
 #[derive(Clone, Copy)]
 pub(super) enum TableAction {
+    Spread(TableSpread),
     Build {
         dest: Reg,
         descriptor: DescriptorId,
@@ -239,44 +242,83 @@ impl Vm {
         descriptor: DescriptorId,
         field: u32,
     ) -> Result<(), VmError> {
-        let Descriptor::Table(fields) = &self.program.package().functions[s.code.function.index()]
-            .descriptors[descriptor.index()]
-        else {
-            unreachable!()
-        };
         let table = self.value(s.env, 1)?;
-        if field as usize == fields.len() {
+        s.table_work = None;
+        let Some(source) = self.table_source(*s, descriptor, field) else {
             self.put(s.regs, dest.0, table)?;
             self.clear(s.env, 1)?;
             self.clear(s.env, 2)?;
             s.table_work = None;
             s.pc.0 += 1;
             s.phase = ScriptPhase::Body;
-        } else {
-            let key = match self.read(*s, fields[field as usize][0]) {
-                Ok(key) => key,
-                Err(kind) => return self.collection_fault(s, kind),
-            };
-            if let Err(kind) = self.start_table(
-                s,
-                table,
-                key,
-                TableAction::Build {
-                    dest,
-                    descriptor,
-                    field,
-                },
-            ) {
-                self.collection_fault(s, kind)?;
+            return Ok(());
+        };
+        match source {
+            TableSource::Spread(source) => {
+                if let Err(kind) = self.start_table_spread(
+                    s,
+                    table,
+                    source,
+                    TableFinish::Build {
+                        dest,
+                        descriptor,
+                        field: field + 1,
+                    },
+                ) {
+                    self.collection_fault(s, kind)?;
+                }
+            }
+            TableSource::Pair(pair) => {
+                let key = match self.read(*s, pair[0]) {
+                    Ok(key) => key,
+                    Err(kind) => return self.collection_fault(s, kind),
+                };
+                if let Err(kind) = self.start_table(
+                    s,
+                    table,
+                    key,
+                    TableAction::Build {
+                        dest,
+                        descriptor,
+                        field,
+                    },
+                ) {
+                    self.collection_fault(s, kind)?;
+                }
             }
         }
         Ok(())
+    }
+    fn table_source(
+        &self,
+        s: ScriptFrame,
+        descriptor: DescriptorId,
+        field: u32,
+    ) -> Option<TableSource> {
+        match &self.program.package().functions[s.code.function.index()].descriptors
+            [descriptor.index()]
+        {
+            Descriptor::Table(fields) => fields.get(field as usize).copied().map(TableSource::Pair),
+            Descriptor::TableSources(sources) => sources.get(field as usize).copied(),
+            _ => unreachable!(),
+        }
     }
     pub(super) fn table_changed(&self, s: ScriptFrame) -> Result<bool, VmError> {
         let Some(work) = s.table_work else {
             return Ok(false);
         };
-        Ok(self.heap.info(self.value(s.env, 1)?)?.content_version != work.version)
+        let source_changed = if let TableAction::Spread(spread) = work.action {
+            self.heap
+                .info(self.value(s.regs, spread.source.0)?)?
+                .content_version
+                != spread.version
+        } else {
+            false
+        };
+        Ok(
+            source_changed
+                || self.heap.info(self.value(s.env, 1)?)?.content_version != work.version,
+        )
     }
     pub(super) fn table_step(
         &mut self,
@@ -286,9 +328,15 @@ impl Vm {
         let work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
         let len = self.heap.info(table)?.len;
+        // Source keys are unique. Entries appended by this spread cannot
+        // match a later source key, so only scan the original destination.
+        let scan_len = match work.action {
+            TableAction::Spread(spread) => spread.prefix_len,
+            _ => len,
+        };
         let scan = matches!(s.phase, ScriptPhase::TableScan);
         let store = scan
-            && (work.matched || work.entry == len)
+            && (work.matched || work.entry == scan_len)
             && !matches!(
                 work.action,
                 TableAction::Get(_) | TableAction::MemberGet { .. } | TableAction::HasOwn(_)
@@ -300,7 +348,7 @@ impl Vm {
         let extra = if fallback
             || (store
                 && !matches!(work.action, TableAction::SetHost { .. })
-                && work.entry == len
+                && !work.matched
                 && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN))
         {
             VALUE_CHUNK_BYTES
@@ -329,7 +377,7 @@ impl Vm {
         }
         if !scan {
             self.validate_key_step(s)?;
-        } else if store || work.matched || work.entry == len {
+        } else if store || work.matched || work.entry == scan_len {
             self.table_commit(s)?;
         } else {
             let key = self.value(s.env, 2)?;
@@ -428,6 +476,24 @@ impl Vm {
         let table = self.value(s.env, 1)?;
         let key = self.value(s.env, 2)?;
         match work.action {
+            TableAction::Spread(mut spread) => {
+                let source = self.value(s.regs, spread.source.0)?;
+                let value = self.heap.table_entry(source, spread.index)?.1;
+                let position = if work.matched {
+                    work.entry
+                } else {
+                    self.heap.table_len(table)?
+                };
+                if let Err(error) = self.heap.table_store(table, position, key, value) {
+                    return self.collection_fault(s, heap_fault(error));
+                }
+                spread.index += 1;
+                spread.destination_version = self.heap.info(table)?.content_version;
+                s.table_work = None;
+                self.clear(s.env, 2)?;
+                s.phase = ScriptPhase::TableSpread(spread);
+                return Ok(());
+            }
             TableAction::HasOwn(dest) => self.put(s.regs, dest.0, Value::bool(work.matched))?,
             TableAction::Get(dest) | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
@@ -474,12 +540,10 @@ impl Vm {
                 descriptor,
                 field,
             } => {
-                let Descriptor::Table(fields) = &self.program.package().functions
-                    [s.code.function.index()]
-                .descriptors[descriptor.index()] else {
+                let Some(TableSource::Pair(pair)) = self.table_source(*s, descriptor, field) else {
                     unreachable!()
                 };
-                let value = match self.read(*s, fields[field as usize][1]) {
+                let value = match self.read(*s, pair[1]) {
                     Ok(value) => value,
                     Err(kind) => return self.collection_fault(s, kind),
                 };
@@ -495,65 +559,6 @@ impl Vm {
         s.pc.0 += 1;
         s.phase = ScriptPhase::Body;
         Ok(())
-    }
-}
-
-impl Vm {
-    pub(super) fn spread_step(
-        &mut self,
-        s: &mut ScriptFrame,
-        index: u32,
-        len: u32,
-        version: u64,
-        destination_version: u64,
-        meter: &mut Meter,
-    ) -> Result<bool, VmError> {
-        let packed = self.value(s.env, 1)?;
-        let source = self.value(s.env, 2)?;
-        let destination = self.heap.info(packed)?;
-        let changed = destination.content_version != destination_version
-            || self.heap.info(source)?.content_version != version;
-        let shape = self.heap.packed_array_len(packed);
-        let extra = if !changed
-            && index < len
-            && shape
-                .as_ref()
-                .is_ok_and(|length| (*length as usize).is_multiple_of(VALUE_CHUNK_LEN))
-        {
-            VALUE_CHUNK_BYTES
-        } else {
-            0
-        };
-        if !meter.take(0, 2, extra) {
-            return Ok(false);
-        }
-        if changed {
-            self.collection_fault(s, FaultKind::ConcurrentModification)?;
-        } else if let Err(error) = shape {
-            self.collection_fault(s, heap_fault(error))?;
-        } else if shape.unwrap() / 2 >= self.limits.max_arguments && index < len {
-            self.collection_fault(s, FaultKind::Resource)?;
-        } else if index == len {
-            self.clear(s.env, 1)?;
-            self.clear(s.env, 2)?;
-            s.pc.0 += 1;
-            s.phase = ScriptPhase::Body;
-        } else {
-            let value = self.heap.sequence_get(source, index)?;
-            let result = self.heap.packed_pair_push(packed, Value::int(-1), value);
-            match result {
-                Ok(()) => {
-                    s.phase = ScriptPhase::Spread {
-                        index: index + 1,
-                        len,
-                        version,
-                        destination_version: self.heap.info(packed)?.content_version,
-                    }
-                }
-                Err(error) => self.collection_fault(s, heap_fault(error))?,
-            }
-        }
-        Ok(true)
     }
 }
 

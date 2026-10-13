@@ -1,0 +1,10 @@
+// Quirrel testData/exec/type_inference/test_array_literal_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+// EXPECTED: no error - array literal assigned to array variable
+let mut x: array = [1, 2, 3];
+let mut y: array|null = null;
+let mut z: array|null = ["a", "b"];
+return [x, y, z];
+
+}
+migrated_script();

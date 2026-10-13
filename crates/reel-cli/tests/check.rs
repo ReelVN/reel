@@ -83,7 +83,7 @@ fn imports_natives_and_unsupported_lowering_fail_honestly() {
     for (source, stage) in [
         ("use reel::story;", "analyze"),
         ("narrator(\"hello\");", "analyze"),
-        ("fn main() { [...[1]] }", "lower"),
+        ("fn main() { let [a]=[1]; a }", "lower"),
     ] {
         let output = case.run(source.as_bytes(), "json");
         assert_eq!(output.status.code(), Some(1));

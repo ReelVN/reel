@@ -1,0 +1,2 @@
+// Quirrel testData/exec/ph_optimizer_null_call_2.nut; complete reviewed migration, original oracle retained.
+let tab = {x: [||444]}; let mut zero = 0; println(tab?.x[zero]());

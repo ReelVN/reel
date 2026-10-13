@@ -73,6 +73,17 @@ let latest = values.pop();
 text(f"剩余 {values.len()} 项，最后一项 {latest}");
 ```
 
+数组展开 `[...items, last]` 接受数组或 tuple；表展开 `{...base, color: value}` 复制自有字段，后项覆盖前项。展开按书写顺序捕获内容，后面的代码修改来源不会改变已捕获的元素或字段；内部对象仍共享引用。null 不能展开。完整可运行示例见 [collections.aside](../../examples/collections.aside)。
+
+```aside
+let base = {message: "窗上的光", x: 32, y: 48};
+let opening = [base];
+let captions = [...opening, {...base, message: "第二句", y: 90}];
+for caption in captions {
+    text(caption.message, x: caption.x, y: caption.y);
+}
+```
+
 ## 二 让代码表达整幅画面
 已注册的函数也可以保存和传递，例如 `let say = narrator; say("你好");`，等待行为与直接调用一致；函数缺省参数也可以是 `text` 等构造函数。可以用 `(int,int)` 约束坐标，用 `(int,int)|null` 表达可省略的坐标；`is`、参数、返回值和变量赋值都会检查相应类型，失败赋值保留旧值。完整可运行示例见 [function_values.aside](../../examples/function_values.aside)，使用前面的 `dev` 或 `build` 命令替换输入路径即可。
 

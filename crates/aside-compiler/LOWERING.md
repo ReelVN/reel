@@ -69,7 +69,7 @@ initializer and ordinary function loops with cleanup-aware break/continue are su
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
 reads/writes are supported by L06; L07 adds nonoptional member values/locations
 and dynamic calls through their results; L08 adds optional value chains.
-Patterns/collection spread, optional-chain assignment targets, full script imports/linking, structural callable annotations, generator/thread/async and the broader language/library scopes remain
+Patterns, optional-chain assignment targets, full script imports/linking, structural callable annotations, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
 short-circuit branches. Nested author functions return through their own boundary;
@@ -120,7 +120,7 @@ range with MissingLink before allocating output. A native registration cannot
 substitute for that environment. Trusted host/import native links remain supported.
 NoWait-only ownerless declarations and non-root exports likewise retain located
 rejections before table admission. Module-context block fragments use initializer
-locals. Complete script imports, patterns/collection spread, unified callable/standard
+locals. Complete script imports, patterns, unified callable/standard
 library and engine sessions remain separate tasks.
 
 [Initializer contracts](tests/lowering/initializer_locals.rs) check actual source
@@ -426,3 +426,18 @@ source execution matrix exercises composition, iteration, shared host properties
 normal and one-instruction slices with interleaved GC. Pure namespaces remain
 compile-time identities; resolved native members retain their individual trusted
 links, while taking a namespace as a runtime value is unsupported.
+
+## Ordered collection spreads
+
+Array literals with spreads use a private MakeArray builder, ArrayPush and
+ArraySpread. Each spread captures array/tuple elements at its source position;
+no register window proportional to the spread length is required. Fixed literals
+retain their existing Sequence/Table descriptors.
+
+Tables with spreads capture each source into a private table before evaluating
+later expressions, then MakeTable consumes a TableSources descriptor containing
+ordered Pair/Spread entries. Explicit key validation remains after all field
+expressions. Later fields overwrite without changing first insertion order.
+Temporary snapshots and builders are rooted registers and are cleared through
+normal expression and frame cleanup. B01 adds descriptor tag 10 and opcode 005f;
+there is no dependency or host ABI change.

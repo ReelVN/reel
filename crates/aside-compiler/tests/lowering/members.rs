@@ -369,7 +369,6 @@ fn member_deferred_constructs_remain_located_rejections() {
             "class A{fn get(self){1}}",
             "Class",
         ),
-        ("fn f(a){a.x([...a])}", "...a", "spread"),
         ("fn f(){let [a]=[1];}", "[a]", "pattern"),
     ] {
         let m = analyzed(source);

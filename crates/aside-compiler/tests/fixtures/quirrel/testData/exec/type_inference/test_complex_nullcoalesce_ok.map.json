@@ -1,0 +1,20 @@
+{
+  "source": "testData/exec/type_inference/test_complex_nullcoalesce_ok.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; original assertions and stdout preserved",
+  "segments": [
+    {
+      "original": [
+        0,
+        220
+      ],
+      "aside": [
+        0,
+        255
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declarations, closures, loops, expression-valued blocks, type names, terminators; explicit function scope for top-level script return"
+    }
+  ],
+  "assertions": []
+}

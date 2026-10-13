@@ -1,0 +1,7 @@
+// Quirrel testData/exec/type_inference/test_function_literal_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut x:closure=||42; let mut y:closure|null=null;
+let mut z:closure|null=|a,b|a+b; return [x,y,z];
+
+}
+migrated_script();

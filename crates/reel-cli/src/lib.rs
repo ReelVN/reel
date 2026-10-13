@@ -193,7 +193,7 @@ mod tests {
             ("let =;", "parse"),
             ("missing();", "analyze"),
             ("use reel::story;", "analyze"),
-            ("fn main() { [...[1]] }", "lower"),
+            ("fn main() { let [a]=[1]; a }", "lower"),
         ] {
             let failure = check(source, "story.aside").err().unwrap();
             assert_eq!(failure.stage, stage);

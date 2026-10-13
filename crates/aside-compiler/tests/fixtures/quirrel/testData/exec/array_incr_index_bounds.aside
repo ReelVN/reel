@@ -1,0 +1,7 @@
+// Quirrel testData/exec/array_incr_index_bounds.nut; complete reviewed migration, original oracle retained.
+let mut a=[10,20,30]; a[0]+=1; a[2]-=1;
+println(f"in-range: {a[0]} {a[1]} {a[2]}");
+let mut b=[10];
+try {b[0x100000000]+=1; print("FAIL: no error\n");} catch e {println(f"big index rejected: b[0]={b[0]}");}
+let mut c=[10];
+try {c[-1]+=1; print("FAIL: no error\n");} catch e {println(f"negative index rejected: c[0]={c[0]}");}

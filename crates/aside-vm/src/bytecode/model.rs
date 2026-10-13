@@ -380,6 +380,11 @@ pub struct PatternDesc {
     pub nodes: Vec<PatternNode>,
     pub root: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableSource {
+    Pair([Reg; 2]),
+    Spread(Reg),
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Descriptor {
     Global {
@@ -393,6 +398,7 @@ pub enum Descriptor {
     Call(CallDesc),
     Sequence(RegWindow),
     Table(Vec<[Reg; 2]>),
+    TableSources(Vec<TableSource>),
     Class(ClassDesc),
     Super {
         base: Reg,
@@ -428,7 +434,7 @@ impl Descriptor {
             Self::Closure { .. } => DescriptorKind::Closure,
             Self::Call(_) => DescriptorKind::Call,
             Self::Sequence(_) => DescriptorKind::Sequence,
-            Self::Table(_) => DescriptorKind::Table,
+            Self::Table(_) | Self::TableSources(_) => DescriptorKind::Table,
             Self::Class(_) => DescriptorKind::Class,
             Self::Super { .. } => DescriptorKind::Super,
             Self::Property { .. } => DescriptorKind::Property,

@@ -1,0 +1,5 @@
+// Quirrel testData/exec/destructuring/foreach_capture_shadowed.nut; complete reviewed migration, original oracle retained.
+let outerCaps = []; let innerCaps = [];
+for v in [1,2,3] { outerCaps.append(||v); innerCaps.append(|v|v*10); }
+for f in outerCaps { println("o:",f()); }
+for f in innerCaps { println("i:",f(7)); }

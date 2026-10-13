@@ -1,0 +1,6 @@
+// Quirrel testData/exec/opt/modify_local_var.nut; complete reviewed migration, original oracle retained.
+//#disable-optimizer
+let mut cnt1 = 11;
+cnt1 = 222;
+cnt1 -= cnt1 / 3333;
+println(cnt1);

@@ -399,15 +399,11 @@ fn sequential_temporaries_are_reused_and_limits_fail_before_growth() {
 
 #[test]
 fn unsupported_nodes_report_original_range() {
-    for (source, node_text) in [
-        ("fn f() { [1,...[]] }", "...[]"),
-        ("fn f() { let (a,b)=(1,2); }", "(a,b)"),
-    ] {
-        let module = analyzed(source);
-        let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
-        assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
-        assert_eq!(&source[aside_compiler::byte_range(error.span)], node_text);
-    }
+    let source = "fn f() { let (a,b)=(1,2); }";
+    let module = analyzed(source);
+    let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
+    assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
+    assert_eq!(&source[aside_compiler::byte_range(error.span)], "(a,b)");
 }
 
 #[test]

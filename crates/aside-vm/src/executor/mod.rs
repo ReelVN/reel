@@ -116,12 +116,8 @@ enum ScriptPhase {
         binding: u32,
     },
     Body,
-    Spread {
-        index: u32,
-        len: u32,
-        version: u64,
-        destination_version: u64,
-    },
+    Spread(collections::SequenceSpread),
+    TableSpread(collections::TableSpread),
     KeyPath {
         index: u32,
     },
@@ -2251,13 +2247,13 @@ impl Vm {
                     }
                 }
             }
-            ScriptPhase::Spread {
-                index,
-                len,
-                version,
-                destination_version,
-            } => {
-                if !self.spread_step(&mut s, index, len, version, destination_version, m)? {
+            ScriptPhase::Spread(work) => {
+                if !self.spread_step(&mut s, work, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::TableSpread(work) => {
+                if !self.table_spread_step(&mut s, work, m)? {
                     return Ok(false);
                 }
             }
@@ -2569,13 +2565,13 @@ impl Vm {
             | Opcode::IterNext
             | Opcode::MakeRange
             | Opcode::MakeRangeInclusive => (4, VALUE_CHUNK_BYTES),
-            Opcode::ChildrenPush => {
+            Opcode::ChildrenPush | Opcode::ArrayPush => {
                 let array = self.slots.read(at(s.regs, _a))?;
                 let value = self.slots.read(at(s.regs, b))?;
                 let len = self.heap.info(array)?.len;
                 (
                     1,
-                    if !value.same_bits(Value::NULL)
+                    if (op == Opcode::ArrayPush || !value.same_bits(Value::NULL))
                         && (len as usize).is_multiple_of(VALUE_CHUNK_LEN)
                     {
                         VALUE_CHUNK_BYTES
@@ -2655,6 +2651,9 @@ impl Vm {
                 | Opcode::ArgsPush
                 | Opcode::ArgsNamed
                 | Opcode::ArgsSpread
+                | Opcode::ArraySpread
+                | Opcode::TableSpread
+                | Opcode::ArrayPush
                 | Opcode::ChildrenPush
                 | Opcode::TextNew
                 | Opcode::TextPush
@@ -2707,6 +2706,16 @@ impl Vm {
                     }
                     self.heap.array_push(array, child).map_err(heap_fault)?;
                 }
+            }
+            Opcode::ArrayPush => {
+                let array = self.read(*s, r(a))?;
+                let value = self.read(*s, r(b))?;
+                self.heap.array_push(array, value).map_err(heap_fault)?;
+            }
+            Opcode::TableSpread => {
+                let table = self.read(*s, r(a))?;
+                self.start_table_spread(s, table, r(b), collections::TableFinish::Instruction)?;
+                return Ok(false);
             }
             Opcode::MakeRange | Opcode::MakeRangeInclusive => {
                 let start = self.read(*s, r(b))?.as_int().ok_or(FaultKind::Type)?;
@@ -3111,7 +3120,7 @@ impl Vm {
                     )
                     .map_err(heap_fault)?;
             }
-            Opcode::ArgsSpread => {
+            Opcode::ArgsSpread | Opcode::ArraySpread => {
                 let packed = self.read(*s, r(a))?;
                 let source = self.read(*s, r(b))?;
                 if !self.is_text(source, ObjectKind::Array)
@@ -3120,20 +3129,27 @@ impl Vm {
                     return Err(FaultKind::Type);
                 }
                 let info = self.heap.info(source).map_err(heap_fault)?;
-                let count = self.heap.packed_array_len(packed).map_err(heap_fault)? / 2;
+                if !self.is_text(packed, ObjectKind::Array) {
+                    return Err(FaultKind::Type);
+                }
                 let destination_version =
                     self.heap.info(packed).map_err(heap_fault)?.content_version;
-                if info.len > self.limits.max_arguments.saturating_sub(count) {
-                    return Err(FaultKind::Resource);
+                let arguments = op == Opcode::ArgsSpread;
+                if arguments {
+                    let count = self.heap.packed_array_len(packed).map_err(heap_fault)? / 2;
+                    if info.len > self.limits.max_arguments.saturating_sub(count) {
+                        return Err(FaultKind::Resource);
+                    }
                 }
                 self.put(s.env, 1, packed).map_err(vm_fault)?;
                 self.put(s.env, 2, source).map_err(vm_fault)?;
-                s.phase = ScriptPhase::Spread {
+                s.phase = ScriptPhase::Spread(collections::SequenceSpread {
+                    arguments,
                     index: 0,
                     len: info.len,
                     version: info.content_version,
                     destination_version,
-                };
+                });
                 return Ok(false);
             }
             Opcode::Call | Opcode::CallNoWait => {

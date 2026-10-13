@@ -1,0 +1,10 @@
+// Quirrel testData/exec/type_inference/test_return_literal_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+fn one()->int {return 42;}
+fn two()->string {return "hello";}
+fn three()->int|string {return 42;}
+fn four()->int|string {return "hello";}
+return [one(),two(),three(),four()];
+
+}
+migrated_script();

@@ -1,0 +1,17 @@
+use reel::prelude::*;
+
+fn main() {
+    let base = {message: "窗上的光", x: 32, y: 48};
+    let opening = [base];
+    let captions = [
+        ...opening,
+        {...base, message: "复制布局，再改动这一句。", y: 90},
+        {...base, message: "数组组合顺序，表组合内容。", y: 132},
+    ];
+    stage.replace(stack() {
+        for caption in captions {
+            text(caption.message, x: caption.x, y: caption.y);
+        }
+    });
+    narrator(f"{captions.len()} 句文字，共用一份布局起点。");
+}

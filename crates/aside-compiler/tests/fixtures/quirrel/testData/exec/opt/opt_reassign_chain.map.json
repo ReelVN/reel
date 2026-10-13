@@ -1,0 +1,321 @@
+{
+  "source": "testData/exec/opt/opt_reassign_chain.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; original assertions and stdout preserved",
+  "segments": [
+    {
+      "original": [
+        0,
+        2142
+      ],
+      "aside": [
+        0,
+        2368
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declarations, closures, loops, expression-valued blocks, type names, terminators; explicit function scope for top-level script return"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        232,
+        273
+      ],
+      "aside": [
+        347,
+        388
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        276,
+        319
+      ],
+      "aside": [
+        392,
+        435
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        398,
+        441
+      ],
+      "aside": [
+        522,
+        565
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        444,
+        487
+      ],
+      "aside": [
+        569,
+        612
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        577,
+        618
+      ],
+      "aside": [
+        714,
+        755
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        621,
+        662
+      ],
+      "aside": [
+        759,
+        800
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        665,
+        708
+      ],
+      "aside": [
+        804,
+        847
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        802,
+        843
+      ],
+      "aside": [
+        950,
+        991
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        846,
+        889
+      ],
+      "aside": [
+        995,
+        1038
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        988,
+        1029
+      ],
+      "aside": [
+        1145,
+        1186
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        1032,
+        1072
+      ],
+      "aside": [
+        1190,
+        1230
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 10
+        }
+      ]
+    },
+    {
+      "original": [
+        1149,
+        1194
+      ],
+      "aside": [
+        1315,
+        1360
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 17
+        }
+      ]
+    },
+    {
+      "original": [
+        1197,
+        1242
+      ],
+      "aside": [
+        1364,
+        1409
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 17
+        }
+      ]
+    },
+    {
+      "original": [
+        1332,
+        1377
+      ],
+      "aside": [
+        1507,
+        1552
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 17
+        }
+      ]
+    },
+    {
+      "original": [
+        1380,
+        1425
+      ],
+      "aside": [
+        1556,
+        1601
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 17
+        }
+      ]
+    },
+    {
+      "original": [
+        1582,
+        1621
+      ],
+      "aside": [
+        1765,
+        1804
+      ]
+    },
+    {
+      "original": [
+        1633,
+        1706
+      ],
+      "aside": [
+        1821,
+        1894
+      ]
+    },
+    {
+      "original": [
+        1810,
+        1849
+      ],
+      "aside": [
+        2009,
+        2048
+      ]
+    },
+    {
+      "original": [
+        1861,
+        1896
+      ],
+      "aside": [
+        2065,
+        2100
+      ]
+    },
+    {
+      "original": [
+        2010,
+        2050
+      ],
+      "aside": [
+        2225,
+        2265
+      ]
+    },
+    {
+      "original": [
+        2062,
+        2104
+      ],
+      "aside": [
+        2282,
+        2324
+      ]
+    }
+  ]
+}

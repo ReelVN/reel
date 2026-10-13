@@ -1,0 +1,2 @@
+// Quirrel testData/exec/ph_optimizer_null_call_3.nut; complete reviewed migration, original oracle retained.
+let x = [[[[||444]]]]; let z = 0; println(x?[z][z][z][z]());

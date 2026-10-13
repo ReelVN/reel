@@ -75,6 +75,26 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         .into();
     let mut cases = vec![
         (
+            "fn main() { let inner={n:1}; let a=[inner,2]; fn change(){a[0]=null; a[1]=9; inner.n=5; 7} let b=[0,...a,change(),...(8,9),null,...[]]; if b[1]==inner && b[1].n==5 && b[2]==2 && b[3]==7 && b[4]==8 && b[5]==9 && b[6]==null && b.len()==7 {42} else {0} }",
+            42,
+        ),
+        (
+            "fn main() { let inner={n:1}; let a={x:inner,y:2,[null]:3}; fn change(){a.x=null; a.y=9; inner.n=5; 7} let b={head:0,...a,z:change(),y:8,...{tail:9},...{}}; if b.x==inner && b.x.n==5 && b.y==8 && b.z==7 && b[null]==3 && b.tail==9 && b.len()==6 {42} else {0} }",
+            42,
+        ),
+        (
+            "fn main() { let mut n=0; fn side(){n+=1; 0} try { let t={[[]]:side(),...{x:1},last:side()}; } catch e {n+=10;} try { let a=[...null,side()]; } catch e {n+=100;} try { let t={...[],last:side()}; } catch e {n+=1000;} n }",
+            1112,
+        ),
+        (
+            "fn main() { fn f(){try { let t={...{x:1},tail:if true {return 42;} else {0}}; } finally { let x=[...[]]; } 0} f() }",
+            42,
+        ),
+        (
+            "fn main() { let a=[]; for i in 0..513 { a.append(i); } let b=[...a]; a[0]=9; if b[0]==0 && b[512]==512 && b.len()==513 {42} else {0} }",
+            42,
+        ),
+        (
             "fn main() { fn f(v:(int,string)|null=(41,\"x\"))->(int,string) { if v is null { (0,\"\") } else { v } } let value=f(); if value is (int,string) { value[0]+1 } else { 0 } }",
             42,
         ),

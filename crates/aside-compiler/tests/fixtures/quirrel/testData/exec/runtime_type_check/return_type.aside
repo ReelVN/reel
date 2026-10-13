@@ -1,0 +1,7 @@
+// Quirrel testData/exec/runtime_type_check/return_type.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+fn multiply(x:int,y:any)->int {return x*y;}
+println(multiply(5,2));
+
+}
+migrated_script();

@@ -73,6 +73,17 @@ let latest = values.pop();
 text(f"剩余 {values.len()} 项，最后一项 {latest}");
 ```
 
+Array spreading `[...items, last]` accepts arrays or tuples. Table spreading `{...base, color: value}` copies own fields, with later entries taking precedence. Each spread captures in source order: later changes to the source do not alter captured elements or fields, while inner objects remain shared references. Spreading null is an error. See the runnable [collections.aside](../../examples/collections.aside) example.
+
+```aside
+let base = {message: "窗上的光", x: 32, y: 48};
+let opening = [base];
+let captions = [...opening, {...base, message: "第二句", y: 90}];
+for caption in captions {
+    text(caption.message, x: caption.x, y: caption.y);
+}
+```
+
 ## 2 Describing the Whole Scene in Code
 Registered functions can be stored and passed as values, for example `let say = narrator; say("你好");`; waiting behaves exactly as in a direct call. A function default can also be a constructor such as `text`. Use `(int,int)` for a coordinate pair and `(int,int)|null` for an optional pair. `is`, parameters, returns and variable assignments check these contracts; a failed assignment preserves the previous value. See the runnable [function_values.aside](../../examples/function_values.aside) example and use its path with the earlier `dev` or `build` commands.
 

@@ -1578,9 +1578,12 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             ));
         }
         if node.kind == H::Spread
-            && node
-                .parent
-                .is_none_or(|parent| m.hir().node(parent).kind != H::Arguments)
+            && node.parent.is_none_or(|parent| {
+                !matches!(
+                    m.hir().node(parent).kind,
+                    H::Arguments | H::Array | H::Object
+                )
+            })
         {
             return Err(b.error(
                 ErrorKind::Unsupported,

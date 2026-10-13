@@ -1,0 +1,8 @@
+// Quirrel testData/exec/runtime_type_check/assign_type_06.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut y:int=5;
+fn update(){ y=8; y+=4; }
+update(); println(y);
+
+}
+migrated_script();

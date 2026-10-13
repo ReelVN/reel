@@ -1,0 +1,6 @@
+// Quirrel testData/exec/opt/fuzz_min.nut; complete reviewed migration, original oracle retained.
+let mut v1 = -111;
+v1 = 3;
+let mut loop2 = v1 - -5 + 12;
+println(v1);
+println(loop2);

@@ -1,0 +1,8 @@
+// Quirrel testData/exec/type_inference/test_call_result_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+fn sqri(x:int)->int {return x*x;}
+let mut y:int=sqri(5); let mut z:int|null=sqri(5); let mut w:int|string=sqri(5);
+return [y,z,w];
+
+}
+migrated_script();
