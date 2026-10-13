@@ -112,6 +112,12 @@ let (a,b) = value 只匹配 tuple 且默认精确数量；let [a,b] 只匹配 ar
 
 多返回值始终是一个 tuple：return (a,b);、yield (a,b); 和 async 返回 tuple 均交付一个值。f(pair) 传一个参数，f(...pair) 才展开位置参数；不会隐式取首项或按表达式所在位置自动扩成多个结果。优化可用多寄存器传递，但动态调用、快照、异常和调试观察必须等价。
 
+### 集合操作的共同约定
+
+array/tuple 的 `slice(range)` 使用非负索引，保留原容器种类和元素引用；范围端点必须在容器边界内。array 提供 `insert(index, value)`、`remove(index)`、`resize(length, value: null)`、`reverse()`、`extend(items)`、`clear()`、`top()`、`swap(a, b)`。insert 允许在长度位置追加；remove 返回被移除的值，top 返回末项且空数组报越界；其余修改方法返回原数组。extend 接受 array/tuple，自身展开只捕获调用开始时的元素。table 提供 `keys()`、`values()`、`entries()`，按自有字段顺序返回新 array；entries 的元素为 `(key, value)` tuple；`clear()` 返回原表。
+
+这些方法支持其声明的具名参数；绑定错误发生在全部实参求值后、任何修改前。批量编辑通过私有工作副本按元素推进，完成后一次提交；中途异常、取消或来源内容变化不发布半成品，内容变化报告 ConcurrentModification 并保留实际来源。工作副本与旧内容共享子对象，提交保持容器身份；旧存储交给增量 GC 回收，不在提交点线性析构。append/pop 保持已有逐项行为。
+
 ## 六 Unicode 文本和可变缓冲
 
 string 为不可变、有效 UTF-8 文本；相等按精确文本序列，不隐式规范化。API 明确区分 byte_len、scalar_count、grapheme_count、bytes()、scalars()、codepoints() 与 graphemes()：bytes 为字节，scalars 为单 Unicode 标量 string，codepoints 为整数，graphemes 为字素 string。普通 string 不提供含糊的 s[i]；使用显式视图或 slice_bytes/slice_scalars/slice_graphemes。

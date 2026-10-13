@@ -85,6 +85,20 @@ for caption in captions {
 ```
 
 ## 2 Describing the Whole Scene in Code
+### Organizing Component Data
+
+Arrays support insertion, removal, resizing, reversal, extension, clearing and swapping. Both tuples and arrays support range slices. Table keys/values/entries return new arrays of own fields; each entry is a `(key, value)` tuple. Bulk edits publish once on success and preserve the original array identity. New positions filled by resize share the supplied value; they do not deep-copy it.
+
+```aside
+let rows = ["序章", "第一章"];
+rows.insert(index: 1, value: "幕间");
+rows.extend(["第二章"]);
+let first = rows.slice(0..2);
+rows.reverse();
+let theme = {title: "窗上的光", color: "#ffffff"};
+let names = theme.keys();
+```
+
 Registered functions can be stored and passed as values, for example `let say = narrator; say("你好");`; waiting behaves exactly as in a direct call. A function default can also be a constructor such as `text`. Use `(int,int)` for a coordinate pair and `(int,int)|null` for an optional pair. `is`, parameters, returns and variable assignments check these contracts; a failed assignment preserves the previous value. See the runnable [function_values.aside](../../examples/function_values.aside) example and use its path with the earlier `dev` or `build` commands.
 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.

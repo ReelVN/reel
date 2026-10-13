@@ -85,6 +85,20 @@ for caption in captions {
 ```
 
 ## 二 让代码表达整幅画面
+### 组织组件数据
+
+数组支持插入、删除、扩缩、反转、扩展、清空和交换，tuple/array 可按范围切片。表的 keys/values/entries 返回自有字段的新数组；entries 每项是 `(key, value)`。批量编辑在成功时一次生效，原有数组引用保持有效；resize 的填充值在新增位置共享，不自动深复制。
+
+```aside
+let rows = ["序章", "第一章"];
+rows.insert(index: 1, value: "幕间");
+rows.extend(["第二章"]);
+let first = rows.slice(0..2);
+rows.reverse();
+let theme = {title: "窗上的光", color: "#ffffff"};
+let names = theme.keys();
+```
+
 已注册的函数也可以保存和传递，例如 `let say = narrator; say("你好");`，等待行为与直接调用一致；函数缺省参数也可以是 `text` 等构造函数。可以用 `(int,int)` 约束坐标，用 `(int,int)|null` 表达可省略的坐标；`is`、参数、返回值和变量赋值都会检查相应类型，失败赋值保留旧值。完整可运行示例见 [function_values.aside](../../examples/function_values.aside)，使用前面的 `dev` 或 `build` 命令替换输入路径即可。
 
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
