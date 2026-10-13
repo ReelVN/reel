@@ -227,6 +227,8 @@ await 接受 Awaitable，不接受普通标量。Future、Reel Activity 和 Save
 
 Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果；检测直接和间接 adoption 环。需要把 Future 当普通值返回时包在 tuple/对象中。任务 Future 仅由任务返回/失败/终止结算，手工 Future 才能 resolve/reject；重复结算报 AlreadySettled。未观察失败在已给等待者/处理器一个正常调度机会后产生诊断，后续观察更新记录而不重报。结算与通知均不在生产者调用栈内同步重入用户回调。
 
+宿主 Awaitable 实现合同：VM 将可信宿主对象绑定到当前已准入包中的单参数 native（参数为对象本身，类型 any，无缺省或 rest；效果包含 WAIT）。绑定不是脚本可修改的字段。Await 指令检查动态 NoWait/效果边界，然后进入已有 NativeFrame，首次 HostCall 即调度边界；Ready 也不在响应调用内执行脚本。Pending、Continue、CallScript、代际 WaitId、根和取消全部复用普通宿主调用。转发生产者故障时，每次 await 建立独立消费者 envelope，保留原值/错误码，以 AwaitedFault 记录源故障与 activation；catch 原因同时保留。宿主按登记顺序维护订阅，以 wait_is_pending 查询取消/完成后的有效性，解除消费者订阅不能停止共享生产者；任务/owner 撤销后旧完成不得交付。当前宿主包的 native 身份和版本属于恢复描述；VM 快照、async fn、Future/adoption、generator 仍未实现，本合同不将它们宣称已交付。
+
 task.request_cancel(reason) 为合作请求，在下一个合法安全点注入一次 Cancelled；脚本可捕获并收尾，Future 按实际最终结果结算。owner.revoke 为不可阻止的硬终止，停止其任务，不运行这些脚本 finally；宿主幂等释放拥有的订阅、资源和活动。取消不自动撤销已经写入的共享状态。必要资源清理依赖 Owner/ResourceToken，不能仅靠可能被跳过的 finally。异步 close 必须在 owner 仍有效时显式 await。
 
 TaskGroup 拥有自己创建的子任务。all 返回输入顺序的结果 array；首次失败请求取消其余任务并等其终止，再抛含主/收尾失败的 GroupError。race 交付最先结算项的 (index,result) 或失败，同一调度步骤依完成队列顺序决定，按组策略取消其余自有任务并完成收尾。owner 硬撤销使整组立即失效。wait_any 对外部共享 Future 只解除本次订阅，不能取消其生产者。组、取消请求、待结果和收尾状态均进入快照。

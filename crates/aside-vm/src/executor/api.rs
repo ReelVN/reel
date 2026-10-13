@@ -84,6 +84,8 @@ pub struct HostTicket {
     pub context: ContextFlags,
     pub continuation: Option<ContinuationState>,
     pub effects: Effects,
+    /// Stable identity of this await expression's execution, if this is an await adapter.
+    pub await_activation: Option<u64>,
 }
 impl HostTicket {
     pub fn wait_id(self) -> WaitId {
@@ -328,6 +330,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::IndexSet,
     Opcode::Call,
     Opcode::CallNoWait,
+    Opcode::Await,
     Opcode::ChildrenPush,
     Opcode::ArrayPush,
     Opcode::ArraySpread,

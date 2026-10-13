@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 mod api;
+mod awaitables;
 mod builtins;
 mod calls;
 use calls::NativeSite;
@@ -38,6 +39,7 @@ struct FaultSeed {
     fault: Option<FaultId>,
     explicit: Option<FaultId>,
     author_value: bool,
+    awaited: Option<(FaultId, u64)>,
 }
 #[derive(Clone, Copy)]
 enum BuildPhase {
@@ -45,6 +47,7 @@ enum BuildPhase {
     Envelope,
     Stack(u32),
     Cause,
+    Awaited,
     Complete,
 }
 #[derive(Clone, Copy)]
@@ -79,6 +82,10 @@ enum ReturnTo {
 #[derive(Clone, Copy)]
 enum ArgSource {
     None,
+    Await {
+        frame: FrameId,
+        value: Reg,
+    },
     Caller {
         frame: FrameId,
         descriptor: DescriptorId,
@@ -269,6 +276,7 @@ struct NativeFrame {
     fault_count: u32,
     pending_fault: Option<FaultSeed>,
     phase: NativePhase,
+    await_activation: Option<u64>,
 }
 impl NativeFrame {
     fn root_count(self) -> u64 {
@@ -1128,6 +1136,12 @@ impl Vm {
     fn argument(&self, source: ArgSource, index: u32) -> Result<(i64, Value), VmError> {
         match source {
             ArgSource::None => Err(VmError::Contract("external arguments already copied")),
+            ArgSource::Await { frame, value } => {
+                let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
+                    return Err(VmError::Contract("await argument source"));
+                };
+                Ok((-1, self.slots.read(at(s.regs, value.0))?))
+            }
             ArgSource::Caller { frame, descriptor } => {
                 let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
                     return Err(VmError::Contract("argument source"));
@@ -1279,6 +1293,7 @@ impl Vm {
         };
         self.active.frames.data.push(Frame::Native(NativeFrame {
             id,
+            await_activation: matches!(source, ArgSource::Await { .. }).then_some(id.0),
             native,
             signature,
             args,
@@ -1378,6 +1393,7 @@ impl Vm {
             input,
             context: n.context,
             effects: n.effects,
+            await_activation: n.await_activation,
             continuation: if input == NativeInput::Entry {
                 None
             } else {
@@ -1430,6 +1446,7 @@ impl Vm {
                     fault: None,
                     explicit: new.cause,
                     author_value: true,
+                    awaited: None,
                 });
                 n.phase = NativePhase::Commit(true);
             }
@@ -1437,17 +1454,10 @@ impl Vm {
                 if !self.native_holds(n, id)? {
                     return Err(VmError::InvalidFault);
                 };
-                let info = self.heap.fault_info(id)?;
                 let value = self.heap.fault_value(id)?;
                 self.put(n.roots, 0, value)?;
                 self.put(n.roots, self.native_pending_slot(), id.as_value())?;
-                n.pending_fault = Some(FaultSeed {
-                    kind: info.kind,
-                    location: info.location,
-                    fault: Some(id),
-                    explicit: None,
-                    author_value: true,
-                });
+                n.pending_fault = Some(self.forwarded_fault(n, id, true)?);
                 n.phase = NativePhase::Commit(true);
             }
             HostResponse::Pending(wait) => {
@@ -1575,6 +1585,7 @@ impl Vm {
                     fault: None,
                     explicit: new.cause,
                     author_value: true,
+                    awaited: None,
                 });
                 n.phase = if n.continuation_active {
                     NativePhase::WaitingFaultBuild
@@ -1586,16 +1597,11 @@ impl Vm {
                 if !self.native_holds(n, id)? {
                     return Err(VmError::InvalidFault);
                 };
-                let info = self.heap.fault_info(id)?;
                 self.put(n.roots, 0, self.heap.fault_value(id)?)?;
                 self.put(n.roots, self.native_pending_slot(), id.as_value())?;
-                n.pending_fault = Some(FaultSeed {
-                    kind: info.kind,
-                    location: info.location,
-                    fault: Some(id),
-                    explicit: None,
-                    author_value: true,
-                });
+                // A continuation can inspect/recover this producer fault first.
+                // Only wrap when the result actually crosses back through await.
+                n.pending_fault = Some(self.forwarded_fault(n, id, !n.continuation_active)?);
                 n.phase = if n.continuation_active {
                     NativePhase::WaitingFaultBuild
                 } else {
@@ -1939,6 +1945,7 @@ impl Vm {
                 fault: None,
                 explicit: None,
                 author_value: false,
+                awaited: None,
                 kind,
                 location: self.binding_location(*s),
             }),
@@ -1952,6 +1959,7 @@ impl Vm {
             fault: None,
             explicit: None,
             author_value: false,
+            awaited: None,
             kind,
             location: n.location,
         });
@@ -2204,6 +2212,7 @@ impl Vm {
                                 fault: None,
                                 explicit: None,
                                 author_value: false,
+                                awaited: None,
 
                                 kind: vm_fault(error),
                                 location: self.loc(s, s.pc),
@@ -2233,6 +2242,7 @@ impl Vm {
                                 fault: None,
                                 explicit: None,
                                 author_value: false,
+                                awaited: None,
 
                                 kind,
                                 location: self.loc(s, s.pc),
@@ -2349,6 +2359,7 @@ impl Vm {
                                         fault: None,
                                         explicit: None,
                                         author_value: false,
+                                        awaited: None,
 
                                         kind,
                                         location: self.loc(s, s.pc),
@@ -2514,6 +2525,14 @@ impl Vm {
                         .map(|id| self.script_push_cost(id, count))
                         .unwrap_or(1),
                 };
+                (cost + self.active.unwinds.data.len() as u64 + 1, 0)
+            }
+            Opcode::Await => {
+                let cost = self
+                    .heap
+                    .host_await(self.slots.read(at(s.regs, b))?)
+                    .map(|id| self.native_push_cost(id, 1))
+                    .unwrap_or(1);
                 (cost + self.active.unwinds.data.len() as u64 + 1, 0)
             }
             Opcode::MakeClosure => {
@@ -3260,6 +3279,10 @@ impl Vm {
                 }
                 return Ok(true);
             }
+            Opcode::Await => {
+                self.start_await(s, r(a), r(b))?;
+                return Ok(true);
+            }
             Opcode::Return => {
                 let v = self.read(*s, r(a))?;
                 let signature = self.program.package().functions[s.code.function.index()].signature;
@@ -3289,6 +3312,7 @@ impl Vm {
                         fault: None,
                         explicit: None,
                         author_value: true,
+                        awaited: None,
                     }),
                     skip: None,
                 };
@@ -3993,6 +4017,7 @@ impl Vm {
                             fault: None,
                             explicit: None,
                             author_value: false,
+                            awaited: None,
                             kind,
                             location: n.location,
                         });
@@ -4058,6 +4083,7 @@ impl Vm {
                         fault: None,
                         explicit: None,
                         author_value: false,
+                        awaited: None,
                         kind: FaultKind::Type,
                         location: n.location,
                     });
@@ -4080,6 +4106,7 @@ impl Vm {
                         fault: None,
                         explicit: None,
                         author_value: false,
+                        awaited: None,
                         kind: FaultKind::Thrown,
                         location: n.location,
                     }))

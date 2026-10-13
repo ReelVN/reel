@@ -321,11 +321,12 @@ impl FunctionBuilder<'_, '_> {
             K::Plus => bc::Opcode::Pos,
             K::Bang => bc::Opcode::Not,
             K::Tilde => bc::Opcode::BitNot,
+            K::Await => bc::Opcode::Await,
             _ => {
-                return Err(self.l.b.error(
-                    ErrorKind::Unsupported,
-                    "await/yield require later task lowering",
-                ));
+                return Err(self
+                    .l
+                    .b
+                    .error(ErrorKind::Unsupported, "yield requires generator lowering"));
             }
         };
         let Some(input) = self.value(value, depth)? else {

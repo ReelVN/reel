@@ -29,6 +29,14 @@ permit element replacement during iteration, but structural changes invalidate
 the cursor. The public Iterator protocol remains `{done, value}`; custom iterator
 adapters and asynchronous iteration are not implemented by this increment.
 
+Await (0081) is executable for Host objects bound by the trusted VM host to a
+registered unary native adapter. It reads the object once, retains the caller's
+return slot and expression location, and enters a normal native frame. HostCall
+is a scheduling boundary even for Ready; Pending and cancellation use the same
+generation-checked wait protocol as ordinary native calls. No new wire metadata
+or opcode is needed. Async functions and Future/adoption are separate runtime
+capabilities and remain unsupported.
+
 Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` BindingId; `c` CaptureId; `g` Global descriptor; `q` typed descriptor; `p` Pc; unused trailing operands zero. Descriptor reads/writes are explicitly resolved by the shared accessor, including windows and pattern output registers. All potentially long structural operations can save internal budget stages.
 
 | Hex | Opcode | operands / typed descriptor | flow | throw | suspend |

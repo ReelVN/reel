@@ -219,6 +219,7 @@ pub type HostPropertyValidator = fn(&Heap, u32, Value) -> Result<(), HeapError>;
 pub(crate) struct Object {
     pub kind: ObjectKind,
     pub host_validator: Option<HostPropertyValidator>,
+    pub host_await: Option<crate::bytecode::NativeId>,
     pub payload: Payload,
     pub weak: Option<HeapHandle>,
     pub mark: u64,
@@ -488,6 +489,7 @@ impl Heap {
         let key = self.objects.insert(Object {
             kind,
             host_validator: None,
+            host_await: None,
             payload,
             weak,
             mark,
@@ -603,6 +605,22 @@ impl Heap {
             return Err(HeapError::RetiredHost);
         }
         Ok(fields)
+    }
+    pub(crate) fn host_await(&self, host: Value) -> Result<crate::bytecode::NativeId, HeapError> {
+        self.host_fields(host)?;
+        self.object(self.key(host)?)?
+            .host_await
+            .ok_or(HeapError::WrongKind)
+    }
+    pub(crate) fn set_host_await(
+        &mut self,
+        host: Value,
+        native: crate::bytecode::NativeId,
+    ) -> Result<(), HeapError> {
+        self.host_fields(host)?;
+        let key = self.key(host)?;
+        self.objects.get_mut(key).unwrap().host_await = Some(native);
+        Ok(())
     }
     pub fn host_payload_len(&self, host: Value) -> Result<u32, HeapError> {
         let info = self.info(host)?;
