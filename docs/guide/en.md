@@ -98,7 +98,12 @@ let first = rows.slice(0..2);
 rows.reverse();
 let theme = {title: "窗上的光", color: "#ffffff"};
 let names = theme.keys();
+let caption = " · ".join(rows);
+let opening = caption.slice_scalars(0..2);
+let has_opening = caption.starts_with(prefix: "第二章");
 ```
+
+Use byte_len for the UTF-8 byte length and scalar_count for the Unicode scalar count. slice_bytes and slice_scalars take explicit ranges and reject out-of-bounds endpoints or cuts inside a UTF-8 scalar. Combining sequences and emoji may contain multiple scalars; scalar slices are not grapheme slices. starts_with/ends_with compare exact prefixes/suffixes and always match an empty string. `separator.join(items)` joins an array or tuple of strings; an empty collection produces an empty string and other types are not converted automatically. Long text advances within execution budgets; changing the source array during a join is an error. See [text_operations.aside](../../examples/text_operations.aside) for a complete example.
 
 Registered functions can be stored and passed as values, for example `let say = narrator; say("你好");`; waiting behaves exactly as in a direct call. A function default can also be a constructor such as `text`. Use `(int,int)` for a coordinate pair and `(int,int)|null` for an optional pair. `is`, parameters, returns and variable assignments check these contracts; a failed assignment preserves the previous value. See the runnable [function_values.aside](../../examples/function_values.aside) example and use its path with the earlier `dev` or `build` commands.
 

@@ -125,6 +125,14 @@ impl Bytes {
         }
         count
     }
+    pub fn segment(&self, offset: u32) -> &[u8] {
+        if offset == self.len {
+            return &[];
+        }
+        let within = offset as usize % BYTE_CHUNK_LEN;
+        let count = (self.len - offset).min((BYTE_CHUNK_LEN - within) as u32) as usize;
+        &self.chunks[&(offset / BYTE_CHUNK_LEN as u32)][within..within + count]
+    }
     pub fn drop_first_chunk(&mut self) {
         self.chunks.pop_first();
         if self.chunks.is_empty() {

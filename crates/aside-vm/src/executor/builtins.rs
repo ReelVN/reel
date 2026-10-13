@@ -1,7 +1,9 @@
-//! Bound collection methods share argument validation and resumable execution.
+//! Bound methods share argument validation and resumable execution.
 use super::*;
 mod bulk;
 pub(super) use bulk::BulkWork;
+mod strings;
+pub(super) use strings::TextWork;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(i64)]
@@ -22,6 +24,13 @@ pub(super) enum Builtin {
     Keys,
     Values,
     Entries,
+    ByteLen,
+    ScalarCount,
+    SliceBytes,
+    SliceScalars,
+    StartsWith,
+    EndsWith,
+    Join,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -43,6 +52,13 @@ impl Builtin {
             (Table, "keys") => Some(Self::Keys),
             (Table, "values") => Some(Self::Values),
             (Table, "entries") => Some(Self::Entries),
+            (String, "byte_len") => Some(Self::ByteLen),
+            (String, "scalar_count") => Some(Self::ScalarCount),
+            (String, "slice_bytes") => Some(Self::SliceBytes),
+            (String, "slice_scalars") => Some(Self::SliceScalars),
+            (String, "starts_with") => Some(Self::StartsWith),
+            (String, "ends_with") => Some(Self::EndsWith),
+            (String, "join") => Some(Self::Join),
             _ => None,
         }
     }
@@ -64,6 +80,13 @@ impl Builtin {
             Builtin::Keys,
             Builtin::Values,
             Builtin::Entries,
+            Builtin::ByteLen,
+            Builtin::ScalarCount,
+            Builtin::SliceBytes,
+            Builtin::SliceScalars,
+            Builtin::StartsWith,
+            Builtin::EndsWith,
+            Builtin::Join,
         ];
         usize::try_from(id)
             .ok()
@@ -74,12 +97,14 @@ impl Builtin {
     fn parameters(self) -> (&'static [&'static str], usize) {
         match self {
             Self::HasOwn => (&["key"], 1),
-            Self::Slice => (&["range"], 1),
+            Self::Slice | Self::SliceBytes | Self::SliceScalars => (&["range"], 1),
             Self::Insert => (&["index", "value"], 2),
             Self::Remove => (&["index"], 1),
             Self::Resize => (&["length", "value"], 1),
-            Self::Extend => (&["items"], 1),
+            Self::Extend | Self::Join => (&["items"], 1),
             Self::Swap => (&["a", "b"], 2),
+            Self::StartsWith => (&["prefix"], 1),
+            Self::EndsWith => (&["suffix"], 1),
             _ => (&[], 0),
         }
     }
@@ -277,7 +302,9 @@ impl Vm {
             return Ok(false);
         }
         let result = match call.method {
-            Builtin::Len => Ok(Value::int(i64::from(self.heap.info(receiver)?.len))),
+            Builtin::Len | Builtin::ByteLen => {
+                Ok(Value::int(i64::from(self.heap.info(receiver)?.len)))
+            }
             Builtin::Pop => self
                 .heap
                 .array_pop(receiver)
@@ -324,6 +351,17 @@ impl Vm {
                 return Ok(true);
             }
             Builtin::Append => Ok(receiver),
+            Builtin::ScalarCount
+            | Builtin::SliceBytes
+            | Builtin::SliceScalars
+            | Builtin::StartsWith
+            | Builtin::EndsWith
+            | Builtin::Join => {
+                if let Err(kind) = self.start_text_builtin(s, call) {
+                    self.collection_fault(s, kind)?;
+                }
+                return Ok(true);
+            }
             _ => {
                 if let Err(kind) = self.start_bulk(s, call) {
                     self.collection_fault(s, kind)?;
@@ -333,6 +371,27 @@ impl Vm {
         };
         self.builtin_finish(s, call, result)?;
         Ok(true)
+    }
+
+    fn range_bounds(&self, range: Value) -> Result<(u32, u32), FaultKind> {
+        if !self.is_text(range, ObjectKind::Range) {
+            return Err(FaultKind::Type);
+        }
+        let begin = index(self.heap.get_field(range, 0).map_err(heap_fault)?)?;
+        let mut end = index(self.heap.get_field(range, 1).map_err(heap_fault)?)?;
+        if self
+            .heap
+            .get_field(range, 2)
+            .map_err(heap_fault)?
+            .as_bool()
+            .ok_or(FaultKind::Type)?
+        {
+            end = end.checked_add(1).ok_or(FaultKind::OutOfBounds)?;
+        }
+        if begin > end {
+            return Err(FaultKind::OutOfBounds);
+        }
+        Ok((begin, end))
     }
 }
 

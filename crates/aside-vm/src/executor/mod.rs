@@ -125,6 +125,7 @@ enum ScriptPhase {
     TableScan,
     Builtin(builtins::BuiltinCall),
     Bulk(builtins::BulkWork),
+    TextBuiltin(builtins::TextWork),
     Sequence {
         dest: Reg,
         window: RegWindow,
@@ -2295,6 +2296,11 @@ impl Vm {
                     return Ok(false);
                 }
             }
+            ScriptPhase::TextBuiltin(work) => {
+                if !self.text_builtin_step(&mut s, work, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Concat {
                 dest,
                 left,
@@ -2783,7 +2789,10 @@ impl Vm {
                 let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
                 if op == Opcode::MemberGet {
                     let kind = self.heap.info(object).map_err(heap_fault)?.kind;
-                    if matches!(kind, ObjectKind::Array | ObjectKind::Tuple) {
+                    if matches!(
+                        kind,
+                        ObjectKind::Array | ObjectKind::Tuple | ObjectKind::String
+                    ) {
                         let method =
                             Builtin::lookup(kind, &self.program.package().symbols[c as usize])
                                 .ok_or(FaultKind::MissingKey)?;
