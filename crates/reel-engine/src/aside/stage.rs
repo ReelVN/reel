@@ -42,6 +42,7 @@ impl StageBinding {
         symbol: &str,
         args: &[Value],
         read_limit: usize,
+        origin: Option<String>,
     ) -> Result<Value, AdapterError> {
         if symbol == "reel::stage::replace" {
             let node = args[0];
@@ -62,29 +63,34 @@ impl StageBinding {
             return Ok(Value::NULL);
         }
 
-        let is_text = symbol == "reel::text";
+        let prefix = registry::node_prefix(symbol);
         let fields = heap.alloc_table()?;
-        let field_count = if is_text { args.len() } else { args.len() - 1 };
+        let field_count = prefix.len() + registry::NODE_FIELDS.len();
         for (index, argument) in args.iter().take(field_count).enumerate() {
-            let name = if is_text && index == 0 {
-                "value"
+            let name = if index < prefix.len() {
+                prefix[index]
             } else {
-                registry::NODE_FIELDS[index - usize::from(is_text)]
+                registry::NODE_FIELDS[index - prefix.len()]
             };
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, index as u32, key, *argument)?;
         }
         let kind = match symbol {
             "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?),
+            "reel::image" => NodeKind::Image {
+                source: read_source(heap, args[0], read_limit)?,
+                fit: read_fit(heap, args[1])?,
+                origin,
+            },
             "reel::row" => NodeKind::Row,
             "reel::column" => NodeKind::Column,
             "reel::stack" => NodeKind::Stack,
             _ => unreachable!("registered stage constructor"),
         };
-        let props = read_props(heap, fields, usize::from(is_text))?;
+        let props = read_props(heap, fields, prefix.len())?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
-        if !is_text {
+        if prefix.is_empty() {
             let input = args[args.len() - 1];
             if input.tag() != ValueTag::Null {
                 for index in 0..heap.sequence_len(input)? {
@@ -98,10 +104,10 @@ impl StageBinding {
         let value = heap.alloc_composable_host(
             fields,
             &[Value::int(id.0 as i64), references, Value::NULL],
-            Some(if is_text {
-                validate_text_property
-            } else {
-                validate_layout_property
+            Some(match symbol {
+                "reel::text" => validate_text_property,
+                "reel::image" => validate_image_property,
+                _ => validate_layout_property,
             }),
         )?;
         self.scene.create(kind, props, children)?;
@@ -142,12 +148,22 @@ impl StageBinding {
             if version == binding.fields_version {
                 continue;
             }
-            let kind = if matches!(node.kind, NodeKind::Text(_)) {
-                NodeKind::Text(read_text(heap, heap.table_entry(fields, 0)?.1, read_limit)?)
-            } else {
-                node.kind.clone()
+            let (kind, offset) = match &node.kind {
+                NodeKind::Text(_) => (
+                    NodeKind::Text(read_text(heap, heap.table_entry(fields, 0)?.1, read_limit)?),
+                    1,
+                ),
+                NodeKind::Image { origin, .. } => (
+                    NodeKind::Image {
+                        source: read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?,
+                        fit: read_fit(heap, heap.table_entry(fields, 1)?.1)?,
+                        origin: origin.clone(),
+                    },
+                    2,
+                ),
+                kind => (kind.clone(), 0),
             };
-            let props = read_props(heap, fields, usize::from(matches!(kind, NodeKind::Text(_))))?;
+            let props = read_props(heap, fields, offset)?;
             updates.push((id, kind, props, version));
         }
         for (id, kind, props, version) in updates {
@@ -201,6 +217,53 @@ impl StageBinding {
 
 fn read_text(heap: &Heap, value: Value, read_limit: usize) -> Result<String, AdapterError> {
     text::read_string(heap, value, read_limit)
+}
+
+fn read_source(heap: &Heap, value: Value, read_limit: usize) -> Result<String, AdapterError> {
+    let source = read_text(heap, value, read_limit)?;
+    if source.is_empty() {
+        return Err(AdapterError::Input("image source must not be empty"));
+    }
+    Ok(source)
+}
+
+fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit, AdapterError> {
+    use reel_ui::properties::ObjectFit;
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 7 {
+        return Err(AdapterError::Input(
+            "image fit requires contain, cover or stretch",
+        ));
+    }
+    let mut bytes = [0; 7];
+    for index in 0..info.len {
+        heap.read_bytes(value, index, &mut bytes[index as usize..index as usize + 1])?;
+    }
+    match &bytes[..info.len as usize] {
+        b"contain" => Ok(ObjectFit::Contain),
+        b"cover" => Ok(ObjectFit::Cover),
+        b"stretch" => Ok(ObjectFit::Stretch),
+        _ => Err(AdapterError::Input(
+            "image fit requires contain, cover or stretch",
+        )),
+    }
+}
+
+fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+    match index {
+        0 => {
+            let info = heap.info(value)?;
+            if info.kind == ObjectKind::String && info.len != 0 {
+                Ok(())
+            } else {
+                Err(HeapError::TypeMismatch)
+            }
+        }
+        1 => read_fit(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        _ => validate_layout_property(heap, index - 2, value),
+    }
 }
 
 fn number(value: Value) -> Result<f64, AdapterError> {

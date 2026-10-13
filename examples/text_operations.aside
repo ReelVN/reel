@@ -1,4 +1,3 @@
-use reel::prelude::*;
 
 fn main() {
     let chapters = ["序章", "窗上的光", "下一幕"];

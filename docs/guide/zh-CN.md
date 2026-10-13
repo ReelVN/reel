@@ -7,18 +7,17 @@
 这份指南从作者想要的画面出发，说明如何用 Aside 写剧情、组合 UI、安排演出和扩展效果。已实现部分可以直接使用；其余章节描述目标设计，并标明尚未接通的能力。中文与英文共用相同示例和接口名称。《Reel 引擎架构设计》说明运行时，《Aside VM 与语言设计》定义语言规则。
 作者使用三个基本概念：函数组织可复用内容；节点树表达画面；活动表达随时间进行的变化。当前普通函数、基础节点组合与顺序剧情已经接通，活动及高级作者接口仍按各节状态区分。
 
-当前可运行：text、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
+当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-图片节点、动画、作者事件回调、bind/derive、媒体与存读档尚未接入作者源码；game.toml、多源码工程与资源包也仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+动画、作者事件回调、bind/derive、媒体与存读档尚未接入作者源码；game.toml、多源码工程与资源包也仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
 ## 一 最小项目与共同写法
 当前可从一个 main.aside 和一个字体文件开始，使用 dev 运行源码，或 build 后用 run 播放 .asb。下面的 game.toml、game:: 模块拆分与标题页展示完整工程的目标组织方式；目前请以本节可运行命令和作者舞台示例为准。
 完整工程设计中的 game.toml 使用 [game] 表的 entry 与 title，以及 [display] 表的 width、height、scale。entry 写 "main::main"；width=1920、height=1080、scale="contain" 是设计默认值。contain 等比例缩放并留出边缘，输入坐标采用同一换算。game:: 将从配置所在目录解析源码，外部模块使用 [modules] 别名。这些配置与多源码解析尚未实现；当前窗口初始大小为 960×540，不强制固定作者画布。
-use reel::prelude::* 导入当前已注册的基础节点与剧情服务；动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下 game:: 导入与标题按钮是尚待实现的完整工程示例。
+Reel 自动提供当前已注册的基础节点与剧情服务：text、image、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下 game:: 导入与标题按钮是尚待实现的完整工程示例。
 ```aside
-use reel::prelude::*;
 use game::ui::title::title;
 
 fn main() {
@@ -27,7 +26,6 @@ fn main() {
 ```
 上例的 ui/title.aside 可以直接用作者自己的节点组成：
 ```aside
-use reel::prelude::*;
 use game::story::opening::opening;
 
 pub fn title() {
@@ -52,7 +50,7 @@ cargo build --locked -p reel-cli --features window
 ./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --font C:/Windows/Fonts/msyh.ttc
 ```
 
-check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者已支持 `use reel::prelude::*`、已注册 native 和其宿主默认参数模块，使用与播放器相同的接口描述。
+check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者提供与播放器相同的默认 Reel 名称、已注册 native 与宿主默认参数。
 
 dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。源码路径与位置保存在包内，运行错误仍指向原来的 .aside 文件。已有输出只在指定 --overwrite 时替换。
 
@@ -109,14 +107,33 @@ let has_opening = caption.starts_with(prefix: "第二章");
 
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
 
-已实现：text、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，仍持有的旧节点不能继续读写，也不会因此保活整棵旧树。完整代码见[作者舞台示例](../../examples/author_stage.aside)。
+已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，仍持有的旧节点不能继续读写，也不会因此保活整棵旧树。完整代码见[作者舞台示例](../../examples/author_stage.aside)。
 
-stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。旋转、缩放、专用 scroll 容器及图片资源仍属于后续作者能力。
+stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。旋转、缩放及专用 scroll 容器仍属于后续作者能力。
+
+用 `image(source, fit: "contain", ...)` 将 PNG/JPEG 文件放到舞台。省略 width/height 时，图片的像素尺寸作为逻辑尺寸；只指定一边时保持宽高比。指定两边后，contain 完整显示并留空，cover 填满并裁剪，stretch 拉伸填满。图片也支持共同的位置、可见性、透明度和 padding 属性。可以直接修改原节点的 source 和 fit。
+
+```aside
+fn main() {
+    let picture = image("assets/panels.png", width: 320, height: 180);
+    stage.replace(column(gap: 16, padding: 24) {
+        picture;
+        image("assets/panels.png", width: 160, height: 160, fit: "cover");
+    });
+    narrator("The same resource can appear in different frames.");
+    picture.source = "assets/sun.jpg";
+    picture.fit = "cover";
+    narrator("The original node now displays the new image.");
+}
+```
+
+完整的 [author_images.aside](../../examples/author_images.aside) 随附所需图片，可用前面的 dev 命令运行。dev 的资源路径相对于源码文件目录，run 相对于 ASB 文件目录；`--assets <directory>` 可另选资源根目录。例如构建到 target/reel-artifacts 后，运行时加 `--assets examples`。构建 ASB 不会复制图片文件。
+
+图片在后台加载，同一路径的节点共享像素。新场景所需图片全部就绪前保留上一完整画面，并暂停剧情输入；换源也保留旧图片直至新资源就绪。文件缺失或损坏会报告文件路径及 image 构造位置，并结束本次窗口运行。属性类型错误和非法 fit 可在赋值处捕获。图片挂载时才读取文件，构造未挂载组件不会产生文件 IO；会话内文件热重载尚未实现。
 
 画面的节点、绘制记录和嵌套层级随实际内容增长。输入路径在新画面发布前扩容，已有按下、拖动和释放继续对应正确的节点。实际内存预算与 GPU 纹理尺寸由运行宿主和设备管理。
-以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 image 和 game:: 模块。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。
+以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 game:: 模块和自定义对话视图。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。
 ```aside
-use reel::prelude::*;
 use game::ui::dialogue::dialogue_view;
 
 pub fn room_view(dialogue) {
@@ -157,7 +174,6 @@ props、布局与绘制方式属于节点，交互行为属于控件。作者可
 
 角色在模块中定义一次。每句对白调用发言者对象，旁白调用 narrator。独立字符串仍是普通字符串。角色调用更新对话数据和历史，并等待当前句完成，普通函数调用沿同一执行顺序继续。
 ```aside
-use reel::prelude::*;
 use game::ui::room::room_view;
 
 let mio = character("Mio");
@@ -249,7 +265,6 @@ visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面�
 
 启动流程仍写普通 fn。媒体 play 返回活动句柄；点击可以通过正常事件停止播放，播放自然结束和主动停止都进入下一行。
 ```aside
-use reel::prelude::*;
 use game::ui::title::title;
 
 fn main() {
@@ -368,7 +383,7 @@ scope(body: |s| {
 ## 九 遮罩 特效与自定义演出
 历史验证（R01 / Issue #25）：内部 Rust 帧记录、资源租约、分组、裁剪与透明度已有针对性用例。R01 当时尚无 GPU 窗口，记录型消费者不代表物理设备通过。本节 mask/blur 等作者效果仍是设计目标；当前基础舞台与真实窗口已接通，范围见第一、二节。[历史验证范围](../../crates/reel-ui/R01-REPORT.md)。
 
-历史验证（R02）：wgpu 后端与 winit 诊断窗口包含图片、分组透明度、裁剪和 Parley 文字；这些 Rust 诊断能力不意味着作者 image 或高级效果接口已实现。当前作者源码和 ASB 由 dev/run 进入真实剧情窗口。[窗口说明](../../crates/reel-player/README.md) · [设备验证范围](../../crates/reel-render/R02-REPORT.md)。
+历史验证（R02）：wgpu 后端与 winit 诊断窗口包含图片、分组透明度、裁剪和 Parley 文字；这些历史 Rust 诊断能力不意味着高级效果接口已实现；当前 PNG/JPEG 作者图片使用共同舞台和播放器资源加载器。当前作者源码和 ASB 由 dev/run 进入真实剧情窗口。[窗口说明](../../crates/reel-player/README.md) · [设备验证范围](../../crates/reel-render/R02-REPORT.md)。
 
 mask、blur 等效果值属于同一合成体系。效果组先合成自己的子节点，再应用效果，组透明度作用一次。裁剪用于几何范围；图像遮罩用于可见程度。mask.progress 从 0 到 1 表示由全隐藏到全显示，softness 控制边缘宽度；黑白遮罩的灰度决定显现先后。
 ```aside
@@ -510,7 +525,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 宿主自动推进旁白并选择第一项，实际经过编译、模块初始化、VM 等待/恢复和 owner 退休。导入符号及名称节点指向同一 native 时会正确合并；冲突注册仍拒绝。宿主链接包沿用请求的内容版本，ABI v1 保持独立。
 
-当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。角色接口、图像节点、动画、事件绑定、媒体等待、完整模块/类、delegate/hooks、property-bag 和保存恢复仍未实现。
+当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。角色接口、动画、事件绑定、媒体等待、完整模块/类、delegate/hooks、property-bag 和保存恢复仍未实现。
 音频实现进展（PR #53，限定 Rust 范围已独立验收）：Rust 层新增有界播放活动账本、owner 取消、精确等待身份过滤和一次终态交付。设备故障不会吞掉已结算结果；接收队列满时，后续取消记录仍能释放。这里的内容消费完成与设备播放完毕、PCM 内存释放分别记录；尚未接通指南中的作者音频 API、剧情等待或保存恢复。seek/reload、单活动暂停与分组混音仍待实现。现有示例继续表示最终作者接口。[Rust 接口与边界](../../crates/reel-media/README.md#logical-audio-activities-pr-53)。
 
 当前 Rust 音频层按实际 PCM 内存计账，不再额外规定单段音频的最大帧数或时长。宿主设定的队列和声音容量也不再被另一组固定数字压低；作者 audio 接口仍待接通。

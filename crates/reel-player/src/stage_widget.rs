@@ -5,21 +5,25 @@ use reel_ui::{
     imaging::{Composite, GroupRef, Painter},
     kurbo::{Axis, Point, Size},
     layout::{LenDef, LenReq, Length, SizeDef},
-    peniko::Color,
+    peniko::{Color, ImageData},
     properties::ContentColor,
+    resources::{ResourceData, ResourceLease},
     stage::{NodeId, NodeKind, Stage, StageNode},
-    widgets::Label,
+    widgets::{Image, Label},
 };
+use std::collections::BTreeMap;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct StageView {
     pub revision: u64,
     root: Option<SceneNode>,
+    pub resources: Vec<ResourceLease>,
 }
 #[derive(Clone)]
 struct SceneNode {
     node: StageNode,
     children: Vec<SceneNode>,
+    image: Option<ImageData>,
 }
 impl StageView {
     pub fn capture(stage: &Stage) -> Self {
@@ -30,11 +34,46 @@ impl StageView {
                 .iter()
                 .map(|id| capture_node(stage, *id))
                 .collect();
-            SceneNode { node, children }
+            SceneNode {
+                node,
+                children,
+                image: None,
+            }
         }
         Self {
             revision: stage.revision(),
             root: stage.root().map(|id| capture_node(stage, id)),
+            resources: Vec::new(),
+        }
+    }
+    pub fn image_requests(&self) -> BTreeMap<String, Option<String>> {
+        let mut requests = BTreeMap::new();
+        let mut pending: Vec<_> = self.root.iter().collect();
+        while let Some(node) = pending.pop() {
+            if let NodeKind::Image { source, origin, .. } = &node.node.kind {
+                requests
+                    .entry(source.clone())
+                    .or_insert_with(|| origin.clone());
+            }
+            pending.extend(node.children.iter());
+        }
+        requests
+    }
+    pub fn resolve_images(&mut self, images: &BTreeMap<String, ResourceLease>) {
+        self.resources = self
+            .image_requests()
+            .keys()
+            .map(|source| images[source].clone())
+            .collect();
+        let mut pending: Vec<_> = self.root.iter_mut().collect();
+        while let Some(node) = pending.pop() {
+            if let NodeKind::Image { source, .. } = &node.node.kind {
+                let ResourceData::Image { image, .. } = images[source].data() else {
+                    unreachable!()
+                };
+                node.image = Some(image.clone());
+            }
+            pending.extend(node.children.iter_mut());
         }
     }
 }
@@ -124,6 +163,8 @@ impl Widget for StageWidget {
 struct SceneWidget {
     node: StageNode,
     label: Option<WidgetPod<Label>>,
+    image: Option<WidgetPod<Image>>,
+    image_size: Size,
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
     size: Size,
 }
@@ -146,6 +187,19 @@ impl SceneWidget {
         Self {
             node: view.node.clone(),
             label,
+            image: view.image.as_ref().map(|image| {
+                let NodeKind::Image { fit, .. } = view.node.kind else {
+                    unreachable!()
+                };
+                NewWidget::new(Image::new(image.clone()))
+                    .with_props(fit)
+                    .to_pod()
+            }),
+            image_size: view
+                .image
+                .as_ref()
+                .map(|image| Size::new(image.width.into(), image.height.into()))
+                .unwrap_or(Size::ZERO),
             children: view
                 .children
                 .iter()
@@ -155,6 +209,17 @@ impl SceneWidget {
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
+        if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
+            && this.widget.node.kind != view.node.kind
+            && let Some(mut image) = this.ctx.get_mut(pod)
+        {
+            Image::set_image_data(&mut image, data.clone());
+            let NodeKind::Image { fit, .. } = view.node.kind else {
+                unreachable!()
+            };
+            image.insert_prop(fit);
+            this.widget.image_size = Size::new(data.width.into(), data.height.into());
+        }
         if let (Some(pod), NodeKind::Text(text)) = (&mut this.widget.label, &view.node.kind)
             && let Some(mut label) = this.ctx.get_mut(pod)
         {
@@ -196,6 +261,9 @@ impl Widget for SceneWidget {
         if let Some(label) = &mut self.label {
             ctx.register_child(label);
         }
+        if let Some(image) = &mut self.image {
+            ctx.register_child(image);
+        }
         for (_, child) in &mut self.children {
             ctx.register_child(child);
         }
@@ -217,6 +285,18 @@ impl Widget for SceneWidget {
             return Length::px(fixed);
         }
         let padding = Length::px(props.padding * 2.);
+        if self.image.is_some() {
+            let other = if axis == Axis::Horizontal {
+                props.height
+            } else {
+                props.width
+            };
+            let native = self.image_size.get_coord(axis);
+            let length = other.map_or(native, |other| {
+                (other - padding.get()).max(0.) * (native / self.image_size.get_coord(axis.cross()))
+            });
+            return Length::px(length + padding.get());
+        }
         let available = LenDef::from(request).reduce(padding);
         let cross = cross.map(|value| value.saturating_sub(padding));
         let context = ctx.context_size();
@@ -264,6 +344,10 @@ impl Widget for SceneWidget {
         if let Some(label) = &mut self.label {
             ctx.run_layout(label, inner);
             ctx.place_child(label, Point::new(padding, padding));
+        }
+        if let Some(image) = &mut self.image {
+            ctx.run_layout(image, inner);
+            ctx.place_child(image, Point::new(padding, padding));
         }
         let mut cursor = 0.;
         for (node, child) in &mut self.children {
@@ -334,6 +418,7 @@ impl Widget for SceneWidget {
         self.label
             .iter()
             .map(WidgetPod::id)
+            .chain(self.image.iter().map(WidgetPod::id))
             .chain(self.children.iter().map(|(_, child)| child.id()))
             .collect()
     }

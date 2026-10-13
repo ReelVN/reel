@@ -1,4 +1,3 @@
-use reel::prelude::*;
 
 fn label_at(message, position: (int,int)|null = null, create = text) {
     let point: (int,int) = if position is null { (32,48) } else { position };

@@ -7,12 +7,13 @@ publish = false
 
 [features]
 default = []
-window = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:blake3", "reel-render/wgpu"]
+window = ["dep:winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
 reel-ui.workspace = true
 reel-engine = { path = "../reel-engine" }
-blake3 = { version = "=1.8.2", optional = true }
+blake3 = { version = "=1.8.2" }
+image = { workspace = true, features = ["png", "jpeg"] }
 reel-core = { path = "../reel-core" }
 reel-render = { path = "../reel-render" }
 winit = { version = "=0.30.12", optional = true }

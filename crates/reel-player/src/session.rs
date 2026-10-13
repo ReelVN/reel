@@ -3,6 +3,8 @@
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
 use crate::stage_widget::{StageView, StageWidget};
+#[cfg(test)]
+mod image_tests;
 use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
 };
@@ -195,10 +197,11 @@ impl SessionWidget {
     }
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
         this.widget.authored = ui.stage.is_some();
-        if let Some(stage) = &ui.stage
-            && let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage)
-        {
-            StageWidget::sync(&mut widget, stage);
+        if let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage) {
+            StageWidget::sync(
+                &mut widget,
+                ui.stage.as_ref().unwrap_or(&StageView::default()),
+            );
         }
         let same_interaction = this.widget.projection.interaction == ui.projection.interaction;
         if !same_interaction {
@@ -527,6 +530,8 @@ pub struct SessionUi {
     scroll: Rc<Cell<f64>>,
     stage: Option<StageView>,
     stage_dirty: bool,
+    pending_stage: Option<StageView>,
+    images: crate::images::Images,
 }
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
@@ -550,6 +555,8 @@ impl SessionUi {
             scroll: Rc::new(Cell::new(0.)),
             stage: None,
             stage_dirty: false,
+            pending_stage: None,
+            images: crate::images::Images::new(Default::default()),
         })
     }
     pub fn session(&self) -> &Session {
@@ -566,14 +573,46 @@ impl SessionUi {
     }
     pub fn set_stage(&mut self, stage: &reel_ui::stage::Stage) {
         if self
-            .stage
+            .pending_stage
             .as_ref()
+            .or(self.stage.as_ref())
             .is_none_or(|view| view.revision != stage.revision())
         {
-            self.stage = Some(StageView::capture(stage));
-            self.stage_dirty = true;
+            let view = StageView::capture(stage);
+            self.images.request(view.image_requests());
+            self.pending_stage = Some(view);
             self.clear_presented();
         }
+    }
+    /// Configure before creating a widget or driving the story.
+    pub fn with_image_options(mut self, options: crate::images::ImageOptions) -> Self {
+        self.images = crate::images::Images::new(options);
+        if let Some(view) = &self.pending_stage {
+            self.images.request(view.image_requests());
+        }
+        self
+    }
+    /// Called from the decoder thread when a terminal result is ready to poll.
+    pub fn set_image_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.images.set_waker(wake);
+    }
+    pub fn images_pending(&self) -> bool {
+        self.pending_stage.is_some()
+    }
+    #[cfg(feature = "window")]
+    pub(crate) fn images_need_poll(&self) -> bool {
+        self.images_pending() || self.images.has_result_pending()
+    }
+    /// Immutable leases for the currently published stage, suitable for a frame snapshot.
+    pub fn image_resources(&self) -> &[reel_ui::resources::ResourceLease] {
+        self.stage.as_ref().map_or(&[], |view| &view.resources)
+    }
+    pub(crate) fn close_images(&mut self) {
+        self.pending_stage = None;
+        self.images.close();
+        self.stage = None;
+        self.stage_dirty = true;
+        self.clear_presented();
     }
     pub fn projection_stamp(&self) -> ProjectionStamp {
         ProjectionStamp {
@@ -583,7 +622,9 @@ impl SessionUi {
     }
     /// Call only after PresentationBridge accepted the matching actual frame.
     pub fn presented(&mut self, stamp: ProjectionStamp) {
-        self.binding.borrow_mut().accepted = Some(stamp);
+        if !self.images_pending() {
+            self.binding.borrow_mut().accepted = Some(stamp);
+        }
     }
     #[cfg(feature = "window")]
     pub(crate) fn gesture_active(&self) -> bool {
@@ -603,6 +644,16 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
     ) -> Result<(), Error> {
+        if self.images.poll()? {
+            if let Some(mut view) = self.pending_stage.take() {
+                view.resolve_images(&self.images.loaded);
+                self.stage = Some(view);
+                self.stage_dirty = true;
+                self.images.commit();
+            }
+        } else if self.images_pending() {
+            return Ok(());
+        }
         let projection = match Projection::from_session(&self.session) {
             Ok(projection) => projection,
             Err(error) => {
@@ -670,6 +721,7 @@ impl SessionUi {
         Ok(handled)
     }
     pub fn cancel(&mut self) -> bool {
+        self.close_images();
         self.clear_presented();
         self.session.cancel()
     }
@@ -765,7 +817,7 @@ mod tests {
     };
     use std::sync::Arc;
 
-    fn session() -> Session {
+    pub(super) fn session() -> Session {
         Session::new(SessionId(42), Epoch(3)).unwrap()
     }
     fn say(session: &mut Session, text: &str) -> InteractionId {
@@ -782,7 +834,7 @@ mod tests {
             )
             .unwrap()
     }
-    fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
+    pub(super) fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
         mount_with_font(ui, None)
     }
     fn mount_with_font(
@@ -831,7 +883,7 @@ mod tests {
         );
         ui.presented(stamp);
     }
-    fn mouse(kind: &str, point: (f64, f64)) -> PointerEvent {
+    pub(super) fn mouse(kind: &str, point: (f64, f64)) -> PointerEvent {
         let pointer = PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),
             persistent_device_id: None,

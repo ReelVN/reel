@@ -200,6 +200,7 @@ impl Renderer {
             tickets: Vec::new(),
             images: HashMap::new(),
             white: None,
+            available_targets: Vec::new(),
         };
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],

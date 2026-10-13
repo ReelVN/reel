@@ -99,9 +99,13 @@ Limits: default two prepared/in-flight submissions,
 Resource domains use byte quotas; ticket counts retain only their u32 representation
 boundary. RGBA16 texture upload accounting includes
 f32 conversion storage, padded CPU staging, GPU staging and texture storage.
-The target budget charges every full-viewport scope, clip coverage, mask result
-and crossfade input, including 4x attachment plus resolve. Exhaustion refuses the
-whole frame; there is no implicit per-group quality change or cache eviction.
+The target budget charges actual full-viewport allocations, including 4x attachment
+plus resolve. Within one preparation, completed scope, clip coverage and mask targets
+are cleared and reused after their reads have been encoded. Active parents, pending
+mask inputs and frozen crossfade inputs remain exclusive until composed. Thus sibling
+scopes share storage rather than accumulating targets. Reservations remain live through
+queue completion; reuse never refunds still-submitted GPU storage. Exhaustion refuses
+the whole frame; there is no implicit per-group quality change or cache eviction.
 Application-accounted extents do not measure driver allocator/pipeline memory or
 prove hard bounds on private Lyon/Swash scratch. Those upstream internals and
 persistent mesh/glyph caches require further profiling before an engine-wide

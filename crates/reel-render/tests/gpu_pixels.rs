@@ -101,7 +101,20 @@ fn whole_group_opacity_and_nested_masks_clips() {
         MaskMode,
         record::{AppliedMask, Clip, Group, Mask},
     };
-    let mut renderer = device();
+    let instance = wgpu::Instance::default();
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &instance,
+            None,
+            DeviceGeneration(1),
+            GpuLimits::default(),
+        ))
+        .unwrap(),
+    );
+    eprintln!(
+        "nested composition: {:?}",
+        renderer.gpu().adapter.get_info()
+    );
     let pool = pool();
     let mut s = Scene::new();
     s.push_group(Group {
@@ -138,7 +151,7 @@ fn whole_group_opacity_and_nested_masks_clips() {
     fill(&mut coverage, Color::from_rgb8(255, 0, 0));
     coverage.pop_group();
     let mut s = Scene::new();
-    let mask = s.define_mask(Mask::new(MaskMode::Luminance, coverage));
+    let mask = s.define_mask(Mask::new(MaskMode::Luminance, coverage.clone()));
     s.push_clip(Clip::Fill {
         transform: Affine::IDENTITY,
         shape: Geometry::Rect(Rect::new(20., 20., 180., 180.)),
@@ -166,6 +179,128 @@ fn whole_group_opacity_and_nested_masks_clips() {
         .unwrap();
     close(pixel(&pixels, 100, 100), [0.2126 * 128. / 255. * 0.5; 4]);
     close(pixel(&pixels, 200, 200), [0.; 4]);
+
+    // Repeating sibling compositions must reuse their completed targets without
+    // recycling the enclosing group, either mask input, or a frozen fade input.
+    let mut peak = None;
+    for count in [1, 24] {
+        let mut s = Scene::new();
+        let mask = s.define_mask(Mask::new(MaskMode::Luminance, coverage.clone()));
+        for index in 0..count {
+            let x = (index % 6 * 64) as f64;
+            let y = (index / 6 * 70) as f64;
+            s.push_group(Group {
+                composite: Composite {
+                    alpha: 0.5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            s.push_clip(Clip::Fill {
+                transform: Affine::IDENTITY,
+                shape: Geometry::Rect(Rect::new(x + 8., y + 8., x + 56., y + 62.)),
+                fill_rule: Default::default(),
+            });
+            s.push_group(Group {
+                mask: Some(AppliedMask::new(mask)),
+                ..Default::default()
+            });
+            fill(
+                &mut s,
+                if index % 2 == 0 {
+                    Color::from_rgb8(255, 0, 0)
+                } else {
+                    Color::from_rgb8(0, 255, 0)
+                },
+            );
+            s.pop_group();
+            s.pop_clip();
+            s.pop_group();
+        }
+        let mut bridge = widget_bridge(RecordWidget::new(s), Affine::IDENTITY);
+        let frame = build(
+            bridge.record(FrameId(3)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let prepared = renderer.prepare(&frame).unwrap();
+        let used = renderer.usage().targets;
+        assert!(used <= GpuLimits::default().target_bytes);
+        assert_eq!(used, *peak.get_or_insert(used));
+        eprintln!(
+            "{count} sibling compositions: {:?}, targets={used}",
+            prepared.quality()
+        );
+        let pixels = renderer.readback(prepared).unwrap();
+        let alpha = 0.2126 * 128. / 255. * 0.5;
+        for index in 0..count {
+            let x = index % 6 * 64;
+            let y = index / 6 * 70;
+            let expected = if index % 2 == 0 {
+                [alpha, 0., 0., alpha]
+            } else {
+                [0., alpha, 0., alpha]
+            };
+            close(pixel(&pixels, x + 32, y + 32), expected);
+            close(pixel(&pixels, x + 2, y + 32), [0.; 4]);
+        }
+        close(pixel(&pixels, 399, 299), [0.; 4]);
+        assert_eq!(renderer.usage().targets, 0);
+
+        if count == 24 {
+            let mut other = widget_bridge(
+                RecordWidget::new(scene(Color::from_rgb8(0, 0, 255))),
+                Affine::IDENTITY,
+            );
+            let other = build(
+                other.record(FrameId(4)).unwrap(),
+                empty_snapshot(&pool),
+                &pool,
+            );
+            let prepared = renderer.crossfade(&frame, &other, 0.5).unwrap();
+            assert!(renderer.usage().targets <= GpuLimits::default().target_bytes);
+            let pixels = renderer.readback(prepared).unwrap();
+            close(
+                pixel(&pixels, 32, 32),
+                [alpha * 0.5, 0., 0.5, (1. + alpha) * 0.5],
+            );
+            close(
+                pixel(&pixels, 96, 32),
+                [0., alpha * 0.5, 0.5, (1. + alpha) * 0.5],
+            );
+            close(pixel(&pixels, 2, 32), [0., 0., 0.5, 0.5]);
+            assert_eq!(renderer.usage().targets, 0);
+            assert_eq!(renderer.usage().resources, 0);
+            assert_eq!(renderer.usage().transient, 0);
+        }
+    }
+
+    // Live parents cannot be pooled: 301 full-size targets exceed 128 MiB even
+    // with the smallest supported RGBA8/1x quality. Refusal releases everything.
+    let mut s = Scene::new();
+    for _ in 0..300 {
+        s.push_group(Group::default());
+    }
+    fill(&mut s, Color::WHITE);
+    for _ in 0..300 {
+        s.pop_group();
+    }
+    let mut bridge = widget_bridge(RecordWidget::new(s), Affine::IDENTITY);
+    let frame = build(
+        bridge.record(FrameId(5)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    assert!(matches!(
+        renderer.prepare(&frame),
+        Err(reel_render::gpu::GpuError::Budget {
+            domain: "targets",
+            ..
+        })
+    ));
+    assert_eq!(renderer.usage().targets, 0);
+    assert_eq!(renderer.usage().resources, 0);
+    assert_eq!(renderer.usage().transient, 0);
 }
 #[test]
 #[ignore = "requires an actual graphics adapter"]

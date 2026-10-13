@@ -279,6 +279,7 @@ pub fn compile_module(
         module: module_path.into(),
         source_path: Some(source_path.into()),
         version: content_version.to_string(),
+        hosts: prelude,
         ..Default::default()
     };
     let module = analyze_module(source, &options, &mut resolver)

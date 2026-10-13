@@ -116,6 +116,16 @@ impl AsideSessionUi {
     pub fn state(&self) -> StoryState {
         self.state
     }
+    /// Select asset resolution and memory policy before driving the story.
+    pub fn with_image_options(mut self, options: crate::images::ImageOptions) -> Self {
+        self.ui = self.ui.with_image_options(options);
+        self
+    }
+    /// Install the host's completion wake-up before first synchronizing images.
+    /// The callback runs on the decoder thread; synchronize on the host thread.
+    pub fn set_image_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.ui.set_image_waker(wake);
+    }
     pub fn host_failure(&self) -> Option<&HostFailure> {
         self.host_failure.as_ref()
     }
@@ -166,7 +176,7 @@ impl AsideSessionUi {
     }
 
     pub fn sync(&mut self, bridge: &mut PresentationBridge, root: WidgetId) -> Result<(), Error> {
-        if self.state != StoryState::Finished {
+        if !matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             self.vm.sync_stage(self.ui.session())?;
             self.ui.set_stage(self.vm.stage());
         }
@@ -275,6 +285,7 @@ impl AsideSessionUi {
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {
+        self.ui.close_images();
         if matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             return Ok(());
         }

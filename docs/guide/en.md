@@ -7,18 +7,17 @@ Design version 1.1 · Development baseline. Implementation status is stated in t
 This guide starts with the scene you want to create and explains how to use Aside to write stories, compose UI, choreograph scenes, and extend effects. Implemented features are ready to use; the remaining sections describe the target design and identify capabilities that are not yet connected. The Chinese and English editions share the same examples and interface names. Reel Engine Architecture Design describes the runtime; Aside VM and Language Design defines the language rules.
 Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Ordinary functions, basic node composition and sequential stories now work together. Activities and advanced creator APIs retain their stated implementation status.
 
-Currently runnable: text, row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
+Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Image nodes, animation, author event callbacks, bind/derive, media and save/load are not connected to creator source yet. game.toml, projects with multiple source modules and asset packaging also remain unimplemented. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Animation, author event callbacks, bind/derive, media and save/load are not connected to creator source yet. game.toml, projects with multiple source modules and asset packaging also remain unimplemented. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
 ## 1 A Minimal Project and Shared Conventions
 Start today with one main.aside file and a font. Use dev to run source, or build and then run its .asb. The game.toml, game:: module layout and title screen below describe the target organization of a complete project. For current execution, use this section's commands and the author-stage example.
 In the complete project design, game.toml uses entry and title in [game], and width, height and scale in [display]. The designed defaults are entry="main::main", width=1920, height=1080 and scale="contain". Contain preserves aspect ratio with borders, using the same conversion for input. game:: will resolve source relative to that configuration, with [modules] aliases for external modules. Configuration loading and multiple-source resolution are not implemented yet. The current window starts at 960×540 without imposing a fixed author canvas.
-use reel::prelude::* imports the currently registered basic nodes and story services. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following game:: imports and title buttons describe a complete project that is not yet implemented.
+Reel makes all currently registered basic nodes and story services available automatically: text, image, row, column, stack, stage, narrator and choose. Each source file can use them without an import. Your module declarations, local bindings and explicit imports take precedence over these defaults. If you define your own text function, `use reel::prelude::text as reel_text;` gives the Reel constructor a separate name. Explicit prelude imports remain ordinary valid imports. This default environment belongs to Reel; standalone Aside has no Reel names. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following game:: imports and title buttons describe a complete project that is not yet implemented.
 ```aside
-use reel::prelude::*;
 use game::ui::title::title;
 
 fn main() {
@@ -27,7 +26,6 @@ fn main() {
 ```
 The ui/title.aside module used above can be built directly from the author's own nodes:
 ```aside
-use reel::prelude::*;
 use game::story::opening::opening;
 
 pub fn title() {
@@ -52,7 +50,7 @@ cargo build --locked -p reel-cli --features window
 ./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --font C:/Windows/Fonts/msyh.ttc
 ```
 
-Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands support `use reel::prelude::*`, registered native functions and their host default-argument module, using the same interface declarations as the player.
+Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands provide the same default Reel names, registered native functions and host default arguments as the player.
 
 Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Source paths and positions are stored in the package, so runtime errors still point to the original .aside file. Existing output is replaced only with --overwrite.
 
@@ -111,14 +109,33 @@ Component calls with a trailing children block may omit the ending semicolon whe
 
 
 
-Implemented: text, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
+Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
 
-Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. Rotation, scaling, a dedicated scroll container and image resources remain future creator capabilities.
+Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. Rotation, scaling and a dedicated scroll container remain future creator capabilities.
+
+Use `image(source, fit: "contain", ...)` to place PNG/JPEG files on the stage. Without width/height, an image uses its pixel dimensions as logical dimensions; setting just one preserves its aspect ratio. With both set, contain fits the whole image with empty space, cover fills and crops the box, and stretch fills the box without preserving the ratio. Images also support the common position, visibility, opacity and padding properties. `source` and `fit` can be changed on the original node.
+
+```aside
+fn main() {
+    let picture = image("assets/panels.png", width: 320, height: 180);
+    stage.replace(column(gap: 16, padding: 24) {
+        picture;
+        image("assets/panels.png", width: 160, height: 160, fit: "cover");
+    });
+    narrator("The same resource can appear in different frames.");
+    picture.source = "assets/sun.jpg";
+    picture.fit = "cover";
+    narrator("The original node now displays the new image.");
+}
+```
+
+The complete [author_images.aside](../../examples/author_images.aside) includes these image files. Run it with the earlier dev command. Paths are relative to the source file for dev and the ASB file for run; use `--assets <directory>` to select a different resource root. For example, after building into target/reel-artifacts, run with `--assets examples`. Building an ASB does not copy image files.
+
+Loading happens in the background, and nodes using the same path share pixels. The previous complete scene remains visible until all images in the new scene are ready; story input pauses during that preparation. Changing source keeps the previous picture until the replacement is ready. A missing or invalid file reports its path and the image constructor's source location and ends the window run. Property type errors and an invalid fit are catchable at assignment. Images are loaded when mounted; unmounted component construction does not read files. In-session file hot reload is not implemented.
 
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
-The following room describes the full-scene design and is not directly runnable yet: it relies on image and game:: modules that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
+The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside
-use reel::prelude::*;
 use game::ui::dialogue::dialogue_view;
 
 pub fn room_view(dialogue) {
@@ -159,7 +176,6 @@ Dialogue lines, choices, interaction text and session history grow with the cont
 
 Define each character once in a module. Each line of dialogue calls the speaker object; narration calls narrator. A standalone string is still just a string. A character call updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
 ```aside
-use reel::prelude::*;
 use game::ui::room::room_view;
 
 let mio = character("Mio");
@@ -251,7 +267,6 @@ Images, animation, button callbacks and game entry switching in this section are
 
 The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
 ```aside
-use reel::prelude::*;
 use game::ui::title::title;
 
 fn main() {
@@ -370,7 +385,7 @@ Adding an offset only to hud shakes only the dialogue UI. It is independent of u
 ## 9 Masks, Effects, and Custom Scene Choreography
 Historical verification (R01 / Issue #25): focused cases cover internal Rust frame records, resource leases, groups, clipping and opacity. R01 did not yet provide a GPU window, and recording consumers do not establish physical-device behavior. This section's author mask/blur effects remain design targets. The basic stage and real window now work together as described in sections 1 and 2. See the [historical verification scope](../../crates/reel-ui/R01-REPORT.md).
 
-Historical verification (R02): the wgpu backend and winit diagnostic window included images, group opacity, clipping and Parley text. These Rust diagnostic capabilities do not establish implementation of author image or advanced-effect APIs. Current author source and ASB enter the real story window through dev/run. See [window documentation](../../crates/reel-player/README.md) and [device verification scope](../../crates/reel-render/R02-REPORT.md).
+Historical verification (R02): the wgpu backend and winit diagnostic window included images, group opacity, clipping and Parley text. Those historical Rust diagnostics do not establish implementation of advanced-effect APIs. PNG/JPEG author images now use the shared stage and player resource loader. Current author source and ASB enter the real story window through dev/run. See [window documentation](../../crates/reel-player/README.md) and [device verification scope](../../crates/reel-render/R02-REPORT.md).
 
 Effect values such as mask and blur belong to the same compositing system. An effect group first composites its children, then applies its effects, with group opacity applied once. Clipping defines a geometric region; an image mask defines degrees of visibility. mask.progress ranges from 0 for fully hidden to 1 for fully visible; softness controls edge width. Grayscale values in a black-and-white mask determine the order of revelation.
 ```aside
@@ -512,7 +527,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 The host advances dialogue and selects the first option through actual compilation, module initialization, VM waiting/resumption and owner retirement. Symbol and name-use links to the same native coalesce; conflicting registrations still reject. The host linkage package uses the requested content version independently of native ABI v1.
 
-Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Character APIs, image nodes, animation, event bindings, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
+Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Character APIs, animation, event bindings, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
 Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
 
 The current Rust audio layer accounts actual PCM memory without an additional per-sound frame or duration ceiling. Host-selected queue and sound capacities are no longer clamped by a second set of fixed numbers. Creator audio interfaces remain unconnected.
