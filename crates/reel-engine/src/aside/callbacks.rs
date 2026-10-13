@@ -1,0 +1,217 @@
+//! Node-owned tasks share the VM and its bounded slices with the story task.
+use super::*;
+use reel_ui::stage::NodeId;
+
+pub(super) struct Callback {
+    pub task: TaskId,
+    pub owner: OwnerHandle,
+    pub node: NodeId,
+    pub wait: Option<WaitId>,
+    pub cancelling: bool,
+}
+
+impl SessionVm {
+    /// Called after the host routes a control activation through accepted geometry.
+    /// Current node liveness and enabled ancestors are checked before task creation.
+    pub fn click(&mut self, session: &mut Session, node: NodeId) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, closure)) = self.stage.click(self.vm.heap(), node)? else {
+            return Ok(false);
+        };
+        self.callbacks
+            .try_reserve(1)
+            .map_err(|_| AdapterError::Allocation)?;
+        let event = self.vm.heap_mut().alloc_table()?;
+        let key = self.vm.heap_mut().alloc_string("target")?;
+        self.vm.heap_mut().table_store(event, 0, key, target)?;
+        let owner = session.create_owner()?;
+        let task = match self.vm.start_closure(
+            closure,
+            &[event],
+            RootOwner(owner.owner_id().0),
+            Context::Ordinary,
+        ) {
+            Ok(task) => task,
+            Err(error) => {
+                session.revoke_owner(owner)?;
+                return Err(error.into());
+            }
+        };
+        self.callbacks.push(Callback {
+            task,
+            owner,
+            node,
+            wait: None,
+            cancelling: false,
+        });
+        Ok(true)
+    }
+
+    pub fn has_runnable_tasks(&self) -> bool {
+        if self.revoked || self.delivery.is_some() {
+            return false;
+        }
+        self.issued.is_some()
+            || self.task.is_some()
+                && self
+                    .main_wait
+                    .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+            || self.callbacks.iter().any(|callback| {
+                callback.cancelling
+                    || self.stage.scene.node(callback.node).is_none()
+                    || callback
+                        .wait
+                        .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+            })
+    }
+
+    pub fn has_live_work(&self) -> bool {
+        !self.callbacks.is_empty() || self.stage.has_handlers() || self.activities.has_active()
+    }
+
+    pub(super) fn callback_owner(&self, task: TaskId) -> Option<RootOwner> {
+        self.callbacks
+            .iter()
+            .find(|c| c.task == task)
+            .map(|c| RootOwner(c.owner.owner_id().0))
+    }
+    pub(super) fn default_activity_owner(&self, task: TaskId) -> Result<Value, AdapterError> {
+        match self.callbacks.iter().find(|c| c.task == task) {
+            Some(callback) => self.stage.value(self.vm.heap(), callback.node),
+            None => Ok(Value::NULL),
+        }
+    }
+
+    pub(super) fn cancel_callback(
+        &mut self,
+        session: &mut Session,
+        index: usize,
+    ) -> Result<(), AdapterError> {
+        let callback = &mut self.callbacks[index];
+        if !callback.cancelling {
+            // Current Reel natives retain no independent roots under callback
+            // owners. Node/activity roots belong to the session; VM ranges are
+            // released by actual task cleanup before this owner can be reused.
+            session.revoke_owner_with_retirement(
+                callback.owner,
+                OwnerRetirementRequirements {
+                    tasks_pending: true,
+                    ..Default::default()
+                },
+            )?;
+            self.vm.cancel_task(callback.task)?;
+            callback.cancelling = true;
+            callback.wait = None;
+            if self
+                .issued
+                .is_some_and(|ticket| ticket.task == callback.task)
+            {
+                self.issued = None;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn retire_callback(
+        &mut self,
+        session: &mut Session,
+        index: usize,
+    ) -> Result<(), AdapterError> {
+        let callback = self.callbacks.remove(index);
+        if callback.cancelling {
+            session.confirm_owner_task_cleanup(callback.owner)?;
+        } else {
+            session.revoke_owner(callback.owner)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn step_tasks(
+        &mut self,
+        session: &mut Session,
+        budget: SliceBudget,
+        now: impl FnMut() -> u64,
+    ) -> Result<SessionStep, AdapterError> {
+        self.live(session)?;
+        self.deliver_completion(session)?;
+        for index in 0..self.callbacks.len() {
+            let callback = &self.callbacks[index];
+            if self.stage.scene.node(callback.node).is_none()
+                || !session.is_owner_live(callback.owner)
+            {
+                self.cancel_callback(session, index)?;
+            }
+        }
+        self.activities.maintain(&mut self.vm)?;
+        if let Some(ticket) = self.issued {
+            return Ok(SessionStep::Vm(RunOutcome::HostCall(ticket)));
+        }
+        if self.delivery.is_some() {
+            return Err(AdapterError::Input("delivery not retired"));
+        }
+        let count = self.callbacks.len() + 1;
+        let selected = (0..count)
+            .map(|offset| (self.schedule_cursor + offset) % count)
+            .find(|&index| {
+                if index == 0 {
+                    self.task.is_some()
+                        && self
+                            .main_wait
+                            .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+                } else {
+                    let callback = &self.callbacks[index - 1];
+                    callback.cancelling
+                        || callback
+                            .wait
+                            .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+                }
+            });
+        let Some(index) = selected else {
+            return Ok(self
+                .main_wait
+                .filter(|&wait| self.vm.wait_is_pending(wait))
+                .map(|wait| SessionStep::Vm(RunOutcome::Waiting(wait)))
+                .unwrap_or(SessionStep::Idle));
+        };
+        // A budget slice yields to the host, not to another script task. Keep
+        // synchronous reads/writes together across VM and native continuations.
+        self.schedule_cursor = index;
+        let task = if index == 0 {
+            self.task.unwrap()
+        } else {
+            self.callbacks[index - 1].task
+        };
+        let outcome = match self.vm.run_slice(task, budget, now) {
+            Ok(outcome) => outcome,
+            Err(VmError::Idle) if index > 0 && self.callbacks[index - 1].cancelling => {
+                self.schedule_cursor = index + 1;
+                self.retire_callback(session, index - 1)?;
+                return Ok(SessionStep::Progress);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match outcome {
+            RunOutcome::Returned(delivery) if index > 0 => {
+                self.schedule_cursor = index + 1;
+                self.vm.discard_delivery(delivery)?;
+                self.retire_callback(session, index - 1)?;
+                return Ok(SessionStep::Progress);
+            }
+            RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
+            RunOutcome::Returned(delivery) | RunOutcome::Fault(delivery) => {
+                self.schedule_cursor = index + 1;
+                self.delivery = Some(delivery);
+                self.delivery_task = Some(task);
+            }
+            RunOutcome::Waiting(wait) => {
+                self.schedule_cursor = index + 1;
+                if index == 0 {
+                    self.main_wait = Some(wait);
+                } else {
+                    self.callbacks[index - 1].wait = Some(wait);
+                }
+            }
+            _ => {}
+        }
+        Ok(SessionStep::Vm(outcome))
+    }
+}

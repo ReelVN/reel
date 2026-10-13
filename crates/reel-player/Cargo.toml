@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-window = ["dep:winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
+window = ["dep:winit", "dep:ui-events-winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
 reel-ui.workspace = true
@@ -17,6 +17,7 @@ image = { workspace = true, features = ["png", "jpeg"] }
 reel-core = { path = "../reel-core" }
 reel-render = { path = "../reel-render" }
 winit = { version = "=0.30.12", optional = true }
+ui-events-winit = { version = "=0.3.0", optional = true }
 wgpu = { version = "=26.0.1", optional = true }
 pollster = { version = "=0.4.0", optional = true }
 

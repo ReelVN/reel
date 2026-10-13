@@ -277,6 +277,8 @@ invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最
 
 宿主可将一个已准入 native callable 的首参数绑定为接收者，产生普通可调用值。绑定值保留代码版本、模块和接收者身份，受既有 GC 跟踪；保存方法后调用仍使用原接收者。调用直接进入 NativeFrame，首参数预绑定，余下位置/具名/默认参数使用同一个 VM binder，显式重复指定首参数仍报重复绑定。脚本调用、宿主 start_closure 和 CallScript 回调使用相同协议，不建立合成脚本调用栈；诊断定位真实调用者。绑定不改变效果或等待许可，不保存 Rust 对象地址。
 
+Reel 作者事件通过宿主已有 start_closure 创建节点拥有的普通任务，不引入 Aside 事件语法或 UI 依赖。回调接受一个事件对象并共享闭包捕获；可以等待普通宿主 Awaitable。Reel 在任务等待或结束后切换任务；指令预算和同步 native 往返只让出宿主执行，不在同步脚本段内切换其他任务。每个任务保留自己的等待和源码故障，节点退休使用既有硬取消与分片释放。Reel 的 SessionVm::step 返回 SessionStep，将实际 VM 结果、已处理的回调完成 Progress 和无可运行任务 Idle 区分；不会伪造 VM WaitId 表示 UI 空闲。
+
 native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。
 
 可信链接包使用本次编译请求的 content_version；宿主 ABI 版本独立保持注册版本。一个调用同时匹配导入符号和名称使用节点时，各链接仍分别核对分析身份与签名；全部指向同一 NativeId 才视为同一注册，指向不同 NativeId 时给出 LinkContract，不能按匹配顺序选择。

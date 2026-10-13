@@ -1,8 +1,8 @@
 //! Compiler/VM-to-SessionUi assembly shared by library hosts and the native window.
 use crate::session::{ProjectionStamp, SessionUi, SessionWidget};
 use reel_engine::aside::{
-    DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionVm,
-    SliceBudget, VmLimits, source,
+    DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionStep,
+    SessionVm, SliceBudget, VmLimits, source,
 };
 use reel_engine::{InteractionId, InteractionView, Session};
 use reel_ui::{
@@ -14,6 +14,10 @@ type Error = Box<dyn std::error::Error>;
 
 #[derive(Debug)]
 pub enum StoryProgress {
+    /// No VM task is ready; mounted interactive nodes remain usable.
+    Idle,
+    /// A node callback completed or its cancellation made bounded progress.
+    CallbackProgress,
     /// Initializer result was discarded before starting the zero-argument entry.
     Initialized,
     Interaction(InteractionId),
@@ -146,7 +150,7 @@ impl AsideSessionUi {
     pub fn ui(&self) -> &SessionUi {
         &self.ui
     }
-    #[cfg(feature = "window")]
+    #[cfg(any(test, feature = "window"))]
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
     }
@@ -207,7 +211,27 @@ impl AsideSessionUi {
         bridge: &mut PresentationBridge,
         event: PointerEvent,
     ) -> Result<Handled, Error> {
-        self.ui.handle_pointer(bridge, event)
+        let result = self.ui.handle_pointer(bridge, event)?;
+        self.accept_ui_input(result)
+    }
+    pub fn handle_text(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        event: reel_ui::core::TextEvent,
+    ) -> Result<Handled, Error> {
+        let result = self.ui.handle_text(bridge, event)?;
+        self.accept_ui_input(result)
+    }
+    fn accept_ui_input(&mut self, result: crate::session::UiDispatch) -> Result<Handled, Error> {
+        if self.state == StoryState::Running
+            && let Some(click) = result.click
+        {
+            self.vm.click(self.ui.session_mut(), click.node)?;
+        }
+        Ok(result.handled)
+    }
+    pub fn has_runnable_tasks(&self) -> bool {
+        self.state == StoryState::Running && self.vm.has_runnable_tasks()
     }
     pub fn reveal_more(&mut self, graphemes: usize) -> Result<(), Error> {
         if let Some(InteractionView::Dialogue(dialogue)) = self.ui.session().view().interaction {
@@ -254,10 +278,22 @@ impl AsideSessionUi {
         host_work: u32,
         now: impl FnMut() -> u64,
     ) -> Result<StoryProgress, Error> {
-        let outcome = self.vm.step(self.ui.session_mut(), budget, now)?;
+        let outcome = match self.vm.step(self.ui.session_mut(), budget, now)? {
+            SessionStep::Vm(outcome) => outcome,
+            SessionStep::Progress => return Ok(StoryProgress::CallbackProgress),
+            SessionStep::Idle => {
+                if self.entry.is_none() && self.vm.task().is_none() {
+                    self.vm.sync_stage(self.ui.session())?;
+                    if !self.vm.has_live_work() {
+                        return self.finish_story();
+                    }
+                }
+                return Ok(StoryProgress::Idle);
+            }
+        };
         match outcome {
             RunOutcome::Returned(_) => {
-                self.vm.discard_delivery(self.ui.session())?;
+                self.vm.discard_delivery(self.ui.session_mut())?;
                 if let Some(entry) = self.entry {
                     self.state = StoryState::StartingEntry;
                     self.vm.start(self.ui.session(), entry)?;
@@ -265,15 +301,12 @@ impl AsideSessionUi {
                     self.state = StoryState::Running;
                     Ok(StoryProgress::Initialized)
                 } else {
-                    self.state = StoryState::Finishing;
-                    // Capture the last property writes before retiring VM-owned nodes.
-                    // The window keeps this owned projection after a normal return.
                     self.vm.sync_stage(self.ui.session())?;
-                    self.ui.set_stage(self.vm.stage());
-                    self.vm.finish(self.ui.session_mut())?;
-                    self.state = StoryState::Finished;
-                    self.ui.clear_presented();
-                    Ok(StoryProgress::Finished)
+                    if self.vm.has_live_work() {
+                        Ok(StoryProgress::CallbackProgress)
+                    } else {
+                        self.finish_story()
+                    }
                 }
             }
             RunOutcome::HostCall(ticket) => {
@@ -302,6 +335,16 @@ impl AsideSessionUi {
             }
             other => Ok(StoryProgress::Vm(other)),
         }
+    }
+
+    fn finish_story(&mut self) -> Result<StoryProgress, Error> {
+        self.state = StoryState::Finishing;
+        self.vm.sync_stage(self.ui.session())?;
+        self.ui.set_stage(self.vm.stage());
+        self.vm.finish(self.ui.session_mut())?;
+        self.state = StoryState::Finished;
+        self.ui.clear_presented();
+        Ok(StoryProgress::Finished)
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {

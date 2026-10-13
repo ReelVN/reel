@@ -73,7 +73,7 @@ Dialogue rows, choices and their text have no additional fixed count or length
 ceiling. All choices share one projection owner, while ChoiceId
 preserves each business key. Scrolling invalidates the old input stamp and any
 held gesture; a new accepted frame must establish the new hit geometry.
-Input in this version uses mouse clicks and scrolling.
+Input supports mouse clicks, scrolling and keyboard button activation. Native IME, touch and system accessibility adapters remain future work.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
@@ -172,3 +172,33 @@ cargo test --locked -p reel-player --lib author_scene_renders_edits_original_nod
 Author source receives the registered Reel prelude automatically, while module declarations, local bindings and explicit imports take precedence. PNG/JPEG `image` nodes load only when mounted through the background resource loader. Source paths resolve against the source directory in `dev` and the ASB directory in `run`; `--assets <directory>` overrides that root, and library hosts configure `ImageOptions`. ASB build does not copy assets. The previous complete scene remains visible with story input paused until all new images are ready. Loading errors end the run and include the path and constructor location. See the [image example](../../examples/author_images.aside) and [creator guide](../../docs/guide/en.md).
 
 Author nodes share rotation (clockwise degrees), scale_x/scale_y and proportional anchor_x/anchor_y. Negative scale mirrors and zero scale collapses without retiring the node. Position, transform and opacity edits preserve layout and widget identities; the compose pass supplies the same affine to drawing, clipping and presented input geometry. See [author_transforms.aside](../../examples/author_transforms.aside).
+
+## Buttons and portable scheduling
+
+`button(label, on_click: |event| { ... })` uses the shared stage and existing
+presented-input routing. `event.target` retains the original node. Common
+`enabled` applies to descendants, and callbacks may await activities without
+blocking the main story's dialogue. Retiring the node cancels its callback tasks
+before their next script statement. Main entry return keeps mounted handlers
+usable; idle sessions sleep. See [author_buttons.aside](../../examples/author_buttons.aside).
+
+`story_runtime::StoryRuntime` is available without the `window` feature. Hosts
+provide a monotonic nanosecond clock and `SliceBudget`, call `wake_input` after
+input, and use `needs_tick`/`tick_interval` to schedule work. `close` starts
+cancellation; continue bounded ticks until `close_complete`. No native window,
+event-loop or GPU types enter this scheduler. `AsideSessionUi` and
+`PresentationBridge` accept shared input and presentation notices, so another
+platform can drive the same script/UI lifecycle.
+
+The built-in `window` feature selects a Winit/WGPU adapter. Only that adapter
+depends on `ui-events-winit` for keyboard conversion. VM, stage, input and
+scheduler checks, including source/ASB button and animation cases, run without it:
+
+```sh
+cargo test --locked -p reel-engine -p reel-player -p reel-cli --no-default-features
+cargo run --locked -p reel-dev -- deps
+```
+
+These CPU checks prove portable contracts on the host where they run, not
+device support on every target. Native IME, touch and system accessibility
+integration remain platform-adapter work.

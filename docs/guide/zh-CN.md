@@ -11,14 +11,14 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-动作组合、作者事件回调、bind/derive、媒体与存读档尚未接入作者源码；game.toml、多源码工程与资源包也仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。动作组合、bind/derive、媒体与存读档尚未接入作者源码；game.toml、多源码工程与资源包也仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
 ## 一 最小项目与共同写法
 当前可从一个 main.aside 和一个字体文件开始，使用 dev 运行源码，或 build 后用 run 播放 .asb。下面的 game.toml、game:: 模块拆分与标题页展示完整工程的目标组织方式；目前请以本节可运行命令和作者舞台示例为准。
 完整工程设计中的 game.toml 使用 [game] 表的 entry 与 title，以及 [display] 表的 width、height、scale。entry 写 "main::main"；width=1920、height=1080、scale="contain" 是设计默认值。contain 等比例缩放并留出边缘，输入坐标采用同一换算。game:: 将从配置所在目录解析源码，外部模块使用 [modules] 别名。这些配置与多源码解析尚未实现；当前窗口初始大小为 960×540，不强制固定作者画布。
-Reel 自动提供当前已注册的基础节点与剧情服务：text、image、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下 game:: 导入与标题按钮是尚待实现的完整工程示例。
+Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下 game:: 导入与标题按钮是尚待实现的完整工程示例。
 ```aside
 use game::ui::title::title;
 
@@ -263,7 +263,7 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 ## 四 时间顺序与同时发生的变化
 
-有限动画活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时归会话；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、in、out、in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --font <font.ttf>`。下文的 sequence/parallel/repeat 和 scope 尚未实现。
+有限动画活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、in、out、in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --font <font.ttf>`。下文的 sequence/parallel/repeat 和 scope 尚未实现。
 
 语言底层现已支持等待宿主注册的可等待对象，普通 fn 可以直接写 `await request`；它会暂停当前调用链，让宿主继续处理其他工作。已完成对象也在下一调度步骤返回，错误在 await 位置报告并保留生产者原因。引擎活动现已接入这一协议；async fn 与 Future 构造尚未实现。可运行的宿主接入检查见 [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs)，命令为 `cargo test -p aside-compiler --test host_awaitables`。
 
@@ -310,7 +310,7 @@ visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面�
 
 ## 六 Logo 标题与局部交互
 
-图片与有限动画已接入作者源码；本节视频、按钮回调和游戏入口切换尚未实现。
+图片、有限动画与 button 的 on_click 回调已接入作者源码；本节视频和游戏入口切换尚未实现，视频事件示例仍属于设计目标。
 
 启动流程仍写普通 fn。媒体 play 返回活动句柄；点击可以通过正常事件停止播放，播放自然结束和主动停止都进入下一行。
 ```aside
@@ -338,7 +338,7 @@ photo_panel 是作者定义的组件控制对象，上例只演示与剧情交�
 
 ## 七 设置页与图片风格控件
 
-本节作者控件、settings、bind 和 derive 接口属于设计目标。
+button 已实现；本节其余作者控件、settings、bind 和 derive 接口属于设计目标。
 
 下面将页签、页面和滑条组合成设置页。switcher 保留各页节点和局部值，select 只改变选中页。隐藏页离开输入与焦点导航。
 ```aside
@@ -574,9 +574,41 @@ cargo run --locked -p reel-engine --example story_contract
 
 宿主自动推进旁白并选择第一项，实际经过编译、模块初始化、VM 等待/恢复和 owner 退休。导入符号及名称节点指向同一 native 时会正确合并；冲突注册仍拒绝。宿主链接包沿用请求的内容版本，ABI v1 保持独立。
 
-当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。角色接口、动画、事件绑定、媒体等待、完整模块/类、delegate/hooks、property-bag 和保存恢复仍未实现。
+当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。有限动画与按钮事件已接通；角色接口、动作组合、媒体等待、完整模块/类、delegate/hooks、property-bag 和保存恢复仍未实现。
 音频实现进展（PR #53，限定 Rust 范围已独立验收）：Rust 层新增有界播放活动账本、owner 取消、精确等待身份过滤和一次终态交付。设备故障不会吞掉已结算结果；接收队列满时，后续取消记录仍能释放。这里的内容消费完成与设备播放完毕、PCM 内存释放分别记录；尚未接通指南中的作者音频 API、剧情等待或保存恢复。seek/reload、单活动暂停与分组混音仍待实现。现有示例继续表示最终作者接口。[Rust 接口与边界](../../crates/reel-media/README.md#logical-audio-activities-pr-53)。
 
 当前 Rust 音频层按实际 PCM 内存计账，不再额外规定单段音频的最大帧数或时长。宿主设定的队列和声音容量也不再被另一组固定数字压低；作者 audio 接口仍待接通。
 
 音频退休进展（PR #56，限定 Rust 独立验收通过）：播放请求改用注册的 AudioOwner，关闭准入后分片取消，再等待该 owner 的 PCM/预算票据和活动描述符分别实际释放。停止播放或收到逻辑完成消息不等于资源已释放。保留完成凭据仍占有界登记槽，挂起输出可能延长退休。这里尚未连接作者音频语法、剧情等待或保存恢复，指南中的 audio 接口仍是最终设计目标。
+
+## 可运行按钮与回调
+
+button 与其他节点使用同一棵舞台树，支持 label、on_click、children 和共同外观属性。省略 label 时可用 children 组合图片、文字或任意组件；内容按 stack 排列。enabled 默认 true，禁用父节点会禁用其整棵交互子树。通过 btn.on_click = 新闭包 或 null 可以更换或清除回调。以下代码与 [author_buttons.aside](../../examples/author_buttons.aside) 相同。
+
+```aside
+fn main() {
+    let caption = text("Ready", width: 320, height: 48);
+    let controls = row(gap: 16) {
+        button("Move", width: 180, height: 64, background: "#284860",
+            on_click: |event| {
+                event.target.enabled = false;
+                await run(tween(caption, x: 120, duration: 0.4));
+                caption.value = "Arrived";
+                event.target.enabled = true;
+            }
+        );
+        button("Finish", width: 180, height: 64, background: "#603840",
+            on_click: |event| { stage.replace(text("Finished")); }
+        );
+    };
+    stage.replace(column(x: 24, y: 24, gap: 24) { controls; caption; });
+}
+```
+
+点击把原按钮作为 event.target 传入闭包。回调可以 await 动画；同步代码执行到等待或结束才切换其他脚本任务，普通读改写不会因引擎分片被打断。不同回调可以等待同一活动，取消一个等待者不会停止其他等待者共用的活动。
+
+回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start、可观察绑定和通用事件订阅仍待实现。
+
+主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认桌面宿主支持鼠标点击、Tab 焦点导航和 Enter/空格激活；原生 IME、触控和系统可访问性接入尚待适配。
+
+用第一节的 dev/build/run 命令运行此文件。引擎的节点、输入和调度不依赖 Winit/WGPU；window feature 选择当前内置桌面组合，其他宿主可以复用同一会话和呈现接口。

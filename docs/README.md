@@ -17,7 +17,7 @@
 - **动态组件**：节点的 add/remove/clear 支持追加、定点插入和局部退休，保留其余控件身份与文字布局。提取的方法使用独立 Aside 的绑定 native callable，普通调用、宿主启动和回调共用参数绑定及 GC。[动态舞台示例](../examples/author_dynamic_stage.aside)。
 - **开发工具**：第一方检查归入 Rust 测试和 reel-dev；Quirrel 保留固定来源、许可、原断言与转换映射。转换解析与真实执行分别记录。[可复现命令](../crates/reel-dev/README.md)。
 
-集合字面量展开、范围切片和基础容器编辑已接通；[集合编辑示例](../examples/collection_editing.aside) 可用源码和 ASB 运行。完整语言仍包括尚未实现的类/元方法、模式、具名展开、完整模块/标准库、generator/thread/async。有限动画活动已接通，可运行 [动画示例](../examples/author_activities.aside)。节点事件、响应式绑定、动作组合、媒体等待和保存恢复仍需接通。具体边界以各模块契约为准。CPU/软件 GPU 检查不替代物理设备运行或性能测量。
+集合字面量展开、范围切片和基础容器编辑已接通；[集合编辑示例](../examples/collection_editing.aside) 可用源码和 ASB 运行。完整语言仍包括尚未实现的类/元方法、模式、具名展开、完整模块/标准库、generator/thread/async。有限动画活动已接通，可运行 [动画示例](../examples/author_activities.aside)。按钮回调已接通共同输入与节点所有权，可等待活动，入口返回后保持交互；见 [按钮示例](../examples/author_buttons.aside)。响应式绑定、通用事件订阅、动作组合、媒体等待和保存恢复仍需接通。具体边界以各模块契约为准。CPU/软件 GPU 检查不替代物理设备运行或性能测量。
 
 ## 运行与维护
 

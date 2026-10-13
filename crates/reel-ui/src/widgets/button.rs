@@ -91,6 +91,55 @@ pub struct ButtonPress {
     pub button: Option<PointerButton>,
 }
 
+/// Shared activation behavior for buttons with independently owned content.
+/// Capture, focus and disabled state stay in the ordinary widget/input system.
+pub struct ButtonBehavior;
+impl ButtonBehavior {
+    pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
+        match event {
+            PointerEvent::Down(PointerButtonEvent {
+                button: None | Some(PointerButton::Primary),
+                ..
+            }) => {
+                ctx.request_focus();
+                ctx.capture_pointer();
+                ctx.request_paint_only();
+                ctx.set_handled();
+                trace!("Button {:?} pressed", ctx.widget_id());
+            }
+            PointerEvent::Up(PointerButtonEvent { button, .. })
+                if ctx.is_active() && matches!(button, None | Some(PointerButton::Primary)) =>
+            {
+                let press = ctx.is_hovered().then_some(ButtonPress { button: *button });
+                ctx.release_pointer();
+                ctx.request_paint_only();
+                ctx.set_handled();
+                return press;
+            }
+            PointerEvent::Cancel(_) => {
+                ctx.release_pointer();
+                ctx.request_paint_only();
+            }
+            _ => {}
+        }
+        None
+    }
+    pub fn text(ctx: &mut EventCtx<'_>, event: &TextEvent) -> Option<ButtonPress> {
+        if let TextEvent::Keyboard(event) = event
+            && event.state.is_up()
+            && (matches!(&event.key, Key::Character(c) if c == " ")
+                || event.key == Key::Named(NamedKey::Enter))
+        {
+            ctx.set_handled();
+            return Some(ButtonPress { button: None });
+        }
+        None
+    }
+    pub fn access(event: &AccessEvent) -> Option<ButtonPress> {
+        (event.action == accesskit::Action::Click).then_some(ButtonPress { button: None })
+    }
+}
+
 // --- MARK: IMPL WIDGET
 impl Widget for Button {
     type Action = ButtonPress;
@@ -101,23 +150,8 @@ impl Widget for Button {
         _props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        match event {
-            PointerEvent::Down(..) => {
-                ctx.request_focus();
-                ctx.capture_pointer();
-                // Changes in pointer capture impact appearance, but not accessibility node
-                ctx.request_paint_only();
-                trace!("Button {:?} pressed", ctx.widget_id());
-            }
-            PointerEvent::Up(PointerButtonEvent { button, .. }) => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    ctx.submit_action::<Self::Action>(ButtonPress { button: *button });
-                    trace!("Button {:?} released", ctx.widget_id());
-                }
-                // Changes in pointer capture impact appearance, but not accessibility node
-                ctx.request_paint_only();
-            }
-            _ => (),
+        if let Some(press) = ButtonBehavior::pointer(ctx, event) {
+            ctx.submit_action::<Self::Action>(press);
         }
     }
 
@@ -127,15 +161,8 @@ impl Widget for Button {
         _props: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        match event {
-            TextEvent::Keyboard(event)
-                if event.state.is_up()
-                    && (matches!(&event.key, Key::Character(c) if c == " ")
-                        || event.key == Key::Named(NamedKey::Enter)) =>
-            {
-                ctx.submit_action::<Self::Action>(ButtonPress { button: None });
-            }
-            _ => (),
+        if let Some(press) = ButtonBehavior::text(ctx, event) {
+            ctx.submit_action::<Self::Action>(press);
         }
     }
 
@@ -145,8 +172,8 @@ impl Widget for Button {
         _props: &mut PropertiesMut<'_>,
         event: &AccessEvent,
     ) {
-        if event.action == accesskit::Action::Click {
-            ctx.submit_action::<Self::Action>(ButtonPress { button: None });
+        if let Some(press) = ButtonBehavior::access(event) {
+            ctx.submit_action::<Self::Action>(press);
         }
     }
 

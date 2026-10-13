@@ -9,9 +9,19 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u64);
 
+/// One activation routed by the UI through accepted presentation geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodeClick {
+    pub node: NodeId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
     Text(String),
+    Button {
+        label: Option<String>,
+        listening: bool,
+    },
     Image {
         source: String,
         fit: ObjectFit,
@@ -31,6 +41,7 @@ pub struct NodeProps {
     pub height: Option<f64>,
     pub opacity: f64,
     pub visible: bool,
+    pub enabled: bool,
     pub clip: bool,
     pub gap: f64,
     pub padding: f64,
@@ -52,6 +63,7 @@ impl Default for NodeProps {
             height: None,
             opacity: 1.,
             visible: true,
+            enabled: true,
             clip: false,
             gap: 0.,
             padding: 0.,
@@ -187,7 +199,7 @@ impl Stage {
         let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             container.kind,
-            NodeKind::Row | NodeKind::Column | NodeKind::Stack
+            NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::Button { .. }
         ) {
             return Err(StageError::NotContainer);
         }
@@ -233,7 +245,7 @@ impl Stage {
         let node = self.nodes.get_mut(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             node.kind,
-            NodeKind::Row | NodeKind::Column | NodeKind::Stack
+            NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::Button { .. }
         ) {
             return Err(StageError::NotContainer);
         }

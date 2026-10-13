@@ -5,8 +5,7 @@ mod demand;
 pub mod diagnostic;
 #[cfg(feature = "window")]
 pub mod shell;
-#[cfg(feature = "window")]
-mod story_runtime;
+pub mod story_runtime;
 #[cfg(feature = "window")]
 mod surface;
 #[cfg(feature = "window")]

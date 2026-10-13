@@ -13,7 +13,7 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 作者活动与窗口时钟
 
-本次范围为 aside-vm 的宿主属性写入追踪、reel-engine 活动服务、reel-player 调度、示例及双语指南；保持 B01/ASB v1、Reel native ABI v1，无新增依赖。有限动画使用共同节点数值属性，`tween(node, x: ..., duration: ..., easing: "linear")` 描述动作，`run(action, owner: node)` 启动；owner 省略时归会话。`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动；await 返回字符串 `Completed` 或 `Stopped`，目标或 owner 退休产生 Cancelled。
+本次范围为 aside-vm 的宿主属性写入追踪、reel-engine 活动服务、reel-player 调度、示例及双语指南；保持 B01/ASB v1、Reel native ABI v1，无新增依赖。有限动画使用共同节点数值属性，`tween(node, x: ..., duration: ..., easing: "linear")` 描述动作，`run(action, owner: node)` 启动；owner 省略时，主剧情归会话、按钮回调归事件节点。`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动；await 返回字符串 `Completed` 或 `Stopped`，目标或 owner 退休产生 Cancelled。
 
 节点目前共享固定数值 schema，因此 tween 从同一节点属性描述生成普通命名参数，不为此引入第二套动态参数绑定器；未知属性由现有编译器/VM 拒绝。PropertyBagTail 仍是自定义 schema 的后续语言能力。null 表示该属性不参与动画；width/height 的起值必须已显式指定。duration 为有限非负秒数，零时长立即提交终值。easing 支持 linear、in、out、in_out 的线性或三次曲线；起值在启动时读取，动作描述可复用。
 
@@ -24,11 +24,23 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 当前作者舞台实现合同
 
+作者按钮实现合同：`button(label: null, on_click: null, children: [], ...)` 使用共同节点属性和子树；省略 label 时由 children 定义外观。button 作为 stack 排列内容，label 是居中的文本内容，子节点按作者顺序叠放。`enabled` 是所有节点共享的可写布尔属性，默认 true，禁用容器会禁用整棵交互子树。构造、属性更新、局部添加和退休沿用同一 Stage，不建立独立按钮节点体系。
+
+按钮复用 reel-ui Button 的指针、焦点、键盘和可访问性激活行为；该行为提取为共享实现，普通 Rust Button 与作者按钮共同调用。接受的 click 通过原有 UI 输入槽交付，包含稳定 NodeId；仅最后接受的呈现和仍可交互的活节点可触发，控件消费的输入不继续推进对白。回调参数是普通事件对象，`event.target` 为原节点；on_click 可赋新闭包或 null。回调不在控件分发或 Rust native 栈中执行。
+
+会话适配层在真正等待或任务结束后选择下一可运行任务，复用 VM start_closure、NativeFrame、等待、故障与 GC。同步脚本段连续执行；预算耗尽让出宿主线程，恢复后仍执行原任务，避免属性读改写在无显式等待处相互覆盖。每次接受的事件创建受 VM 资源预算管理的任务和可复用存储的会话 owner，成功返回后释放交付并退休 owner；没有固定作者事件数量限制，也不累积历史任务。任务可等待活动；活动等待维护多个消费者，消费者取消不取消共享活动，结算保留订阅顺序且用线性压缩移除失效等待。回调中省略 owner 的 run 默认归事件节点，主任务仍默认归会话。节点退休在下一次脚本推进前硬撤销所属回调，取消等待并分片清理任务，不能执行退休后的下一条脚本。关闭会话显式汇总主任务及所有回调的清理义务。narrator/choose 仍由主剧情拥有，回调调用它们报告可捕获的上下文错误，不夺取当前对白。
+
+主入口返回后，已挂载的交互节点、正在运行的活动或回调继续维持会话；没有可运行工作时休眠。全部交互与活动结束后按原自然结束路径保留最后画面。单个回调未捕获的故障保留真实源码和完整 VM 故障交付，并暂停会话，供检查和显式关闭清理。
+
+本次范围：reel-ui 的 stage 与共享按钮行为、reel-engine 的绑定和任务调度、reel-player 的已呈现输入和生命周期、reel-cli 的源码/ASB 合同，以及规范、示例、双语指南。依赖 #74/#78/#80/#82；B01/ASB v1 和 native ABI v1 保持。仅桌面适配器增加锁定的 ui-events-winit 0.3.0，用于原生键盘事件转换；共同输入、舞台和调度不依赖 Winit 或 WGPU。验收覆盖真实指针配对/消费、禁用祖先、捕获闭包、并发等待、入口返回后的交互、回调自移除与替换、旧帧/旧任务过滤、关闭和源码故障；成本检查空闲不轮询 VM、保留控件身份及反复点击不积累 owner/任务/根。
+
+`reel-player::story_runtime::StoryRuntime` 在无桌面 feature 时同样可用，供任意宿主复用 VM、活动、GC 和关闭调度。宿主传入单调时钟与执行预算，在输入提交后调用 wake_input，并根据 needs_tick 安排唤醒；不把 Winit 事件循环或 WGPU 表面作为调度前提。当前 window feature 只表示内置 Winit + WGPU 组合，其他组合使用公共输入、PresentationBridge 和 RenderBackend 合同；这些接口不得暴露原生窗口或设备类型。关闭该 feature 的依赖树检查是本轮交付的一部分。
+
 动态子树合同：`parent.add(child, index: null)` 将未挂载、无父节点的子树插入 row/column/stack，默认末尾，显式位置为 0..=子节点数，返回原 child。拒绝成环、重复拥有、越界和向叶节点添加，失败保持原树。`node.remove()` 从父级或舞台移除并退休整棵子树；`container.clear()` 退休全部子节点而保留容器。退休清除脚本私有强边、图片请求和目标活动的有效性；已退休引用不能重新挂载。提取的方法值保留接收者身份，重复调用已提取的 remove 可安全返回。
 
 窗口调度交替推进 VM 和增量 GC；已失效对象仍有载荷等待释放时，先推进有额度的 GC 片，再恢复脚本分配。GC 片同样服从窗口截止时间，不通过增加堆预算掩盖释放积压，也不在一次调用中强制完成整轮回收。
 
-本次范围为 aside-vm、aside-host、reel-ui stage、reel-engine、reel-player 控件同步及源码/ASB 合同；B01/ASB v1、native ABI v1 保持，无新依赖。绑定 native 方法直接进入既有 NativeFrame，接收者是受 GC 跟踪的首参数，具名/默认参数、等待与效果检查复用普通调用。结构修改的工作和临时存储随受影响兄弟/子树增长；呈现端按 NodeId 保留原控件，只建立新增子树、删除退休控件和更新顺序。未改变的文字不重新整形，不用全场景替换模拟局部修改。跨父移动、节点事件、scope 与快照另行实现。
+本次范围为 aside-vm、aside-host、reel-ui stage、reel-engine、reel-player 控件同步及源码/ASB 合同；B01/ASB v1、native ABI v1 保持，无新依赖。绑定 native 方法直接进入既有 NativeFrame，接收者是受 GC 跟踪的首参数，具名/默认参数、等待与效果检查复用普通调用。结构修改的工作和临时存储随受影响兄弟/子树增长；呈现端按 NodeId 保留原控件，只建立新增子树、删除退休控件和更新顺序。未改变的文字不重新整形，不用全场景替换模拟局部修改。跨父移动、通用事件订阅、scope 与快照另行实现。
 
 Reel 源码编译入口将当前注册的 reel::prelude 接口放入外围宿主名称环境，作者无需逐文件导入。模块声明、局部绑定及显式导入优先；普通 use 与别名可取得被遮蔽的接口。名称绑定来自同一宿主注册描述，check/build/dev 与构建出的 ASB 使用同一链接合同；不向源码注入前缀，诊断保留原 UTF-8 范围与行列位置。Aside 的默认宿主环境为空，不依赖 Reel；该默认由 reel-engine 的 AnalysisOptions.hosts 配置提供，不改变语言、VM 或 B01/ASB v1。
 

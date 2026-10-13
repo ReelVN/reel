@@ -1,5 +1,4 @@
 //! Source and ASB use the same real activity clock, stage and frame pipeline.
-#![cfg(feature = "window")]
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     identity::{FrameId, SurfaceEpoch},

@@ -97,8 +97,7 @@ transfers its root before retirement; the retained result slot is reused by a
 later result, so an earlier bare Value is not a permanent host root.
 
 Native Windows checks execute compiler/VM, wait/root, rejection, GC, cancellation
-and player terminal contracts. Character objects, multiline say, UI callback
-tasks, observable bindings, media waits and save/restore remain outside this adapter.
+and player terminal contracts. Character objects, multiline say, observable bindings, media waits and save/restore remain outside this adapter. Node-owned button callback tasks now share the VM with the main story.
 
 ### Source linkage and runnable contract
 
@@ -138,3 +137,18 @@ at that call; invalid heap identities remain host errors.
 The [author example](../../examples/author_stage.aside) uses functions, children,
 conditions and loops, then changes existing nodes between two dialogue waits.
 Run it with `cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --font path/to/font.ttf`.
+
+`button` adds an optional label and `on_click` closure to the same node model;
+its children use stack layout. All nodes expose `enabled`, including containers.
+`SessionVm::click` starts a node-owned task only for a mounted, visible, enabled
+button. The player invokes it after accepted input routing. The callback receives
+`{target: node}` and defaults `run` ownership to that event node.
+
+`SessionVm::step` returns `SessionStep::Vm` for real VM outcomes, `Progress` for
+handled callback completion/cleanup, and `Idle` when no task can run. Synchronous
+segments retain their task across budget slices and native continuations; waits
+and terminal results permit another task. Multiple consumers can await one
+activity. Callback retirement releases actual VM storage before reusing its
+session owner slot. `discard_delivery` therefore requires a mutable session.
+`narrator` and `choose` remain main-story operations; callback use raises a
+catchable context error. See the [button example](../../examples/author_buttons.aside).

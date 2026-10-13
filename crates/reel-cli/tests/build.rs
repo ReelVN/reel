@@ -151,6 +151,9 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) {
                     || 0,
                 )
                 .unwrap();
+            let reel_engine::aside::SessionStep::Vm(outcome) = outcome else {
+                panic!("expected main task progress");
+            };
             match outcome {
                 RunOutcome::BudgetYield(_) => {}
                 RunOutcome::HostCall(ticket) => {
@@ -184,7 +187,7 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) {
                     }
                 }
                 RunOutcome::Returned(_) => {
-                    vm.discard_delivery(&session).unwrap();
+                    vm.discard_delivery(&mut session).unwrap();
                     returned = true;
                     break;
                 }

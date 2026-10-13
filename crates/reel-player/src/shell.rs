@@ -178,14 +178,20 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => state.resize(size),
             WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                state.modifiers = modifiers.state();
+                Ok(())
+            }
+            WindowEvent::KeyboardInput { event, .. } => state.text_event(TextEvent::Keyboard(
+                ui_events_winit::keyboard::from_winit_keyboard_event(event, state.modifiers),
+            )),
             WindowEvent::Focused(focus) => {
-                state
-                    .bridge
-                    .handle_text_event(TextEvent::WindowFocusChange(focus));
+                let result = state.text_event(TextEvent::WindowFocusChange(focus));
                 if !focus {
-                    state.pointer_event(PointerKind::Cancel)
+                    state.modifiers = Default::default();
+                    result.and_then(|()| state.pointer_event(PointerKind::Cancel))
                 } else {
-                    Ok(())
+                    result
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

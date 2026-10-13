@@ -4,8 +4,10 @@ use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
 
 type Error = Box<dyn std::error::Error>;
 
-pub(crate) struct StoryRuntime {
-    pub(crate) driver: AsideSessionUi,
+/// Backend-independent VM, activity and GC scheduler. Hosts supply monotonic
+/// time and call `wake_input` after submitting input to the session driver.
+pub struct StoryRuntime {
+    pub driver: AsideSessionUi,
     runnable: bool,
     collecting: bool,
     gc_turn: bool,
@@ -16,7 +18,7 @@ pub(crate) struct StoryRuntime {
 }
 
 impl StoryRuntime {
-    pub(crate) fn new(driver: AsideSessionUi) -> Self {
+    pub fn new(driver: AsideSessionUi) -> Self {
         Self {
             driver,
             runnable: true,
@@ -29,7 +31,7 @@ impl StoryRuntime {
         }
     }
 
-    pub(crate) fn needs_tick(&self) -> bool {
+    pub fn needs_tick(&self) -> bool {
         self.needs_work() || self.driver.activities_need_time()
     }
 
@@ -40,44 +42,40 @@ impl StoryRuntime {
             || self.driver.activities_pending()
     }
 
-    pub(crate) fn tick_interval(&self) -> std::time::Duration {
+    pub fn tick_interval(&self) -> std::time::Duration {
         std::time::Duration::from_millis(if self.needs_work() { 1 } else { 16 })
     }
 
-    pub(crate) fn wake_input(&mut self) {
+    pub fn wake_input(&mut self) {
         if self.driver.state() == StoryState::Running
-            && self.driver.ui().session().view().interaction.is_none()
+            && (self.driver.has_runnable_tasks()
+                || self.driver.ui().session().view().interaction.is_none())
         {
             self.runnable = true;
         }
     }
 
-    pub(crate) fn close(&mut self) -> Result<(), Error> {
+    pub fn close(&mut self) -> Result<(), Error> {
         self.closing = true;
         self.runnable = false;
         self.collecting = false;
         self.driver.cancel()
     }
 
-    pub(crate) fn close_complete(&self) -> bool {
+    pub fn close_complete(&self) -> bool {
         self.closing && !self.driver.cleanup_pending()
     }
 
     /// Run bounded VM/GC slices until the window deadline or an idle wait. Native
     /// continuations share that deadline, so they do not each cost a window frame.
     /// Without a deadline, run exactly one slice for manually scheduled hosts.
-    pub(crate) fn tick(
-        &mut self,
-        budget: SliceBudget,
-        mut now: impl FnMut() -> u64,
-    ) -> Result<(), Error> {
+    pub fn tick(&mut self, budget: SliceBudget, mut now: impl FnMut() -> u64) -> Result<(), Error> {
         if !self.closing && self.needs_tick() {
             self.logical_ns = self.logical_ns.max(now());
-            if self
+            let progress = self
                 .driver
-                .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?
-                .woke
-            {
+                .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;
+            if progress.woke || (progress.work != 0 && self.driver.adapter().task().is_none()) {
                 self.runnable = true;
             }
         }
@@ -132,7 +130,8 @@ impl StoryRuntime {
             StoryProgress::Interaction(_)
             | StoryProgress::Vm(RunOutcome::Waiting(_))
             | StoryProgress::Finished
-            | StoryProgress::Cancelled => self.runnable = false,
+            | StoryProgress::Cancelled
+            | StoryProgress::Idle => self.runnable = self.driver.has_runnable_tasks(),
             StoryProgress::HostFailed(_) => {
                 self.runnable = false;
                 let failure = self.driver.host_failure().expect("host failure recorded");

@@ -6,6 +6,7 @@
 //! interprets bytecode or assumes a table's private storage layout.
 mod activity;
 pub use activity::ActivityProgress;
+mod callbacks;
 mod choice;
 mod publication;
 mod registry;
@@ -145,20 +146,31 @@ pub enum NativeDispatch {
     },
 }
 
-/// Owns a single session's main task. UI owners have no VM tasks in this adapter.
-/// Native dispatch remains at the host boundary; tickets cannot select another
-/// task or owner. No mutable VM escape hatch can bypass its revocation gates.
+#[derive(Debug)]
+pub enum SessionStep {
+    Vm(RunOutcome),
+    Progress,
+    Idle,
+}
+
+/// Owns the story and node callback tasks, their waits and retirement obligations.
+/// Native tickets must belong to an admitted live task; dispatch never selects
+/// work by the VM's most recently active task.
 pub struct SessionVm {
     vm: Vm,
     identity: SessionIdentity,
     owner: OwnerHandle,
     root_owner: RootOwner,
     task: Option<TaskId>,
+    main_wait: Option<WaitId>,
+    callbacks: Vec<callbacks::Callback>,
+    schedule_cursor: usize,
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
     choice_reader: Option<choice::ChoiceReader>,
     claimed: Option<Completion>,
     delivery: Option<DeliveryId>,
+    delivery_task: Option<TaskId>,
     result_root: Option<RootToken>,
     read_limit: usize,
     revoked: bool,
@@ -192,11 +204,15 @@ impl SessionVm {
             owner,
             root_owner: RootOwner(owner.owner_id().0),
             task: None,
+            main_wait: None,
+            callbacks: Vec::new(),
+            schedule_cursor: 0,
             issued: None,
             pending: None,
             choice_reader: None,
             claimed: None,
             delivery: None,
+            delivery_task: None,
             result_root: None,
             read_limit: limits.heap.max_mutation_bytes.min(4096) as usize,
             revoked: false,
@@ -258,7 +274,10 @@ impl SessionVm {
         self.stage.sync(self.vm.heap_mut(), self.read_limit)
     }
     pub fn cleanup_pending(&self) -> bool {
-        self.revoked && (self.root_cursor < self.root_end || self.task.is_some())
+        self.revoked
+            && (self.root_cursor < self.root_end
+                || self.task.is_some()
+                || !self.callbacks.is_empty())
     }
 
     /// Advance the session's monotonic logical clock, independently of VM slice
@@ -302,13 +321,20 @@ impl SessionVm {
                         &args,
                         self.read_limit,
                     )?,
-                    "reel::run" => self.activities.start(
-                        &mut self.vm,
-                        &self.stage,
-                        self.root_owner,
-                        args[0],
-                        args[1],
-                    )?,
+                    "reel::run" => {
+                        let owner = if args[1].tag() == aside_vm::ValueTag::Null {
+                            self.default_activity_owner(ticket.task)?
+                        } else {
+                            args[1]
+                        };
+                        self.activities.start(
+                            &mut self.vm,
+                            &self.stage,
+                            self.root_owner,
+                            args[0],
+                            owner,
+                        )?
+                    }
                     "reel::activity::await" => {
                         self.check_wait(session, ticket)?;
                         self.activities.subscribe(&mut self.vm, ticket, args[0])?;
@@ -354,6 +380,7 @@ impl SessionVm {
             }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
+            | "reel::button"
             | "reel::image"
             | "reel::row"
             | "reel::column"
@@ -395,7 +422,7 @@ impl SessionVm {
         ticket: HostTicket,
         budget: u32,
     ) -> Result<NativeDispatch, AdapterError> {
-        self.check_wait(session, ticket)?;
+        self.check_story_wait(session, ticket)?;
         let mut reader = if let Some(reader) = self.choice_reader.take() {
             reader
         } else {
@@ -432,6 +459,7 @@ impl SessionVm {
             .vm
             .start(entry, &[], self.root_owner, Context::Ordinary)?;
         self.task = Some(task);
+        self.main_wait = None;
         Ok(task)
     }
 
@@ -442,30 +470,18 @@ impl SessionVm {
         session: &mut Session,
         budget: SliceBudget,
         now: impl FnMut() -> u64,
-    ) -> Result<RunOutcome, AdapterError> {
-        self.live(session)?;
-        self.deliver_completion(session)?;
-        if let Some(ticket) = self.issued {
-            return Ok(RunOutcome::HostCall(ticket));
-        }
-        if self.delivery.is_some() {
-            return Err(AdapterError::Input("delivery not retired"));
-        }
-        let task = self.task.ok_or(AdapterError::Input("no main task"))?;
-        let outcome = self.vm.run_slice(task, budget, now)?;
-        match outcome {
-            RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
-            RunOutcome::Returned(id) | RunOutcome::Fault(id) => self.delivery = Some(id),
-            _ => {}
-        }
-        Ok(outcome)
+    ) -> Result<SessionStep, AdapterError> {
+        self.step_tasks(session, budget, now)
     }
 
     fn check_ticket(&self, session: &Session, ticket: HostTicket) -> Result<(), AdapterError> {
         self.live(session)?;
         if self.issued != Some(ticket)
-            || self.task != Some(ticket.task)
-            || ticket.owner != self.root_owner
+            || if self.task == Some(ticket.task) {
+                ticket.owner != self.root_owner
+            } else {
+                self.callback_owner(ticket.task) != Some(ticket.owner)
+            }
             || ticket.input != NativeInput::Entry
         {
             return Err(AdapterError::Input("foreign or consumed native ticket"));
@@ -483,6 +499,14 @@ impl SessionVm {
             || ticket.context.derived
             || ticket.effects.0 & Effects::WAIT == 0
         {
+            return Err(AdapterError::Vm(VmError::Effect));
+        }
+        Ok(())
+    }
+
+    fn check_story_wait(&self, session: &Session, ticket: HostTicket) -> Result<(), AdapterError> {
+        self.check_wait(session, ticket)?;
+        if self.task != Some(ticket.task) {
             return Err(AdapterError::Vm(VmError::Effect));
         }
         if self.pending.is_some() {
@@ -514,7 +538,7 @@ impl SessionVm {
         ticket: HostTicket,
         locale: &str,
     ) -> Result<InteractionId, AdapterError> {
-        self.check_wait(session, ticket)?;
+        self.check_story_wait(session, ticket)?;
         let p = self.vm.program().package();
         let native = &p.natives[ticket.native.index()];
         if p.symbols[native.symbol.index()] != "reel::narrator" {
@@ -568,7 +592,7 @@ impl SessionVm {
         lines: &[DialogueLineInput<'_>],
         locale: &str,
     ) -> Result<InteractionId, AdapterError> {
-        self.check_wait(session, ticket)?;
+        self.check_story_wait(session, ticket)?;
         let publication =
             publication::Publication::stage(session, |s| s.begin_say(self.owner, lines, locale))?;
         let interaction = publication.id();
@@ -584,7 +608,7 @@ impl SessionVm {
         ticket: HostTicket,
         rows: &[(Value, Value)],
     ) -> Result<InteractionId, AdapterError> {
-        self.check_wait(session, ticket)?;
+        self.check_story_wait(session, ticket)?;
         let mut decoded = Vec::new();
         decoded
             .try_reserve_exact(rows.len())
@@ -728,16 +752,28 @@ impl SessionVm {
         };
         self.vm.take_delivery_root(delivery, root)?;
         self.delivery = None;
+        self.delivery_task = None;
         self.task = None;
+        self.main_wait = None;
         Ok(self.vm.heap().root_value(root)?)
     }
 
-    pub fn discard_delivery(&mut self, session: &Session) -> Result<(), AdapterError> {
+    pub fn discard_delivery(&mut self, session: &mut Session) -> Result<(), AdapterError> {
         self.live(session)?;
         let delivery = self.delivery.ok_or(AdapterError::Input("no delivery"))?;
         self.vm.discard_delivery(delivery)?;
         self.delivery = None;
-        self.task = None;
+        let task = self.delivery_task.take();
+        if task == self.task {
+            self.task = None;
+            self.main_wait = None;
+        } else if let Some(index) = self
+            .callbacks
+            .iter()
+            .position(|callback| Some(callback.task) == task)
+        {
+            self.retire_callback(session, index)?;
+        }
         Ok(())
     }
 
@@ -745,7 +781,11 @@ impl SessionVm {
     /// declared cleanup obligations. A successful result must be claimed first.
     pub fn finish(&mut self, session: &mut Session) -> Result<(), AdapterError> {
         self.live(session)?;
-        if self.task.is_some() || self.pending.is_some() || self.delivery.is_some() {
+        if self.task.is_some()
+            || self.pending.is_some()
+            || self.delivery.is_some()
+            || !self.callbacks.is_empty()
+        {
             return Err(AdapterError::Input("main task has not finished"));
         }
         self.revoke(session)?;
@@ -765,8 +805,9 @@ impl SessionVm {
                 Err(error) => Err(error.into()),
             };
         }
-        // This adapter creates VM work only for the main owner. UI peer owners
-        // belong to the pure Rust projection and have no VM/external resources.
+        for index in 0..self.callbacks.len() {
+            self.cancel_callback(session, index)?;
+        }
         for index in 0..session.owners.len() {
             let peer = session.owners[index].handle;
             if peer != self.owner {
@@ -793,6 +834,7 @@ impl SessionVm {
         self.claimed = None;
         self.result_root = None;
         self.delivery = None;
+        self.delivery_task = None;
         match self.vm.cancel(self.root_owner) {
             Ok(()) | Err(VmError::Idle) => Ok(()),
             Err(error) => Err(error.into()),
@@ -822,6 +864,21 @@ impl SessionVm {
             self.root_cursor as usize,
             slots as usize,
         )?;
+        if let Some(callback) = self.callbacks.first() {
+            match self.vm.run_slice(callback.task, budget, now) {
+                Err(VmError::Idle) => {
+                    self.retire_callback(session, 0)?;
+                }
+                Ok(RunOutcome::BudgetYield(_)) | Ok(RunOutcome::ResourceBlocked(_)) => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return Err(AdapterError::Input(
+                        "unexpected callback cancellation outcome",
+                    ));
+                }
+            }
+            return Ok(self.root_cursor - before);
+        }
         if let Some(task) = self.task {
             match self.vm.run_slice(task, budget, now) {
                 Err(VmError::Idle) => {

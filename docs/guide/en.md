@@ -11,14 +11,14 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Action composition, author event callbacks, bind/derive, media and save/load are not connected to creator source yet. game.toml, projects with multiple source modules and asset packaging also remain unimplemented. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. Action composition, bind/derive, media and save/load are not connected to creator source yet. game.toml, projects with multiple source modules and asset packaging also remain unimplemented. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
 ## 1 A Minimal Project and Shared Conventions
 Start today with one main.aside file and a font. Use dev to run source, or build and then run its .asb. The game.toml, game:: module layout and title screen below describe the target organization of a complete project. For current execution, use this section's commands and the author-stage example.
 In the complete project design, game.toml uses entry and title in [game], and width, height and scale in [display]. The designed defaults are entry="main::main", width=1920, height=1080 and scale="contain". Contain preserves aspect ratio with borders, using the same conversion for input. game:: will resolve source relative to that configuration, with [modules] aliases for external modules. Configuration loading and multiple-source resolution are not implemented yet. The current window starts at 960×540 without imposing a fixed author canvas.
-Reel makes all currently registered basic nodes and story services available automatically: text, image, row, column, stack, stage, narrator and choose. Each source file can use them without an import. Your module declarations, local bindings and explicit imports take precedence over these defaults. If you define your own text function, `use reel::prelude::text as reel_text;` gives the Reel constructor a separate name. Explicit prelude imports remain ordinary valid imports. This default environment belongs to Reel; standalone Aside has no Reel names. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following game:: imports and title buttons describe a complete project that is not yet implemented.
+Reel makes all currently registered basic nodes and story services available automatically: text, image, button, row, column, stack, stage, narrator and choose. Each source file can use them without an import. Your module declarations, local bindings and explicit imports take precedence over these defaults. If you define your own text function, `use reel::prelude::text as reel_text;` gives the Reel constructor a separate name. Explicit prelude imports remain ordinary valid imports. This default environment belongs to Reel; standalone Aside has no Reel names. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following game:: imports and title buttons describe a complete project that is not yet implemented.
 ```aside
 use game::ui::title::title;
 
@@ -265,7 +265,7 @@ An ordinary fn is sufficient for story code. A chapter entry registered through 
 
 ## 4 Sequencing Changes and Running Them Together
 
-Finite animation activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, in, out and in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --font <font.ttf>`. The sequence/parallel/repeat and scope interfaces below are not implemented yet.
+Finite animation activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, in, out and in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --font <font.ttf>`. The sequence/parallel/repeat and scope interfaces below are not implemented yet.
 
 The language runtime supports awaiting host-registered awaitable objects. An ordinary fn can use `await request` to suspend its call chain while the host handles other work. Even settled objects return on a later scheduling step; failures point to the await expression and retain the producer's cause. Engine activities now use this protocol; async fn and Future construction are not available yet. The runnable host integration check is [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs): `cargo test -p aside-compiler --test host_awaitables`.
 
@@ -312,7 +312,7 @@ visible=false hides the subtree and removes it from hit testing and focus; enabl
 
 ## 6 Logos, Title Screens, and Local Interaction
 
-Images and finite animation are connected to creator source. Video, button callbacks and game entry switching in this section are not implemented yet.
+Images, finite animation and button on_click callbacks are connected to creator source. Video and game entry switching in this section remain unimplemented; video events still describe the target design.
 
 The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
 ```aside
@@ -340,7 +340,7 @@ photo_panel is an author-defined component control object. The example only demo
 
 ## 7 Settings Pages and Image-Based Controls
 
-The creator controls, settings, bind and derive interfaces in this section remain design targets.
+button is implemented; the other creator controls, settings, bind and derive interfaces in this section remain design targets.
 
 The following example combines tabs, pages, and sliders into a settings page. switcher preserves each page's nodes and local values; select changes only the selected page. Hidden pages leave input handling and focus navigation.
 ```aside
@@ -576,7 +576,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 The host advances dialogue and selects the first option through actual compilation, module initialization, VM waiting/resumption and owner retirement. Symbol and name-use links to the same native coalesce; conflicting registrations still reject. The host linkage package uses the requested content version independently of native ABI v1.
 
-Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Character APIs, animation, event bindings, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
+Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Finite animation and button events now work. Character APIs, action composition, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
 Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
 
 The current Rust audio layer accounts actual PCM memory without an additional per-sound frame or duration ceiling. Host-selected queue and sound capacities are no longer clamped by a second set of fixed numbers. Creator audio interfaces remain unconnected.
@@ -588,3 +588,35 @@ descriptor release. Stopping playback or receiving a logical terminal is not
 physical resource release. Retained completed receipts occupy bounded registration
 slots, and suspended output can delay retirement. Creator audio syntax, story
 waits and save/restore are not connected by this increment.
+
+## Runnable Buttons and Callbacks
+
+button shares the stage tree with every other node. It accepts label, on_click, children and common appearance properties. Omit label to compose images, text or other components through children, laid out like a stack. enabled defaults to true; disabling a parent disables its interactive subtree. Assign a new closure or null to btn.on_click to replace or clear its handler. This code matches [author_buttons.aside](../../examples/author_buttons.aside).
+
+```aside
+fn main() {
+    let caption = text("Ready", width: 320, height: 48);
+    let controls = row(gap: 16) {
+        button("Move", width: 180, height: 64, background: "#284860",
+            on_click: |event| {
+                event.target.enabled = false;
+                await run(tween(caption, x: 120, duration: 0.4));
+                caption.value = "Arrived";
+                event.target.enabled = true;
+            }
+        );
+        button("Finish", width: 180, height: 64, background: "#603840",
+            on_click: |event| { stage.replace(text("Finished")); }
+        );
+    };
+    stage.replace(column(x: 24, y: 24, gap: 24) { controls; caption; });
+}
+```
+
+A click passes the original button as event.target. A callback can await an animation. Synchronous code runs until it waits or ends before another script task executes, so engine budget slices do not interrupt ordinary read-modify-write operations. Multiple callbacks may await one activity; cancelling a consumer does not stop the shared producer.
+
+The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start, observable bindings and general event subscriptions remain unimplemented.
+
+Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in desktop host supports mouse activation, Tab focus navigation and Enter/Space activation; native IME, touch and system accessibility adapters remain future work.
+
+Use the dev/build/run commands in section 1 with this file. Nodes, input and scheduling do not depend on Winit/WGPU. The window feature selects the built-in desktop combination; other hosts can reuse the same session and presentation interfaces.

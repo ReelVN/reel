@@ -20,3 +20,7 @@ source manifests, diffs and experimental observations remain available at the
 [accepted pre-integration base](https://github.com/jhq223/reel/tree/7990c326f1acf3531a940134eab38bd55c66f214/crates/masonry)
 and [U01 experiment](https://github.com/jhq223/reel/tree/7990c326f1acf3531a940134eab38bd55c66f214/tools/masonry-contract-check).
 Production regression assertions are maintained in `tests/`.
+
+Author-stage controls reuse the maintained Button activation behavior, extracted
+as `ButtonBehavior` for shared pointer, focus, keyboard and accessibility actions.
+The common stage node model also carries inherited enabled state.
