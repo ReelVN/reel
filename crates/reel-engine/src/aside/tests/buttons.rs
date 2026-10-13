@@ -28,7 +28,7 @@ fn pump(vm: &mut SessionVm, session: &mut Session) {
                 panic!("button resource: {error:?}")
             }
             SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
-                if !vm.has_runnable_tasks() =>
+                if !vm.has_runnable_tasks() && !vm.activities_pending() =>
             {
                 vm.sync_stage(session).unwrap();
                 return;
@@ -123,7 +123,7 @@ fn independent_callbacks_await_one_producer_beside_main_dialogue() {
     let (mut s, mut vm) = setup(
         r#"fn opening() {
         let count = text("count");
-        let motion = run(tween(count, y: 100, duration: 1));
+        let motion = run(sequence(tween(count, y: 50, duration: 0.5), tween(count, y: 100, duration: 0.5)));
         let first = button("first", on_click: |event| {
             if await motion != "Completed" { throw "wrong completion"; }
             count.x += 1;
@@ -158,7 +158,7 @@ fn independent_callbacks_await_one_producer_beside_main_dialogue() {
     assert_eq!(vm.callbacks.len(), 2);
     assert!(!vm.has_runnable_tasks());
     collect(&mut vm);
-    assert!(vm.advance_time(&s, 1., 1).unwrap().woke);
+    assert!(super::activities::advance_clock(&mut vm, &s, 1., 1).woke);
     pump(&mut vm, &mut s);
     assert_eq!(text_x(&vm, "count"), 1111.);
     assert!(vm.callbacks.is_empty());
@@ -200,7 +200,7 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
     vm.click(&mut s, waiting).unwrap();
     pump(&mut vm, &mut s);
     assert_eq!(vm.callbacks.len(), 1);
-    vm.advance_time(&s, 0.5, 1).unwrap();
+    super::activities::advance_clock(&mut vm, &s, 0.5, 1);
     vm.click(&mut s, remove).unwrap();
     pump(&mut vm, &mut s);
     assert!(vm.callbacks.is_empty());
@@ -221,4 +221,37 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
     }
     assert!(vm.callbacks.is_empty());
     assert_eq!(s.storage_usage().pending_owner_retirements, 0);
+}
+
+#[test]
+fn retiring_a_future_target_wakes_waiters_of_paused_compositions_without_clock_ticks() {
+    let (mut s, mut vm) = setup(
+        r#"fn opening() {
+        let count = text("count");
+        let future = text("future");
+        let motion = run(sequence(tween(count, y: 10), tween(future, y: 20)));
+        pause(motion);
+        stage.replace(column() { count; future;
+            button("wait", on_click: |event| {
+                try { await motion; } catch error { count.x += 1; }
+            });
+            button("retire", on_click: |event| { future.remove(); });
+        });
+        narrator("waiting");
+    }"#,
+        Context::Ordinary,
+    );
+    pump(&mut vm, &mut s);
+    assert!(!vm.activities_need_time());
+    let waiter = button(&vm, "wait");
+    vm.click(&mut s, waiter).unwrap();
+    pump(&mut vm, &mut s);
+    assert_eq!(vm.callbacks.len(), 1);
+    let retire = button(&vm, "retire");
+    vm.click(&mut s, retire).unwrap();
+    pump(&mut vm, &mut s);
+    collect(&mut vm);
+    assert_eq!(text_x(&vm, "count"), 1.);
+    assert!(vm.callbacks.is_empty());
+    assert!(!vm.activities.has_active());
 }

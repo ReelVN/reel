@@ -11,9 +11,13 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 
 Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点、会话和活动业务留在 Reel；可复用的 Rust native 声明、编译链接、运行时准入和属性 schema 生成归 Aside 扩展层。绑定宏从同一声明产生元数据与调用包装，不复制舞台类型或引入第二套语言实现。
 
-组合动作的宿主声明先接通普通可变参数：NativeContract 的 rest 名称和 Rust `#[aside(rest)]` 映射为既有 B01 array rest。sequence/parallel 等库接口使用这条通路，不新增 Reel 专用编译语法或另一套参数收集器。范围和验收见 Aside host SDK 文档；动作组合运行器另按活动合同实现。
+组合动作的宿主声明先接通普通可变参数：NativeContract 的 rest 名称和 Rust `#[aside(rest)]` 映射为既有 B01 array rest。sequence/parallel 等库接口使用这条通路，不新增 Reel 专用编译语法或另一套参数收集器。范围和验收见 Aside host SDK 文档；动作组合运行器共用下面的活动合同。
 
 ### 作者活动与窗口时钟
+
+`sequence(...actions)`、`parallel(...actions)` 与 `repeat(action, times: null)` 产生不可变、可复用的描述。空组合与零次重复无写入地立即完成；持续循环要求单轮时长大于零，包含无限分支的组合在 finish 修改状态前报错。run 在接管前完整校验并行分支的写集合，顺序段到激活时才读取起值与取得属性。暂停、停止、失败、目标或 owner 退休均按整个根活动结算。
+
+每次 run 在 VM 堆中构造可追踪的执行图；同一描述的多个出现位置拥有独立进度，重复次数不展开成节点。构造、公共祖先冲突检查、时间推进、控制和终态清理使用显式游标，按图节点/祖先计工作额度，不递归占用宿主栈。运行时按截止时间处理跨段事件，同一时刻先结束已有段再激活后续段；循环复用起值、版本和计数槽，不分配新 VM 载荷。时间轮结束前保留上一完整舞台投影，脚本任务边界也触发维护，以处理暂停期间的赋值与退休。终态清除描述、目标和执行图强引用；等待者取消不取消生产者。演出示例见 [author_activities.aside](../examples/author_activities.aside)。
 
 本次范围为 aside-vm 的宿主属性写入追踪、reel-engine 活动服务、reel-player 调度、示例及双语指南；保持 B01/ASB v1、Reel native ABI v1，无新增依赖。有限动画使用共同节点数值属性，`tween(node, x: ..., duration: ..., easing: "linear")` 描述动作，`run(action, owner: node)` 启动；owner 省略时，主剧情归会话、按钮回调归事件节点。`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动；await 返回字符串 `Completed` 或 `Stopped`，目标或 owner 退休产生 Cancelled。
 
@@ -21,7 +25,7 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 活动的写入所有权调整为接管语义：新活动在真正启动属性段时停止与它冲突的旧根活动，之后读取当前起值。暂停保持属性占用，但不阻止新演出接管。直接赋值（包括赋相同的值）停止写该属性的根活动；其他属性的赋值不影响它。退休、取消、停止、完成均只结算一次；等待者取消不取消生产者。终态保存在脚本持有的活动对象中，活跃根及订阅随结束释放，不积累历史活动索引。
 
-库宿主通过显式单调逻辑秒数推进活动；时间片计时与剧情时间分离。推进按调用者给定的活动工作额度分片，同一轮固定采样时间，未完成时保留上一完整呈现；属性占用直接索引对应活动，启动接管和终态摘链不扫描历史活动。窗口只在有运行中的动画时请求后续时间更新，暂停和纯输入等待可休眠。动画直接写现有节点字段，变换沿现有 compose 路径，不逐帧分配脚本对象或重做文字布局。验收检查源码/ASB、终态/取消/接管、时钟和画面投影，记录稳定推进期间堆分配与布局次数；所有动作、活动、属性写入版本与占用关系都位于既有 VM 堆；单一活动链根保活生产者，不设活动数量上限。会话适配器已调度主任务与按钮回调，活动等待维护多个独立消费者；取消消费者不取消共享生产者，订阅随真实等待失效或交付释放。可运行示例为 [author_activities.aside](../examples/author_activities.aside) 和 [author_buttons.aside](../examples/author_buttons.aside)。sequence/parallel/repeat 由 [#88](https://github.com/jhq223/reel/issues/88) 跟进，scope 与快照恢复仍未实现。
+库宿主通过显式单调逻辑秒数推进活动；时间片计时与剧情时间分离。推进按调用者给定的活动工作额度分片，同一轮固定采样时间，未完成时保留上一完整呈现；属性占用直接索引对应活动，启动接管和终态摘链不扫描历史活动。窗口只在有运行中的动画时请求后续时间更新，暂停和纯输入等待可休眠。动画直接写现有节点字段，变换沿现有 compose 路径，不逐帧分配脚本对象或重做文字布局。验收检查源码/ASB、终态/取消/接管、时钟和画面投影，记录稳定推进期间堆分配与布局次数；所有动作、活动、属性写入版本与占用关系都位于既有 VM 堆；单一活动链根保活生产者，不设活动数量上限。会话适配器已调度主任务与按钮回调，活动等待维护多个独立消费者；取消消费者不取消共享生产者，订阅随真实等待失效或交付释放。可运行示例为 [author_activities.aside](../examples/author_activities.aside) 和 [author_buttons.aside](../examples/author_buttons.aside)。sequence/parallel/repeat 已贯通同一活动协议，scope 与快照恢复仍未实现。
 作者能够以符合直觉的接口表达、组合和改变想象中的画面与交互，是实现和设计取舍的共同标准。可运行的小场景用于验证表达能力，不限定引擎最终范围。实现过程中发现不自然的接口，应同步改进规范和作者指南，不为维持尚未发布的内部接口引入兼容层。
 
 ### 当前作者舞台实现合同
@@ -487,7 +491,7 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 
 host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
-PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/image/row/column/stack、children 组合、属性更新、局部子树编辑和有限动画，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、事件/绑定、动作组合、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
+PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/image/row/column/stack、children 组合、属性更新、局部子树编辑和有限动画，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、事件/绑定、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
 ## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
 
 reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、注册 AudioOwner（包含完整 Scope）、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。当前分组仅为元数据，循环取自输入声音配置。

@@ -40,7 +40,7 @@ const SOURCE: &str = r##"fn main() {
 fn wait(driver: &mut AsideSessionUi) {
     for _ in 0..10000 {
         match driver.tick(SliceBudget::default(), 256, || 0).unwrap() {
-            StoryProgress::Vm(RunOutcome::Waiting(_)) => return,
+            StoryProgress::Vm(RunOutcome::Waiting(_)) if !driver.activities_pending() => return,
             StoryProgress::Faulted(_) => panic!("{:?}", driver.fault().unwrap()),
             StoryProgress::HostFailed(_) => panic!("{:?}", driver.host_failure()),
             StoryProgress::Finished => panic!("ended before expected wait"),

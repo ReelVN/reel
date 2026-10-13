@@ -104,6 +104,8 @@ impl SessionVm {
                     ..Default::default()
                 },
             )?;
+            self.activities
+                .cancel_native(self.vm.heap_mut(), callback.task)?;
             self.vm.cancel_task(callback.task)?;
             callback.cancelling = true;
             callback.wait = None;
@@ -147,6 +149,10 @@ impl SessionVm {
             }
         }
         self.activities.maintain(&mut self.vm)?;
+        if self.activities.pending() {
+            self.activities.drain(&mut self.vm, 64)?;
+            return Ok(SessionStep::Progress);
+        }
         if let Some(ticket) = self.issued {
             return Ok(SessionStep::Vm(RunOutcome::HostCall(ticket)));
         }
@@ -194,6 +200,12 @@ impl SessionVm {
             }
             Err(error) => return Err(error.into()),
         };
+        if matches!(
+            outcome,
+            RunOutcome::Returned(_) | RunOutcome::Fault(_) | RunOutcome::Waiting(_)
+        ) {
+            self.activities.after_script(self.vm.heap())?;
+        }
         match outcome {
             RunOutcome::Returned(delivery) if index > 0 => {
                 self.schedule_cursor = index + 1;

@@ -281,8 +281,8 @@ impl SessionVm {
     }
 
     /// Advance the session's monotonic logical clock, independently of VM slice
-    /// timing. Work counts complete activity updates, each with fixed-schema
-    /// property work. Continue while pending before publishing the new frame.
+    /// timing. Work counts graph nodes, transitions and cleanup steps, each with
+    /// fixed-schema property work. Drain pending before publishing the new frame.
     pub fn advance_time(
         &mut self,
         session: &Session,
@@ -312,34 +312,50 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
-            "reel::tween" | "reel::run" | "reel::activity::await" => {
+            "reel::sequence" | "reel::parallel" => {
+                let kind = if symbol == "reel::sequence" {
+                    activity::action::Kind::Sequence
+                } else {
+                    activity::action::Kind::Parallel
+                };
+                let work = activity::action::compose(&mut self.vm, ticket, kind, work)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work })
+            }
+            "reel::run" => {
+                let args = self.vm.host_arguments(ticket)?;
+                let [action, owner] = [args[0], args[1]];
+                let owner = if owner.tag() == aside_vm::ValueTag::Null {
+                    self.default_activity_owner(ticket.task)?
+                } else {
+                    owner
+                };
+                let (done, work) = self.activities.run(
+                    &mut self.vm,
+                    &self.stage,
+                    self.root_owner,
+                    ticket,
+                    [action, owner],
+                    work,
+                )?;
+                if done {
+                    self.issued = None;
+                    Ok(NativeDispatch::Ready { work })
+                } else {
+                    Ok(NativeDispatch::Decoding { work })
+                }
+            }
+            "reel::tween" | "reel::repeat" => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let value = match symbol.as_str() {
-                    "reel::tween" => activity::Activities::describe(
+                    "reel::tween" => activity::action::tween(
                         self.vm.heap_mut(),
                         &self.stage,
                         &args,
                         self.read_limit,
                     )?,
-                    "reel::run" => {
-                        let owner = if args[1].tag() == aside_vm::ValueTag::Null {
-                            self.default_activity_owner(ticket.task)?
-                        } else {
-                            args[1]
-                        };
-                        self.activities.start(
-                            &mut self.vm,
-                            &self.stage,
-                            self.root_owner,
-                            args[0],
-                            owner,
-                        )?
-                    }
-                    "reel::activity::await" => {
-                        self.check_wait(session, ticket)?;
-                        self.activities.subscribe(&mut self.vm, ticket, args[0])?;
-                        self.issued = None;
-                        return Ok(NativeDispatch::Ready { work: 1 });
+                    "reel::repeat" => {
+                        activity::action::repeat(self.vm.heap_mut(), args[0], args[1])?
                     }
                     _ => unreachable!("registered activity constructor"),
                 };
@@ -347,19 +363,35 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            activity::pause::SYMBOL
-            | activity::resume::SYMBOL
-            | activity::stop::SYMBOL
-            | activity::finish::SYMBOL => {
-                let invoke = match symbol.as_str() {
-                    activity::pause::SYMBOL => activity::pause::invoke,
-                    activity::resume::SYMBOL => activity::resume::invoke,
-                    activity::stop::SYMBOL => activity::stop::invoke,
-                    _ => activity::finish::invoke,
+            "reel::pause"
+            | "reel::resume"
+            | "reel::stop"
+            | "reel::finish"
+            | "reel::activity::await" => {
+                let command = match symbol.as_str() {
+                    "reel::pause" => activity::Command::Pause,
+                    "reel::resume" => activity::Command::Resume,
+                    "reel::stop" => activity::Command::Stop,
+                    "reel::finish" => activity::Command::Finish,
+                    _ => {
+                        self.check_wait(session, ticket)?;
+                        activity::Command::Await
+                    }
                 };
-                invoke(&mut self.activities, &mut self.vm, ticket)?;
-                self.issued = None;
-                Ok(NativeDispatch::Ready { work: 1 })
+                let (done, work) = self.activities.command(
+                    &mut self.vm,
+                    &self.stage,
+                    self.root_owner,
+                    ticket,
+                    command,
+                    work,
+                )?;
+                if done {
+                    self.issued = None;
+                    Ok(NativeDispatch::Ready { work })
+                } else {
+                    Ok(NativeDispatch::Decoding { work })
+                }
             }
             "reel::narrator" => {
                 self.dispatch_narrator(session, ticket, locale)
@@ -523,6 +555,8 @@ impl SessionVm {
     ) -> Result<(), AdapterError> {
         self.check_ticket(session, ticket)?;
         self.vm.respond_language_error(ticket, kind)?;
+        self.activities
+            .cancel_native(self.vm.heap_mut(), ticket.task)?;
         if let Some(reader) = self.choice_reader.take() {
             reader.release(self.vm.heap_mut())?;
         }

@@ -223,6 +223,8 @@ derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取�
 
 async fn 调用立即返回任务 Future，函数体在后续调度片开始；创建带 ParentTaskId 的新任务，继承当前明确 owner。普通调用返回不取消任务，丢弃 Future 不等于取消。spawn(owner:,task:) 指定其他合法所有者，无主后台任务不能被暗中创建。ParentTaskId 供因果追踪，不等于自动强制结构化寿命。
 
+Reel 的 sequence/parallel 通过普通位置 rest 参数接收动作，repeat(action, times: null) 通过普通默认参数指定次数；它们返回描述，由 run 创建实现 Awaitable 协议的活动。组合与计时属于 Reel 宿主库，独立 Aside 不增加专用语法或平台依赖。
+
 await 接受 Awaitable，不接受普通标量。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
 
 Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果；检测直接和间接 adoption 环。需要把 Future 当普通值返回时包在 tuple/对象中。任务 Future 仅由任务返回/失败/终止结算，手工 Future 才能 resolve/reject；重复结算报 AlreadySettled。未观察失败在已给等待者/处理器一个正常调度机会后产生诊断，后续观察更新记录而不重报。结算与通知均不在生产者调用栈内同步重入用户回调。

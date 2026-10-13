@@ -24,7 +24,11 @@ use std::sync::Arc;
 const SOURCE: &str = r##"fn main() {
     let card = stack(width: 20, height: 20, x: 10, y: 10, background: "#ff0000");
     stage.replace(card);
-    await run(tween(card, x: 90, y: 50, rotation: 90, opacity: 0.5, duration: 2));
+    await run(parallel(
+        sequence(tween(card, x: 50, y: 30, duration: 1), tween(card, x: 90, y: 50, duration: 1)),
+        sequence(tween(card, rotation: 45, duration: 1), repeat(tween(card, rotation: 90, duration: 0.5), times: 2)),
+        tween(card, opacity: 0.5, duration: 2)
+    ));
 }"##;
 
 fn frames(story: CompiledStory) -> Vec<[f64; 6]> {
@@ -78,9 +82,16 @@ fn frames(story: CompiledStory) -> Vec<[f64; 6]> {
     );
     let mut transforms = Vec::new();
     for second in 0..=2 {
-        let progress = driver.advance_time(second as f64, 64).unwrap();
-        assert!(!progress.pending);
-        assert_eq!(progress.woke, second == 2);
+        let mut woke = false;
+        loop {
+            let progress = driver.advance_time(second as f64, 8).unwrap();
+            assert!(progress.work <= 8);
+            woke |= progress.woke;
+            if !progress.pending {
+                break;
+            }
+        }
+        assert_eq!(woke, second == 2);
         driver.sync(&mut bridge, root_id).unwrap();
         let recording = bridge.record(FrameId(second as u64 + 1)).unwrap();
         let key = recording.key();
