@@ -15,7 +15,7 @@ fn add(left: i64, #[aside(default = 2)] right: i64) -> i64 {
 let binding = add::binding();
 ```
 
-The original Rust function remains callable. Its same-named module provides `SYMBOL`, `binding()` and `invoke()`. The binding contains a `NativeContract` and a direct function pointer. A host builds these declarations during compilation/loading, then dispatches each admitted `NativeId` to its handler. Calling `invoke` does not rebuild the registry, look up parameter names or allocate a parameter vector.
+The original Rust function remains callable. Its body keeps the compiler's original tokens and delimiter spans; only the declaration is parsed to generate the interface. Its same-named module provides `SYMBOL`, `binding()` and `invoke()`. The binding contains a `NativeContract` and a direct function pointer. A host builds these declarations during compilation/loading, then dispatches each admitted `NativeId` to its handler. Calling `invoke` does not rebuild the registry, look up parameter names or allocate a parameter vector.
 
 `NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates B01 native linkage and constant default functions. `aside_host::runtime_support()` resolves the host's independently supplied contracts against the package; pass its result to `Vm::load`. A package cannot supply its own authority to call native code. B01/ASB v1 and native ABI v1 are unchanged.
 
@@ -63,6 +63,20 @@ Declare the function's effects and required capabilities explicitly when it touc
 Built-in conversions cover `i64`, `f64`, `bool`, `String`, `Value` and `Option<T>`; `()` returns `null`, and `&str` can be returned as a string. Numbers retain their declared integer/float type. `Option<T>` declares `Any`, maps `null` to `None` and validates non-null values through `T`. Implement `FromValue` and `IntoValue` for additional owned Rust types.
 
 `String` copies UTF-8 into owned Rust memory in linear time; this memory belongs to the host. String results allocate in the VM's accounted heap. `Value` copies only a VM identity; keeping it after the native call requires an explicit VM root. The context is borrowed for one call. Native code must root any new temporary values it retains across a manually requested collection. Large or asynchronous operations use handwritten resumable natives with the same `NativeContract`, `HostTicket` and NativeFrame protocol, so scheduling and cancellation remain explicit.
+
+## Bind a receiver
+
+`aside_host::lower()` seeds one native callable definition per contract; the compiler reuses it when source reads the function as a value. Resolve its `FunctionId` from the admitted program once during host setup. `Vm::bind_native(receiver, function)` creates an immutable callable that traces the receiver and retains the code version and module identity. The native must declare a required first parameter accepting that value.
+
+The first parameter is already bound. Remaining positional, named and default arguments use the ordinary VM binder; explicitly supplying the receiver again reports a duplicate argument. The value can be stored in a host property, passed to script, invoked through `start_closure`, or used by a native `CallScript` callback. These paths enter the same NativeFrame without a generated script wrapper. Effects, waiting permissions and source diagnostics are unchanged. As with other VM values, root the method when retaining it across collection from Rust.
+
+The runnable [bound_native.rs](../crates/aside-host/tests/bound_native.rs) host verifies these call paths with interleaved GC and B01 encoding/decoding:
+
+```sh
+cargo test --locked -p aside-host --test bound_native
+```
+
+Reel exposes `add`, `remove` and `clear` on nodes through this mechanism. Extracting a method retains that specific node; retirement clears its private tree edges, so a saved method does not retain a retired tree.
 
 ## Describe host properties
 

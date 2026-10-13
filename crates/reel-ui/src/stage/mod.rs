@@ -93,6 +93,9 @@ pub enum StageError {
     AlreadyParented,
     DuplicateChild,
     IdentityExhausted,
+    NotContainer,
+    Cycle,
+    Index,
 }
 impl std::fmt::Display for StageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -177,6 +180,73 @@ impl Stage {
             self.revision = self.revision.wrapping_add(1);
         }
         Ok(())
+    }
+
+    /// Insert one detached component, keeping every existing node identity.
+    pub fn add(&mut self, parent: NodeId, child: NodeId, index: usize) -> Result<(), StageError> {
+        let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
+        if !matches!(
+            container.kind,
+            NodeKind::Row | NodeKind::Column | NodeKind::Stack
+        ) {
+            return Err(StageError::NotContainer);
+        }
+        if index > container.children.len() {
+            return Err(StageError::Index);
+        }
+        let node = self.nodes.get(&child).ok_or(StageError::RetiredNode)?;
+        if node.parent.is_some() || self.root == Some(child) {
+            return Err(StageError::AlreadyParented);
+        }
+        let mut ancestor = Some(parent);
+        while let Some(id) = ancestor {
+            if id == child {
+                return Err(StageError::Cycle);
+            }
+            ancestor = self.nodes[&id].parent;
+        }
+        self.nodes
+            .get_mut(&parent)
+            .unwrap()
+            .children
+            .insert(index, child);
+        self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Remove a component from its parent or the stage and retire its full tree.
+    pub fn remove(&mut self, node: NodeId) -> Result<Vec<NodeId>, StageError> {
+        let parent = self.nodes.get(&node).ok_or(StageError::RetiredNode)?.parent;
+        if let Some(parent) = parent {
+            let children = &mut self.nodes.get_mut(&parent).unwrap().children;
+            children.remove(children.iter().position(|&child| child == node).unwrap());
+        } else if self.root == Some(node) {
+            self.root = None;
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(self.remove_tree(node))
+    }
+
+    /// Keep the container, retiring only the children it currently owns.
+    pub fn clear_children(&mut self, parent: NodeId) -> Result<Vec<NodeId>, StageError> {
+        let node = self.nodes.get_mut(&parent).ok_or(StageError::RetiredNode)?;
+        if !matches!(
+            node.kind,
+            NodeKind::Row | NodeKind::Column | NodeKind::Stack
+        ) {
+            return Err(StageError::NotContainer);
+        }
+        if node.children.is_empty() {
+            return Ok(Vec::new());
+        }
+        let children = std::mem::take(&mut node.children);
+        let mut retired = Vec::new();
+        for child in children {
+            retired.extend(self.remove_tree(child));
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(retired)
     }
 
     /// Commit a complete new root and return retired identities to its owner.

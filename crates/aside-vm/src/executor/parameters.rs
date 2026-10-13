@@ -84,7 +84,7 @@ impl Vm {
                         self.put(n.bound, count, rest)?;
                         n.phase = NativePhase::Bind {
                             index: 0,
-                            positional: 0,
+                            positional: u32::from(n.receiver),
                         };
                     }
                     Err(e) => self.native_fault(n, heap_fault(e))?,

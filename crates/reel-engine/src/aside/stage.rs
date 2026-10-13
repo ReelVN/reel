@@ -8,6 +8,9 @@ use reel_ui::stage::{NodeId, NodeKind, NodeProps, Stage};
 
 use super::{AdapterError, registry, text};
 use aside_host::PropertySchema;
+use aside_host::{CallContext, NativeBinding};
+use aside_vm::bytecode::{Effects, FunctionId, FunctionKind, VerifiedProgram};
+use aside_vm::executor::Vm;
 
 /// One host schema feeds construction, writes and animation; NodeProps remains in reel-ui.
 #[derive(aside_host::Properties)]
@@ -48,11 +51,11 @@ pub(super) enum NodeProperty {
     AnchorY,
 }
 
-#[derive(Default)]
 pub(super) struct StageBinding {
     pub scene: Stage,
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
+    methods: [FunctionId; 3],
 }
 struct NodeBinding {
     handle: HeapHandle,
@@ -60,6 +63,34 @@ struct NodeBinding {
 }
 
 impl StageBinding {
+    pub fn new(program: &VerifiedProgram) -> Result<Self, AdapterError> {
+        let p = program.package();
+        let mut methods = [FunctionId(0); 3];
+        for (slot, symbol) in methods
+            .iter_mut()
+            .zip([add::SYMBOL, remove::SYMBOL, clear::SYMBOL])
+        {
+            *slot = p
+                .functions
+                .iter()
+                .enumerate()
+                .find_map(|(i, f)| match f.kind {
+                    FunctionKind::Native(native)
+                        if p.symbols[p.natives[native.index()].symbol.index()] == symbol =>
+                    {
+                        Some(FunctionId(i as u32))
+                    }
+                    _ => None,
+                })
+                .ok_or(AdapterError::Input("node method callable missing"))?;
+        }
+        Ok(Self {
+            scene: Stage::default(),
+            handles: BTreeMap::new(),
+            root: None,
+            methods,
+        })
+    }
     pub(super) fn id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
         heap.host_fields(value)?;
         let id = NodeId(
@@ -86,13 +117,14 @@ impl StageBinding {
 
     pub fn dispatch(
         &mut self,
-        heap: &mut Heap,
+        vm: &mut Vm,
         owner: RootOwner,
         symbol: &str,
         args: &[Value],
         read_limit: usize,
         origin: Option<String>,
     ) -> Result<Value, AdapterError> {
+        let heap = vm.heap_mut();
         if symbol == "reel::stage::replace" {
             let node = args[0];
             let id = self.id(heap, node)?;
@@ -164,6 +196,17 @@ impl StageBinding {
                 _ => validate_layout_property,
             }),
         )?;
+        for (i, (name, function)) in ["add", "remove", "clear"]
+            .into_iter()
+            .zip(self.methods)
+            .enumerate()
+        {
+            let method = vm.bind_native(value, function)?;
+            let heap = vm.heap_mut();
+            let key = heap.alloc_string(name)?;
+            heap.table_store(fields, (field_count + i) as u32, key, method)?;
+        }
+        let heap = vm.heap_mut();
         self.scene.create(kind, props, children)?;
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
@@ -267,6 +310,92 @@ impl StageBinding {
         self.scene = Stage::default();
         Ok(())
     }
+}
+
+pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 3] {
+    [add::binding(), remove::binding(), clear::binding()]
+}
+
+#[aside_host::native(symbol = "reel::node::add", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn add(
+    #[aside(context)] context: &mut CallContext<'_, StageBinding>,
+    receiver: Value,
+    child: Value,
+    #[aside(default = null)] index: Option<i64>,
+) -> Result<Value, AdapterError> {
+    let heap = context.vm.heap_mut();
+    let parent_id = context.host.id(heap, receiver)?;
+    let child_id = context.host.id(heap, child)?;
+    let node = context.host.scene.node(parent_id).unwrap();
+    let index = match index {
+        Some(i) => usize::try_from(i)
+            .map_err(|_| AdapterError::Input("child index must be nonnegative"))?,
+        None => node.children.len(),
+    };
+    // Prepare replacement traced edges before committing either tree.
+    let previous = heap.host_payload(receiver, 1)?;
+    let next = heap.alloc_array(&[])?;
+    for i in 0..heap.sequence_len(previous)? {
+        if i as usize == index {
+            heap.array_push(next, child)?;
+        }
+        heap.array_push(next, heap.sequence_get(previous, i)?)?;
+    }
+    if index == node.children.len() {
+        heap.array_push(next, child)?;
+    }
+    context.host.scene.add(parent_id, child_id, index)?;
+    heap.set_host_payload(receiver, 1, next)?;
+    heap.set_host_payload(child, 2, receiver)?;
+    Ok(child)
+}
+
+#[aside_host::native(symbol = "reel::node::remove", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn remove(
+    #[aside(context)] context: &mut CallContext<'_, StageBinding>,
+    receiver: Value,
+) -> Result<(), AdapterError> {
+    let heap = context.vm.heap_mut();
+    if matches!(heap.host_fields(receiver), Err(HeapError::RetiredHost)) {
+        return Ok(());
+    }
+    let id = context.host.id(heap, receiver)?;
+    let parent = heap.host_payload(receiver, 2)?;
+    let edges = if parent.tag() != ValueTag::Null {
+        let previous = heap.host_payload(parent, 1)?;
+        let next = heap.alloc_array(&[])?;
+        for i in 0..heap.sequence_len(previous)? {
+            let child = heap.sequence_get(previous, i)?;
+            if !child.same_bits(receiver) {
+                heap.array_push(next, child)?;
+            }
+        }
+        Some(next)
+    } else {
+        None
+    };
+    let was_root = context.host.scene.root() == Some(id);
+    let retired = context.host.scene.remove(id)?;
+    if let Some(edges) = edges {
+        heap.set_host_payload(parent, 1, edges)?;
+    }
+    if was_root && let Some(root) = context.host.root.take() {
+        heap.release_root(root)?;
+    }
+    context.host.retire(heap, retired)
+}
+
+#[aside_host::native(symbol = "reel::node::clear", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn clear(
+    #[aside(context)] context: &mut CallContext<'_, StageBinding>,
+    receiver: Value,
+) -> Result<(), AdapterError> {
+    let heap = context.vm.heap_mut();
+    let id = context.host.id(heap, receiver)?;
+    let edges = heap.alloc_array(&[])?;
+    let retired = context.host.scene.clear_children(id)?;
+    heap.set_host_payload(receiver, 1, edges)?;
+    context.host.retire(heap, retired)
 }
 
 fn read_text(heap: &Heap, value: Value, read_limit: usize) -> Result<String, AdapterError> {
@@ -400,6 +529,9 @@ pub(super) fn validate_layout_property(
     index: u32,
     value: Value,
 ) -> Result<(), HeapError> {
+    if index as usize >= NodeProperty::PROPERTIES.len() {
+        return Err(HeapError::TypeMismatch);
+    }
     NodeProperty::validate(heap, index, value)
 }
 fn validation<T>(result: Result<T, AdapterError>) -> Result<(), HeapError> {

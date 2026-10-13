@@ -263,6 +263,7 @@ struct NativeFrame {
     has_defaults: bool,
     roots: RootRangeToken,
     argument_count: u32,
+    receiver: bool,
     continuation_len: u32,
     continuation_active: bool,
     continuation_version: u64,
@@ -862,7 +863,8 @@ impl Vm {
     fn script_push_cost(&self, function: FunctionId, count: u32) -> u64 {
         let f = &self.program.package().functions[function.index()];
         if let FunctionKind::Native(native) = f.kind {
-            return self.native_push_cost(native, count);
+            // A callable may carry one prebound receiver root.
+            return self.native_push_cost(native, count) + 1;
         }
         let values = f.register_count as u64
             + 3
@@ -916,7 +918,11 @@ impl Vm {
         let f = &self.program.package().functions[function.index()];
         if let FunctionKind::Native(native) = f.kind {
             let site = self.native_site(function, owner, context, effects, ret)?;
-            return self.push_native(native, source, count, site);
+            let receiver = closure
+                .filter(|&value| self.is_text(value, ObjectKind::BoundNative))
+                .map(|value| self.heap.get_field(value, 3))
+                .transpose()?;
+            return self.push_native_bound(native, source, count, site, receiver);
         }
         let registers = f.register_count;
         let env_len = 3 + f.regions.len() as u32 * 2;
@@ -1094,7 +1100,7 @@ impl Vm {
                 } else {
                     NativePhase::Bind {
                         index: 0,
-                        positional: 0,
+                        positional: u32::from(n.receiver),
                     }
                 }
             }
@@ -1104,8 +1110,47 @@ impl Vm {
         self.active.task_id = Some(task);
         Ok(task)
     }
+    /// Bind the receiver of an admitted native callable. The immutable value
+    /// traces its receiver and shares ordinary native argument preparation.
+    pub fn bind_native(&mut self, receiver: Value, function: FunctionId) -> Result<Value, VmError> {
+        let p = self.program.package();
+        let f = p
+            .functions
+            .get(function.index())
+            .ok_or(VmError::Contract("unknown native callable"))?;
+        if !matches!(f.kind, FunctionKind::Native(_)) {
+            return Err(VmError::Contract(
+                "receiver binding requires a native callable",
+            ));
+        }
+        let parameter = p.signatures[f.signature.index()]
+            .parameters
+            .first()
+            .filter(|p| p.default.is_none())
+            .ok_or(VmError::Contract(
+                "native receiver requires a first parameter",
+            ))?;
+        if !self
+            .type_checks
+            .accepts(p, &self.heap, parameter.ty, receiver)?
+        {
+            return Err(HeapError::TypeMismatch.into());
+        }
+        Ok(self.heap.alloc_record(
+            ObjectKind::BoundNative,
+            &[
+                Value::int(function.0 as i64),
+                Value::int(p.content_version as i64),
+                Value::int(f.module.0 as i64),
+                receiver,
+            ],
+        )?)
+    }
+
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
-        if self.heap.info(closure)?.kind != ObjectKind::Closure {
+        let info = self.heap.info(closure)?;
+        let bound = info.kind == ObjectKind::BoundNative;
+        if info.kind != ObjectKind::Closure && !bound {
             return Err(VmError::Contract("callee is not a closure"));
         }
         let fi = self
@@ -1127,7 +1172,8 @@ impl Vm {
             .ok_or(VmError::Contract("foreign closure code"))?;
         if version != self.program.package().content_version
             || self.heap.get_field(closure, 2)?.as_int() != Some(f.module.0 as i64)
-            || self.heap.info(closure)?.len != f.captures.len() as u32 + 3
+            || info.len != f.captures.len() as u32 + 3 + u32::from(bound)
+            || (bound && !matches!(f.kind, FunctionKind::Native(_)))
         {
             return Err(VmError::Contract("foreign closure environment/version"));
         }
@@ -1240,6 +1286,16 @@ impl Vm {
         count: u32,
         site: NativeSite,
     ) -> Result<(), VmError> {
+        self.push_native_bound(native, source, count, site, None)
+    }
+    fn push_native_bound(
+        &mut self,
+        native: NativeId,
+        source: ArgSource,
+        count: u32,
+        site: NativeSite,
+        receiver: Option<Value>,
+    ) -> Result<(), VmError> {
         if site.effects.0 & Effects::HOST == 0 {
             return Err(VmError::Effect);
         }
@@ -1262,6 +1318,13 @@ impl Vm {
                 return Err(e);
             }
         };
+        if let Some(value) = receiver
+            && let Err(error) = self.put(bound, 0, value)
+        {
+            self.slots.release(&mut self.heap, bound)?;
+            self.slots.release(&mut self.heap, args)?;
+            return Err(error);
+        }
         let bindings = if needs_cells {
             match self.open(site.owner, RootKind::Arguments, n) {
                 Ok(r) => Some(r),
@@ -1303,6 +1366,7 @@ impl Vm {
             has_defaults,
             roots,
             argument_count: count,
+            receiver: receiver.is_some(),
             continuation_len: 0,
             continuation_active: false,
             continuation_version: 0,
@@ -3882,7 +3946,7 @@ impl Vm {
                     } else {
                         NativePhase::Bind {
                             index: 0,
-                            positional: 0,
+                            positional: u32::from(n.receiver),
                         }
                     };
                 }

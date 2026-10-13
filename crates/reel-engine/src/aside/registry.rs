@@ -120,6 +120,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         super::activity::stop::binding().contract,
         super::activity::finish::binding().contract,
     ]);
+    contracts.extend(super::stage::bindings().map(|binding| binding.contract));
     contracts
 }
 

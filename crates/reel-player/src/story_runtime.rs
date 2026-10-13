@@ -92,8 +92,8 @@ impl StoryRuntime {
         }
     }
 
-    /// Alternate VM and incremental GC work. A wait finishes the active collection
-    /// before sleeping, and never repeatedly executes the waiting VM.
+    /// Alternate VM and incremental GC work, draining invalidated payloads before
+    /// allocating again. A wait finishes collection before sleeping.
     fn step(&mut self, budget: SliceBudget, now: impl FnMut() -> u64) -> Result<(), Error> {
         if self.driver.cleanup_pending() {
             self.driver.cleanup_step(256, budget, now)?;
@@ -109,7 +109,11 @@ impl StoryRuntime {
             }
             return Ok(());
         }
-        if self.collecting && (self.gc_turn || !self.runnable) {
+        if self.collecting
+            && (self.gc_turn
+                || !self.runnable
+                || self.driver.adapter().vm().heap().stats().pending_bytes != 0)
+        {
             if self.driver.gc_step(GcBudget::default())?.cycle_complete {
                 self.collecting = false;
                 if self.retry_after_collection {
@@ -355,6 +359,11 @@ mod tests {
         assert!(clock >= 2_000_000);
         drain(&mut story);
         assert_eq!(story.driver.state(), StoryState::Finished);
+        let heap = story.driver.adapter().vm().heap().stats();
+        eprintln!(
+            "1200 scene replacements: peak_charged_bytes={}, peak_pending_bytes={}",
+            heap.peak_charged_bytes, heap.peak_pending_bytes
+        );
         assert_eq!(
             story.driver.ui().session().owner_lifecycle(owner),
             Some(OwnerLifecycle::Retired)

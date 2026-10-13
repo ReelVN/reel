@@ -14,6 +14,7 @@
 - **作者工具**：reel check/build 与引擎共用 Reel 接口注册、默认名称环境和编译入口，作者无需逐文件导入 prelude。开启 window 后，dev 从源码运行，run 直接加载 ASB v1；两者使用同一个原生窗口宿主。完整工程和素材包尚未实现。[使用命令](guide/zh-CN.md#当前可用的检查构建与运行)。
 - **UI 与渲染**：text、image（PNG/JPEG）、row、column、stack 与 stage.replace 接通共享舞台；普通函数、条件和循环组合节点，属性修改保留原控件身份。位置、旋转、缩放、锚点、尺寸、颜色、透明度、裁剪、可见性和内容布局进入生产呈现路径。窗口使用脚本画面与默认对白/选择覆盖层。[作者示例](../examples/author_stage.aside) · [组件变换](../examples/author_transforms.aside) · [窗口入口](../crates/reel-player/README.md) · [渲染验证范围](../crates/reel-render/R02-REPORT.md)。
 - **音频**：Kira/可选 CPAL 桥、有界活动账本和物理 owner 退休已实现。逻辑完成、PCM/预算票据实际释放、描述符释放分别观察。脚本媒体等待、完整恢复和硬件完成时钟尚未接通。[接口](../crates/reel-media/README.md) · [验证边界](../crates/reel-media/VERIFICATION.md)。
+- **动态组件**：节点的 add/remove/clear 支持追加、定点插入和局部退休，保留其余控件身份与文字布局。提取的方法使用独立 Aside 的绑定 native callable，普通调用、宿主启动和回调共用参数绑定及 GC。[动态舞台示例](../examples/author_dynamic_stage.aside)。
 - **开发工具**：第一方检查归入 Rust 测试和 reel-dev；Quirrel 保留固定来源、许可、原断言与转换映射。转换解析与真实执行分别记录。[可复现命令](../crates/reel-dev/README.md)。
 
 集合字面量展开、范围切片和基础容器编辑已接通；[集合编辑示例](../examples/collection_editing.aside) 可用源码和 ASB 运行。完整语言仍包括尚未实现的类/元方法、模式、具名展开、完整模块/标准库、generator/thread/async。有限动画活动已接通，可运行 [动画示例](../examples/author_activities.aside)。节点事件、响应式绑定、动作组合、媒体等待和保存恢复仍需接通。具体边界以各模块契约为准。CPU/软件 GPU 检查不替代物理设备运行或性能测量。

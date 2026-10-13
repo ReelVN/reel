@@ -122,6 +122,12 @@ pub(super) fn lower<'a>(
     };
     lower.type_cache = lower.b.filled(m.types().len(), None)?;
     lower.native_values = lower.b.filled(lower.package.natives.len(), None)?;
+    lower.b.work(lower.package.functions.len() as u64)?;
+    for (index, function) in lower.package.functions.iter().enumerate() {
+        if let bc::FunctionKind::Native(native) = function.kind {
+            lower.native_values[native.index()] = Some(bc::FunctionId(index as u32));
+        }
+    }
     if !links.natives.is_empty() {
         lower.native_nodes = lower.b.filled(m.hir().nodes.len(), None)?;
         lower.native_symbols = lower.b.filled(symbol_count, None)?;

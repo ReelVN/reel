@@ -185,6 +185,7 @@ impl SessionVm {
             return Err(AdapterError::Input("owner revoked"));
         }
         let vm = Vm::load(program, support, limits, SessionEpoch(identity.epoch.0))?;
+        let stage = stage::StageBinding::new(vm.program())?;
         Ok(Self {
             vm,
             identity,
@@ -201,7 +202,7 @@ impl SessionVm {
             revoked: false,
             root_cursor: 0,
             root_end: 0,
-            stage: stage::StageBinding::default(),
+            stage,
             activities: activity::Activities::default(),
         })
     }
@@ -341,6 +342,16 @@ impl SessionVm {
                         work: 0,
                     })
             }
+            stage::add::SYMBOL | stage::remove::SYMBOL | stage::clear::SYMBOL => {
+                let invoke = match symbol.as_str() {
+                    stage::add::SYMBOL => stage::add::invoke,
+                    stage::remove::SYMBOL => stage::remove::invoke,
+                    _ => stage::clear::invoke,
+                };
+                invoke(&mut self.stage, &mut self.vm, ticket)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
             | "reel::image"
@@ -361,7 +372,7 @@ impl SessionVm {
                     None
                 };
                 let value = self.stage.dispatch(
-                    self.vm.heap_mut(),
+                    &mut self.vm,
                     self.root_owner,
                     &symbol,
                     &arguments,

@@ -2666,6 +2666,7 @@ dependencies = [
 name = "reel-player"
 version = "0.1.0"
 dependencies = [
+ "aside-vm",
  "blake3",
  "image",
  "pollster",

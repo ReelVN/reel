@@ -9,9 +9,9 @@
 这份指南从作者想要的画面出发，说明如何用 Aside 写剧情、组合 UI、安排演出和扩展效果。已实现部分可以直接使用；其余章节描述目标设计，并标明尚未接通的能力。中文与英文共用相同示例和接口名称。《Reel 引擎架构设计》说明运行时，《Aside VM 与语言设计》定义语言规则。
 作者使用三个基本概念：函数组织可复用内容；节点树表达画面；活动表达随时间进行的变化。当前普通函数、基础节点组合与顺序剧情已经接通，活动及高级作者接口仍按各节状态区分。
 
-当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
+当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-动画、作者事件回调、bind/derive、媒体与存读档尚未接入作者源码；game.toml、多源码工程与资源包也仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+动作组合、作者事件回调、bind/derive、媒体与存读档尚未接入作者源码；game.toml、多源码工程与资源包也仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -112,6 +112,31 @@ let has_opening = caption.starts_with(prefix: "第二章");
 已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，仍持有的旧节点不能继续读写，也不会因此保活整棵旧树。完整代码见[作者舞台示例](../../examples/author_stage.aside)。
 
 stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。专用 scroll 容器仍属于后续作者能力。
+
+### 在运行中修改组件
+
+`container.add(child)` 将子树追加到 row、column 或 stack，返回原 child；`index:` 可指定从零开始的插入位置，允许等于当前子节点数，省略或传 null 表示末尾。子树必须尚未挂到舞台且没有父级。重复挂载、成环、向 text/image 添加或位置越界都会报错，原树保持不变。添加和删除保留其他节点及其控件身份，未改变的文字不重新整形。
+
+`node.remove()` 移除并退休该节点及其全部后代，也可用于舞台根；`container.clear()` 只退休子节点，保留容器自身的属性和身份。两者返回 null。退休使相关动画取消并释放舞台对图片的请求；旧节点不能重新挂载或继续读写。需要再次展示的组件应由函数重新构造。方法可以保存和传递，始终保留原接收者；已保存的 remove 可重复调用。
+
+```aside
+fn main() {
+    let cards = row(x: 40, y: 60, gap: 20);
+    stage.replace(cards);
+    let card = cards.add(column(padding: 16, background: "#20304c") {
+        text("A reusable component");
+    });
+    let dismiss = card.remove;
+    narrator("The component has been added.");
+    cards.add(text("Inserted first"), index: 0);
+    dismiss();
+    narrator("The same container now has different children.");
+    cards.clear();
+    cards.add(text("Start again"));
+}
+```
+
+完整示例 [author_dynamic_stage.aside](../../examples/author_dynamic_stage.aside) 结合组件函数、局部编辑和淡入动画，可直接使用第一节的 dev/build/run 命令。当前接口负责插入和退休；跨父级移动尚未实现。
 
 用 `image(source, fit: "contain", ...)` 将 PNG/JPEG 文件放到舞台。省略 width/height 时，图片的像素尺寸作为逻辑尺寸；只指定一边时保持宽高比。指定两边后，contain 完整显示并留空，cover 填满并裁剪，stretch 拉伸填满。图片也支持共同的位置、可见性、透明度和 padding 属性。可以直接修改原节点的 source 和 fit。
 
