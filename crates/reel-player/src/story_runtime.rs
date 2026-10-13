@@ -15,6 +15,8 @@ pub struct StoryRuntime {
     retried_collection: bool,
     closing: bool,
     logical_ns: u64,
+    suspended_at: Option<u64>,
+    suspended_ns: u64,
 }
 
 impl StoryRuntime {
@@ -28,11 +30,26 @@ impl StoryRuntime {
             retried_collection: false,
             closing: false,
             logical_ns: 0,
+            suspended_at: None,
+            suspended_ns: 0,
         }
     }
 
     pub fn needs_tick(&self) -> bool {
-        self.needs_work() || self.driver.activities_need_time()
+        (self.suspended_at.is_none() || self.closing)
+            && (self.needs_work() || self.driver.activities_need_time())
+    }
+
+    /// Suspend story time. Execution deadlines always remain on the unadjusted host clock.
+    pub fn suspend(&mut self, now_ns: u64) {
+        self.suspended_at.get_or_insert(now_ns);
+    }
+    pub fn resume(&mut self, now_ns: u64) {
+        if let Some(start) = self.suspended_at.take() {
+            self.suspended_ns = self
+                .suspended_ns
+                .saturating_add(now_ns.saturating_sub(start));
+        }
     }
 
     fn needs_work(&self) -> bool {
@@ -70,8 +87,11 @@ impl StoryRuntime {
     /// continuations share that deadline, so they do not each cost a window frame.
     /// Without a deadline, run exactly one slice for manually scheduled hosts.
     pub fn tick(&mut self, budget: SliceBudget, mut now: impl FnMut() -> u64) -> Result<(), Error> {
+        if self.suspended_at.is_some() && !self.closing {
+            return Ok(());
+        }
         if !self.closing && self.needs_tick() {
-            self.logical_ns = self.logical_ns.max(now());
+            self.logical_ns = self.logical_ns.max(now().saturating_sub(self.suspended_ns));
             let progress = self
                 .driver
                 .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;

@@ -31,6 +31,10 @@ pub struct Quality {
 }
 #[derive(Debug)]
 pub enum GpuError {
+    Surface(wgpu::SurfaceError),
+    SurfaceContract(super::surface::ContractError),
+    InvalidSurface,
+    WrongSurface,
     Adapter(String),
     Device(String),
     DeviceLost,
@@ -199,5 +203,31 @@ impl Gpu {
             requested: u64::from(size[0]) * u64::from(size[1]) * 4,
             available: self.limits.target_bytes,
         })
+    }
+}
+
+impl From<super::surface::ContractError> for GpuError {
+    fn from(error: super::surface::ContractError) -> Self {
+        Self::SurfaceContract(error)
+    }
+}
+impl crate::BackendError for GpuError {
+    fn kind(&self) -> crate::FailureKind {
+        use crate::FailureKind;
+        match self {
+            Self::Busy | Self::Pressure { .. } => FailureKind::Pressure,
+            Self::Budget { .. }
+            | Self::Unsupported { .. }
+            | Self::InvalidRecord { .. }
+            | Self::Geometry { .. }
+            | Self::InvalidSize
+            | Self::InvalidSurface
+            | Self::WrongSurface => FailureKind::Refused,
+            Self::Surface(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                FailureKind::SurfaceLost
+            }
+            Self::DeviceLost => FailureKind::DeviceLost,
+            _ => FailureKind::Fatal,
+        }
     }
 }

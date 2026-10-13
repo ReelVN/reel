@@ -1,4 +1,4 @@
-use reel_render::gpu::GpuError;
+use reel_render::FailureKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Model {
@@ -65,15 +65,15 @@ impl Demand {
     pub(crate) fn has_work(self) -> bool {
         self.draw().is_some()
     }
-    pub(crate) fn refused(&mut self, draw: Draw, error: &GpuError) {
+    pub(crate) fn refused(&mut self, draw: Draw, error: FailureKind) {
         if draw == Draw::Current {
-            self.model = if error.is_retryable() {
+            self.model = if error == FailureKind::Pressure {
                 Model::Waiting
             } else {
                 Model::Blocked
             };
         }
-        self.exposure = if error.is_retryable() {
+        self.exposure = if error == FailureKind::Pressure {
             Exposure::Waiting
         } else {
             Exposure::None
@@ -99,20 +99,11 @@ impl Demand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reel_ui::core::Widget;
-    use reel_ui::frame::RecordLocation;
     #[test]
     fn pressure_and_busy_wait_for_completion_then_retry_latest_state() {
-        for error in [
-            GpuError::Busy,
-            GpuError::Pressure {
-                domain: "targets",
-                requested: 10,
-                available: 0,
-            },
-        ] {
+        for error in [FailureKind::Pressure] {
             let mut demand = Demand::default();
-            demand.refused(Draw::Current, &error);
+            demand.refused(Draw::Current, error);
             demand.invalidate();
             for _ in 0..100 {
                 demand.exposed();
@@ -125,25 +116,9 @@ mod tests {
     }
     #[test]
     fn permanent_errors_never_retry_current_model_on_expose_or_completion() {
-        let at = RecordLocation {
-            fragment: 0,
-            command: 3,
-            mask_depth: 1,
-            owner: reel_ui::widgets::Label::new("").prepare().id(),
-        };
-        for error in [
-            GpuError::Budget {
-                domain: "targets",
-                requested: 10,
-                available: 0,
-            },
-            GpuError::InvalidRecord {
-                at,
-                record: "unclosed scope",
-            },
-        ] {
+        for error in [FailureKind::Refused] {
             let mut demand = Demand::default();
-            demand.refused(Draw::Current, &error);
+            demand.refused(Draw::Current, error);
             for _ in 0..100 {
                 demand.completed(true);
                 assert!(!demand.has_work());
@@ -172,16 +147,9 @@ mod tests {
     #[test]
     fn accepted_repaint_pressure_preserves_permanent_block() {
         let mut demand = Demand::default();
-        demand.refused(
-            Draw::Current,
-            &GpuError::Budget {
-                domain: "targets",
-                requested: 10,
-                available: 0,
-            },
-        );
+        demand.refused(Draw::Current, FailureKind::Refused);
         demand.exposed();
-        demand.refused(Draw::Accepted, &GpuError::Busy);
+        demand.refused(Draw::Accepted, FailureKind::Pressure);
         demand.exposed();
         assert!(!demand.has_work());
         demand.completed(true);

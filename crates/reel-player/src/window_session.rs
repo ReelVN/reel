@@ -84,6 +84,16 @@ impl WindowSession {
     pub(crate) fn needs_tick(&self) -> bool {
         matches!(self, Self::Aside(story) if story.needs_tick())
     }
+    pub(crate) fn suspend(&mut self, now: u64) {
+        if let Self::Aside(story) = self {
+            story.suspend(now);
+        }
+    }
+    pub(crate) fn resume(&mut self, now: u64) {
+        if let Self::Aside(story) = self {
+            story.resume(now);
+        }
+    }
 
     pub(crate) fn tick_interval(&self) -> std::time::Duration {
         match self {
@@ -120,7 +130,7 @@ impl WindowSession {
         }
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
     pub(crate) fn diagnostic_step(&self) -> u8 {
         match self {
             Self::Diagnostic(host) => host.diagnostic_step(),

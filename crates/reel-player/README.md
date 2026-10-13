@@ -20,15 +20,43 @@ recreation; F6 exercises the same surface suspend/resume handlers as the lifecyc
 callbacks; Escape closes cleanly. Set `REEL_DIAGNOSTIC_TRACE=1` to log accepted
 frame/epoch identities alongside routed physical pointer coordinates.
 
-`window.rs` owns the native window, surface, configuration, prepared resources and
-frame assembly. `shell.rs` maps winit events and wake-ups. `diagnostic.rs` is an
-ordinary Masonry widget. PresentationBridge routes all input against the last
-accepted geometry. Compilation/upload never installs geometry. The shell submits,
-calls surface present, and only then resolves a notice for that exact frame.
+`window.rs` assembles the window, backend, prepared resources and frames.
+`platform::winit::WinitHost` implements platform commands and `Clock`; `shell.rs`
+maps native events. `gpu::WgpuBackend` owns the surface, configuration and GPU
+submission. `presentation::Presentation` coordinates redraw and accepted frames.
+`diagnostic.rs` is an ordinary UI widget. PresentationBridge routes input against
+the last accepted geometry. Compilation/upload never installs geometry. Only
+successful backend presentation resolves acceptance for that exact frame.
 Completion polling is independent. Zero size/suspend performs no acquisition;
 resize/DPI/resume/device recovery replaces the epoch. Device recovery increments
 generation, preserving the widget and prepared CPU sources. Suspend drops surface
 before window and drains queued work; shutdown does the same before exit.
+
+The public `PlatformHost`, `Presentation` and `StoryRuntime` have no native types
+or required native dependencies. Enable `reel-player/winit` to use only the Winit
+host, or `reel-render/wgpu` to use only the WGPU adapter. The `window` feature
+selects the built-in combination. A custom host implements redraw, wake deadline,
+before-present and exit commands; it converts input into the existing UI events.
+Construct `Presentation` with a fresh bridge and matching `SurfaceInfo`, configure
+the backend, then call `render` with a frame-building closure. Only an accepted
+result calls the story driver's `presented` with the projection stamp captured
+after recording. `poll` uses a reusable completion buffer and never accepts input.
+
+On suspend, cancel active input, suspend presentation/backend and call
+`StoryRuntime::suspend` with the host's monotonic nanoseconds. On resume, replace
+the surface with a strictly newer epoch, configure its backend, then call
+`StoryRuntime::resume`. Activity time excludes the suspended interval, while VM
+deadlines keep using the real host clock. Closing still drains task retirement
+while suspended. Native IME, clipboard, touch and accessibility services are not
+implemented by the current host.
+
+```sh
+cargo test -p reel-player --no-default-features portable_host_runs_story
+cargo check -p reel-player --no-default-features --features winit
+cargo run -p reel-dev -- deps
+# Requires a native Windows or Linux X11 display and an actual graphics adapter:
+cargo test -p reel-player --features window actual_window_retry_and_recovery_contract -- --ignored --nocapture
+```
 
 Frame and geometry storage grow with the recorded scene within their byte budgets;
 the window does not impose diagnostic node, command, mask or nesting counts.

@@ -5,14 +5,34 @@ remain portable. Started from R01 411cc7531431f35fbd43a614476815e22cd58f21;
 synchronized the exact accepted painter work-error repair
 9578cb3991d62a5dffb6a8580a1a6d1a850230cc. No VM execution.
 
-The adapter consumes RenderFrame directly. Native window ownership and Surface
-stay in player assembly. Device generation is monotonic and independent of
+The adapter consumes RenderFrame directly. Native windows and surface creation
+stay in player assembly; `gpu::WgpuBackend` owns the resulting native surface,
+configuration and renderer, and implements the shared `RenderBackend`. It has no
+Winit dependency. `reel-player::presentation::Presentation` owns acceptance and
+repaint for both desktop and custom hosts. Device generation is monotonic and independent of
 SurfaceEpoch. Recreating a device invalidates every GPU cache entry; resizing or
 resuming requires a new surface epoch and invalidates input candidates through
 PresentationBridge. A queue completion never constitutes presentation acceptance.
 Only successful surface acquisition, submission and present permit Accepted.
 Offscreen submission has no Accepted result. Completion retains the exact frame,
 resource leases and allocations until the queue callback is observed.
+
+`RenderBackend::Error` preserves each adapter's concrete diagnostics, with
+`BackendError::kind` classifying pressure, permanent refusal, surface loss,
+device loss and fatal errors. `render_present` calls the host's `before_present`
+hook after submission and immediately before native presentation. `poll(out, limit)`
+retains excess completions for later calls, and `has_pending` lets idle hosts
+avoid device polling. The caller reuses its event buffer. WGPU prepares inline
+uploads from frame resource leases; it advertises zero standalone upload capacity
+and returns an intact Unsupported batch for optional prewarming. Resource owners
+retire registry handles; backend retirement acts on its retained resources.
+Already leased frozen frames remain eligible for repaint.
+
+Device recovery retires the old native surface before creating its replacement,
+and keeps the old renderer owned until the new backend is configured. Window
+systems may reject two simultaneous native surfaces for one window. The new
+backend owns its device and surface as one lifetime; a zero-sized view needs no
+temporary nonzero swapchain and does not acquire a surface texture.
 
 Quality is negotiated from actual adapter format usages/flags and configured
 budgets: linear premultiplied Rgba16Float/4x preferred, explicit Rgba16Float/1x
@@ -46,9 +66,10 @@ CPU/software adapter, physical GPU and window evidence are reported separately.
 ## Concrete two-phase adapter API
 
 The optional `gpu::Renderer` deliberately separates `prepare(RenderFrame)` from
-`submit(Prepared)`: surface acquisition/presentation is in the assembly crate,
-so an offscreen renderer cannot manufacture PresentAccepted. The earlier
-RecordingBackend/NullBackend trait and its simulated events remain unchanged.
+`submit(Prepared)`: surface acquisition/presentation belongs to `WgpuBackend`,
+so an offscreen renderer cannot manufacture PresentAccepted. RecordingBackend
+and NullBackend implement the same updated trait and keep their bounded ownership
+and terminal-event contracts.
 `Prepared` is opaque outside the adapter. It owns a renderer identity, generation,
 frame leases, command encoder and budget tickets. Its image copies are encoded
 into the same submission before their draws; there is no immediate queue write

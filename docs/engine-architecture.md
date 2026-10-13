@@ -100,21 +100,27 @@ UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88
 播放器的 source 能力选择性引入编译器；精简版本只加载字节码。hot-reload 只开启模块替换协议，可接收外部编译产物。编译器、监视器和对照运行时留在开发侧，精简构建检查实际依赖树。[7]
 
 ## 三 平台接口与移植边界
-窗口和渲染分别选择，默认组合为 WinitHost 与 WgpuBackend。reel-player/platform 定义 PlatformHost，reel-render 定义 RenderBackend，reel-media 定义 AudioOutput；AssetIo、Clock、WorkExecutor 在 reel-core 中定义。player 组装适配器并转换输入，engine 与 reel-ui 不反向依赖 player。UI 控件与布局同窗口外壳和 GPU 后端分开，以依赖检查和限定构建验证隔离。
+### HAL 与公共呈现（#83）
+
+内置桌面使用公共 PlatformHost 与 Presentation，其他平台复用同一会话、输入、记录、已接受帧与生命周期。范围为 reel-render 后端合同/既有 WGPU 实现、reel-player 公共呈现、运行时计时与 Winit 适配，以及合同检查、规范和双语指南。复用 reel-core 的时钟合同，保持 Aside、B01/ASB v1 和 native ABI v1；Rust 宿主/渲染接口直接更新，不保留兼容层，无新增依赖。
+
+PlatformHost 的当前必需命令为 request_redraw、set_wake_deadline、before_present、request_exit，时钟沿用 Clock，后台通知沿用 WakeSignal。原生事件由适配器转换后进入共同 UI/会话；窗口创建及原生表面创建仍在组装代码。剪贴板、IME、系统可访问性属于独立可选平台服务，后续实现时给出真实能力与结果；本轮不以空成功实现这些服务。
+
+RenderBackend 保留配置、呈现、完成轮询和挂起责任，使用具体错误类型及统一的拒绝/设备丢失/表面失效分类。呈现通过宿主的 before_present 通知后才交给平台。RenderFrame 已拥有全部 CPU 资源租约；后端可以在同一次提交内上传，独立 upload 是可选预热能力，上传额度为零的后端明确拒绝而不影响普通帧资源。资源生产者通过 ResourceRegistry 退休资源；后端 retire 退休其持有的资源，既有已接受帧租约的重绘仍合法。无持久 GPU 缓存的后端按提交保留和释放帧租约。完成轮询不得丢失超过本次额度的结果，完成通知和呈现接受保持独立。
+
+公共呈现协调器管理画面更改与曝光重绘、候选几何、已接受帧、失败后的重试和表面代数。任何失败/跳过都结算对应候选，不能积累无主候选或发布未呈现输入；永久拒绝后只重绘最后已接受帧，提交完成才解除临时压力。原生 GPU/窗口类型只出现在各自适配模块。无桌面宿主与默认桌面调用同一协调器。
+
+会话逻辑时间排除宿主挂起区间；VM/GC 截止时间继续使用真实单调时间。恢复先更换表面代数与输入几何，再恢复逻辑时间；关闭即使在挂起期间仍分片清理任务。验证真实源码的输入、动画、挂起恢复、拒绝/旧帧和关闭，保留既有呈现、预算和终态合同；无桌面/启用适配器依赖树、debug/release、Clippy 分别检查。关注空闲无轮询、无额外逐帧像素副本、完成事件不重复分配队列，以及租约实际释放；CPU、软件 GPU 与原生窗口证据分别陈述。
+
+窗口和渲染分别选择，默认组合为 WinitHost 与 WgpuBackend。reel-player 的 winit feature 单独提供 platform::winit::WinitHost，不依赖 WGPU；window feature 组装内置 Winit + WGPU 播放器。reel-render 的 wgpu feature 单独提供 gpu::WgpuBackend，不依赖 Winit。reel-player/platform 定义 PlatformHost，reel-render 定义 RenderBackend，reel-media 定义 AudioOutput；AssetIo、Clock、WorkExecutor 在 reel-core 中定义。player 组装适配器并转换输入，engine 与 reel-ui 不反向依赖 player。UI 控件与布局同窗口外壳和 GPU 后端分开，以依赖检查和限定构建验证隔离。
 原生窗口或固定显示目标的创建、表面来源协商与销毁留在具体 player 组装代码，不进入公共 trait。可借用或包装原始句柄，但有效期必须覆盖表面使用期；先停止提交并释放表面，再销毁显示目标。winit 事件、wgpu 设备与纹理、Vita 原生句柄都不得进入会话、RenderFrame 或 DSL。每个后端负责上传、格式转换、离屏目标、设备重建和完成后回收，不能仅替换最终绘制函数。
 Cargo features 决定编入哪些适配器，运行参数只在已编入且能力匹配的组合中选择。游戏包声明必需能力；缺失时报错，有声明的低质量后备才可降级。reel-ui 与默认外壳、Kira 与默认输出的目标依赖都要检查，关闭桌面 feature 后不能仍被传递依赖强制引入。不建设动态插件系统或通用平台框架。
 以下 Rust 签名规定模块边界，自定义类型是引擎自有数据；不统一要求 Send + Sync，只约束实际跨线程的数据。下文给出类型的最低字段与结果语义，D01 完成对应定义与契约测试。
 ```rust
 pub trait PlatformHost {
-    fn capabilities(&self) -> PlatformCaps;
     fn request_redraw(&mut self);
     fn set_wake_deadline(&mut self, when: Option<MonoTime>);
-    fn set_text_input(&mut self, state: TextInputState)
-        -> Result<(), PlatformError>;
-    fn clipboard(&mut self, request: ClipboardRequest)
-        -> Result<ClipboardId, Rejected<ClipboardRequest>>;
-    fn update_accessibility(&mut self, update: AccessibilityUpdate)
-        -> Result<(), Rejected<AccessibilityUpdate>>;
+    fn before_present(&mut self);
     fn request_exit(&mut self);
 }
 pub trait Clock {
@@ -122,14 +128,17 @@ pub trait Clock {
     fn wall_time(&self) -> Option<UnixMillis>;
 }
 pub trait RenderBackend {
+    type Error: BackendError + 'static;
     fn capabilities(&self) -> RenderCaps;
-    fn configure(&mut self, info: SurfaceInfo) -> Result<(), RenderError>;
+    fn configure(&mut self, info: SurfaceInfo) -> Result<(), Self::Error>;
     fn upload(&mut self, batch: UploadBatch)
         -> Result<UploadId, Rejected<UploadBatch>>;
-    fn render_present(&mut self, frame: &RenderFrame)
-        -> Result<PresentOutcome, RenderError>;
+    fn render_present(&mut self, frame: &RenderFrame, before_present: impl FnOnce())
+        -> Result<PresentOutcome, Self::Error>;
     fn retire(&mut self, resources: &[ResourceVersion]);
-    fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize);
+    fn poll(&mut self, out: &mut Vec<RenderEvent<Self::Error>>, limit: usize)
+        -> Result<(), Self::Error>;
+    fn has_pending(&self) -> bool;
     fn suspend(&mut self);
 }
 pub type PcmFill = Box<dyn FnMut(&mut [f32]) + Send + 'static>;
@@ -175,7 +184,7 @@ pub trait WorkExecutor {
 - ReadRequest 含资源身份与版本、offset:u64、len:u32、优先级、Scope 和预算票据；读取结果拥有 bytes，并明确 eof，长度不得超过请求。SaveWrite 含槽位、提交序号、完整槽位数据、最低持久提交级别与预算票据。IoCaps 声明范围读取、读取/保存队列限制及可提供的提交级别；只保证可见替换、不保证持久性的实现不得报告持久保存成功。
 - WorkRequest 含 kind、拥有型输入、Scope、优先级及预算票据；kind 限于已注册的解码、编码、校验操作。WorkCaps 含 Threaded/Cooperative、支持种类和队列限制；不支持的 kind 在接受前拒绝。处理进度不算终态。
 ## 平台与时间
-PlatformHost 提供命令，原生事件循环驱动 Player::on_event，不要求平台提供反复阻塞的 pump_events。PlatformEvent 包括输入、组合文本、焦点、尺寸与 DPI、挂起、恢复、内存压力和关闭；输入采用引擎自己的键盘、指针、触摸和手柄数据。剪贴板请求拥有读写参数，以 ClipboardId 关联一次结果；可访问性更新使用稳定节点身份，平台动作从同一事件桥接返回。不支持的能力明确拒绝。平台在组装时给媒体、IO、工作执行器与渲染完成队列注入可克隆的 WakeSignal，后台只用它唤醒循环，不借用整个 PlatformHost。结果入队或 AudioStatus 改变时合并唤醒，即使画面静止也会处理完成消息；纯音频完成保持布局与呈现按需执行。实时供给只使用已验证为有界的通知路径，通用平台唤醒可由控制线程转发。
+PlatformHost 提供命令，原生事件循环转换输入后驱动公共会话与 Presentation，不要求平台提供阻塞的 pump_events。PointerEvent、TextEvent 和 WindowEvent 沿用 reel-ui 的共同数据；原生生命周期驱动 Presentation、RenderBackend 和 StoryRuntime 的挂起/恢复。Presentation 只接受严格递增的表面代数。组装方在恢复时先失效旧输入，再配置后端，成功后恢复剧情时钟；VM 截止时间不扣除挂起区间。剪贴板、组合文本、系统可访问性、触摸/手柄原生适配属于后续独立服务，当前没有空实现声称支持。后台通知复用 reel-core::WakeSignal，实时音频的通知路径仍须单独验证；不把通用平台回调直接作为实时保证。
 PlatformCaps 声明输入、文本服务、可访问性及等待/唤醒能力；重绘可合并。MonoTime 使用固定单位的 u64，不保存 std::time::Instant。会话逻辑时钟独立累计，可暂停与恢复；墙钟可缺失，只用于显示日期等。恢复后重设截止时间，系统睡眠不得变成巨大动画增量。
 ## 渲染与音频
 SurfaceInfo 只含尺寸、缩放和引擎颜色约定。RenderCaps 声明纹理/离屏上限、格式和效果支持集；RenderFrame 保留画序、分组、裁剪与颜色/alpha 语义，具体路径和字形转为可适配的几何、掩码或图集。效果以 ID 和纯参数表达，只有 WGSL 实现的效果不能宣称可跨后端使用。

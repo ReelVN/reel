@@ -39,6 +39,7 @@ pub struct SurfaceInfo {
 pub enum ConsumerKind {
     Recording,
     Null,
+    Device,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderCaps {
@@ -115,6 +116,35 @@ pub enum RenderError {
     IdentityExhausted,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind {
+    /// Retry after submission completion frees shared capacity.
+    Pressure,
+    /// The current frame cannot be rendered; an accepted frame may be repainted.
+    Refused,
+    /// Recreate/reconfigure the native surface under a new input epoch.
+    SurfaceLost,
+    DeviceLost,
+    Fatal,
+}
+pub trait BackendError: std::error::Error {
+    fn kind(&self) -> FailureKind;
+}
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for RenderError {}
+impl BackendError for RenderError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Busy => FailureKind::Pressure,
+            Self::IdentityExhausted => FailureKind::Fatal,
+            _ => FailureKind::Refused,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
     NullConsumer,
     Suspended,
@@ -126,13 +156,13 @@ pub enum PresentOutcome {
     SurfaceUnavailable,
 }
 #[derive(Debug)]
-pub enum RenderEvent {
+pub enum RenderEvent<E = RenderError> {
     UploadFinished {
         id: UploadId,
         scope: Scope,
-        result: Terminal<(), RenderError>,
+        result: Terminal<(), E>,
     },
-    /// Explicit simulated completion, distinct from present acceptance.
+    /// Submission completion, distinct from presentation acceptance.
     RenderFinished {
         id: SubmissionId,
         frame: FrameId,
@@ -141,23 +171,34 @@ pub enum RenderEvent {
         versions: Vec<ResourceVersion>,
         storage: Arc<BudgetTicket>,
     },
-    DeviceLost(RenderError),
+    DeviceLost(E),
 }
 pub trait RenderBackend {
+    type Error: BackendError + 'static;
     fn capabilities(&self) -> RenderCaps;
-    fn configure(&mut self, info: SurfaceInfo) -> Result<(), RenderError>;
+    fn configure(&mut self, info: SurfaceInfo) -> Result<(), Self::Error>;
     fn upload(&mut self, batch: UploadBatch) -> Result<UploadId, Rejected<UploadBatch>>;
-    fn render_present(&mut self, frame: &RenderFrame) -> Result<PresentOutcome, RenderError>;
+    /// Call before_present only after successful submission, immediately before present.
+    fn render_present(
+        &mut self,
+        frame: &RenderFrame,
+        before_present: impl FnOnce(),
+    ) -> Result<PresentOutcome, Self::Error>;
     fn retire(&mut self, resources: &[ResourceVersion]);
-    fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize);
+    fn poll(
+        &mut self,
+        out: &mut Vec<RenderEvent<Self::Error>>,
+        limit: usize,
+    ) -> Result<(), Self::Error>;
+    fn has_pending(&self) -> bool;
     fn suspend(&mut self);
 }
 /// The coordinator supplies the current surface epoch and the exact borrowed frame key.
 /// Upload/build completion never calls this acceptance gate.
-pub fn presentation_notice(
+pub fn presentation_notice<E>(
     frame: &RenderFrame,
     epoch: SurfaceEpoch,
-    result: Result<PresentOutcome, RenderError>,
+    result: Result<PresentOutcome, E>,
 ) -> PresentationNotice {
     PresentationNotice::new(
         frame.key(),
@@ -438,6 +479,7 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
     Ok(bytes)
 }
 impl RenderBackend for RecordingBackend {
+    type Error = RenderError;
     fn capabilities(&self) -> RenderCaps {
         RenderCaps {
             consumer: ConsumerKind::Recording,
@@ -529,7 +571,11 @@ impl RenderBackend for RecordingBackend {
         });
         Ok(id)
     }
-    fn render_present(&mut self, frame: &RenderFrame) -> Result<PresentOutcome, RenderError> {
+    fn render_present(
+        &mut self,
+        frame: &RenderFrame,
+        before_present: impl FnOnce(),
+    ) -> Result<PresentOutcome, RenderError> {
         let Some(surface) = self.surface else {
             return Ok(PresentOutcome::SurfaceUnavailable);
         };
@@ -566,6 +612,7 @@ impl RenderBackend for RecordingBackend {
             frame: frame.clone(),
         });
         self.last_submission = Some(id);
+        before_present();
         Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
@@ -586,11 +633,16 @@ impl RenderBackend for RecordingBackend {
         }
         self.collect_retired();
     }
-    fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize) {
+    fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize) -> Result<(), RenderError> {
         self.collect_retired();
-        for _ in 0..limit.min(self.events.len()) {
-            out.push(self.events.remove(0));
-        }
+        out.extend(self.events.drain(..limit.min(self.events.len())));
+        Ok(())
+    }
+    fn has_pending(&self) -> bool {
+        !self.inflight.is_empty()
+            || !self.uploads.is_empty()
+            || !self.events.is_empty()
+            || self.resident.iter().any(|resource| resource.retired)
     }
     fn suspend(&mut self) {
         self.suspended = true;
@@ -608,6 +660,7 @@ impl NullBackend {
     }
 }
 impl RenderBackend for NullBackend {
+    type Error = RenderError;
     fn capabilities(&self) -> RenderCaps {
         RenderCaps {
             consumer: ConsumerKind::Null,
@@ -620,14 +673,21 @@ impl RenderBackend for NullBackend {
     fn upload(&mut self, batch: UploadBatch) -> Result<UploadId, Rejected<UploadBatch>> {
         self.0.upload(batch)
     }
-    fn render_present(&mut self, _: &RenderFrame) -> Result<PresentOutcome, RenderError> {
+    fn render_present(
+        &mut self,
+        _: &RenderFrame,
+        _: impl FnOnce(),
+    ) -> Result<PresentOutcome, RenderError> {
         Ok(PresentOutcome::Skipped(SkipReason::NullConsumer))
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
         self.0.retire(resources)
     }
-    fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize) {
+    fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize) -> Result<(), RenderError> {
         self.0.poll(out, limit)
+    }
+    fn has_pending(&self) -> bool {
+        self.0.has_pending()
     }
     fn suspend(&mut self) {
         self.0.suspend()

@@ -6,6 +6,8 @@ use crate::stage_widget::{StageView, StageWidget};
 #[cfg(test)]
 mod button_tests;
 #[cfg(test)]
+mod hal_tests;
+#[cfg(test)]
 mod image_tests;
 use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
@@ -787,7 +789,7 @@ pub(crate) struct SessionHostDiagnostic {
 }
 #[cfg(feature = "window")]
 impl SessionHostDiagnostic {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
     pub(crate) fn diagnostic_step(&self) -> u8 {
         self.step
     }
