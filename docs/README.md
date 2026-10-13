@@ -11,7 +11,7 @@
 - **编译与执行**：源码编译接通 B01 和 VM，支持普通调用、缺省参数、共享闭包 Cell、异常/finally、固定集合、索引/成员、可选取值链及位置调用 spread/rest；尾随 children 与 array/tuple 的 for 可用于组件组合。可组合宿主对象保持身份并支持属性读写。[编译接口](../crates/aside-compiler/LOWERING.md) · [VM 与资源边界](../crates/aside-vm/README.md)。
 - **剧情会话**：narrator/choose 接通可信 native 注册、模块初始化、真实 VM 等待/恢复、原选择 key 保活和 owner 退休。[可运行 Aside 示例](../crates/reel-engine/examples/story_contract.aside) · [无窗口宿主](../crates/reel-engine/examples/story_contract.rs) · [会话接口](../crates/reel-engine/README.md)。
 - **作者工具**：reel check/build 与引擎共用 Reel 接口注册、默认名称环境和编译入口，作者无需逐文件导入 prelude。开启 window 后，dev 从源码运行，run 直接加载 ASB v1；两者使用同一个原生窗口宿主。完整工程和素材包尚未实现。[使用命令](guide/zh-CN.md#当前可用的检查构建与运行)。
-- **UI 与渲染**：text、image（PNG/JPEG）、row、column、stack 与 stage.replace 接通共享舞台；普通函数、条件和循环组合节点，属性修改保留原控件身份。位置、尺寸、颜色、透明度、裁剪、可见性和内容布局进入生产呈现路径。窗口使用脚本画面与默认对白/选择覆盖层。[作者示例](../examples/author_stage.aside) · [窗口入口](../crates/reel-player/README.md) · [渲染验证范围](../crates/reel-render/R02-REPORT.md)。
+- **UI 与渲染**：text、image（PNG/JPEG）、row、column、stack 与 stage.replace 接通共享舞台；普通函数、条件和循环组合节点，属性修改保留原控件身份。位置、旋转、缩放、锚点、尺寸、颜色、透明度、裁剪、可见性和内容布局进入生产呈现路径。窗口使用脚本画面与默认对白/选择覆盖层。[作者示例](../examples/author_stage.aside) · [组件变换](../examples/author_transforms.aside) · [窗口入口](../crates/reel-player/README.md) · [渲染验证范围](../crates/reel-render/R02-REPORT.md)。
 - **音频**：Kira/可选 CPAL 桥、有界活动账本和物理 owner 退休已实现。逻辑完成、PCM/预算票据实际释放、描述符释放分别观察。脚本媒体等待、完整恢复和硬件完成时钟尚未接通。[接口](../crates/reel-media/README.md) · [验证边界](../crates/reel-media/VERIFICATION.md)。
 - **开发工具**：第一方检查归入 Rust 测试和 reel-dev；Quirrel 保留固定来源、许可、原断言与转换映射。转换解析与真实执行分别记录。[可复现命令](../crates/reel-dev/README.md)。
 

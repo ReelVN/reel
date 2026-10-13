@@ -34,7 +34,7 @@ const SOURCE: &str = r#"
 fn main() {
     stage.replace(stack() {
         image("assets/panels.png");
-        image("assets/panels.png", x: 180, width: 80);
+        image("assets/panels.png", x: 180, width: 80, anchor_x: 0.5, rotation: 90, scale_x: -2, scale_y: 2);
         image("assets/sun.jpg", x: 280);
     });
 }
@@ -201,7 +201,7 @@ fn images(frame: &RenderFrame, assets: &Path) -> Vec<ImageDraw> {
             &draws[1],
             "assets/panels.png",
             [160, 90],
-            [0.5, 0., 0., 0.5, 180., 0.],
+            [0., -1., -1., 0., 180., 80.],
         ),
         (
             &draws[2],
@@ -212,7 +212,14 @@ fn images(frame: &RenderFrame, assets: &Path) -> Vec<ImageDraw> {
     ] {
         assert_eq!(Path::new(&draw.version.key.0), assets.join(file));
         assert_eq!(draw.dimensions, dimensions);
-        assert_eq!(draw.transform, transform);
+        assert!(
+            draw.transform
+                .iter()
+                .zip(transform)
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "transform={:?}, expected={transform:?}",
+            draw.transform
+        );
     }
     assert_eq!(&draws[0].pixels[..4], &[224, 64, 48, 255]);
     assert_eq!(&draws[0].pixels[80 * 4..81 * 4], &[32, 112, 224, 128]);

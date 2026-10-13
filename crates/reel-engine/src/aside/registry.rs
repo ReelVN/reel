@@ -5,7 +5,7 @@ use aside_vm::bytecode::{
 
 use super::AdapterError;
 
-pub(super) const NODE_FIELDS: [&str; 12] = [
+pub(super) const NODE_FIELDS: [&str; 17] = [
     "x",
     "y",
     "width",
@@ -18,6 +18,11 @@ pub(super) const NODE_FIELDS: [&str; 12] = [
     "font_size",
     "color",
     "background",
+    "rotation",
+    "scale_x",
+    "scale_y",
+    "anchor_x",
+    "anchor_y",
 ];
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
@@ -166,6 +171,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             (BuiltinType::Any, bc::Const::Int(24)),
             (BuiltinType::String, bc::Const::Utf8("#ffffff".into())),
             (BuiltinType::Any, bc::Const::Null),
+            (BuiltinType::Any, bc::Const::Int(0)),
+            (BuiltinType::Any, bc::Const::Int(1)),
+            (BuiltinType::Any, bc::Const::Int(1)),
+            (BuiltinType::Any, bc::Const::Int(0)),
+            (BuiltinType::Any, bc::Const::Int(0)),
         ]) {
             parameters.push(NativeParameter {
                 name: name.into(),

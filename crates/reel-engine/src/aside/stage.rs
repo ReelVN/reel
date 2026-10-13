@@ -351,6 +351,7 @@ fn validate_layout_property(heap: &Heap, index: u32, value: Value) -> Result<(),
         10 => color(heap, value).map(|_| ()),
         11 if value.tag() == ValueTag::Null => Ok(()),
         11 => color(heap, value).map(|_| ()),
+        12..=16 => number(value).map(|_| ()),
         _ => return Err(HeapError::OutOfBounds),
     };
     result.map_err(|error| match error {
@@ -380,5 +381,10 @@ fn read_props(heap: &Heap, fields: Value, offset: usize) -> Result<NodeProps, Ad
         } else {
             Some(color(heap, background)?)
         },
+        rotation: number(get(12)?)?,
+        scale_x: number(get(13)?)?,
+        scale_y: number(get(14)?)?,
+        anchor_x: number(get(15)?)?,
+        anchor_y: number(get(16)?)?,
     })
 }

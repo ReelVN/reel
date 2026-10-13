@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Author-owned scene composition, shared by the script host and presentation.
+use crate::kurbo::{Affine, Size};
 use crate::properties::ObjectFit;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +37,11 @@ pub struct NodeProps {
     pub font_size: f64,
     pub color: [u8; 4],
     pub background: Option<[u8; 4]>,
+    pub rotation: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub anchor_x: f64,
+    pub anchor_y: f64,
 }
 impl Default for NodeProps {
     fn default() -> Self {
@@ -52,7 +58,23 @@ impl Default for NodeProps {
             font_size: 24.,
             color: [255; 4],
             background: None,
+            rotation: 0.,
+            scale_x: 1.,
+            scale_y: 1.,
+            anchor_x: 0.,
+            anchor_y: 0.,
         }
+    }
+}
+
+impl NodeProps {
+    /// Map the layout box's anchor to x/y in its parent's layout coordinates.
+    /// The same affine is consumed by painting, clipping and presented geometry.
+    pub fn transform(&self, size: Size) -> Affine {
+        Affine::translate((self.x, self.y))
+            * Affine::rotate(self.rotation.to_radians())
+            * Affine::scale_non_uniform(self.scale_x, self.scale_y)
+            * Affine::translate((-self.anchor_x * size.width, -self.anchor_y * size.height))
     }
 }
 

@@ -133,6 +133,26 @@ The complete [author_images.aside](../../examples/author_images.aside) includes 
 
 Loading happens in the background, and nodes using the same path share pixels. The previous complete scene remains visible until all images in the new scene are ready; story input pauses during that preparation. Changing source keeps the previous picture until the replacement is ready. A missing or invalid file reports its path and the image constructor's source location and ends the window run. Property type errors and an invalid fit are catchable at assignment. Images are loaded when mounted; unmounted component construction does not read files. In-session file hot reload is not implemented.
 
+Every basic node supports rotation, scale_x/scale_y and anchor_x/anchor_y; a container transforms the whole component. Rotation uses clockwise degrees and defaults to 0. Scale defaults to 1; negative values mirror, and zero collapses the picture and excludes it from hit testing. Anchors are fractions of the layout width and height: (0,0) is the default top-left corner and (0.5,0.5) is the center. They may also lie outside the component. The x/y values offset that anchor from the container's layout position. Scale around the anchor, rotate, then place it at that position; the parent's transform applies to the result. Width, height and row/column placement retain their size before transformation. Clips and presented geometry use the same transform. Edits preserve node identity; changing position, rotation, scale, anchor or opacity does not repeat layout.
+
+```aside
+fn main() {
+    let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
+                     rotation: -12, scale_x: 1.25, scale_y: 1.25,
+                      gap: 12, padding: 16, background: "#183048") {
+        image("assets/panels.png");
+        text("A scene is one component");
+    };
+    stage.replace(card);
+    narrator("The entire component shares one transform.");
+    card.rotation = 12;
+    card.scale_x = -1.25;
+    narrator("The same component is now mirrored.");
+}
+```
+
+See the runnable [author_transforms.aside](../../examples/author_transforms.aside); it uses the same assets and commands as the image example.
+
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside

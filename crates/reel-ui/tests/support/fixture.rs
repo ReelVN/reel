@@ -196,6 +196,7 @@ impl<W: Widget> Widget for Observed<W> {
 /// Author group implemented entirely through public Masonry extension points.
 /// It lays out real child widgets; pre/post paint delimit one isolated Imaging group.
 pub struct StageGroup {
+    pub child_transform: Option<reel_ui::stage::NodeProps>,
     pub accepts_pointer: bool,
     pub query_ids: Vec<WidgetId>,
     pub child_queries: Option<ChildQueryTrace>,
@@ -212,6 +213,7 @@ pub struct StageGroup {
 impl StageGroup {
     pub fn new(trace: Trace, opacity: f32, clip: Rect) -> Self {
         Self {
+            child_transform: None,
             accepts_pointer: false,
             query_ids: vec![],
             child_queries: None,
@@ -377,6 +379,14 @@ impl Widget for StageGroup {
             }
             c.run_layout(child, *size);
             c.place_child(child, *origin);
+        }
+    }
+    fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        if let Some(props) = &self.child_transform {
+            for (child, _, _) in &mut self.children {
+                let transform = props.transform(ctx.child_size(child));
+                ctx.set_child_transform(child, transform);
+            }
         }
     }
     fn pre_paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {

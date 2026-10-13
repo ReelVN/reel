@@ -12,6 +12,8 @@ use reel_ui::{
     widgets::{Image, Label},
 };
 use std::collections::BTreeMap;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Default)]
 pub(crate) struct StageView {
@@ -109,12 +111,20 @@ impl StageWidget {
         {
             SceneWidget::sync(&mut child, node);
         }
+        if this.widget.root_props.visible
+            != view
+                .root
+                .as_ref()
+                .is_none_or(|root| root.node.props.visible)
+        {
+            this.ctx.request_layout();
+        }
         this.widget.root_props = view
             .root
             .as_ref()
             .map(|node| node.node.props.clone())
             .unwrap_or_default();
-        this.ctx.request_layout();
+        this.ctx.request_compose();
     }
 }
 impl Widget for StageWidget {
@@ -143,8 +153,14 @@ impl Widget for StageWidget {
             if self.root_props.visible {
                 let chosen = ctx.compute_size(root, SizeDef::fit(size), size.into());
                 ctx.run_layout(root, chosen);
-                ctx.place_child(root, Point::new(self.root_props.x, self.root_props.y));
+                ctx.place_child(root, Point::ORIGIN);
             }
+        }
+    }
+    fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        if let Some(root) = &mut self.root {
+            let transform = self.root_props.transform(ctx.child_size(root));
+            ctx.set_child_transform(root, transform);
         }
     }
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
@@ -167,6 +183,8 @@ struct SceneWidget {
     image_size: Size,
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
     size: Size,
+    #[cfg(test)]
+    layouts: usize,
 }
 fn color(value: [u8; 4]) -> Color {
     Color::from_rgba8(value[0], value[1], value[2], value[3])
@@ -206,6 +224,8 @@ impl SceneWidget {
                 .map(|child| (child.node.clone(), WidgetPod::new(Self::new(child))))
                 .collect(),
             size: Size::ZERO,
+            #[cfg(test)]
+            layouts: 0,
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
@@ -237,14 +257,30 @@ impl SceneWidget {
             }
         }
         for ((node, pod), next) in this.widget.children.iter_mut().zip(&view.children) {
-            *node = next.node.clone();
+            if node.props.visible != next.node.props.visible {
+                this.ctx.request_layout();
+            }
+            if *node != next.node {
+                *node = next.node.clone();
+                this.ctx.request_compose();
+            }
             if let Some(mut child) = this.ctx.get_mut(pod) {
                 Self::sync(&mut child, next);
             }
         }
         if this.widget.node != view.node {
+            let old = &this.widget.node.props;
+            let new = &view.node.props;
+            if old.width != new.width
+                || old.height != new.height
+                || old.gap != new.gap
+                || old.padding != new.padding
+                || old.font_size != new.font_size
+                || old.clip != new.clip
+            {
+                this.ctx.request_layout();
+            }
             this.widget.node = view.node.clone();
-            this.ctx.request_layout();
             this.ctx.request_render();
         }
     }
@@ -330,6 +366,10 @@ impl Widget for SceneWidget {
         Length::px(total + padding.get())
     }
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
+        #[cfg(test)]
+        {
+            self.layouts += 1;
+        }
         self.size = size;
         if self.node.props.clip {
             ctx.set_clip_path(size.to_rect());
@@ -370,13 +410,13 @@ impl Widget for SceneWidget {
                 _ => Point::ORIGIN,
             };
             ctx.run_layout(child, chosen);
-            ctx.place_child(
-                child,
-                Point::new(
-                    padding + offset.x + node.props.x,
-                    padding + offset.y + node.props.y,
-                ),
-            );
+            ctx.place_child(child, Point::new(padding + offset.x, padding + offset.y));
+        }
+    }
+    fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        for (node, child) in &mut self.children {
+            let transform = node.props.transform(ctx.child_size(child));
+            ctx.set_child_transform(child, transform);
         }
     }
     fn pre_paint(

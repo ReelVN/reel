@@ -196,12 +196,23 @@ impl SessionWidget {
             .collect();
     }
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
+        let authored_changed = this.widget.authored != ui.stage.is_some();
         this.widget.authored = ui.stage.is_some();
-        if let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage) {
+        if ui.stage_dirty
+            && let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage)
+        {
             StageWidget::sync(
                 &mut widget,
                 ui.stage.as_ref().unwrap_or(&StageView::default()),
             );
+        }
+        this.widget.stamp = ui.stamp;
+        if this.widget.background != ui.background {
+            this.widget.background = ui.background;
+            this.ctx.request_render();
+        }
+        if !authored_changed && this.widget.projection == ui.projection {
+            return;
         }
         let same_interaction = this.widget.projection.interaction == ui.projection.interaction;
         if !same_interaction {
