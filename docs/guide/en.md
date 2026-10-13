@@ -1,13 +1,12 @@
 # Reel Game Creator Guide
 
-Developers extending script interfaces from Rust can refer to the [Aside host SDK](../aside-host.md). Registered host functions use the same named arguments, defaults and source-location rules as ordinary Aside functions.
-
-Rust extensions can also declare variadic positional arguments with `#[aside(rest)]`. Authors call them with ordinary arguments or `...items`; each call receives a fresh outer array while its elements retain their normal shared identity. Defaults and bound methods use the same rules. This facility is independent of Reel and does not by itself enable the action combinators described later.
 Design version 1.1 · Development baseline. Implementation status is stated in the guide.
 
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
 
 ## Reading This Guide
+Reel is currently a development prototype that runs simple interactive scenes; the full creation and distribution workflow is still being built. Start with the [basic scene](../../examples/author_stage.aside), [animation](../../examples/author_activities.aside), or [interactive buttons](../../examples/author_buttons.aside). The [capability table](../README.md#当前状态) states the actual boundaries, and [roadmap #94](https://github.com/jhq223/reel/issues/94) tracks implementation order.
+
 This guide starts with the scene you want to create and explains how to use Aside to write stories, compose UI, choreograph scenes, and extend effects. Implemented features are ready to use; the remaining sections describe the target design and identify capabilities that are not yet connected. The Chinese and English editions share the same examples and interface names. Reel Engine Architecture Design describes the runtime; Aside VM and Language Design defines the language rules.
 Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Ordinary functions, basic node composition and sequential stories now work together. Activities and advanced creator APIs retain their stated implementation status.
 
@@ -542,6 +541,10 @@ fn arrive(node, destination_x, seconds = 0.5) {
 The same arrive function can be used for characters, title-screen buttons, or entire groups of text. Changing images, layouts, and action parameters lets authors build their own component libraries. Custom nodes are registered through the host and participate in the same property, input, rendering, and restoration protocols. New language keywords are reserved for rules that ordinary composition genuinely struggles to express and that multiple creative scenarios need.
 
 ## 14 Text, Media, and Extension Entry Points
+
+Developers extending script interfaces from Rust can refer to the [Aside host SDK](../aside-host.md). Registered host functions use the same named arguments, defaults and source-location rules as ordinary Aside functions.
+
+Rust extensions can also declare variadic positional arguments with `#[aside(rest)]`. Authors call them with ordinary arguments or `...items`; each call receives a fresh outer array while its elements retain their normal shared identity. Defaults and bound methods use the same rules. This facility is independent of Reel and does not by itself enable action combinators.
 
 Basic text currently uses real text layout. The rich-text types, localization, media and custom drawing interfaces in this section remain future creator capabilities.
 
