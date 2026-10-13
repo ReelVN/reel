@@ -11,6 +11,15 @@ native adapters or snapshot format.
 Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
 is maintained by the integration owner.
 
+String methods expose explicit byte/scalar lengths and slices, exact prefix/suffix
+checks, and separator-based joining of string arrays/tuples. Rust std supplies
+UTF-8 validation and scalar iteration, including scalars split across heap chunks.
+Text scans borrow bounded heap segments; copying/joining append into one rooted
+private buffer and seal it without copying. Work is metered by bytes and elements,
+and source-array changes invalidate a pending join. See the runnable
+[text example](../../examples/text_operations.aside) and the
+[text contract](../../docs/aside-language.md#六-unicode-文本和可变缓冲).
+
 Composable Host values have stable heap identity, a script-visible field table
 and private strong payload edges. Member/index property access shares the table;
 retiring a host invalidates access. Children collection and array/tuple iteration

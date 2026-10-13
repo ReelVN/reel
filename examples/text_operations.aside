@@ -1,0 +1,16 @@
+use reel::prelude::*;
+
+fn main() {
+    let chapters = ["序章", "窗上的光", "下一幕"];
+    let caption = " · ".join(chapters);
+    let title = "中🙂é";
+    stage.replace(column(x: 32, y: 32, gap: 16) {
+        text(caption, font_size: 32);
+        text(f"首项：{caption.slice_scalars(0..2)}");
+        text(f"{title}：{title.byte_len()} 字节，{title.scalar_count()} 个标量");
+        if caption.starts_with("序章") && caption.ends_with("下一幕") {
+            text("章节顺序正确", color: "#e8d5ac");
+        }
+    });
+    narrator("连接与切片可以直接用于对白；标量数量与屏幕上看到的字符数量不同。");
+}

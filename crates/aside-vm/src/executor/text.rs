@@ -2,47 +2,49 @@
 use super::*;
 use std::fmt::Write;
 
+/// Carries only the incomplete scalar between chunks; std owns UTF-8 rules.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Utf8 {
-    remaining: u8,
-    scalar: u32,
-    minimum: u32,
+    tail: [u8; 4],
+    len: u8,
 }
 impl Utf8 {
-    fn push(&mut self, byte: u8) -> bool {
-        if self.remaining == 0 {
-            match byte {
-                0..=0x7f => return true,
-                0xc2..=0xdf => {
-                    self.remaining = 1;
-                    self.scalar = u32::from(byte & 0x1f);
-                    self.minimum = 0x80;
+    pub(super) fn complete(self) -> bool {
+        self.len == 0
+    }
+
+    pub(super) fn feed(
+        &mut self,
+        mut input: &[u8],
+        mut visit: impl FnMut(&str),
+    ) -> Result<(), FaultKind> {
+        while self.len != 0 && !input.is_empty() {
+            self.tail[self.len as usize] = input[0];
+            self.len += 1;
+            input = &input[1..];
+            match std::str::from_utf8(&self.tail[..self.len as usize]) {
+                Ok(text) => {
+                    visit(text);
+                    self.len = 0;
                 }
-                0xe0..=0xef => {
-                    self.remaining = 2;
-                    self.scalar = u32::from(byte & 0xf);
-                    self.minimum = 0x800;
-                }
-                0xf0..=0xf4 => {
-                    self.remaining = 3;
-                    self.scalar = u32::from(byte & 7);
-                    self.minimum = 0x10000;
-                }
-                _ => return false,
-            }
-        } else {
-            if byte & 0xc0 != 0x80 {
-                return false;
-            }
-            self.scalar = (self.scalar << 6) | u32::from(byte & 0x3f);
-            self.remaining -= 1;
-            if self.remaining == 0
-                && (self.scalar < self.minimum || char::from_u32(self.scalar).is_none())
-            {
-                return false;
+                Err(error) if error.error_len().is_none() => {}
+                Err(_) => return Err(FaultKind::Type),
             }
         }
-        true
+        if self.len != 0 {
+            return Ok(());
+        }
+        match std::str::from_utf8(input) {
+            Ok(text) => visit(text),
+            Err(error) if error.error_len().is_none() => {
+                let (valid, tail) = input.split_at(error.valid_up_to());
+                visit(std::str::from_utf8(valid).map_err(|_| FaultKind::Type)?);
+                self.tail[..tail.len()].copy_from_slice(tail);
+                self.len = tail.len() as u8;
+            }
+            Err(_) => return Err(FaultKind::Type),
+        }
+        Ok(())
     }
 }
 
@@ -107,7 +109,7 @@ impl Vm {
             return Ok(true);
         }
         if count == 0 {
-            if utf8.remaining != 0 {
+            if !utf8.complete() {
                 self.collection_fault(s, FaultKind::Type)?;
             } else {
                 self.heap.seal_string(value)?;
@@ -121,7 +123,7 @@ impl Vm {
         self.text_scratch.data.resize(count as usize, 0);
         self.heap
             .read_bytes(value, offset, &mut self.text_scratch.data)?;
-        let valid = self.text_scratch.data.iter().all(|&byte| utf8.push(byte));
+        let valid = utf8.feed(&self.text_scratch.data, |_| {}).is_ok();
         self.text_scratch.data.clear();
         if !valid {
             self.collection_fault(s, FaultKind::Type)?;

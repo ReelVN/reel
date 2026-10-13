@@ -76,6 +76,44 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
     let mut cases = vec![
         (
             r#"fn main() {
+            let s="A中🙂é\0";
+            if s.byte_len()!=12 || s.scalar_count()!=6 {throw "text units";}
+            if s.slice_bytes(range:1..8)!="中🙂" || s.slice_scalars(1..=2)!="中🙂" {throw "slice";}
+            let cut=s.slice_scalars;
+            if cut(range:4..5)!="́" || cut(6..6)!="" || s.slice_bytes(12..12)!="" {throw "scalar boundary";}
+            if !s.starts_with(prefix:"A中") || !s.ends_with(suffix:"é\0") {throw "prefix/suffix";}
+            if s.starts_with("中") || s.ends_with("A") || s.starts_with(s+"x") {throw "mismatch";}
+            if !s.starts_with("") || !"".ends_with("") || "".byte_len()!=0 || "".scalar_count()!=0 {throw "empty text";}
+            if " · ".join(items:["中","🙂",""])!="中 · 🙂 · " {throw "join array";}
+            if "".join(("e","́","\0"))!="é\0" || "x".join([])!="" || "x".join(())!="" {throw "join tuple";}
+            if "x".join([""])!="" || "x".join(["",""])!="x" {throw "empty elements";}
+            if "é"=="é" {throw "implicit normalization";}
+            42
+        }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+            let s="A中🙂é\0"; let mut caught=0;
+            try {s.slice_bytes(2..4);} catch e {caught+=1;}
+            try {s.slice_bytes(1..2);} catch e {caught+=1;}
+            try {s.slice_bytes(0..13);} catch e {caught+=1;}
+            try {s.slice_scalars(0..7);} catch e {caught+=1;}
+            try {s.slice_scalars(3..2);} catch e {caught+=1;}
+            try {s.slice_bytes(-1..0);} catch e {caught+=1;}
+            try {s.slice_scalars(0..=6);} catch e {caught+=1;}
+            try {s.starts_with(null);} catch e {caught+=1;}
+            try {s.join(["a",1]);} catch e {caught+=1;}
+            try {s.join(null);} catch e {caught+=1;}
+            try {s.starts_with(suffix:"A");} catch e {caught+=1;}
+            try {s.join();} catch e {caught+=1;}
+            try {s.starts_with("A",prefix:"A");} catch e {caught+=1;}
+            if caught==13 && s=="A中🙂é\0" {42} else {0}
+        }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
             let shared={n:1}; let a=[shared,2,3]; let alias=a;
             if a.insert(value:4,index:1)!=a {throw "identity";}
             if a.remove(index:2)!=2 || a.top()!=3 {throw "remove";}
@@ -235,6 +273,27 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         ),
     ];
     cases.extend(interpolations.iter().map(|source| (source.as_str(), 42)));
+    // Every UTF-8 scalar width crosses the heap's byte-chunk boundary; the
+    // standard library supplies the expected byte/scalar slices independently.
+    let text_cases: Vec<_> = (1021..=1025).map(|padding| {
+        let text = format!("{}中🙂é👩‍🚀{}", "x".repeat(padding), "尾".repeat(700));
+        let head: String = text.chars().take(padding + 6).collect();
+        let tail: String = text.chars().skip(padding + 3).collect();
+        let slice: String = text.chars().skip(padding).take(8).collect();
+        format!(r#"fn main() {{
+            let s="{text}";
+            if s.byte_len()!={} || s.scalar_count()!={} {{throw "long count";}}
+            if s.slice_scalars({padding}..{})!="{slice}" {{throw "long scalar slice";}}
+            if s.slice_bytes({padding}..{})!="{slice}" {{throw "long byte slice";}}
+            if !s.starts_with("{head}") || !s.ends_with("{tail}") {{throw "long comparison";}}
+            if s.ends_with("x{tail}") || s.starts_with("{head}x") {{throw "long mismatch";}}
+            let parts=[]; for n in 0..32 {{parts.append(s);}}
+            let joined=" · ".join(parts);
+            if joined.byte_len()!=s.byte_len()*32+4*31 || joined.scalar_count()!=s.scalar_count()*32+3*31 {{throw "long join";}}
+            42
+        }}"#, text.len(), text.chars().count(), padding+8, padding+slice.len())
+    }).collect();
+    cases.extend(text_cases.iter().map(|source| (source.as_str(), 42)));
     for (source, expected) in cases {
         let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
             .unwrap()

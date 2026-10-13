@@ -58,22 +58,8 @@ impl Vm {
                     Some(self.heap.info(source).map_err(heap_fault)?.content_version);
             }
             Builtin::Slice => {
-                let range = argument(0)?;
-                if self.heap.info(range).map_err(heap_fault)?.kind != ObjectKind::Range {
-                    return Err(FaultKind::Type);
-                }
-                let begin = index(self.heap.get_field(range, 0).map_err(heap_fault)?)?;
-                let mut end = index(self.heap.get_field(range, 1).map_err(heap_fault)?)?;
-                if self
-                    .heap
-                    .get_field(range, 2)
-                    .map_err(heap_fault)?
-                    .as_bool()
-                    .ok_or(FaultKind::Type)?
-                {
-                    end = end.checked_add(1).ok_or(FaultKind::OutOfBounds)?;
-                }
-                if begin > end || end > info.len {
+                let (begin, end) = self.range_bounds(argument(0)?)?;
+                if end > info.len {
                     return Err(FaultKind::OutOfBounds);
                 }
                 work.offset = begin;

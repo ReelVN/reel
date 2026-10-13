@@ -929,6 +929,18 @@ impl Heap {
         }
         Ok(bytes.read(offset, output))
     }
+    /// A bounded immutable chunk borrowed only for the current executor step.
+    pub(crate) fn byte_segment(&self, target: Value, offset: u32) -> Result<&[u8], HeapError> {
+        let obj = self.object(self.key(target)?)?;
+        let Payload::Bytes(bytes) = &obj.payload else {
+            return Err(HeapError::WrongKind);
+        };
+        if offset > bytes.len {
+            return Err(HeapError::OutOfBounds);
+        }
+        let segment = bytes.segment(offset);
+        Ok(&segment[..segment.len().min(self.limits.max_mutation_bytes as usize)])
+    }
     pub fn handle(&self, value: Value) -> Result<HeapHandle, HeapError> {
         let key = self.key(value)?;
         self.object(key)?;
