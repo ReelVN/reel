@@ -103,7 +103,7 @@ fn callbacks_share_captures_reuse_retired_storage_and_outlive_main() {
         )
     );
     eprintln!(
-        "512 callbacks: {:?}, owner slots {owners}, heap before={before:?}, after={:?}",
+        "511 callbacks after one warmup, including GC: {:?}, owner slots {owners}, heap before={before:?}, after={:?}",
         started.elapsed(),
         vm.vm.heap().stats()
     );
@@ -134,17 +134,26 @@ fn independent_callbacks_await_one_producer_beside_main_dialogue() {
             try { narrator("must not steal dialogue"); } catch e { count.x += 100; }
             try { choose([{key: "bad", label: "bad"}]); } catch e { count.x += 1000; }
         });
-        stage.replace(column() { first; second; count; });
+        let cancelled = button("cancelled", on_click: |event| {
+            await motion;
+            throw "cancelled consumer resumed";
+        });
+        let remove = button("cancel consumer", on_click: |event| { cancelled.remove(); });
+        stage.replace(column() { first; second; cancelled; remove; count; });
         narrator("main dialogue");
     }"#,
         Context::Ordinary,
     );
     pump(&mut vm, &mut s);
     let interaction = s.view().interaction.unwrap().id();
-    for name in ["first", "second"] {
+    for name in ["first", "second", "cancelled"] {
         let id = button(&vm, name);
         assert!(vm.click(&mut s, id).unwrap());
     }
+    pump(&mut vm, &mut s);
+    assert_eq!(vm.callbacks.len(), 3);
+    let remove = button(&vm, "cancel consumer");
+    vm.click(&mut s, remove).unwrap();
     pump(&mut vm, &mut s);
     assert_eq!(vm.callbacks.len(), 2);
     assert!(!vm.has_runnable_tasks());
@@ -175,7 +184,12 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
             holder.clear();
             throw "self-removal continued";
         }));
-        stage.replace(column() { holder; count; });
+        stage.replace(column() { holder; count;
+            button("close pending", on_click: |event| {
+                await run(tween(count, x: 100, duration: 1));
+                throw "closed callback resumed";
+            });
+        });
         narrator("keep main alive");
     }"#,
         Context::Ordinary,
@@ -196,9 +210,15 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
     assert!(!vm.activities_need_time());
     assert!(s.view().interaction.is_some());
     assert_eq!(s.storage_usage().pending_owner_retirements, 0);
+    let close = button(&vm, "close pending");
+    vm.click(&mut s, close).unwrap();
+    pump(&mut vm, &mut s);
+    assert_eq!(vm.callbacks.len(), 1);
     vm.revoke(&mut s).unwrap();
     while vm.cleanup_pending() {
         vm.cleanup_step(&mut s, 1, SliceBudget::default(), || 0)
             .unwrap();
     }
+    assert!(vm.callbacks.is_empty());
+    assert_eq!(s.storage_usage().pending_owner_retirements, 0);
 }

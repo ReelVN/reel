@@ -97,40 +97,30 @@ pub struct ButtonBehavior;
 impl ButtonBehavior {
     pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
         match event {
-            PointerEvent::Down(PointerButtonEvent {
-                button: None | Some(PointerButton::Primary),
-                ..
-            }) => {
+            PointerEvent::Down(_) => {
                 ctx.request_focus();
                 ctx.capture_pointer();
                 ctx.request_paint_only();
-                ctx.set_handled();
                 trace!("Button {:?} pressed", ctx.widget_id());
             }
-            PointerEvent::Up(PointerButtonEvent { button, .. })
-                if ctx.is_active() && matches!(button, None | Some(PointerButton::Primary)) =>
-            {
-                let press = ctx.is_hovered().then_some(ButtonPress { button: *button });
-                ctx.release_pointer();
+            PointerEvent::Up(PointerButtonEvent { button, .. }) => {
+                let press = (ctx.is_active() && ctx.is_hovered())
+                    .then_some(ButtonPress { button: *button });
                 ctx.request_paint_only();
-                ctx.set_handled();
+                // The shared event pass releases capture after terminal bubbling.
+                // Ancestors may still need the real terminal event for cleanup.
                 return press;
-            }
-            PointerEvent::Cancel(_) => {
-                ctx.release_pointer();
-                ctx.request_paint_only();
             }
             _ => {}
         }
         None
     }
-    pub fn text(ctx: &mut EventCtx<'_>, event: &TextEvent) -> Option<ButtonPress> {
+    pub fn text(event: &TextEvent) -> Option<ButtonPress> {
         if let TextEvent::Keyboard(event) = event
             && event.state.is_up()
             && (matches!(&event.key, Key::Character(c) if c == " ")
                 || event.key == Key::Named(NamedKey::Enter))
         {
-            ctx.set_handled();
             return Some(ButtonPress { button: None });
         }
         None
@@ -161,7 +151,7 @@ impl Widget for Button {
         _props: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        if let Some(press) = ButtonBehavior::text(ctx, event) {
+        if let Some(press) = ButtonBehavior::text(event) {
             ctx.submit_action::<Self::Action>(press);
         }
     }

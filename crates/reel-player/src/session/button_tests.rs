@@ -71,11 +71,11 @@ fn click(runtime: &mut StoryRuntime, bridge: &mut PresentationBridge) {
     runtime.wake_input();
     drain(runtime);
 }
-fn key(state: keyboard::KeyState, key: keyboard::NamedKey) -> TextEvent {
+fn key(state: keyboard::KeyState, key: keyboard::Key) -> TextEvent {
     TextEvent::Keyboard(keyboard::KeyboardEvent {
         state,
-        key: keyboard::Key::Named(key),
-        code: keyboard::Code::Enter,
+        key,
+        code: keyboard::Code::Unidentified,
         location: keyboard::Location::Standard,
         modifiers: Default::default(),
         repeat: false,
@@ -104,8 +104,9 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
         box.add(button("Ready", width: 180, height: 60, on_click: |event| {
             n += 1;
             if n == 1 { event.target.label = "Pointer"; }
-            if n == 2 { event.target.label = "Keyboard"; box.enabled = false; }
-            if n > 2 { throw "disabled ancestor accepted a click"; }
+            if n == 2 { event.target.label = "Keyboard"; }
+            if n == 3 { event.target.label = "Space"; box.enabled = false; }
+            if n > 3 { throw "disabled ancestor accepted a click"; }
         }));
         stage.replace(box);
     }"#,
@@ -116,6 +117,20 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     click(&mut runtime, &mut bridge);
     assert_eq!(caption(&runtime), "Ready", "unpresented input");
     present(&mut runtime, &mut bridge, root, 1);
+    runtime
+        .driver
+        .handle_text(
+            &mut bridge,
+            key(
+                keyboard::KeyState::Down,
+                keyboard::Key::Named(keyboard::NamedKey::Tab),
+            ),
+        )
+        .unwrap();
+    let focus = bridge
+        .root()
+        .focused_widget()
+        .expect("Tab enters the button");
     // Release without a matching Down must not activate.
     runtime
         .driver
@@ -125,7 +140,7 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     assert_eq!(caption(&runtime), "Ready");
     click(&mut runtime, &mut bridge);
     assert_eq!(caption(&runtime), "Pointer");
-    let focus = bridge.root().focused_widget().unwrap();
+    assert_eq!(bridge.root().focused_widget(), Some(focus));
     runtime.driver.sync(&mut bridge, root).unwrap();
     click(&mut runtime, &mut bridge);
     assert_eq!(
@@ -142,15 +157,31 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
         runtime
             .driver
-            .handle_text(&mut bridge, key(state, keyboard::NamedKey::Enter))
+            .handle_text(
+                &mut bridge,
+                key(state, keyboard::Key::Named(keyboard::NamedKey::Enter)),
+            )
             .unwrap();
     }
     runtime.wake_input();
     drain(&mut runtime);
     assert_eq!(caption(&runtime), "Keyboard");
     present(&mut runtime, &mut bridge, root, 3);
+    for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+        runtime
+            .driver
+            .handle_text(
+                &mut bridge,
+                key(state, keyboard::Key::Character(" ".into())),
+            )
+            .unwrap();
+    }
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(caption(&runtime), "Space");
+    present(&mut runtime, &mut bridge, root, 4);
     click(&mut runtime, &mut bridge);
-    assert_eq!(caption(&runtime), "Keyboard");
+    assert_eq!(caption(&runtime), "Space");
     assert!(!runtime.needs_tick());
     runtime
         .tick(SliceBudget::default(), || {
@@ -206,6 +237,59 @@ fn control_click_does_not_advance_dialogue_and_callback_fault_keeps_source() {
         error.contains("buttons:3:9") && error.contains("callback failure"),
         "{error}"
     );
+    runtime.close().unwrap();
+    drain(&mut runtime);
+    assert!(runtime.close_complete());
+}
+
+#[test]
+fn suspended_button_animation_advances_without_polling_vm_and_closes_its_wait() {
+    let mut runtime = runtime(
+        r#"fn main() {
+        let target = text("moving");
+        stage.replace(stack() {
+            target;
+            button("Animate", width: 180, height: 60, on_click: |event| {
+                await run(tween(target, x: 100, duration: 1));
+                throw "closed callback must not resume";
+            });
+        });
+    }"#,
+    );
+    drain(&mut runtime);
+    let (mut bridge, root) = mount(runtime.driver.ui());
+    present(&mut runtime, &mut bridge, root, 1);
+    for kind in ["move", "down", "up"] {
+        runtime
+            .driver
+            .handle_pointer(&mut bridge, mouse(kind, (50., 30.)))
+            .unwrap();
+    }
+    runtime.wake_input();
+    for step in 0..10_000 {
+        runtime.tick(SliceBudget::default(), || 0).unwrap();
+        if runtime.driver.activities_need_time()
+            && !runtime.driver.has_runnable_tasks()
+            && runtime.driver.adapter().vm().heap().phase() == aside_vm::GcPhase::Idle
+        {
+            break;
+        }
+        assert!(step < 9999, "waiting callback did not finish collection");
+    }
+    let before = runtime.driver.adapter().vm().stats().slices;
+    for ns in [100_000_000, 200_000_000, 300_000_000] {
+        runtime.tick(SliceBudget::default(), || ns).unwrap();
+    }
+    assert_eq!(runtime.driver.adapter().vm().stats().slices, before);
+    runtime.driver.sync(&mut bridge, root).unwrap();
+    let target = runtime
+        .driver
+        .adapter()
+        .stage()
+        .nodes()
+        .find(|node| matches!(&node.kind, NodeKind::Text(value) if value == "moving"))
+        .unwrap();
+    assert_eq!(target.props.x, 30.);
     runtime.close().unwrap();
     drain(&mut runtime);
     assert!(runtime.close_complete());

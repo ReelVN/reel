@@ -66,13 +66,18 @@ impl SessionVm {
     }
 
     pub fn has_live_work(&self) -> bool {
-        !self.callbacks.is_empty() || self.stage.has_handlers() || self.activities.has_active()
+        !self.callbacks.is_empty() || self.activities.has_active() || self.stage.has_handlers()
     }
 
-    pub(super) fn callback_owner(&self, task: TaskId) -> Option<RootOwner> {
+    pub(super) fn callback_owner(&self, session: &Session, task: TaskId) -> Option<RootOwner> {
         self.callbacks
             .iter()
-            .find(|c| c.task == task)
+            .find(|c| {
+                c.task == task
+                    && !c.cancelling
+                    && session.is_owner_live(c.owner)
+                    && self.stage.scene.node(c.node).is_some()
+            })
             .map(|c| RootOwner(c.owner.owner_id().0))
     }
     pub(super) fn default_activity_owner(&self, task: TaskId) -> Result<Value, AdapterError> {

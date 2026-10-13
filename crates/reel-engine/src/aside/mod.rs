@@ -480,7 +480,7 @@ impl SessionVm {
             || if self.task == Some(ticket.task) {
                 ticket.owner != self.root_owner
             } else {
-                self.callback_owner(ticket.task) != Some(ticket.owner)
+                self.callback_owner(session, ticket.task) != Some(ticket.owner)
             }
             || ticket.input != NativeInput::Entry
         {

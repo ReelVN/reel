@@ -335,8 +335,15 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        if self.is_button() && ButtonBehavior::pointer(ctx, event).is_some() {
-            ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+        if self.is_button() {
+            let consumes = matches!(event, PointerEvent::Down(_))
+                || matches!(event, PointerEvent::Up(_)) && ctx.is_active();
+            if ButtonBehavior::pointer(ctx, event).is_some() {
+                ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+            }
+            if consumes {
+                ctx.set_handled();
+            }
         }
     }
     fn on_text_event(
@@ -345,7 +352,8 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        if self.is_button() && ButtonBehavior::text(ctx, event).is_some() {
+        if self.is_button() && ButtonBehavior::text(event).is_some() {
+            ctx.set_handled();
             ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
         }
     }

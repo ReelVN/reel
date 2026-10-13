@@ -75,7 +75,11 @@ impl StoryRuntime {
             let progress = self
                 .driver
                 .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;
-            if progress.woke || (progress.work != 0 && self.driver.adapter().task().is_none()) {
+            if progress.woke
+                || (progress.work != 0
+                    && self.driver.adapter().task().is_none()
+                    && !self.driver.adapter().has_live_work())
+            {
                 self.runnable = true;
             }
         }
