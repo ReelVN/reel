@@ -110,17 +110,25 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
     use reel_ui::{properties::ObjectFit, stage::NodeKind};
     let code = r#"use reel::prelude::*;
         fn opening() {
-            let p = image("original.png", width: 200, opacity: 0.5);
+            let p = image("original.png", width: 200, opacity: 0.5, rotation: 450, scale_x: -2, scale_y: 0, anchor_x: 1.5, anchor_y: -1);
             let mut errors = 0;
             try { p.source = ""; } catch e { errors += 1; }
             try { p.fit = "unknown"; } catch e { errors += 1; }
             try { p.source = 42; } catch e { errors += 1; }
-            if errors != 3 || p.source != "original.png" || p.fit != "contain" { throw "bad validation"; }
+            try { p.rotation = "invalid"; } catch e { errors += 1; }
+            try { p.scale_x = null; } catch e { errors += 1; }
+            try { p.anchor_y = false; } catch e { errors += 1; }
+            if errors != 6 || p.source != "original.png" || p.fit != "contain" { throw "bad validation"; }
             stage.replace(stack() { p; });
             narrator("first");
             p.source = "replacement.jpg";
             p.fit = "cover";
             p.height = 160;
+            p.rotation = -90;
+            p.scale_x = 0.5;
+            p.scale_y = 3;
+            p.anchor_x = 0.5;
+            p.anchor_y = 0;
             narrator("second");
             stage.replace(stack());
             try { p.source = "retired.png"; return false; } catch e { return true; }
@@ -168,6 +176,20 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
                         }
                     );
                     assert_eq!(node.props.width, Some(200.));
+                    assert_eq!(
+                        [
+                            node.props.rotation,
+                            node.props.scale_x,
+                            node.props.scale_y,
+                            node.props.anchor_x,
+                            node.props.anchor_y
+                        ],
+                        if waits == 0 {
+                            [450., -2., 0., 1.5, -1.]
+                        } else {
+                            [-90., 0.5, 3., 0.5, 0.]
+                        }
+                    );
                     assert_eq!(
                         node.props.height,
                         if waits == 0 { None } else { Some(160.) }
@@ -781,26 +803,30 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
 
     // An uncaught property error names the actual assignment, with the same
     // behavior for a not-yet-mounted node and a one-instruction VM budget.
-    let code = "fn opening() { let node = text(\"Fault\"); node.opacity = \"invalid\"; }";
-    let (mut session, mut vm) = setup(code, Context::Ordinary);
-    loop {
-        match next(&mut vm, &mut session) {
-            RunOutcome::HostCall(ticket) => {
-                vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+    for property in ["opacity", "rotation"] {
+        let code = format!(
+            "fn opening() {{ let node = text(\"Fault\"); node.{property} = \"invalid\"; }}"
+        );
+        let (mut session, mut vm) = setup(&code, Context::Ordinary);
+        loop {
+            match next(&mut vm, &mut session) {
+                RunOutcome::HostCall(ticket) => {
+                    vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+                }
+                RunOutcome::Fault(delivery) => {
+                    let fault = vm.vm.delivery_fault(delivery).unwrap().unwrap();
+                    assert_eq!(fault.kind, FaultKind::Type);
+                    let span = fault.location.source.unwrap();
+                    assert_eq!(
+                        &code[span.start as usize..span.end as usize],
+                        format!("node.{property}")
+                    );
+                    vm.discard_delivery(&session).unwrap();
+                    vm.finish(&mut session).unwrap();
+                    break;
+                }
+                other => panic!("expected property assignment fault: {other:?}"),
             }
-            RunOutcome::Fault(delivery) => {
-                let fault = vm.vm.delivery_fault(delivery).unwrap().unwrap();
-                assert_eq!(fault.kind, FaultKind::Type);
-                let span = fault.location.source.unwrap();
-                assert_eq!(
-                    &code[span.start as usize..span.end as usize],
-                    "node.opacity"
-                );
-                vm.discard_delivery(&session).unwrap();
-                vm.finish(&mut session).unwrap();
-                break;
-            }
-            other => panic!("expected property assignment fault: {other:?}"),
         }
     }
 }

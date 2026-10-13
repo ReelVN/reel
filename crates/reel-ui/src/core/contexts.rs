@@ -1142,6 +1142,26 @@ impl LayoutCtx<'_> {
 }
 
 impl ComposeCtx<'_> {
+    /// The child's untransformed layout size, for size-dependent composition.
+    pub fn child_size(&self, child: &WidgetPod<impl Widget + ?Sized>) -> Size {
+        self.get_child_state(child).layout_border_box_size
+    }
+
+    /// Update a child's local affine after layout, before composing its subtree.
+    /// Paint, accessibility and presented input geometry use this same transform.
+    pub fn set_child_transform(
+        &mut self,
+        child: &mut WidgetPod<impl Widget + ?Sized>,
+        transform: Affine,
+    ) {
+        let child = self.get_child_state_mut(child);
+        if child.transform != transform {
+            child.transform = transform;
+            child.transform_changed = true;
+            child.needs_compose = true;
+        }
+    }
+
     /// Sets the scroll translation for the child widget.
     ///
     /// The translation is applied on top of the position from [`LayoutCtx::place_child`].

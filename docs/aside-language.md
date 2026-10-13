@@ -277,6 +277,8 @@ native 注册表包含稳定符号/版本、参数与命名调用描述、类型
 
 可信链接包使用本次编译请求的 content_version；宿主 ABI 版本独立保持注册版本。一个调用同时匹配导入符号和名称使用节点时，各链接仍分别核对分析身份与签名；全部指向同一 NativeId 才视为同一注册，指向不同 NativeId 时给出 LinkContract，不能按匹配顺序选择。
 
+Reel 节点的 rotation、scale_x/scale_y 和 anchor_x/anchor_y 是普通宿主数值属性，构造和赋值使用同一注册签名及纯验证器，非法值在作者赋值位置失败且不修改旧值。其角度、锚点及矩阵组合属于 Reel 的舞台合同，Aside 不新增变换语法或平台依赖；源码与 ASB 使用同一节点接口。
+
 签名可显式声明 PropertyBagTail：先绑定普通已声明参数，再将余下具名参数按指定目标参数的实际 PropertySchema 验证。描述包含目标参数、允许属性集合/能力、值类型、读写与可动画要求；未知名、只读属性、类型错误和与保留参数冲突均报错。tween(target, x: 80, duration: 0.5) 中 duration 是普通参数，x 按 target 的可动画属性 schema 检查；s.override(node, visible: false) 按 node 的可覆盖属性 schema 检查。普通无此元数据的函数仍拒绝未知名。call(fn,positional:,named:) 使用同一绑定器，脚本包装器通过显式 properties/named 表接收再转发动态属性；普通 fn 只接收自己声明的参数，不会自动捕获任意未知具名项。全程使用同一绑定器。工具能从签名和目标类型生成属性补全。宿主类型声明身份/值语义、字段读写/版本、结构模式可见字段、可观察属性、克隆与迭代行为。脚本与 native 使用同一参数错误和类型诊断，不允许只有内建函数支持命名参数。
 
 借用 Value/字节视图只能在当前 native 调用中使用；保留对象须申请代际 root handle，跨线程只传拥有数据、ID 或真正不可变缓冲。Rust panic 不跨 FFI；native 非法实现视为扩展故障，不声称能恢复任意内存错误。能力检查在操作前完成，InitSafe/DerivedSafe 限制传递到 callback，注册标签不豁免效果检查。

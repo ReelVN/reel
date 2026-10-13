@@ -1,6 +1,90 @@
 mod support;
 
 #[test]
+fn composed_anchor_transform_uses_accepted_geometry_for_hits_and_capture() {
+    let f = SliderFixture::new();
+    let (group, slider, trace) = (f.group, f.slider, f.trace);
+    let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), bridge_limits()).unwrap();
+    let first = bridge.record(FrameId(1)).unwrap();
+    bridge.resolve(accept(&first));
+    bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+    assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
+    bridge.edit_widget(group, |mut widget| {
+        let mut group = widget.downcast::<StageGroup>();
+        group.widget.child_transform = Some(reel_ui::stage::NodeProps {
+            x: 150.,
+            y: 100.,
+            rotation: 90.,
+            scale_x: 2.,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+            ..Default::default()
+        });
+        group.ctx.request_compose();
+    });
+    let next = bridge.record(FrameId(2)).unwrap();
+    let actual = next.geometry().get(slider).unwrap().window_transform;
+    assert!(
+        actual
+            .as_coeffs()
+            .into_iter()
+            .zip([0., 2., -1., 0., 175., 10.])
+            .all(|(a, b)| (a - b).abs() < 1e-9)
+    );
+    let new_position = Point::new(165., 60.);
+    assert_eq!(next.geometry().hit_test(new_position), Some(slider));
+    assert_ne!(
+        next.geometry().hit_test(Point::new(160., 205.)),
+        Some(slider),
+        "parent clip applies after transformation"
+    );
+    assert_eq!(
+        first.geometry().hit_test(Point::new(35., 20.)),
+        Some(slider)
+    );
+    trace.borrow_mut().clear();
+    bridge.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+    let old_local = trace
+        .borrow()
+        .iter()
+        .rev()
+        .find(|o| o.widget == slider && o.kind == "move")
+        .unwrap()
+        .local
+        .unwrap();
+    assert_eq!(
+        old_local,
+        Point::new(25., 10.),
+        "unaccepted transforms cannot move input geometry"
+    );
+    bridge.resolve(accept(&next));
+    assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
+    trace.borrow_mut().clear();
+    bridge.handle_pointer_event(mouse("up", new_position));
+    let new_local = trace
+        .borrow()
+        .iter()
+        .rev()
+        .find(|o| o.widget == slider && o.kind == "up")
+        .unwrap()
+        .local
+        .unwrap();
+    assert!((new_local - Point::new(25., 10.)).hypot() < 1e-9);
+    assert_eq!(bridge.root().pointer_capture_target(), None);
+    bridge.edit_widget(group, |mut widget| {
+        let mut group = widget.downcast::<StageGroup>();
+        group.widget.child_transform.as_mut().unwrap().scale_x = 0.;
+        group.ctx.request_compose();
+    });
+    let collapsed = bridge.record(FrameId(3)).unwrap();
+    assert_ne!(collapsed.geometry().hit_test(new_position), Some(slider));
+    bridge.resolve(accept(&collapsed));
+    bridge.handle_pointer_event(mouse("down", new_position));
+    assert_eq!(bridge.root().pointer_capture_target(), None);
+    assert!(bridge.root().has_widget(slider));
+}
+
+#[test]
 fn production_input_measurements() {
     support::presentation::measure();
     support::presentation::scaled_measure();
