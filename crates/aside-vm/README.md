@@ -4,11 +4,18 @@ This crate implements Value storage, an object heap, explicit roots, continuous
 root ranges, one incremental tracing collector, and the B01 shared bytecode
 format, codec, verifier and disassembler. See [B01](src/bytecode/README.md) for
 program loading and validation boundaries. PR #49 integrates V03 executor sources from PR #23 onto the current baseline.
-This integration has compile-only evidence, not independent execution acceptance.
+The current source execution matrix in `aside-compiler/tests/execution.rs` runs
+compiled B01 on this executor with ordinary slices and interleaved incremental GC.
 It does not implement the parser, full language collection operations, platform
 native adapters or snapshot format.
 Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
 is maintained by the integration owner.
+
+Composable Host values have stable heap identity, a script-visible field table
+and private strong payload edges. Member/index property access shares the table;
+retiring a host invalidates access. Children collection and array/tuple iteration
+execute on the same VM, including lexical NoWait calls, nested components and
+per-iteration captures. See the [instruction contract](src/bytecode/FORMAT.md).
 
 V02 implements the frozen section 22 at `1226c6b`: continuous FrameSlots,
 generation-checked RootRangeToken descriptors and temporary RootRanges provider

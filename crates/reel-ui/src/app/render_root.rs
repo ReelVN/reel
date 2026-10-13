@@ -9,9 +9,7 @@ use crate::tree_arena::{ArenaMut, TreeArena};
 use accesskit::{ActionRequest, NodeId, TreeId, TreeUpdate};
 use dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use kurbo::{Point, Rect, Size};
-use parley::fontique::{
-    Blob, Collection, CollectionOptions, FallbackKey, FamilyId, FontInfo, Script, SourceCache,
-};
+use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, FontInfo, SourceCache};
 use parley::{FontContext, LayoutContext};
 use tracing::{debug, info_span, warn};
 
@@ -225,14 +223,10 @@ pub struct RenderRootOptions {
     /// `1.0` is a sensible default.
     pub scale_factor: f64,
 
-    /// Add a font from its raw data for use in tests.
-    /// The font is added to the fallback chain for Latin scripts.
-    /// This is expected to be used with `use_system_fonts = false`
-    /// to ensure rendering is consistent cross-platform.
-    ///
-    /// We expect to develop a much more fully-featured font API in the future, but
-    /// this is necessary for our testing of Masonry.
-    pub test_font: Option<Blob<u8>>,
+    /// Use the families in these font bytes as the default SystemUi family.
+    /// Selection applies to every script covered by the font, including CJK.
+    /// The platform renderer must register the same data as a frame resource.
+    pub default_font: Option<Blob<u8>>,
 }
 
 /// Objects emitted by the [`RenderRoot`] to signal that something has changed or require external actions.
@@ -332,7 +326,7 @@ impl RenderRoot {
             size_policy,
             size,
             scale_factor,
-            test_font,
+            default_font,
         } = options;
         let debug_paint = std::env::var("MASONRY_DEBUG_PAINT").is_ok_and(|it| !it.is_empty());
 
@@ -400,22 +394,26 @@ impl RenderRoot {
             },
         };
 
-        if let Some(test_font_data) = test_font {
+        if let Some(default_font_data) = default_font {
             // We don't use `register_fonts` here because that requests a global relayout.
             // However, because we are not yet fully initialised (we are before the below call
             // to `run_rewrite_passes`), `request_layout_all` will panic, as the root hasn't
             // been inserted into the arena yet.
-            let families = root
+            let mut families = root
                 .global_state
                 .font_context
                 .collection
-                .register_fonts(test_font_data, None);
-            // Make sure that all of these fonts are in the fallback chain for the Latin script.
-            // <https://en.wikipedia.org/wiki/Script_(Unicode)#Latn>
-            root.global_state.font_context.collection.append_fallbacks(
-                FallbackKey::new(Script::from_bytes(*b"Latn"), None),
-                families.iter().map(|(family, _)| *family),
-            );
+                .register_fonts(default_font_data, None);
+            // Fontique groups families in a map. File order gives the same
+            // default family on every run, including multi-family collections.
+            families.sort_by_key(|(_, fonts)| fonts.iter().map(FontInfo::index).min());
+            root.global_state
+                .font_context
+                .collection
+                .set_generic_families(
+                    parley::GenericFamily::SystemUi,
+                    families.iter().map(|(family, _)| *family),
+                );
         }
 
         // We run a set of passes to initialize the widget tree

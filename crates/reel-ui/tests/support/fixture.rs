@@ -429,7 +429,7 @@ pub fn root<W: Widget>(widget: NewWidget<W>) -> (RenderRoot, Rc<RefCell<Vec<Rend
                 size_policy: WindowSizePolicy::User,
                 size: PhysicalSize::new(400, 300),
                 scale_factor: 1.,
-                test_font: None,
+                default_font: None,
             },
         ),
         signals,

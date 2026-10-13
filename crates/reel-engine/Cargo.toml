@@ -9,6 +9,7 @@ publish = false
 aside-vm = { path = "../aside-vm" }
 aside-compiler = { path = "../aside-compiler" }
 reel-core = { path = "../reel-core" }
+reel-ui = { path = "../reel-ui" }
 unicode-segmentation = "=1.13.3"
 
 [dev-dependencies]

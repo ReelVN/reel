@@ -1,9 +1,9 @@
 # Reel session host (S01)
 
 This crate owns the bounded Rust session model specified by architecture 1.1.
-The Rust model remains independently usable. PR #55 adds an Aside adapter in
-`aside`; snapshot/restore is not implemented. Adapter execution acceptance is
-pending: source inspection and compilation are not runtime evidence.
+The Rust model remains independently usable. The `aside` adapter executes real
+source programs, owns story waits and publishes the common author stage.
+Snapshot/restore is not implemented.
 PR #50 / Issue #48 introduces it as one substantive engine crate; UI remains
 in reel-ui and platform/window assembly remains in reel-player.
 
@@ -64,8 +64,9 @@ history/completion semantics.
 The host-owned ABI v1 registry defines `reel.session` contracts independently
 of package claims. The compiler resolver/prelude and runtime admission consume
 the same descriptors; runtime checks exact signatures, ABI and capabilities.
-`source::compile_story` supports `use reel::prelude::*`, `narrator(text)`
-and `choose(options)`. Selection maps the exact module-level HIR function symbol
+`source::compile_module` is shared with the author CLI; `compile_story` selects
+an executable entry. The prelude includes `narrator`, `choose`, `text`, `row`,
+`column`, `stack` and the `stage` namespace. Selection maps the exact module-level HIR function symbol
 to its emitted function, including private functions. It rejects required
 parameters, captures and nonordinary functions. The emitted module initializer
 must complete before the selected entry; default/rest binding remains VM-owned.
@@ -96,7 +97,7 @@ later result, so an earlier bare Value is not a permanent host root.
 
 Native Windows checks execute compiler/VM, wait/root, rejection, GC, cancellation
 and player terminal contracts. Character objects, multiline say, UI callback
-tasks, observable script UI, media waits and save/restore remain outside this adapter.
+tasks, observable bindings, media waits and save/restore remain outside this adapter.
 
 ### Source linkage and runnable contract
 
@@ -111,4 +112,28 @@ cargo run --locked -p reel-engine --example story_contract
 
 The [story](examples/story_contract.aside) and [headless host](examples/story_contract.rs)
 compile and execute narrator/choose, advance real waits and retire their owner.
-These are CPU/library checks, not a new window/ASB loader or hardware claim.
+These are CPU/library checks. The author CLI separately provides the window/ASB
+entry; its native device behavior has its own verification boundary.
+
+## Author stage
+
+`reel-ui::stage` is the shared node model. Nodes returned by `text`, `row`,
+`column` and `stack` have real Host identity and an ordinary shared property
+table. Holding any node keeps its complete unmounted component alive through
+private parent and child references. A stage root keeps its subtree alive across VM collection. `stage.replace`
+retires the old tree; keeping an old script handle does not keep retired content
+alive. Session cancellation retires the stage along with its task.
+
+`SessionVm::sync_stage` publishes changed property tables; unchanged tables do
+not recopy text or bump the stage revision. Author properties include x/y,
+optional width/height, opacity, visible, clip, gap, padding, font_size, color and
+background; a text node also exposes value. Colors use #rrggbb or #rrggbbaa.
+Unknown fields and retired handles fail at script access. Property writes use
+the Host's pure validator before committing the value, so invalid types, colors
+and numeric ranges are catchable at the assignment and preserve the old value.
+Using a retired node in a native call also produces a catchable `InvalidState`
+at that call; invalid heap identities remain host errors.
+
+The [author example](../../examples/author_stage.aside) uses functions, children,
+conditions and loops, then changes existing nodes between two dialogue waits.
+Run it with `cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --font path/to/font.ttf`.

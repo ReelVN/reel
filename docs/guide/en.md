@@ -4,21 +4,19 @@ Design version 1.1 · Development baseline. Implementation status is stated in t
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
 
 ## Reading This Guide
-This guide starts with the scene you want to create and explains how to use Aside to write stories, compose UI, choreograph scenes, and extend effects. Interfaces and examples describe the target design unless explicitly marked as implemented. Each section will be marked as implemented, with its applicable version, once the code passes acceptance checks. The Chinese and English editions share the same examples and interface names. Reel Engine Architecture Design describes the runtime; Aside VM and Language Design defines the language rules.
-Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Story code, button events, and utility functions all use the same fn declaration. Components are ordinary functions that return a node or a collection of named nodes.
+This guide starts with the scene you want to create and explains how to use Aside to write stories, compose UI, choreograph scenes, and extend effects. Implemented features are ready to use; the remaining sections describe the target design and identify capabilities that are not yet connected. The Chinese and English editions share the same examples and interface names. Reel Engine Architecture Design describes the runtime; Aside VM and Language Design defines the language rules.
+Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Ordinary functions, basic node composition and sequential stories now work together. Activities and advanced creator APIs retain their stated implementation status.
 
-Implementation boundary: the compiler provides lexing, parsing, semantic analysis and bytecode generation for a supported subset. L05 adds static generation and verification for module-initializer locals, forwarded closure captures and per-entry Cell creation. Root module globals and lexical locals have distinct identities; missing external Value/Cell links are rejected explicitly. L06 adds static compilation for fixed tuple/array/table literals, ordinary index access and mixed assignment chains. Elements and key/value expressions are evaluated in source order before construction; index locations are saved before the right-hand side. L07 further supports nonoptional member reads/writes, mixed Name/Index/Member assignments and all ten compound operators. Member results feed dynamic Call without compiler-injected self. L08 supports optional value chains: only explicit optional segments test null, later suffixes share the short-circuit exit, Group ends propagation, and non-null errors still throw. Same-chain optional assignments and optional native values/calls remain rejected. L09 adds static compilation of call spread/rest: only array/tuple expand, and rest receives a new outer array per invocation rather than a same-name named argument. Classes/super, native function values, complete unified callable support, collection spread and patterns remain deferred. The supported collection, closure, GC and single-module initialization paths pass execution checks; the complete module system remains pending. VM storage, root ranges, bytecode validation and internal Rust stage/render contracts are also implemented. The narrator/choose subset and single-module CLI are runnable as described in their sections; other DSL features retain their stated status. See the [current implementation status](../README.md#当前状态) for merged and pending work; each section's explicit status takes precedence over its design examples.
+Currently runnable: text, row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Implementation status (R02 / PR #28): the internal Rust wgpu consumer and winit diagnostic window passed independent debug/release acceptance on software Vulkan and Xvfb/X11, covering budget-pressure retries, permanent bad-frame isolation, OS redraw and capability renegotiation during recovery. This diagnostic program does not yet connect the guide's Aside stories, node bindings or complete game sessions. Physical GPUs, device hot-unplug and native platform lifecycles remain unverified. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
+Image nodes, animation, author event callbacks, bind/derive, media and save/load are not connected to creator source yet. game.toml, projects with multiple source modules and asset packaging also remain unimplemented. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
-Internal module organization (PR #35): widgets, layout, input bridging, frames and resources live in reel-ui as responsibility-based modules. Rendering backends and window assembly remain separate. Reel maintains the borrowed code independently rather than preserving the upstream package structure. This reorganization adds no creator API and does not establish complete story-session integration.
-
-Internal optimizations (R03–R04 / PR #33 and #38): each Renderer reuses at most three GPU pipeline configurations within its own instance. Reuse does not cross device instances or change creator APIs, quality selection, or frame-resource submission/completion lifetimes. Repeated preparation and construction-failure isolation passed independent checks on native wgpu-core; browser WebGPU and physical-device faults remain unverified. Solid drawing and clipping within one frame preparation also share one white-texture upload on demand. The texture is not cached across preparation transactions; cancellation and submission/completion lifetimes remain unchanged. First/subsequent preparation CPU measurements describe the test environment, not a physical-GPU frame-performance guarantee.
+Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
 ## 1 A Minimal Project and Shared Conventions
-A project needs only game.toml, main.aside, and assets/ to get started. Split out directories such as ui/ and story/ as your project grows. The configuration specifies main::main as the entry point and a logical canvas of 1920×1080. reel dev runs source code and reports errors with their file locations; reel build produces bytecode and asset packages; a lightweight player runs the build output. These commands are implementation targets. build outputs .asb bytecode packages, .rpk asset packages, and release.json. Assets can be packaged by category, and the release player loads them according to the manifest. Story updates and asset updates are built separately.
-game.toml uses entry and title in the [game] table, and width, height, and scale in the [display] table. Set entry to "main::main"; the defaults are width=1920, height=1080, and scale="contain". contain preserves the aspect ratio and leaves empty space at the edges; input coordinates are converted using the same scaling. game:: modules resolve .aside files relative to the directory containing game.toml. File and directory names must be valid module identifiers. External source modules are imported through [modules] mappings from aliases to relative directories; game and reel are reserved aliases.
-use reel::prelude::* imports the names of common nodes, layouts, actions, and services. Authors still build their pages and visual style with their own functions. The game:: prefix resolves modules from the game's source root. All documents consistently use fn, let, let mut, |parameters| closures, and use imports. Except for complete module and function examples, standalone snippets belong inside a running function and reuse variables such as view and mio introduced earlier. Ordinary statements end with semicolons; the final expression in a function can serve as its return value. Object literals use {field: value}.
+Start today with one main.aside file and a font. Use dev to run source, or build and then run its .asb. The game.toml, game:: module layout and title screen below describe the target organization of a complete project. For current execution, use this section's commands and the author-stage example.
+In the complete project design, game.toml uses entry and title in [game], and width, height and scale in [display]. The designed defaults are entry="main::main", width=1920, height=1080 and scale="contain". Contain preserves aspect ratio with borders, using the same conversion for input. game:: will resolve source relative to that configuration, with [modules] aliases for external modules. Configuration loading and multiple-source resolution are not implemented yet. The current window starts at 960×540 without imposing a fixed author canvas.
+use reel::prelude::* imports the currently registered basic nodes and story services. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following game:: imports and title buttons describe a complete project that is not yet implemented.
 ```aside
 use reel::prelude::*;
 use game::ui::title::title;
@@ -43,23 +41,34 @@ See section 3 for opening in story/opening.aside. The examples' relative file lo
 let fixes a variable's binding while leaving node properties mutable. Use let mut when the variable must be rebound to another value. Ordinary expressions are evaluated once when executed. bind(model.value) connects an observable property; derive(|| expression) connects a read-only value computed from other properties. See the second document for the complete language rules.
 
 
-### Current Single-Module Tool Progress (PR #52)
+### Available Check, Build and Run Commands
+Run these Windows commands from the repository root. The example uses Microsoft YaHei; replace --font with your own font file if needed. Close the window opened by dev or run before continuing to the next command.
 
-check, build and the shared .asb container are implemented together; entry-validation fixes have passed independent acceptance for this static scope. These commands compile and validate without running a story.
-
-```sh
-reel check main.aside --format human
-reel check main.aside --format json
-reel build main.aside --output main.asb --entry main::main
+```powershell
+cargo build --locked -p reel-cli --features window
+./target/debug/reel.exe check examples/author_stage.aside
+./target/debug/reel.exe dev examples/author_stage.aside --font C:/Windows/Fonts/msyh.ttc
+./target/debug/reel.exe build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
+./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --font C:/Windows/Fonts/msyh.ttc
 ```
 
-check performs lexing, parsing, analysis, bytecode generation and B01 encoding/decoding verification without running the story. build packages bytecode, module metadata, the initializer and an explicitly selected startup function into one .asb. Omitting --entry produces a module-only artifact, not a launchable game. The entry may be private but must be a capture-free module-level function in the Ordinary context with no required arguments. The reader checks its binding against a restricted compiler initializer prologue; matching names or metadata claims alone cannot establish a module-level entry. Output does not overwrite by default; --overwrite explicitly permits atomic replacement.
+Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands support `use reel::prelude::*`, registered native functions and their host default-argument module, using the same interface declarations as the player.
 
-This increment handles one standalone source module and rejects unconnected imports/natives. Full game.toml project builds, resource packages and release.json remain incomplete, and this does not establish player loading or execution. Input reads are capped at 8 MiB, with potentially tighter compiler/bytecode budgets applied afterward. JSON diagnostics preserve UTF-8 byte ranges and zero-based byte/scalar/UTF-16 coordinates.
+Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Source paths and positions are stored in the package, so runtime errors still point to the original .aside file. Existing output is replaced only with --overwrite.
+
+With window enabled, source and built packages use the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window or press Escape to exit and finish cleanup.
+
+Each invocation currently handles one author source module. The host default-argument module inside a package does not establish support for projects with multiple source modules. game.toml, .rpk asset packages and release.json remain future capabilities.
 
 ## 2 Describing the Whole Scene in Code
-stack layers its children from back to front in the order they are written; row arranges them horizontally, and column vertically. Ordinary nodes share position, size, opacity, visibility, transforms, and clipping. Absolute positions use logical canvas coordinates, with the origin at the top left, x increasing to the right, and y increasing downward. Layout containers arrange their children; a container's own x and y determine its position within its parent. When content extends beyond a container, a clip or scroll container determines the visible region.
-The following room places the background at the bottom, the character portrait above it, the CG above that, and the dialogue UI on top. The author's function returns named parts that the story needs to manipulate.
+Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
+
+
+
+Implemented: text, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
+
+Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. Rotation, scaling, a dedicated scroll container and image resources remain future creator capabilities.
+The following room describes the full-scene design and is not directly runnable yet: it relies on image and game:: modules that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside
 use reel::prelude::*;
 use game::ui::dialogue::dialogue_view;
@@ -92,7 +101,12 @@ fn card(children = []) {
 ```
 Properties, layout, and rendering belong to nodes; interaction behavior belongs to controls. Authors can put a character portrait inside a button, place a button in a visual group, or rotate or fade out an entire settings page. The shared node tree determines hierarchy rules. Authors explicitly place overlays within the root node.
 
+Keeping a reference to any node also keeps its unmounted parent component alive; GC does not invalidate a node still in use. Property types, colors and numeric ranges are checked at assignment, so the same try/catch can handle errors and a rejected assignment retains the old value. The font selected by --font is used for every script it covers, including Chinese, rather than Latin only.
+
 ## 3 Story Code Is Ordinary Sequential Code
+
+narrator and choose currently support sequential waiting and resumption. The character API, bindable dialogue model, custom dialogue views and voice interfaces below remain design targets.
+
 Define each character once in a module. Each line of dialogue calls the speaker object; narration calls narrator. A standalone string is still just a string. A character call updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
 ```aside
 use reel::prelude::*;
@@ -137,6 +151,9 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 An ordinary fn is sufficient for story code. A chapter entry registered through story.register must be a module-level function with no required parameters. game.start uses the function's own stable module symbol, so an ordinary new-game entry needs no additional registration. Only route and restart operations that address chapters by ID use the registry. Registration occurs within a module candidate; validation and module publication are committed together. game.start(opening) accepts the same kind of symbolic entry point and submits a new-game request from a UI event. The engine first validates the entry point against the latest published module set, then creates a new session and calls it, initializing global story variables, auto-play, and fast-forward state. Ordinary helper calls retain their original module bindings.
 
 ## 4 Sequencing Changes and Running Them Together
+
+The action composition, animation activities and creator controls in this section are not implemented yet.
+
 tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. By default, run(action) belongs to the current scope, or to the current task's owner when outside a scope. Specify an explicit owner when the activity needs to outlive that boundary.
 An action reads its starting property values when it actually becomes active. In a sequence, a later step reads its starting values after the previous step finishes. Action descriptions are reusable, and every run creates independent progress. run atomically reserves every property that the entire action tree will write. These reservations last until the root activity ends, including future sequence segments, repeat iterations, and periods while paused. A sequence may write the same property in order; parallel branches must have disjoint write sets. A conflict is reported at the call site and leaves existing activities intact. To take over, first stop the old activity. Assigning directly to a reserved property first stops its root activity, then applies the assignment. This rule also applies to properties reserved for future segments. An activity releases all reservations when it ends.
 ```aside
@@ -159,6 +176,9 @@ mio("听，雨又大了。");
 The example above demonstrates the rules for composing loops. Actual character breathing can use subtle movement or scaling instead, with the same script structure. Authors wrap common actions in ordinary fn functions that take any node and return an action value. UI and character portraits can share these actions.
 
 ## 5 Managing Temporary Scenes with Scopes
+
+The creator scope, temporary overrides and restoration behavior in this section remain design targets.
+
 scope executes an ordinary closure within the current story call chain. It manages temporary nodes, property overrides, offsets, and activities. Its body can deliver dialogue, wait, and call other functions normally. On exit, it releases only what that scope owns.
 ```aside
 fn show_cg(view) {
@@ -176,6 +196,9 @@ By default, scope lives with the current task. Use scope(owner: node, body: ...)
 visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and a container's replace(new_child) for permanent local replacements.
 
 ## 6 Logos, Title Screens, and Local Interaction
+
+Images, animation, button callbacks and game entry switching in this section are not connected to creator source yet.
+
 The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
 ```aside
 use reel::prelude::*;
@@ -202,6 +225,9 @@ hint.remove();
 photo_panel is an author-defined component control object. The example only demonstrates a button's lifetime interleaved with the story. Event callbacks are scheduled under their owning nodes. When a modal node opens, the engine consistently handles input isolation for underlying content, focus entry, and focus restoration after closing. A callback that needs to take over the main story submits an entry operation through game; ordinary scene changes can run directly.
 
 ## 7 Settings Pages and Image-Based Controls
+
+The creator controls, settings, bind and derive interfaces in this section remain design targets.
+
 The following example combines tabs, pages, and sliders into a settings page. switcher preserves each page's nodes and local values; select changes only the selected page. Hidden pages leave input handling and focus navigation.
 ```aside
 fn preferences() {
@@ -244,6 +270,9 @@ bind connects an observable property while preserving that property's existing r
 Authors can use the same approach to wrap consistent fonts, button images, spacing, and animation, then import them as ordinary modules. Visual style is reused through components and parameters; shared property objects can also be organized using ordinary language rules.
 
 ## 8 Styling and Moving Elements Together
+
+Ordinary functions and node property updates are available. The style spreading, transforms, animation and temporary overrides in this section remain unimplemented.
+
 Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
 ```aside
 let default_look = {font: "assets/ui.ttf", font_size: 32,
@@ -289,9 +318,9 @@ scope(body: |s| {
 Adding an offset only to hud shakes only the dialogue UI. It is independent of underlying x/y movement: multiple x/y offsets add together in the parent's coordinate system, leaving the base layout unchanged. Rendering and hit testing both use the composed result. When scope ends, it removes its own offset, leaving the moved base position correct. Rotation and scaling compose in an explicit transform-matrix order and are expressed through separate group nodes; additive x/y offsets do not imply additive rotation.
 
 ## 9 Masks, Effects, and Custom Scene Choreography
-Implementation status (R01 / Issue #25): real Masonry cases verify the internal Rust frame records and resource leases, groups/clips across fragments, and External paint order. Recording/null consumers and linear-alpha formulas are checked. Accepted notices retain candidate qualification and matching geometry, allowing acceptance to be processed after graphics completion; upload completion still leaves input geometry unchanged. Export work-budget failures also retain the actual painter location. The author-facing Aside examples remain design specifications; at the R01 milestone GPU rasterization, windows, and the player were not implemented (see R02 below), and simulated presentation does not establish device acceptance. See [verification scope and measurements](../../crates/reel-ui/R01-REPORT.md).
+Historical verification (R01 / Issue #25): focused cases cover internal Rust frame records, resource leases, groups, clipping and opacity. R01 did not yet provide a GPU window, and recording consumers do not establish physical-device behavior. This section's author mask/blur effects remain design targets. The basic stage and real window now work together as described in sections 1 and 2. See the [historical verification scope](../../crates/reel-ui/R01-REPORT.md).
 
-R02 implementation status: the optional wgpu adapter consumes RenderFrame directly. A thin winit shell provides a draggable, zoomable renderer diagnostic with an image, group opacity, clipping and optional real Parley text. This is not an Aside story session. Unsupported records fail explicitly; the full engine scope remains. See [launch command](../../crates/reel-player/README.md) and [device evidence and limitations](../../crates/reel-render/R02-REPORT.md).
+Historical verification (R02): the wgpu backend and winit diagnostic window included images, group opacity, clipping and Parley text. These Rust diagnostic capabilities do not establish implementation of author image or advanced-effect APIs. Current author source and ASB enter the real story window through dev/run. See [window documentation](../../crates/reel-player/README.md) and [device verification scope](../../crates/reel-render/R02-REPORT.md).
 
 Effect values such as mask and blur belong to the same compositing system. An effect group first composites its children, then applies its effects, with group opacity applied once. Clipping defines a geometric region; an image mask defines degrees of visibility. mask.progress ranges from 0 for fully hidden to 1 for fully visible; softness controls edge width. Grayscale values in a black-and-white mask determine the order of revelation.
 ```aside
@@ -307,6 +336,9 @@ Custom effects use a versioned Effect description for input images, parameters, 
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.
 
 ## 10 Choices and Changing Content
+
+choose supports option arrays, selection in the real window and returning the original key. The custom choice_view, game.choice bindings and list interfaces below remain design targets. The player currently supplies the default choice view.
+
 choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(option_id). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.
 ```aside
 fn choice_view(model) {
@@ -329,6 +361,9 @@ choice_view is mounted in the scene containing the dialogue UI; by_window and by
 A for loop inside ordinary children is appropriate for constructing a scene as it is now. list is for continuously changing lists: items connects to an observable collection, key determines element identity, and build creates a node for a new key. An observable item with the same key retains its identity while its fields update; only removing that key destroys the corresponding subtree. Layout is vertical by default. Virtualized display is governed by the viewport range and reusable measurement results. Duplicate keys produce errors at the corresponding list location. Passing an ordinary array as items constructs fixed content.
 
 ## 11 Saves, History, Routes, and Skipping
+
+The creator save/load, history view, route switching and skipping interfaces in this section are not implemented. Internal session records do not make these creator services available.
+
 saves is an independent service. save(slot_id) returns a SaveRequest, and quick_save() uses the quick-save slot; load(slot_id) and quick_load() return a LoadRequest. Requests expose read-only status and error members. Use derive or bind to display progress. The request itself can be awaited; save buttons usually only submit a request and observe its model. Success means the slot has been committed to storage. A caller can also directly await the save request it submitted: capture occurs at a restorable boundary after the call. The corresponding request in that saved image is restored as a successful result, so the waiting task continues with the following statements. The save call is executed only once. Other in-flight external write requests settle with a catchable OperationInterrupted error when restored across processes; the request corresponding to the current saved image follows the success rule above. A successful load request replaces the session, ending callback tasks owned by the old session while the process-level service continues publishing results.
 saves.slots(page: 1, page_size: 12) returns a SlotPage whose observable items include stable id, occupied, chapter, saved_at, thumbnail, and status fields. saves.delete(slot_id) returns a DeleteRequest; on success, the corresponding summary becomes an empty slot. Page numbers start at 1; page_size and page number determine a fixed set of ordinary slots, while the quick-save slot is separate. Authors build pages with grid, image, text, and button; paging only changes the displayed set.
 ```aside
@@ -346,6 +381,9 @@ Fast-forward shortens skippable waits for already-read content and finite scene 
 These services provide data and operations; authors compose the appearance of their pages. The signatures listed in this edition are specifications awaiting implementation. Once a feature passes its contract acceptance checks, the guide will mark that section with the implemented version and run commands.
 
 ## 12 Game Variables and Component State
+
+Ordinary local variables, objects and closures are available. The model, state, persistent and save restoration interfaces in this section remain design targets.
+
 In the language, let/let mut determines whether a binding can be reassigned, model determines whether properties are observable, and state ownership determines how state is saved and released. Each serves a separate purpose.
 ```aside
 let route = state("route", {affection: 0, visited: set()});
@@ -372,6 +410,9 @@ node.state(key, defaults) belongs to that component instance. The same local key
 settings belongs to the engine's global preference service; restoring a story save reads the current preferences. Changes to application state follow ordinary control flow, and their results are preserved when temporary scope effects end.
 
 ## 13 Extending Your Own Building Blocks
+
+Ordinary node functions, named arguments, defaults, children and closures are available. The arrive example below depends on animation interfaces that are not implemented yet.
+
 The smallest unit of reuse is an ordinary fn. Functions returning nodes build scenes; functions returning actions choreograph them; ordinary objects expose parts that callers need to manipulate. Named arguments, children, closures, and module imports work together to support this approach.
 Default parameter expressions run in parameter order on each call, after every actual argument has been evaluated. They may refer to earlier parameters and use the expression or block's final value as their result. An explicit return belongs in a function body; it is invalid inside that function's parameter default, including conditional or short-circuit branches. A nested function defined within a default returns through its own body. break and continue may target only loops established inside the default, and throw propagates a parameter-preparation failure.
 ```aside
@@ -385,6 +426,9 @@ fn arrive(node, destination_x, seconds = 0.5) {
 The same arrive function can be used for characters, title-screen buttons, or entire groups of text. Changing images, layouts, and action parameters lets authors build their own component libraries. Custom nodes are registered through the host and participate in the same property, input, rendering, and restoration protocols. New language keywords are reserved for rules that ordinary composition genuinely struggles to express and that multiple creative scenarios need.
 
 ## 14 Text, Media, and Extension Entry Points
+
+Basic text currently uses real text layout. The rich-text types, localization, media and custom drawing interfaces in this section remain future creator capabilities.
+
 
 Implementation status (M01 / PR #14): the Rust audio layer implements the Kira bridge, optional CPAL output, bounded reclamation and device-failure notification. Independent checks cover actual Kira with offline Linux output, default/output-feature-off contracts and Windows cross compilation. Physical devices, hardware clocks, hot-plug and native start/stop/suspend behavior are not accepted; the CPAL clock remains Unavailable. The author-facing audio/video APIs, story waits and session recovery below remain design targets; passing Rust probes does not establish their integration. See [audio verification scope](../../crates/reel-media/VERIFICATION.md).
 
@@ -406,7 +450,7 @@ The core composition rules are ordinary functions, unified nodes, action values,
 
 ## Verified Source Execution Scope
 
-The V03 executor, L06–L09 collections/index/member and call spread/rest, and the narrator/choose session adapter pass native Windows execution checks. Coverage includes ordinary/default calls, shared closure Cells, exceptions/finally, tiny-budget progress, GC across waits, delivery of the original choice key, cancellation and stable terminal states. Tables use budgeted linear lookup; large tuple constants still have a per-constant admission limit.
+The compiler, VM and session pass native Windows execution checks covering collections/members, closures/default arguments, exceptions/finally, children/for, wait/resume, GC and cancellation. The author-stage example also passes actual check/build, ASB loading and SessionVm execution: existing scene nodes retain identity while text and appearance change between two dialogue lines. The window entry point uses the same program and presented-input path. The Chinese author scene also completed offscreen GPU readback on Windows with an AMD Radeon RX 7900 GRE using Vulkan. Native window lifecycles and hot-plug behavior still require separate verification.
 
 Run the [minimal Aside story](../../crates/reel-engine/examples/story_contract.aside) with its [headless host](../../crates/reel-engine/examples/story_contract.rs):
 
@@ -416,7 +460,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 The host advances dialogue and selects the first option through actual compilation, module initialization, VM waiting/resumption and owner retirement. Symbol and name-use links to the same native coalesce; conflicting registrations still reject. The host linkage package uses the requested content version independently of native ABI v1.
 
-Entries must be ordinary module-level functions without required parameters or captured environments; private functions are supported. The view lays out and scrolls its content without an additional row or choice count cap; SessionLimits configures resource capacity. The 64 KiB interaction budget includes text and metadata; default VM string constants have a separate 4096-byte limit. Existing window commands still use Rust requests; there is no source/.asb window launch command. This example does not provide characters, script-composed UI, media waits, full modules/classes, delegates/hooks, property-bag tails or save/restore. Those full DSL sections remain design targets. Physical devices and performance guarantees require separate measurements.
+Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Character APIs, image nodes, animation, event bindings, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
 Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
 
 Audio retirement progress (PR #56, independently accepted for the limited Rust scope):

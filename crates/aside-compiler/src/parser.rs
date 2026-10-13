@@ -140,6 +140,7 @@ struct Expr {
     assignment_range: Option<TextRange>,
     missing_else: bool,
     children_named: bool,
+    children_block: bool,
 }
 impl Expr {
     fn new(kind: K) -> Self {
@@ -151,6 +152,7 @@ impl Expr {
             assignment_range: None,
             missing_else: false,
             children_named: false,
+            children_block: false,
         }
     }
     fn target(kind: K) -> Self {
@@ -388,6 +390,7 @@ impl Parser<'_> {
                 self.start(K::ExprStmt);
                 let expr = self.expr(0, false, false);
                 if !self.eat(K::Semi)
+                    && !expr.children_block
                     && !matches!(expr.kind, K::IfExpr | K::MatchExpr)
                     && !(tail
                         && !expr.assignment
@@ -420,6 +423,16 @@ impl Parser<'_> {
         let cp = self.checkpoint();
         let mut lhs = self.atom(head, value);
         while !self.halted {
+            if lhs.children_block
+                && !value
+                && min == 0
+                && self.tokens[self.cursor..]
+                    .iter()
+                    .take_while(|t| t.kind.is_trivia())
+                    .any(|t| t.text(self.source).contains(['\n', '\r']))
+            {
+                break;
+            }
             let op = self.peek();
             if self.stop_pipe && op == K::Pipe {
                 break;
@@ -476,6 +489,7 @@ impl Parser<'_> {
                 self.finish();
                 lhs = Expr {
                     height: lhs.height + 1,
+                    children_block: true,
                     ..Expr::new(K::CallExpr)
                 };
             } else if let Some((left, right, kind)) = infix(op) {

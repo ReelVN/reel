@@ -72,18 +72,14 @@ pub struct Artifact {
     pub game_entry: Option<rp::GameEntry>,
 }
 
-pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure> {
+pub(crate) fn select_entry(
+    checked: &Checked,
+    entry: Option<&str>,
+) -> Result<Option<rp::GameEntry>, Failure> {
     let compiled = &checked.compilation;
     let m = &compiled.metadata;
     let p = compiled.program.package();
     let fail = |stage, range, detail| error(stage, DiagnosticCode::InvalidHir, range, detail);
-    if !m.imports.is_empty() || !m.external_bindings.is_empty() || !m.natives.is_empty() {
-        return Err(fail(
-            "metadata",
-            m.source_span,
-            "unlinked imports/native identities cannot be packaged".into(),
-        ));
-    }
     let game_entry = if let Some(name) = entry {
         let prefix = format!("{}::", m.canonical_path);
         let short = name
@@ -105,7 +101,7 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
                 fail(
                     "entry",
                     m.source_span,
-                    format!("no module-level function declaration for {name}"),
+                    format!("story entry {name} was not found; define fn {short}() or select another function with --entry main::name"),
                 )
             })?;
         let function = &p.functions[declaration.function_id as usize];
@@ -115,16 +111,26 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
             || !function.captures.is_empty()
             || signature.parameters.iter().any(|p| p.default.is_none())
         {
-            return Err(fail("entry", text_range(declaration.declaration_span), "game entry must be an Ordinary plain module-level function without captures or required arguments".into()));
+            return Err(fail("entry", text_range(declaration.declaration_span), "story entry must be an Ordinary module-level function with no required parameters or captured variables".into()));
         }
         Some(rp::GameEntry {
-            module_id: 0,
+            module_id: function.module.0,
             declaration_index: index as u32,
             function_id: declaration.function_id,
         })
     } else {
         None
     };
+    Ok(game_entry)
+}
+
+pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure> {
+    let compiled = &checked.compilation;
+    let m = &compiled.metadata;
+    let p = compiled.program.package();
+    let fail = |stage, range, detail| error(stage, DiagnosticCode::InvalidHir, range, detail);
+    let game_entry = select_entry(checked, entry)?;
+    let module_id = p.functions[compiled.entry.index()].module.0;
     let metadata = rp::Metadata {
         schema_version: 1,
         bytecode_blake3: rp::digest(&checked.bytes),
@@ -132,7 +138,7 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
         bytecode_version: p.format_version,
         host_abi_version: p.host_abi_version,
         content_version: p.content_version,
-        module_id: 0,
+        module_id,
         canonical_path: m.canonical_path.clone(),
         source_version: m.source_version.clone(),
         source_blake3: rp::digest(p.sources[0].text.as_bytes()),
@@ -140,7 +146,7 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
         source_span: span(m.source_span),
         symbol_count: m.symbol_count,
         initializer: rp::Initializer {
-            module_id: 0,
+            module_id,
             function_id: compiled.entry.0,
         },
         game_entry: game_entry.clone(),

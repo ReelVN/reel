@@ -137,6 +137,7 @@ pub enum HeapError {
     WrongHeap,
     WrongEpoch,
     InvalidHandle,
+    RetiredHost,
     UnconfirmedLive,
     InvalidRoot,
     WrongKind,
@@ -208,8 +209,14 @@ pub struct HeapStats {
     pub allocation_queue_len: u32,
 }
 
+/// Trusted, allocation-free validation at a host property's write boundary.
+/// The index identifies an existing own field. This callback must not execute
+/// script or wait; an error leaves the old property value unchanged.
+pub type HostPropertyValidator = fn(&Heap, u32, Value) -> Result<(), HeapError>;
+
 pub(crate) struct Object {
     pub kind: ObjectKind,
+    pub host_validator: Option<HostPropertyValidator>,
     pub payload: Payload,
     pub weak: Option<HeapHandle>,
     pub mark: u64,
@@ -476,6 +483,7 @@ impl Heap {
         };
         let key = self.objects.insert(Object {
             kind,
+            host_validator: None,
             payload,
             weak,
             mark,
@@ -546,6 +554,102 @@ impl Heap {
             return Err(HeapError::WrongKind);
         }
         self.allocate_values(kind, fields)
+    }
+    /// A stable host identity with script-visible properties and private strong edges.
+    pub fn alloc_host(
+        &mut self,
+        fields: Value,
+        payload: &[Value],
+        validator: Option<HostPropertyValidator>,
+    ) -> Result<Value, HeapError> {
+        self.host_record(fields, payload, false, validator)
+    }
+    /// Declare that this host value participates in trailing children composition.
+    pub fn alloc_composable_host(
+        &mut self,
+        fields: Value,
+        payload: &[Value],
+        validator: Option<HostPropertyValidator>,
+    ) -> Result<Value, HeapError> {
+        self.host_record(fields, payload, true, validator)
+    }
+    fn host_record(
+        &mut self,
+        fields: Value,
+        payload: &[Value],
+        composable: bool,
+        validator: Option<HostPropertyValidator>,
+    ) -> Result<Value, HeapError> {
+        self.table_len(fields)?;
+        let mut values = Vec::with_capacity(payload.len() + 2);
+        values.extend([fields, Value::bool(composable)]);
+        values.extend_from_slice(payload);
+        let host = self.allocate_values(ObjectKind::Host, &values)?;
+        let key = self.key(host)?;
+        self.objects.get_mut(key).unwrap().host_validator = validator;
+        Ok(host)
+    }
+    pub fn host_fields(&self, host: Value) -> Result<Value, HeapError> {
+        if self.info(host)?.kind != ObjectKind::Host {
+            return Err(HeapError::WrongKind);
+        }
+        let fields = self.get_field(host, 0)?;
+        if fields.same_bits(Value::NULL) {
+            return Err(HeapError::RetiredHost);
+        }
+        Ok(fields)
+    }
+    pub fn host_payload_len(&self, host: Value) -> Result<u32, HeapError> {
+        let info = self.info(host)?;
+        if info.kind != ObjectKind::Host {
+            return Err(HeapError::WrongKind);
+        }
+        info.len.checked_sub(2).ok_or(HeapError::WrongKind)
+    }
+    pub fn host_payload(&self, host: Value, index: u32) -> Result<Value, HeapError> {
+        if index >= self.host_payload_len(host)? {
+            return Err(HeapError::OutOfBounds);
+        }
+        self.get_field(host, index + 2)
+    }
+    pub fn set_host_payload(
+        &mut self,
+        host: Value,
+        index: u32,
+        value: Value,
+    ) -> Result<(), HeapError> {
+        self.host_fields(host)?;
+        if index >= self.host_payload_len(host)? {
+            return Err(HeapError::OutOfBounds);
+        }
+        self.set_field(host, index + 2, value)
+    }
+    pub(crate) fn validate_host_property(
+        &self,
+        host: Value,
+        index: u32,
+        value: Value,
+    ) -> Result<(), HeapError> {
+        self.host_fields(host)?;
+        if let Some(validate) = self.object(self.key(host)?)?.host_validator {
+            validate(self, index, value)?;
+        }
+        Ok(())
+    }
+    pub fn is_composable_host(&self, host: Value) -> Result<bool, HeapError> {
+        if host.tag() != crate::value::ValueTag::Object || self.info(host)?.kind != ObjectKind::Host
+        {
+            return Ok(false);
+        }
+        self.host_fields(host)?;
+        Ok(self.get_field(host, 1)?.as_bool() == Some(true))
+    }
+    pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
+        let slots = self.host_payload_len(host)? + 2;
+        for index in 0..slots {
+            self.set_field(host, index, Value::NULL)?;
+        }
+        Ok(())
     }
     fn allocate_bytes(&mut self, kind: ObjectKind, input: &[u8]) -> Result<Value, HeapError> {
         self.input_bytes(input)?;

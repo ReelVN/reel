@@ -102,6 +102,14 @@ fn closure_or_and_control_heads_use_one_expression_grammar() {
     assert_eq!(has(&p, K::Block), 4);
     let p = ok("if (ready() { node; }) { go(); }", E::Block);
     assert_eq!(has(&p, K::Children), 1);
+    let p = ok(
+        "column() { row() { text(\"a\"); } row() { text(\"b\"); }; }",
+        E::Block,
+    );
+    assert_eq!(has(&p, K::Children), 3);
+    let p = ok("row() {}\n(text(\"next\"));", E::Block);
+    assert_eq!(has(&p, K::CallExpr), 3);
+    rejects("text(\"a\") text(\"b\");", E::Block, D::MissingSemicolon);
     let p = ok("component(children: nodes)", E::Expression);
     assert_eq!(has(&p, K::NamedArg), 1);
     rejects(

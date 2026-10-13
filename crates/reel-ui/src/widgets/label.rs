@@ -779,7 +779,7 @@ mod reveal_tests {
                 size_policy: WindowSizePolicy::User,
                 size: PhysicalSize::new(200, 150),
                 scale_factor: 1.,
-                test_font: Some(font),
+                default_font: Some(font),
             },
         );
         root.redraw();

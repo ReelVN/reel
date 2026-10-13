@@ -1,6 +1,12 @@
+use crate::aside_session::AsideSessionUi;
 use crate::window::{PointerKind, State};
+use reel_engine::{
+    Epoch, Session, SessionId, SessionLimits,
+    aside::{VmLimits, source::CompiledStory},
+};
 use reel_render::gpu::GpuError;
 use reel_ui::core::TextEvent;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
@@ -10,19 +16,54 @@ use winit::{
 };
 type Error = Box<dyn std::error::Error>;
 pub fn run() -> Result<(), Error> {
-    run_mode(false)
+    run_mode(Mode::Diagnostic)
 }
 /// Open the real Rust host/session diagnostic through the existing native renderer.
 pub fn run_session_host() -> Result<(), Error> {
-    run_mode(true)
+    run_mode(Mode::SessionDiagnostic)
 }
-fn run_mode(session_host: bool) -> Result<(), Error> {
+
+/// Native window options; logical_size is the window size, not a fixed stage canvas.
+pub struct StoryWindowOptions {
+    pub title: String,
+    pub font: PathBuf,
+    pub locale: String,
+    pub logical_size: [u32; 2],
+}
+impl StoryWindowOptions {
+    pub fn new(font: impl Into<PathBuf>) -> Self {
+        Self {
+            title: "Reel".into(),
+            font: font.into(),
+            locale: "en".into(),
+            logical_size: [960, 540],
+        }
+    }
+}
+
+/// Run a prepared story using the production window and presented-input path.
+/// On close, VM task and root retirement finishes before the native window exits.
+pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<(), Error> {
+    let session = Session::new(SessionId(1), Epoch(1), SessionLimits::default())?;
+    let driver =
+        AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?;
+    run_mode(Mode::Story(Box::new((driver, options))))
+}
+
+enum Mode {
+    Diagnostic,
+    SessionDiagnostic,
+    Story(Box<(AsideSessionUi, StoryWindowOptions)>),
+}
+
+fn run_mode(mode: Mode) -> Result<(), Error> {
     let event_loop = EventLoop::new()?;
     let mut app = App {
         state: None,
         error: None,
         next_generation: 1,
-        session_host,
+        mode: Some(mode),
+        closing: false,
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
@@ -34,13 +75,28 @@ struct App {
     state: Option<State>,
     error: Option<String>,
     next_generation: u64,
-    session_host: bool,
+    mode: Option<Mode>,
+    closing: bool,
 }
 impl App {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl std::fmt::Display) {
-        self.error = Some(error.to_string());
-        self.state = None;
-        event_loop.exit();
+        self.error.get_or_insert_with(|| error.to_string());
+        self.close(event_loop);
+    }
+    fn close(&mut self, event_loop: &ActiveEventLoop) {
+        self.closing = true;
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_millis(1),
+        ));
+        if let Some(state) = &mut self.state {
+            if let Err(error) = state.close() {
+                self.error.get_or_insert_with(|| error.to_string());
+                self.state = None;
+                event_loop.exit();
+            }
+        } else {
+            event_loop.exit();
+        }
     }
 }
 impl ApplicationHandler for App {
@@ -51,10 +107,16 @@ impl ApplicationHandler for App {
             }
             return;
         }
-        let created = if self.session_host {
-            State::new_session(event_loop, self.next_generation)
-        } else {
-            State::new(event_loop, self.next_generation)
+        let Some(mode) = self.mode.take() else {
+            return;
+        };
+        let created = match mode {
+            Mode::SessionDiagnostic => State::new_session(event_loop, self.next_generation),
+            Mode::Diagnostic => State::new(event_loop, self.next_generation),
+            Mode::Story(story) => {
+                let (driver, options) = *story;
+                State::new_story(event_loop, self.next_generation, driver, options)
+            }
         };
         match created {
             Ok(state) => {
@@ -70,6 +132,9 @@ impl ApplicationHandler for App {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.closing {
+            return;
+        }
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -82,13 +147,12 @@ impl ApplicationHandler for App {
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape) =>
             {
-                state.bridge.clear();
-                self.state = None;
-                event_loop.exit();
+                self.close(event_loop);
                 return;
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
+                    && state.is_diagnostic()
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F5) =>
             {
@@ -98,6 +162,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
+                    && state.is_diagnostic()
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F6) =>
             {
@@ -105,9 +170,7 @@ impl ApplicationHandler for App {
                 state.resume()
             }
             WindowEvent::CloseRequested => {
-                state.bridge.clear();
-                self.state = None;
-                event_loop.exit();
+                self.close(event_loop);
                 return;
             }
             WindowEvent::Resized(size) => state.resize(size),
@@ -176,8 +239,27 @@ impl ApplicationHandler for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(state) = &mut self.state {
+            if self.closing {
+                if let Err(error) = state.tick_story() {
+                    self.error.get_or_insert_with(|| error.to_string());
+                    self.state = None;
+                    event_loop.exit();
+                } else if state.close_complete() {
+                    self.state = None;
+                    event_loop.exit();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_millis(1),
+                    ));
+                }
+                return;
+            }
             if state.is_suspended() {
                 event_loop.set_control_flow(ControlFlow::Wait);
+                return;
+            }
+            if let Err(error) = state.tick_story() {
+                self.fail(event_loop, error);
                 return;
             }
             if let Err(e) = state.tick_reveal() {
@@ -202,6 +284,10 @@ impl ApplicationHandler for App {
                 || state.renderer.usage().targets != 0)
                 .then(|| Instant::now() + Duration::from_millis(8));
             let deadline = match (completion_deadline, state.reveal_deadline()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let deadline = match (deadline, state.story_deadline()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };

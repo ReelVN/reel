@@ -88,6 +88,9 @@ impl CodePackage {
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
+    pub fn into_parts(self) -> (bc::VerifiedProgram, Metadata) {
+        (self.program, self.metadata)
+    }
 }
 pub fn digest(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()

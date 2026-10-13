@@ -79,6 +79,18 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
                 _ => (),
             }
         }
+        // CST trivia belongs to adjacent nodes, but author diagnostics and
+        // runtime locations begin at syntax, not the preceding blank line.
+        if parent.is_some()
+            && let (Some(first), Some(last)) = (edges.first(), edges.last())
+        {
+            let span = |element: &HirElement| match element {
+                HirElement::Node(id) => hir.nodes[id.0 as usize].span,
+                HirElement::Token(token) => token.span,
+            };
+            hir.nodes[id.0 as usize].span =
+                crate::TextRange::new(span(first).start(), span(last).end());
+        }
         if hir.elements.len().saturating_add(edges.len()) > u32::MAX as usize {
             return Err(Diagnostic::error(
                 D::BudgetExceeded,

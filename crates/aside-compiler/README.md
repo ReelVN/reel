@@ -165,6 +165,11 @@ Current `tests/execution.rs` compiles source, round-trips B01, initializes a mod
 and runs its entry on the real V03 VM, including tiny slices with interleaved GC.
 It checks arithmetic, shared captures, defaults, finally, prepared index targets,
 members, optional short-circuiting, spread/rest and loops against scalar results.
+Trailing children now executes with independent nested collectors, ordinary helper
+functions, and array/tuple `for` loops. Each iteration has its own captured binding.
+Only host values registered for composition are collected; null is ignored,
+declarations and assignments do not contribute children. Shared host fields retain
+identity through collection, calls and later property writes.
 
 ```sh
 cargo test --locked -p aside-compiler --test execution
@@ -182,6 +187,6 @@ Cell/default-prefix/capture identity. Rest receives only surplus positional
 arguments as a fresh outer array; its annotation constrains that array, not each
 element. A named argument cannot supply rest. Known invalid spread sources and
 incompatible rest annotations diagnose; unknown sources retain runtime checks.
-See [the contract](LOWERING.md#call-spread-and-rest-l09). Collection spread,
-children and native function values remain separate. No runtime acceptance is
-implied by these source/IR/B01 checks.
+See [the contract](LOWERING.md#call-spread-and-rest-l09). Collection spread and
+native function values remain separate. The original L09 source/IR/B01 checks
+are complemented by the current source execution matrix above.

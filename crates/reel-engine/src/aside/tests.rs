@@ -139,6 +139,7 @@ fn choice_decode_yields_with_roots_and_returns_original_key_once() {
     let mut published = false;
     for _ in 0..1000 {
         match vm.dispatch(&mut s, ticket, "en", 1).unwrap() {
+            NativeDispatch::Ready { .. } => panic!("choice must wait"),
             NativeDispatch::Decoding { work } => {
                 assert!(work <= 1);
                 assert!(s.view().interaction.is_none());
@@ -423,5 +424,204 @@ fn selected_64k_key_is_retained_original_and_one_more_byte_rejects_before_publis
         assert!(vm.retain_return(&s).unwrap().same_bits(original));
         collect(&mut vm);
         assert_eq!(vm.vm.heap().info(original).unwrap().len as usize, len);
+    }
+}
+
+#[test]
+fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
+    use reel_ui::stage::NodeKind;
+    let code = r##"
+        use reel::prelude::*;
+        fn card(children = []) {
+            column(gap: 8, padding: 12, background: "#203040") {
+                for child in children { child; }
+            }
+        }
+        fn mount() {
+            let heading = text("Before", font_size: 30, color: "#ff8040");
+            stage.replace(stack(width: 640, height: 480) {
+                card() {
+                    heading;
+                    if true { text("Conditional"); }
+                    for caption in ["One", "Two", "Three"] { text(caption); }
+                }
+            });
+            heading
+        }
+        fn unmounted_child() {
+            let child = text("Detached");
+            let component = column() { child; };
+            child
+        }
+        fn opening() {
+            let detached = unmounted_child();
+            narrator("Detached");
+            detached.value = "Still held";
+            let heading = mount();
+            narrator("First");
+            let mut caught = 0;
+            try { heading.opacity = "wrong"; } catch error { caught += 1; }
+            try { heading["color"] = "#gggggg"; } catch error { caught += 1; }
+            try { heading.width = -1; } catch error { caught += 1; }
+            let unchanged = heading.opacity == 1 && heading.color == "#ff8040" && heading.width == null;
+            heading.visible = false;
+            narrator("Hidden");
+            heading.visible = true;
+            heading.value = "After";
+            heading.x = 24;
+            heading.opacity = 0.5;
+            narrator("Second");
+            stage.replace(text("Replacement"));
+            try { stage.replace(heading); } catch error { caught += 1; }
+            try { heading.value = "Retired"; return false; }
+            catch error { return caught == 4 && unchanged && detached.value == "Still held"; }
+        }
+    "##;
+    let (mut session, mut vm) = setup(code, Context::Ordinary);
+    let mut first_root = None;
+    let mut heading_id = None;
+    let mut publications = 0;
+    let mut retained_old_root = None;
+    let mut old_child = None;
+    loop {
+        match next(&mut vm, &mut session) {
+            RunOutcome::HostCall(ticket) => {
+                let package = vm.vm.program().package();
+                if retained_old_root.is_none()
+                    && package.symbols[package.natives[ticket.native.index()].symbol.index()]
+                        == "reel::stage::replace"
+                {
+                    let root = vm.vm.host_arguments(ticket).unwrap()[0];
+                    let children = vm.vm.heap().host_payload(root, 1).unwrap();
+                    let card = vm.vm.heap().sequence_get(children, 0).unwrap();
+                    let children = vm.vm.heap().host_payload(card, 1).unwrap();
+                    let child = vm.vm.heap().sequence_get(children, 4).unwrap();
+                    old_child = Some(vm.vm.heap().downgrade(child).unwrap());
+                    // A retained old parent must not retain its retired children.
+                    retained_old_root = Some(
+                        vm.vm
+                            .heap_mut()
+                            .add_root(vm.root_owner, RootKind::Host, root)
+                            .unwrap(),
+                    );
+                }
+                let dispatch = match vm.dispatch(&mut session, ticket, "en", 8) {
+                    Ok(dispatch) => dispatch,
+                    Err(error) => {
+                        assert!(matches!(error, AdapterError::Heap(HeapError::RetiredHost)));
+                        let kind = error.native_fault_kind().unwrap();
+                        assert_eq!(kind, FaultKind::InvalidState);
+                        vm.reject_native(&session, ticket, kind).unwrap();
+                        continue;
+                    }
+                };
+                if let NativeDispatch::Published { interaction, .. } = dispatch {
+                    vm.sync_stage(&session).unwrap();
+                    if publications == 0 {
+                        assert!(vm.stage().root().is_none());
+                        assert_eq!(vm.stage().nodes().count(), 2);
+                        collect(&mut vm);
+                        vm.sync_stage(&session).unwrap();
+                        // The child returned from its component factory keeps
+                        // the otherwise unreferenced parent alive through GC.
+                        assert_eq!(vm.stage().nodes().count(), 2);
+                    } else if publications == 1 {
+                        let root = vm.stage().root().unwrap();
+                        first_root = Some(root);
+                        let card = vm
+                            .stage()
+                            .node(vm.stage().node(root).unwrap().children[0])
+                            .unwrap();
+                        assert_eq!(card.props.gap, 8.);
+                        assert_eq!(card.children.len(), 5);
+                        heading_id = Some(card.children[0]);
+                        assert_eq!(
+                            vm.stage().node(card.children[4]).unwrap().kind,
+                            NodeKind::Text("Three".into())
+                        );
+                        collect(&mut vm);
+                        vm.sync_stage(&session).unwrap();
+                        assert_eq!(
+                            vm.stage().node(heading_id.unwrap()).unwrap().kind,
+                            NodeKind::Text("Before".into())
+                        );
+                    } else if publications == 2 {
+                        assert_eq!(vm.stage().root(), first_root);
+                        let heading = vm.stage().node(heading_id.unwrap()).unwrap();
+                        assert!(!heading.props.visible);
+                        assert_eq!(heading.props.opacity, 1.);
+                        assert_eq!(heading.props.color, [255, 128, 64, 255]);
+                        assert_eq!(heading.props.width, None);
+                    } else {
+                        let root = vm.stage().root().unwrap();
+                        assert_eq!(Some(root), first_root);
+                        let heading = vm.stage().node(heading_id.unwrap()).unwrap();
+                        assert!(heading.props.visible);
+                        assert_eq!(heading.kind, NodeKind::Text("After".into()));
+                        assert_eq!(heading.props.x, 24.);
+                        assert_eq!(heading.props.opacity, 0.5);
+                    }
+                    publications += 1;
+                    let owner = session.root_owner();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                }
+            }
+            RunOutcome::Returned(_) => break,
+            other => panic!("unexpected scene outcome: {other:?}"),
+        }
+    }
+    assert_eq!(publications, 4);
+    assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
+    collect(&mut vm);
+    vm.sync_stage(&session).unwrap();
+    assert_eq!(vm.stage().nodes().count(), 1);
+    assert!(vm.vm.heap().root_value(retained_old_root.unwrap()).is_ok());
+    assert!(
+        vm.vm
+            .heap_mut()
+            .upgrade(old_child.unwrap())
+            .unwrap()
+            .is_none()
+    );
+    vm.vm
+        .heap_mut()
+        .release_root(retained_old_root.unwrap())
+        .unwrap();
+    assert!(vm.stage().node(first_root.unwrap()).is_none());
+    assert_eq!(
+        vm.stage().node(vm.stage().root().unwrap()).unwrap().kind,
+        NodeKind::Text("Replacement".into())
+    );
+    vm.finish(&mut session).unwrap();
+    assert!(vm.stage().root().is_none());
+
+    // An uncaught property error names the actual assignment, with the same
+    // behavior for a not-yet-mounted node and a one-instruction VM budget.
+    let code = "use reel::prelude::*; fn opening() { let node = text(\"Fault\"); node.opacity = \"invalid\"; }";
+    let (mut session, mut vm) = setup(code, Context::Ordinary);
+    loop {
+        match next(&mut vm, &mut session) {
+            RunOutcome::HostCall(ticket) => {
+                vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+            }
+            RunOutcome::Fault(delivery) => {
+                let fault = vm.vm.delivery_fault(delivery).unwrap().unwrap();
+                assert_eq!(fault.kind, FaultKind::Type);
+                let span = fault.location.source.unwrap();
+                assert_eq!(
+                    &code[span.start as usize..span.end as usize],
+                    "node.opacity"
+                );
+                vm.discard_delivery(&session).unwrap();
+                vm.finish(&mut session).unwrap();
+                break;
+            }
+            other => panic!("expected property assignment fault: {other:?}"),
+        }
     }
 }

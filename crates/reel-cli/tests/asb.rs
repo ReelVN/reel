@@ -1,8 +1,12 @@
-//! Compiler-to-container regression checks; never execute bytecode.
+//! Compiler-to-container checks and a built author scene on the real SessionVm.
 use reel_package::{self as rp, ErrorKind, Limits};
 
 fn artifact(source: &str, entry: Option<&str>) -> reel_cli::Artifact {
-    reel_cli::build(&reel_cli::check(source).unwrap(), entry).unwrap()
+    reel_cli::build(
+        &reel_cli::check(source, "stories/序章.aside").unwrap(),
+        entry,
+    )
+    .unwrap()
 }
 fn u64_at(bytes: &[u8], at: usize) -> usize {
     u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
@@ -56,7 +60,7 @@ fn assemble(b01: &[u8], json: &[u8]) -> Vec<u8> {
 fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
     use aside_vm::bytecode as bc;
     for context in [bc::Context::NoWait, bc::Context::Init, bc::Context::Derived] {
-        let mut checked = reel_cli::check("fn main() { 1 }").unwrap();
+        let mut checked = reel_cli::check("fn main() { 1 }", "main.aside").unwrap();
         let original = reel_cli::build(&checked, Some("main::main")).unwrap();
         let mut metadata: rp::Metadata =
             serde_json::from_slice(section(&original.bytes, 1)).unwrap();
@@ -100,14 +104,10 @@ fn metadata_only_cannot_redirect_main_to_same_named_nested_function() {
     )
     .bytes;
     let mut metadata: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
-    assert_eq!(metadata["initializer"]["function_id"], 3);
-    for path in [
-        "/declarations/0/source_function_id",
-        "/declarations/0/function_id",
-        "/game_entry/function_id",
-    ] {
-        *metadata.pointer_mut(path).unwrap() = serde_json::json!(2);
-    }
+    let nested = metadata["functions"][2]["output"].clone();
+    metadata["declarations"][0]["source_function_id"] = serde_json::json!(2);
+    metadata["declarations"][0]["function_id"] = nested.clone();
+    metadata["game_entry"]["function_id"] = nested;
     let forged = repack(&original, &serde_json::to_vec(&metadata).unwrap());
     assert_eq!(section(&original, 0), section(&forged, 0));
     let error = rp::decode(&forged, Limits::default()).unwrap_err();
@@ -190,7 +190,7 @@ fn private_entry_comes_from_declaration_not_initializer_or_linked_global() {
     let entry = m.game_entry.as_ref().unwrap();
     assert_ne!(entry.function_id, m.initializer.function_id);
     assert_eq!(
-        p.modules[0].initializer.unwrap().0,
+        p.modules[m.module_id as usize].initializer.unwrap().0,
         m.initializer.function_id
     );
     let d = &m.declarations[entry.declaration_index as usize];
@@ -203,9 +203,9 @@ fn private_entry_comes_from_declaration_not_initializer_or_linked_global() {
         p.symbols[p.functions[entry.function_id as usize].name.index()],
         "main"
     );
-    assert!(p.modules[0].exports.is_empty());
+    assert!(p.modules[m.module_id as usize].exports.is_empty());
     assert!(
-        p.modules[0].globals[d.global_id as usize]
+        p.modules[m.module_id as usize].globals[d.global_id as usize]
             .linked_function
             .is_none()
     );
@@ -238,7 +238,7 @@ fn entry_is_optional_and_only_real_module_functions_can_be_selected() {
         ("fn main() { 1 }", "other::main"),
         ("fn main() { 1 }", "main::missing"),
     ] {
-        let checked = reel_cli::check(source).unwrap();
+        let checked = reel_cli::check(source, "stories/序章.aside").unwrap();
         let error = reel_cli::build(&checked, Some(entry)).err().unwrap();
         assert_eq!(error.stage, "entry");
         assert!(!error.diagnostics.is_empty());
@@ -303,7 +303,7 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
     for (pointer, value) in [
         ("/schema_version", serde_json::json!(2)),
         ("/bytecode_blake3", serde_json::json!("wrong")),
-        ("/module_id", serde_json::json!(1)),
+        ("/module_id", serde_json::json!(u32::MAX)),
         ("/canonical_path", serde_json::json!("foreign")),
         ("/source_blake3", serde_json::json!("wrong")),
         ("/source_span/end", serde_json::json!(u32::MAX)),
@@ -521,4 +521,82 @@ fn repeated_source_slots_must_keep_their_b01_binding_contract() {
     )
     .unwrap_err();
     assert!(error.detail.contains("binding identity changes"));
+}
+
+#[test]
+fn authored_scene_builds_loads_and_runs_without_recompilation() {
+    use reel_engine::aside::{NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits};
+    use reel_engine::{Epoch, InputAction, Session, SessionId, SessionLimits};
+    let artifact = artifact(
+        include_str!("../../../examples/author_stage.aside"),
+        Some("main::main"),
+    );
+    let story = reel_cli::decode_story(&artifact.bytes).unwrap();
+    let package = story.program.package();
+    assert_eq!(
+        package.symbols[package.sources[0].path.index()],
+        "stories/序章.aside"
+    );
+    assert_eq!(
+        package.symbols[package.modules[package.functions[story.entry.index()].module.index()]
+            .path
+            .index()],
+        "main"
+    );
+    let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default()).unwrap();
+    let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
+    let mut entry = Some(story.entry);
+    vm.start(&session, story.initializer).unwrap();
+    let mut original = None;
+    let mut publications = 0;
+    let mut finished = false;
+    for _ in 0..20_000 {
+        match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::HostCall(ticket) => {
+                if let NativeDispatch::Published { interaction, .. } =
+                    vm.dispatch(&mut session, ticket, "zh-CN", 64).unwrap()
+                {
+                    vm.sync_stage(&session).unwrap();
+                    let stage = vm.stage();
+                    let root = stage.root().unwrap();
+                    let column = stage.node(root).unwrap().children[1];
+                    let title = stage.node(column).unwrap().children[1];
+                    let kind = stage.node(title).unwrap().kind.clone();
+                    if let Some((old_root, old_title, old_kind)) = &original {
+                        assert_eq!(root, *old_root);
+                        assert_eq!(title, *old_title);
+                        assert_ne!(&kind, old_kind);
+                    } else {
+                        original = Some((root, title, kind));
+                    }
+                    publications += 1;
+                    let owner = session.root_owner();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                }
+            }
+            RunOutcome::Returned(_) => {
+                vm.discard_delivery(&session).unwrap();
+                if let Some(entry) = entry.take() {
+                    vm.start(&session, entry).unwrap();
+                } else {
+                    vm.finish(&mut session).unwrap();
+                    finished = true;
+                    break;
+                }
+            }
+            outcome => panic!("built scene failed: {outcome:?}"),
+        }
+    }
+    assert!(finished);
+    assert_eq!(publications, 2);
+    while vm.cleanup_pending() {
+        vm.cleanup_step(&mut session, 64, SliceBudget::default(), || 0)
+            .unwrap();
+    }
 }

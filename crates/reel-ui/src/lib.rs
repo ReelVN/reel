@@ -35,6 +35,7 @@ pub mod frame;
 pub mod layout;
 pub mod properties;
 pub mod resources;
+pub mod stage;
 pub mod theme;
 pub mod widgets;
 

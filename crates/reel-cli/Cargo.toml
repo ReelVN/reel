@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
-description = "Non-executing author checks for Aside source"
+description = "Check, build and play Aside stories"
+
+[features]
+default = []
+window = ["dep:reel-player", "reel-player/window"]
 
 [[bin]]
 name = "reel"
@@ -16,6 +20,8 @@ aside-vm = { path = "../aside-vm" }
 codespan-reporting = "=0.13.1"
 serde_json = "=1.0.145"
 reel-package = { path = "../reel-package" }
+reel-engine = { path = "../reel-engine" }
+reel-player = { path = "../reel-player", optional = true }
 atomic-write-file = "=0.3.1"
 
 [target.'cfg(unix)'.dependencies]

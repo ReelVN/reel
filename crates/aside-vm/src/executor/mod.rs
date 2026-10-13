@@ -2364,7 +2364,7 @@ impl Vm {
                     (1, 0)
                 }
             }
-            Opcode::Call => {
+            Opcode::Call | Opcode::CallNoWait => {
                 let Descriptor::Call(d) = &f.descriptors[b as usize] else {
                     unreachable!()
                 };
@@ -2406,6 +2406,22 @@ impl Vm {
                 (self.program.package().modules.len() as u64 + 1, 0)
             }
             Opcode::ArgsNew => (1, 0),
+            Opcode::IterInit | Opcode::IterNext => (4, VALUE_CHUNK_BYTES),
+            Opcode::ChildrenPush => {
+                let array = self.slots.read(at(s.regs, _a))?;
+                let value = self.slots.read(at(s.regs, b))?;
+                let len = self.heap.info(array)?.len;
+                (
+                    1,
+                    if !value.same_bits(Value::NULL)
+                        && (len as usize).is_multiple_of(VALUE_CHUNK_LEN)
+                    {
+                        VALUE_CHUNK_BYTES
+                    } else {
+                        0
+                    },
+                )
+            }
             Opcode::ArgsPush | Opcode::ArgsNamed => {
                 let packed = self.slots.read(at(s.regs, _a))?;
                 let len = self.heap.packed_array_len(packed)?;
@@ -2455,11 +2471,99 @@ impl Vm {
                 | Opcode::ArgsPush
                 | Opcode::ArgsNamed
                 | Opcode::ArgsSpread
+                | Opcode::ChildrenPush
+                | Opcode::IterInit
+                | Opcode::IterNext
         ) && s.effects.0 & Effects::ALLOCATE == 0
         {
             return Err(FaultKind::Effect);
         }
         match op {
+            Opcode::ChildrenPush => {
+                let array = self.read(*s, r(a))?;
+                let child = self.read(*s, r(b))?;
+                if !child.same_bits(Value::NULL) {
+                    if !self.heap.is_composable_host(child).map_err(heap_fault)? {
+                        return Err(FaultKind::Type);
+                    }
+                    self.heap.array_push(array, child).map_err(heap_fault)?;
+                }
+            }
+            Opcode::IterInit => {
+                let source = self.read(*s, r(b))?;
+                self.heap.sequence_len(source).map_err(heap_fault)?;
+                let version = self
+                    .heap
+                    .info(source)
+                    .map_err(heap_fault)?
+                    .structure_version;
+                let iterator = self
+                    .heap
+                    .alloc_record(
+                        ObjectKind::Iterator,
+                        &[source, Value::int(0), Value::int(version as i64)],
+                    )
+                    .map_err(heap_fault)?;
+                self.write(*s, r(a), iterator)?;
+            }
+            Opcode::IterNext => {
+                let iterator = self.read(*s, r(b))?;
+                if self.heap.info(iterator).map_err(heap_fault)?.kind != ObjectKind::Iterator {
+                    return Err(FaultKind::Type);
+                }
+                let source = self.heap.get_field(iterator, 0).map_err(heap_fault)?;
+                let index = self
+                    .heap
+                    .get_field(iterator, 1)
+                    .map_err(heap_fault)?
+                    .as_int()
+                    .ok_or(FaultKind::Type)? as u32;
+                let (done, value) = if source.same_bits(Value::NULL) {
+                    (true, Value::NULL)
+                } else {
+                    let info = self.heap.info(source).map_err(heap_fault)?;
+                    let version = self
+                        .heap
+                        .get_field(iterator, 2)
+                        .map_err(heap_fault)?
+                        .as_int()
+                        .ok_or(FaultKind::Type)? as u64;
+                    if info.structure_version != version {
+                        return Err(FaultKind::ConcurrentModification);
+                    }
+                    if index == info.len {
+                        (true, Value::NULL)
+                    } else {
+                        (
+                            false,
+                            self.heap.sequence_get(source, index).map_err(heap_fault)?,
+                        )
+                    }
+                };
+                let step = self
+                    .heap
+                    .alloc_tuple(&[Value::bool(done), value])
+                    .map_err(heap_fault)?;
+                self.write(*s, r(a), step)?;
+                if done {
+                    self.heap
+                        .set_field(iterator, 0, Value::NULL)
+                        .map_err(heap_fault)?;
+                } else {
+                    self.heap
+                        .set_field(iterator, 1, Value::int(i64::from(index) + 1))
+                        .map_err(heap_fault)?;
+                }
+            }
+            Opcode::IterClose => {
+                let iterator = self.read(*s, r(a))?;
+                if self.heap.info(iterator).map_err(heap_fault)?.kind != ObjectKind::Iterator {
+                    return Err(FaultKind::Type);
+                }
+                self.heap
+                    .set_field(iterator, 0, Value::NULL)
+                    .map_err(heap_fault)?;
+            }
             Opcode::MakeTuple | Opcode::MakeArray => {
                 let Descriptor::Sequence(window) = f.descriptors[b as usize] else {
                     unreachable!()
@@ -2483,6 +2587,12 @@ impl Vm {
             }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
+                let host = self.is_text(object, ObjectKind::Host);
+                let object = if host {
+                    self.heap.host_fields(object).map_err(heap_fault)?
+                } else {
+                    object
+                };
                 let key = self
                     .value(
                         self.constants,
@@ -2491,6 +2601,11 @@ impl Vm {
                     .map_err(vm_fault)?;
                 let action = if op == Opcode::MemberGet {
                     TableAction::Get(r(a))
+                } else if host {
+                    TableAction::SetHost {
+                        object: r(a),
+                        value: r(b),
+                    }
                 } else {
                     TableAction::Set(r(b))
                 };
@@ -2500,6 +2615,11 @@ impl Vm {
             Opcode::IndexGet => {
                 let object = self.read(*s, r(b))?;
                 let index = self.read(*s, r(c))?;
+                let object = if self.is_text(object, ObjectKind::Host) {
+                    self.heap.host_fields(object).map_err(heap_fault)?
+                } else {
+                    object
+                };
                 if self.is_text(object, ObjectKind::Table) {
                     self.start_table(s, object, index, TableAction::Get(r(a)))?;
                     return Ok(false);
@@ -2510,6 +2630,19 @@ impl Vm {
             Opcode::IndexSet => {
                 let object = self.read(*s, r(a))?;
                 let index = self.read(*s, r(b))?;
+                if self.is_text(object, ObjectKind::Host) {
+                    let fields = self.heap.host_fields(object).map_err(heap_fault)?;
+                    self.start_table(
+                        s,
+                        fields,
+                        index,
+                        TableAction::SetHost {
+                            object: r(a),
+                            value: r(c),
+                        },
+                    )?;
+                    return Ok(false);
+                }
                 if self.is_text(object, ObjectKind::Table) {
                     self.start_table(s, object, index, TableAction::Set(r(c)))?;
                     return Ok(false);
@@ -2779,7 +2912,7 @@ impl Vm {
                 };
                 return Ok(false);
             }
-            Opcode::Call => {
+            Opcode::Call | Opcode::CallNoWait => {
                 let Descriptor::Call(desc) = &f.descriptors[b as usize] else {
                     unreachable!()
                 };
@@ -2796,7 +2929,9 @@ impl Vm {
                     descriptor: DescriptorId(b),
                 };
                 let mut caller = *s;
-                if self.active.unwinds.data.iter().any(|u| u.frame == s.id) {
+                if op == Opcode::CallNoWait
+                    || self.active.unwinds.data.iter().any(|u| u.frame == s.id)
+                {
                     caller.context = inherit(caller.context, Context::NoWait);
                 }
                 let dynamic = if let CallTarget::Register(reg) = target {
@@ -3734,6 +3869,7 @@ fn heap_fault(e: HeapError) -> FaultKind {
         HeapError::ReadOnly => FaultKind::ReadOnly,
         HeapError::TypeMismatch | HeapError::WrongKind => FaultKind::Type,
         HeapError::AlreadyInitialized => FaultKind::AlreadyInitialized,
+        HeapError::InvalidHandle | HeapError::RetiredHost => FaultKind::InvalidState,
         _ => FaultKind::Resource,
     }
 }

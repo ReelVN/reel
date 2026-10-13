@@ -13,13 +13,15 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 完成条件同时覆盖语言、标准库、扩展契约、调试工具和 Reel 作者场景。只运行一段剧情、只解析全部语法或只通过旧语言测试，都不算完整 Aside。
 
-实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、固定 tuple/array/table、索引/成员及混合赋值、可选取值链和位置调用 spread/rest。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
+实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、固定 tuple/array/table、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
 class/super、native 函数值、完整统一 callable、集合/具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 ## 二 语法与求值顺序
+尾随 children 块调用作为独立语句时，可以像控制语句块一样省略分号。例如 `column { text("标题"); }` 后可直接书写下一个组件。显式分号同样有效，且不会取消子节点收集。独立 children 调用后的换行结束该语句，下一行的括号不会被解析成继续调用；取值上下文仍可正常链接后续操作。其他普通调用、绑定和赋值仍使用分号。
 
-函数统一写 fn；async fn 创建任务，gen fn 创建同步生成器。绑定使用 let 与 let mut，闭包写 |x| expression 或 || { statements }，模块导入写 use。普通语句必须以分号结束，不做换行自动插入；函数、类及作为语句的控制流块后不要求分号。块末无分号表达式为块值，否则为 null；return、break、continue、throw、yield 以分号结束。
+
+函数统一写 fn；async fn 创建任务，gen fn 创建同步生成器。绑定使用 let 与 let mut，闭包写 |x| expression 或 || { statements }，模块导入写 use。除上文的独立 children 调用外，普通语句必须以分号结束，不做换行自动插入；函数、类及作为语句的控制流块后不要求分号。块末无分号表达式为块值，否则为 null；return、break、continue、throw、yield 以分号结束。
 
 ```aside
 use reel::{character, narrator, story};
@@ -171,6 +173,8 @@ game.toml 所在目录是源码根；game:: 后的模块段对应目录和 .asid
 type_of、is、signature、members、own_fields 提供一致反射。签名包含参数名、顺序、缺省是否存在、变参、返回契约和效果，不因反射而执行缺省表达式。native 与脚本类型遵循同一描述。反射不泄露原生地址、任意私有环境、恢复 PC 的写权限或绕过字段/schema 的写入口。
 
 ## 十一 children 与可观察绑定
+当前实现增量贯通尾随 children、array/tuple 的 `for` 与可组合宿主对象。宿主通过通用的 composable 标记声明可收集对象；Aside 不依赖 Reel 类型或平台库。宿主对象有保持身份的公开字段表和私有载荷，成员读取/赋值访问同一字段表，私有载荷仅由宿主访问。公开字段参与 GC，私有载荷中的值同样可追踪。children 收集沿用本节 Node/null 规则，并保持 NoWait 边界；普通 helper 不继承调用者的收集器。for 的每轮词法绑定独立，array 结构变化遵循集合迭代规则。新增字节码行为直接进入当前 B01 实现与执行能力表，不引入旧实现兼容路径。
+
 
 尾随 children 块是通用调用语法：立即计算名为 children 的 array 参数，不是隐式闭包、不按帧重跑。块内独立表达式语句产生 Node 时按顺序收集，分号不取消收集；块末 Node 只收集一次。null 忽略，其他值报错。let 初始化与赋值不收集；if/for/while/match/普通语句块继承词法收集位置，控制流整体不再次收集末值。嵌套尾随块建立独立收集器，被调用函数不继承调用者收集器。显式 children 与尾随块不能共存，事件回调必须命名传入。
 
@@ -454,3 +458,9 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
 
 集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。运行、GC、异常和取消合同已通过 Windows 原生 debug/release 验证。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
+
+
+### 宿主属性的同步验证
+宿主对象可以携带 HostPropertyValidator 纯函数，接收只读 Heap、已定位的固定属性索引和新 Value，在现有属性赋值提交前返回结果。验证不进入脚本、不等待、不改堆；失败走原赋值点的语言错误路径，try/catch 可捕获且旧值保持。alloc_host 与 alloc_composable_host 显式传入可选验证器，元数据归对象所有，不建立额外能力注册。私有字段更新使用 set_host_payload 并经过统一 GC 写屏障；退休清除属性表和所有私有强边。退休后的宿主对象访问返回明确的 RetiredHost，并在属性访问或宿主调用原位变为可捕获的 InvalidState；它与损坏、跨堆等无效句柄错误保持区分。
+
+源码定位使用首尾有效语法 token，不把前导空白或注释作为错误位置；实际源码文件路径与逻辑模块身份分别保存。窗口显示源码路径、行列以及脚本抛出的字符串或标量值。

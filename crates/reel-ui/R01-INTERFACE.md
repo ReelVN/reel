@@ -100,8 +100,10 @@ ambiguous versions in a frozen lookup table.
 `ResourceRegistry::new(max_resources, max_bytes)` charges fixed slots,
 descriptor/identity storage, version-string capacities and owned Blob headers
 before allocation. `register_image(ResourceVersion, OwnedBytes, size, format,
-alpha_type, encoding)` and `register_font(ResourceVersion, OwnedBytes, index)`
+alpha_type, encoding)` and `register_font(ResourceVersion, OwnedBytes)`
 attach the full core byte-capacity ticket to the Blob backing allocation.
+Font resources own the complete font file or collection. `FrameGlyphRun.font_index`
+selects its face; all faces share the same resource, bytes and lifetime.
 Producer/widget/cache Blob clones keep that ticket and header reservation even
 after frame, registry and simulated graphics retirement. Imported opaque
 `register(version, ResourceData, BudgetTicket)` charges the declared retained

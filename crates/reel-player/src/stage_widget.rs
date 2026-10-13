@@ -1,0 +1,343 @@
+//! Persistent widgets for the shared author stage. Property edits keep widget identities.
+use reel_ui::{
+    accesskit::{Node, Role},
+    core::*,
+    imaging::{Composite, GroupRef, Painter},
+    kurbo::{Axis, Point, Size},
+    layout::{LenDef, LenReq, Length, SizeDef},
+    peniko::Color,
+    properties::ContentColor,
+    stage::{NodeId, NodeKind, Stage, StageNode},
+    widgets::Label,
+};
+
+#[derive(Clone)]
+pub(crate) struct StageView {
+    pub revision: u64,
+    root: Option<SceneNode>,
+}
+#[derive(Clone)]
+struct SceneNode {
+    node: StageNode,
+    children: Vec<SceneNode>,
+}
+impl StageView {
+    pub fn capture(stage: &Stage) -> Self {
+        fn capture_node(stage: &Stage, id: NodeId) -> SceneNode {
+            let node = stage.node(id).expect("mounted stage node").clone();
+            let children = node
+                .children
+                .iter()
+                .map(|id| capture_node(stage, *id))
+                .collect();
+            SceneNode { node, children }
+        }
+        Self {
+            revision: stage.revision(),
+            root: stage.root().map(|id| capture_node(stage, id)),
+        }
+    }
+}
+
+pub(crate) struct StageWidget {
+    root: Option<WidgetPod<SceneWidget>>,
+    root_id: Option<NodeId>,
+    root_props: reel_ui::stage::NodeProps,
+}
+impl StageWidget {
+    pub fn new(view: Option<&StageView>) -> Self {
+        let root = view.and_then(|view| view.root.as_ref());
+        Self {
+            root: root.map(|node| WidgetPod::new(SceneWidget::new(node))),
+            root_id: root.map(|node| node.node.id),
+            root_props: root.map(|node| node.node.props.clone()).unwrap_or_default(),
+        }
+    }
+    pub fn sync(this: &mut WidgetMut<'_, Self>, view: &StageView) {
+        let id = view.root.as_ref().map(|node| node.node.id);
+        if id != this.widget.root_id {
+            if let Some(root) = this.widget.root.take() {
+                this.ctx.remove_child(root);
+            }
+            this.widget.root = view
+                .root
+                .as_ref()
+                .map(|node| WidgetPod::new(SceneWidget::new(node)));
+            this.widget.root_id = id;
+            this.ctx.children_changed();
+        } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root)
+            && let Some(mut child) = this.ctx.get_mut(pod)
+        {
+            SceneWidget::sync(&mut child, node);
+        }
+        this.widget.root_props = view
+            .root
+            .as_ref()
+            .map(|node| node.node.props.clone())
+            .unwrap_or_default();
+        this.ctx.request_layout();
+    }
+}
+impl Widget for StageWidget {
+    type Action = NoAction;
+    fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
+        if let Some(root) = &mut self.root {
+            ctx.register_child(root);
+        }
+    }
+    fn measure(
+        &mut self,
+        _: &mut MeasureCtx<'_>,
+        _: &PropertiesRef<'_>,
+        _: Axis,
+        request: LenReq,
+        _: Option<Length>,
+    ) -> Length {
+        match request {
+            LenReq::FitContent(space) => space,
+            _ => Length::ZERO,
+        }
+    }
+    fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
+        if let Some(root) = &mut self.root {
+            ctx.set_stashed(root, !self.root_props.visible);
+            if self.root_props.visible {
+                let chosen = ctx.compute_size(root, SizeDef::fit(size), size.into());
+                ctx.run_layout(root, chosen);
+                ctx.place_child(root, Point::new(self.root_props.x, self.root_props.y));
+            }
+        }
+    }
+    fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {}
+    fn accessibility_role(&self) -> Role {
+        Role::GenericContainer
+    }
+    fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
+    fn children_ids(&self) -> ChildrenIds {
+        self.root.iter().map(WidgetPod::id).collect()
+    }
+    fn accepts_pointer_interaction(&self) -> bool {
+        false
+    }
+}
+
+struct SceneWidget {
+    node: StageNode,
+    label: Option<WidgetPod<Label>>,
+    children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
+    size: Size,
+}
+fn color(value: [u8; 4]) -> Color {
+    Color::from_rgba8(value[0], value[1], value[2], value[3])
+}
+impl SceneWidget {
+    fn new(view: &SceneNode) -> Self {
+        let label = match &view.node.kind {
+            NodeKind::Text(text) => Some(
+                NewWidget::new(
+                    Label::new(text.clone())
+                        .with_style(StyleProperty::FontSize(view.node.props.font_size as f32)),
+                )
+                .with_props(ContentColor::new(color(view.node.props.color)))
+                .to_pod(),
+            ),
+            _ => None,
+        };
+        Self {
+            node: view.node.clone(),
+            label,
+            children: view
+                .children
+                .iter()
+                .map(|child| (child.node.clone(), WidgetPod::new(Self::new(child))))
+                .collect(),
+            size: Size::ZERO,
+        }
+    }
+    fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
+        if let (Some(pod), NodeKind::Text(text)) = (&mut this.widget.label, &view.node.kind)
+            && let Some(mut label) = this.ctx.get_mut(pod)
+        {
+            if this.widget.node.kind != view.node.kind {
+                Label::set_text(&mut label, text.clone());
+            }
+            if this.widget.node.props.font_size != view.node.props.font_size {
+                Label::insert_style(
+                    &mut label,
+                    StyleProperty::FontSize(view.node.props.font_size as f32),
+                );
+            }
+            if this.widget.node.props.color != view.node.props.color {
+                label.insert_prop(ContentColor::new(color(view.node.props.color)));
+            }
+        }
+        for ((node, pod), next) in this.widget.children.iter_mut().zip(&view.children) {
+            *node = next.node.clone();
+            if let Some(mut child) = this.ctx.get_mut(pod) {
+                Self::sync(&mut child, next);
+            }
+        }
+        if this.widget.node != view.node {
+            this.widget.node = view.node.clone();
+            this.ctx.request_layout();
+            this.ctx.request_render();
+        }
+    }
+    fn sequential(&self, axis: Axis) -> bool {
+        matches!(
+            (&self.node.kind, axis),
+            (NodeKind::Row, Axis::Horizontal) | (NodeKind::Column, Axis::Vertical)
+        )
+    }
+}
+impl Widget for SceneWidget {
+    type Action = NoAction;
+    fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
+        if let Some(label) = &mut self.label {
+            ctx.register_child(label);
+        }
+        for (_, child) in &mut self.children {
+            ctx.register_child(child);
+        }
+    }
+    fn measure(
+        &mut self,
+        ctx: &mut MeasureCtx<'_>,
+        _: &PropertiesRef<'_>,
+        axis: Axis,
+        request: LenReq,
+        cross: Option<Length>,
+    ) -> Length {
+        let props = &self.node.props;
+        if let Some(fixed) = if axis == Axis::Horizontal {
+            props.width
+        } else {
+            props.height
+        } {
+            return Length::px(fixed);
+        }
+        let padding = Length::px(props.padding * 2.);
+        let available = LenDef::from(request).reduce(padding);
+        let cross = cross.map(|value| value.saturating_sub(padding));
+        let context = ctx.context_size();
+        if let Some(label) = &mut self.label {
+            return Length::px(
+                ctx.compute_length(label, available, context, axis, cross)
+                    .get()
+                    + padding.get(),
+            );
+        }
+        let sequential = self.sequential(axis);
+        let mut total: f64 = 0.;
+        let mut visible = 0;
+        for (node, child) in &mut self.children {
+            if !node.props.visible {
+                continue;
+            }
+            let length = ctx
+                .compute_length(child, available, context, axis, cross)
+                .get();
+            if sequential {
+                total += length;
+            } else {
+                total = total.max(length);
+            }
+            visible += 1;
+        }
+        if sequential && visible > 1 {
+            total += self.node.props.gap * f64::from(visible - 1);
+        }
+        Length::px(total + padding.get())
+    }
+    fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
+        self.size = size;
+        if self.node.props.clip {
+            ctx.set_clip_path(size.to_rect());
+        } else {
+            ctx.clear_clip_path();
+        }
+        let padding = self.node.props.padding;
+        let inner = Size::new(
+            (size.width - padding * 2.).max(0.),
+            (size.height - padding * 2.).max(0.),
+        );
+        if let Some(label) = &mut self.label {
+            ctx.run_layout(label, inner);
+            ctx.place_child(label, Point::new(padding, padding));
+        }
+        let mut cursor = 0.;
+        for (node, child) in &mut self.children {
+            ctx.set_stashed(child, !node.props.visible);
+            if !node.props.visible {
+                continue;
+            }
+            let chosen = ctx.compute_size(child, SizeDef::fit(inner), inner.into());
+            let offset = match self.node.kind {
+                NodeKind::Row => {
+                    let offset = Point::new(cursor, 0.);
+                    cursor += chosen.width + self.node.props.gap;
+                    offset
+                }
+                NodeKind::Column => {
+                    let offset = Point::new(0., cursor);
+                    cursor += chosen.height + self.node.props.gap;
+                    offset
+                }
+                _ => Point::ORIGIN,
+            };
+            ctx.run_layout(child, chosen);
+            ctx.place_child(
+                child,
+                Point::new(
+                    padding + offset.x + node.props.x,
+                    padding + offset.y + node.props.y,
+                ),
+            );
+        }
+    }
+    fn pre_paint(
+        &mut self,
+        _: &mut PaintCtx<'_>,
+        _: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        if self.node.props.opacity != 1. {
+            painter.push_group(GroupRef {
+                composite: Composite {
+                    alpha: self.node.props.opacity as f32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+    }
+    fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+        if let Some(background) = self.node.props.background {
+            painter.fill_rect(self.size.to_rect(), color(background));
+        }
+    }
+    fn post_paint(
+        &mut self,
+        _: &mut PaintCtx<'_>,
+        _: &PropertiesRef<'_>,
+        painter: &mut Painter<'_>,
+    ) {
+        if self.node.props.opacity != 1. {
+            painter.pop_group();
+        }
+    }
+    fn accessibility_role(&self) -> Role {
+        Role::GenericContainer
+    }
+    fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
+    fn children_ids(&self) -> ChildrenIds {
+        self.label
+            .iter()
+            .map(WidgetPod::id)
+            .chain(self.children.iter().map(|(_, child)| child.id()))
+            .collect()
+    }
+    fn accepts_pointer_interaction(&self) -> bool {
+        false
+    }
+}

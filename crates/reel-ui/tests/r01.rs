@@ -762,7 +762,7 @@ fn large_path_gradient_glyph_variation_dash_and_utf8_resume_then_retire() {
     let handle = registry
         .register(
             version(1),
-            ResourceData::Font(font.clone()),
+            ResourceData::Font(font.data.clone()),
             ticket(&pool, 4),
         )
         .unwrap();
@@ -892,14 +892,22 @@ fn blob_collision_is_not_a_content_version_and_old_registry_handles_are_foreign(
     let fb = FontData::new(Blob::from_raw_parts(b, 9), 0);
     let mut r = ResourceRegistry::new(2, 8192).unwrap();
     let h = r
-        .register(version(1), ResourceData::Font(fa.clone()), ticket(&pool, 4))
+        .register(
+            version(1),
+            ResourceData::Font(fa.data.clone()),
+            ticket(&pool, 4),
+        )
         .unwrap();
     let other = r
-        .register(version(2), ResourceData::Font(fb.clone()), ticket(&pool, 4))
+        .register(
+            version(2),
+            ResourceData::Font(fb.data.clone()),
+            ticket(&pool, 4),
+        )
         .unwrap();
     assert_ne!(h, other);
     let again = r
-        .register(version(1), ResourceData::Font(fa), ticket(&pool, 4))
+        .register(version(1), ResourceData::Font(fa.data), ticket(&pool, 4))
         .unwrap();
     assert_eq!(h, again);
     assert_eq!(r.usage().tickets, 3);
@@ -1130,17 +1138,13 @@ fn actual_parley_label_glyphs_are_copied_without_reshaping() {
             size_policy: WindowSizePolicy::User,
             size: PhysicalSize::new(400, 300),
             scale_factor: 1.,
-            test_font: Some(font.clone()),
+            default_font: Some(font.clone()),
         },
     );
     let pool = pool();
     let mut registry = ResourceRegistry::new(1, 4096).unwrap();
     let handle = registry
-        .register(
-            version(9),
-            ResourceData::Font(FontData::new(font, 0)),
-            ticket(&pool, bytes),
-        )
+        .register(version(9), ResourceData::Font(font), ticket(&pool, bytes))
         .unwrap();
     let mut bridge = bridge(root);
     let source = bridge.record(FrameId(1)).unwrap();

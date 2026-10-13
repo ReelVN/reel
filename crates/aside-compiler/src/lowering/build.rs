@@ -1,6 +1,7 @@
 mod arguments;
 mod chains;
 mod collections;
+mod composition;
 mod expressions;
 mod locations;
 
@@ -66,7 +67,14 @@ pub(super) fn lower<'a>(
     for name in &m.hir().names {
         b.push(&mut names, (name.as_str(), None))?;
     }
-    for name in [m.canonical_path(), "$module", "$closure", "$default"] {
+    for name in [
+        m.canonical_path(),
+        m.source_path(),
+        "$module",
+        "$closure",
+        "$default",
+        "children",
+    ] {
         b.push(&mut names, (name, None))?;
     }
     sort_names(&mut names, &mut b)?;
@@ -157,11 +165,15 @@ pub(super) fn lower<'a>(
         }
     }
     let path = lower.name(m.canonical_path())?;
+    let source_path = lower.name(m.source_path())?;
     lower.source = bc::SourceId(lower.package.sources.len() as u32);
     let source = lower.b.string(&m.hir().source)?;
     lower.b.push(
         &mut lower.package.sources,
-        bc::SourceFile { path, text: source },
+        bc::SourceFile {
+            path: source_path,
+            text: source,
+        },
     )?;
     lower.module = bc::ModuleId(lower.package.modules.len() as u32);
     let mut module = bc::ModuleDef {
@@ -873,51 +885,17 @@ impl Lowerer<'_> {
                             "import lacks retained external identity",
                         )
                     })?;
+                // A namespace is compile-time name resolution, not a runtime value.
+                // Its used members retain their own trusted native links.
+                if external.descriptor.namespace.is_some() {
+                    continue;
+                }
                 self.b.work(self.links.natives.len() as u64)?;
-                let mut linked = self
+                let linked = self
                     .links
                     .natives
                     .iter()
                     .any(|link| link.target == ExternalTarget::Symbol(symbol));
-                if let Some(namespace) = &external.descriptor.namespace {
-                    for link in self.links.natives {
-                        let ExternalTarget::Node(node) = link.target else {
-                            continue;
-                        };
-                        self.b.work(self.m.external_bindings().len() as u64)?;
-                        let resolved = self
-                            .m
-                            .external_bindings()
-                            .iter()
-                            .find(|e| e.node == Some(node))
-                            .expect("native node link checked above");
-                        let mut reference = resolved.descriptor.resolved_from.as_deref();
-                        let mut depth = 0;
-                        while let Some(source) = reference {
-                            self.b.work(1)?;
-                            depth += 1;
-                            if depth > self.b.limits.max_depth.min(128) {
-                                return Err(self.b.error(
-                                    ErrorKind::Limit,
-                                    "native resolution provenance depth exceeded",
-                                ));
-                            }
-                            if self
-                                .b
-                                .compare(&source.reference.module, &namespace.module)?
-                                .is_eq()
-                                && self
-                                    .b
-                                    .compare(&source.reference.version, &namespace.version)?
-                                    .is_eq()
-                            {
-                                linked = true;
-                                break;
-                            }
-                            reference = source.previous.as_deref();
-                        }
-                    }
-                }
                 if !linked {
                     return Err(self.b.error(ErrorKind::MissingLink,"import requires trusted native linkage; full script module initialization is deferred"));
                 }
@@ -975,6 +953,8 @@ struct FunctionBuilder<'b, 'a> {
     locals: Vec<(h::SymbolId, bc::BindingId)>,
     captures: Vec<(h::SymbolId, bc::CaptureId)>,
     loops: Vec<LoopTarget>,
+    collector: Option<bc::Reg>,
+    no_wait: bool,
     protected_depth: usize,
 }
 
@@ -1101,6 +1081,8 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             locals,
             captures,
             loops: Vec::new(),
+            collector: None,
+            no_wait: false,
             protected_depth: 0,
         };
         let entry = out.block()?;
@@ -1577,8 +1559,6 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             H::Class
                 | H::Interpolation
                 | H::Range
-                | H::Children
-                | H::For
                 | H::Match
                 | H::MatchArm
                 | H::Yield

@@ -250,6 +250,7 @@ pub fn analyze_project(
         for (path, hir) in projected {
             let local = AnalysisOptions {
                 module: path.clone(),
+                source_path: None,
                 context: AnalysisContext::Module,
                 version: memory.modules[&path].version.clone(),
                 limits: AnalysisLimits {

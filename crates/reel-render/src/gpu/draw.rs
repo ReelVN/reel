@@ -241,7 +241,15 @@ impl Context<'_> {
                 .limits
                 .resource_bytes
                 .saturating_sub(self.budget_scope.resources.usage().bytes);
-            let Some(bitmap) = super::glyph::rasterize(frame, run, index, at, available)? else {
+            let Some(bitmap) = super::glyph::rasterize(
+                frame,
+                run,
+                index,
+                at,
+                available,
+                self.gpu.device.limits().max_texture_dimension_2d,
+            )?
+            else {
                 continue;
             };
             let image = self.upload(bitmap.size, &bitmap.pixels)?;

@@ -3,10 +3,11 @@
 use super::{AdapterError, registry};
 use aside_compiler::{
     AnalysisOptions, analyze_module,
+    hir::AnalyzedModule,
     lowering::{self, ExternalTarget, Linkage, NativeLink},
     semantic::{
         CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, MemoryResolver,
-        ModuleInterface, SymbolReference, TypeHint,
+        ModuleInterface, NamespaceRef, SymbolReference, TypeHint,
     },
 };
 use aside_vm::bytecode as bc;
@@ -61,6 +62,8 @@ impl std::error::Error for SourceError {}
 
 fn hint(ty: &bc::BuiltinType) -> TypeHint {
     match ty {
+        bc::BuiltinType::Any => TypeHint::Any,
+        bc::BuiltinType::Bool => TypeHint::Bool,
         bc::BuiltinType::Null => TypeHint::Null,
         bc::BuiltinType::String => TypeHint::String,
         bc::BuiltinType::Array => TypeHint::Array,
@@ -68,10 +71,11 @@ fn hint(ty: &bc::BuiltinType) -> TypeHint {
     }
 }
 fn reference(contract: &registry::NativeContract) -> SymbolReference {
+    let (module, export) = contract.symbol.rsplit_once("::").unwrap();
     SymbolReference {
-        module: "reel".into(),
+        module: module.into(),
         version: contract.abi_version.to_string(),
-        export: Some(contract.symbol.strip_prefix("reel::").unwrap().into()),
+        export: Some(export.into()),
     }
 }
 
@@ -95,17 +99,76 @@ fn seed(content_version: u64) -> Result<bc::VerifiedProgram, bc::Error> {
         });
         bc::TypeId(index as u32)
     }
+    let defaults_path = symbol(&mut package, "reel::defaults");
+    package.modules.push(bc::ModuleDef {
+        path: defaults_path,
+        imports: vec![],
+        exports: vec![],
+        globals: vec![],
+        initializer: None,
+    });
     for contract in registry::contracts() {
-        let parameters = contract
-            .parameters
-            .iter()
-            .map(|(name, builtin)| bc::Parameter {
-                name: symbol(&mut package, name),
-                ty: ty(&mut package, builtin),
+        let mut parameters: Vec<bc::Parameter> = Vec::new();
+        for (index, parameter) in contract.parameters.iter().enumerate() {
+            let parameter_type = ty(&mut package, &parameter.ty);
+            let default = if let Some(value) = &parameter.default {
+                let constant = package.constants.len() as u32;
+                package.constants.push(value.clone());
+                let name = symbol(&mut package, &registry::default_name(&contract, index));
+                let signature = bc::SignatureId(package.signatures.len() as u32);
+                package.signatures.push(bc::Signature {
+                    parameters: parameters
+                        .iter()
+                        .cloned()
+                        .map(|mut p| {
+                            p.default = None;
+                            p
+                        })
+                        .collect(),
+                    rest: None,
+                    return_type: parameter_type,
+                    effects: bc::Effects(0),
+                    property_bag_tail: None,
+                });
+                let function = bc::FunctionId(package.functions.len() as u32);
+                package.functions.push(bc::FunctionDef {
+                    module: bc::ModuleId(0),
+                    name,
+                    kind: bc::FunctionKind::Plain,
+                    signature,
+                    context: bc::Context::NoWait,
+                    captures: vec![],
+                    register_count: index as u32 + 1,
+                    bindings: parameters
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| bc::BindingDef {
+                            name: p.name,
+                            ty: p.ty,
+                            mutable: false,
+                            storage: bc::BindingStorage::Value(bc::Reg(i as u32)),
+                            initialization: bc::BindingInitialization::Parameter(i as u32),
+                        })
+                        .collect(),
+                    descriptors: vec![],
+                    regions: vec![],
+                    source_map: vec![],
+                    code: vec![
+                        bc::Instruction::new(bc::Opcode::LoadConst, index as u32, constant, 0),
+                        bc::Instruction::new(bc::Opcode::Return, index as u32, 0, 0),
+                    ],
+                });
+                Some(function)
+            } else {
+                None
+            };
+            parameters.push(bc::Parameter {
+                name: symbol(&mut package, &parameter.name),
+                ty: parameter_type,
                 mutable: false,
-                default: None,
-            })
-            .collect();
+                default,
+            });
+        }
         let result = ty(&mut package, &contract.result);
         let signature = bc::SignatureId(package.signatures.len() as u32);
         package.signatures.push(bc::Signature {
@@ -135,15 +198,20 @@ fn seed(content_version: u64) -> Result<bc::VerifiedProgram, bc::Error> {
     bc::verify(package, bc::Limits::default())
 }
 
-/// Compile a module containing a named ordinary story function. Supports the
-/// formal `use reel::prelude::*` import; no permissive unknown-name resolver.
+/// One source analysis and its B01 lowering, shared with author tools.
+pub struct SourceCompilation {
+    pub module: AnalyzedModule,
+    pub compilation: lowering::Compilation,
+}
+
+/// The author CLI and runtime share this resolver and trusted native registry.
 /// `content_version` is supplied by the asset/module resolver, not a save ID.
-pub fn compile_story(
+pub fn compile_module(
     source: &str,
     module_path: &str,
+    source_path: &str,
     content_version: u64,
-    entry_name: &str,
-) -> Result<CompiledStory, SourceError> {
+) -> Result<SourceCompilation, SourceError> {
     let contracts = registry::contracts();
     let references = contracts.iter().map(reference).collect::<Vec<_>>();
     let exports = contracts
@@ -156,11 +224,11 @@ pub fn compile_story(
                     parameters: contract
                         .parameters
                         .iter()
-                        .map(|(name, ty)| ExternalParameter {
-                            name: name.clone(),
-                            ty: hint(ty),
+                        .map(|parameter| ExternalParameter {
+                            name: parameter.name.clone(),
+                            ty: hint(&parameter.ty),
                             mutable: false,
-                            default: false,
+                            default: parameter.default.is_some(),
                             rest: false,
                         })
                         .collect(),
@@ -178,15 +246,38 @@ pub fn compile_story(
         })
         .collect::<Vec<_>>();
     let mut resolver = MemoryResolver::default();
+    let mut prelude = exports
+        .iter()
+        .zip(&references)
+        .filter(|(_, reference)| reference.module == "reel")
+        .map(|(export, _)| export.clone())
+        .collect::<Vec<_>>();
+    let mut stage = ExternalSymbol::dynamic("stage");
+    stage.namespace = Some(NamespaceRef {
+        module: "reel::stage".into(),
+        version: "1".into(),
+    });
+    prelude.push(stage);
     for path in ["reel", "reel::prelude"] {
         resolver.insert(ModuleInterface {
             canonical_path: path.into(),
             version: "1".into(),
-            exports: exports.clone(),
+            exports: prelude.clone(),
         });
     }
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::stage".into(),
+        version: "1".into(),
+        exports: exports
+            .iter()
+            .zip(&references)
+            .filter(|(_, reference)| reference.module == "reel::stage")
+            .map(|(export, _)| export.clone())
+            .collect(),
+    });
     let options = AnalysisOptions {
         module: module_path.into(),
+        source_path: Some(source_path.into()),
         version: content_version.to_string(),
         ..Default::default()
     };
@@ -228,6 +319,22 @@ pub fn compile_story(
         },
     )
     .map_err(SourceError::Lowering)?;
+    Ok(SourceCompilation {
+        module,
+        compilation: compiled,
+    })
+}
+
+pub fn compile_story(
+    source: &str,
+    module_path: &str,
+    content_version: u64,
+    entry_name: &str,
+) -> Result<CompiledStory, SourceError> {
+    let SourceCompilation {
+        module,
+        compilation: compiled,
+    } = compile_module(source, module_path, module_path, content_version)?;
     // The compiler initializes module function globals at runtime; their
     // GlobalDef.linked_function is intentionally None. Select the real HIR
     // declaration/output mapping, not that optional prelinked-closure field.

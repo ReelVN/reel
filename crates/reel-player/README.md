@@ -2,8 +2,7 @@
 
 This is a thin native assembly using the production `RenderFrame` → wgpu path.
 The diagnostic binaries below use Rust requests and do not execute the VM.
-The separate Aside adapter described below is library assembly, not a new
-verified runnable story binary.
+`shell::run_story` connects the Aside session driver to this same native window.
 
 ```sh
 # Optional: a real TTF/OTF font for Masonry/Parley text, registered before recording.
@@ -11,7 +10,7 @@ export REEL_DIAGNOSTIC_FONT=/path/to/font.ttf
 cargo run --locked -p reel-player --features window --bin reel-diagnostic
 ```
 
-The optional font source is capped at 16 MiB and budgeted before reading; image
+The font source reserves space in the shared CPU resource budget before reading; image
 and font ContentVersion values are BLAKE3 hashes computed during preparation.
 
 Drag the shapes/white indicator; scroll to change the root transform. The checker
@@ -50,8 +49,7 @@ export REEL_SESSION_FONT=/path/to/font.ttf
 cargo run --locked -p reel-player --features window --bin reel-session-host
 ```
 
-A real font is required (REEL_DIAGNOSTIC_FONT is a fallback); the existing 16 MiB
-font-source limit remains. The scene shows two dialogue requests, a choice,
+A real font is required (REEL_DIAGNOSTIC_FONT is a fallback). The scene shows two dialogue requests, a choice,
 a background branch and completion/cancellation. It does not establish native
 story APIs, media, save/load or VM integration.
 
@@ -98,8 +96,8 @@ Cancellation routes through VM owner revocation and bounded root/task cleanup,
 never through the Rust model's zero-obligation shortcut. GC is provider-aware.
 The embedding application must continue cleanup until its obligations retire.
 
-This is reusable library wiring, not a window/CLI source-file launch path or an
-ASB loader. The existing diagnostic/session-host commands remain Rust-only.
+The existing diagnostic/session-host commands remain Rust-only. Production
+`shell::run_story` accepts a compiled story through the same driver and renderer.
 At 110b984, StoryState distinguishes Running, StartingEntry, Finishing,
 HostFailed(stage), Faulted(DeliveryId), Finished and Cancelled. Repeated terminal ticks return the same terminal category without
 stepping the VM or calling the clock. Entry is consumed only after successful
@@ -112,11 +110,54 @@ fault() offers ephemeral fault inspection while delivery remains
 rooted; cancellation invalidates it and starts bounded cleanup. Cancel after
 normal completion preserves Finished. A terminal state does not mean cleanup has
 finished: continue cleanup_step while cleanup_pending reports work.
-The compiled-program constructor is available; decoding/loading an ASB file is
-still a separate integration increment.
+The compiled-program constructor keeps source compilation and file loading
+outside the native event loop.
 
 Native Windows execution checks cover compiled input, initializer/entry ordering,
 fault retention across GC, cancellation, normal completion and stable host-capacity
 failure. Run `cargo test --locked -p reel-player --lib`. The headless source example
 is `cargo run --locked -p reel-engine --example story_contract`; performance,
-hardware, ASB window loading and the complete author-facing DSL remain separate.
+hardware and the complete author-facing DSL remain separate.
+
+## Aside story window
+
+With the `window` feature, call
+`shell::run_story(story, shell::StoryWindowOptions::new(font_path))`, where `story`
+is a prepared `reel_engine::aside::source::CompiledStory`. Options expose the
+window title, locale and logical window size (default 960 × 540). That size is
+not a fixed author canvas. The font is a TTF/OTF resource used by the existing
+text renderer; no system-font or diagnostic-scene fallback is substituted.
+
+Each window turn advances bounded VM, GC and retirement slices within one 2 ms
+deadline, then updates the projection once. Synchronous native calls continue
+within that deadline instead of waiting for a separate window frame. A published
+dialogue or choice finishes the active GC cycle, then sleeps until presented UI
+input completes it. VM and GC slices alternate during execution, so discarded
+nodes and loop temporaries are reclaimed throughout a long story; instruction
+budget yields schedule another turn without forcing a redraw. Surface resize,
+suspend/resume and device recovery preserve the same VM. The existing reveal
+timer advances at most one grapheme per wake and freezes while a click is held.
+Natural completion leaves the window open after owner retirement. Close or
+Escape cancels and continues task/root cleanup before exiting, including while
+the surface is suspended. VM faults report their source path, line, column and
+author-thrown value after
+the same cleanup. F5/F6 device diagnostics apply only to diagnostic windows.
+
+Resource-blocked execution gets one incremental collection and retry. If live
+capacity remains exhausted, the task stays blocked without polling or losing
+its roots; the diagnostic identifies the resource and the window can still be
+closed normally. The current shell does not raise VM capacities at runtime.
+
+CPU checks exercise real source execution, bounded scheduling, wait/resume,
+choice result delivery and close/normal owner retirement:
+`cargo test --locked -p reel-player --features window --lib`.
+Native compilation and these checks do not claim a physical GPU test.
+
+The supplied default font covers every supported script, including Chinese. Font
+collections share one resource across face indices. To run the existing author
+scene contract with real Chinese glyphs on Windows:
+
+```powershell
+$env:REEL_SESSION_FONT = "C:/Windows/Fonts/msyh.ttc"
+cargo test --locked -p reel-player --lib author_scene_renders_edits_original_nodes_and_keeps_final_picture
+```

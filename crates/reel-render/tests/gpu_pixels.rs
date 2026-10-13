@@ -204,12 +204,13 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
     use reel_ui::resources::{ResourceData, ResourceRegistry};
     use reel_ui::{
         app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
-        core::{DefaultProperties, Widget},
+        core::{DefaultProperties, StyleProperty, Widget},
         dpi::PhysicalSize,
-        peniko::{Blob, FontData, ImageAlphaType, ImageBrush, ImageFormat},
+        peniko::{Blob, ImageAlphaType, ImageBrush, ImageFormat},
     };
     use std::sync::Arc;
     let mut renderer = device();
+    eprintln!("adapter={:?}", renderer.gpu().adapter.get_info());
     let pool = pool();
     let mut registry = ResourceRegistry::new(2, 64 << 10).unwrap();
     let version = |n| ResourceVersion {
@@ -268,48 +269,53 @@ fn image_linear_upload_retirement_and_actual_parley_glyphs() {
     let handle = registry
         .register(
             version(2),
-            ResourceData::Font(FontData::new(font.clone(), 0)),
+            ResourceData::Font(font.clone()),
             pool.reserve(bytes as u64).unwrap(),
         )
         .unwrap();
-    let root = RenderRoot::new(
-        reel_ui::widgets::Label::new("office ffi Reel 25").prepare(),
-        |_| {},
-        RenderRootOptions {
-            default_properties: Arc::new(DefaultProperties::new()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(400, 300),
-            scale_factor: 1.,
-            test_font: Some(font),
-        },
-    );
-    let mut bridge = r01_fixture::bridge(root);
-    let frame = build(
-        bridge.record(FrameId(2)).unwrap(),
-        registry.freeze(&[handle], &pool).unwrap(),
-        &pool,
-    );
-    let count: usize = frame
-        .commands()
-        .iter()
-        .filter_map(|c| match &c.op {
-            reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => {
-                Some(run.glyphs.len())
-            }
-            _ => None,
-        })
-        .sum();
-    assert!(count > 0);
-    let pixels = renderer
-        .readback(renderer.prepare(&frame).unwrap())
-        .unwrap();
-    let covered = pixels.iter().filter(|p| p[3] > 0.1).count();
-    assert!(
-        covered > 100,
-        "{covered} covered pixels for {count} original Parley glyphs"
-    );
-    eprintln!("Parley glyphs={count}; Swash covered pixels={covered}");
+    for (text, font_size) in [("office ffi Reel 25", 24.), ("R", 400.)] {
+        let root = RenderRoot::new(
+            reel_ui::widgets::Label::new(text)
+                .with_style(StyleProperty::FontSize(font_size))
+                .prepare(),
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(400, 300),
+                scale_factor: 1.,
+                default_font: Some(font.clone()),
+            },
+        );
+        let mut bridge = r01_fixture::bridge(root);
+        let frame = build(
+            bridge.record(FrameId(2)).unwrap(),
+            registry.freeze(&[handle], &pool).unwrap(),
+            &pool,
+        );
+        let count: usize = frame
+            .commands()
+            .iter()
+            .filter_map(|c| match &c.op {
+                reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => {
+                    assert_eq!(run.font_size, font_size);
+                    Some(run.glyphs.len())
+                }
+                _ => None,
+            })
+            .sum();
+        assert!(count > 0);
+        let pixels = renderer
+            .readback(renderer.prepare(&frame).unwrap())
+            .unwrap();
+        let covered = pixels.iter().filter(|p| p[3] > 0.1).count();
+        assert!(
+            covered > 100,
+            "{covered} covered pixels for {count} original Parley glyphs at size {font_size}"
+        );
+        eprintln!("Parley glyphs={count}, size={font_size}; Swash covered pixels={covered}");
+    }
 }
 
 #[test]

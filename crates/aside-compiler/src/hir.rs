@@ -361,6 +361,7 @@ pub struct AnalysisStats {
 pub struct AnalyzedModule {
     pub(crate) entry_context: crate::semantic::AnalysisContext,
     pub(crate) canonical_path: String,
+    pub(crate) source_path: String,
     pub(crate) version: String,
     pub(crate) hir: Hir,
     pub(crate) facts: Vec<NodeFacts>,
@@ -396,6 +397,9 @@ impl AnalyzedModule {
 
     pub fn canonical_path(&self) -> &str {
         &self.canonical_path
+    }
+    pub fn source_path(&self) -> &str {
+        &self.source_path
     }
     pub fn version(&self) -> &str {
         &self.version

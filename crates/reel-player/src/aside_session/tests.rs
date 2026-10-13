@@ -158,7 +158,12 @@ fn entry_window_capacity_failure_is_a_stable_host_failure() {
     let mut limits = VmLimits {
         max_tasks: 1,
         max_unwinds: 1,
-        max_arguments: 2,
+        max_arguments: p
+            .signatures
+            .iter()
+            .map(|signature| signature.parameters.len() as u32)
+            .max()
+            .unwrap(),
         max_continuation_values: 1,
         ..Default::default()
     };

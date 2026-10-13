@@ -158,26 +158,18 @@ impl Metadata {
             "metadata/B01 version mismatch",
         )?;
         require(
-            p.modules.len() == 1
-                && self.module_id == 0
-                && p.sources.len() == 1
-                && self.source_id == 0,
+            (self.module_id as usize) < p.modules.len()
+                && (self.source_id as usize) < p.sources.len(),
             Invalid,
-            "ASB standalone profile requires one module and one source",
+            "source module or source file is missing",
         )?;
-        require(
-            p.natives.is_empty() && p.modules[0].imports.is_empty() && p.capabilities.is_empty(),
-            Invalid,
-            "imports, natives and host capabilities are unsupported",
-        )?;
-        let module = &p.modules[0];
-        let source = &p.sources[0];
+        let module = &p.modules[self.module_id as usize];
+        let source = &p.sources[self.source_id as usize];
         budget.charge(source.text.len())?;
         require(
-            p.symbols[module.path.index()] == self.canonical_path
-                && p.symbols[source.path.index()] == self.canonical_path,
+            p.symbols[module.path.index()] == self.canonical_path,
             Invalid,
-            "module/source path mismatch",
+            "module path mismatch",
         )?;
         require(
             self.source_blake3 == digest(source.text.as_bytes()) && !self.source_version.is_empty(),
@@ -264,7 +256,8 @@ impl Metadata {
                 .get(b.function as usize)
                 .ok_or_else(|| Error::new(Invalid, "binding function out of range"))?;
             require(
-                (b.binding as usize) < function.bindings.len()
+                function.module.0 == self.module_id
+                    && (b.binding as usize) < function.bindings.len()
                     && b.source < self.symbol_count
                     && bindings.insert((b.function, b.binding))
                     && function_symbols.insert((b.function, b.source))
@@ -283,7 +276,12 @@ impl Metadata {
             )?;
         }
         require(
-            bindings.len() == p.functions.iter().map(|f| f.bindings.len()).sum::<usize>(),
+            bindings.len()
+                == p.functions
+                    .iter()
+                    .filter(|f| f.module.0 == self.module_id)
+                    .map(|f| f.bindings.len())
+                    .sum::<usize>(),
             Invalid,
             "incomplete binding mappings",
         )?;

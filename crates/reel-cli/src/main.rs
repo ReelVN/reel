@@ -9,21 +9,28 @@ use std::{
     process::ExitCode,
 };
 
-const HELP: &str = "reel check <source.aside> [--format human|json]\nreel build <source.aside> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]\n\nStatically compiles one logical main module. No VM execution or runtime admission.\nBuild writes a verified ASB 1.0 code container; without --entry it is module-only.\nEntry must be an Ordinary plain module-level function with zero required arguments.\nInitializer and game entry are separate; private entry functions are allowed.\nNo import/native linking, game.toml, .rpk, release.json or player support.\nB01 retains source text; BLAKE3 checks integrity, not origin or host authority.\nOutput is explicit; existing files are preserved unless --overwrite is given.\nPublication is atomically visible; power-loss durability is not promised.\n\nBudgets: source read 8388608 bytes; ASB 25165824; metadata 4194304; sections 32;\nmetadata records/objects 65536; source symbols 200000; JSON depth 16;\nJSON string bytes 4096; JSON tokens 1000000; ASB work 134217728.\nB01 defaults: bytes 16777216; records 262144; string bytes 1048576;\nregisters 65536; allocation bytes 67108864; work 16777216 per pass.\nOther parser/analyzer/lowering default budgets also apply.\nJSON: one report on stdout; ranges are half-open UTF-8 bytes, positions zero-based.\nExit codes: 0 verified/built, 1 source/compilation/package failure, 2 usage/IO failure.\n";
+const HELP: &str = "reel check <source.aside> [--format human|json]\nreel build <source.aside> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside> --font <font.ttf> [--entry main::main]\nreel run <file.asb> --font <font.ttf>\n\nCheck and build use the same Reel imports and node constructors as the player.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
 
 struct Args {
+    command: String,
     source: PathBuf,
     json: bool,
     output: Option<PathBuf>,
     entry: Option<String>,
     overwrite: bool,
+    font: Option<PathBuf>,
 }
 fn args(raw: &[OsString]) -> Result<Args, String> {
-    if raw.first().is_none_or(|v| v != "check" && v != "build") {
-        return Err("expected check or build; dev/run/test/loc are unavailable".into());
+    if raw.first().is_none_or(|v| {
+        !["check", "build", "dev", "run"]
+            .iter()
+            .any(|name| v == name)
+    }) {
+        return Err("expected check, build, dev or run".into());
     }
     let (mut source, mut format, mut output, mut entry) = (None, None, None, None);
     let (mut options, mut overwrite) = (true, false);
+    let mut font = None;
     let mut iter = raw[1..].iter();
     while let Some(arg) = iter.next() {
         if options && arg == "--" {
@@ -54,6 +61,10 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
                     .ok_or("--entry requires a UTF-8 main::name")?
                     .to_owned(),
             );
+        } else if options && arg == "--font" {
+            font = Some(PathBuf::from(
+                iter.next().ok_or("--font requires a font file")?,
+            ));
         } else if options && arg == "--overwrite" {
             if overwrite {
                 return Err("--overwrite may only be specified once".into());
@@ -71,17 +82,32 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     if raw[0] == "build" && output.is_none() {
         return Err("build requires an explicit --output <file.asb>".into());
     }
+    let playing = raw[0] == "dev" || raw[0] == "run";
+    if playing && (output.is_some() || overwrite || format.is_some()) {
+        return Err("dev/run accept --font and dev also accepts --entry".into());
+    }
+    if playing && font.is_none() {
+        return Err("dev/run require --font <font.ttf>".into());
+    }
+    if raw[0] == "run" && entry.is_some() {
+        return Err("run uses the entry selected when the package was built".into());
+    }
+    if !playing && font.is_some() {
+        return Err("--font is used by dev/run".into());
+    }
     if let Some(path) = &output
         && (path.to_str().is_none() || path.extension().is_none_or(|ext| ext != "asb"))
     {
         return Err("--output requires a UTF-8 .asb file path".into());
     }
     Ok(Args {
+        command: raw[0].to_string_lossy().into_owned(),
         source: source.ok_or("missing source file")?,
         json: format.unwrap_or(false),
         output,
         entry,
         overwrite,
+        font,
     })
 }
 fn requested_json(raw: &[OsString]) -> bool {
@@ -115,17 +141,17 @@ fn run() -> io::Result<u8> {
     let raw: Vec<_> = std::env::args_os().skip(1).collect();
     let help = |arg: &OsString| arg == "--help" || arg == "-h";
     if (raw.len() == 1 && help(&raw[0]))
-        || (raw.len() == 2 && (raw[0] == "check" || raw[0] == "build") && help(&raw[1]))
+        || (raw.len() == 2
+            && ["check", "build", "dev", "run"]
+                .iter()
+                .any(|name| raw[0] == *name)
+            && help(&raw[1]))
     {
         write!(io::stdout().lock(), "{HELP}")?;
         return Ok(0);
     }
     if raw.len() == 1 && raw[0] == "--version" {
-        writeln!(
-            io::stdout().lock(),
-            "reel {} (static compiler; design 1.1; ASB 1.0)",
-            env!("CARGO_PKG_VERSION")
-        )?;
+        writeln!(io::stdout().lock(), "reel {}", env!("CARGO_PKG_VERSION"))?;
         return Ok(0);
     }
     let parsed = match args(&raw) {
@@ -144,6 +170,22 @@ fn run() -> io::Result<u8> {
         )?;
         return Ok(2);
     };
+    if parsed.command == "run" {
+        let bytes = match std::fs::read(&parsed.source) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                failure(false, "input", Some(path), &error.to_string())?;
+                return Ok(2);
+            }
+        };
+        return match reel_cli::decode_story(&bytes) {
+            Ok(story) => launch(story, parsed.font.unwrap(), path),
+            Err(error) => {
+                failure(false, "package", Some(path), &error.to_string())?;
+                Ok(1)
+            }
+        };
+    }
     let source = match read_source(&parsed.source) {
         Ok(source) => source,
         Err(error) => {
@@ -159,14 +201,28 @@ fn run() -> io::Result<u8> {
             return Ok(error.exit_code);
         }
     };
-    let result = check(&source).and_then(|checked| {
+    let checked = match check(&source, path) {
+        Ok(checked) => checked,
+        Err(failed) => return source_error(parsed.json, path, &source, failed),
+    };
+    if parsed.command == "dev" {
+        return match reel_cli::into_story(checked, parsed.entry.as_deref().unwrap_or("main::main"))
+        {
+            Ok(story) => launch(story, parsed.font.unwrap(), path),
+            Err(failed) => source_error(false, path, &source, failed),
+        };
+    }
+    let result = (|| {
         let artifact = if parsed.output.is_some() {
-            Some(build(&checked, parsed.entry.as_deref())?)
+            Some(build(
+                &checked,
+                Some(parsed.entry.as_deref().unwrap_or("main::main")),
+            )?)
         } else {
             None
         };
         Ok((checked, artifact))
-    });
+    })();
     match result {
         Ok((checked, artifact)) => {
             let mut cleanup_warning = None;
@@ -198,24 +254,13 @@ fn run() -> io::Result<u8> {
                         "atomic_visibility": true, "power_loss_durability": "not_promised", "cleanup_warning": cleanup_warning}))}),
                 )?;
             } else {
-                writeln!(
-                    io::stdout().lock(),
-                    "{path}: static compilation and B01 round trip verified ({} bytes; module initializer {}). No execution or runtime admission; no complete release package.",
-                    checked.bytes.len(),
-                    checked.compilation.entry.0
-                )?;
+                writeln!(io::stdout().lock(), "{path}: check passed")?;
                 if let Some(artifact) = &artifact {
                     writeln!(
                         io::stdout().lock(),
-                        "Built {}: ASB 1.0, {} bytes, BLAKE3 {}. {} Atomic visibility only; power-loss durability not promised.",
+                        "Built {} ({} bytes). Ready to run.",
                         parsed.output.as_ref().unwrap().display(),
                         artifact.bytes.len(),
-                        artifact.blake3,
-                        if artifact.game_entry.is_some() {
-                            "Selected game entry recorded; not executed."
-                        } else {
-                            "Module-only artifact; no game entry selected."
-                        }
                     )?;
                     if let Some(warning) = cleanup_warning {
                         writeln!(io::stderr().lock(), "warning: {warning}")?;
@@ -224,36 +269,66 @@ fn run() -> io::Result<u8> {
             }
             Ok(0)
         }
-        Err(failed) => {
-            if parsed.json {
-                let map = SourceMap::new(&source);
-                let diagnostics: Vec<_> = failed
-                    .diagnostics
-                    .iter()
-                    .map(|d| {
-                        let mut value = diagnostic_json(d, &map);
-                        if let Some(code) = &failed.code {
-                            value["code"] = json!(code);
-                        }
-                        value
-                    })
-                    .collect();
-                report_json(
-                    &json!({"schema_version": 1, "status": "error", "source": path, "limits": package_limits_json(),
-                    "stage": failed.stage, "executed": false, "diagnostics": diagnostics}),
-                )?;
-            } else {
-                let file = SimpleFile::new(path, &source);
-                let mut output = io::stderr().lock();
-                for d in &failed.diagnostics {
-                    let mut rendered = d.to_codespan(());
-                    if let Some(code) = &failed.code {
-                        rendered.code = Some(code.clone());
-                    }
-                    term::emit_to_io_write(&mut output, &term::Config::default(), &file, &rendered)
-                        .map_err(io::Error::other)?;
+        Err(failed) => source_error(parsed.json, path, &source, failed),
+    }
+}
+
+fn source_error(
+    json_format: bool,
+    path: &str,
+    source: &str,
+    failed: reel_cli::Failure,
+) -> io::Result<u8> {
+    if json_format {
+        let map = SourceMap::new(source);
+        let diagnostics: Vec<_> = failed
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let mut value = diagnostic_json(d, &map);
+                if let Some(code) = &failed.code {
+                    value["code"] = json!(code);
                 }
+                value
+            })
+            .collect();
+        report_json(
+            &json!({"schema_version": 1, "status": "error", "source": path, "limits": package_limits_json(),
+                    "stage": failed.stage, "executed": false, "diagnostics": diagnostics}),
+        )?;
+    } else {
+        let file = SimpleFile::new(path, &source);
+        let mut output = io::stderr().lock();
+        for d in &failed.diagnostics {
+            let mut rendered = d.to_codespan(());
+            if let Some(code) = &failed.code {
+                rendered.code = Some(code.clone());
             }
+            term::emit_to_io_write(&mut output, &term::Config::default(), &file, &rendered)
+                .map_err(io::Error::other)?;
+        }
+    }
+    Ok(1)
+}
+
+fn launch(
+    story: reel_engine::aside::source::CompiledStory,
+    font: PathBuf,
+    path: &str,
+) -> io::Result<u8> {
+    #[cfg(feature = "window")]
+    let result =
+        reel_player::shell::run_story(story, reel_player::shell::StoryWindowOptions::new(font))
+            .map_err(|error| error.to_string());
+    #[cfg(not(feature = "window"))]
+    let result: Result<(), String> = {
+        let _ = (story, font);
+        Err("build the window player with: cargo build -p reel-cli --features window".into())
+    };
+    match result {
+        Ok(()) => Ok(0),
+        Err(message) => {
+            failure(false, "player", Some(path), &message)?;
             Ok(1)
         }
     }

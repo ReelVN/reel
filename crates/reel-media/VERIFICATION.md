@@ -25,9 +25,9 @@ cargo run -p reel-media --example device_probe --locked
 
 The [Rust validation tool](../../tools/reel-dev/README.md) replaces the first-party
 Python audit and shell launchers without deleting their assertions. `audit-kira`
-reverses the approved two-file patch, checks all 126 source hashes and exact-VCS
-license/config bytes, and rejects unexpected Rust sources. An optional upstream
-crate directory permits an independent package-byte comparison.
+checks the provenance, licenses and local change record. Local source edits and
+new modules are supported; historical source hashes are not a development gate.
+An optional upstream crate directory produces a comparison report.
 
 Actual Kira/Renderer checks cover mixing and declared stereo→8ch conversion,
 finite-value handling, saturation, block splitting, malformed buffers, shortages,
