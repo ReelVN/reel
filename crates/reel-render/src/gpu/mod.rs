@@ -1,4 +1,4 @@
-//! Real device adapter. Window/surface ownership belongs to the assembly crate.
+//! Optional WGPU adapter. Native surface creation belongs to the host assembly.
 mod device;
 mod targets;
 pub use device::{DeviceGeneration, Gpu, GpuError, GpuLimits, Quality};
@@ -14,3 +14,8 @@ pub use present::SurfacePass;
 mod draw;
 mod replay;
 mod scopes;
+
+mod backend;
+mod surface;
+pub use backend::WgpuBackend;
+pub use surface::ContractError as SurfaceContractError;

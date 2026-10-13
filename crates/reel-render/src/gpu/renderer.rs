@@ -146,20 +146,46 @@ impl Renderer {
         }
     }
     pub fn poll(&mut self) -> Result<Vec<u64>, GpuError> {
+        let mut completed = Vec::new();
+        self.poll_completed(usize::MAX, |id, _| completed.push(id))?;
+        Ok(completed)
+    }
+    pub fn has_pending(&self) -> bool {
+        !self.inflight.is_empty()
+    }
+    pub(super) fn poll_completed(
+        &mut self,
+        mut limit: usize,
+        mut completed: impl FnMut(u64, &RenderFrame),
+    ) -> Result<(), GpuError> {
         self.gpu.check()?;
         let result = self.gpu.device.poll(wgpu::PollType::Poll);
         self.gpu.check()?;
         result.map_err(|e| GpuError::Device(e.to_string()))?;
-        let mut completed = Vec::new();
         self.inflight.retain(|s| {
-            if s.done.load(Ordering::Acquire) {
-                completed.push(s.id);
+            if limit != 0 && s.done.load(Ordering::Acquire) {
+                completed(
+                    s.id,
+                    s._frames.last().expect("submission owns its output frame"),
+                );
+                limit -= 1;
                 false
             } else {
                 true
             }
         });
-        Ok(completed)
+        Ok(())
+    }
+    pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
+        for submission in &self.inflight {
+            for frame in &submission._frames {
+                for lease in frame.resources().leases() {
+                    if resources.contains(lease.version()) {
+                        lease.prohibit_new_leases();
+                    }
+                }
+            }
+        }
     }
     pub fn prepare(&self, frame: &RenderFrame) -> Result<Prepared, GpuError> {
         self.prepare_frames(frame, None)

@@ -1,9 +1,11 @@
 use crate::aside_session::AsideSessionUi;
+use crate::platform::PlatformHost;
 use crate::window::{PointerKind, State};
 use reel_engine::{
     Epoch, Session, SessionId,
     aside::{VmLimits, source::CompiledStory},
 };
+use reel_render::RenderBackend;
 use reel_render::gpu::GpuError;
 use reel_ui::core::TextEvent;
 use std::path::PathBuf;
@@ -122,8 +124,8 @@ impl ApplicationHandler for App {
             }
         };
         match created {
-            Ok(state) => {
-                state.window.request_redraw();
+            Ok(mut state) => {
+                state.host.request_redraw();
                 self.state = Some(state);
             }
             Err(e) => self.fail(event_loop, e),
@@ -159,7 +161,7 @@ impl ApplicationHandler for App {
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F5) =>
             {
-                state.renderer.gpu().device.destroy();
+                state.backend.renderer().gpu().device.destroy();
                 state.invalidate();
                 Ok(())
             }
@@ -227,9 +229,12 @@ impl ApplicationHandler for App {
                 };
                 state.zoom = (state.zoom + delta).clamp(0.5, 1.5);
                 let zoom = state.zoom;
-                state.bridge.edit_widget(state.root_id, |mut widget| {
-                    widget.set_transform(reel_ui::kurbo::Affine::scale(zoom))
-                });
+                state
+                    .presentation
+                    .bridge
+                    .edit_widget(state.root_id, |mut widget| {
+                        widget.set_transform(reel_ui::kurbo::Affine::scale(zoom))
+                    });
                 state.invalidate();
                 Ok(())
             }
@@ -254,17 +259,20 @@ impl ApplicationHandler for App {
                     self.state = None;
                     event_loop.exit();
                 } else if state.close_complete() {
+                    state.host.request_exit();
+                    state.host.apply(event_loop);
                     self.state = None;
-                    event_loop.exit();
                 } else {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(
-                        Instant::now() + Duration::from_millis(1),
-                    ));
+                    state
+                        .host
+                        .wait_until(Some(Instant::now() + Duration::from_millis(1)));
+                    state.host.apply(event_loop);
                 }
                 return;
             }
             if state.is_suspended() {
-                event_loop.set_control_flow(ControlFlow::Wait);
+                state.host.set_wake_deadline(None);
+                state.host.apply(event_loop);
                 return;
             }
             if let Err(error) = state.tick_story() {
@@ -285,13 +293,13 @@ impl ApplicationHandler for App {
                 }
                 return;
             }
-            if state.demand.has_work() {
-                state.window.request_redraw();
+            if state.presentation.needs_redraw() {
+                state.host.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            let completion_deadline = (state.demand.has_work()
-                || state.renderer.usage().targets != 0)
-                .then(|| Instant::now() + Duration::from_millis(8));
+            let completion_deadline = (state.presentation.needs_redraw()
+                || state.backend.has_pending())
+            .then(|| Instant::now() + Duration::from_millis(8));
             let deadline = match (completion_deadline, state.reveal_deadline()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
@@ -300,11 +308,8 @@ impl ApplicationHandler for App {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
-            event_loop.set_control_flow(
-                deadline
-                    .map(ControlFlow::WaitUntil)
-                    .unwrap_or(ControlFlow::Wait),
-            );
+            state.host.wait_until(deadline);
+            state.host.apply(event_loop);
         }
     }
 }

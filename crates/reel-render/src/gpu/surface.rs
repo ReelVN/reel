@@ -1,7 +1,7 @@
-use reel_render::gpu::{Gpu, SurfacePass};
+use super::{Gpu, GpuError, SurfacePass};
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ContractError {
+pub enum ContractError {
     NoSrgbFormat,
     NoOpaqueAlpha,
     NoFifo,
@@ -9,7 +9,7 @@ pub(crate) enum ContractError {
 }
 impl std::fmt::Display for ContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "incompatible diagnostic surface: {self:?}")
+        write!(f, "incompatible surface: {self:?}")
     }
 }
 impl std::error::Error for ContractError {}
@@ -50,7 +50,7 @@ pub(crate) fn negotiate(
     gpu: &Gpu,
     surface: &wgpu::Surface<'_>,
     size: [u32; 2],
-) -> Result<(wgpu::SurfaceConfiguration, SurfacePass), Box<dyn std::error::Error>> {
+) -> Result<(wgpu::SurfaceConfiguration, SurfacePass), GpuError> {
     let config = select(&surface.get_capabilities(&gpu.adapter), size)?;
     gpu.quality([config.width, config.height])?;
     let output = SurfacePass::new(&gpu.device, config.format)?;

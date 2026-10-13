@@ -4,17 +4,17 @@ use crate::{
     aside_session::AsideSessionUi, shell::StoryWindowOptions, window_session::WindowSession,
 };
 use crate::{
-    demand::{Demand, Draw},
-    surface::negotiate,
+    platform::{PlatformHost, winit::WinitHost},
+    presentation::Presentation,
 };
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+    clock::Clock,
     identity::{AssetKey, ContentVersion, FrameId, ResourceVersion, SurfaceEpoch},
 };
 use reel_render::{
-    PresentOutcome,
-    gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer, SurfacePass},
-    presentation_notice,
+    AlphaMode, RenderBackend, RenderEvent, SurfaceInfo,
+    gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, WgpuBackend},
 };
 use reel_ui::bridge::{BridgeLimits, PresentationBridge};
 use reel_ui::frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget};
@@ -34,31 +34,25 @@ use winit::{event_loop::ActiveEventLoop, window::Window};
 type Error = Box<dyn std::error::Error>;
 // Surface is declared first and explicitly dropped before Window on shutdown/suspend.
 pub(crate) struct State {
-    surface: Option<wgpu::Surface<'static>>,
+    pub(crate) backend: WgpuBackend,
     instance: wgpu::Instance,
-    pub(crate) renderer: Renderer,
-    output: SurfacePass,
     pub(crate) window: Arc<Window>,
-    pub(crate) bridge: PresentationBridge,
-    config: wgpu::SurfaceConfiguration,
+    pub(crate) host: WinitHost,
+    pub(crate) presentation: Presentation,
     size: PhysicalSize<u32>,
     pool: BudgetPool,
     registry: ResourceRegistry,
     resources: Vec<reel_ui::resources::ResourceHandle>,
     epoch: u64,
-    frame: u64,
-    // One budgeted immutable accepted CPU frame, for expose after model refusal.
-    accepted_frame: Option<RenderFrame>,
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
-    pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
     pub(crate) session: Option<WindowSession>,
     recorded_projection: Option<ProjectionStamp>,
     next_reveal: Option<Instant>,
-    clock_origin: Instant,
     closing: bool,
+    completions: Vec<RenderEvent<GpuError>>,
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
@@ -144,12 +138,20 @@ impl State {
             limits,
         ))?;
         let size = window.inner_size();
-        let (config, output) = negotiate(&gpu, &surface, [size.width, size.height])?;
+        let info = SurfaceInfo {
+            physical_size: [size.width, size.height],
+            scale_factor: window.scale_factor(),
+            surface_epoch: SurfaceEpoch(1),
+            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        };
         eprintln!(
             "adapter={:?}; quality={:?}",
             gpu.adapter.get_info(),
-            gpu.quality([config.width, config.height])?
+            gpu.quality([size.width.max(1), size.height.max(1)])?
         );
+        let mut backend = WgpuBackend::new(gpu, surface);
+        backend.configure(info)?;
         let pool = BudgetPool::new(
             BudgetCategory::CpuOutput,
             QueueLimits {
@@ -263,43 +265,34 @@ impl State {
         )
         .map_err(|e| format!("bridge: {e:?}"))?;
         let mut state = Self {
-            surface: Some(surface),
+            backend,
             instance,
-            renderer: Renderer::new(gpu),
-            output,
+            host: WinitHost::new(window.clone()),
             window,
-            bridge,
-            config,
+            presentation: Presentation::new(bridge, info),
             size: PhysicalSize::new(size.width, size.height),
             pool,
             registry,
             resources,
             epoch: 1,
-            frame: 0,
-            accepted_frame: None,
             pointer: Default::default(),
             modifiers: Default::default(),
-            demand: Demand::default(),
             root_id,
             zoom: 1.,
             session,
             recorded_projection: None,
             next_reveal: None,
-            clock_origin: Instant::now(),
             closing: false,
+            completions: Vec::new(),
         };
         state.schedule_reveal();
         Ok(state)
     }
     pub(crate) fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
         self.invalidate_surface(size)?;
-        if let Some(surface) = &self.surface {
-            let (config, output) =
-                negotiate(self.renderer.gpu(), surface, [size.width, size.height])?;
-            self.config = config;
-            self.output = output;
+        if self.backend.surface().is_some() {
+            self.backend.configure(self.presentation.surface_info())?;
         }
-        self.demand = Demand::default();
         self.schedule_reveal();
         self.window.request_redraw();
         Ok(())
@@ -307,26 +300,23 @@ impl State {
     fn invalidate_surface(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
         self.size = PhysicalSize::new(size.width, size.height);
         self.epoch = self.epoch.checked_add(1).ok_or("surface epoch exhausted")?;
-        self.bridge.replace_surface(SurfaceEpoch(self.epoch));
-        self.bridge
-            .handle_window_event(reel_ui::core::WindowEvent::Rescale(
-                self.window.scale_factor(),
-            ));
-        self.bridge
-            .handle_window_event(reel_ui::core::WindowEvent::Resize(self.size));
+        self.presentation.replace_surface(SurfaceInfo {
+            physical_size: [size.width, size.height],
+            scale_factor: self.window.scale_factor(),
+            surface_epoch: SurfaceEpoch(self.epoch),
+            ..self.presentation.surface_info()
+        });
         // Invalidates candidates even if fresh negotiation subsequently fails.
-        self.demand = Demand::idle();
         self.next_reveal = None;
-        self.accepted_frame = None;
         if let Some(session) = &mut self.session {
             session.ui_mut().clear_presented();
         }
         Ok(())
     }
     pub(crate) fn invalidate(&mut self) {
-        self.demand.invalidate();
-        if self.demand.has_work() {
-            self.window.request_redraw();
+        self.presentation.invalidate();
+        if self.presentation.needs_redraw() {
+            self.host.request_redraw();
         }
     }
     pub(crate) fn is_diagnostic(&self) -> bool {
@@ -345,8 +335,8 @@ impl State {
         if !session.needs_tick() && !session.ui().images_need_poll() {
             return Ok(());
         }
-        let origin = self.clock_origin;
-        let now = || u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let host = &self.host;
+        let now = || host.monotonic_now().0;
         let budget = reel_engine::aside::SliceBudget {
             deadline_ns: Some(now().saturating_add(2_000_000)),
             ..Default::default()
@@ -354,7 +344,7 @@ impl State {
         let before = session.ui().projection_stamp();
         session.tick(budget, now)?;
         if !self.closing {
-            session.sync(&mut self.bridge, self.root_id)?;
+            session.sync(&mut self.presentation.bridge, self.root_id)?;
             if before != session.ui().projection_stamp() {
                 self.schedule_reveal();
                 self.invalidate();
@@ -365,8 +355,7 @@ impl State {
     pub(crate) fn close(&mut self) -> Result<(), Error> {
         self.closing = true;
         self.next_reveal = None;
-        self.demand = Demand::idle();
-        self.bridge.clear();
+        self.presentation.suspend();
         if let Some(session) = &mut self.session {
             session.ui_mut().close_images();
             session.close()?;
@@ -381,204 +370,101 @@ impl State {
                 .is_none_or(WindowSession::close_complete)
     }
     pub(crate) fn poll_completions(&mut self) -> Result<(), GpuError> {
-        let completed = self.renderer.poll()?;
-        self.demand.completed(!completed.is_empty());
+        self.completions.clear();
+        self.presentation
+            .poll(&mut self.backend, &mut self.completions, 64)?;
         Ok(())
     }
     pub(crate) fn render(&mut self) -> Result<(), Error> {
         self.poll_completions()?;
-        let Some(draw) = self.demand.draw() else {
-            return Ok(());
-        };
-        if self.size.width == 0 || self.size.height == 0 {
-            self.demand = Demand::idle();
-            return Ok(());
-        }
-        let Some(surface) = &self.surface else {
-            return Ok(());
-        };
-        let surface_texture = match surface.get_current_texture() {
-            Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+        let Self {
+            presentation,
+            backend,
+            host,
+            pool,
+            registry,
+            resources,
+            session,
+            recorded_projection,
+            ..
+        } = self;
+        let result = presentation.render(backend, host, |bridge, id, info| {
+            build_frame(
+                bridge,
+                id,
+                info,
+                pool,
+                registry,
+                resources,
+                session.as_ref(),
+                recorded_projection,
+            )
+        });
+        let result = match result {
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<GpuError>(),
+                    Some(GpuError::Surface(
+                        wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated
+                    ))
+                ) =>
+            {
                 self.resize(self.window.inner_size())?;
                 return Ok(());
             }
-            Err(wgpu::SurfaceError::Timeout) => {
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
+            result => result?,
         };
-        let frame = match draw {
-            Draw::Current => self.build_frame()?,
-            Draw::Accepted => {
-                let Some(frame) = &self.accepted_frame else {
-                    self.demand.presented(draw);
-                    return Ok(());
-                };
-                // A frozen repaint cannot install stale or unaccepted geometry.
-                if !self.bridge.accepted_key().is_some_and(|key| {
-                    key.frame_id() == frame.frame_id()
-                        && key.surface_epoch() == frame.surface_epoch()
-                }) {
-                    self.accepted_frame = None;
-                    if let Some(session) = &mut self.session {
-                        session.ui_mut().clear_presented();
-                    }
-                    self.demand.presented(draw);
-                    return Ok(());
-                }
-                frame.clone()
-            }
-        };
-        let mut prepared = match self.renderer.prepare(&frame) {
-            Ok(p) => p,
-            Err(error) if error.is_retryable() => {
-                self.demand.refused(draw, &error);
-                return Ok(());
-            }
-            Err(
-                error @ (GpuError::Budget { .. }
-                | GpuError::Unsupported { .. }
-                | GpuError::Geometry { .. }
-                | GpuError::InvalidRecord { .. }),
-            ) => {
-                eprintln!("frame refused; keeping last accepted view: {error}");
-                self.demand.refused(draw, &error);
-                if draw == Draw::Current && self.accepted_frame.is_some() {
-                    self.demand.exposed();
-                }
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
-        };
-        self.output.encode(
-            &self.renderer.gpu().device,
-            &mut prepared,
-            &surface_texture.texture.create_view(&Default::default()),
-        );
-        self.renderer.submit(prepared)?;
-        self.window.pre_present_notify();
-        surface_texture.present();
-        let frame_id = frame.frame_id();
-        let notice_result = if draw == Draw::Current {
-            let notice = presentation_notice(
-                &frame,
-                SurfaceEpoch(self.epoch),
-                Ok(PresentOutcome::PresentAccepted(frame.frame_id())),
-            );
-            let result = self.bridge.resolve(notice);
-            if result == reel_ui::bridge::NoticeResult::Accepted {
-                if let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
-                {
-                    session.ui_mut().presented(stamp);
-                }
-                self.accepted_frame = Some(frame);
-            }
-            Some(result)
-        } else {
-            // This is the exact already accepted frame; repaint has no new
-            // candidate and cannot accept or change the latest model's geometry.
-            None
-        };
-        if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
+        if result.accepted
+            && let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
+        {
+            session.ui_mut().presented(stamp);
+        }
+        if result.accepted && std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
+            let key = self
+                .presentation
+                .bridge
+                .accepted_key()
+                .expect("accepted frame");
             eprintln!(
-                "present frame={} epoch={} draw={draw:?} notice={notice_result:?}",
-                frame_id.0, self.epoch
+                "present frame={} epoch={}",
+                key.frame_id().0,
+                key.surface_epoch().0
             );
         }
-        self.demand.presented(draw);
+        if let Some(error) = result.refused {
+            eprintln!("frame refused; keeping last accepted view: {error}");
+        }
         Ok(())
     }
     pub(crate) fn redraw_requested(&mut self) -> Result<(), Error> {
         self.tick_story()?;
-        self.demand.exposed();
+        self.presentation.exposed();
         self.render()
-    }
-    fn build_frame(&mut self) -> Result<RenderFrame, Error> {
-        self.frame = self
-            .frame
-            .checked_add(1)
-            .ok_or("frame identity exhausted")?;
-        let source = self
-            .bridge
-            .record(FrameId(self.frame))
-            .map_err(|e| format!("record: {e:?}"))?;
-        // Recording lays out the viewport and may clamp its scroll offset.
-        self.recorded_projection = self
-            .session
-            .as_ref()
-            .map(|session| session.ui().projection_stamp());
-        let images = self
-            .session
-            .as_ref()
-            .map_or(&[][..], |session| session.ui().image_resources());
-        let snapshot = reel_ui::resources::ResourceSnapshot::capture(
-            (0..self.resources.len() + images.len()).map(|index| {
-                if index < self.resources.len() {
-                    self.registry.acquire(self.resources[index])
-                } else {
-                    Ok(images[index - self.resources.len()].clone())
-                }
-            }),
-            &self.pool,
-        )
-        .map_err(|e| format!("snapshot: {e:?}"))?;
-        let scale = self.window.scale_factor();
-        let mut build = FrameBuild::new(
-            source,
-            snapshot,
-            FrameInfo {
-                logical_size: [
-                    f64::from(self.size.width) / scale,
-                    f64::from(self.size.height) / scale,
-                ],
-                physical_size: [self.size.width, self.size.height],
-            },
-            BuildLimits { max_bytes: 8 << 20 },
-            &self.pool,
-        )
-        .map_err(|e| format!("build: {e:?}"))?;
-        let mut budget = StepBudget {
-            max_commands: 64,
-            max_units: 8192,
-            max_bytes: 64 << 10,
-        };
-        loop {
-            let progress = build.step(budget).map_err(|e| format!("compile: {e:?}"))?;
-            if progress.complete {
-                break;
-            }
-            budget.max_units = budget.max_units.max(progress.minimum_units);
-            budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
-        }
-        Ok(build.finish().map_err(|e| format!("finish: {e:?}"))?)
     }
     pub(crate) fn recover_device(&mut self) -> Result<(), Error> {
         self.pointer_event(PointerKind::Cancel)?;
         let size = self.window.inner_size();
         self.invalidate_surface(size)?;
         let generation = self
-            .renderer
+            .backend
+            .renderer()
             .gpu()
             .generation()
             .0
             .checked_add(1)
             .ok_or("device generation exhausted")?;
+        self.backend.suspend();
+        let surface = self.instance.create_surface(self.window.clone())?;
         let gpu = pollster::block_on(Gpu::request(
             &self.instance,
-            self.surface.as_ref(),
+            Some(&surface),
             DeviceGeneration(generation),
-            self.renderer.gpu().limits(),
+            self.backend.renderer().gpu().limits(),
         ))?;
-        let surface = self
-            .surface
-            .as_ref()
-            .ok_or("device recovery requires a resumed surface")?;
-        let (config, output) = negotiate(&gpu, surface, [size.width, size.height])?;
-        self.output = output;
-        self.config = config;
-        self.renderer = Renderer::new(gpu);
-        self.demand = Demand::default();
+        let mut backend = WgpuBackend::new(gpu, surface);
+        backend.configure(self.presentation.surface_info())?;
+        // Retire the old surface and device together, including zero-sized views.
+        self.backend = backend;
         self.schedule_reveal();
         self.window.request_redraw();
         eprintln!(
@@ -589,34 +475,36 @@ impl State {
     }
     pub(crate) fn suspend(&mut self) {
         let _ = self.pointer_event(PointerKind::Cancel);
-        self.bridge.clear();
-        let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
-        let _ = self.renderer.poll();
-        self.surface = None;
-        self.demand = Demand::idle();
+        self.presentation.suspend();
+        self.backend.suspend();
         self.next_reveal = None;
-        self.accepted_frame = None;
         if let Some(session) = &mut self.session {
             session.ui_mut().clear_presented();
+            session.suspend(self.host.monotonic_now().0);
         }
     }
     pub(crate) fn is_suspended(&self) -> bool {
-        self.surface.is_none()
+        self.backend.surface().is_none()
     }
     pub(crate) fn resume(&mut self) -> Result<(), Error> {
-        self.surface = Some(self.instance.create_surface(self.window.clone())?);
-        if self.renderer.gpu().check().is_err() {
-            self.recover_device()
+        self.backend
+            .resume(self.instance.create_surface(self.window.clone())?);
+        if self.backend.renderer().gpu().check().is_err() {
+            self.recover_device()?;
         } else {
-            self.resize(self.window.inner_size())
+            self.resize(self.window.inner_size())?;
         }
+        if let Some(session) = &mut self.session {
+            session.resume(self.host.monotonic_now().0);
+        }
+        Ok(())
     }
     pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<(), Error> {
         if let Some(session) = &mut self.session {
-            session.handle_text(&mut self.bridge, event)?;
-            session.after_input(&mut self.bridge, self.root_id)?;
+            session.handle_text(&mut self.presentation.bridge, event)?;
+            session.after_input(&mut self.presentation.bridge, self.root_id)?;
         } else {
-            self.bridge.handle_text_event(event);
+            self.presentation.bridge.handle_text_event(event);
         }
         self.schedule_reveal();
         self.invalidate();
@@ -659,19 +547,20 @@ impl State {
         if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
             eprintln!(
                 "pointer accepted={:?} position={:?}",
-                self.bridge
+                self.presentation
+                    .bridge
                     .accepted_key()
                     .map(|key| (key.frame_id(), key.surface_epoch())),
                 self.pointer
             );
         }
         if let Some(session) = &mut self.session {
-            session.handle_pointer(&mut self.bridge, event)?;
+            session.handle_pointer(&mut self.presentation.bridge, event)?;
             if matches!(kind, PointerKind::Up) {
-                session.after_input(&mut self.bridge, self.root_id)?;
+                session.after_input(&mut self.presentation.bridge, self.root_id)?;
             }
         } else {
-            self.bridge.handle_pointer_event(event);
+            self.presentation.bridge.handle_pointer_event(event);
         }
         if matches!(kind, PointerKind::Up) {
             self.schedule_reveal();
@@ -680,7 +569,7 @@ impl State {
         Ok(())
     }
     fn schedule_reveal(&mut self) {
-        if self.surface.is_none() || self.size.width == 0 || self.size.height == 0 {
+        if self.is_suspended() || self.size.width == 0 || self.size.height == 0 {
             self.next_reveal = None;
             return;
         }
@@ -730,7 +619,7 @@ impl State {
                     .session_mut()
                     .reveal_more(owner, interaction, 1)?
                 {
-                    session.sync(&mut self.bridge, self.root_id)?;
+                    session.sync(&mut self.presentation.bridge, self.root_id)?;
                     self.invalidate();
                 }
             }
@@ -754,26 +643,101 @@ impl Drop for State {
         if let Some(session) = &mut self.session {
             let _ = session.close();
         }
-        self.bridge.clear();
-        let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
-        let _ = self.renderer.poll();
-        self.surface = None;
+        self.presentation.suspend();
+        self.backend.suspend();
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "assembly borrows disjoint frame inputs without copying resource payloads"
+)]
+fn build_frame(
+    bridge: &mut PresentationBridge,
+    id: FrameId,
+    info: SurfaceInfo,
+    pool: &BudgetPool,
+    registry: &ResourceRegistry,
+    resources: &[reel_ui::resources::ResourceHandle],
+    session: Option<&WindowSession>,
+    recorded_projection: &mut Option<ProjectionStamp>,
+) -> Result<RenderFrame, Error> {
+    let source = bridge.record(id).map_err(|e| format!("record: {e:?}"))?;
+    *recorded_projection = session.map(|session| session.ui().projection_stamp());
+    let images = session.map_or(&[][..], |session| session.ui().image_resources());
+    let snapshot = reel_ui::resources::ResourceSnapshot::capture(
+        (0..resources.len() + images.len()).map(|index| {
+            if index < resources.len() {
+                registry.acquire(resources[index])
+            } else {
+                Ok(images[index - resources.len()].clone())
+            }
+        }),
+        pool,
+    )
+    .map_err(|e| format!("snapshot: {e:?}"))?;
+    let mut build = FrameBuild::new(
+        source,
+        snapshot,
+        FrameInfo {
+            logical_size: info
+                .physical_size
+                .map(|size| f64::from(size) / info.scale_factor),
+            physical_size: info.physical_size,
+        },
+        BuildLimits { max_bytes: 8 << 20 },
+        pool,
+    )
+    .map_err(|e| format!("build: {e:?}"))?;
+    let mut budget = StepBudget {
+        max_commands: 64,
+        max_units: 8192,
+        max_bytes: 64 << 10,
+    };
+    loop {
+        let progress = build.step(budget).map_err(|e| format!("compile: {e:?}"))?;
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
+    Ok(build.finish().map_err(|e| format!("finish: {e:?}"))?)
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
+impl State {
+    fn build_frame(&mut self) -> Result<RenderFrame, Error> {
+        self.presentation.frame += 1;
+        let info = self.presentation.surface_info();
+        build_frame(
+            &mut self.presentation.bridge,
+            FrameId(self.presentation.frame),
+            info,
+            &self.pool,
+            &self.registry,
+            &self.resources,
+            self.session.as_ref(),
+            &mut self.recorded_projection,
+        )
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod tests {
     use super::*;
     use crate::demand::Model;
+    use reel_render::{PresentOutcome, presentation_notice};
     use reel_ui::app::InputGeometrySource;
-    use winit::{
-        application::ApplicationHandler, event_loop::EventLoop,
-        platform::x11::EventLoopBuilderExtX11,
-    };
+    #[cfg(target_os = "windows")]
+    use winit::platform::windows::EventLoopBuilderExtWindows;
+    #[cfg(target_os = "linux")]
+    use winit::platform::x11::EventLoopBuilderExtX11;
+    use winit::{application::ApplicationHandler, event_loop::EventLoop};
 
     fn accepted_transform(state: &State) -> reel_ui::kurbo::Affine {
         let InputGeometrySource::Presented(Some(view)) =
-            state.bridge.root().input_geometry_source()
+            state.presentation.bridge.root().input_geometry_source()
         else {
             panic!("input requires an actually accepted surface frame");
         };
@@ -781,11 +745,48 @@ mod tests {
     }
     fn exercise(event_loop: &ActiveEventLoop) {
         // Derive pressure from the current profile rather than assuming 4x support.
-        let mut probe = State::new(event_loop, 1).unwrap();
+        let mut probe = State::with_limits(
+            event_loop,
+            1,
+            GpuLimits {
+                target_bytes: 512 << 20,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let probe_frame = probe.build_frame().unwrap();
-        let prepared = probe.renderer.prepare(&probe_frame).unwrap();
-        let single_targets = probe.renderer.usage().targets;
-        drop(prepared);
+        let prepared = probe.backend.renderer_mut().prepare(&probe_frame).unwrap();
+        let single_targets = probe.backend.renderer_mut().usage().targets;
+        let second = probe.backend.renderer().prepare(&probe_frame).unwrap();
+        let first_id = probe.backend.renderer_mut().submit(prepared).unwrap();
+        let second_id = probe.backend.renderer_mut().submit(second).unwrap();
+        probe
+            .backend
+            .renderer()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        let mut events = Vec::new();
+        probe.backend.poll(&mut events, 0).unwrap();
+        assert!(events.is_empty());
+        assert!(probe.backend.has_pending());
+        probe.backend.poll(&mut events, 1).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(probe.backend.has_pending());
+        probe.backend.poll(&mut events, 1).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(!probe.backend.has_pending());
+        for (event, id) in events.iter().zip([first_id, second_id]) {
+            assert!(
+                matches!(event, RenderEvent::RenderFinished { id: actual, frame }
+                if actual.0 == id && *frame == probe_frame.frame_id())
+            );
+        }
+        assert!(
+            probe.presentation.bridge.accepted_key().is_none(),
+            "offscreen completion never accepts input"
+        );
         drop(probe_frame);
         drop(probe);
         let mut state = State::with_limits(
@@ -798,95 +799,115 @@ mod tests {
         )
         .unwrap();
         state.render().unwrap();
-        assert!(state.bridge.accepted_key().is_some());
+        assert!(state.presentation.bridge.accepted_key().is_some());
         state
-            .renderer
+            .backend
+            .renderer_mut()
             .gpu()
             .device
             .poll(wgpu::PollType::Wait)
             .unwrap();
         state.poll_completions().unwrap();
-        let before_expose = state.frame;
+        let before_expose = state.presentation.frame;
         state.redraw_requested().unwrap();
-        assert!(state.frame > before_expose);
-        let accepted = state.bridge.accepted_key().unwrap().frame_id();
-        assert_eq!(state.demand.model, Model::Idle);
+        assert!(state.presentation.frame > before_expose);
+        let accepted = state.presentation.bridge.accepted_key().unwrap().frame_id();
+        assert_eq!(state.presentation.demand.model, Model::Idle);
         state
-            .renderer
+            .backend
+            .renderer_mut()
             .gpu()
             .device
             .poll(wgpu::PollType::Wait)
             .unwrap();
         state.poll_completions().unwrap();
         // Successful idle never creates a timer-driven model preparation.
-        let after_expose = state.frame;
+        let after_expose = state.presentation.frame;
         state.render().unwrap();
-        assert_eq!(state.frame, after_expose);
+        assert_eq!(state.presentation.frame, after_expose);
         let held_frame = state.build_frame().unwrap();
-        let held = state.renderer.prepare(&held_frame).unwrap();
+        let held = state.backend.renderer_mut().prepare(&held_frame).unwrap();
         eprintln!(
             "native pressure fixture targets={}",
-            state.renderer.usage().targets
+            state.backend.renderer_mut().usage().targets
         );
-        state.bridge.edit_widget(state.root_id, |mut widget| {
-            widget.set_transform(reel_ui::kurbo::Affine::scale(0.7))
-        });
+        state
+            .presentation
+            .bridge
+            .edit_widget(state.root_id, |mut widget| {
+                widget.set_transform(reel_ui::kurbo::Affine::scale(0.7))
+            });
         state.invalidate();
         state.render().unwrap();
-        assert_eq!(state.demand.model, Model::Waiting);
-        assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
+        assert_eq!(state.presentation.demand.model, Model::Waiting);
+        assert_eq!(
+            state.presentation.bridge.accepted_key().unwrap().frame_id(),
+            accepted
+        );
         assert_eq!(accepted_transform(&state), reel_ui::kurbo::Affine::IDENTITY);
-        let refused_frame = state.frame;
+        let refused_frame = state.presentation.frame;
         // No completion and no new input: OS redraws cannot repeatedly compile.
         for _ in 0..10 {
             state.render().unwrap();
         }
-        assert_eq!(state.frame, refused_frame);
-        let id = state.renderer.submit(held).unwrap(); // offscreen: never accepts its geometry
+        assert_eq!(state.presentation.frame, refused_frame);
+        let id = state.backend.renderer_mut().submit(held).unwrap(); // offscreen: never accepts its geometry
         state
-            .renderer
+            .backend
+            .renderer_mut()
             .gpu()
             .device
             .poll(wgpu::PollType::Wait)
             .unwrap();
-        assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
-        assert!(state.renderer.usage().targets > 0);
+        assert_eq!(
+            state.presentation.bridge.accepted_key().unwrap().frame_id(),
+            accepted
+        );
+        assert!(state.backend.renderer_mut().usage().targets > 0);
         state.render().unwrap(); // observes completion and retries latest state, without input
-        assert_eq!(state.demand.model, Model::Idle);
-        assert!(state.bridge.accepted_key().unwrap().frame_id() > accepted);
+        assert_eq!(state.presentation.demand.model, Model::Idle);
+        assert!(state.presentation.bridge.accepted_key().unwrap().frame_id() > accepted);
         assert_eq!(
             accepted_transform(&state),
             reel_ui::kurbo::Affine::scale(0.7)
         );
         state
-            .renderer
+            .backend
+            .renderer_mut()
             .gpu()
             .device
             .poll(wgpu::PollType::Wait)
             .unwrap();
         state.poll_completions().unwrap();
         // R01 can freeze this finite f64 transform; GPU conversion cannot represent it.
-        state.bridge.edit_widget(state.root_id, |mut widget| {
-            widget.set_transform(reel_ui::kurbo::Affine::scale(1e100))
-        });
+        state
+            .presentation
+            .bridge
+            .edit_widget(state.root_id, |mut widget| {
+                widget.set_transform(reel_ui::kurbo::Affine::scale(1e100))
+            });
         state.invalidate();
         state.redraw_requested().unwrap();
-        assert_eq!(state.demand.model, Model::Blocked);
-        let failed_count = state.frame;
-        let accepted = state.bridge.accepted_key().unwrap().frame_id();
+        assert_eq!(state.presentation.demand.model, Model::Blocked);
+        let failed_count = state.presentation.frame;
+        let accepted = state.presentation.bridge.accepted_key().unwrap().frame_id();
         state.redraw_requested().unwrap(); // repaint exact accepted frame; no bad-model compile
         assert!(
-            state.renderer.usage().targets > 0,
+            state.backend.renderer_mut().usage().targets > 0,
             "expose must actually submit the frozen accepted frame"
         );
-        assert_eq!(state.frame, failed_count);
-        assert_eq!(state.bridge.accepted_key().unwrap().frame_id(), accepted);
+        assert_eq!(state.presentation.frame, failed_count);
+        assert_eq!(
+            state.presentation.bridge.accepted_key().unwrap().frame_id(),
+            accepted
+        );
         assert_eq!(
             accepted_transform(&state),
             reel_ui::kurbo::Affine::scale(0.7)
         );
         state
-            .renderer
+            .backend
+            .renderer_mut()
             .gpu()
             .device
             .poll(wgpu::PollType::Wait)
@@ -895,47 +916,61 @@ mod tests {
         for _ in 0..10 {
             state.render().unwrap();
         }
-        assert_eq!(state.frame, failed_count);
-        assert_eq!(state.demand.model, Model::Blocked);
-        state.bridge.edit_widget(state.root_id, |mut widget| {
-            widget.set_transform(reel_ui::kurbo::Affine::scale(0.7))
-        });
+        assert_eq!(state.presentation.frame, failed_count);
+        assert_eq!(state.presentation.demand.model, Model::Blocked);
+        state
+            .presentation
+            .bridge
+            .edit_widget(state.root_id, |mut widget| {
+                widget.set_transform(reel_ui::kurbo::Affine::scale(0.7))
+            });
         state.invalidate();
         state.redraw_requested().unwrap();
-        assert_eq!(state.demand.model, Model::Idle);
-        assert!(!state.renderer.poll().unwrap().contains(&id)); // completion is delivered once
+        assert_eq!(state.presentation.demand.model, Model::Idle);
+        assert!(!state.backend.renderer_mut().poll().unwrap().contains(&id)); // completion is delivered once
 
         state
-            .renderer
+            .backend
+            .renderer_mut()
             .gpu()
             .device
             .poll(wgpu::PollType::Wait)
             .unwrap();
         state.poll_completions().unwrap();
         let old_frame = state.build_frame().unwrap();
-        let old = state.renderer.prepare(&old_frame).unwrap();
+        let old = state.backend.renderer_mut().prepare(&old_frame).unwrap();
         let old_notice = presentation_notice(
             &old_frame,
             SurfaceEpoch(state.epoch),
-            Ok(PresentOutcome::PresentAccepted(old_frame.frame_id())),
+            Ok::<_, reel_render::RenderError>(PresentOutcome::PresentAccepted(
+                old_frame.frame_id(),
+            )),
         );
         let old_epoch = state.epoch;
-        // Stale configuration must never survive recovery negotiation.
-        state.config.format = wgpu::TextureFormat::Rgba8Unorm;
-        state.renderer.gpu().device.destroy();
-        let _ = state.renderer.gpu().device.poll(wgpu::PollType::Wait);
+        // Recovery negotiates a fresh configuration for the new device generation.
+
+        state.backend.renderer_mut().gpu().device.destroy();
+        let _ = state
+            .backend
+            .renderer_mut()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait);
         state.recover_device().unwrap();
-        assert_eq!(state.renderer.gpu().generation(), DeviceGeneration(2));
-        assert_eq!(state.epoch, old_epoch + 1);
-        assert!(state.config.format.is_srgb());
-        assert!(state.bridge.accepted_key().is_none());
-        assert!(state.accepted_frame.is_none());
         assert_eq!(
-            state.bridge.resolve(old_notice),
+            state.backend.renderer_mut().gpu().generation(),
+            DeviceGeneration(2)
+        );
+        assert_eq!(state.epoch, old_epoch + 1);
+        assert!(state.backend.configuration().unwrap().format.is_srgb());
+        assert!(state.presentation.bridge.accepted_key().is_none());
+        assert!(state.presentation.accepted_frame.is_none());
+        assert_eq!(
+            state.presentation.bridge.resolve(old_notice),
             reel_ui::bridge::NoticeResult::StaleOrForeign
         );
         assert!(matches!(
-            state.renderer.submit(old),
+            state.backend.renderer_mut().submit(old),
             Err(GpuError::DeviceLost)
         ));
         state.render().unwrap();
@@ -943,23 +978,44 @@ mod tests {
             accepted_transform(&state),
             reel_ui::kurbo::Affine::scale(0.7)
         );
-        let generation = state.renderer.gpu().generation();
+        let generation = state.backend.renderer_mut().gpu().generation();
         let epoch = state.epoch;
         state.suspend();
         assert!(state.is_suspended());
-        assert!(state.bridge.accepted_key().is_none());
-        assert!(state.accepted_frame.is_none());
+        assert!(state.presentation.bridge.accepted_key().is_none());
+        assert!(state.presentation.accepted_frame.is_none());
         state.resume().unwrap();
-        assert_eq!(state.renderer.gpu().generation(), generation);
+        assert_eq!(state.backend.renderer_mut().gpu().generation(), generation);
         assert_eq!(state.epoch, epoch + 1);
         state.render().unwrap();
-        assert!(state.bridge.accepted_key().is_some());
+        assert!(state.presentation.bridge.accepted_key().is_some());
         state.resize(winit::dpi::PhysicalSize::new(0, 0)).unwrap();
-        let frame = state.frame;
+        let frame = state.presentation.frame;
+        state.backend.renderer().gpu().device.destroy();
+        state
+            .invalidate_surface(winit::dpi::PhysicalSize::new(0, 0))
+            .unwrap();
+        state.backend.suspend();
+        let surface = state.instance.create_surface(state.window.clone()).unwrap();
+        let gpu = pollster::block_on(Gpu::request(
+            &state.instance,
+            Some(&surface),
+            DeviceGeneration(3),
+            state.backend.renderer().gpu().limits(),
+        ))
+        .unwrap();
+        let mut backend = WgpuBackend::new(gpu, surface);
+        backend
+            .configure(state.presentation.surface_info())
+            .unwrap();
+        state.backend = backend;
         state.render().unwrap();
-        assert_eq!(state.frame, frame);
-        assert!(state.bridge.accepted_key().is_none());
-        assert!(state.accepted_frame.is_none());
+        assert_eq!(state.presentation.frame, frame);
+        assert!(state.presentation.bridge.accepted_key().is_none());
+        assert!(state.presentation.accepted_frame.is_none());
+        state.resize(state.window.inner_size()).unwrap();
+        state.render().unwrap();
+        assert!(state.presentation.bridge.accepted_key().is_some());
         drop(state);
 
         // Permanent refusals stop preparation even when unrelated GPU work completes.
@@ -975,14 +1031,14 @@ mod tests {
         ] {
             let mut refused = State::with_limits(event_loop, 1, limits).unwrap();
             refused.render().unwrap();
-            assert_eq!(refused.demand.model, Model::Blocked);
-            assert!(refused.bridge.accepted_key().is_none());
-            let count = refused.frame;
+            assert_eq!(refused.presentation.demand.model, Model::Blocked);
+            assert!(refused.presentation.bridge.accepted_key().is_none());
+            let count = refused.presentation.frame;
             for _ in 0..10 {
                 refused.redraw_requested().unwrap();
             }
-            assert_eq!(refused.frame, count);
-            assert_eq!(refused.renderer.usage().targets, 0);
+            assert_eq!(refused.presentation.frame, count);
+            assert_eq!(refused.backend.renderer_mut().usage().targets, 0);
         }
         eprintln!(
             "native retry, accepted geometry, permanent refusal, generation/epoch recovery and shutdown passed"
@@ -1005,23 +1061,56 @@ mod tests {
         }
     }
     fn session_click(state: &mut State, x: f64, y: f64) {
-        state.pointer = reel_ui::dpi::PhysicalPosition::new(x, y);
+        let scale = state.window.scale_factor();
+        state.pointer = reel_ui::dpi::PhysicalPosition::new(x * scale, y * scale);
         for kind in [PointerKind::Move, PointerKind::Down, PointerKind::Up] {
             state.pointer_event(kind).unwrap();
         }
     }
     fn dark_dialogue_pixels(state: &mut State) -> usize {
+        state
+            .backend
+            .renderer()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
         let frame = state.build_frame().unwrap();
-        let prepared = state.renderer.prepare(&frame).unwrap();
-        let pixels = state.renderer.readback(prepared).unwrap();
+        let prepared = state.backend.renderer_mut().prepare(&frame).unwrap();
+        let pixels = state.backend.renderer_mut().readback(prepared).unwrap();
         let width = state.size.width as usize;
-        (280..365)
-            .flat_map(|y| (45..585).map(move |x| y * width + x))
+        let px = |value: f64| (value * state.window.scale_factor()) as usize;
+        let left = px(45.);
+        let right = px(585.);
+        (px(280.)..px(365.))
+            .flat_map(|y| (left..right).map(move |x| y * width + x))
             .filter(|index| {
                 let p = pixels[*index];
                 p[0] < 0.3 && p[1] < 0.3 && p[2] < 0.3 && p[3] > 0.9
             })
             .count()
+    }
+    fn present_session(state: &mut State) {
+        // The fixture explicitly drives completion boundaries; immediate hardware
+        // completion is not guaranteed by a render attempt or an offscreen readback.
+        state
+            .backend
+            .renderer()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
+        state.render().unwrap();
+        state
+            .backend
+            .renderer()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait)
+            .unwrap();
+        state.poll_completions().unwrap();
     }
     fn exercise_session(event_loop: &ActiveEventLoop) {
         let mut state = State::new_session(event_loop, 1).unwrap();
@@ -1032,8 +1121,8 @@ mod tests {
             0,
             "no input before first actual presentation"
         );
-        state.render().unwrap();
-        assert!(state.bridge.accepted_key().is_some());
+        present_session(&mut state);
+        assert!(state.presentation.bridge.accepted_key().is_some());
         let hidden_pixels = dark_dialogue_pixels(&mut state);
         assert_eq!(
             hidden_pixels, 0,
@@ -1057,18 +1146,23 @@ mod tests {
         state.resize(state.window.inner_size()).unwrap();
         assert!(state.reveal_deadline().is_some());
         assert_eq!(session_reveal(&state), 1);
-        assert!(state.bridge.accepted_key().is_none());
-        state.render().unwrap();
-        state.renderer.gpu().device.destroy();
-        let _ = state.renderer.gpu().device.poll(wgpu::PollType::Wait);
+        assert!(state.presentation.bridge.accepted_key().is_none());
+        present_session(&mut state);
+        state.backend.renderer_mut().gpu().device.destroy();
+        let _ = state
+            .backend
+            .renderer_mut()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::Wait);
         state.recover_device().unwrap();
         assert_eq!(session_reveal(&state), 1);
         assert!(state.reveal_deadline().is_some());
-        assert!(state.bridge.accepted_key().is_none());
-        state.render().unwrap();
+        assert!(state.presentation.bridge.accepted_key().is_none());
+        present_session(&mut state);
         state.suspend();
         assert!(state.reveal_deadline().is_none());
-        assert!(state.bridge.accepted_key().is_none());
+        assert!(state.presentation.bridge.accepted_key().is_none());
         state.resume().unwrap();
         assert!(state.reveal_deadline().is_some());
         assert_eq!(session_reveal(&state), 1);
@@ -1076,9 +1170,10 @@ mod tests {
             state.session.as_ref().unwrap().ui().session().identity(),
             identity
         );
-        state.render().unwrap();
+        present_session(&mut state);
         // Holding a real pointer gesture freezes the timed reveal revision.
-        state.pointer = reel_ui::dpi::PhysicalPosition::new(100., 300.);
+        let scale = state.window.scale_factor();
+        state.pointer = reel_ui::dpi::PhysicalPosition::new(100. * scale, 300. * scale);
         state.pointer_event(PointerKind::Move).unwrap();
         state.pointer_event(PointerKind::Down).unwrap();
         state.next_reveal = Some(Instant::now());
@@ -1087,43 +1182,41 @@ mod tests {
         state.pointer_event(PointerKind::Up).unwrap();
         assert!(session_reveal(&state) > 1);
         assert!(state.reveal_deadline().is_none());
-        state.render().unwrap();
+        present_session(&mut state);
         let shown_pixels = dark_dialogue_pixels(&mut state);
         assert!(
             shown_pixels > 100,
-            "real Parley glyphs must produce software GPU pixels"
+            "real Parley glyphs must produce GPU pixels"
         );
-        eprintln!(
-            "software GPU dialogue glyph coverage: hidden={hidden_pixels}, full={shown_pixels}"
-        );
+        eprintln!("GPU dialogue glyph coverage: hidden={hidden_pixels}, full={shown_pixels}");
         session_click(&mut state, 100., 300.); // drain first completion, request second line
         assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 1);
         assert_eq!(session_reveal(&state), 0);
         session_click(&mut state, 100., 300.); // still accepted old first-line frame
         assert_eq!(session_reveal(&state), 0);
-        state.render().unwrap();
+        present_session(&mut state);
         session_click(&mut state, 100., 300.); // reveal second line
-        state.render().unwrap();
+        present_session(&mut state);
         session_click(&mut state, 100., 300.); // install choice
         assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 2);
-        state.render().unwrap();
+        present_session(&mut state);
         session_click(&mut state, 100., 320.); // actual second Button
         assert_eq!(state.session.as_ref().unwrap().diagnostic_step(), 3);
         let session = state.session.as_ref().unwrap().ui().session();
         assert_eq!(session.status(), reel_engine::SessionStatus::Ended);
         assert_eq!(session.view().history.len(), 2);
         assert!(session.view().interaction.is_none());
-        state.render().unwrap();
+        present_session(&mut state);
         drop(state);
         let mut cancelled = State::new_session(event_loop, 1).unwrap();
-        cancelled.render().unwrap();
+        present_session(&mut cancelled);
         assert!(cancelled.session.as_mut().unwrap().ui_mut().cancel());
         assert!(!cancelled.session.as_mut().unwrap().ui_mut().cancel());
         cancelled
             .session
             .as_mut()
             .unwrap()
-            .after_input(&mut cancelled.bridge, cancelled.root_id)
+            .after_input(&mut cancelled.presentation.bridge, cancelled.root_id)
             .unwrap();
         assert_eq!(
             cancelled.session.as_ref().unwrap().ui().session().status(),
@@ -1146,7 +1239,7 @@ mod tests {
         );
     }
     #[test]
-    #[ignore = "requires Linux X11 display, a graphics adapter and REEL_SESSION_FONT"]
+    #[ignore = "requires a native display, a graphics adapter and REEL_SESSION_FONT"]
     fn actual_session_window_host_contract() {
         struct Harness;
         impl ApplicationHandler for Harness {
@@ -1162,15 +1255,18 @@ mod tests {
             ) {
             }
         }
+        #[cfg(target_os = "linux")]
         let event_loop = EventLoop::builder()
             .with_x11()
             .with_any_thread(true)
             .build()
             .unwrap();
+        #[cfg(target_os = "windows")]
+        let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
         event_loop.run_app(&mut Harness).unwrap();
     }
     #[test]
-    #[ignore = "requires Linux X11 display and actual graphics adapter"]
+    #[ignore = "requires a native display and actual graphics adapter"]
     fn actual_window_retry_and_recovery_contract() {
         struct Harness;
         impl ApplicationHandler for Harness {
@@ -1186,11 +1282,14 @@ mod tests {
             ) {
             }
         }
+        #[cfg(target_os = "linux")]
         let event_loop = EventLoop::builder()
             .with_x11()
             .with_any_thread(true)
             .build()
             .unwrap();
+        #[cfg(target_os = "windows")]
+        let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
         event_loop.run_app(&mut Harness).unwrap();
     }
 }

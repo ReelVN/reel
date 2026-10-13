@@ -60,8 +60,32 @@ pub fn dependencies() -> Result<()> {
         )),
         "native dependency entered default-off closure"
     );
+    for (package, feature, forbidden) in [
+        ("reel-player", "winit", "wgpu"),
+        ("reel-render", "wgpu", "winit"),
+    ] {
+        let tree = output(Command::new("cargo").current_dir(root()).args([
+            "tree",
+            "--locked",
+            "-p",
+            package,
+            "--no-default-features",
+            "--features",
+            feature,
+            "-e",
+            "normal,build",
+            "--prefix",
+            "none",
+        ]))?;
+        ensure!(
+            !tree
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some(forbidden)),
+            "{package}/{feature} pulled in {forbidden}"
+        );
+    }
     println!(
-        "One local reel-ui; enabled UI closure and default-off UI/render/player have no reverse native dependencies"
+        "One local reel-ui; portable UI/render/player closure; Winit and WGPU adapters can be enabled independently"
     );
     Ok(())
 }

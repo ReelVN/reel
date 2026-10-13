@@ -1,13 +1,12 @@
 //! Assembly crate: native windows and surfaces never enter stage/core contracts.
-#[cfg(feature = "window")]
 mod demand;
 #[cfg(feature = "window")]
 pub mod diagnostic;
+pub mod platform;
+pub mod presentation;
 #[cfg(feature = "window")]
 pub mod shell;
 pub mod story_runtime;
-#[cfg(feature = "window")]
-mod surface;
 #[cfg(feature = "window")]
 mod window;
 #[cfg(feature = "window")]

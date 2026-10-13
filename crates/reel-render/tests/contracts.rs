@@ -167,7 +167,7 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
         .collect();
     assert_eq!(resources, vec![h, h]);
     assert_eq!(frame.resources().leases().len(), 1);
-    let result = backend.render_present(&frame);
+    let result = backend.render_present(&frame, || {});
     assert_eq!(result, Ok(PresentOutcome::PresentAccepted(FrameId(1))));
     let submit = backend.last_submission().unwrap();
     assert_eq!(
@@ -194,7 +194,7 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
         "borrowed submission retains an owned immutable frame"
     );
     let mut events = vec![];
-    backend.poll(&mut events, 16);
+    backend.poll(&mut events, 16).unwrap();
     assert!(events.iter().any(|e|matches!(e,RenderEvent::UploadFinished {id,result:Terminal::Completed(()),..} if *id==upload)));
     assert!(
         !events
@@ -204,8 +204,8 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
     assert!(backend.complete_render(submit));
     assert!(!backend.complete_render(submit));
     assert!(weak.is_released());
-    backend.poll(&mut events, 1);
-    backend.poll(&mut events, 16);
+    backend.poll(&mut events, 1).unwrap();
+    backend.poll(&mut events, 16).unwrap();
     assert_eq!(backend.resident_count(), 0);
     assert!(events.iter().any(
         |e| matches!(e,RenderEvent::ResourcesRetired {versions,..} if versions==&vec![old.clone()])
@@ -301,7 +301,7 @@ fn invalid_upload_returns_original_busy_terminal_capacity_and_null_skip() {
         empty_snapshot(&pool),
         &pool,
     );
-    let result = null.render_present(&frame);
+    let result = null.render_present(&frame, || {});
     assert_eq!(
         bridge.resolve(presentation_notice(&frame, SurfaceEpoch(1), result)),
         NoticeResult::NotPresented
@@ -405,7 +405,7 @@ fn accepted_notice_survives_frame_drop_and_render_completion() {
             &pool,
         );
         let expected_transform = frame.geometry().records()[0].window_transform;
-        let result = backend.render_present(&frame);
+        let result = backend.render_present(&frame, || {});
         let notice = presentation_notice(&frame, SurfaceEpoch(1), result);
         let submission = backend.last_submission().unwrap();
         let duplicate = notice.clone();
@@ -449,7 +449,7 @@ fn accepted_notice_survives_frame_drop_and_render_completion() {
             assert_eq!(bridge.resolve(duplicate), NoticeResult::StaleOrForeign);
         }
         let mut events = vec![];
-        backend.poll(&mut events, 16);
+        backend.poll(&mut events, 16).unwrap();
     }
     assert_eq!(bridge.snapshot_usage().bytes, 0);
 }
