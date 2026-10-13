@@ -125,16 +125,12 @@ fn usage_io_and_invalid_utf8_are_machine_readable() {
 }
 
 #[test]
-fn oversized_file_is_rejected_before_read_and_directories_are_rejected() {
+fn source_input_rejects_directories() {
     let case = Case::new();
-    let path = case.dir.join("big.aside");
-    fs::File::create(&path)
-        .unwrap()
-        .set_len(reel_cli::MAX_SOURCE_BYTES as u64 + 1)
-        .unwrap();
-    for path in [path.as_path(), case.dir.as_path()] {
-        assert!(reel_cli::read_source(path).is_err());
-    }
+    assert_eq!(
+        reel_cli::read_source(&case.dir).unwrap_err().code,
+        "REEL-INPUT-FILE"
+    );
 }
 
 #[test]
@@ -214,21 +210,24 @@ fn option_terminator_help_and_duplicate_options() {
 }
 
 #[test]
-fn bytecode_budget_rejects_source_within_the_io_limit() {
+fn source_larger_than_old_cli_and_string_caps_passes_the_shared_pipeline() {
     let case = Case::new();
-    let mut source =
-        vec![b'x'; aside_vm::bytecode::Limits::default().max_string_bytes as usize + 1];
-    source[..2].copy_from_slice(b"//");
-    let output = case.run(&source, "json");
-    assert_eq!(output.status.code(), Some(1));
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["stage"], "lower");
-    assert!(
-        report["diagnostics"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("string-byte limit")
+    let source = format!(
+        "//{}\nuse reel::prelude::*; fn main() {{ let item={{next:null}}; item.next=item; let sum={}; let selected=item{}; stage.replace({}text(\"nested scene\");{}); }}",
+        "x".repeat(8 * 1024 * 1024 + 1),
+        vec!["1"; 256].join("+"),
+        ".next".repeat(256),
+        "column() {".repeat(24),
+        "};".repeat(23) + "}"
     );
+    let output = case.run(source.as_bytes(), "json");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "verified");
 }
 
 #[cfg(unix)]

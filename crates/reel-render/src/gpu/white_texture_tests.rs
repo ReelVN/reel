@@ -324,8 +324,12 @@ fn white_texture_late_target_and_transient_budget_failures_release() {
     ));
     counts(&target_limited, 1);
     empty(&target_limited);
+    let one_solid = frame(workload(1, 0, Color::WHITE), &pool);
+    let baseline = renderer(Default::default());
+    drop(baseline.prepare(&one_solid).unwrap());
+    let one_draw_peak = baseline.budgets.transient.usage().peak_bytes;
     let transient_limited = renderer(super::super::GpuLimits {
-        transient_bytes: (2 << 20) + 152,
+        transient_bytes: one_draw_peak,
         ..Default::default()
     });
     assert!(matches!(

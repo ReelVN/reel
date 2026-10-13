@@ -16,18 +16,21 @@ Public API: `lex(&str) -> Result<Lexed, SourceTooLarge>`,
 `EntryPoint::{Module, Block, Expression, Pattern, Type}`. Block entry accepts a
 function-body fragment without shifting source ranges. One parser handles all
 entries; children uses the ordinary block grammar. Source admission rejects the
-configured byte limit or rowan u32 capacity before allocation. Other resource
+configured byte limit or the syntax tree's u32 offset capacity before allocation. Other resource
 exhaustion remains a Parse with diagnostics, an exhaustion flag and a lossless
 error tail.
 
 `Token { kind: SyntaxKind, range: TextRange }` references the caller's UTF-8
 source, including whitespace/comments. `Lexed` owns token ranges and lexical
-diagnostics, not duplicate source strings. `Parse` owns a rowan green tree;
+diagnostics, not duplicate source strings. `Parse` owns an `aside-syntax` green tree;
 `green()/syntax()` expose immutable/navigation forms. Every admitted source byte
 is represented by a leaf, including invalid input. Missing tokens are never
-invented in the user's source. Budgets cap recursive descent and tree height,
+invented in the user's source. Budgets cap recursive descent and nested syntax,
 tokens and diagnostics; input truncation always makes progress or exits. Ordinary
 tokens obey the exact emission limit, with at most one separate error-tail leaf.
+Flat left-associative operator and postfix chains use explicit work lists and do
+not consume one nesting level per segment. Recursive depth defaults to 128 and
+honors the caller's configured value without a hidden maximum clamp.
 
 Ambiguous assignment targets use a silent, isolated trial of the same pattern,
 type and default-expression productions. Tokens/source are borrowed; caller

@@ -1,0 +1,363 @@
+{
+  "source": "doc/examples/pages/language/containers-basic.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "segments": [
+    {
+      "original": [
+        0,
+        3
+      ],
+      "aside": [
+        0,
+        3
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        3,
+        3
+      ],
+      "aside": [
+        3,
+        17
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        3,
+        4
+      ],
+      "aside": [
+        17,
+        18
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        4,
+        5
+      ],
+      "aside": [
+        18,
+        51
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        5,
+        7
+      ],
+      "aside": [
+        51,
+        53
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        7,
+        7
+      ],
+      "aside": [
+        53,
+        59
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        7,
+        8
+      ],
+      "aside": [
+        59,
+        60
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        8,
+        8
+      ],
+      "aside": [
+        60,
+        86
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        8,
+        9
+      ],
+      "aside": [
+        86,
+        87
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        9,
+        9
+      ],
+      "aside": [
+        87,
+        210
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        9,
+        11
+      ],
+      "aside": [
+        210,
+        212
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        11,
+        12
+      ],
+      "aside": [
+        212,
+        215
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        12,
+        13
+      ],
+      "aside": [
+        215,
+        216
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        13,
+        16
+      ],
+      "aside": [
+        216,
+        217
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        16,
+        17
+      ],
+      "aside": [
+        217,
+        218
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        17,
+        19
+      ],
+      "aside": [
+        218,
+        218
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        19,
+        20
+      ],
+      "aside": [
+        218,
+        219
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        20,
+        31
+      ],
+      "aside": [
+        219,
+        221
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        31,
+        50
+      ],
+      "aside": [
+        221,
+        240
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        50,
+        52
+      ],
+      "aside": [
+        240,
+        241
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        52,
+        70
+      ],
+      "aside": [
+        241,
+        259
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        70,
+        72
+      ],
+      "aside": [
+        259,
+        260
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        72,
+        76
+      ],
+      "aside": [
+        260,
+        264
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        76,
+        76
+      ],
+      "aside": [
+        264,
+        265
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        76,
+        112
+      ],
+      "aside": [
+        265,
+        301
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        112,
+        175
+      ],
+      "aside": [
+        301,
+        302
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        175,
+        206
+      ],
+      "aside": [
+        302,
+        333
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        206,
+        206
+      ],
+      "aside": [
+        333,
+        334
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        206,
+        280
+      ],
+      "aside": [
+        334,
+        408
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        280,
+        280
+      ],
+      "aside": [
+        408,
+        409
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        280,
+        281
+      ],
+      "aside": [
+        409,
+        410
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": []
+}

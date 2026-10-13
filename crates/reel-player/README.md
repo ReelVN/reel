@@ -30,6 +30,13 @@ resize/DPI/resume/device recovery replaces the epoch. Device recovery increments
 generation, preserving the widget and prepared CPU sources. Suspend drops surface
 before window and drains queued work; shutdown does the same before exit.
 
+Frame and geometry storage grow with the recorded scene within their byte budgets;
+the window does not impose diagnostic node, command, mask or nesting counts.
+Compilation honors the next step's reported minimum work and allocation budget.
+Prepared resource slots match the actual startup resources, and story windows do
+not allocate the renderer diagnostic's checker image. CPU resource residency is
+limited by bytes rather than a separate ticket-count quota.
+
 The shell accepts opaque sRGB surfaces with FIFO presentation. Other surface
 profiles, IME/accessibility platform integration and touch/pen input remain future
 adapter work. Unsupported drawing records and quota refusals are logged with their
@@ -62,8 +69,8 @@ Full Parley text layout is kept while cluster/ligature masks reveal its prefix.
 Each 35 ms tick reveals at most one grapheme per line; a held gesture freezes
 reveal and wake-up does not replay a backlog. Labels and buttons use their natural
 content height; mouse-wheel scrolling reaches every row within the viewport.
-SessionLimits configures row, choice and text resource capacities without an
-additional view cap. All choices share one projection owner, while ChoiceId
+Dialogue rows, choices and their text have no additional fixed count or length
+ceiling. All choices share one projection owner, while ChoiceId
 preserves each business key. Scrolling invalidates the old input stamp and any
 held gesture; a new accepted frame must establish the new hit geometry.
 Input in this version uses mouse clicks and scrolling.

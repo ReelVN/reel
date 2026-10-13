@@ -1,10 +1,14 @@
-use super::GpuError;
+use super::{
+    GpuError,
+    renderer::{Budgets, Reservation, reserve},
+};
 use lyon_tessellation::{
     FillOptions, FillTessellator, FillVertex, GeometryBuilderError, StrokeOptions,
     StrokeTessellator, StrokeVertex, VertexId,
     geometry_builder::{FillGeometryBuilder, GeometryBuilder, StrokeGeometryBuilder},
-    path::{Path, math::point},
+    path::{PathEvent, math::point},
 };
+use reel_core::budget::BudgetPool;
 use reel_ui::frame::RecordLocation;
 use reel_ui::{
     imaging::record::Geometry,
@@ -22,15 +26,75 @@ pub struct Vertex {
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    max: usize,
-    overflow: bool,
+    allocation: Allocation,
+    error: Option<GpuError>,
+}
+pub(super) struct Allocation {
+    shared: BudgetPool,
+    local: BudgetPool,
+    limit: u64,
+    max_buffer: u64,
+    _tickets: Vec<Reservation>,
+}
+impl Allocation {
+    pub(super) fn new(
+        budgets: &Budgets,
+        budget_scope: &Budgets,
+        limit: u64,
+        max_buffer: u64,
+    ) -> Self {
+        Self {
+            shared: budgets.transient.clone(),
+            local: budget_scope.transient.clone(),
+            limit,
+            max_buffer,
+            _tickets: Vec::new(),
+        }
+    }
+    fn grow<T>(&mut self, storage: &mut Vec<T>, additional: usize) -> Result<(), GpuError> {
+        let required = storage
+            .len()
+            .checked_add(additional)
+            .ok_or(GpuError::InvalidSize)?;
+        if required <= storage.capacity() {
+            return Ok(());
+        }
+        let stride = size_of::<T>() as u64;
+        let max_elements = (self.max_buffer / stride).min(u64::from(u32::MAX)) as usize;
+        if required > max_elements {
+            return Err(GpuError::InvalidSize);
+        }
+        let available = self
+            .limit
+            .saturating_sub(self.local.usage().bytes)
+            .min(self.limit.saturating_sub(self.shared.usage().bytes));
+        let growth = storage
+            .capacity()
+            .max(additional)
+            .min((available / stride) as usize)
+            .min(max_elements - storage.capacity())
+            .max(required - storage.capacity());
+        self._tickets.push(reserve(
+            &self.shared,
+            &self.local,
+            growth as u64 * stride,
+            self.limit,
+            "mesh scratch",
+        )?);
+        storage.reserve_exact(storage.capacity() + growth - storage.len());
+        Ok(())
+    }
 }
 impl Mesh {
     fn push(
         &mut self,
         p: lyon_tessellation::math::Point,
     ) -> Result<VertexId, GeometryBuilderError> {
-        if self.vertices.len() >= self.max {
+        if self.error.is_some() {
+            return Err(GeometryBuilderError::TooManyVertices);
+        }
+        if let Err(error) = self.allocation.grow(&mut self.vertices, 1) {
+            self.error = Some(error);
             return Err(GeometryBuilderError::TooManyVertices);
         }
         let id = VertexId(self.vertices.len() as u32);
@@ -44,8 +108,11 @@ impl Mesh {
 }
 impl GeometryBuilder for Mesh {
     fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
-        if self.indices.len() + 3 > self.max * 3 {
-            self.overflow = true;
+        if self.error.is_some() {
+            return;
+        }
+        if let Err(error) = self.allocation.grow(&mut self.indices, 3) {
+            self.error = Some(error);
             return;
         }
         self.indices.extend([a.0, b.0, c.0]);
@@ -69,26 +136,18 @@ pub fn tessellate(
     fill: Fill,
     stroke: Option<&Stroke>,
     at: RecordLocation,
-    max_bytes: u64,
+    allocation: Allocation,
 ) -> Result<Mesh, GpuError> {
     // Stage accepts nonnegative f64 miter limits. Lyon's ordinary assertion
     // requires >= 1 even for Bevel/Round, so reject at this narrower boundary.
     let stroke_options = stroke.map(|s| stroke_options(s, at)).transpose()?;
-    let max = (max_bytes / (size_of::<Vertex>() as u64 + 12)).min(u64::from(u32::MAX)) as usize;
     let mut mesh = Mesh {
-        vertices: Vec::with_capacity(max),
-        indices: Vec::with_capacity(max * 3),
-        max,
-        overflow: false,
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        allocation,
+        error: None,
     };
-    let mut builder = Path::builder();
-    let mut open = false;
-    let elements: Box<dyn Iterator<Item = PathEl> + '_> = match shape {
-        Geometry::Path(p) => Box::new(p.elements().iter().copied()),
-        Geometry::Rect(r) => Box::new(r.path_elements(0.1)),
-        Geometry::RoundedRect(r) => Box::new(r.path_elements(0.1)),
-    };
-    for e in elements {
+    for e in elements(shape) {
         let valid = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
         let finite = match e {
             PathEl::MoveTo(p) | PathEl::LineTo(p) => valid(p),
@@ -102,45 +161,13 @@ pub fn tessellate(
                 record: "geometry outside float32 range",
             });
         }
-        match e {
-            PathEl::MoveTo(p) => {
-                if open {
-                    builder.end(false);
-                }
-                builder.begin(point(p.x as f32, p.y as f32));
-                open = true;
-            }
-            PathEl::LineTo(p) => {
-                builder.line_to(point(p.x as f32, p.y as f32));
-            }
-            PathEl::QuadTo(a, b) => {
-                builder.quadratic_bezier_to(
-                    point(a.x as f32, a.y as f32),
-                    point(b.x as f32, b.y as f32),
-                );
-            }
-            PathEl::CurveTo(a, b, c) => {
-                builder.cubic_bezier_to(
-                    point(a.x as f32, a.y as f32),
-                    point(b.x as f32, b.y as f32),
-                    point(c.x as f32, c.y as f32),
-                );
-            }
-            PathEl::ClosePath => {
-                builder.end(true);
-                open = false;
-            }
-        }
     }
-    if open {
-        builder.end(false);
-    }
-    let path = builder.build();
+    let path = events(shape);
     let result = if let Some(options) = stroke_options {
-        StrokeTessellator::new().tessellate_path(&path, &options, &mut mesh)
+        StrokeTessellator::new().tessellate(path, &options, &mut mesh)
     } else {
-        FillTessellator::new().tessellate_path(
-            &path,
+        FillTessellator::new().tessellate(
+            path,
             &FillOptions::default().with_fill_rule(match fill {
                 Fill::NonZero => lyon_tessellation::FillRule::NonZero,
                 Fill::EvenOdd => lyon_tessellation::FillRule::EvenOdd,
@@ -148,18 +175,96 @@ pub fn tessellate(
             &mut mesh,
         )
     };
+    if let Some(error) = mesh.error.take() {
+        return Err(error);
+    }
     result.map_err(|e| GpuError::Geometry {
         at,
         reason: e.to_string(),
     })?;
-    if mesh.overflow {
-        return Err(GpuError::Budget {
-            domain: "mesh",
-            requested: max_bytes + 1,
-            available: max_bytes,
-        });
-    }
     Ok(mesh)
+}
+fn elements(shape: &Geometry) -> Box<dyn Iterator<Item = PathEl> + '_> {
+    match shape {
+        Geometry::Path(p) => Box::new(p.elements().iter().copied()),
+        Geometry::Rect(r) => Box::new(r.path_elements(0.1)),
+        Geometry::RoundedRect(r) => Box::new(r.path_elements(0.1)),
+    }
+}
+fn events(shape: &Geometry) -> impl Iterator<Item = PathEvent> + '_ {
+    let mut first = point(0., 0.);
+    let mut last = first;
+    let mut open = false;
+    elements(shape)
+        .map(Some)
+        .chain(std::iter::once(None))
+        .flat_map(move |element| {
+            let p = |p: Point| point(p.x as f32, p.y as f32);
+            let mut preceding = None;
+            if !open
+                && matches!(
+                    element,
+                    Some(PathEl::LineTo(_) | PathEl::QuadTo(..) | PathEl::CurveTo(..))
+                )
+            {
+                preceding = Some(PathEvent::Begin { at: first });
+                last = first;
+                open = true;
+            }
+            let event = match element {
+                Some(PathEl::MoveTo(at)) => {
+                    if open {
+                        preceding = Some(PathEvent::End {
+                            last,
+                            first,
+                            close: false,
+                        });
+                    }
+                    first = p(at);
+                    last = first;
+                    open = true;
+                    Some(PathEvent::Begin { at: first })
+                }
+                Some(PathEl::LineTo(to)) => {
+                    let event = PathEvent::Line {
+                        from: last,
+                        to: p(to),
+                    };
+                    last = p(to);
+                    Some(event)
+                }
+                Some(PathEl::QuadTo(ctrl, to)) => {
+                    let event = PathEvent::Quadratic {
+                        from: last,
+                        ctrl: p(ctrl),
+                        to: p(to),
+                    };
+                    last = p(to);
+                    Some(event)
+                }
+                Some(PathEl::CurveTo(ctrl1, ctrl2, to)) => {
+                    let event = PathEvent::Cubic {
+                        from: last,
+                        ctrl1: p(ctrl1),
+                        ctrl2: p(ctrl2),
+                        to: p(to),
+                    };
+                    last = p(to);
+                    Some(event)
+                }
+                Some(PathEl::ClosePath) | None => {
+                    let event = open.then_some(PathEvent::End {
+                        last,
+                        first,
+                        close: element.is_some(),
+                    });
+                    open = false;
+                    last = first;
+                    event
+                }
+            };
+            [preceding, event].into_iter().flatten()
+        })
 }
 fn stroke_options(stroke: &Stroke, at: RecordLocation) -> Result<StrokeOptions, GpuError> {
     let width = stroke.width as f32;

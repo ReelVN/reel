@@ -19,15 +19,9 @@ pub(super) fn lower<'a>(
     m: &'a h::AnalyzedModule,
     links: &'a Linkage<'a>,
     options: Options,
-) -> Result<IrModule, Error> {
+) -> Result<IrModule, Box<Error>> {
     let mut b = Budget::new(options.limits);
     b.span = m.hir().node(h::NodeId(0)).span;
-    if m.hir().source.len() > options.bytecode_limits.max_string_bytes as usize {
-        return Err(b.error(
-            ErrorKind::Limit,
-            "source text exceeds the shared bytecode string-byte limit",
-        ));
-    }
     preflight(m, links, &mut b)?;
     b.span = m.hir().node(h::NodeId(0)).span;
     let mut package = if let Some(seed) = links.package {
@@ -93,12 +87,6 @@ pub(super) fn lower<'a>(
         let id = match seed {
             Some(id) => id,
             None => {
-                if name.len() > options.bytecode_limits.max_string_bytes as usize {
-                    return Err(b.error(
-                        ErrorKind::Limit,
-                        "symbol text exceeds the shared bytecode string-byte limit",
-                    ));
-                }
                 let id = bc::SymbolId(package.symbols.len() as u32);
                 let text = b.string(name)?;
                 b.push(&mut package.symbols, text)?;
@@ -358,12 +346,15 @@ pub(super) fn lower<'a>(
 
 /// Fallible heapsort: comparisons charge work before examining text. A trusted
 /// seed id wins ties, so duplicate source names retain the seed ABI identity.
-fn sort_names(values: &mut [(&str, Option<bc::SymbolId>)], b: &mut Budget) -> Result<(), Error> {
+fn sort_names(
+    values: &mut [(&str, Option<bc::SymbolId>)],
+    b: &mut Budget,
+) -> Result<(), Box<Error>> {
     fn less(
         a: (&str, Option<bc::SymbolId>),
         c: (&str, Option<bc::SymbolId>),
         b: &mut Budget,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, Box<Error>> {
         Ok(b.compare(a.0, c.0)?
             .then_with(|| a.1.is_none().cmp(&c.1.is_none()))
             .is_lt())
@@ -373,7 +364,7 @@ fn sort_names(values: &mut [(&str, Option<bc::SymbolId>)], b: &mut Budget) -> Re
         mut root: usize,
         end: usize,
         b: &mut Budget,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<Error>> {
         while root * 2 + 1 < end {
             let mut child = root * 2 + 1;
             if child + 1 < end && less(values[child], values[child + 1], b)? {
@@ -417,7 +408,7 @@ struct Lowerer<'a> {
     module: bc::ModuleId,
 }
 impl Lowerer<'_> {
-    fn name(&mut self, name: &str) -> Result<bc::SymbolId, Error> {
+    fn name(&mut self, name: &str) -> Result<bc::SymbolId, Box<Error>> {
         let (mut lo, mut hi) = (0, self.names.len());
         while lo < hi {
             let mid = (lo + hi) / 2;
@@ -432,7 +423,7 @@ impl Lowerer<'_> {
             "name absent from admitted symbol table",
         ))
     }
-    fn builtin(&mut self, ty: bc::BuiltinType) -> Result<bc::TypeId, Error> {
+    fn builtin(&mut self, ty: bc::BuiltinType) -> Result<bc::TypeId, Box<Error>> {
         self.b.work(self.package.types.len() as u64 + 1)?;
         if let Some(i) = self
             .package
@@ -447,9 +438,9 @@ impl Lowerer<'_> {
             .push(&mut self.package.types, bc::TypeDef::Builtin(ty))?;
         Ok(id)
     }
-    fn ty(&mut self, id: h::TypeId, depth: usize) -> Result<bc::TypeId, Error> {
+    fn ty(&mut self, id: h::TypeId, depth: usize) -> Result<bc::TypeId, Box<Error>> {
         self.b.work(1)?;
-        if depth >= self.options.limits.max_depth.min(128) {
+        if depth >= self.options.limits.max_depth {
             return Err(self
                 .b
                 .error(ErrorKind::Limit, "type lowering depth exceeded"));
@@ -514,7 +505,7 @@ impl Lowerer<'_> {
         parameters: Vec<bc::Parameter>,
         return_type: bc::TypeId,
         context: bc::Context,
-    ) -> Result<bc::SignatureId, Error> {
+    ) -> Result<bc::SignatureId, Box<Error>> {
         let id = bc::SignatureId(self.package.signatures.len() as u32);
         self.b.push(
             &mut self.package.signatures,
@@ -538,7 +529,7 @@ impl Lowerer<'_> {
         signature: bc::SignatureId,
         context: bc::Context,
         captures: Vec<bc::CaptureKind>,
-    ) -> Result<bc::FunctionId, Error> {
+    ) -> Result<bc::FunctionId, Box<Error>> {
         let name = self.name(name)?;
         let id = bc::FunctionId(self.package.functions.len() as u32);
         self.b.push(
@@ -560,7 +551,7 @@ impl Lowerer<'_> {
         )?;
         Ok(id)
     }
-    fn captures(&mut self, f: &h::Function) -> Result<Vec<bc::CaptureKind>, Error> {
+    fn captures(&mut self, f: &h::Function) -> Result<Vec<bc::CaptureKind>, Box<Error>> {
         self.b.work(f.captures.len() as u64)?;
         let mut out = Vec::new();
         for capture in &f.captures {
@@ -574,7 +565,7 @@ impl Lowerer<'_> {
         }
         Ok(out)
     }
-    fn prepare_functions(&mut self) -> Result<(), Error> {
+    fn prepare_functions(&mut self) -> Result<(), Box<Error>> {
         for f in self.m.functions() {
             self.b.span = self.m.hir().node(f.node).span;
             if f.kind != h::FunctionKind::Plain
@@ -678,7 +669,7 @@ impl Lowerer<'_> {
         }
         Ok(())
     }
-    fn prepare_module(&mut self) -> Result<bc::FunctionId, Error> {
+    fn prepare_module(&mut self) -> Result<bc::FunctionId, Box<Error>> {
         let result = self.builtin(bc::BuiltinType::Any)?;
         let context = match self.m.entry_context() {
             crate::semantic::AnalysisContext::Module => bc::Context::Init,
@@ -694,7 +685,7 @@ impl Lowerer<'_> {
         let signature = self.signature(Vec::new(), result, context)?;
         self.empty_function("$module", signature, context, Vec::new())
     }
-    fn check_links(&mut self) -> Result<(), Error> {
+    fn check_links(&mut self) -> Result<(), Box<Error>> {
         self.b.work(self.links.natives.len() as u64)?;
         for link in self.links.natives {
             self.b.span = match link.target {
@@ -842,7 +833,7 @@ impl Lowerer<'_> {
         }
         Ok(())
     }
-    fn native(&mut self, node: h::NodeId) -> Result<Option<bc::NativeId>, Error> {
+    fn native(&mut self, node: h::NodeId) -> Result<Option<bc::NativeId>, Box<Error>> {
         let mut node = node;
         while let Form::Single { child } = self.m.hir().node(node).form {
             if self.m.hir().node(node).kind != H::Group {
@@ -868,7 +859,7 @@ impl Lowerer<'_> {
         }
         Ok(result)
     }
-    fn check_imports(&mut self) -> Result<(), Error> {
+    fn check_imports(&mut self) -> Result<(), Box<Error>> {
         for import in self.m.imports() {
             self.b.span = self.m.hir().node(import.node).span;
             self.b.work(import.names.len() as u64)?;
@@ -903,7 +894,7 @@ impl Lowerer<'_> {
         }
         Ok(())
     }
-    fn build_function(&mut self, output: bc::FunctionId, origin: Origin) -> Result<(), Error> {
+    fn build_function(&mut self, output: bc::FunctionId, origin: Origin) -> Result<(), Box<Error>> {
         let node = match origin {
             Origin::Module => h::NodeId(0),
             Origin::Function(id) => self.m.functions()[id.0 as usize].body,
@@ -974,7 +965,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         output: bc::FunctionId,
         origin: Origin,
         node: h::NodeId,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Box<Error>> {
         let (owner, prefix) = match origin {
             Origin::Module => (None, 0),
             Origin::Function(id) => (Some(id), l.m.functions()[id.0 as usize].parameters.len()),
@@ -1092,7 +1083,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
     fn span(&self, n: h::NodeId) -> TextRange {
         self.l.m.hir().node(n).span
     }
-    fn block(&mut self) -> Result<BlockId, Error> {
+    fn block(&mut self) -> Result<BlockId, Box<Error>> {
         if self.l.b.stats.blocks >= self.l.b.limits.max_blocks {
             return Err(self
                 .l
@@ -1110,7 +1101,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         )?;
         Ok(id)
     }
-    fn start(&mut self, block: BlockId) -> Result<(), Error> {
+    fn start(&mut self, block: BlockId) -> Result<(), Box<Error>> {
         if self.current.is_some() {
             return Err(self.l.b.error(
                 ErrorKind::InvalidIr,
@@ -1121,7 +1112,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         self.current = Some(block);
         Ok(())
     }
-    fn instruction(&mut self) -> Result<(), Error> {
+    fn instruction(&mut self) -> Result<(), Box<Error>> {
         if self.l.b.stats.instructions >= self.l.b.limits.max_instructions {
             return Err(self
                 .l
@@ -1138,7 +1129,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         b: u32,
         c: u32,
         n: h::NodeId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<Error>> {
         self.l.b.span = self.span(n);
         self.instruction()?;
         let current = self.current.ok_or_else(|| {
@@ -1155,7 +1146,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             },
         )
     }
-    fn terminate(&mut self, term: Terminator, n: h::NodeId) -> Result<(), Error> {
+    fn terminate(&mut self, term: Terminator, n: h::NodeId) -> Result<(), Box<Error>> {
         self.l.b.span = self.span(n);
         self.instruction()?;
         self.l.b.record()?;
@@ -1166,10 +1157,10 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         self.ir.blocks[current.0 as usize].terminator = Some((term, self.span(n)));
         Ok(())
     }
-    fn temp(&mut self) -> Result<bc::Reg, Error> {
+    fn temp(&mut self) -> Result<bc::Reg, Box<Error>> {
         self.registers.temp(&mut self.l.b)
     }
-    fn release(&mut self, reg: bc::Reg) -> Result<(), Error> {
+    fn release(&mut self, reg: bc::Reg) -> Result<(), Box<Error>> {
         if let Some(current) = self.current {
             self.instruction()?;
             let span = self.l.b.span;
@@ -1183,7 +1174,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         }
         self.registers.drop_temp(reg, &mut self.l.b)
     }
-    fn release_window(&mut self, window: bc::RegWindow, n: h::NodeId) -> Result<(), Error> {
+    fn release_window(&mut self, window: bc::RegWindow, n: h::NodeId) -> Result<(), Box<Error>> {
         self.l.b.span = self.span(n);
         self.l.b.work(window.len as u64)?;
         if self.current.is_some() {
@@ -1193,19 +1184,19 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         }
         self.registers.release(window, &mut self.l.b)
     }
-    fn descriptor(&mut self, descriptor: bc::Descriptor) -> Result<bc::DescriptorId, Error> {
+    fn descriptor(&mut self, descriptor: bc::Descriptor) -> Result<bc::DescriptorId, Box<Error>> {
         let id = bc::DescriptorId(self.def.descriptors.len() as u32);
         self.l.b.push(&mut self.def.descriptors, descriptor)?;
         Ok(id)
     }
-    fn constant(&mut self, constant: bc::Const, n: h::NodeId) -> Result<bc::Reg, Error> {
+    fn constant(&mut self, constant: bc::Const, n: h::NodeId) -> Result<bc::Reg, Box<Error>> {
         let id = bc::ConstId(self.l.package.constants.len() as u32);
         self.l.b.push(&mut self.l.package.constants, constant)?;
         let out = self.temp()?;
         self.op(bc::Opcode::LoadConst, out.0, id.0, 0, n)?;
         Ok(out)
     }
-    fn local(&mut self, symbol: h::SymbolId) -> Result<Option<bc::BindingId>, Error> {
+    fn local(&mut self, symbol: h::SymbolId) -> Result<Option<bc::BindingId>, Box<Error>> {
         self.l.b.work(usize::BITS as u64)?;
         Ok(self
             .locals
@@ -1213,7 +1204,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             .ok()
             .map(|i| self.locals[i].1))
     }
-    fn capture(&mut self, symbol: h::SymbolId) -> Result<Option<bc::CaptureId>, Error> {
+    fn capture(&mut self, symbol: h::SymbolId) -> Result<Option<bc::CaptureId>, Box<Error>> {
         self.l.b.work(usize::BITS as u64)?;
         Ok(self
             .captures
@@ -1221,7 +1212,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             .ok()
             .map(|i| self.captures[i].1))
     }
-    fn read(&mut self, symbol: h::SymbolId, n: h::NodeId) -> Result<bc::Reg, Error> {
+    fn read(&mut self, symbol: h::SymbolId, n: h::NodeId) -> Result<bc::Reg, Box<Error>> {
         let out = self.temp()?;
         if let Some(id) = self.local(symbol)? {
             self.op(bc::Opcode::BindRead, out.0, id.0, 0, n)?;
@@ -1253,7 +1244,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         value: bc::Reg,
         initialize: bool,
         n: h::NodeId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<Error>> {
         if let Some(binding) = self.local(symbol)? {
             self.op(
                 if initialize {
@@ -1301,7 +1292,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         }
         Ok(())
     }
-    fn closure(&mut self, function: h::FunctionId, n: h::NodeId) -> Result<bc::Reg, Error> {
+    fn closure(&mut self, function: h::FunctionId, n: h::NodeId) -> Result<bc::Reg, Box<Error>> {
         let mut captures = Vec::new();
         let f = &self.l.m.functions()[function.0 as usize];
         self.l.b.work(f.captures.len() as u64)?;
@@ -1326,7 +1317,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         self.op(bc::Opcode::MakeClosure, out.0, descriptor.0, 0, n)?;
         Ok(out)
     }
-    fn enter_scope(&mut self, n: h::NodeId) -> Result<(), Error> {
+    fn enter_scope(&mut self, n: h::NodeId) -> Result<(), Box<Error>> {
         if let Some(scope) = self.l.m.facts()[n.0 as usize].scope {
             let symbols = &self.l.m.scopes()[scope.0 as usize].symbols;
             self.l.b.work(symbols.len() as u64)?;
@@ -1373,7 +1364,7 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         }
         Ok(())
     }
-    fn finish(mut self) -> Result<(), Error> {
+    fn finish(mut self) -> Result<(), Box<Error>> {
         self.def.register_count = self.registers.high;
         self.l.b.stats.registers += self.registers.high as u64;
         self.l.b.stats.max_function_registers = self
@@ -1437,9 +1428,9 @@ fn hint_matches(
     p: &bc::BytecodePackage,
     b: &mut Budget,
     depth: usize,
-) -> Result<bool, Error> {
+) -> Result<bool, Box<Error>> {
     b.work(1)?;
-    if depth >= b.limits.max_depth.min(128) {
+    if depth >= b.limits.max_depth {
         return Err(b.error(
             ErrorKind::Limit,
             "trusted native type comparison depth exceeded",
@@ -1486,7 +1477,7 @@ fn hint_matches(
     }
 }
 
-fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Result<(), Error> {
+fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Result<(), Box<Error>> {
     let root_scope = m.facts()[0].scope.ok_or_else(|| {
         b.error(
             ErrorKind::InvalidIr,
@@ -1545,20 +1536,9 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
     b.work(m.hir().nodes.len() as u64)?;
     for (i, node) in m.hir().nodes.iter().enumerate() {
         b.span = node.span;
-        if node.kind == H::String {
-            b.work(m.hir().elements(h::NodeId(i as u32)).len() as u64)?;
-            if m.hir().children(h::NodeId(i as u32)).next().is_some() {
-                return Err(b.error(
-                    ErrorKind::Unsupported,
-                    "interpolation requires standard string conversion linkage",
-                ));
-            }
-        }
         if matches!(
             node.kind,
             H::Class
-                | H::Interpolation
-                | H::Range
                 | H::Match
                 | H::MatchArm
                 | H::Yield
@@ -1596,7 +1576,7 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             {
                 b.work(1)?;
                 depth += 1;
-                if depth >= b.limits.max_depth.min(128) {
+                if depth >= b.limits.max_depth {
                     return Err(b.error(ErrorKind::Limit, "assignment target depth exceeded"));
                 }
                 target = child;
@@ -1625,7 +1605,7 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             {
                 b.work(1)?;
                 depth += 1;
-                if depth >= b.limits.max_depth.min(128) {
+                if depth >= b.limits.max_depth {
                     return Err(b.error(ErrorKind::Limit, "optional callee depth exceeded"));
                 }
                 target = child;
@@ -1675,13 +1655,9 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
             // whose resolved identity must match the trusted native link.
             let mut expression = callee;
             let mut parent = node.parent;
-            let mut count = 0;
+            let mut group_depth = 1;
             let call = loop {
                 b.work(1)?;
-                count += 1;
-                if count >= b.limits.max_depth.min(128) {
-                    return Err(b.error(ErrorKind::Limit, "qualified callee depth exceeded"));
-                }
                 let Some(id) = parent else {
                     break None;
                 };
@@ -1699,6 +1675,12 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                     Form::Single { child }
                         if m.hir().node(id).kind == H::Group && child == expression =>
                     {
+                        group_depth += 1;
+                        if group_depth >= b.limits.max_depth {
+                            return Err(
+                                b.error(ErrorKind::Limit, "qualified callee depth exceeded")
+                            );
+                        }
                         expression = id;
                         parent = m.hir().node(id).parent;
                     }

@@ -18,7 +18,11 @@ code. [Source and license](ORIGIN.md) · [Input contract](INTERFACE.md) ·
 | private `tree_arena` | Safe widget tree and leased bounded lookup scratch |
 | `doc`, `util` | Maintained concepts and supporting UI helpers |
 
-`reel-ui → reel-core`; `reel-render → reel-ui/core`;
+Text shaping and paragraph layout come from the shared
+[`reel-text`](../reel-text/README.md) crate, re-exported as `reel_ui::reel_text`.
+UI widgets remain in this package.
+
+`reel-ui → reel-core/reel-text`; `reel-render → reel-ui/core`;
 `reel-player → reel-ui/render/core`. UI never depends on renderer, player,
 winit or wgpu, including when their native features are enabled.
 The crate inherits the workspace version, is unpublished and forbids unsafe code.
@@ -53,4 +57,8 @@ Generated logs and measurements go under ignored `target/reel-artifacts/`.
 Native device tests and window Expose/recovery commands are documented in the
 [R02 report](../reel-render/R02-REPORT.md). Those require a Vulkan device and an
 actual window/display; software Vulkan/Xvfb results establish only that environment.
-Author node/DSL and author image-slider APIs remain separate implementation work.
+The shared author stage and Aside composition are connected through reel-engine
+and reel-player; author image and slider APIs remain separate implementation work.
+Geometry export uses an explicit traversal stack. Node counts and path depth
+follow the recorded tree; input route storage grows before publication within
+its memory account, preserving the accepted view and active pointer capture.

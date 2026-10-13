@@ -12,7 +12,6 @@ pub struct GpuLimits {
     pub resource_bytes: u64,
     pub transient_bytes: u64,
     pub max_inflight: usize,
-    pub max_depth: usize,
 }
 impl Default for GpuLimits {
     fn default() -> Self {
@@ -21,7 +20,6 @@ impl Default for GpuLimits {
             resource_bytes: 128 << 20,
             transient_bytes: 32 << 20,
             max_inflight: 2,
-            max_depth: 32,
         }
     }
 }
@@ -55,10 +53,6 @@ pub enum GpuError {
     Unsupported {
         at: RecordLocation,
         record: &'static str,
-    },
-    DepthLimit {
-        at: RecordLocation,
-        limit: usize,
     },
     InvalidRecord {
         at: RecordLocation,
@@ -106,7 +100,7 @@ impl Gpu {
         generation: DeviceGeneration,
         limits: GpuLimits,
     ) -> Result<Self, GpuError> {
-        if generation.0 == 0 || limits.max_inflight == 0 || !(1..=64).contains(&limits.max_depth) {
+        if generation.0 == 0 || limits.max_inflight == 0 {
             return Err(GpuError::IdentityExhausted);
         }
         let adapter = instance

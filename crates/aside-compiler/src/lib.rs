@@ -12,10 +12,10 @@ mod lexer;
 mod parser;
 mod raw;
 mod syntax;
+pub use aside_syntax::{GreenNode, TextRange, TextSize};
 pub use diagnostic::*;
 pub use lexer::{Lexed, Token, lex, lex_with_limits};
 pub use parser::{EntryPoint, Parse, ParseOptions, parse, parse_with_options};
-pub use rowan::{GreenNode, TextRange, TextSize};
 pub use syntax::*;
 /// Pinned Unicode XID table version used by this package.
 pub const UNICODE_VERSION: (u8, u8, u8) = unicode_ident::UNICODE_VERSION;
@@ -31,7 +31,8 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_source_bytes: 8 * 1024 * 1024,
+            // Source locations use u32 byte offsets; there is no smaller author cap.
+            max_source_bytes: u32::MAX as usize,
             max_tokens: 1_000_000,
             max_depth: 128,
             max_diagnostics: 128,
@@ -56,7 +57,7 @@ impl std::error::Error for SourceTooLarge {}
 impl Limits {
     pub(crate) fn normalized(mut self) -> Self {
         self.max_source_bytes = self.max_source_bytes.min(u32::MAX as usize);
-        self.max_depth = self.max_depth.clamp(1, 128);
+        self.max_depth = self.max_depth.max(1);
         self.max_diagnostics = self.max_diagnostics.max(1);
         self
     }

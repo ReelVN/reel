@@ -10,7 +10,7 @@ impl FunctionBuilder<'_, '_> {
         children: Option<h::NodeId>,
         target: bc::CallTarget,
         depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         self.l
             .b
             .work(arguments.map_or(0, |args| self.l.m.hir().elements(args).len()) as u64)?;
@@ -105,7 +105,7 @@ impl FunctionBuilder<'_, '_> {
         children: Option<h::NodeId>,
         target: bc::CallTarget,
         depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         self.l.b.span = self.span(n);
         let builder = self.temp()?;
         self.op(bc::Opcode::ArgsNew, builder.0, 0, 0, n)?;

@@ -416,7 +416,10 @@ fn localized_refusal_and_foreign_prepared_device() {
 #[test]
 #[ignore = "requires an actual graphics adapter"]
 fn transformed_path_clip_has_geometric_coverage() {
-    use reel_ui::{imaging::record::Clip, kurbo::BezPath};
+    use reel_ui::{
+        imaging::record::Clip,
+        kurbo::{BezPath, Stroke},
+    };
     let mut renderer = device();
     let pool = pool();
     let mut path = BezPath::new();
@@ -444,4 +447,52 @@ fn transformed_path_clip_has_geometric_coverage() {
     close(pixel(&pixels, 75, 75), [1.; 4]);
     close(pixel(&pixels, 220, 140), [0.; 4]);
     close(pixel(&pixels, 30, 30), [0.; 4]);
+
+    // Kurbo permits each edge type immediately after ClosePath. The implicit
+    // restart must have the same pixels as an explicit MoveTo(first), including
+    // the final unclosed curve whose End event is supplied at iterator exhaustion.
+    let mut rendered = Vec::new();
+    for explicit in [false, true] {
+        let mut path = BezPath::new();
+        path.move_to((100., 100.));
+        path.line_to((150., 100.));
+        path.line_to((150., 80.));
+        path.close_path();
+        if explicit {
+            path.move_to((100., 100.));
+        }
+        path.line_to((100., 160.));
+        path.close_path();
+        if explicit {
+            path.move_to((100., 100.));
+        }
+        path.quad_to((160., 160.), (180., 100.));
+        path.close_path();
+        if explicit {
+            path.move_to((100., 100.));
+        }
+        path.curve_to((180., 180.), (180., 240.), (100., 240.));
+        let mut scene = Scene::new();
+        scene.draw(Draw::Stroke {
+            transform: Affine::IDENTITY,
+            shape: Geometry::Path(path),
+            stroke: Stroke::new(10.),
+            brush: Brush::Solid(Color::WHITE),
+            brush_transform: None,
+            composite: Composite::default(),
+        });
+        let mut bridge = widget_bridge(RecordWidget::new(scene), Affine::IDENTITY);
+        let frame = build(
+            bridge.record(FrameId(2 + u64::from(explicit))).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        rendered.push(
+            renderer
+                .readback(renderer.prepare(&frame).unwrap())
+                .unwrap(),
+        );
+    }
+    close(pixel(&rendered[0], 100, 130), [1.; 4]);
+    assert_eq!(rendered[0], rendered[1]);
 }

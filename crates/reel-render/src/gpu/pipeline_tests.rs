@@ -456,7 +456,7 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
                 transient_bytes: 0,
                 ..Default::default()
             },
-            "mesh scratch",
+            "transient",
             1,
         ),
     ] {

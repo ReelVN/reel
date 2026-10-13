@@ -26,18 +26,12 @@ impl InputGeometrySource {
 /// Bounds applied before snapshot allocation/publication.
 #[derive(Clone, Copy, Debug)]
 pub struct GeometryLimits {
-    /// Maximum registered nodes, including stashed nodes.
-    pub max_nodes: usize,
     /// Maximum export allocation peak: snapshot capacities plus temporary child IDs.
     pub max_bytes: usize,
-    /// Maximum root-to-leaf path length.
-    pub max_path: usize,
 }
 /// A refused export does not change the input view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryError {
-    /// Registered node capacity exhausted.
-    Nodes,
     /// Snapshot bytes exhausted or arithmetic overflow.
     Bytes,
     /// Path capacity exhausted.
@@ -134,7 +128,7 @@ impl PresentedGeometryView {
             + self.children.capacity() * size_of::<usize>()
             + self.ids.capacity() * size_of::<(WidgetId, usize)>()
     }
-    /// Peak temporary child-ID heap storage during export (native call stack is separate).
+    /// Peak explicit traversal stack and temporary child-ID heap storage during export.
     pub fn scratch_peak_bytes(&self) -> usize {
         self.scratch_peak_bytes
     }
@@ -379,122 +373,94 @@ impl GeometryRef<'_> {
     }
 }
 impl RenderRoot {
-    /// Export after compose/record. Limits are checked before allocation, including stashed nodes.
+    /// Export after compose/record, charging actual registered storage and traversal workspaces.
     pub fn capture_presented_geometry(
         &self,
         limits: GeometryLimits,
     ) -> Result<PresentedGeometryView, GeometryError> {
-        // Reject an oversized registered tree before invoking children_ids(), which
-        // may itself create temporary SmallVec heap storage for a wide container.
-        let registered = self.widget_arena.nodes.len();
-        if registered > limits.max_nodes {
-            return Err(GeometryError::Nodes);
+        struct Visit<'a> {
+            node: crate::tree_arena::ArenaRef<'a, WidgetArenaNode>,
+            parent: Option<(usize, usize)>,
+            depth: usize,
         }
-        if PresentedGeometryView::bytes_for_nodes(registered)
-            .is_none_or(|bytes| bytes > limits.max_bytes)
+        let registered = self.widget_arena.nodes.len();
+        let snapshot_bytes =
+            PresentedGeometryView::bytes_for_nodes(registered).ok_or(GeometryError::Bytes)?;
+        let stack_bytes = registered
+            .checked_mul(size_of::<Visit<'_>>())
+            .ok_or(GeometryError::Bytes)?;
+        if snapshot_bytes
+            .checked_add(stack_bytes)
+            .is_none_or(|n| n > limits.max_bytes)
         {
             return Err(GeometryError::Bytes);
         }
-        fn count(
-            node: crate::tree_arena::ArenaRef<'_, WidgetArenaNode>,
-            depth: usize,
-            n: &mut usize,
-            max: &mut usize,
-            l: GeometryLimits,
-            heap_live: usize,
-            peak: &mut usize,
-        ) -> Result<(), GeometryError> {
-            if depth > l.max_path {
-                return Err(GeometryError::Path);
-            }
-            *n += 1;
-            *max = (*max).max(depth);
-            if *n > l.max_nodes {
-                return Err(GeometryError::Nodes);
-            }
-            if PresentedGeometryView::bytes_for_nodes(*n).is_none_or(|bytes| bytes > l.max_bytes) {
-                return Err(GeometryError::Bytes);
-            }
-            let children = node.item.widget.children_ids();
-            let heap = if children.spilled() {
-                children.capacity() * size_of::<WidgetId>()
-            } else {
-                0
-            };
-            let live = heap_live.checked_add(heap).ok_or(GeometryError::Bytes)?;
-            *peak = (*peak).max(live);
-            if live > l.max_bytes {
-                return Err(GeometryError::Bytes);
-            }
-            for child in children {
-                count(
-                    node.children.item(child).expect("registered direct child"),
-                    depth + 1,
-                    n,
-                    max,
-                    l,
-                    live,
-                    peak,
-                )?;
-            }
-            Ok(())
-        }
-        let mut n = 0;
-        let mut max = 0;
-        let mut peak = 0;
-        let root_node = self
+        let mut view = PresentedGeometryView {
+            records: Vec::with_capacity(registered),
+            children: Vec::with_capacity(registered - 1),
+            ids: Vec::with_capacity(registered),
+            scale_factor: self.global_state.scale_factor,
+            root: 0,
+            max_depth: 0,
+            retention_guard: None,
+            scratch_peak_bytes: stack_bytes,
+        };
+        let root = self
             .widget_arena
             .nodes
             .roots()
             .item(self.root_id())
             .expect("registered root");
-        // Traverse borrowed direct children, avoiding TreeArena::find's temporary
-        // ancestor Vec at every node in the upstream safe-tree implementation.
-        count(root_node, 1, &mut n, &mut max, limits, 0, &mut peak)?;
-        if PresentedGeometryView::bytes_for_nodes(n)
-            .and_then(|b| b.checked_add(peak))
-            .is_none_or(|b| b > limits.max_bytes)
+        let mut pending = Vec::with_capacity(registered);
+        pending.push(Visit {
+            node: root,
+            parent: None,
+            depth: 1,
+        });
+        while let Some(Visit {
+            node,
+            parent,
+            depth,
+        }) = pending.pop()
         {
-            return Err(GeometryError::Bytes);
-        }
-        let mut view = PresentedGeometryView {
-            records: Vec::with_capacity(n),
-            children: Vec::with_capacity(n - 1),
-            ids: Vec::with_capacity(n),
-            scale_factor: self.global_state.scale_factor,
-            root: 0,
-            max_depth: max,
-            retention_guard: None,
-            scratch_peak_bytes: peak,
-        };
-        fn visit(
-            node: crate::tree_arena::ArenaRef<'_, WidgetArenaNode>,
-            parent: Option<usize>,
-            v: &mut PresentedGeometryView,
-        ) -> usize {
-            let id = node.item.state.id;
             let children = node.item.widget.children_ids();
-            let index = v.records.len();
-            let start = v.children.len();
+            let child_bytes = if children.spilled() {
+                children.capacity() * size_of::<WidgetId>()
+            } else {
+                0
+            };
+            let scratch_bytes = stack_bytes
+                .checked_add(child_bytes)
+                .ok_or(GeometryError::Bytes)?;
+            if snapshot_bytes
+                .checked_add(scratch_bytes)
+                .is_none_or(|n| n > limits.max_bytes)
+            {
+                return Err(GeometryError::Bytes);
+            }
+            view.scratch_peak_bytes = view.scratch_peak_bytes.max(scratch_bytes);
+            view.max_depth = view.max_depth.max(depth);
+            let index = view.records.len();
+            if let Some((_, slot)) = parent {
+                view.children[slot] = index;
+            }
+            let start = view.children.len();
             let end = start + children.len();
-            v.children.resize(end, 0);
-            v.records.push(GeometryRecord::project(
+            view.children.resize(end, 0);
+            view.records.push(GeometryRecord::project(
                 &node.item.state,
-                parent,
+                parent.map(|(index, _)| index),
                 start..end,
             ));
-            v.ids.push((id, index));
-            for (slot, child) in (start..end).zip(children) {
-                let i = visit(
-                    node.children.item(child).expect("registered direct child"),
-                    Some(index),
-                    v,
-                );
-                v.children[slot] = i;
+            view.ids.push((node.item.state.id, index));
+            for (slot, child) in (start..end).zip(children).rev() {
+                pending.push(Visit {
+                    node: node.children.item(child).expect("registered direct child"),
+                    parent: Some((index, slot)),
+                    depth: depth + 1,
+                });
             }
-            index
         }
-        visit(root_node, None, &mut view);
         view.ids.sort_unstable_by_key(|e| e.0.to_raw());
         Ok(view)
     }
@@ -518,15 +484,15 @@ impl RenderRoot {
         self.global_state.input_geometry_source = source;
         self.run_rewrite_passes();
     }
-    /// Configure bounded reusable pointer routes. Existing over-depth input is suppressed.
+    /// Reserve reusable pointer routes before presentation; existing active paths are preserved.
     pub fn configure_input_path_storage(&mut self, limit: usize) -> usize {
         self.widget_arena.nodes.configure_lookup_path_storage(limit);
         self.global_state.max_input_path = limit;
         self.global_state.pointer_route = Vec::with_capacity(limit);
         self.global_state.pointer_hover_spare = Vec::with_capacity(limit);
         self.global_state.pointer_active_spare = Vec::with_capacity(limit);
-        // This setup is used after clearing pointer state at the bridge boundary.
-        // Preserve any standalone caller's existing paths, with bounded requested capacity.
+        // Growing routes between presentations must preserve hover and active capture.
+        // A standalone caller may also request less storage than an existing path needs.
         for path in [
             &mut self.global_state.hovered_path,
             &mut self.global_state.active_path,

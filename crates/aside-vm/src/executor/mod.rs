@@ -10,9 +10,13 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 mod api;
+mod builtins;
 #[cfg(test)]
 mod collection_tests;
 mod collections;
+mod iterators;
+mod text;
+use builtins::Builtin;
 use collections::{TableAction, TableWork};
 #[cfg(test)]
 mod cancellation_tests;
@@ -120,11 +124,37 @@ enum ScriptPhase {
     },
     TableValidate,
     TableScan,
+    Builtin {
+        descriptor: DescriptorId,
+        dest: Reg,
+        method: Builtin,
+        count: u32,
+        index: u32,
+        prepared: bool,
+    },
     Sequence {
         dest: Reg,
         window: RegWindow,
         index: u32,
         tuple: bool,
+    },
+    TextPush {
+        builder: Reg,
+        input: Reg,
+        offset: u32,
+    },
+    TextFinish {
+        dest: Reg,
+        input: Reg,
+        offset: u32,
+        version: u64,
+        utf8: text::Utf8,
+    },
+    Concat {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+        offset: u32,
     },
     Equality {
         dest: Reg,
@@ -492,7 +522,10 @@ impl Vm {
                     .unwrap_or(3),
             ) as usize,
         )?;
-        let text_scratch = ChargedVec::new(&usage, limits.heap.max_mutation_bytes as usize)?;
+        let text_scratch = ChargedVec::new(
+            &usage,
+            (limits.heap.max_mutation_bytes as usize).min(BYTE_CHUNK_LEN),
+        )?;
         let constants = slots.open(
             &mut heap,
             RootOwner(u64::MAX),
@@ -2187,6 +2220,35 @@ impl Vm {
                     return Ok(false);
                 }
             }
+            ScriptPhase::TextFinish { .. } => {
+                if !self.text_finish_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::TextPush {
+                builder,
+                input,
+                offset,
+            } => {
+                if !self.text_push_step(&mut s, builder, input, offset, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::Builtin { .. } => {
+                if !self.builtin_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::Concat {
+                dest,
+                left,
+                right,
+                offset,
+            } => {
+                if !self.concat_step(&mut s, dest, left, right, offset, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Equality { dest, negated } => {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
@@ -2350,20 +2412,6 @@ impl Vm {
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
-            Opcode::Add => {
-                let left = self.slots.read(at(s.regs, b))?;
-                let right = self.slots.read(at(s.regs, _c))?;
-                if self.is_text(left, ObjectKind::String) && self.is_text(right, ObjectKind::String)
-                {
-                    let n = self.heap.info(left)?.len as u64 + self.heap.info(right)?.len as u64;
-                    (
-                        n * 3 + 1,
-                        n.div_ceil(BYTE_CHUNK_LEN as u64) * BYTE_CHUNK_BYTES,
-                    )
-                } else {
-                    (1, 0)
-                }
-            }
             Opcode::Call | Opcode::CallNoWait => {
                 let Descriptor::Call(d) = &f.descriptors[b as usize] else {
                     unreachable!()
@@ -2405,8 +2453,24 @@ impl Vm {
             Opcode::GlobalRead | Opcode::GlobalInit | Opcode::GlobalWrite => {
                 (self.program.package().modules.len() as u64 + 1, 0)
             }
+            Opcode::MemberGet => {
+                let object = self.slots.read(at(s.regs, b))?;
+                let kind = self.heap.info(object)?.kind;
+                (
+                    1,
+                    if matches!(kind, ObjectKind::Array | ObjectKind::Tuple) {
+                        VALUE_CHUNK_BYTES
+                    } else {
+                        0
+                    },
+                )
+            }
+            Opcode::IterAdvance => (5, 0),
             Opcode::ArgsNew => (1, 0),
-            Opcode::IterInit | Opcode::IterNext => (4, VALUE_CHUNK_BYTES),
+            Opcode::IterInit
+            | Opcode::IterNext
+            | Opcode::MakeRange
+            | Opcode::MakeRangeInclusive => (4, VALUE_CHUNK_BYTES),
             Opcode::ChildrenPush => {
                 let array = self.slots.read(at(s.regs, _a))?;
                 let value = self.slots.read(at(s.regs, b))?;
@@ -2472,6 +2536,10 @@ impl Vm {
                 | Opcode::ArgsNamed
                 | Opcode::ArgsSpread
                 | Opcode::ChildrenPush
+                | Opcode::TextNew
+                | Opcode::TextPush
+                | Opcode::MakeRange
+                | Opcode::MakeRangeInclusive
                 | Opcode::IterInit
                 | Opcode::IterNext
         ) && s.effects.0 & Effects::ALLOCATE == 0
@@ -2479,6 +2547,37 @@ impl Vm {
             return Err(FaultKind::Effect);
         }
         match op {
+            Opcode::TextNew => {
+                let value = self.heap.alloc_byte_buffer(&[]).map_err(heap_fault)?;
+                self.write(*s, r(a), value)?;
+            }
+            Opcode::TextPush => {
+                let builder = self.read(*s, r(a))?;
+                if self.heap.info(builder).map_err(heap_fault)?.kind != ObjectKind::ByteBuffer {
+                    return Err(FaultKind::Type);
+                }
+                s.phase = ScriptPhase::TextPush {
+                    builder: r(a),
+                    input: r(b),
+                    offset: 0,
+                };
+                return Ok(false);
+            }
+            Opcode::TextFinish => {
+                let value = self.read(*s, r(b))?;
+                let info = self.heap.info(value).map_err(heap_fault)?;
+                if info.kind != ObjectKind::ByteBuffer {
+                    return Err(FaultKind::Type);
+                }
+                s.phase = ScriptPhase::TextFinish {
+                    dest: r(a),
+                    input: r(b),
+                    offset: 0,
+                    version: info.content_version,
+                    utf8: Default::default(),
+                };
+                return Ok(false);
+            }
             Opcode::ChildrenPush => {
                 let array = self.read(*s, r(a))?;
                 let child = self.read(*s, r(b))?;
@@ -2489,71 +2588,38 @@ impl Vm {
                     self.heap.array_push(array, child).map_err(heap_fault)?;
                 }
             }
-            Opcode::IterInit => {
-                let source = self.read(*s, r(b))?;
-                self.heap.sequence_len(source).map_err(heap_fault)?;
-                let version = self
-                    .heap
-                    .info(source)
-                    .map_err(heap_fault)?
-                    .structure_version;
-                let iterator = self
+            Opcode::MakeRange | Opcode::MakeRangeInclusive => {
+                let start = self.read(*s, r(b))?.as_int().ok_or(FaultKind::Type)?;
+                let end = self.read(*s, r(c))?.as_int().ok_or(FaultKind::Type)?;
+                let value = self
                     .heap
                     .alloc_record(
-                        ObjectKind::Iterator,
-                        &[source, Value::int(0), Value::int(version as i64)],
+                        ObjectKind::Range,
+                        &[
+                            Value::int(start),
+                            Value::int(end),
+                            Value::bool(op == Opcode::MakeRangeInclusive),
+                        ],
                     )
                     .map_err(heap_fault)?;
+                self.write(*s, r(a), value)?;
+            }
+            Opcode::IterInit => {
+                let source = self.read(*s, r(b))?;
+                let iterator = self.iterator_new(source).map_err(heap_fault)?;
                 self.write(*s, r(a), iterator)?;
             }
             Opcode::IterNext => {
                 let iterator = self.read(*s, r(b))?;
-                if self.heap.info(iterator).map_err(heap_fault)?.kind != ObjectKind::Iterator {
-                    return Err(FaultKind::Type);
-                }
-                let source = self.heap.get_field(iterator, 0).map_err(heap_fault)?;
-                let index = self
-                    .heap
-                    .get_field(iterator, 1)
-                    .map_err(heap_fault)?
-                    .as_int()
-                    .ok_or(FaultKind::Type)? as u32;
-                let (done, value) = if source.same_bits(Value::NULL) {
-                    (true, Value::NULL)
-                } else {
-                    let info = self.heap.info(source).map_err(heap_fault)?;
-                    let version = self
-                        .heap
-                        .get_field(iterator, 2)
-                        .map_err(heap_fault)?
-                        .as_int()
-                        .ok_or(FaultKind::Type)? as u64;
-                    if info.structure_version != version {
-                        return Err(FaultKind::ConcurrentModification);
-                    }
-                    if index == info.len {
-                        (true, Value::NULL)
-                    } else {
-                        (
-                            false,
-                            self.heap.sequence_get(source, index).map_err(heap_fault)?,
-                        )
-                    }
-                };
-                let step = self
-                    .heap
-                    .alloc_tuple(&[Value::bool(done), value])
-                    .map_err(heap_fault)?;
-                self.write(*s, r(a), step)?;
-                if done {
-                    self.heap
-                        .set_field(iterator, 0, Value::NULL)
-                        .map_err(heap_fault)?;
-                } else {
-                    self.heap
-                        .set_field(iterator, 1, Value::int(i64::from(index) + 1))
-                        .map_err(heap_fault)?;
-                }
+                let value = self.iterator_next(iterator).map_err(heap_fault)?;
+                self.write(*s, r(a), value)?;
+            }
+            Opcode::IterAdvance => {
+                let iterator = self.read(*s, r(b))?;
+                let step = self.iterator_peek(iterator).map_err(heap_fault)?;
+                self.write(*s, r(a), Value::bool(step.done))?;
+                self.write(*s, r(c), step.value)?;
+                self.iterator_commit(iterator, step).map_err(heap_fault)?;
             }
             Opcode::IterClose => {
                 let iterator = self.read(*s, r(a))?;
@@ -2587,6 +2653,18 @@ impl Vm {
             }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
+                if op == Opcode::MemberGet {
+                    let kind = self.heap.info(object).map_err(heap_fault)?.kind;
+                    if matches!(kind, ObjectKind::Array | ObjectKind::Tuple) {
+                        let method =
+                            Builtin::lookup(kind, &self.program.package().symbols[c as usize])
+                                .ok_or(FaultKind::MissingKey)?;
+                        let value = self.bound_builtin(object, method, s.effects)?;
+                        self.write(*s, r(a), value)?;
+                        s.pc.0 += 1;
+                        return Ok(false);
+                    }
+                }
                 let host = self.is_text(object, ObjectKind::Host);
                 let object = if host {
                     self.heap.host_fields(object).map_err(heap_fault)?
@@ -2600,7 +2678,14 @@ impl Vm {
                     )
                     .map_err(vm_fault)?;
                 let action = if op == Opcode::MemberGet {
-                    TableAction::Get(r(a))
+                    if host {
+                        TableAction::Get(r(a))
+                    } else {
+                        TableAction::MemberGet {
+                            dest: r(a),
+                            symbol: SymbolId(c),
+                        }
+                    }
                 } else if host {
                     TableAction::SetHost {
                         object: r(a),
@@ -2820,17 +2905,30 @@ impl Vm {
                     };
                     return Ok(false);
                 }
-                let v = if op == Opcode::Add
+                if op == Opcode::Add
                     && self.is_text(left, ObjectKind::String)
                     && self.is_text(right, ObjectKind::String)
                 {
                     if s.effects.0 & Effects::ALLOCATE == 0 {
                         return Err(FaultKind::Effect);
                     }
-                    self.concat_text(left, right)?
-                } else {
-                    binary(op, left, right)?
-                };
+                    self.heap
+                        .info(left)
+                        .map_err(heap_fault)?
+                        .len
+                        .checked_add(self.heap.info(right).map_err(heap_fault)?.len)
+                        .ok_or(FaultKind::Resource)?;
+                    let builder = self.heap.alloc_byte_buffer(&[]).map_err(heap_fault)?;
+                    self.put(s.env, 1, builder).map_err(vm_fault)?;
+                    s.phase = ScriptPhase::Concat {
+                        dest: r(a),
+                        left: r(b),
+                        right: r(c),
+                        offset: 0,
+                    };
+                    return Ok(false);
+                }
+                let v = binary(op, left, right)?;
                 self.write(*s, r(a), v)?;
             }
             Opcode::MakeClosure => {
@@ -2936,6 +3034,10 @@ impl Vm {
                 }
                 let dynamic = if let CallTarget::Register(reg) = target {
                     let closure = self.read(*s, reg)?;
+                    if self.is_text(closure, ObjectKind::BoundBuiltin) {
+                        self.start_builtin(s, closure, DescriptorId(b), r(a), count)?;
+                        return Ok(false);
+                    }
                     Some((
                         closure,
                         self.closure_function(closure)
@@ -3117,26 +3219,6 @@ impl Vm {
     }
     fn is_text(&self, v: Value, kind: ObjectKind) -> bool {
         v.tag() == ValueTag::Object && self.heap.info(v).is_ok_and(|i| i.kind == kind)
-    }
-    fn concat_text(&mut self, left: Value, right: Value) -> Result<Value, FaultKind> {
-        let left_len = self.heap.info(left).map_err(heap_fault)?.len as usize;
-        let right_len = self.heap.info(right).map_err(heap_fault)?.len as usize;
-        let len = left_len.checked_add(right_len).ok_or(FaultKind::Resource)?;
-        if len > self.text_scratch.data.capacity() {
-            return Err(FaultKind::Resource);
-        }
-        self.text_scratch.data.resize(len, 0);
-        self.heap
-            .read_bytes(left, 0, &mut self.text_scratch.data[..left_len])
-            .map_err(heap_fault)?;
-        self.heap
-            .read_bytes(right, 0, &mut self.text_scratch.data[left_len..])
-            .map_err(heap_fault)?;
-        let text =
-            std::str::from_utf8(&self.text_scratch.data).map_err(|_| FaultKind::InvalidState)?;
-        let result = self.heap.alloc_string(text).map_err(heap_fault);
-        self.text_scratch.data.clear();
-        result
     }
     fn equality_step(
         &mut self,

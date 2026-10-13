@@ -3,7 +3,7 @@
 Historical observations below describe their original revisions. Raw evidence links
 point to the pre-cleanup Git revision; new generated output belongs under
 `target/reel-artifacts/`. Current maintenance commands are documented in
-[`tools/reel-dev`](../../tools/reel-dev/README.md).
+[`crates/reel-dev`](../reel-dev/README.md).
 
 Rust 1.96.0, Linux x86_64 KVM, AMD EPYC 9V74 (5 visible vCPUs), release.
 This measures the compiler, not bytecode or script execution. It does not establish

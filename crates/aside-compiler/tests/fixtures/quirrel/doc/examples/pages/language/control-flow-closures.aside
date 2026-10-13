@@ -1,0 +1,20 @@
+// Source: original/doc/examples/pages/language/control-flow-closures.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let turretAngles = [15, 45, 75];
+let staleQueue = [];
+// Preserve Quirrel's C-for shared binding explicitly; Aside for binds each pass.
+{ let mut slot = 0; while slot < turretAngles.len() { staleQueue.append(|| slot); slot += 1; } }
+let freshQueue = [];
+{ let mut slot = 0; while slot < turretAngles.len() { let ownSlot = slot; freshQueue.append(|| ownSlot); slot += 1; } }
+let angleQueue = [];
+for angle in turretAngles { angleQueue.append(|| angle); }
+println("staleQueue (captured for's shared slot):");
+for getSlot in staleQueue { print(f"{getSlot()} "); }
+println("");
+println("freshQueue (captured a fresh local per pass):");
+for getSlot in freshQueue { print(f"{getSlot()} "); }
+println("");
+println("angleQueue (captured foreach's own fresh variable):");
+for getAngle in angleQueue { print(f"{getAngle()} "); }
+println("");

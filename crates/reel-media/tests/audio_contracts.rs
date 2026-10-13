@@ -56,12 +56,26 @@ fn sound(pool: &BudgetPool, samples: Vec<[f32; 2]>) -> DecodedSound {
 }
 #[test]
 fn real_kira_mixes_stereo_then_maps_explicit_71_and_freezes_on_suspend() {
-    let service =
-        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let service = AudioReclaimService::new(
+        ReclaimLimits {
+            max_generations: 65,
+            queued_work: 257,
+        },
+        WakeSignal::new(|| {}),
+    )
+    .unwrap();
     let (mut output, format) = setup(ChannelLayout::Surround71, SampleFormat::F32, 7);
     assert_eq!(format.mixer_channels, 2);
     assert_eq!(format.device_channel_layout.channels().len(), 8);
-    let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
+    let mut mixer = KiraMixer::new(
+        &format,
+        MixerLimits {
+            max_sounds: 257,
+            internal_buffer_frames: 4097,
+        },
+        &service,
+    )
+    .unwrap();
     let pool = pool();
     let first = mixer
         .play(sound(&pool, vec![[0.2, -0.1]; 4800]))
@@ -215,6 +229,14 @@ fn bounded_queue_underrun_supplies_silence_counts_missing_frames_and_clock_advan
     assert_eq!(output.status().silent_frames, 8);
     assert_eq!(output.clock_observation().submitted_frames, 10);
     assert_eq!(output.clock_observation().estimated_presented_frames, 3);
+    output.stop().unwrap();
+    let (mut producer, fill) = bounded_pcm_queue(96_001, output.underrun_signal()).unwrap();
+    assert_eq!(producer.slots(), 96_001);
+    producer.push([0.2, -0.1]).unwrap();
+    assert!(output.start(fill).is_ok());
+    output.render(&mut data, timing(3));
+    assert_eq!(&data[..2], &[0.2, -0.1]);
+    assert!(data[8..].iter().all(|v| *v == 0.0));
 }
 #[test]
 fn format_change_invalidates_clock_requires_stop_and_new_kira_at_negotiated_rate() {

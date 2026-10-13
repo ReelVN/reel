@@ -15,10 +15,10 @@ layout are not contracts. See [origin](ORIGIN.md).
 
 - `InputGeometrySource::{Live, Presented(Option<Arc<PresentedGeometryView>>)}`.
   Presented(None) has no geometric hit; standalone RenderRoot defaults to Live.
-- `GeometryLimits { max_nodes, max_bytes, max_path }`: registered-node count,
-  export heap peak and maximum depth. `GeometryError::{Nodes,Bytes,Path}` refuses
-  publication. Bytes include snapshot vector capacities and temporary child-ID
-  heap arrays; the native call stack is separate.
+- `GeometryLimits { max_bytes }` accounts export heap peak without an additional
+  node-count or depth ceiling. Bytes include snapshot capacities, the explicit
+  traversal stack and temporary child-ID arrays. `GeometryError::Bytes` refuses
+  publication; `Path` reports an insufficient caller-provided input workspace.
 - `RenderRoot::record_presented_geometry(limits) -> Result<(VisualLayerPlan,
   PresentedGeometryView),GeometryError>` executes real rewrite/layout/compose/
   paint and exports matching geometry. `capture_presented_geometry` exports
@@ -33,7 +33,11 @@ layout are not contracts. See [origin](ORIGIN.md).
   and an independent TreeArena lookup workspace of `limit` u64 slots.
   `input_path_storage_bytes_for(limit) -> Option<usize>` plans the allocation;
   `input_path_storage_bytes()` reports actual capacities plus workspace headers.
-  The bridge reserves the complete Temporary ticket before configuration.
+  The bridge grows these arrays to each recorded tree's actual maximum depth
+  before publishing it, preserving existing hover/capture paths. Its Temporary
+  ticket grows atomically through `BudgetTicket::resize` before allocation;
+  rejection keeps the old charge and input view. `routing_storage_bytes()`
+  reports current route/registry storage.
   One pointer bubble
   route is built once and also used by the focus check. Hover/active each use
   their own reused array, with old arrays retained through exit notifications.
@@ -70,9 +74,9 @@ layout are not contracts. See [origin](ORIGIN.md).
 ## Reel minimum acceptance bridge (no render/player dependency)
 
 - `PresentationBridge::new(root, epoch, BridgeLimits)` takes ownership and starts
-  Presented(None). Limits cover nodes, export bytes/depth, candidate count,
-  aggregate snapshot bytes and fixed route/registry storage. A D01 Temporary
-  ticket is reserved before fixed storage allocation; a Snapshot ticket reserves
+  Presented(None). Limits cover export bytes, candidate count, aggregate snapshot
+  bytes and route/registry storage. A D01 Temporary ticket is reserved before
+  route/registry allocation; a Snapshot ticket reserves
   the maximum export allowance before record/export and remains continuously
   charged until the last key/view lease drops. The same Arc allocation provides
   opaque candidate identity and its budget guard; no separate identity allocation
@@ -108,7 +112,7 @@ D01 identity.rs supplies FrameId/SurfaceEpoch, not an author NodeId type. U02
 uses non-reused Masonry WidgetIds for the private widget tree; it introduces no
 parallel NodeId allocator or StageGraph. R01 adds prepared resource versions,
 bounded frame export and ExternalDraw. Author Slider/DSL remain separate tasks; native GPU/window implementations
-live in reel-render/player. Bridge tickets cover geometry and fixed routes/registry;
+live in reel-render/player. Bridge tickets cover geometry and growing routes/registry;
 R01 independently accounts output/resource/backend ownership and measures opaque
 producer Scene/cache residency.
 

@@ -7,9 +7,7 @@ use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
 };
 #[cfg(any(test, feature = "window"))]
-use reel_engine::{
-    ChoiceInput, CompletionOutcome, DialogueLineInput, Epoch, SessionId, SessionLimits,
-};
+use reel_engine::{ChoiceInput, CompletionOutcome, DialogueLineInput, Epoch, SessionId};
 #[cfg(test)]
 use reel_engine::{InputEvent, InputSequence};
 use reel_ui::{
@@ -691,7 +689,7 @@ impl SessionHostDiagnostic {
         self.step
     }
     pub(crate) fn new() -> Result<Self, Error> {
-        let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default())?;
+        let mut session = Session::new(SessionId(1), Epoch(1))?;
         session.begin_say(
             session.root_owner(),
             &[DialogueLineInput {
@@ -768,7 +766,7 @@ mod tests {
     use std::sync::Arc;
 
     fn session() -> Session {
-        Session::new(SessionId(42), Epoch(3), SessionLimits::default()).unwrap()
+        Session::new(SessionId(42), Epoch(3)).unwrap()
     }
     fn say(session: &mut Session, text: &str) -> InteractionId {
         session
@@ -810,11 +808,7 @@ mod tests {
                 root,
                 SurfaceEpoch(1),
                 BridgeLimits {
-                    geometry: reel_ui::app::GeometryLimits {
-                        max_nodes: 256,
-                        max_bytes: 1 << 20,
-                        max_path: 32,
-                    },
+                    geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
                     max_candidates: 4,
                     max_bridge_bytes: 64 << 10,
                     max_snapshot_bytes: 8 << 20,
@@ -917,14 +911,7 @@ mod tests {
                     logical_size: [640., 420.],
                     physical_size: [640, 420],
                 },
-                BuildLimits {
-                    max_fragments: 1024,
-                    max_commands: 4096,
-                    max_masks: 64,
-                    max_depth: 32,
-                    max_bytes: 8 << 20,
-                    max_total_units: 4_000_000,
-                },
+                BuildLimits { max_bytes: 8 << 20 },
                 &pool,
             )
             .unwrap();
@@ -1274,7 +1261,7 @@ mod tests {
         ui.sync(&mut bridge, root).unwrap();
         assert_eq!(visible(&ui), "First".len());
         let source_owner = ui.session().root_owner();
-        let mut foreign = Session::new(SessionId(99), Epoch(3), SessionLimits::default()).unwrap();
+        let mut foreign = Session::new(SessionId(99), Epoch(3)).unwrap();
         let foreign_interaction = say(&mut foreign, "Foreign interaction");
         // A live source's invalid action still consumes the global watermark.
         assert_eq!(
@@ -1397,9 +1384,9 @@ mod tests {
     }
 
     #[test]
-    fn all_configured_choices_are_reachable_and_scroll_requires_new_presented_geometry() {
+    fn all_choices_are_reachable_and_scroll_requires_new_presented_geometry() {
         let mut session = session();
-        let count = session.limits().max_choices;
+        let count = 1025;
         let keys: Vec<_> = (0..count).map(|i| format!("choice-{i}")).collect();
         let rows: Vec<_> = keys
             .iter()
@@ -1447,16 +1434,11 @@ mod tests {
     }
 
     #[test]
-    fn failed_choice_owner_allocation_rolls_back_without_destroying_old_view() {
-        let session = Session::new(
-            SessionId(42),
-            Epoch(3),
-            SessionLimits {
-                max_owners: 2,
-                ..SessionLimits::default()
-            },
-        )
-        .unwrap();
+    fn existing_owner_count_does_not_block_choice_projection() {
+        let mut session = Session::new(SessionId(42), Epoch(3)).unwrap();
+        for _ in 0..100 {
+            session.create_owner().unwrap();
+        }
         let mut ui = SessionUi::new(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
@@ -1475,11 +1457,13 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert!(ui.sync(&mut bridge, root).is_err());
-        assert!(ui.projection.choices.is_empty());
-        assert!(ui.binding.borrow().accepted.is_none());
-        assert!(ui.session.create_owner().is_err());
-        assert!(ui.choice_owners.is_empty());
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(ui.projection.choices.len(), 2);
+        assert_ne!(ui.binding.borrow().accepted, Some(ui.projection_stamp()));
+        accept(&mut ui, &mut bridge, 2);
+        assert_eq!(ui.binding.borrow().accepted, Some(ui.projection_stamp()));
+        assert!(ui.session.create_owner().is_ok());
+        assert_eq!(ui.choice_owners.len(), 1);
         assert!(ui.session.is_owner_live(ui.source_owner));
     }
 }

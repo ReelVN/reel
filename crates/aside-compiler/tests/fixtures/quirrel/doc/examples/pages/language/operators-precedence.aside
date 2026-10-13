@@ -1,0 +1,10 @@
+// Source: original/doc/examples/pages/language/operators-precedence.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let ammoLeft = 0;
+println("ammoLeft ?? ammoLeft > 0 =", ammoLeft ?? ammoLeft > 0);
+println("1 << 2 == 4 =", 1 << 2 == 4);
+let squadReady = true;
+let hasFuel = false;
+let override = true;
+println("squadReady && hasFuel || override =", squadReady && hasFuel || override);

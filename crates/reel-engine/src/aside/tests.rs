@@ -1,12 +1,12 @@
 //! Runtime regressions for real source compilation, waits, GC and cancellation.
 use super::*;
-use crate::{Epoch, InputAction, OwnerLifecycle, SessionId, SessionLimits};
+use crate::{Epoch, InputAction, OwnerLifecycle, SessionId};
 use aside_vm::bytecode as bc;
 
 const STORY: &str =
     "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
 fn session() -> Session {
-    Session::new(SessionId(41), Epoch(9), SessionLimits::default()).unwrap()
+    Session::new(SessionId(41), Epoch(9)).unwrap()
 }
 fn next(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     for _ in 0..10_000 {
@@ -153,11 +153,7 @@ fn choice_decode_yields_with_roots_and_returns_original_key_once() {
         }
     }
     assert!(published);
-    let original = vm
-        .vm
-        .heap()
-        .root_value(vm.pending.as_ref().unwrap().keys[3].root)
-        .unwrap();
+    let original = vm.pending.as_ref().unwrap().keys.as_ref().unwrap().entries[3].value;
     collect(&mut vm);
     let crate::InteractionView::Choice(choice) = s.view().interaction.unwrap() else {
         panic!("choice")
@@ -240,7 +236,7 @@ fn staged_history_can_be_discarded_without_spending_identity() {
     let id = staged.id();
     assert!(s.view().interaction.is_none());
     assert!(s.view().history.is_empty());
-    assert_eq!(s.history_text_bytes, 0);
+    assert_eq!(s.storage_usage().retained_history_text_bytes, 0);
     drop(staged); // same rollback path as failed VM Pending acceptance
     assert_eq!(s.begin_say(owner, &[line], "en").unwrap(), id);
 }
@@ -279,10 +275,13 @@ fn failed_pending_response_rolls_back_history_and_releases_new_key_roots() {
             &mut s,
             ticket,
             staged,
-            vec![RetainedKey {
-                key: "key".into(),
-                root
-            }]
+            Some(RetainedKeys {
+                root,
+                entries: vec![RetainedKey {
+                    key: "key".into(),
+                    value: key
+                }],
+            })
         )
         .is_err()
     );
@@ -290,7 +289,7 @@ fn failed_pending_response_rolls_back_history_and_releases_new_key_roots() {
     assert!(s.view().interaction.is_none());
     assert!(s.view().history.is_empty());
     assert_eq!(s.next_interaction, Some(1));
-    assert_eq!(s.history_text_bytes, 0);
+    assert_eq!(s.storage_usage().retained_history_text_bytes, 0);
     assert!(vm.vm.heap().root_value(root).is_err());
 }
 
@@ -366,67 +365,103 @@ fn text_read_chunks_can_split_utf8_and_accept_64k_without_a_large_heap_read() {
     let mut heap = aside_vm::Heap::new(SessionEpoch(1), limits).unwrap();
     let text = format!("{}é{}", "a".repeat(4095), "b".repeat(65536 - 4097));
     let value = heap.alloc_string(&text).unwrap();
-    assert_eq!(text::read_string(&heap, value, 65536, 4096).unwrap(), text);
-    assert!(text::read_string(&heap, value, 65535, 4096).is_err());
-    assert!(text::read_string(&heap, value, 65536, 0).is_err());
+    assert_eq!(text::read_string(&heap, value, 4096).unwrap(), text);
+    assert!(text::read_string(&heap, value, 0).is_err());
     let mut normal = aside_vm::Heap::new(SessionEpoch(2), Default::default()).unwrap();
     let small = normal.alloc_string("é").unwrap();
     assert!(normal.read_bytes(small, 0, &mut [0; 4097]).is_err());
-    assert_eq!(text::read_string(&normal, small, 2, 1).unwrap(), "é");
+    assert_eq!(text::read_string(&normal, small, 1).unwrap(), "é");
     assert!(normal.alloc_string(&"x".repeat(4096)).is_ok());
-    assert!(normal.alloc_string(&"x".repeat(4097)).is_err());
+    assert!(normal.alloc_string(&"x".repeat(4097)).is_ok());
 }
 
 #[test]
-fn selected_64k_key_is_retained_original_and_one_more_byte_rejects_before_publish() {
-    // The fixture explicitly raises the constant-admission limit. Default
-    // 4096-byte constant loading is a separate VM boundary, not bypassed by host.
-    for len in [65536, 65537] {
-        let code = format!(
-            "use reel::prelude::*; fn opening() {{ choose([{{key: \"{}\", label: \"\"}}]) }}",
-            "k".repeat(len)
-        );
-        let story = source::compile_story(&code, "story", 7, "opening").unwrap();
-        let mut s = session();
-        let mut limits = VmLimits::default();
-        limits.heap.max_mutation_bytes = len as u32;
-        let mut vm = SessionVm::load(&s, story.program, limits).unwrap();
-        assert_eq!(vm.read_limit, 4096);
-        vm.start(&s, story.initializer).unwrap();
-        assert!(matches!(next(&mut vm, &mut s), RunOutcome::Returned(_)));
-        vm.discard_delivery(&s).unwrap();
-        vm.start(&s, story.entry).unwrap();
-        let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
-            panic!("choice")
-        };
-        let result = vm.dispatch(&mut s, ticket, "en", 64);
-        if len > 65536 {
-            assert!(result.is_err());
-            assert!(s.view().interaction.is_none());
-            assert!(vm.pending.is_none());
-            assert!(vm.choice_reader.is_none());
-            continue;
+fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
+    let long = "雨".repeat(22_000);
+    let mut rows: Vec<_> = (0..1024)
+        .map(|i| format!("{{key: \"key-{i}\", label: \"Option\"}}"))
+        .collect();
+    rows.push(format!("{{key: \"{long}\", label: \"Last option\"}}"));
+    let code = format!(
+        "use reel::prelude::*; fn opening() {{ let mut count = 0; while count < 300 {{ narrator(\"continued\"); count += 1; }} narrator(\"{long}\"); choose([{}]) }}",
+        rows.join(",")
+    );
+    let (mut session, mut vm) = setup(&code, Context::Ordinary);
+    let mut original = None;
+    let mut choice_roots = None;
+    let mut finished = false;
+    for _ in 0..20_000 {
+        match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::HostCall(ticket) => {
+                let p = vm.vm.program().package();
+                if p.symbols[p.natives[ticket.native.index()].symbol.index()] == "reel::choose"
+                    && choice_roots.is_none()
+                {
+                    choice_roots = Some(vm.vm.heap().stats().roots);
+                }
+                match vm.dispatch(&mut session, ticket, "en", 128).unwrap() {
+                    NativeDispatch::Published { interaction, .. } => {
+                        match session.view().interaction.unwrap() {
+                            crate::InteractionView::Dialogue(_) => {
+                                session
+                                    .handle_local_input(
+                                        session.root_owner(),
+                                        InputAction::Advance(interaction),
+                                    )
+                                    .unwrap();
+                                session
+                                    .handle_local_input(
+                                        session.root_owner(),
+                                        InputAction::Advance(interaction),
+                                    )
+                                    .unwrap();
+                            }
+                            crate::InteractionView::Choice(choice) => {
+                                assert_eq!(choice.options().len(), 1025);
+                                let selected = choice.options()[1024].id().clone();
+                                original = Some(
+                                    vm.pending.as_ref().unwrap().keys.as_ref().unwrap().entries
+                                        [1024]
+                                        .value,
+                                );
+                                assert!(vm.vm.heap().stats().roots <= choice_roots.unwrap() + 2);
+                                collect(&mut vm);
+                                session
+                                    .handle_local_input(
+                                        session.root_owner(),
+                                        InputAction::Select(selected),
+                                    )
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    NativeDispatch::Decoding { .. } => collect(&mut vm),
+                    NativeDispatch::Ready { .. } => panic!("story native must wait"),
+                }
+            }
+            RunOutcome::Returned(_) => {
+                assert!(
+                    vm.retain_return(&session)
+                        .unwrap()
+                        .same_bits(original.unwrap())
+                );
+                finished = true;
+                break;
+            }
+            other => panic!("unexpected large story outcome: {other:?}"),
         }
-        assert!(matches!(result.unwrap(), NativeDispatch::Published { .. }));
-        let original = vm
-            .vm
-            .heap()
-            .root_value(vm.pending.as_ref().unwrap().keys[0].root)
-            .unwrap();
-        collect(&mut vm);
-        let crate::InteractionView::Choice(choice) = s.view().interaction.unwrap() else {
-            panic!("choice")
-        };
-        let selected = choice.options()[0].id().clone();
-        s.handle_local_input(s.root_owner(), InputAction::Select(selected))
-            .unwrap();
-        assert!(matches!(next(&mut vm, &mut s), RunOutcome::Returned(_)));
-        assert!(vm.retain_return(&s).unwrap().same_bits(original));
-        collect(&mut vm);
-        assert_eq!(vm.vm.heap().info(original).unwrap().len as usize, len);
     }
+    assert!(finished);
+    assert_eq!(session.view().history.len(), 301);
+    assert_eq!(session.view().history[0].text(), "continued");
+    assert_eq!(session.view().history[300].text(), long);
+    collect(&mut vm);
+    assert_eq!(
+        vm.vm.heap().info(original.unwrap()).unwrap().len as usize,
+        long.len()
+    );
 }
-
 #[test]
 fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
     use reel_ui::stage::NodeKind;

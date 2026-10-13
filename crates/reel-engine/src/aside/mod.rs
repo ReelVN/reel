@@ -72,8 +72,7 @@ impl AdapterError {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
             Self::Input(_) => Some(FaultKind::Type),
             Self::Stage(_) => Some(FaultKind::Type),
-            Self::Allocation
-            | Self::Session(SessionError::Capacity(_) | SessionError::AllocationFailed) => {
+            Self::Allocation | Self::Session(SessionError::AllocationFailed) => {
                 Some(FaultKind::Resource)
             }
             Self::Session(
@@ -100,13 +99,17 @@ impl AdapterError {
 
 struct RetainedKey {
     key: String,
+    value: Value,
+}
+struct RetainedKeys {
     root: RootToken,
+    entries: Vec<RetainedKey>,
 }
 struct PendingInteraction {
     interaction: InteractionId,
     task: TaskId,
     wait: WaitId,
-    keys: Vec<RetainedKey>,
+    keys: Option<RetainedKeys>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,7 +216,7 @@ impl SessionVm {
             ValueTag::Object => {
                 let info = heap.info(value)?;
                 if info.kind == ObjectKind::String {
-                    text::read_string(heap, value, info.len as usize, self.read_limit)?
+                    text::read_string(heap, value, self.read_limit)?
                 } else {
                     format!("<{:?}>", info.kind)
                 }
@@ -293,12 +296,7 @@ impl SessionVm {
                 return Err(AdapterError::Input("choose arity"));
             };
             let options = *options; // end the VM argument borrow before root insertion
-            choice::ChoiceReader::new(
-                self.vm.heap_mut(),
-                options,
-                self.root_owner,
-                session.limits().max_choices,
-            )?
+            choice::ChoiceReader::new(self.vm.heap_mut(), options, self.root_owner)?
         };
         match reader.step(self.vm.heap_mut(), budget) {
             Ok((false, work)) => {
@@ -418,12 +416,7 @@ impl SessionVm {
         let [text] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
         };
-        let text = text::read_string(
-            self.vm.heap(),
-            *text,
-            session.limits().max_interaction_text_bytes,
-            self.read_limit,
-        )?;
+        let text = text::read_string(self.vm.heap(), *text, self.read_limit)?;
         let function = &p.functions[ticket.location.code.function.index()];
         let module = &p.symbols[p.modules[function.module.index()].path.index()];
         let content_id = match ticket.location.source {
@@ -471,12 +464,12 @@ impl SessionVm {
         let publication =
             publication::Publication::stage(session, |s| s.begin_say(self.owner, lines, locale))?;
         let interaction = publication.id();
-        self.accept_wait(session, ticket, publication, Vec::new())?;
+        self.accept_wait(session, ticket, publication, None)?;
         Ok(interaction)
     }
 
     /// Decoder output uses the original immutable key Values, not reconstructed
-    /// strings. Each key is independently rooted before releasing native entry.
+    /// strings. One rooted array retains every key before releasing native entry.
     fn publish_choice(
         &mut self,
         session: &mut Session,
@@ -484,56 +477,50 @@ impl SessionVm {
         rows: &[(Value, Value)],
     ) -> Result<InteractionId, AdapterError> {
         self.check_wait(session, ticket)?;
-        let limits = session.limits();
-        if rows.len() > limits.max_choices {
-            return Err(AdapterError::Input("session choice count limit"));
-        }
         let mut decoded = Vec::new();
         decoded
             .try_reserve_exact(rows.len())
             .map_err(|_| AdapterError::Allocation)?;
-        let mut remaining = limits.max_interaction_text_bytes;
         for &(key, label) in rows {
-            let key = text::read_string(self.vm.heap(), key, remaining, self.read_limit)?;
-            remaining -= key.len();
-            let label = text::read_string(self.vm.heap(), label, remaining, self.read_limit)?;
-            remaining -= label.len();
+            let key = text::read_string(self.vm.heap(), key, self.read_limit)?;
+            let label = text::read_string(self.vm.heap(), label, self.read_limit)?;
             decoded.push((key, label));
         }
         let mut keys = Vec::new();
         keys.try_reserve_exact(rows.len())
             .map_err(|_| AdapterError::Allocation)?;
-        for (&(value, _), (key, _)) in rows.iter().zip(&decoded) {
-            match self
-                .vm
-                .heap_mut()
-                .add_root(self.root_owner, RootKind::Host, value)
-            {
-                Ok(root) => keys.push(RetainedKey {
-                    key: key.clone(),
-                    root,
-                }),
-                Err(error) => {
-                    self.release_keys(keys)?;
-                    return Err(error.into());
-                }
-            }
+        let mut inputs = Vec::new();
+        inputs
+            .try_reserve_exact(decoded.len())
+            .map_err(|_| AdapterError::Allocation)?;
+        inputs.extend(
+            decoded
+                .iter()
+                .map(|(key, label)| ChoiceInput { key, label }),
+        );
+        let references = self.vm.heap_mut().alloc_array(&[])?;
+        for &(value, _) in rows {
+            self.vm.heap_mut().array_push(references, value)?;
         }
-        let inputs = decoded
-            .iter()
-            .map(|(key, label)| ChoiceInput { key, label })
-            .collect::<Vec<_>>();
         let publication =
-            match publication::Publication::stage(session, |s| s.begin_choice(self.owner, &inputs))
-            {
-                Ok(publication) => publication,
-                Err(error) => {
-                    self.release_keys(keys)?;
-                    return Err(error.into());
-                }
-            };
+            publication::Publication::stage(session, |s| s.begin_choice(self.owner, &inputs))?;
+        let root = self
+            .vm
+            .heap_mut()
+            .add_root(self.root_owner, RootKind::Host, references)?;
+        for (&(value, _), (key, _)) in rows.iter().zip(decoded) {
+            keys.push(RetainedKey { key, value });
+        }
         let interaction = publication.id();
-        self.accept_wait(session, ticket, publication, keys)?;
+        self.accept_wait(
+            session,
+            ticket,
+            publication,
+            Some(RetainedKeys {
+                root,
+                entries: keys,
+            }),
+        )?;
         Ok(interaction)
     }
 
@@ -542,7 +529,7 @@ impl SessionVm {
         session: &mut Session,
         ticket: HostTicket,
         publication: publication::Publication,
-        keys: Vec<RetainedKey>,
+        keys: Option<RetainedKeys>,
     ) -> Result<(), AdapterError> {
         let wait = ticket.wait_id();
         // The prepared interaction/history is not visible during VM response.
@@ -563,9 +550,9 @@ impl SessionVm {
         Ok(())
     }
 
-    fn release_keys(&mut self, keys: Vec<RetainedKey>) -> Result<(), AdapterError> {
-        for key in keys {
-            self.vm.heap_mut().release_root(key.root)?;
+    fn release_keys(&mut self, keys: Option<RetainedKeys>) -> Result<(), AdapterError> {
+        if let Some(keys) = keys {
+            self.vm.heap_mut().release_root(keys.root)?;
         }
         Ok(())
     }
@@ -592,14 +579,17 @@ impl SessionVm {
             return Err(AdapterError::Input("cleanup-only completion"));
         }
         let value = match completion.outcome() {
-            CompletionOutcome::Advanced if pending.keys.is_empty() => Value::NULL,
+            CompletionOutcome::Advanced if pending.keys.is_none() => Value::NULL,
             CompletionOutcome::Selected(selected) => {
                 let key = pending
                     .keys
+                    .as_ref()
+                    .ok_or(AdapterError::Input("choice completion without keys"))?
+                    .entries
                     .iter()
                     .find(|key| &key.key == selected)
                     .ok_or(AdapterError::Input("unknown choice key"))?;
-                self.vm.heap().root_value(key.root)?
+                key.value
             }
             _ => return Err(AdapterError::Input("completion kind mismatch")),
         };

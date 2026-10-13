@@ -24,6 +24,7 @@ pub enum ObjectKind {
     Class,
     Instance,
     Closure,
+    BoundBuiltin,
     Generator,
     Thread,
     Future,
@@ -59,6 +60,7 @@ impl ObjectKind {
                 | Self::Class
                 | Self::Instance
                 | Self::Closure
+                | Self::BoundBuiltin
                 | Self::Generator
                 | Self::Thread
                 | Self::Future
@@ -652,7 +654,7 @@ impl Heap {
         Ok(())
     }
     fn allocate_bytes(&mut self, kind: ObjectKind, input: &[u8]) -> Result<Value, HeapError> {
-        self.input_bytes(input)?;
+        u32::try_from(input.len()).map_err(|_| HeapError::OutOfBounds)?;
         if self.objects.full() {
             return Err(HeapError::ObjectCapacity);
         }
@@ -673,6 +675,15 @@ impl Heap {
     }
     pub fn alloc_byte_buffer(&mut self, value: &[u8]) -> Result<Value, HeapError> {
         self.allocate_bytes(ObjectKind::ByteBuffer, value)
+    }
+    // Only the executor owns this unpublished buffer, copied from valid strings.
+    pub(crate) fn seal_string(&mut self, builder: Value) -> Result<(), HeapError> {
+        let key = self.key(builder)?;
+        if self.object(key)?.kind != ObjectKind::ByteBuffer {
+            return Err(HeapError::WrongKind);
+        }
+        self.objects.get_mut(key).unwrap().kind = ObjectKind::String;
+        Ok(())
     }
     pub fn info(&self, value: Value) -> Result<ObjectInfo, HeapError> {
         let obj = self.object(self.key(value)?)?;
@@ -703,7 +714,10 @@ impl Heap {
         let obj = self.object(key)?;
         if !obj.kind.values()
             || matches!(obj.payload, Payload::Table(_))
-            || matches!(obj.kind, ObjectKind::Tuple | ObjectKind::Closure)
+            || matches!(
+                obj.kind,
+                ObjectKind::Tuple | ObjectKind::Closure | ObjectKind::BoundBuiltin
+            )
         {
             return Err(HeapError::WrongKind);
         }

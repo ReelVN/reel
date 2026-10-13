@@ -1,0 +1,7 @@
+// Source: original/doc/examples/pages/language/containers-basic.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let squad = { name: "alpha", strength: 4 };
+println("squad.name =", squad.name);
+let spawnPoints = [10, 20, 30];
+println("spawnPoints[1] =", spawnPoints[1], "count =", spawnPoints.len());

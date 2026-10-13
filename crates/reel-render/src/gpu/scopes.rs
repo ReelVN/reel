@@ -15,47 +15,40 @@ pub(super) struct Entry<T> {
 pub(super) struct Scopes<T> {
     root: T,
     nested: Vec<Entry<T>>,
-    base: usize,
-    limit: usize,
 }
-impl<T> Scopes<T> {
-    pub(super) fn new(
-        base: usize,
-        limit: usize,
-        at: RecordLocation,
-        make: impl FnOnce() -> Result<T, GpuError>,
-    ) -> Result<Self, GpuError> {
-        if base >= limit {
-            return Err(GpuError::DepthLimit { at, limit });
-        }
-        Ok(Self {
-            root: make()?,
-            nested: Vec::new(),
-            base,
-            limit,
-        })
+
+pub(super) fn push_stack<T>(
+    stack: &mut Vec<T>,
+    entry: T,
+    reserve: impl FnOnce(u64) -> Result<(), GpuError>,
+) -> Result<(), GpuError> {
+    if stack.len() == stack.capacity() {
+        let additional = stack.capacity().max(1);
+        let bytes = additional
+            .checked_mul(size_of::<T>())
+            .ok_or(GpuError::InvalidSize)?;
+        reserve(bytes as u64)?;
+        stack.reserve_exact(additional);
     }
-    pub(super) fn depth(&self) -> usize {
-        self.base + 1 + self.nested.len()
+    stack.push(entry);
+    Ok(())
+}
+
+impl<T> Scopes<T> {
+    pub(super) fn new(root: T) -> Self {
+        Self {
+            root,
+            nested: Vec::new(),
+        }
     }
     pub(super) fn push(
         &mut self,
         kind: Kind,
         at: RecordLocation,
-        make: impl FnOnce() -> Result<T, GpuError>,
+        value: T,
+        reserve: impl FnOnce(u64) -> Result<(), GpuError>,
     ) -> Result<(), GpuError> {
-        if self.depth() >= self.limit {
-            return Err(GpuError::DepthLimit {
-                at,
-                limit: self.limit,
-            });
-        }
-        self.nested.push(Entry {
-            at,
-            value: make()?,
-            kind,
-        });
-        Ok(())
+        push_stack(&mut self.nested, Entry { at, value, kind }, reserve)
     }
     pub(super) fn pop(&mut self, kind: Kind, at: RecordLocation) -> Result<Entry<T>, GpuError> {
         match self.nested.last() {
@@ -104,31 +97,44 @@ mod tests {
         }
     }
     #[test]
-    fn boundary_rejects_before_allocation_and_checks_recursive_root() {
-        let mut stack = Scopes::new(0, 2, at(0), || Ok(())).unwrap();
-        stack.push(Kind::Group, at(1), || Ok(())).unwrap();
-        let error = stack
-            .push(Kind::Clip, at(2), || panic!("must not allocate"))
-            .unwrap_err();
-        assert!(
-            matches!(error, GpuError::DepthLimit { at: location, limit: 2 } if location == at(2))
+    fn stack_growth_reserves_capacity_before_mutation_without_a_depth_ceiling() {
+        let mut stack = Scopes::new(());
+        let mut charged = 0;
+        for index in 0..128 {
+            stack
+                .push(Kind::Group, at(index), (), |bytes| {
+                    charged += bytes;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            charged,
+            (stack.nested.capacity() * size_of::<Entry<()>>()) as u64
         );
-        assert!(!error.is_retryable());
-        stack.pop(Kind::Group, at(3)).unwrap();
-        assert_eq!(stack.depth(), 1);
-        assert!(Scopes::new(stack.depth(), 2, at(4), || Ok(())).is_ok());
-        assert!(
-            matches!(Scopes::<()>::new(2, 2, at(5), || panic!("must not allocate")), Err(GpuError::DepthLimit { at: location, .. }) if location == at(5))
-        );
+        assert!(matches!(
+            stack.push(Kind::Clip, at(128), (), |bytes| {
+                Err(GpuError::Budget {
+                    domain: "transient",
+                    requested: bytes,
+                    available: 0,
+                })
+            }),
+            Err(GpuError::Budget { .. })
+        ));
+        assert_eq!(stack.nested.len(), 128);
+        for index in (0..128).rev() {
+            assert_eq!(stack.pop(Kind::Group, at(index)).unwrap().at, at(index));
+        }
         stack.finish().unwrap();
     }
     #[test]
     fn malformed_structure_is_localized_and_permanent() {
-        let mut stack = Scopes::new(0, 3, at(0), || Ok(())).unwrap();
+        let mut stack = Scopes::new(());
         assert!(
             matches!(stack.pop(Kind::Clip, at(1)), Err(GpuError::InvalidRecord { at: location, record: "scope underflow" }) if location == at(1))
         );
-        stack.push(Kind::Group, at(2), || Ok(())).unwrap();
+        stack.push(Kind::Group, at(2), (), |_| Ok(())).unwrap();
         assert!(
             matches!(stack.pop(Kind::Clip, at(3)), Err(GpuError::InvalidRecord { at: location, record: "mismatched scope terminator" }) if location == at(3))
         );

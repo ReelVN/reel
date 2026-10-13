@@ -25,20 +25,19 @@ pub use verify::{
 pub struct Limits {
     pub max_bytes: usize,
     pub max_records: u32,
-    pub max_string_bytes: u32,
     pub max_registers: u32,
     pub max_allocation_bytes: usize,
     pub max_work: u64,
 }
 impl Default for Limits {
     fn default() -> Self {
+        let max_bytes = 16 * 1024 * 1024;
         Self {
-            max_bytes: 16 * 1024 * 1024,
+            max_bytes,
             max_records: 262_144,
-            max_string_bytes: 1024 * 1024,
             max_registers: 65_536,
             max_allocation_bytes: 64 * 1024 * 1024,
-            max_work: 16_777_216,
+            max_work: 2 * max_bytes as u64,
         }
     }
 }

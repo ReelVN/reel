@@ -5,6 +5,7 @@ const EN: &str = include_str!("../../../docs/guide/en.md");
 const SCENES: &[(&str, E)] = &[
     ("main module", E::Module),
     ("title module", E::Module),
+    ("ranges, collections and interpolation", E::Block),
     ("room module", E::Module),
     ("card component", E::Module),
     ("opening module", E::Module),

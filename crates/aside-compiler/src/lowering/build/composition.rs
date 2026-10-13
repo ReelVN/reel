@@ -38,7 +38,7 @@ impl FunctionBuilder<'_, '_> {
         &mut self,
         node: h::NodeId,
         depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         let children = self.temp()?;
         let descriptor = self.descriptor(bc::Descriptor::Sequence(bc::RegWindow {
             start: children,
@@ -72,7 +72,7 @@ impl FunctionBuilder<'_, '_> {
         source: h::NodeId,
         body: h::NodeId,
         depth: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<Error>> {
         let Some(source) = self.value(source, depth)? else {
             return Ok(());
         };
@@ -84,12 +84,9 @@ impl FunctionBuilder<'_, '_> {
         let end = self.block()?;
         self.terminate(Terminator::Jump(head), node)?;
         self.start(head)?;
-        let step = self.temp()?;
-        self.op(bc::Opcode::IterNext, step.0, iterator.0, 0, node)?;
-        let zero = self.constant(bc::Const::Int(0), node)?;
         let done = self.temp()?;
-        self.op(bc::Opcode::IndexGet, done.0, step.0, zero.0, node)?;
-        self.release(zero)?;
+        let value = self.temp()?;
+        self.op(bc::Opcode::IterAdvance, done.0, iterator.0, value.0, node)?;
         self.terminate(
             Terminator::BranchBool {
                 value: done,
@@ -100,11 +97,6 @@ impl FunctionBuilder<'_, '_> {
         )?;
         self.release(done)?;
         self.start(body_block)?;
-        let one = self.constant(bc::Const::Int(1), node)?;
-        let value = self.temp()?;
-        self.op(bc::Opcode::IndexGet, value.0, step.0, one.0, node)?;
-        self.release(one)?;
-        self.release(step)?;
         if let Some(symbol) = self.pattern_symbol(pattern)? {
             let binding = self.local(symbol)?.ok_or_else(|| {
                 self.l.b.error(

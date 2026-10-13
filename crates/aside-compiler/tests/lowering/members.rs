@@ -412,6 +412,19 @@ fn member_positions_and_symbols_obey_register_work_capacity_and_depth_limits() {
     assert_eq!(&source[byte_range(e.span)], "a");
     assert!(byte_range(e.span).start >= source.find("a.z").unwrap());
     let source = format!("fn f(a){{a{}}}", ".x".repeat(20));
+    lowering::lower(
+        &analyzed(&source),
+        &Linkage::default(),
+        Options {
+            limits: lowering::Limits {
+                max_depth: 12,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let source = format!("fn f(a){{{}a.x{}}}", "(".repeat(20), ")".repeat(20));
     let e = lowering::lower(
         &analyzed(&source),
         &Linkage::default(),

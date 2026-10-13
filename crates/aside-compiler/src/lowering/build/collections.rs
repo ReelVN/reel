@@ -6,7 +6,7 @@ impl FunctionBuilder<'_, '_> {
         &mut self,
         n: h::NodeId,
         depth: usize,
-    ) -> Result<Option<bc::Reg>, Error> {
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         self.l.b.work(self.l.m.hir().elements(n).len() as u64)?;
         let count = self.l.m.hir().children(n).count();
         self.l.b.work(count as u64)?;
@@ -61,7 +61,11 @@ impl FunctionBuilder<'_, '_> {
         Ok(Some(out))
     }
 
-    pub(super) fn table(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Error> {
+    pub(super) fn table(
+        &mut self,
+        n: h::NodeId,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
         self.l.b.work(self.l.m.hir().elements(n).len() as u64)?;
         let count = self.l.m.hir().children(n).count();
         self.l.b.work(count as u64)?;

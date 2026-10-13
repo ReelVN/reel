@@ -1,7 +1,5 @@
 use std::{io::Read, path::Path};
 
-pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-
 #[derive(Debug)]
 pub struct InputError {
     pub code: &'static str,
@@ -34,23 +32,12 @@ fn not_regular() -> InputError {
         exit_code: 2,
     }
 }
-fn too_large() -> InputError {
-    InputError {
-        code: "REEL-INPUT-LIMIT",
-        message: format!("source exceeds {MAX_SOURCE_BYTES} byte limit"),
-        byte_range: None,
-        exit_code: 1,
-    }
-}
-
-/// Metadata is an early rejection only; a bounded read also catches file growth.
+/// Read author source; representability and compiler resources are checked by
+/// the shared source pipeline rather than a separate CLI file-size policy.
 pub fn read_source(path: &Path) -> Result<String, InputError> {
     let metadata = std::fs::metadata(path).map_err(|e| io_error("inspect", e))?;
     if !metadata.is_file() {
         return Err(not_regular());
-    }
-    if metadata.len() > MAX_SOURCE_BYTES as u64 {
-        return Err(too_large());
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -71,15 +58,11 @@ pub fn read_source(path: &Path) -> Result<String, InputError> {
     read_utf8(file)
 }
 
-fn read_utf8(reader: impl Read) -> Result<String, InputError> {
+fn read_utf8(mut reader: impl Read) -> Result<String, InputError> {
     let mut bytes = Vec::new();
     reader
-        .take((MAX_SOURCE_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| io_error("read", e))?;
-    if bytes.len() > MAX_SOURCE_BYTES {
-        return Err(too_large());
-    }
     String::from_utf8(bytes).map_err(|error| {
         let start = error.utf8_error().valid_up_to();
         let end = error
@@ -99,14 +82,11 @@ fn read_utf8(reader: impl Read) -> Result<String, InputError> {
 mod tests {
     use super::*;
     #[test]
-    fn read_limits_and_utf8() {
+    fn read_utf8_preserves_bytes_and_reports_invalid_sequences() {
         let error = read_utf8(&[b'a', 0xe4, 0xb8][..]).unwrap_err();
         assert_eq!(error.byte_range, Some(1..3));
         assert_eq!(error.exit_code, 1);
-        assert!(read_utf8(std::io::repeat(b' ').take(MAX_SOURCE_BYTES as u64)).is_ok());
-        assert_eq!(
-            read_utf8(std::io::repeat(b' ')).unwrap_err().code,
-            "REEL-INPUT-LIMIT"
-        );
+        let source = "文".repeat(3 * 1024 * 1024);
+        assert_eq!(read_utf8(source.as_bytes()).unwrap(), source);
     }
 }

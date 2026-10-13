@@ -9,12 +9,7 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 // cannot add unrelated allocator traffic while the region is being measured.
 #[test]
 fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
-    let limits = SessionLimits {
-        max_owners: 3,
-        max_history_groups: 4,
-        ..SessionLimits::default()
-    };
-    let mut dialogue = Session::new(SessionId(1), Epoch(1), limits).unwrap();
+    let mut dialogue = Session::new(SessionId(1), Epoch(1)).unwrap();
     let root = dialogue.root_owner();
     let ui_owner = dialogue.create_owner().unwrap();
     let id = dialogue
@@ -29,7 +24,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
             "zh-CN",
         )
         .unwrap();
-    let mut choice = Session::new(SessionId(2), Epoch(1), limits).unwrap();
+    let mut choice = Session::new(SessionId(2), Epoch(1)).unwrap();
     let choice_root = choice.root_owner();
     choice
         .begin_choice(
@@ -50,7 +45,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
         InteractionView::Choice(model) => model.options()[0].id().clone(),
         _ => unreachable!(),
     };
-    let mut cancelled = Session::new(SessionId(3), Epoch(1), limits).unwrap();
+    let mut cancelled = Session::new(SessionId(3), Epoch(1)).unwrap();
     let cancelled_root = cancelled.root_owner();
     cancelled
         .begin_say(
@@ -64,7 +59,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
             "en",
         )
         .unwrap();
-    let mut retirement = Session::new(SessionId(4), Epoch(1), limits).unwrap();
+    let mut retirement = Session::new(SessionId(4), Epoch(1)).unwrap();
     let retirement_root = retirement.root_owner();
     let retiring = retirement.create_owner().unwrap();
 

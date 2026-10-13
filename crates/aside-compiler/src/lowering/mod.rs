@@ -110,7 +110,7 @@ pub fn lower(
     module: &hir::AnalyzedModule,
     linkage: &Linkage<'_>,
     options: Options,
-) -> Result<IrModule, Error> {
+) -> Result<IrModule, Box<Error>> {
     build::lower(module, linkage, options)
 }
 #[derive(Debug)]
@@ -173,7 +173,7 @@ impl Metadata {
 }
 impl IrModule {
     /// Consumes the IR, relocates block edges/regions and runs the shared verifier.
-    pub fn emit(self) -> Result<Compilation, Error> {
+    pub fn emit(self) -> Result<Compilation, Box<Error>> {
         emit::emit(self)
     }
 }
@@ -181,6 +181,6 @@ pub fn compile(
     module: &hir::AnalyzedModule,
     linkage: &Linkage<'_>,
     options: Options,
-) -> Result<Compilation, Error> {
+) -> Result<Compilation, Box<Error>> {
     lower(module, linkage, options)?.emit()
 }

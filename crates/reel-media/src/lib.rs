@@ -13,8 +13,7 @@ mod pcm;
 pub use contracts::*;
 pub use maintenance::{AudioReclaimService, ReclaimLimits, ReclaimStatus};
 pub use mixer::{
-    DecodedSound, DecodedSoundRequest, KiraMixer, MAX_DECODED_FRAMES, MixerLimits, Playback,
-    ReclaimProgress,
+    DecodedSound, DecodedSoundRequest, KiraMixer, MixerLimits, Playback, ReclaimProgress,
 };
 pub use output::{OfflineOutput, UnderrunSignal, bounded_pcm_queue};
 pub use pcm::DeviceSample;

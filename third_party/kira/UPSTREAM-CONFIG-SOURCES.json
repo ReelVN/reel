@@ -1,6 +1,0 @@
-{
-  "rustfmt.toml": {
-    "url": "https://raw.githubusercontent.com/tesselode/kira/74b3ef0fd8bd15f90e3b469208ee741f04374a62/rustfmt.toml",
-    "sha256": "bce79651b2e2ff42e1c54b9a26c5e17af5222f9f65ab51d9563a48fd159dae84"
-  }
-}

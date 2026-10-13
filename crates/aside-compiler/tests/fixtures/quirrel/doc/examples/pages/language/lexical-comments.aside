@@ -1,0 +1,9 @@
+// Source: original/doc/examples/pages/language/lexical-comments.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+// a line comment runs to the end of the line
+let reloadSeconds = 2; // trailing comments work the same way
+/* a block comment
+   can span several lines */
+let squadStrength = 4;
+println(reloadSeconds + squadStrength);

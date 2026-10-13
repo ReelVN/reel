@@ -15,4 +15,4 @@ cargo run --locked -p reel-cli -- check examples/author_stage.aside
 cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --font path/to/font.ttf
 ```
 
-开发检查与第一方脚本覆盖迁移见 [reel-dev](tools/reel-dev/README.md)。UI 借用源码由 Reel 自主维护在单一 [reel-ui](crates/reel-ui/README.md) 中，按职责使用内部模块，共用根 workspace 和 lockfile；保留原始许可和必要版权；可再生成输出统一放入忽略的 `target/reel-artifacts/`。
+开发检查与第一方脚本覆盖迁移见 [reel-dev](crates/reel-dev/README.md)。UI 借用源码由 Reel 自主维护在单一 [reel-ui](crates/reel-ui/README.md) 中，按职责使用内部模块，共用根 workspace 和 lockfile；保留原始许可和必要版权；可再生成输出统一放入忽略的 `target/reel-artifacts/`。

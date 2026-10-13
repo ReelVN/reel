@@ -1,5 +1,14 @@
 use aside_compiler::{semantic::*, *};
 use std::path::Path;
+fn significant(source: &str) -> Vec<String> {
+    lex(source)
+        .unwrap()
+        .tokens
+        .into_iter()
+        .filter(|token| !token.kind.is_trivia())
+        .map(|token| token.text(source).to_owned())
+        .collect()
+}
 fn inputs(dir: &Path, result: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let p = entry.unwrap().path();
@@ -11,7 +20,7 @@ fn inputs(dir: &Path, result: &mut Vec<std::path::PathBuf>) {
     }
 }
 #[test]
-fn accepted_t01_samples_parse_and_analyze_without_claiming_execution() {
+fn migrated_sources_preserve_original_assertions_and_analyze() {
     let mut paths = Vec::new();
     inputs(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,7 +29,18 @@ fn accepted_t01_samples_parse_and_analyze_without_claiming_execution() {
         &mut paths,
     );
     paths.sort();
-    assert_eq!(paths.len(), 10);
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quirrel");
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture_root.join("provenance.json")).unwrap())
+            .unwrap();
+    let mut registered: Vec<_> = provenance["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| fixture_root.join(entry["path"].as_str().unwrap()))
+        .collect();
+    registered.sort();
+    assert_eq!(paths, registered);
     let options = AnalysisOptions {
         hosts: vec![
             ExternalSymbol::function(
@@ -63,7 +83,7 @@ fn accepted_t01_samples_parse_and_analyze_without_claiming_execution() {
             path.display(),
             parsed.diagnostics()
         );
-        assertions += parsed
+        let calls: Vec<_> = parsed
             .syntax()
             .descendants()
             .filter(|n| n.kind() == SyntaxKind::CallExpr)
@@ -72,7 +92,48 @@ fn accepted_t01_samples_parse_and_analyze_without_claiming_execution() {
                     n.kind() == SyntaxKind::NameExpr && n.text().to_string().trim() == "assert"
                 })
             })
-            .count();
+            .map(|n| significant(&n.text().to_string()))
+            .collect();
+        let mapping: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.with_extension("map.json")).unwrap())
+                .unwrap();
+        let original = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/quirrel/original")
+                .join(mapping["source"].as_str().unwrap()),
+        )
+        .unwrap();
+        let range = |value: &serde_json::Value| {
+            value[0].as_u64().unwrap() as usize..value[1].as_u64().unwrap() as usize
+        };
+        let expected: Vec<_> = mapping["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|assertion| {
+                let original_tokens = significant(&original[range(&assertion["original"])]);
+                assert_eq!(
+                    original_tokens,
+                    significant(&source[range(&assertion["aside"])])
+                );
+                original_tokens
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            expected,
+            "original assertions changed in {}",
+            path.display()
+        );
+        for segment in mapping["segments"].as_array().unwrap() {
+            if segment["kind"] == "copied" {
+                assert_eq!(
+                    &original[range(&segment["original"])],
+                    &source[range(&segment["aside"])]
+                );
+            }
+        }
+        assertions += calls.len();
         let result = analyze(&parsed, &options, &mut NoModules);
         assert!(
             result.is_ok(),
@@ -81,12 +142,12 @@ fn accepted_t01_samples_parse_and_analyze_without_claiming_execution() {
             result.diagnostics
         );
         println!(
-            "{}: parse=passed analysis=passed execution=waiting_runtime",
+            "{}: parse=passed analysis=passed execution=checked_by_quirrel_vm",
             path.display()
         );
     }
     assert_eq!(
-        assertions, 32,
+        assertions, 52,
         "original assertion calls must remain intact"
     );
 }

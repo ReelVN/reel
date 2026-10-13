@@ -1,4 +1,4 @@
-//! The bounded Rust session host, design baseline 1.1, host interface 0.1.
+//! The Rust session host, design baseline 1.1, host interface 0.1.
 //!
 //! This owns ADV dialogue, copied choice rows, input permission and one terminal
 //! record. The separate [`aside`] adapter binds this model to actual VM tickets
@@ -6,37 +6,12 @@
 //! `CleanupOnly` never grants resume permission. A claimed `Resume` record must
 //! still be checked against session/epoch, owner liveness and the actual wait.
 
-use std::ops::Range;
+use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
 use unicode_segmentation::UnicodeSegmentation;
-
-/// Fixed allocation and work bounds for a session. History is not evicted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionLimits {
-    pub max_owners: usize,
-    pub max_history_groups: usize,
-    pub max_history_text_bytes: usize,
-    pub max_lines_per_dialogue: usize,
-    pub max_choices: usize,
-    /// Sum of copied locale, role, content ID, text, key and label UTF-8 bytes.
-    pub max_interaction_text_bytes: usize,
-}
-
-impl Default for SessionLimits {
-    fn default() -> Self {
-        Self {
-            max_owners: 64,
-            max_history_groups: 256,
-            max_history_text_bytes: 1024 * 1024,
-            max_lines_per_dialogue: 16,
-            max_choices: 64,
-            max_interaction_text_bytes: 64 * 1024,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionIdentity {
@@ -89,7 +64,7 @@ impl InteractionId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DialogueLineId {
     interaction_id: InteractionId,
-    index: u32,
+    index: usize,
 }
 
 impl DialogueLineId {
@@ -97,7 +72,7 @@ impl DialogueLineId {
         self.interaction_id
     }
 
-    pub fn index(self) -> u32 {
+    pub fn index(self) -> usize {
         self.index
     }
 }
@@ -496,18 +471,7 @@ impl Completion {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CapacityKind {
-    Owners,
-    HistoryGroups,
-    HistoryTextBytes,
-    DialogueLines,
-    Choices,
-    InteractionTextBytes,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
-    InvalidLimits,
     SessionNotRunning,
     ForeignOwner,
     OwnerNotLive,
@@ -522,7 +486,6 @@ pub enum SessionError {
     EmptyChoiceKey,
     EmptyChoices,
     DuplicateChoiceKey,
-    Capacity(CapacityKind),
     AllocationFailed,
     IdentityExhausted,
     OwnerUnknown,
@@ -645,7 +608,7 @@ impl Interaction {
 
 /// One host owns exactly one main interaction, plus a reserved terminal slot.
 ///
-/// Owner and history storage is preallocated at construction. An interaction
+/// Owner and history storage grows with its contents. An interaction
 /// prepares all copied data and grapheme boundaries before publication. Its
 /// completion is moved into a single in-struct slot without allocation; the
 /// next interaction cannot start until that slot is claimed.
@@ -653,7 +616,6 @@ impl Interaction {
 pub struct Session {
     identity: SessionIdentity,
     status: SessionStatus,
-    limits: SessionLimits,
     owners: Vec<OwnerEntry>,
     next_owner: Option<u64>,
     next_interaction: Option<u64>,
@@ -661,27 +623,19 @@ pub struct Session {
     active: Option<Interaction>,
     completion: Option<Completion>,
     history: Vec<HistoryGroup>,
-    history_text_bytes: usize,
 }
 
 impl Session {
     /// Construct a new identity namespace. The runtime must assign a fresh
     /// `(SessionId, Epoch)` pair when replacing or restarting a session; reusing
     /// that pair would deliberately make the old scoped identities equivalent.
-    pub fn new(
-        session_id: SessionId,
-        epoch: Epoch,
-        limits: SessionLimits,
-    ) -> Result<Self, SessionError> {
-        if limits.max_owners == 0 || limits.max_lines_per_dialogue > u32::MAX as usize {
-            return Err(SessionError::InvalidLimits);
-        }
+    pub fn new(session_id: SessionId, epoch: Epoch) -> Result<Self, SessionError> {
         let identity = SessionIdentity { session_id, epoch };
         let root_owner = OwnerHandle {
             identity,
             id: OwnerId(1),
         };
-        let mut owners = reserved_vec(limits.max_owners)?;
+        let mut owners = reserved_vec(1)?;
         owners.push(OwnerEntry {
             handle: root_owner,
             lifecycle: OwnerLifecycle::Live,
@@ -690,15 +644,13 @@ impl Session {
         Ok(Self {
             identity,
             status: SessionStatus::Running,
-            limits,
             owners,
             next_owner: Some(2),
             next_interaction: Some(1),
             last_input_sequence: None,
             active: None,
             completion: None,
-            history: reserved_vec(limits.max_history_groups)?,
-            history_text_bytes: 0,
+            history: Vec::new(),
         })
     }
 
@@ -710,20 +662,22 @@ impl Session {
         self.status
     }
 
-    pub fn limits(&self) -> SessionLimits {
-        self.limits
-    }
-
     /// Inspect allocated backing capacity outside the input/render hot path.
     pub fn storage_usage(&self) -> StorageUsage {
         let mut bytes = vector_capacity_bytes(&self.owners) + vector_capacity_bytes(&self.history);
+        let mut history_text_bytes = 0;
         for history in &self.history {
             bytes += vector_capacity_bytes(&history.lines) + history.page_locale.capacity();
+            history_text_bytes += history.page_locale.len();
             for line in &history.lines {
                 bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
                     + line.speaker_name.capacity()
                     + line.content.id.capacity()
                     + line.content.fallback.capacity();
+                history_text_bytes += line.speaker_id.as_ref().map_or(0, String::len)
+                    + line.speaker_name.len()
+                    + line.content.id.len()
+                    + line.content.fallback.len();
             }
         }
         let mut active_grapheme_boundary_slots = 0;
@@ -761,7 +715,7 @@ impl Session {
             reserved_owner_slots: self.owners.capacity(),
             reserved_history_slots: self.history.capacity(),
             active_grapheme_boundary_slots,
-            retained_history_text_bytes: self.history_text_bytes,
+            retained_history_text_bytes: history_text_bytes,
             reserved_retirement_records: self.owners.capacity(),
             pending_owner_retirements: self
                 .owners
@@ -808,10 +762,12 @@ impl Session {
             .owners
             .iter()
             .position(|entry| entry.lifecycle == OwnerLifecycle::Retired);
-        if retired_index.is_none() && self.owners.len() == self.limits.max_owners {
-            return Err(SessionError::Capacity(CapacityKind::Owners));
-        }
         let id = self.next_owner.ok_or(SessionError::IdentityExhausted)?;
+        if retired_index.is_none() {
+            self.owners
+                .try_reserve(1)
+                .map_err(|_| SessionError::AllocationFailed)?;
+        }
         let handle = OwnerHandle {
             identity: self.identity,
             id: OwnerId(id),
@@ -998,38 +954,13 @@ impl Session {
         page_locale: &str,
     ) -> Result<InteractionId, SessionError> {
         let id = self.prepare_interaction(owner)?;
-        if lines.len() > self.limits.max_lines_per_dialogue {
-            return Err(SessionError::Capacity(CapacityKind::DialogueLines));
-        }
-        if self.history.len() == self.limits.max_history_groups {
-            return Err(SessionError::Capacity(CapacityKind::HistoryGroups));
-        }
         if page_locale.is_empty() {
             return Err(SessionError::EmptyLocale);
         }
-        let mut text_bytes = page_locale.len();
         for line in lines {
             if line.content_id.is_empty() {
                 return Err(SessionError::EmptyContentId);
             }
-            for count in [
-                line.speaker_id.map_or(0, str::len),
-                line.speaker_name.len(),
-                line.content_id.len(),
-                line.text.len(),
-            ] {
-                text_bytes = add_text_bytes(text_bytes, count)?;
-            }
-        }
-        if text_bytes > self.limits.max_interaction_text_bytes {
-            return Err(SessionError::Capacity(CapacityKind::InteractionTextBytes));
-        }
-        let history_bytes = self
-            .history_text_bytes
-            .checked_add(text_bytes)
-            .ok_or(SessionError::Capacity(CapacityKind::HistoryTextBytes))?;
-        if history_bytes > self.limits.max_history_text_bytes {
-            return Err(SessionError::Capacity(CapacityKind::HistoryTextBytes));
         }
 
         let mut owned_lines = reserved_vec(lines.len())?;
@@ -1038,7 +969,7 @@ impl Session {
         for (index, line) in lines.iter().enumerate() {
             let line_id = DialogueLineId {
                 interaction_id: id,
-                index: index as u32,
+                index,
             };
             let total_count = line.text.graphemes(true).count();
             let mut boundaries = reserved_vec(
@@ -1081,10 +1012,12 @@ impl Session {
             lines: history_lines,
             page_locale: copy_text(page_locale)?,
         };
+        self.history
+            .try_reserve(1)
+            .map_err(|_| SessionError::AllocationFailed)?;
         // Everything fallible is complete. Both publications use reserved storage.
         self.active = Some(Interaction::Dialogue(dialogue));
         self.history.push(history);
-        self.history_text_bytes = history_bytes;
         self.next_interaction = id.generation.checked_add(1);
         Ok(id)
     }
@@ -1099,23 +1032,14 @@ impl Session {
         if options.is_empty() {
             return Err(SessionError::EmptyChoices);
         }
-        if options.len() > self.limits.max_choices {
-            return Err(SessionError::Capacity(CapacityKind::Choices));
-        }
-        let mut text_bytes = 0;
+        let mut keys = HashSet::new();
+        keys.try_reserve(options.len())
+            .map_err(|_| SessionError::AllocationFailed)?;
         for option in options {
             if option.key.is_empty() {
                 return Err(SessionError::EmptyChoiceKey);
             }
-            text_bytes = add_text_bytes(text_bytes, option.key.len())?;
-            text_bytes = add_text_bytes(text_bytes, option.label.len())?;
-        }
-        if text_bytes > self.limits.max_interaction_text_bytes {
-            return Err(SessionError::Capacity(CapacityKind::InteractionTextBytes));
-        }
-        // Only bounded accepted text reaches potentially linear string comparisons.
-        for (index, option) in options.iter().enumerate() {
-            if options[..index].iter().any(|other| other.key == option.key) {
+            if !keys.insert(option.key) {
                 return Err(SessionError::DuplicateChoiceKey);
             }
         }
@@ -1401,12 +1325,6 @@ fn copy_content(line: &DialogueLineInput<'_>) -> Result<PlainTextContent, Sessio
     })
 }
 
-fn add_text_bytes(current: usize, additional: usize) -> Result<usize, SessionError> {
-    current
-        .checked_add(additional)
-        .ok_or(SessionError::Capacity(CapacityKind::InteractionTextBytes))
-}
-
 fn vector_capacity_bytes<T>(data: &Vec<T>) -> usize {
     data.capacity() * std::mem::size_of::<T>()
 }
@@ -1417,7 +1335,7 @@ mod identity_tests {
 
     #[test]
     fn interaction_generation_exhaustion_never_wraps_or_changes_history() {
-        let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default()).unwrap();
+        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
         let root = session.root_owner();
         session.next_interaction = Some(u64::MAX);
         let id = session.begin_say(root, &[], "en").unwrap();
@@ -1442,7 +1360,7 @@ mod identity_tests {
 
     #[test]
     fn owner_generation_exhaustion_does_not_reuse_a_retired_id() {
-        let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default()).unwrap();
+        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
         session.next_owner = Some(u64::MAX);
         let last = session.create_owner().unwrap();
         assert_eq!(last.owner_id(), OwnerId(u64::MAX));

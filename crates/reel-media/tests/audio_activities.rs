@@ -143,30 +143,30 @@ impl Drop for Rig {
 
 #[test]
 fn content_terminal_once_without_claiming_presentation_and_without_vector_growth() {
-    let mut rig = Rig::new(2, 100);
+    let mut rig = Rig::new(257, 100);
     let id = rig.play(3, false);
     rig.render();
     // The controlled output has submitted a block but has presented none of it.
     assert_eq!(rig.output.clock_observation().presented_frames(), Some(0));
-    rig.service().maintain(2, 1);
+    rig.service().maintain(257, 1);
     assert!(matches!(
         rig.service().snapshot(id).unwrap().terminal,
         Some(AudioActivityTerminal::Completed { .. })
     ));
     assert!(!rig.service().stop(id));
     let mut no_capacity = Vec::new();
-    let p = rig.service().drain(&mut no_capacity, 2, |_, _, _| true);
-    assert_eq!(p.inspected, 2);
+    let p = rig.service().drain(&mut no_capacity, 257, |_, _, _| true);
+    assert_eq!(p.inspected, 257);
     assert!(!p.needs_turn);
     assert_eq!(no_capacity.capacity(), 0);
     let mut out = Vec::with_capacity(1);
-    rig.service().drain(&mut out, 2, |_, _, _| true);
+    rig.service().drain(&mut out, 257, |_, _, _| true);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, id);
     assert_eq!(out[0].scope, scope(3));
     out.clear();
-    rig.service().maintain(2, 1);
-    rig.service().drain(&mut out, 2, |_, _, _| true);
+    rig.service().maintain(257, 1);
+    rig.service().drain(&mut out, 257, |_, _, _| true);
     assert!(out.is_empty());
 }
 

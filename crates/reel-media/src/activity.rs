@@ -128,7 +128,7 @@ pub struct AudioActivityMaintenance {
 /// activity evidence, including caller-held completed receipts. max_bytes charges
 /// their fixed storage plus owned asset-key capacities. PCM remains independently
 /// charged by the existing BudgetTicket/reclamation protocol.
-/// Limits: 1..=256 slots; every sweep/drain inspects at most min(limit, slots).
+/// Every sweep/drain inspects at most min(limit, configured slots).
 pub struct AudioActivityService {
     mixer: KiraMixer,
     entries: Vec<Option<Entry>>,
@@ -157,7 +157,7 @@ impl AudioActivityService {
         wake: WakeSignal,
     ) -> Result<Self, Rejected<KiraMixer>> {
         if epoch.0 == u64::MAX
-            || !(1..=256).contains(&limits.max_requests)
+            || limits.max_requests == 0
             || Self::slot_bytes(limits.max_requests) > limits.max_bytes
         {
             return Err(Rejected {

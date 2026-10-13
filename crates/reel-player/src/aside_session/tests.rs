@@ -1,9 +1,9 @@
 //! Runtime regressions for compiled stories and stable terminal ownership.
 use super::*;
-use reel_engine::{Epoch, SessionId, SessionLimits};
+use reel_engine::{Epoch, SessionId};
 
 fn session() -> Session {
-    Session::new(SessionId(72), Epoch(1), SessionLimits::default()).unwrap()
+    Session::new(SessionId(72), Epoch(1)).unwrap()
 }
 fn driver(text: &str) -> AsideSessionUi {
     AsideSessionUi::from_source(

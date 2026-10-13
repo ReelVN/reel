@@ -27,9 +27,12 @@ eligibility. Source/build/frame drop cancels an unsubmitted candidate; an Accept
 notice independently retains eligibility after submission. Retained keys and geometry remain charged
 until their final lease drops. No partial frame is exposed.
 
-`BuildLimits` bounds fragments, output commands (including mask commands), mask
-definitions, nesting depth, output/scratch bytes and aggregate work units.
+`BuildLimits { max_bytes }` bounds output and scratch storage. Fragments, commands,
+mask definitions and nesting have no separate count or depth limit. Command storage
+uses actual source counts; traversal and mapping capacities grow with the scene and
+are charged before allocation. Completed mask cursors release their scratch charge.
 `StepBudget` separately bounds committed commands, work units and byte work.
+There is no aggregate work cutoff: larger scenes continue across more slices.
 All payload cursors survive pause: path elements, stroke dashes, gradient stops,
 glyphs, normalized variation coordinates, filters and each UTF-8/context/source
 string byte. Mapping and command-header work is prepaid across slices before
@@ -44,14 +47,14 @@ and overlapping source residency are measured in [R01-REPORT.md](R01-REPORT.md).
 `BuildError { at: RecordLocation, kind }` reports fragment, local command,
 mask depth and owning WidgetId. Missing resources include a Blob ID lookup hint
 or External token. Structured source file/line/column and diagnostic contexts
-are retained in the completed frame. Invalid/nonfinite records, capacity/work/
-bytes exhaustion and unsupported records abort the whole candidate.
+are retained in the completed frame. Invalid/nonfinite records, exhausted byte
+storage, unrepresentable frame IDs and unsupported records abort the whole candidate.
 The painter's command ranges identify ordinary Inline children as well as layer
 owners. A range cursor advances only to the next contiguous range during a
 prepaid command commit or fragment advance; setup seeds the first owner by one
-indexed read. This makes even `Work` failure during the next command's mapping
-prepayment report that command's owner, with no diagnostic scan or late binary
-lookup. Payload continuations keep the same owner. Generated clips and debug/inspector commands
+indexed read. Errors after mapping prepayment report that command's owner,
+with no diagnostic scan or late binary lookup. Payload continuations keep the
+same owner. Generated clips and debug/inspector commands
 also record their actual owner. Mask commands inherit their defining owner.
 
 ## Portable stream
@@ -67,13 +70,13 @@ continuously through the last frame clone.
 Push/PopGroup, Push/PopContext and External. kurbo/Peniko shape, brush, gradient,
 stroke, sampler and composite values are retained. Glyph IDs/positions, font
 size, font collection index, hinting, transforms, style and variation coordinates
-are copied from the original Parley result without reshaping.
+are copied from the original `reel-text` result without reshaping.
 
 `CommandOrigin` identifies `(source, local ID)`; local IDs alone are never a
-global identity. Source identity and local MaskId key the bounded definition
+global identity. Source identity and local MaskId key the byte-budgeted definition
 map. Definitions remain local, while each `MaskUse` carries its transform.
 The ordered main stream keeps clip/group/context state across fragments;
-each nested mask has its own explicit bounded cursor and validation stacks.
+each nested mask has its own explicit cursor and growing validation stacks.
 Normal cross-fragment nesting is accepted. Crossed clip/group lifetimes return
 localized `UnsupportedRecord`, because imaging does not define their pixel
 meaning; underflow and unclosed lifetimes return `InvalidRecord`.

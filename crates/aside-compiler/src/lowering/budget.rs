@@ -16,15 +16,15 @@ impl Budget {
             span: TextRange::empty(TextSize::from(0)),
         }
     }
-    pub fn error(&self, kind: ErrorKind, detail: impl Into<String>) -> Error {
-        Error {
+    pub fn error(&self, kind: ErrorKind, detail: impl Into<String>) -> Box<Error> {
+        Box::new(Error {
             kind,
             span: self.span,
             detail: detail.into(),
             stats: self.stats,
-        }
+        })
     }
-    pub fn work(&mut self, n: u64) -> Result<(), Error> {
+    pub fn work(&mut self, n: u64) -> Result<(), Box<Error>> {
         let next = self
             .stats
             .work_units
@@ -34,14 +34,14 @@ impl Budget {
         self.stats.work_units = next;
         Ok(())
     }
-    pub fn record(&mut self) -> Result<(), Error> {
+    pub fn record(&mut self) -> Result<(), Box<Error>> {
         if self.stats.records >= self.limits.max_records.min(u32::MAX as usize) {
             return Err(self.error(ErrorKind::Limit, "lowering record budget exceeded"));
         }
         self.stats.records += 1;
         self.work(1)
     }
-    pub fn capacity(&mut self, bytes: usize) -> Result<(), Error> {
+    pub fn capacity(&mut self, bytes: usize) -> Result<(), Box<Error>> {
         let next = self
             .stats
             .capacity_bytes
@@ -57,7 +57,7 @@ impl Budget {
     }
     /// Charge the complete replacement allocation while the old allocation still
     /// exists. try_reserve_exact may realloc in place; the peak is conservative.
-    pub fn reserve<T>(&mut self, v: &mut Vec<T>, additional: usize) -> Result<(), Error> {
+    pub fn reserve<T>(&mut self, v: &mut Vec<T>, additional: usize) -> Result<(), Box<Error>> {
         let needed = v
             .len()
             .checked_add(additional)
@@ -83,13 +83,13 @@ impl Budget {
         self.release_bytes(old);
         Ok(())
     }
-    pub fn push<T>(&mut self, v: &mut Vec<T>, value: T) -> Result<(), Error> {
+    pub fn push<T>(&mut self, v: &mut Vec<T>, value: T) -> Result<(), Box<Error>> {
         self.record()?;
         self.reserve(v, 1)?;
         v.push(value);
         Ok(())
     }
-    pub fn filled<T: Clone>(&mut self, len: usize, value: T) -> Result<Vec<T>, Error> {
+    pub fn filled<T: Clone>(&mut self, len: usize, value: T) -> Result<Vec<T>, Box<Error>> {
         self.work(len as u64)?;
         let mut v = Vec::new();
         self.reserve(&mut v, len)?;
@@ -99,14 +99,18 @@ impl Budget {
     pub fn release<T>(&mut self, v: Vec<T>) {
         self.release_bytes(v.capacity() * size_of::<T>());
     }
-    pub fn string(&mut self, text: &str) -> Result<String, Error> {
+    pub fn string(&mut self, text: &str) -> Result<String, Box<Error>> {
         self.work(text.len() as u64)?;
-        let mut v = Vec::new();
-        self.reserve(&mut v, text.len())?;
-        v.extend_from_slice(text.as_bytes());
-        Ok(String::from_utf8(v).expect("source is UTF-8"))
+        self.capacity(text.len())?;
+        let mut value = String::new();
+        value
+            .try_reserve_exact(text.len())
+            .map_err(|_| self.error(ErrorKind::Allocation, "lowering string reservation failed"))?;
+        self.capacity(value.capacity() - text.len())?;
+        value.push_str(text);
+        Ok(value)
     }
-    pub fn compare(&mut self, a: &str, b: &str) -> Result<std::cmp::Ordering, Error> {
+    pub fn compare(&mut self, a: &str, b: &str) -> Result<std::cmp::Ordering, Box<Error>> {
         self.work(1 + a.len().min(b.len()) as u64)?;
         Ok(a.cmp(b))
     }

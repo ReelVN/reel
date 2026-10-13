@@ -27,12 +27,7 @@ pub struct FrameInfo {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct BuildLimits {
-    pub max_fragments: usize,
-    pub max_commands: usize,
-    pub max_masks: usize,
-    pub max_depth: usize,
     pub max_bytes: u64,
-    pub max_total_units: u64,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct StepBudget {
@@ -60,7 +55,6 @@ pub struct RecordLocation {
 pub enum BuildErrorKind {
     Capacity,
     Bytes,
-    Work,
     InvalidRecord,
     UnsupportedRecord,
     MissingGroupMetadata,
@@ -311,6 +305,12 @@ struct Cursor {
     owner_range: usize,
 }
 impl Cursor {
+    fn storage_bytes(&self) -> usize {
+        self.path.capacity() * size_of::<record::MaskId>()
+            + self.scopes.capacity() * size_of::<Scope>()
+            + (self.contexts.capacity() + self.clips.capacity() + self.groups.capacity())
+                * size_of::<usize>()
+    }
     fn advance_command(&mut self, plan: &crate::app::VisualLayerPlan) {
         self.position += 1;
         if self.stream.is_some() {
@@ -364,8 +364,6 @@ struct Building {
     job: Option<CopyJob>,
     limits: BuildLimits,
     bytes: u64,
-    total_units: u64,
-    command_count: usize,
     complete: bool,
     start_credit: u64,
     allocation_need: Option<u64>,
@@ -406,13 +404,7 @@ impl FrameBuild {
             source.key.cancel();
             BuildError { at, kind }
         };
-        if source.plan.layers.len() > limits.max_fragments
-            || limits.max_depth == 0
-            || limits
-                .max_fragments
-                .checked_add(limits.max_masks)
-                .is_none_or(|n| n > u32::MAX as usize)
-        {
+        if source.plan.layers.len() > u32::MAX as usize {
             return Err(error(BuildErrorKind::Capacity));
         }
         if info.logical_size.iter().any(|v| !v.is_finite() || *v < 0.)
@@ -432,62 +424,42 @@ impl FrameBuild {
                 })
             })
             .ok_or_else(|| error(BuildErrorKind::Capacity))?;
-        if main_count > limits.max_commands {
-            return Err(error(BuildErrorKind::Capacity));
-        }
         let ticket = pool
             .reserve(limits.max_bytes)
             .map_err(|_| error(BuildErrorKind::Bytes))?;
         let initial = size_of::<FrameData>()
             .checked_add(2 * size_of::<usize>() + size_of::<Building>())
             .and_then(|n| n.checked_add(main_count.checked_mul(size_of::<FrameCommand>())?))
-            .and_then(|n| {
-                n.checked_add(
-                    limits
-                        .max_masks
-                        .checked_mul(size_of::<FrameMask>() + size_of::<MaskMapping>())?,
-                )
-            })
-            .and_then(|n| {
-                n.checked_add(limits.max_depth.checked_mul(
-                    size_of::<Cursor>()
-                        + size_of::<Scope>()
-                        + 3 * size_of::<usize>()
-                        + size_of::<record::MaskId>(),
-                )?)
-            })
+            .and_then(|n| n.checked_add(size_of::<Cursor>()))
             .ok_or_else(|| error(BuildErrorKind::Bytes))?;
         if initial as u64 > limits.max_bytes {
             return Err(error(BuildErrorKind::Bytes));
         }
         let cursor = Cursor {
             layer: 0,
-            path: Vec::with_capacity(limits.max_depth),
+            path: Vec::new(),
             stream: None,
             position: 0,
-            scopes: Vec::with_capacity(limits.max_depth),
-            contexts: Vec::with_capacity(limits.max_depth),
-            clips: Vec::with_capacity(limits.max_depth),
-            groups: Vec::with_capacity(limits.max_depth),
+            scopes: Vec::new(),
+            contexts: Vec::new(),
+            clips: Vec::new(),
+            groups: Vec::new(),
             owner: at.owner,
             owner_range: 0,
         };
-        let mut cursors = Vec::with_capacity(limits.max_depth);
-        cursors.push(cursor);
+        let cursors = vec![cursor];
         Ok(Self {
             state: Some(Building {
                 source,
                 resources,
                 info,
                 commands: Vec::with_capacity(main_count),
-                masks: Vec::with_capacity(limits.max_masks),
+                masks: Vec::new(),
                 cursors,
-                mappings: Vec::with_capacity(limits.max_masks),
+                mappings: Vec::new(),
                 job: None,
                 limits,
                 bytes: initial as u64,
-                total_units: 0,
-                command_count: 0,
                 complete: false,
                 start_credit: 0,
                 allocation_need: None,
@@ -585,11 +557,6 @@ impl Building {
         if units > b.max_units - p.units || bytes > b.max_bytes - p.bytes {
             return Ok(false);
         }
-        self.total_units = self
-            .total_units
-            .checked_add(units)
-            .filter(|n| *n <= self.limits.max_total_units)
-            .ok_or_else(|| self.error(BuildErrorKind::Work))?;
         p.units += units;
         p.bytes += bytes;
         Ok(true)
@@ -732,7 +699,8 @@ impl Building {
                         if !c.scopes.is_empty() || !c.contexts.is_empty() {
                             return Err(self.error(BuildErrorKind::InvalidRecord));
                         }
-                        self.cursors.pop();
+                        let cursor = self.cursors.pop().unwrap();
+                        self.bytes -= cursor.storage_bytes() as u64;
                     } else {
                         self.cursors
                             .last_mut()
@@ -748,9 +716,6 @@ impl Building {
                 }
                 self.start_credit = 0;
                 let c = self.cursors.last().unwrap();
-                if self.command_count >= self.limits.max_commands {
-                    return Err(self.error(BuildErrorKind::Capacity));
-                }
                 let layer = &self.source.plan.layers[c.layer];
                 let VisualLayerKind::External {
                     token,
@@ -787,7 +752,6 @@ impl Building {
                     1. / self.source.geometry.scale_factor(),
                 ));
                 self.commands.push(command);
-                self.command_count += 1;
                 p.commands += 1;
                 self.cursors
                     .last_mut()
@@ -828,7 +792,7 @@ impl Building {
             self.start_credit = 0;
             self.allocation_need = None;
             self.allocation_credit = 0;
-            self.start()?;
+            self.start(need)?;
         }
         p.complete = self.complete;
         Ok(p)
@@ -839,6 +803,17 @@ impl Building {
         let command = &scene.commands()[cursor.position];
         let mut bytes =
             payload_bytes(scene, command).ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+        let stack_bytes = match command {
+            Command::PushClip(_) => growth_bytes(&cursor.scopes)
+                .and_then(|n| n.checked_add(growth_bytes(&cursor.clips)?)),
+            Command::PushGroup(_) => growth_bytes(&cursor.scopes)
+                .and_then(|n| n.checked_add(growth_bytes(&cursor.groups)?)),
+            Command::PushContext(_) => growth_bytes(&cursor.contexts),
+            _ => Some(0),
+        };
+        bytes = stack_bytes
+            .and_then(|n| n.checked_add(bytes))
+            .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
         if let Command::PushGroup(id) = command
             && let Some(mask) = &scene.group(*id).mask
         {
@@ -855,12 +830,17 @@ impl Building {
                     .len()
                     .checked_mul(size_of::<FrameCommand>())
                     .and_then(|n| {
-                        n.checked_add(self.limits.max_depth.checked_mul(
-                            size_of::<Scope>()
-                                + 3 * size_of::<usize>()
-                                + size_of::<record::MaskId>(),
-                        )?)
+                        n.checked_add(
+                            cursor
+                                .path
+                                .len()
+                                .checked_add(1)?
+                                .checked_mul(size_of::<record::MaskId>())?,
+                        )
                     })
+                    .and_then(|n| n.checked_add(growth_bytes(&self.masks)?))
+                    .and_then(|n| n.checked_add(growth_bytes(&self.mappings)?))
+                    .and_then(|n| n.checked_add(growth_bytes(&self.cursors)?))
                     .and_then(|n| n.checked_add(bytes))
                     .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
             }
@@ -873,9 +853,25 @@ impl Building {
         }
         Ok(bytes as u64)
     }
-    fn start(&mut self) -> Result<(), BuildError> {
-        if self.command_count >= self.limits.max_commands {
-            return Err(self.error(BuildErrorKind::Capacity));
+    fn start(&mut self, allocation: u64) -> Result<(), BuildError> {
+        self.charge(allocation as usize)?;
+        let allocation_error = self.error(BuildErrorKind::Bytes);
+        let cursor = self.cursors.last().unwrap();
+        let command = &Self::scene(&self.source, cursor).unwrap().commands()[cursor.position];
+        let cursor = self.cursors.last_mut().unwrap();
+        match command {
+            Command::PushClip(_) => {
+                reserve_slot(&mut cursor.scopes).map_err(|()| allocation_error)?;
+                reserve_slot(&mut cursor.clips).map_err(|()| allocation_error)?;
+            }
+            Command::PushGroup(_) => {
+                reserve_slot(&mut cursor.scopes).map_err(|()| allocation_error)?;
+                reserve_slot(&mut cursor.groups).map_err(|()| allocation_error)?;
+            }
+            Command::PushContext(_) => {
+                reserve_slot(&mut cursor.contexts).map_err(|()| allocation_error)?;
+            }
+            _ => {}
         }
         let c = self.cursors.last().unwrap();
         let layer = &self.source.plan.layers[c.layer];
@@ -891,7 +887,13 @@ impl Building {
             return Err(self.error(BuildErrorKind::InvalidRecord));
         }
         let source = if let Some(mask) = c.stream {
-            (self.limits.max_fragments + mask) as u32
+            self.source
+                .plan
+                .layers
+                .len()
+                .checked_add(mask)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| self.error(BuildErrorKind::Capacity))?
         } else {
             c.layer as u32
         };
@@ -907,31 +909,16 @@ impl Building {
                 .find(|m| m.scene == scene_key && m.local == applied.mask)
                 .map(|m| m.index);
             let index = found.unwrap_or(self.masks.len());
+            let mask_id = u32::try_from(index).map_err(|_| self.error(BuildErrorKind::Capacity))?;
             if found.is_none() {
-                if self.masks.len() >= self.limits.max_masks
-                    || self.cursors.len() >= self.limits.max_depth
-                {
-                    return Err(self.error(BuildErrorKind::Capacity));
-                }
                 let definition = scene.mask(applied.mask);
                 let count = definition.scene.commands().len();
-                if count > self.limits.max_commands - self.command_count {
-                    return Err(self.error(BuildErrorKind::Capacity));
-                }
-                let allocation = count
-                    .checked_mul(size_of::<FrameCommand>())
-                    .and_then(|n| {
-                        n.checked_add(self.limits.max_depth.checked_mul(
-                            size_of::<Scope>()
-                                + 3 * size_of::<usize>()
-                                + size_of::<record::MaskId>(),
-                        )?)
-                    })
-                    .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
                 let mode = definition.mode;
                 let local = applied.mask;
                 let t = transform * applied.transform;
-                self.charge(allocation)?;
+                reserve_slot(&mut self.masks).map_err(|()| allocation_error)?;
+                reserve_slot(&mut self.mappings).map_err(|()| allocation_error)?;
+                reserve_slot(&mut self.cursors).map_err(|()| allocation_error)?;
                 self.masks.push(FrameMask {
                     mode,
                     commands: Vec::with_capacity(count),
@@ -943,19 +930,17 @@ impl Building {
                 });
                 descend = Some((local, index));
                 mask = Some(MaskUse {
-                    mask: index as u32,
+                    mask: mask_id,
                     transform: t,
                 });
             } else {
                 mask = Some(MaskUse {
-                    mask: index as u32,
+                    mask: mask_id,
                     transform: transform * applied.transform,
                 });
             }
         }
         let c = self.cursors.last().unwrap();
-        let scene = Self::scene(&self.source, c).unwrap();
-        let command = &scene.commands()[c.position];
         let layer = &self.source.plan.layers[c.layer];
         let meta = if c.stream.is_some() {
             Some((c.owner, Affine::IDENTITY))
@@ -971,9 +956,6 @@ impl Building {
                     )
                 })
         };
-        let variable =
-            payload_bytes(scene, command).ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
-        self.charge(variable)?;
         let scene = Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
         let command = &scene.commands()[self.cursors.last().unwrap().position];
         let (local, op) = make_op(scene, command, transform, meta, mask, &self.resources)
@@ -1018,9 +1000,6 @@ impl Building {
             _ => None,
         };
         if let Some(kind) = kind {
-            if c.scopes.len() >= self.limits.max_depth {
-                return Err(self.error(BuildErrorKind::Capacity));
-            }
             let c = self.cursors.last_mut().unwrap();
             match kind {
                 ScopeKind::Clip => c.clips.push(index),
@@ -1072,9 +1051,6 @@ impl Building {
                 self.add_ink(ink);
             }
         } else if matches!(job.command.op, FrameOp::PushContext(_)) {
-            if c.contexts.len() >= self.limits.max_depth {
-                return Err(self.error(BuildErrorKind::Capacity));
-            }
             self.cursors.last_mut().unwrap().contexts.push(index);
         } else if matches!(job.command.op, FrameOp::PopContext) {
             if self.cursors.last_mut().unwrap().contexts.pop().is_none() {
@@ -1099,14 +1075,13 @@ impl Building {
             _ => job.command.origin.at.owner,
         };
         self.program(stream).push(job.command);
-        self.command_count += 1;
         self.cursors
             .last_mut()
             .unwrap()
             .advance_command(&self.source.plan);
         if let Some((mask, index)) = job.descend.take() {
             let parent = self.cursors.last().unwrap();
-            let mut path = Vec::with_capacity(self.limits.max_depth);
+            let mut path = Vec::with_capacity(parent.path.len() + 1);
             path.extend_from_slice(&parent.path);
             path.push(mask);
             self.cursors.push(Cursor {
@@ -1114,16 +1089,35 @@ impl Building {
                 path,
                 stream: Some(index),
                 position: 0,
-                scopes: Vec::with_capacity(self.limits.max_depth),
-                contexts: Vec::with_capacity(self.limits.max_depth),
-                clips: Vec::with_capacity(self.limits.max_depth),
-                groups: Vec::with_capacity(self.limits.max_depth),
+                scopes: Vec::new(),
+                contexts: Vec::new(),
+                clips: Vec::new(),
+                groups: Vec::new(),
                 owner,
                 owner_range: 0,
             });
         }
         Ok(())
     }
+}
+
+// Amortized growth is charged before reserving; no scene-wide count ceiling or
+// worst-case nesting allocation is needed. Calls occur only before a push.
+fn growth_bytes<T>(values: &Vec<T>) -> Option<usize> {
+    if values.len() < values.capacity() {
+        Some(0)
+    } else {
+        values.capacity().max(1).checked_mul(size_of::<T>())
+    }
+}
+
+fn reserve_slot<T>(values: &mut Vec<T>) -> Result<(), ()> {
+    if values.len() == values.capacity() {
+        values
+            .try_reserve_exact(values.capacity().max(1))
+            .map_err(|_| ())?;
+    }
+    Ok(())
 }
 
 fn finite(t: Affine) -> bool {

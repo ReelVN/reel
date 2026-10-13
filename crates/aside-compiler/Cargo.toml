@@ -9,13 +9,14 @@ description = "Lossless Aside 1.1 source frontend"
 [dependencies]
 aside-vm = { path = "../aside-vm" }
 logos = "=0.16.1"
-rowan = "=0.17.0"
+aside-syntax = { path = "../aside-syntax" }
 smallvec = "=1.15.1"
 unicode-ident = "=1.0.26"
 codespan-reporting = "=0.13.1"
 
 [dev-dependencies]
 stats_alloc = "=0.1.10"
+serde_json = "=1.0.145"
 
 [lints]
 workspace = true

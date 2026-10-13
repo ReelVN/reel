@@ -1,6 +1,6 @@
 * text=auto eol=lf
 # Imported snapshots and immutable evidence must retain their exact Git bytes.
-third_party/** -text
 crates/aside-compiler/tests/fixtures/quirrel/** -text
-tools/reel-dev/tests/fixtures/** -text
-tools/quirrel-compat/converted/** -text
+crates/reel-audio/LICENSE-* -text
+crates/reel-text/LICENSE-* -text
+crates/aside-syntax/LICENSE-* -text

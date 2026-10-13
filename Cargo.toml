@@ -1,7 +1,6 @@
 [workspace]
-members = ["crates/*", "tools/reel-dev"]
+members = ["crates/*"]
 resolver = "3"
-exclude = ["third_party/kira", "third_party/parley"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,7 +16,7 @@ reel-ui = { path = "crates/reel-ui", default-features = false }
 anymore = "=1.0.0"
 imaging = "=0.0.1"
 kurbo = "=0.13.1"
-parley = { version = "=0.8.0", features = ["accesskit"] }
+reel-text = { path = "crates/reel-text", features = ["accesskit"] }
 peniko = "=0.6.1"
 tracing = { version = "=0.1.44", default-features = false }
 tracing-wasm = "=0.2.1"
@@ -31,10 +30,6 @@ resvg = "=0.47.0"
 web-time = "=1.1.0"
 accesskit = "=0.24.0"
 time = "=0.3.47"
-
-[patch.crates-io]
-parley = { path = "third_party/parley" }
-
 
 [profile.build-perf]
 inherits = "dev"

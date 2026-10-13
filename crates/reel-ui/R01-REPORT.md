@@ -3,7 +3,7 @@
 Historical observations below describe their original revisions. Raw evidence links
 point to the pre-cleanup Git revision; new generated output belongs under
 `target/reel-artifacts/`. Current maintenance commands are documented in
-[`tools/reel-dev`](../../tools/reel-dev/README.md). Issue #34 migration and current validation are recorded in [MIGRATION.md](MIGRATION.md).
+[`crates/reel-dev`](../../crates/reel-dev/README.md). Issue #34 migration and current validation are recorded in [MIGRATION.md](MIGRATION.md).
 
 Issue #25 is implemented against the complete architecture §16 contract at
 `ac00418231ddc16ec0b90b2181cd77138b3f6e49`, extending independently checked U02

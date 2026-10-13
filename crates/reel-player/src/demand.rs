@@ -137,7 +137,6 @@ mod tests {
                 requested: 10,
                 available: 0,
             },
-            GpuError::DepthLimit { at, limit: 2 },
             GpuError::InvalidRecord {
                 at,
                 record: "unclosed scope",

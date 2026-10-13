@@ -4,6 +4,70 @@
 use super::*;
 
 impl Vm {
+    pub(super) fn concat_step(
+        &mut self,
+        s: &mut ScriptFrame,
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+        offset: u32,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        // The immutable operands remain rooted in their original registers until
+        // publication, including when dest aliases one of those registers.
+        let left_value = self.slots.read(at(s.regs, left.0))?;
+        let right_value = self.slots.read(at(s.regs, right.0))?;
+        let left_len = self.heap.info(left_value)?.len;
+        let total = left_len + self.heap.info(right_value)?.len;
+        let builder = self.value(s.env, 1)?;
+        if offset == total {
+            if !meter.take(0, 1, 0) {
+                return Ok(false);
+            }
+            self.heap.seal_string(builder)?;
+            match self.write(*s, dest, builder) {
+                Ok(()) => {
+                    self.clear(s.env, 1)?;
+                    s.pc.0 += 1;
+                    s.phase = ScriptPhase::Body;
+                }
+                Err(kind) => self.collection_fault(s, kind)?,
+            }
+            return Ok(true);
+        }
+        let (source, source_offset, remaining) = if offset < left_len {
+            (left_value, offset, left_len - offset)
+        } else {
+            (right_value, offset - left_len, total - offset)
+        };
+        let count = (remaining as usize)
+            .min(self.limits.heap.max_mutation_bytes as usize)
+            .min(BYTE_CHUNK_LEN);
+        let chunks = (u64::from(offset) + count as u64).div_ceil(BYTE_CHUNK_LEN as u64)
+            - u64::from(offset).div_ceil(BYTE_CHUNK_LEN as u64);
+        if !meter.take(0, count as u64 * 2 + 1, chunks * BYTE_CHUNK_BYTES) {
+            return Ok(false);
+        }
+        self.text_scratch.data.resize(count, 0);
+        let result = self
+            .heap
+            .read_bytes(source, source_offset, &mut self.text_scratch.data)
+            .and_then(|_| self.heap.bytes_append(builder, &self.text_scratch.data));
+        self.text_scratch.data.clear();
+        match result {
+            Ok(()) => {
+                s.phase = ScriptPhase::Concat {
+                    dest,
+                    left,
+                    right,
+                    offset: offset + count as u32,
+                }
+            }
+            Err(error) => self.collection_fault(s, heap_fault(error))?,
+        }
+        Ok(true)
+    }
+
     pub(super) fn collection_fault(
         &mut self,
         s: &mut ScriptFrame,
@@ -117,6 +181,11 @@ pub(super) enum TableAction {
         field: u32,
     },
     Get(Reg),
+    MemberGet {
+        dest: Reg,
+        symbol: SymbolId,
+    },
+    HasOwn(Reg),
     Set(Reg),
     SetHost {
         object: Reg,
@@ -220,11 +289,19 @@ impl Vm {
         let scan = matches!(s.phase, ScriptPhase::TableScan);
         let store = scan
             && (work.matched || work.entry == len)
-            && !matches!(work.action, TableAction::Get(_));
-        let extra = if store
-            && !matches!(work.action, TableAction::SetHost { .. })
+            && !matches!(
+                work.action,
+                TableAction::Get(_) | TableAction::MemberGet { .. } | TableAction::HasOwn(_)
+            );
+        let fallback = scan
             && work.entry == len
-            && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN)
+            && !work.matched
+            && matches!(work.action, TableAction::MemberGet { symbol, .. } if Builtin::lookup(ObjectKind::Table, &self.program.package().symbols[symbol.index()]).is_some());
+        let extra = if fallback
+            || (store
+                && !matches!(work.action, TableAction::SetHost { .. })
+                && work.entry == len
+                && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN))
         {
             VALUE_CHUNK_BYTES
         } else {
@@ -351,11 +428,24 @@ impl Vm {
         let table = self.value(s.env, 1)?;
         let key = self.value(s.env, 2)?;
         match work.action {
-            TableAction::Get(dest) => {
-                if !work.matched {
+            TableAction::HasOwn(dest) => self.put(s.regs, dest.0, Value::bool(work.matched))?,
+            TableAction::Get(dest) | TableAction::MemberGet { dest, .. } => {
+                let value = if work.matched {
+                    self.heap.table_entry(table, work.entry)?.1
+                } else if let TableAction::MemberGet { symbol, .. } = work.action {
+                    let Some(method) = Builtin::lookup(
+                        ObjectKind::Table,
+                        &self.program.package().symbols[symbol.index()],
+                    ) else {
+                        return self.collection_fault(s, FaultKind::MissingKey);
+                    };
+                    match self.bound_builtin(table, method, s.effects) {
+                        Ok(value) => value,
+                        Err(kind) => return self.collection_fault(s, kind),
+                    }
+                } else {
                     return self.collection_fault(s, FaultKind::MissingKey);
-                }
-                let (_, value) = self.heap.table_entry(table, work.entry)?;
+                };
                 self.put(s.regs, dest.0, value)?;
             }
             TableAction::Set(reg) | TableAction::SetHost { value: reg, .. } => {

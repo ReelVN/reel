@@ -1,0 +1,7 @@
+// Source: original/doc/examples/pages/language/bindings-basic.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let mut ammoLeft = 30;
+let magazineSize = 30;
+ammoLeft -= 12;
+println("ammoLeft =", ammoLeft, "magazineSize =", magazineSize);

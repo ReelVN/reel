@@ -1,6 +1,6 @@
-// Source: third_party/quirrel/testData/exec/for_loop_at_function_start.nut
-// Upstream: 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: third_party/quirrel/COPYRIGHT
-// Reviewed syntax conversion. Aside execution: waiting_runtime.
+// Source: original/testData/exec/for_loop_at_function_start.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed Aside syntax conversion; parse and analysis fixture.
 // for-loops emitting the function's first instructions: the condition JZ
 // lands at position 0 and must still be patched; the increment block is
 // extracted starting from position 0 and must run after the body, not before.

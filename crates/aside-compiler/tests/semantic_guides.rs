@@ -1,7 +1,7 @@
 use aside_compiler::{semantic::*, *};
 const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
 const EN: &str = include_str!("../../../docs/guide/en.md");
-const BLOCKS: &[usize] = &[6, 8, 9, 12, 16, 17, 18, 19, 21];
+const BLOCKS: &[usize] = &[2, 7, 9, 10, 13, 17, 18, 19, 20, 22];
 // These names are the documented reel::prelude symbols, not names harvested
 // from unresolved diagnostics. Their dynamic members remain runtime contracts.
 const PRELUDE: &[&str] = &[
@@ -44,26 +44,27 @@ const PRELUDE: &[&str] = &[
 ];
 // Actual surrounding author scope described in the prose for each fragment.
 const CONTEXT: &[(usize, &[&str])] = &[
-    (3, &["column"]),
-    (4, &["show_cg"]),
-    (5, &["column", "text", "bind", "derive"]),
-    (6, &["mio", "character", "say"]),
-    (7, &["story"]),
-    (8, &["view", "parallel", "tween", "run"]),
-    (9, &["view", "mio", "repeat", "sequence", "tween", "run"]),
-    (10, &["scope", "image", "game"]),
-    (12, &["view", "mio", "photo_panel", "button"]),
+    (2, &["text"]),
+    (4, &["column"]),
+    (5, &["show_cg"]),
+    (6, &["column", "text", "bind", "derive"]),
+    (7, &["mio", "character", "say"]),
+    (8, &["story"]),
+    (9, &["view", "parallel", "tween", "run"]),
+    (10, &["view", "mio", "repeat", "sequence", "tween", "run"]),
+    (11, &["scope", "image", "game"]),
+    (13, &["view", "mio", "photo_panel", "button"]),
     (
-        13,
+        14,
         &[
             "switcher", "page", "text", "slider", "bind", "settings", "image", "column", "row",
             "button",
         ],
     ),
-    (14, &["button", "image", "derive"]),
-    (15, &["button", "image", "text", "game", "opening"]),
+    (15, &["button", "image", "derive"]),
+    (16, &["button", "image", "text", "game", "opening"]),
     (
-        16,
+        17,
         &[
             "group",
             "image",
@@ -74,10 +75,10 @@ const CONTEXT: &[(usize, &[&str])] = &[
             "tween",
         ],
     ),
-    (17, &["view", "repeat", "sequence", "tween", "scope"]),
-    (18, &["view", "mask", "group", "image", "run", "tween"]),
+    (18, &["view", "repeat", "sequence", "tween", "scope"]),
+    (19, &["view", "mask", "group", "image", "run", "tween"]),
     (
-        19,
+        20,
         &[
             "list",
             "bind",
@@ -88,10 +89,10 @@ const CONTEXT: &[(usize, &[&str])] = &[
             "by_door",
         ],
     ),
-    (20, &["saves", "button"]),
-    (21, &["state", "persistent", "set"]),
-    (22, &["column", "button"]),
-    (23, &["parallel", "tween"]),
+    (21, &["saves", "button"]),
+    (22, &["state", "persistent", "set"]),
+    (23, &["column", "button"]),
+    (24, &["parallel", "tween"]),
 ];
 fn snippets(doc: &str) -> Vec<String> {
     let mut result = Vec::new();
@@ -111,10 +112,10 @@ fn snippets(doc: &str) -> Vec<String> {
     result
 }
 #[test]
-fn all_24_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
+fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 24);
+    assert_eq!(zh.len(), 25);
     assert_eq!(zh, en);
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {
@@ -198,7 +199,7 @@ fn all_24_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
                 "scene {i} analysis: {:?}",
                 result.diagnostics
             );
-            if i == 17 {
+            if i == 18 {
                 let module = result.module().unwrap();
                 assert!(
                     module

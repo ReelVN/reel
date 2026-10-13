@@ -1,6 +1,6 @@
 use aside_compiler::{DiagnosticCode, EntryPoint, ParseOptions, parse_with_options};
 use std::process::Command;
-#[path = "../../../tools/test-support/process.rs"]
+#[path = "../../reel-dev/src/process.rs"]
 #[allow(
     dead_code,
     reason = "shared subprocess helper also exposes exit-code conversion for tool observers"

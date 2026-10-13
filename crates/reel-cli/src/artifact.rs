@@ -204,12 +204,12 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
 
 pub fn package_limits_json() -> Value {
     let l = rp::Limits::default();
-    json!({"source_bytes": super::MAX_SOURCE_BYTES, "asb_bytes": l.max_file_bytes,
+    json!({"source_offset_bits": u32::BITS, "asb_bytes": l.max_file_bytes,
         "metadata_bytes": l.max_metadata_bytes, "sections": l.max_sections,
         "metadata_records": l.max_metadata_records, "source_symbols": l.max_source_symbols,
         "json_depth": l.max_json_depth, "json_string_bytes": l.max_json_string_bytes,
         "json_tokens": l.max_json_tokens, "asb_work": l.max_work,
         "b01": {"bytes": l.bytecode.max_bytes, "records": l.bytecode.max_records,
-            "string_bytes": l.bytecode.max_string_bytes, "registers": l.bytecode.max_registers,
+            "registers": l.bytecode.max_registers,
             "allocation_bytes": l.bytecode.max_allocation_bytes, "work": l.bytecode.max_work}})
 }

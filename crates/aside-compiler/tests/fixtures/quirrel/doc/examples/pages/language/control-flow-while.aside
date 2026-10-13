@@ -1,0 +1,12 @@
+// Source: original/doc/examples/pages/language/control-flow-while.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Reviewed syntax migration; original assertions and output are retained.
+let mut rounds = 0;
+while rounds > 0 { println("firing"); rounds -= 1; }
+println(f"rounds left: {rounds}");
+let mut reloadAttempt = 0;
+loop {
+    reloadAttempt += 1;
+    println(f"reload attempt {reloadAttempt}");
+    if !(reloadAttempt < 3) { break; }
+}

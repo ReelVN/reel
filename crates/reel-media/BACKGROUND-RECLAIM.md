@@ -22,14 +22,17 @@ refuse new acceptance while existing work continues draining.
 
 ## Bounds and lifecycle
 
-Defaults are G=4 live generations and R=64 normal queued jobs; maxima G=64/R=256.
+Defaults are G=4 live generations and R=64 normal queued jobs. The host configures
+nonzero capacities; there are no additional fixed generation or job-count maxima.
 There are R+1 queued/in-flight normal jobs and 2G total teardown credits. Sound
-capacity N<=256 has N active/pending reservations plus N unused slots. Conservative
-unique PCM bound is `(2*256*G+R+1)*64MiB`, before the caller's tighter BudgetPool.
-Queue metadata is preallocated. Accepted aliases do not duplicate PCM.
+capacity N has N active/pending reservations plus N unused slots.
+Actual PCM residency remains charged to the caller's BudgetPool throughout
+retirement; queue counts do not estimate its byte size. Queue metadata is
+preallocated. Accepted aliases do not duplicate PCM.
 
-The maximum Sound remains 8,388,608 stereo frames / 64MiB, with a conservative
-128MiB construction charge. Stop closes/fences callback entry and disposes the
+Sounds have no separate frame-count or duration ceiling. A sound's ticket must
+cover input vector capacity plus converted Frame storage. Stop closes/fences
+callback entry and disposes the
 fill shell on its caller. Stopped means no more supply; asynchronous residency
 still holds tickets. Native pause, stream destruction and in-flight fencing have
 no 0.5ms promise. Final explicit host join is a shutdown wait, not a frame task.
@@ -47,7 +50,7 @@ cargo run -p reel-dev --locked -- audio-probe
 Media regressions retain same-mixer single-ticket/single-PCM A→B, quota 0/1,
 ordinary saturation, reserved teardown credits, nested untaken Renderer, old
 live-generation backpressure, constructor/fill failures and sleeping/no-callback
-maintenance. The real-Kira probe builds shipping debug/release libraries and
+maintenance. The real-reel-audio probe builds shipping debug/release libraries and
 observes allocator calls only on the measured PCM thread through 8ch conversion.
 
 The reclaim probe separates control ownership transfer, full worker job and actual

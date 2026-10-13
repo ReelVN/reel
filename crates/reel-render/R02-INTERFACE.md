@@ -62,7 +62,15 @@ Preparation reserves a submission slot as well as each target/resource allocatio
 `Busy` is temporary admission pressure; `Pressure` is shared residency held by
 other prepared/in-flight submissions. `Budget` is a permanent limit of this
 preparation itself. Per-preparation live quotas are checked before shared quotas,
-including readback storage and mesh scratch. All partial reservations release
+including readback storage and mesh scratch. Mesh vertex/index arrays grow with
+their actual recorded geometry, reserving capacity before allocation. There is
+no fixed per-path 1 MiB mesh or 2 MiB scratch ceiling; the live transient budget,
+device buffer sizes and GPU index representation bound those arrays. Kurbo path
+events stream into Lyon without a second owned path copy. A line or curve after
+ClosePath starts a new subpath at the preceding subpath's initial point, matching
+Kurbo semantics. Lyon's internal
+tessellator workspace remains backend implementation storage, not a separately
+measured allocator quota. All partial reservations release
 on refusal. The player retains latest state after temporary refusal and retries
 only when `poll()` observes completion. A permanent refusal stops preparation
 until a new state/size invalidation. Neither refusal updates accepted input geometry.
@@ -83,9 +91,10 @@ supplied device generation happens to match. Retired source leases already in a
 frame remain usable; GPU residency has no independent persistent cache lease and
 ends on completion. The R01 registry separately prohibits new source leases.
 
-Limits: default two prepared/in-flight submissions, nesting 32 (maximum 64),
+Limits: default two prepared/in-flight submissions,
 128 MiB targets, 128 MiB converted resource/staging data, 32 MiB transient data.
-Each domain also has a 65,536-ticket cap. RGBA16 texture upload accounting includes
+Resource domains use byte quotas; ticket counts retain only their u32 representation
+boundary. RGBA16 texture upload accounting includes
 f32 conversion storage, padded CPU staging, GPU staging and texture storage.
 The target budget charges every full-viewport scope, clip coverage, mask result
 and crossfade input, including 4x attachment plus resolve. Exhaustion refuses the
@@ -114,10 +123,12 @@ Stroke width must convert to a finite, nonnegative f32 without nonzero underflow
 Miter limit must be at least 1 in the original f64 and finite after f32 conversion,
 for every join including Bevel/Round. R01's legal `[0, 1)` miter values are rejected
 here with their drawing or opening clip `RecordLocation`; there is no clamp.
-Replay root/scopes and recursive mask roots count toward `max_depth`. Exceeding
-it returns permanent `DepthLimit` at the responsible command (the opening group
-for an empty mask); mismatched, underflowing or unclosed scopes return permanent
-`InvalidRecord`. These cannot be confused with admission `Busy`.
+Replay scopes and mask continuations use explicit, growing work stacks; their
+allocated capacity is charged to the existing transient budget. Every nested
+scope still reserves its actual render targets. There is no separate nesting
+count ceiling or recursive mask call stack. Mismatched, underflowing or unclosed
+scopes return permanent `InvalidRecord` at the responsible command. These cannot
+be confused with admission `Busy`.
 
 Every surface configuration/recreation and device recovery freshly queries the
 current adapter/surface pair and rebuilds the SurfacePass for its selected format.

@@ -526,11 +526,18 @@ fn repeated_source_slots_must_keep_their_b01_binding_contract() {
 #[test]
 fn authored_scene_builds_loads_and_runs_without_recompilation() {
     use reel_engine::aside::{NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits};
-    use reel_engine::{Epoch, InputAction, Session, SessionId, SessionLimits};
-    let artifact = artifact(
-        include_str!("../../../examples/author_stage.aside"),
-        Some("main::main"),
+    use reel_engine::{Epoch, InputAction, Session, SessionId};
+    let text = "文".repeat(350_000); // A single UTF-8 constant exceeds the old 1 MiB cap.
+    let narration = format!("{text} 完整结束");
+    let source = format!(
+        "//{}\n{}",
+        "x".repeat(8 * 1024 * 1024 + 1),
+        include_str!("../../../examples/author_stage.aside").replace(
+            "narrator(\"先让画面停留片刻。\");",
+            &format!("narrator(\"{text}\" + \" 完整结束\");")
+        )
     );
+    let artifact = artifact(&source, Some("main::main"));
     let story = reel_cli::decode_story(&artifact.bytes).unwrap();
     let package = story.program.package();
     assert_eq!(
@@ -543,7 +550,7 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
             .index()],
         "main"
     );
-    let mut session = Session::new(SessionId(1), Epoch(1), SessionLimits::default()).unwrap();
+    let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
     let mut entry = Some(story.entry);
     vm.start(&session, story.initializer).unwrap();
@@ -569,6 +576,12 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
                         assert_ne!(&kind, old_kind);
                     } else {
                         original = Some((root, title, kind));
+                    }
+                    if publications == 0 {
+                        assert_eq!(
+                            session.view().history[0].lines()[0].resolved_text(),
+                            narration
+                        );
                     }
                     publications += 1;
                     let owner = session.root_owner();

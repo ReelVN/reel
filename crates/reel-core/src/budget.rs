@@ -90,6 +90,20 @@ impl BudgetTicket {
     pub fn bytes(&self) -> u64 {
         self.bytes
     }
+
+    /// Change this reservation without briefly releasing its existing charge.
+    /// A rejected growth leaves both the ticket and shared usage unchanged.
+    pub fn resize(&mut self, bytes: u64) -> Result<(), RejectReason> {
+        let mut account = self.account.lock().expect("budget account poisoned");
+        let next = (account.usage.bytes - self.bytes)
+            .checked_add(bytes)
+            .filter(|next| *next <= account.limits.max_bytes)
+            .ok_or_else(|| RejectReason::new(RejectCode::Busy, "budget capacity exhausted"))?;
+        account.usage.bytes = next;
+        account.usage.peak_bytes = account.usage.peak_bytes.max(next);
+        self.bytes = bytes;
+        Ok(())
+    }
 }
 
 impl Drop for BudgetTicket {

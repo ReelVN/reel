@@ -1,0 +1,191 @@
+{
+  "source": "doc/examples/pages/language/operators-precedence.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "segments": [
+    {
+      "original": [
+        0,
+        0
+      ],
+      "aside": [
+        0,
+        226
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        0,
+        16
+      ],
+      "aside": [
+        226,
+        242
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        16,
+        133
+      ],
+      "aside": [
+        242,
+        243
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        133,
+        197
+      ],
+      "aside": [
+        243,
+        307
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        197,
+        244
+      ],
+      "aside": [
+        307,
+        308
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        244,
+        282
+      ],
+      "aside": [
+        308,
+        346
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        282,
+        365
+      ],
+      "aside": [
+        346,
+        347
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        365,
+        387
+      ],
+      "aside": [
+        347,
+        369
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        387,
+        387
+      ],
+      "aside": [
+        369,
+        370
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        387,
+        407
+      ],
+      "aside": [
+        370,
+        390
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        407,
+        407
+      ],
+      "aside": [
+        390,
+        391
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        407,
+        427
+      ],
+      "aside": [
+        391,
+        411
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        427,
+        427
+      ],
+      "aside": [
+        411,
+        412
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        427,
+        509
+      ],
+      "aside": [
+        412,
+        494
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        509,
+        509
+      ],
+      "aside": [
+        494,
+        495
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        509,
+        510
+      ],
+      "aside": [
+        495,
+        496
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": []
+}

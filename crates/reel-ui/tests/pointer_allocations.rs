@@ -48,9 +48,7 @@ fn real_uncaptured_pointer_dispatch_allocations() {
             SurfaceEpoch(1),
             BridgeLimits {
                 geometry: GeometryLimits {
-                    max_nodes: nodes,
-                    max_bytes: bytes + 2 * nodes * size_of::<WidgetId>(),
-                    max_path: 128,
+                    max_bytes: 2 * bytes,
                 },
                 max_candidates: 1,
                 max_bridge_bytes: 64 * 1024,

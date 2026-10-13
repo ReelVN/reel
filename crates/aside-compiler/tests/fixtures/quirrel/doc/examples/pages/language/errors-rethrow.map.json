@@ -1,7 +1,5 @@
 {
   "source": "doc/examples/pages/language/errors-rethrow.nut",
-  "source_sha256": "07ef2a8d524c2e735ed349a31adace1fc295bfedd04ee98c9542fdd32d56e9bb",
-  "aside_sha256": "adf2709fb1d0f908cd3180e0ac4c5323cf95571afdd2ace19da3eabe9e3ec0fe",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        237
+        210
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         128
       ],
       "aside": [
-        237,
-        365
+        210,
+        338
       ],
       "kind": "copied"
     },
@@ -33,8 +31,8 @@
         152
       ],
       "aside": [
-        365,
-        383
+        338,
+        356
       ],
       "kind": "reviewed_edit",
       "reason": "named function declaration"
@@ -45,8 +43,8 @@
         153
       ],
       "aside": [
-        383,
-        384
+        356,
+        357
       ],
       "kind": "copied"
     },
@@ -56,8 +54,8 @@
         193
       ],
       "aside": [
-        384,
-        425
+        357,
+        398
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -68,8 +66,8 @@
         202
       ],
       "aside": [
-        425,
-        434
+        398,
+        407
       ],
       "kind": "copied"
     },
@@ -79,8 +77,8 @@
         233
       ],
       "aside": [
-        434,
-        466
+        407,
+        439
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -91,8 +89,8 @@
         234
       ],
       "aside": [
-        466,
-        467
+        439,
+        440
       ],
       "kind": "copied"
     },
@@ -102,8 +100,8 @@
         249
       ],
       "aside": [
-        467,
-        480
+        440,
+        453
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -114,8 +112,8 @@
         250
       ],
       "aside": [
-        480,
-        481
+        453,
+        454
       ],
       "kind": "copied"
     },
@@ -125,8 +123,8 @@
         275
       ],
       "aside": [
-        481,
-        507
+        454,
+        480
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -137,8 +135,8 @@
         276
       ],
       "aside": [
-        507,
-        508
+        480,
+        481
       ],
       "kind": "copied"
     },
@@ -148,8 +146,8 @@
         287
       ],
       "aside": [
-        508,
-        520
+        481,
+        493
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -160,8 +158,8 @@
         301
       ],
       "aside": [
-        520,
-        534
+        493,
+        507
       ],
       "kind": "copied"
     },
@@ -171,8 +169,8 @@
         316
       ],
       "aside": [
-        534,
-        550
+        507,
+        523
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -183,8 +181,8 @@
         317
       ],
       "aside": [
-        550,
-        551
+        523,
+        524
       ],
       "kind": "copied"
     },
@@ -194,8 +192,8 @@
         330
       ],
       "aside": [
-        551,
-        562
+        524,
+        535
       ],
       "kind": "reviewed_edit",
       "reason": "catch binding removes Quirrel parameter delimiters"
@@ -206,8 +204,8 @@
         331
       ],
       "aside": [
-        562,
-        563
+        535,
+        536
       ],
       "kind": "copied"
     },
@@ -217,8 +215,8 @@
         370
       ],
       "aside": [
-        563,
-        603
+        536,
+        576
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -229,8 +227,8 @@
         373
       ],
       "aside": [
-        603,
-        606
+        576,
+        579
       ],
       "kind": "copied"
     }

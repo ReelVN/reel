@@ -13,17 +13,24 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
         names: Vec::new(),
     };
     let mut names = HashMap::new();
-    // Each frame holds only its direct edges. Descendant text is never cloned.
-    fn visit(
+    // Explicit projection frames retain only direct edges, so a flat binary or
+    // postfix chain does not consume one Rust call frame per CST node.
+    struct Frame {
+        syntax: SyntaxNode,
+        children: aside_syntax::SyntaxElementChildren<crate::AsideLanguage>,
+        id: NodeId,
+        depth: usize,
+        edges: SmallVec<[HirElement; 8]>,
+    }
+    fn enter(
         syntax: SyntaxNode,
         parent: Option<NodeId>,
         depth: usize,
         hir: &mut Hir,
-        names: &mut HashMap<String, NameId>,
         limits: AnalysisLimits,
-    ) -> Result<NodeId, Diagnostic> {
+    ) -> Result<Frame, Diagnostic> {
         if hir.nodes.len() >= limits.max_nodes.min(u32::MAX as usize)
-            || depth >= limits.max_depth.clamp(1, 128)
+            || depth >= limits.max_depth.max(1)
         {
             return Err(Diagnostic::error(
                 D::BudgetExceeded,
@@ -46,18 +53,35 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
             elements: 0..0,
             form: Form::Sequence,
         });
-        let mut edges = SmallVec::<[HirElement; 8]>::new();
-        for element in syntax.children_with_tokens() {
+        Ok(Frame {
+            children: syntax.children_with_tokens(),
+            syntax,
+            id,
+            depth,
+            edges: SmallVec::new(),
+        })
+    }
+    let mut stack = vec![enter(syntax, None, 0, &mut hir, limits)?];
+    while let Some(frame) = stack.last_mut() {
+        if let Some(element) = frame.children.next() {
             match element {
-                rowan::NodeOrToken::Node(node) => edges.push(HirElement::Node(visit(
-                    node,
-                    Some(id),
-                    depth + 1,
-                    hir,
-                    names,
-                    limits,
-                )?)),
-                rowan::NodeOrToken::Token(token) if !token.kind().is_trivia() => {
+                aside_syntax::NodeOrToken::Node(node) => {
+                    let flat_receiver =
+                        !frame.edges.iter().any(|e| matches!(e, HirElement::Node(_)))
+                            && matches!(
+                                frame.syntax.kind(),
+                                K::BinaryExpr | K::MemberExpr | K::IndexExpr | K::CallExpr
+                            );
+                    let child = enter(
+                        node,
+                        Some(frame.id),
+                        frame.depth + usize::from(!flat_receiver),
+                        &mut hir,
+                        limits,
+                    )?;
+                    stack.push(child);
+                }
+                aside_syntax::NodeOrToken::Token(token) if !token.kind().is_trivia() => {
                     let name = if token.kind() == K::Ident {
                         let next = NameId(hir.names.len() as u32);
                         Some(if let Some(&name) = names.get(token.text()) {
@@ -70,7 +94,7 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
                     } else {
                         None
                     };
-                    edges.push(HirElement::Token(HirToken {
+                    frame.edges.push(HirElement::Token(HirToken {
                         kind: token.kind(),
                         span: token.text_range(),
                         name,
@@ -78,10 +102,14 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
                 }
                 _ => (),
             }
+            continue;
         }
+        let Frame {
+            syntax, id, edges, ..
+        } = stack.pop().unwrap();
         // CST trivia belongs to adjacent nodes, but author diagnostics and
         // runtime locations begin at syntax, not the preceding blank line.
-        if parent.is_some()
+        if hir.nodes[id.0 as usize].parent.is_some()
             && let (Some(first), Some(last)) = (edges.first(), edges.last())
         {
             let span = |element: &HirElement| match element {
@@ -101,9 +129,10 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
         let start = hir.elements.len() as u32;
         hir.elements.extend(edges);
         hir.nodes[id.0 as usize].elements = start..hir.elements.len() as u32;
-        Ok(id)
+        if let Some(parent) = stack.last_mut() {
+            parent.edges.push(HirElement::Node(id));
+        }
     }
-    visit(syntax, None, 0, &mut hir, &mut names, limits)?;
     super::forms::forms(&mut hir);
     Ok(hir)
 }

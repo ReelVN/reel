@@ -3,7 +3,7 @@ use crate::{
     Diagnostic, DiagnosticCode as D, Fix, GreenNode, Limits, RelatedRange, SourceTooLarge,
     SyntaxKind as K, SyntaxNode, TextRange, Token, lex_with_limits,
 };
-use rowan::{Checkpoint, GreenNodeBuilder};
+use aside_syntax::{Checkpoint, GreenNodeBuilder};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -221,7 +221,16 @@ impl Parser<'_> {
         if let Some(checkpoint) = cp.checkpoint {
             self.builder.start_node_at(checkpoint, kind.raw());
         }
-        let children = self.frames.last_mut().unwrap().split_off(cp.index);
+        let mut children = self.frames.last_mut().unwrap().split_off(cp.index);
+        // A left-associated operation extends a flat chain. Only its new
+        // operands/arguments add nesting; the receiver is already complete.
+        if matches!(
+            kind,
+            K::BinaryExpr | K::MemberExpr | K::IndexExpr | K::CallExpr
+        ) && let Some(height) = children.iter_mut().find(|height| **height != 0)
+        {
+            *height -= 1;
+        }
         if children.iter().copied().max().unwrap_or(0) + 1 > self.limits.max_depth && !self.halted {
             self.limit("syntax tree nesting budget exhausted");
         }
@@ -553,9 +562,6 @@ impl Parser<'_> {
                 };
             } else {
                 break;
-            }
-            if lhs.height >= self.limits.max_depth {
-                self.limit("expression tree nesting budget exhausted");
             }
         }
         if value && lhs.assignment {

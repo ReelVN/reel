@@ -96,7 +96,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 
 Regions use `[start,end)` protected code, optional `[catch_start,catch_end)` plus exception register, optional `[finally_start,finally_end)` ending in EndFinally(region). Protected/handler blocks are laminar/disjoint, never partially overlapping or entered by arbitrary jumps. Leave exits protected/catch blocks through cleanup. Finally cannot Await/Yield/ThreadSuspend/Return or escape; calls inherit NoWait dynamically. Generator forbids explicit Await; helper/native dynamic Pending rejected by runtime context.
 
-Binary envelope: magic `ASIDBC01`, format/language/host ABI u32, content version u64, actual total byte length u32, section counts; ordered count-prefixed records with explicit tags. Reject unknown versions/tags/flags and unsupported opcode/native/capabilities, including instructions in unreachable code. Configurable input/record/string/register/work/allocation limits; scan full shape and counts before materializing, checked arithmetic, fallible reservation, then validate all references and control flow. Private VerifiedProgram owns immutable package plus capacity accounting and can only be constructed by validation. Separate format validation and explicit runtime capability validation permit tooling to inspect full language targets without claiming dispatch support.
+Binary envelope: magic `ASIDBC01`, format/language/host ABI u32, content version u64, actual total byte length u32, section counts; ordered count-prefixed records with explicit tags. Reject unknown versions/tags/flags and unsupported opcode/native/capabilities, including instructions in unreachable code. Configurable package-wide input/record/register/work/allocation limits; strings, including source text, share those budgets and their existing u32 length representation without a separate per-string cap. The default work budget is twice the default byte budget to cover the complete scan and materialization passes; both passes charge the same work counter. Scan full shape and counts before materializing, use checked arithmetic and fallible reservation, then validate all references and control flow. Private VerifiedProgram owns immutable package plus capacity accounting and can only be constructed by validation. Separate format validation and explicit runtime capability validation permit tooling to inspect full language targets without claiming dispatch support.
 
 Decoding, verification and runtime admission independently enforce max_work. Shared signature scans, default capture equality, capability searches and trusted-registry comparisons are charged before the inner work; compressed metadata cannot hide a function × parameter × capture traversal. Uniqueness uses bounded, reserved sorted indices (including exact string sorting for hash collision groups); heap-operation comparison bounds and actual capacities are charged before work/allocation. Opcode support is normalized once. VerifiedProgram retains Limits for later runtime admission. This accounting does not change the v1 wire schema.
 
@@ -128,3 +128,19 @@ The unwind cursor is a consumed RegionId with strict-ancestor semantics, validat
 NativeSupport includes required_capabilities from the trusted host registry. Every trusted requirement must be authorized by RuntimeSupport and declared by both the package and its native record. Removing untrusted capability declarations cannot grant access. Snapshot generation must use the independent registry, never copy package declarations to manufacture support.
 
 Use visit_registers_budgeted at untrusted boundaries: it precharges register windows, capture arrays, class lists and pattern metadata before traversal, and can interrupt scalar visits. Verification also charges scratch lengths before allocation/fill and bulk pattern-stack extensions before copying. The unmetered visit_registers adapter is for previously trusted analysis.
+
+### Range and interpolation execution
+
+B01 adds `TextNew` (0025: dest), `TextPush` (0026: builder, value),
+`TextFinish` (0027: dest, builder), `MakeRange` (005d: dest, start, end),
+`MakeRangeInclusive` (005e: dest, start, end) and `IterAdvance`
+(0068: done-dest, iterator, value-dest). Range endpoints are int64 and
+the implicit step is +1; reversed ranges are empty and MAX terminates
+without overflow. IterAdvance writes both results directly without
+allocating a result tuple; IterNext retains the explicit tuple protocol.
+TextPush accepts scalars or UTF-8 strings, appends in charged chunks,
+and preserves operand roots across yields. TextFinish validates UTF-8
+in charged chunks and seals the buffer without copying. Mutation during
+validation is a concurrent-modification error. Cancellation releases
+builders through the existing frame teardown. These operations use the
+shared verifier register roles and source locations.

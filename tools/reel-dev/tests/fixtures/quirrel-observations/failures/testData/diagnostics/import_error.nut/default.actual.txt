@@ -1,8 +1,0 @@
-ERROR: expected 'identifier or *'
-testData/diagnostics/import_error.nut:2:19
-
-// missing import list
-from "file1" import
-                   ^
-
-

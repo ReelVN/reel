@@ -1,0 +1,191 @@
+{
+  "source": "doc/examples/pages/language/control-flow-foreach-array.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "segments": [
+    {
+      "original": [
+        0,
+        0
+      ],
+      "aside": [
+        0,
+        232
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        0,
+        49
+      ],
+      "aside": [
+        232,
+        281
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        49,
+        77
+      ],
+      "aside": [
+        281,
+        282
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        77,
+        108
+      ],
+      "aside": [
+        282,
+        313
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        108,
+        108
+      ],
+      "aside": [
+        313,
+        314
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        108,
+        112
+      ],
+      "aside": [
+        314,
+        318
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        112,
+        218
+      ],
+      "aside": [
+        318,
+        318
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        218,
+        239
+      ],
+      "aside": [
+        318,
+        339
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        239,
+        241
+      ],
+      "aside": [
+        339,
+        339
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        241,
+        242
+      ],
+      "aside": [
+        339,
+        340
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        242,
+        242
+      ],
+      "aside": [
+        340,
+        341
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        242,
+        251
+      ],
+      "aside": [
+        341,
+        350
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        251,
+        252
+      ],
+      "aside": [
+        350,
+        435
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        252,
+        274
+      ],
+      "aside": [
+        435,
+        457
+      ],
+      "kind": "copied"
+    },
+    {
+      "original": [
+        274,
+        274
+      ],
+      "aside": [
+        457,
+        460
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Reviewed declarations, table fields, explicit block/loop syntax and string interpolation; preserve evaluation order, bindings and all original assertions/output."
+    },
+    {
+      "original": [
+        274,
+        275
+      ],
+      "aside": [
+        460,
+        461
+      ],
+      "kind": "copied"
+    }
+  ],
+  "assertions": []
+}

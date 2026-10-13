@@ -1,7 +1,5 @@
 {
   "source": "doc/examples/pages/language/functions-minimal.nut",
-  "source_sha256": "169c6ccba547a4d0b1819d981e789b343977e427bb7caff4f695254027c4f98b",
-  "aside_sha256": "c5d2920f1a70f3486ccdb0833aa8bc664e48dcda37feae0ca47bea66e49e09fb",
   "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
   "mapping_rule": "copied spans are offset-exact; edited spans map conservatively to the entire reviewed span",
   "segments": [
@@ -12,7 +10,7 @@
       ],
       "aside": [
         0,
-        240
+        213
       ],
       "kind": "generated_header"
     },
@@ -22,8 +20,8 @@
         32
       ],
       "aside": [
-        240,
-        266
+        213,
+        239
       ],
       "kind": "reviewed_edit",
       "reason": "named function declaration"
@@ -34,8 +32,8 @@
         33
       ],
       "aside": [
-        266,
-        267
+        239,
+        240
       ],
       "kind": "copied"
     },
@@ -45,8 +43,8 @@
         54
       ],
       "aside": [
-        267,
-        289
+        240,
+        262
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -57,8 +55,8 @@
         135
       ],
       "aside": [
-        289,
-        370
+        262,
+        343
       ],
       "kind": "copied"
     },
@@ -68,8 +66,8 @@
         179
       ],
       "aside": [
-        370,
-        414
+        343,
+        387
       ],
       "kind": "reviewed_edit",
       "reason": "expression closure parameter boundary"
@@ -80,8 +78,8 @@
         181
       ],
       "aside": [
-        414,
-        416
+        387,
+        389
       ],
       "kind": "copied"
     },
@@ -91,8 +89,8 @@
         228
       ],
       "aside": [
-        416,
-        464
+        389,
+        437
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -103,8 +101,8 @@
         229
       ],
       "aside": [
-        464,
-        465
+        437,
+        438
       ],
       "kind": "copied"
     },
@@ -114,8 +112,8 @@
         280
       ],
       "aside": [
-        465,
-        517
+        438,
+        490
       ],
       "kind": "reviewed_edit",
       "reason": "terminate this complete reviewed statement with a semicolon"
@@ -126,8 +124,8 @@
         281
       ],
       "aside": [
-        517,
-        518
+        490,
+        491
       ],
       "kind": "copied"
     }

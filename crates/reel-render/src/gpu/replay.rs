@@ -3,7 +3,7 @@ use super::{
     pipeline::Pipelines,
     renderer::{Budgets, Reservation, reserve},
     resources,
-    scopes::{Kind, Scopes},
+    scopes::{Kind, Scopes, push_stack},
     targets::{Target, target_bytes},
 };
 use reel_ui::frame::{FrameCommand, FrameOp, RecordLocation, RenderFrame};
@@ -29,6 +29,18 @@ struct Scope<'a> {
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
     opacity: f32,
+}
+struct MaskComposition {
+    source: Target,
+    opacity: f32,
+    mode: u32,
+}
+struct Stream<'a> {
+    commands: &'a [FrameCommand],
+    next: usize,
+    transform: Affine,
+    scopes: Scopes<Scope<'a>>,
+    mask: Option<MaskComposition>,
 }
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
@@ -56,30 +68,45 @@ impl Context<'_> {
         frame: &RenderFrame,
         commands: &[FrameCommand],
         transform: Affine,
-        depth: usize,
-        origin: RecordLocation,
     ) -> Result<Target, GpuError> {
-        let mut stack = Scopes::new(depth, self.gpu.limits.max_depth, origin, || {
-            Ok(Scope {
-                target: self.target()?,
-                clip: None,
-                mask: None,
-                opacity: 1.,
-            })
-        })?;
-        for command in commands {
+        let first = self.start_stream(commands, transform)?;
+        let mut streams = Vec::new();
+        push_stack(&mut streams, first, |bytes| self.transient(bytes))?;
+        loop {
+            let current = streams.last_mut().expect("active replay stream");
+            let Some(command) = current.commands.get(current.next) else {
+                let finished = streams.pop().unwrap().scopes.finish()?.target;
+                let Some(parent) = streams.last_mut() else {
+                    return Ok(finished);
+                };
+                let mask = parent.mask.take().expect("suspended mask composition");
+                self.combine(
+                    &parent.scopes.last().target,
+                    &mask.source.view,
+                    &finished.view,
+                    mask.opacity,
+                    mask.mode,
+                    0.,
+                )?;
+                continue;
+            };
+            current.next += 1;
             let at = command.origin.at;
+            let transform = current.transform;
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
-                    stack.push(Kind::Clip, at, || {
-                        Ok(Scope {
+                    current.scopes.push(
+                        Kind::Clip,
+                        at,
+                        Scope {
                             target: self.target()?,
                             clip: Some(clip),
                             mask: None,
                             opacity: 1.,
-                        })
-                    })?;
+                        },
+                        |bytes| self.transient(bytes),
+                    )?;
                 }
                 FrameOp::PushGroup(group) => {
                     self.composite_supported(group.composite, at)?;
@@ -89,14 +116,17 @@ impl Context<'_> {
                             record: "group filters",
                         });
                     }
-                    stack.push(Kind::Group, at, || {
-                        Ok(Scope {
+                    current.scopes.push(
+                        Kind::Group,
+                        at,
+                        Scope {
                             target: self.target()?,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             opacity: group.composite.alpha,
-                        })
-                    })?;
+                        },
+                        |bytes| self.transient(bytes),
+                    )?;
                 }
                 FrameOp::PopClip | FrameOp::PopGroup => {
                     let kind = if matches!(command.op, FrameOp::PopClip) {
@@ -104,9 +134,8 @@ impl Context<'_> {
                     } else {
                         Kind::Group
                     };
-                    let entry = stack.pop(kind, at)?;
+                    let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
-                    let parent = stack.last();
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
@@ -124,27 +153,20 @@ impl Context<'_> {
                                     at,
                                     record: "missing mask",
                                 })?;
-                        let coverage = self.stream(
-                            frame,
-                            &definition.commands,
-                            transform * mask.transform,
-                            stack.depth(),
-                            entry.at,
-                        )?;
-                        self.combine(
-                            &parent.target,
-                            &source.view,
-                            &coverage.view,
-                            group.opacity,
-                            match definition.mode {
+                        current.mask = Some(MaskComposition {
+                            source,
+                            opacity: group.opacity,
+                            mode: match definition.mode {
                                 MaskMode::Alpha => 1,
                                 MaskMode::Luminance => 2,
                             },
-                            0.,
-                        )?;
+                        });
+                        let child =
+                            self.start_stream(&definition.commands, transform * mask.transform)?;
+                        push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                     } else {
                         self.combine(
-                            &parent.target,
+                            &current.scopes.last().target,
                             &source.view,
                             &source.view,
                             group.opacity,
@@ -154,7 +176,7 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
-                    self.draw(frame, &stack.last().target, draw, transform, at)?
+                    self.draw(frame, &current.scopes.last().target, draw, transform, at)?
                 }
                 FrameOp::External(_) => {
                     return Err(GpuError::Unsupported {
@@ -164,7 +186,24 @@ impl Context<'_> {
                 }
             }
         }
-        Ok(stack.finish()?.target)
+    }
+    fn start_stream<'a>(
+        &mut self,
+        commands: &'a [FrameCommand],
+        transform: Affine,
+    ) -> Result<Stream<'a>, GpuError> {
+        Ok(Stream {
+            commands,
+            next: 0,
+            transform,
+            scopes: Scopes::new(Scope {
+                target: self.target()?,
+                clip: None,
+                mask: None,
+                opacity: 1.,
+            }),
+            mask: None,
+        })
     }
     pub(super) fn combine(
         &mut self,

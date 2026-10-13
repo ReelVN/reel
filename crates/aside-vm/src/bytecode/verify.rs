@@ -430,7 +430,7 @@ fn validate_symbols_with_hash(
     for s in &p.symbols {
         b.work(s.len() as u64 + 1)?;
         check(
-            s.len() <= b.limits.max_string_bytes as usize && !s.is_empty() && !s.contains('\0'),
+            !s.is_empty() && !s.contains('\0'),
             ErrorKind::Encoding,
             "symbol text",
         )?;
@@ -510,23 +510,15 @@ fn validate_program(
     b.work(encoded as u64)?;
     validate_symbols(p, &mut b)?;
     for (i, c) in p.constants.iter().enumerate() {
-        match c {
-            Const::Tuple(ids) => {
-                for id in ids {
-                    b.work(1)?;
-                    check(
-                        id.index() < i,
-                        ErrorKind::Index,
-                        "constant tuple must refer backwards",
-                    )?;
-                }
+        if let Const::Tuple(ids) = c {
+            for id in ids {
+                b.work(1)?;
+                check(
+                    id.index() < i,
+                    ErrorKind::Index,
+                    "constant tuple must refer backwards",
+                )?;
             }
-            Const::Utf8(s) => check(
-                s.len() <= limits.max_string_bytes as usize,
-                ErrorKind::Limit,
-                "constant UTF-8 bytes",
-            )?,
-            _ => {}
         }
     }
     for (i, t) in p.types.iter().enumerate() {
@@ -755,11 +747,6 @@ fn validate_program(
     }
     for file in &p.sources {
         symbol(p, file.path)?;
-        check(
-            file.text.len() <= limits.max_string_bytes as usize,
-            ErrorKind::Limit,
-            "source text bytes",
-        )?;
     }
     let parameter_layouts = ParameterLayouts::build(p, &mut b)?;
     let mut instruction_bytes = 0usize;

@@ -13,7 +13,7 @@ fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
     } else {
         SliceBudget::default()
     };
-    for _ in 0..100_000 {
+    loop {
         let outcome = vm.run_slice(task, budget, || 0).unwrap();
         if tiny {
             if vm.heap().phase() == GcPhase::Idle {
@@ -41,12 +41,71 @@ fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
             other => panic!("unexpected source outcome: {other:?}"),
         }
     }
-    panic!("source fixture exceeded bounded slice count");
 }
 
 #[test]
 fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
-    let cases = [
+    let text = "中文🙂".repeat(1100);
+    let long_text = format!(
+        r#"fn main() {{
+        let mut value = "{text}";
+        value += value;
+        if value == "{text}{text}" {{ 42 }} else {{ 0 }}
+    }}"#
+    );
+    let long_sum = format!("fn main() {{ {} }}", vec!["1"; 256].join("+"));
+    let long_members = format!(
+        "fn main() {{ let x={{next:null,result:42}}; x.next=x; x{}.result + x?.next{}.result }}",
+        ".next".repeat(256),
+        ".next".repeat(255)
+    );
+    let nested_children = format!(
+        "fn main(node) {{ fn wrap(children=[]) {{ children[0] }} let out={}node;{} if out==node {{42}} else {{0}} }}",
+        "wrap() {".repeat(24),
+        "};".repeat(24)
+    );
+    let fragment = "中文🙂".repeat(100);
+    let interpolations: Vec<_> = [1, 32, 128]
+        .map(|parts| {
+            format!(
+                "fn main() {{ let fragment=\"{fragment}\"; let value=f\"{}\"; if value==\"{}\" {{42}} else {{0}} }}",
+                "{fragment}".repeat(parts), fragment.repeat(parts),
+            )
+        })
+        .into();
+    let mut cases = vec![
+        (long_text.as_str(), 42),
+        (long_sum.as_str(), 256),
+        (long_members.as_str(), 84),
+        (nested_children.as_str(), 42),
+        (
+            "fn main() { let mut total=0; for i in 0..1024 { total+=i; } total }",
+            523776,
+        ),
+        (
+            "fn main() { let mut total=0; for i in 9223372036854775806..=9223372036854775807 { total+=1; } total }",
+            2,
+        ),
+        (
+            "fn main() { let mut total=0; for i in 5..3 { total+=1; } for i in 0..9223372036854775807 { total+=i; if i==3 { break; } } total }",
+            6,
+        ),
+        (
+            "fn main() { let mut a=[1,2]; let append=a.append; let pop=a.pop; a=[]; append(...[3,4]); pop()*10+pop() }",
+            43,
+        ),
+        (
+            "fn main() { let t={len:||42, value:null}; if t.has_own(\"value\") && !t.has_own(\"missing\") { t.len() } else { 0 } }",
+            42,
+        ),
+        (
+            r#"fn main() { let mut n=0; fn bump() { n+=1; n } let s=f"中{bump()}🙂{f"[{bump()}]"}{{字}}"; if s=="中1🙂[2]{字}" {n} else {0} }"#,
+            2,
+        ),
+        (
+            r#"fn main() { try { [].pop(); } catch e { return 42; } 0 }"#,
+            42,
+        ),
         ("fn main() { 6 * 7 }", 42),
         (
             "fn main() { let mut n=0; fn add() { n+=1; n } add(); add(); n }",
@@ -104,6 +163,7 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             17,
         ),
     ];
+    cases.extend(interpolations.iter().map(|source| (source.as_str(), 42)));
     for (source, expected) in cases {
         let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
             .unwrap()
@@ -153,11 +213,29 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             let task = vm
                 .start(entry, &arguments, RootOwner(1), bc::Context::Ordinary)
                 .unwrap();
+            let allocations_before = vm.heap().stats().chunk_allocations;
             assert_eq!(
                 finish(&mut vm, task, tiny).as_int(),
                 Some(expected),
                 "{source}, tiny={tiny}"
             );
+            if source.contains("for i in 0..1024") {
+                assert_eq!(
+                    vm.heap().stats().chunk_allocations - allocations_before,
+                    2,
+                    "range and cursor allocate once; iteration allocates nothing"
+                );
+            }
+            if source.contains("let fragment=") {
+                let bytes = source.matches("{fragment}").count() * fragment.len();
+                let chunks = vm.heap().stats().chunk_allocations - allocations_before;
+                assert_eq!(
+                    chunks,
+                    bytes.div_ceil(aside_vm::BYTE_CHUNK_LEN) as u64,
+                    "interpolation allocates only its final payload, with no copied prefixes"
+                );
+                println!("interpolation bytes={bytes} payload_chunks={chunks} tiny={tiny}");
+            }
             assert!(vm.is_idle());
         }
     }
