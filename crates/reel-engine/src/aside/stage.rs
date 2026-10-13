@@ -27,6 +27,8 @@ pub(super) enum NodeProperty {
     Opacity,
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
+    #[aside(name = "enabled", ty = Bool, default = true)]
+    Enabled,
     #[aside(name = "clip", ty = Bool, default = false)]
     Clip,
     #[aside(name = "gap", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
@@ -110,7 +112,7 @@ impl StageBinding {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
             NodeKind::Text(_) => 1,
-            NodeKind::Image { .. } => 2,
+            NodeKind::Image { .. } | NodeKind::Button { .. } => 2,
             _ => 0,
         })
     }
@@ -158,6 +160,7 @@ impl StageBinding {
         }
         let kind = match symbol {
             "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?),
+            "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
             "reel::image" => NodeKind::Image {
                 source: read_source(heap, args[0], read_limit)?,
                 fit: read_fit(heap, args[1])?,
@@ -171,7 +174,10 @@ impl StageBinding {
         let props = read_props(heap, fields, prefix.len())?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
-        if prefix.is_empty() {
+        if matches!(
+            kind,
+            NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::Button { .. }
+        ) {
             let input = args[args.len() - 1];
             if input.tag() != ValueTag::Null {
                 for index in 0..heap.sequence_len(input)? {
@@ -193,6 +199,7 @@ impl StageBinding {
             Some(match symbol {
                 "reel::text" => validate_text_property,
                 "reel::image" => validate_image_property,
+                "reel::button" => validate_button_property,
                 _ => validate_layout_property,
             }),
         )?;
@@ -246,6 +253,15 @@ impl StageBinding {
                 continue;
             }
             let (kind, offset) = match &node.kind {
+                NodeKind::Button { .. } => (
+                    button_kind(
+                        heap,
+                        heap.table_entry(fields, 0)?.1,
+                        heap.table_entry(fields, 1)?.1,
+                        read_limit,
+                    )?,
+                    2,
+                ),
                 NodeKind::Text(_) => (
                     NodeKind::Text(read_text(heap, heap.table_entry(fields, 0)?.1, read_limit)?),
                     1,
@@ -309,6 +325,68 @@ impl StageBinding {
         self.retire(heap, nodes)?;
         self.scene = Stage::default();
         Ok(())
+    }
+
+    pub fn value(&self, heap: &Heap, id: NodeId) -> Result<Value, AdapterError> {
+        let node = self
+            .handles
+            .get(&id)
+            .ok_or(AdapterError::Input("retired stage node"))?;
+        Ok(heap.import_handle(node.handle)?)
+    }
+
+    /// Input has already been routed through accepted geometry. Check current
+    /// ownership and script fields before retaining a callback task.
+    pub fn click(&self, heap: &Heap, id: NodeId) -> Result<Option<(Value, Value)>, AdapterError> {
+        let Some(node) = self.scene.node(id) else {
+            return Ok(None);
+        };
+        if !matches!(node.kind, NodeKind::Button { .. }) {
+            return Ok(None);
+        }
+        let target = self.value(heap, id)?;
+        let callback = heap.table_entry(heap.host_fields(target)?, 1)?.1;
+        if callback.tag() == ValueTag::Null {
+            return Ok(None);
+        }
+        let mut current = Some(id);
+        let mut root = id;
+        while let Some(id) = current {
+            let value = self.value(heap, id)?;
+            let fields = heap.host_fields(value)?;
+            let offset = self.property_offset(heap, value)?;
+            for property in [NodeProperty::Visible, NodeProperty::Enabled] {
+                if heap
+                    .table_entry(fields, offset + property.index() as u32)?
+                    .1
+                    .as_bool()
+                    != Some(true)
+                {
+                    return Ok(None);
+                }
+            }
+            root = id;
+            current = self.scene.node(id).unwrap().parent;
+        }
+        Ok((self.scene.root() == Some(root)).then_some((target, callback)))
+    }
+
+    pub fn has_handlers(&self) -> bool {
+        let mut pending: Vec<_> = self.scene.root().into_iter().collect();
+        while let Some(id) = pending.pop() {
+            let node = self.scene.node(id).unwrap();
+            if matches!(
+                node.kind,
+                NodeKind::Button {
+                    listening: true,
+                    ..
+                }
+            ) {
+                return true;
+            }
+            pending.extend(node.children.iter().copied());
+        }
+        false
     }
 }
 
@@ -449,6 +527,32 @@ fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), 
     }
 }
 
+fn button_kind(
+    heap: &Heap,
+    label: Value,
+    callback: Value,
+    read_limit: usize,
+) -> Result<NodeKind, AdapterError> {
+    validate_button_property(heap, 1, callback)?;
+    Ok(NodeKind::Button {
+        label: if label.tag() == ValueTag::Null {
+            None
+        } else {
+            Some(read_text(heap, label, read_limit)?)
+        },
+        listening: callback.tag() != ValueTag::Null,
+    })
+}
+fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+    match index {
+        0 | 1 if value.tag() == ValueTag::Null => Ok(()),
+        0 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::String, value)? => Ok(()),
+        1 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::Closure, value)? => Ok(()),
+        0 | 1 => Err(HeapError::TypeMismatch),
+        _ => validate_layout_property(heap, index - 2, value),
+    }
+}
+
 pub(super) fn number(value: Value) -> Result<f64, AdapterError> {
     let value = value
         .as_float()
@@ -576,6 +680,7 @@ fn read_props(heap: &Heap, fields: Value, offset: usize) -> Result<NodeProps, Ad
         height: dimension(get(NodeProperty::Height)?)?,
         opacity: opacity(get(NodeProperty::Opacity)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
+        enabled: boolean(get(NodeProperty::Enabled)?)?,
         clip: boolean(get(NodeProperty::Clip)?)?,
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,

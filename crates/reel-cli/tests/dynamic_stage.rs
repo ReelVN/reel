@@ -1,5 +1,4 @@
 //! Real source/ASB editing changes published geometry without replacing its root.
-#![cfg(feature = "window")]
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     identity::{FrameId, SurfaceEpoch},

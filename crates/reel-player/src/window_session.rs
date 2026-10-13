@@ -5,7 +5,10 @@ use crate::{
     story_runtime::StoryRuntime,
 };
 use reel_engine::aside::SliceBudget;
-use reel_ui::{bridge::PresentationBridge, core::WidgetId};
+use reel_ui::{
+    bridge::PresentationBridge,
+    core::{Handled, PointerEvent, TextEvent, WidgetId},
+};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -15,6 +18,26 @@ pub(crate) enum WindowSession {
 }
 
 impl WindowSession {
+    pub(crate) fn handle_pointer(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        event: PointerEvent,
+    ) -> Result<Handled, Error> {
+        match self {
+            Self::Diagnostic(host) => Ok(host.ui.handle_pointer(bridge, event)?.handled),
+            Self::Aside(story) => story.driver.handle_pointer(bridge, event),
+        }
+    }
+    pub(crate) fn handle_text(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        event: TextEvent,
+    ) -> Result<Handled, Error> {
+        match self {
+            Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
+            Self::Aside(story) => story.driver.handle_text(bridge, event),
+        }
+    }
     pub(crate) fn aside(driver: AsideSessionUi) -> Self {
         Self::Aside(Box::new(StoryRuntime::new(driver)))
     }

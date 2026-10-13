@@ -7,6 +7,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "reel::text" => &["value"],
         "reel::image" => &["source", "fit"],
+        "reel::button" => &["label", "on_click"],
         _ => &[],
     }
 }
@@ -30,17 +31,25 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: capabilities(),
     })
     .collect();
-    for name in ["text", "image", "row", "column", "stack"] {
+    for name in ["text", "image", "row", "column", "stack", "button"] {
         let mut parameters = Vec::new();
         for &field in node_prefix(&format!("reel::{name}")) {
             parameters.push(NativeParameter {
                 name: field.into(),
-                ty: BuiltinType::String,
-                default: (field == "fit").then(|| bc::Const::Utf8("contain".into())),
+                ty: if name == "button" {
+                    BuiltinType::Any
+                } else {
+                    BuiltinType::String
+                },
+                default: if name == "button" {
+                    Some(bc::Const::Null)
+                } else {
+                    (field == "fit").then(|| bc::Const::Utf8("contain".into()))
+                },
             });
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
-        if matches!(name, "row" | "column" | "stack") {
+        if matches!(name, "row" | "column" | "stack" | "button") {
             parameters.push(NativeParameter {
                 name: "children".into(),
                 ty: BuiltinType::Any,

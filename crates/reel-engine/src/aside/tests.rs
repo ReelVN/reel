@@ -3,6 +3,7 @@ use super::*;
 use crate::{Epoch, InputAction, OwnerLifecycle, SessionId};
 use aside_vm::bytecode as bc;
 mod activities;
+mod buttons;
 mod dynamic_stage;
 
 const STORY: &str =
@@ -22,6 +23,9 @@ fn next(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
                 || 0,
             )
             .unwrap();
+        let SessionStep::Vm(outcome) = outcome else {
+            continue;
+        };
         if !matches!(outcome, RunOutcome::BudgetYield(_)) {
             return outcome;
         }
@@ -34,7 +38,7 @@ fn setup(source: &str, context: Context) -> (Session, SessionVm) {
     let mut vm = SessionVm::load(&s, story.program, VmLimits::default()).unwrap();
     vm.start(&s, story.initializer).unwrap();
     assert!(matches!(next(&mut vm, &mut s), RunOutcome::Returned(_)));
-    vm.discard_delivery(&s).unwrap();
+    vm.discard_delivery(&mut s).unwrap();
     // Tests exercise effective caller restrictions without forging a ticket.
     vm.task = Some(
         vm.vm
@@ -559,7 +563,11 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
     let mut choice_roots = None;
     let mut finished = false;
     for _ in 0..20_000 {
-        match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+        let SessionStep::Vm(outcome) = vm.step(&mut session, SliceBudget::default(), || 0).unwrap()
+        else {
+            panic!("expected main task progress");
+        };
+        match outcome {
             RunOutcome::BudgetYield(_) => {}
             RunOutcome::HostCall(ticket) => {
                 let p = vm.vm.program().package();
@@ -823,7 +831,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
                         &code[span.start as usize..span.end as usize],
                         format!("node.{property}")
                     );
-                    vm.discard_delivery(&session).unwrap();
+                    vm.discard_delivery(&mut session).unwrap();
                     vm.finish(&mut session).unwrap();
                     break;
                 }

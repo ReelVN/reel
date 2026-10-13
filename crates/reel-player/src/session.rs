@@ -4,6 +4,8 @@
 //! explicit host requests and must not be described as a source story runner.
 use crate::stage_widget::{StageView, StageWidget};
 #[cfg(test)]
+mod button_tests;
+#[cfg(test)]
 mod image_tests;
 use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
@@ -42,10 +44,11 @@ pub struct ProjectionStamp {
 struct InputBinding {
     accepted: Option<ProjectionStamp>,
     down: Option<ProjectionStamp>,
+    non_pointer: bool,
 }
 impl InputBinding {
     fn permits(&self, current: ProjectionStamp) -> bool {
-        self.accepted == Some(current) && self.down == Some(current)
+        self.accepted == Some(current) && (self.down == Some(current) || self.non_pointer)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,9 +110,18 @@ impl Projection {
     }
 }
 #[derive(Debug)]
-struct UiInput {
-    owner: OwnerHandle,
-    action: InputAction,
+enum UiInput {
+    Session {
+        owner: OwnerHandle,
+        action: InputAction,
+    },
+    Node(reel_ui::stage::NodeClick),
+}
+
+/// A control activation uses the same consumed input as the session projection.
+pub struct UiDispatch {
+    pub handled: Handled,
+    pub click: Option<reel_ui::stage::NodeClick>,
 }
 struct LineWidgets {
     speaker: WidgetPod<Label>,
@@ -294,7 +306,7 @@ impl Widget for SessionWidget {
                         ctx.local_position(e.state.position) + Vec2::new(0., self.scroll.get()),
                     )
                 {
-                    self.inputs.borrow_mut().get_or_insert(UiInput {
+                    self.inputs.borrow_mut().get_or_insert(UiInput::Session {
                         owner: self.source_owner,
                         action: InputAction::Advance(interaction),
                     });
@@ -315,11 +327,20 @@ impl Widget for SessionWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        if let Some(click) = action.downcast_ref::<reel_ui::stage::NodeClick>() {
+            if self.binding.borrow().permits(self.current_stamp()) {
+                self.inputs
+                    .borrow_mut()
+                    .get_or_insert(UiInput::Node(*click));
+            }
+            ctx.set_handled();
+            return;
+        }
         if action.downcast_ref::<ButtonPress>().is_some()
             && let Some(choice) = self.choices.iter().find(|row| row.button.id() == source)
         {
             if self.binding.borrow().permits(self.current_stamp()) {
-                self.inputs.borrow_mut().get_or_insert(UiInput {
+                self.inputs.borrow_mut().get_or_insert(UiInput::Session {
                     owner: choice.owner,
                     action: InputAction::Select(choice.id.clone()),
                 });
@@ -702,7 +723,7 @@ impl SessionUi {
         &mut self,
         bridge: &mut PresentationBridge,
         event: PointerEvent,
-    ) -> Result<Handled, Error> {
+    ) -> Result<UiDispatch, Error> {
         match &event {
             PointerEvent::Down(_) => {
                 let accepted = self.binding.borrow().accepted;
@@ -715,19 +736,40 @@ impl SessionUi {
         if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_)) {
             self.binding.borrow_mut().down = None;
         }
-        let input = self.inputs.borrow_mut().take();
-        if let Some(input) = input {
-            // Owner/session cancellation may race the final UI dispatch. Host
-            // rejections filter that event; they are not window failures.
-            // Assign the new event at final dispatch, after any external input
-            // through session_mut. Already-sequenced replays use handle_input.
-            if self.session.handle_local_input(input.owner, input.action)
-                == Err(InputRejection::SequenceExhausted)
-            {
-                return Err("input sequence exhausted".into());
-            }
+        self.finish_input(handled)
+    }
+    pub fn handle_text(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        event: TextEvent,
+    ) -> Result<UiDispatch, Error> {
+        self.binding.borrow_mut().non_pointer = true;
+        let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
+        let handled = bridge.handle_text_event(event);
+        self.binding.borrow_mut().non_pointer = false;
+        if lost_focus {
+            self.binding.borrow_mut().down = None;
         }
-        Ok(handled)
+        self.finish_input(handled)
+    }
+    fn finish_input(&mut self, handled: Handled) -> Result<UiDispatch, Error> {
+        let click = match self.inputs.borrow_mut().take() {
+            Some(UiInput::Node(click)) => Some(click),
+            Some(UiInput::Session { owner, action }) => {
+                // Owner/session cancellation may race the final UI dispatch. Host
+                // rejections filter that event; they are not window failures.
+                // Assign the new event at final dispatch, after any external input
+                // through session_mut. Already-sequenced replays use handle_input.
+                if self.session.handle_local_input(owner, action)
+                    == Err(InputRejection::SequenceExhausted)
+                {
+                    return Err("input sequence exhausted".into());
+                }
+                None
+            }
+            None => None,
+        };
+        Ok(UiDispatch { handled, click })
     }
     pub fn cancel(&mut self) -> bool {
         self.close_images();

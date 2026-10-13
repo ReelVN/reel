@@ -13,14 +13,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut finished = false;
     let mut lines = Vec::new();
     for _ in 0..10_000 {
-        match vm.step(
+        let reel_engine::aside::SessionStep::Vm(outcome) = vm.step(
             &mut session,
             SliceBudget {
                 instructions: 1,
                 ..Default::default()
             },
             || 0,
-        )? {
+        )?
+        else {
+            continue;
+        };
+        match outcome {
             RunOutcome::BudgetYield(_) => {}
             RunOutcome::HostCall(ticket) => {
                 if matches!(
@@ -47,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             RunOutcome::Returned(_) => {
-                vm.discard_delivery(&session)?;
+                vm.discard_delivery(&mut session)?;
                 if let Some(function) = entry.take() {
                     vm.start(&session, function)?;
                 } else {

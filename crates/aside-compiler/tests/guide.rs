@@ -33,6 +33,7 @@ const SCENES: &[(&str, E)] = &[
     ("game variables in story", E::Block),
     ("settings component", E::Module),
     ("arrive helper", E::Module),
+    ("runnable button module", E::Module),
 ];
 fn snippets(doc: &str) -> Vec<(usize, String)> {
     let mut result = Vec::new();

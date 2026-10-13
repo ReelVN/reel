@@ -1445,6 +1445,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.2",
+ "serde",
 ]
 
 [[package]]
@@ -2674,6 +2675,7 @@ dependencies = [
  "reel-engine",
  "reel-render",
  "reel-ui",
+ "ui-events-winit",
  "wgpu",
  "winit",
 ]
@@ -3636,6 +3638,17 @@ dependencies = [
  "dpi",
  "keyboard-types",
  "kurbo",
+]
+
+[[package]]
+name = "ui-events-winit"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de12c5f7e256ff97aa9a710a5e2fb345bb59302c98d77a3d2f249100d92145d4"
+dependencies = [
+ "ui-events",
+ "web-time",
+ "winit",
 ]
 
 [[package]]

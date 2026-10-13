@@ -40,7 +40,7 @@ pub(super) struct Activities {
     time: f64,
     observed_time: f64,
     running: usize,
-    wait: Option<(WaitId, Value)>,
+    waits: Vec<(WaitId, Value)>,
     cursor: Option<Value>,
 }
 
@@ -69,6 +69,9 @@ fn readonly(_: &Heap, _: u32, _: Value) -> Result<(), HeapError> {
 }
 
 impl Activities {
+    pub fn has_active(&self) -> bool {
+        self.head.is_some()
+    }
     pub fn needs_time(&self) -> bool {
         self.running != 0
     }
@@ -441,8 +444,11 @@ impl Activities {
             }
         } else {
             let wait = ticket.wait_id();
+            self.waits
+                .try_reserve(1)
+                .map_err(|_| AdapterError::Allocation)?;
             vm.respond(ticket, HostResponse::Pending(wait))?;
-            self.wait = Some((wait, activity));
+            self.waits.push((wait, activity));
         }
         self.maintain(vm)?;
         Ok(())
@@ -450,16 +456,41 @@ impl Activities {
 
     /// The native frame roots its own awaited value. Invalidated subscriptions
     /// are discarded without touching the independently owned producer.
-    fn maintain(&mut self, vm: &mut Vm) -> Result<bool, AdapterError> {
-        let mut woke = false;
-        if let Some((wait, activity)) = self.wait {
-            if !vm.wait_is_pending(wait) {
-                self.wait = None;
-            } else if state(vm.heap(), activity)? >= COMPLETED {
-                vm.complete(wait, Self::response(vm.heap(), activity)?)?;
-                self.wait = None;
-                woke = true;
+    pub(super) fn maintain(&mut self, vm: &mut Vm) -> Result<bool, AdapterError> {
+        for index in 0..self.waits.len() {
+            let (wait, activity) = self.waits[index];
+            if vm.wait_is_pending(wait) {
+                self.reconcile(vm.heap_mut(), activity)?;
             }
+        }
+        let mut woke = false;
+        let mut failure = None;
+        self.waits.retain(|&(wait, activity)| {
+            if failure.is_some() {
+                return true;
+            }
+            if !vm.wait_is_pending(wait) {
+                return false;
+            }
+            // Retain compacts in order without shifting the suffix per completion.
+            match (|| -> Result<bool, AdapterError> {
+                if state(vm.heap(), activity)? >= COMPLETED {
+                    vm.complete(wait, Self::response(vm.heap(), activity)?)?;
+                    woke = true;
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            })() {
+                Ok(keep) => keep,
+                Err(error) => {
+                    failure = Some(error);
+                    true
+                }
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
         }
         Ok(woke)
     }
@@ -502,7 +533,7 @@ impl Activities {
             heap.release_root(root)?;
         }
         self.running = 0;
-        self.wait = None;
+        self.waits.clear();
         self.cursor = None;
         Ok(())
     }

@@ -50,6 +50,7 @@ pub(crate) struct State {
     // One budgeted immutable accepted CPU frame, for expose after model refusal.
     accepted_frame: Option<RenderFrame>,
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
+    pub(crate) modifiers: winit::keyboard::ModifiersState,
     pub(crate) demand: Demand,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
@@ -277,6 +278,7 @@ impl State {
             frame: 0,
             accepted_frame: None,
             pointer: Default::default(),
+            modifiers: Default::default(),
             demand: Demand::default(),
             root_id,
             zoom: 1.,
@@ -609,6 +611,17 @@ impl State {
             self.resize(self.window.inner_size())
         }
     }
+    pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<(), Error> {
+        if let Some(session) = &mut self.session {
+            session.handle_text(&mut self.bridge, event)?;
+            session.after_input(&mut self.bridge, self.root_id)?;
+        } else {
+            self.bridge.handle_text_event(event);
+        }
+        self.schedule_reveal();
+        self.invalidate();
+        Ok(())
+    }
     pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {
         let pointer = PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),
@@ -653,7 +666,7 @@ impl State {
             );
         }
         if let Some(session) = &mut self.session {
-            session.ui_mut().handle_pointer(&mut self.bridge, event)?;
+            session.handle_pointer(&mut self.bridge, event)?;
             if matches!(kind, PointerKind::Up) {
                 session.after_input(&mut self.bridge, self.root_id)?;
             }

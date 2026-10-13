@@ -8,8 +8,8 @@ use reel_ui::{
     peniko::{Color, ImageData},
     properties::ContentColor,
     resources::{ResourceData, ResourceLease},
-    stage::{NodeId, NodeKind, Stage, StageNode},
-    widgets::{Image, Label},
+    stage::{NodeClick, NodeId, NodeKind, Stage, StageNode},
+    widgets::{ButtonBehavior, Image, Label},
 };
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -186,11 +186,21 @@ fn color(value: [u8; 4]) -> Color {
     Color::from_rgba8(value[0], value[1], value[2], value[3])
 }
 impl SceneWidget {
+    fn caption(kind: &NodeKind) -> Option<&str> {
+        match kind {
+            NodeKind::Text(text) => Some(text),
+            NodeKind::Button { label, .. } => label.as_deref(),
+            _ => None,
+        }
+    }
+    fn is_button(&self) -> bool {
+        matches!(self.node.kind, NodeKind::Button { .. })
+    }
     fn new(view: &SceneNode) -> Self {
         let label = match &view.node.kind {
-            NodeKind::Text(text) => Some(
+            NodeKind::Text(_) | NodeKind::Button { .. } => Some(
                 NewWidget::new(
-                    Label::new(text.clone())
+                    Label::new(Self::caption(&view.node.kind).unwrap_or("").to_owned())
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32)),
                 )
                 .with_props(ContentColor::new(color(view.node.props.color)))
@@ -225,6 +235,9 @@ impl SceneWidget {
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
+        if this.widget.node.props.enabled != view.node.props.enabled {
+            this.ctx.set_disabled(!view.node.props.enabled);
+        }
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
             && this.widget.node.kind != view.node.kind
             && let Some(mut image) = this.ctx.get_mut(pod)
@@ -236,11 +249,19 @@ impl SceneWidget {
             image.insert_prop(fit);
             this.widget.image_size = Size::new(data.width.into(), data.height.into());
         }
-        if let (Some(pod), NodeKind::Text(text)) = (&mut this.widget.label, &view.node.kind)
+        let caption_changed =
+            Self::caption(&this.widget.node.kind) != Self::caption(&view.node.kind);
+        if caption_changed {
+            this.ctx.request_layout();
+        }
+        if let Some(pod) = &mut this.widget.label
             && let Some(mut label) = this.ctx.get_mut(pod)
         {
-            if this.widget.node.kind != view.node.kind {
-                Label::set_text(&mut label, text.clone());
+            if caption_changed {
+                Label::set_text(
+                    &mut label,
+                    Self::caption(&view.node.kind).unwrap_or("").to_owned(),
+                );
             }
             if this.widget.node.props.font_size != view.node.props.font_size {
                 Label::insert_style(
@@ -307,7 +328,50 @@ impl SceneWidget {
     }
 }
 impl Widget for SceneWidget {
-    type Action = NoAction;
+    type Action = NodeClick;
+    fn on_pointer_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &PointerEvent,
+    ) {
+        if self.is_button() {
+            let consumes = matches!(event, PointerEvent::Down(_))
+                || matches!(event, PointerEvent::Up(_)) && ctx.is_active();
+            if ButtonBehavior::pointer(ctx, event).is_some() {
+                ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+            }
+            if consumes {
+                ctx.set_handled();
+            }
+        }
+    }
+    fn on_text_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &TextEvent,
+    ) {
+        if self.is_button() && ButtonBehavior::text(event).is_some() {
+            ctx.set_handled();
+            ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+        }
+    }
+    fn on_access_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &AccessEvent,
+    ) {
+        if self.is_button() && ButtonBehavior::access(event).is_some() {
+            ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+        }
+    }
+    fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
+        if matches!(event, Update::WidgetAdded) {
+            ctx.set_disabled(!self.node.props.enabled);
+        }
+    }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         if let Some(label) = &mut self.label {
             ctx.register_child(label);
@@ -351,15 +415,15 @@ impl Widget for SceneWidget {
         let available = LenDef::from(request).reduce(padding);
         let cross = cross.map(|value| value.saturating_sub(padding));
         let context = ctx.context_size();
-        if let Some(label) = &mut self.label {
-            return Length::px(
-                ctx.compute_length(label, available, context, axis, cross)
-                    .get()
-                    + padding.get(),
-            );
-        }
         let sequential = self.sequential(axis);
         let mut total: f64 = 0.;
+        if Self::caption(&self.node.kind).is_some()
+            && let Some(label) = &mut self.label
+        {
+            total = ctx
+                .compute_length(label, available, context, axis, cross)
+                .get();
+        }
         let mut visible = 0;
         for (node, child) in &mut self.children {
             if !node.props.visible {
@@ -397,8 +461,23 @@ impl Widget for SceneWidget {
             (size.height - padding * 2.).max(0.),
         );
         if let Some(label) = &mut self.label {
-            ctx.run_layout(label, inner);
-            ctx.place_child(label, Point::new(padding, padding));
+            let present = Self::caption(&self.node.kind).is_some();
+            ctx.set_stashed(label, !present);
+            if present {
+                let chosen = if matches!(self.node.kind, NodeKind::Button { .. }) {
+                    ctx.compute_size(label, SizeDef::fit(inner), inner.into())
+                } else {
+                    inner
+                };
+                ctx.run_layout(label, chosen);
+                ctx.place_child(
+                    label,
+                    Point::new(
+                        padding + (inner.width - chosen.width) * 0.5,
+                        padding + (inner.height - chosen.height) * 0.5,
+                    ),
+                );
+            }
         }
         if let Some(image) = &mut self.image {
             ctx.run_layout(image, inner);
@@ -466,9 +545,17 @@ impl Widget for SceneWidget {
         }
     }
     fn accessibility_role(&self) -> Role {
-        Role::GenericContainer
+        if self.is_button() {
+            Role::Button
+        } else {
+            Role::GenericContainer
+        }
     }
-    fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, _: &mut Node) {}
+    fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
+        if self.is_button() {
+            node.add_action(reel_ui::accesskit::Action::Click);
+        }
+    }
     fn children_ids(&self) -> ChildrenIds {
         self.label
             .iter()
@@ -478,6 +565,12 @@ impl Widget for SceneWidget {
             .collect()
     }
     fn accepts_pointer_interaction(&self) -> bool {
-        false
+        self.is_button()
+    }
+    fn accepts_focus(&self) -> bool {
+        self.is_button()
+    }
+    fn propagates_pointer_interaction(&self) -> bool {
+        !self.is_button()
     }
 }

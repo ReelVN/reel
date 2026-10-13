@@ -28,6 +28,7 @@ atomic-write-file = "=0.3.1"
 libc = "=0.2.190"
 
 [dev-dependencies]
+reel-player = { path = "../reel-player" }
 reel-core = { path = "../reel-core" }
 reel-ui = { path = "../reel-ui" }
 

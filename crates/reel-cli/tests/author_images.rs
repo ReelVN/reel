@@ -1,5 +1,4 @@
 //! Real source/ASB author images through the public player and frame pipeline.
-#![cfg(feature = "window")]
 
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
