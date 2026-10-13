@@ -477,6 +477,8 @@ fn arrive(node, destination_x, seconds = 0.5) {
 
 当前基础 text 使用真实文字布局；本节富文本类型、本地化、媒体和自定义绘制接口属于后续作者能力。
 
+Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换；描边和几何裁剪均支持虚线，包括曲线、闭合路径和虚线偏移。全零虚线模式显示为实线，较小的斜接限制使用斜角连接。以上属于现有 Rust 绘制接口能力，Aside 自定义绘制入口仍待接通。
+
 
 实现状态（M01 / PR #14）：Rust 音频层已实现 Kira 桥、可选 CPAL 输出、有界回收和设备失败通知。Linux 离线真实 Kira、默认/关闭输出 feature 的契约检查及 Windows 交叉编译已独立通过；实体设备、硬件时钟、热插拔和原生启停/挂起仍未验收，CPAL 时钟为 Unavailable。以下作者 audio/video 接口、剧情等待与会话恢复仍是设计目标，不能由 Rust 探针通过推导为已接通。[音频验证范围](../../crates/reel-media/VERIFICATION.md)。
 

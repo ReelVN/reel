@@ -68,7 +68,10 @@ no fixed per-path 1 MiB mesh or 2 MiB scratch ceiling; the live transient budget
 device buffer sizes and GPU index representation bound those arrays. Kurbo path
 events stream into Lyon without a second owned path copy. A line or curve after
 ClosePath starts a new subpath at the preceding subpath's initial point, matching
-Kurbo semantics. Lyon's internal
+Kurbo semantics. Dashed draw and clip paths use Kurbo's dashing iterator, including
+offsets, odd-length patterns, zero-length entries and closed-subpath seams. An
+all-zero pattern is solid. The dash period must remain finite in f64. No owned
+copy of the complete dashed path is built. Kurbo's seam workspace and Lyon's internal
 tessellator workspace remains backend implementation storage, not a separately
 measured allocator quota. All partial reservations release
 on refusal. The player retains latest state after temporary refusal and retries
@@ -109,7 +112,7 @@ The implemented profile draws source-over solid fills/strokes, bilinear padded
 RGBA8 images with linear conversion, monochrome filled Swash outlines from Parley,
 whole-group alpha, geometric clips, nested alpha/luminance masks and frozen-frame
 crossfade. Rejected with RecordLocation: gradients, non-source-over blends,
-filters/blur, External producers, dashed strokes, non-bilinear/repeat image
+filters/blur, External producers, non-bilinear/repeat image
 sampling, color glyph layers and glyph stroke/embolden/local glyph transform.
 Glyph raster extents are admitted against the current device's texture dimensions
 and the remaining resource upload budget, with no separate font-size ceiling.
@@ -120,9 +123,12 @@ shaping. This explicit profile does not remove any
 architecture §16 feature from the full engine scope.
 
 Stroke width must convert to a finite, nonnegative f32 without nonzero underflow.
-Miter limit must be at least 1 in the original f64 and finite after f32 conversion,
-for every join including Bevel/Round. R01's legal `[0, 1)` miter values are rejected
-here with their drawing or opening clip `RecordLocation`; there is no clamp.
+Bevel/Round ignore the miter limit. A Miter limit in `[0, 1)` uses Bevel because
+no miter can satisfy that limit; remaining Miter limits must fit finite f32.
+This adapts the semantics to Lyon without imposing Lyon's assertion on valid frames.
+Color conversion uses Peniko's typed color-space and alpha operations. Independent
+f64 reference formulas live only in `tests/support/color.rs`; there is no production
+`reel_render::color` module. Frame colors and byte image formats are unchanged.
 Replay scopes and mask continuations use explicit, growing work stacks; their
 allocated capacity is charged to the existing transient budget. Every nested
 scope still reserves its actual render targets. There is no separate nesting
