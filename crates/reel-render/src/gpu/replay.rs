@@ -23,6 +23,7 @@ pub(super) struct Context<'a> {
     pub(super) tickets: Vec<Reservation>,
     pub(super) images: HashMap<reel_ui::resources::ResourceHandle, Arc<resources::Image>>,
     pub(super) white: Option<Arc<resources::Image>>,
+    pub(super) available_targets: Vec<Target>,
 }
 struct Scope<'a> {
     target: Target,
@@ -44,15 +45,19 @@ struct Stream<'a> {
 }
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
-        let cost = target_bytes(self.size, self.quality)?;
-        self.tickets.push(reserve(
-            &self.budgets.targets,
-            &self.budget_scope.targets,
-            cost,
-            self.gpu.limits.target_bytes,
-            "targets",
-        )?);
-        let target = Target::new(&self.gpu.device, self.size, self.quality);
+        let target = if let Some(target) = self.available_targets.pop() {
+            target
+        } else {
+            let cost = target_bytes(self.size, self.quality)?;
+            self.tickets.push(reserve(
+                &self.budgets.targets,
+                &self.budget_scope.targets,
+                cost,
+                self.gpu.limits.target_bytes,
+                "targets",
+            )?);
+            Target::new(&self.gpu.device, self.size, self.quality)
+        };
         let _pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear isolated target"),
             color_attachments: &[Some(target.attachment(true))],
@@ -62,6 +67,17 @@ impl Context<'_> {
         });
         drop(_pass);
         Ok(target)
+    }
+    /// All reads have been encoded before recycling. Later passes can overwrite
+    /// the texture, but its reservation remains live through queue completion.
+    fn recycle_target(&mut self, target: Target) -> Result<(), GpuError> {
+        if self.available_targets.len() == self.available_targets.capacity() {
+            let additional = self.available_targets.capacity().max(1);
+            self.transient((additional * size_of::<Target>()) as u64)?;
+            self.available_targets.reserve_exact(additional);
+        }
+        self.available_targets.push(target);
+        Ok(())
     }
     pub(super) fn stream(
         &mut self,
@@ -88,6 +104,8 @@ impl Context<'_> {
                     mask.mode,
                     0.,
                 )?;
+                self.recycle_target(mask.source)?;
+                self.recycle_target(finished)?;
                 continue;
             };
             current.next += 1;
@@ -142,6 +160,8 @@ impl Context<'_> {
                         self.clip(&coverage, clip, transform, entry.at)?;
                         let clipped = self.target()?;
                         self.combine(&clipped, &source.view, &coverage.view, 1., 1, 0.)?;
+                        self.recycle_target(source)?;
+                        self.recycle_target(coverage)?;
                         source = clipped;
                     }
                     if let Some(mask) = group.mask {
@@ -173,6 +193,7 @@ impl Context<'_> {
                             0,
                             0.,
                         )?;
+                        self.recycle_target(source)?;
                     }
                 }
                 FrameOp::Draw(draw) => {

@@ -365,18 +365,36 @@ impl ResourceRegistry {
         if handles.len() > self.slots.len() {
             return Err(ResourceError::Capacity);
         }
-        let bytes = handles
+        ResourceSnapshot::capture(handles.iter().map(|&handle| self.acquire(handle)), pool)
+    }
+}
+#[derive(Debug)]
+pub struct ResourceSnapshot {
+    pub(crate) leases: Vec<ResourceLease>,
+    _ticket: BudgetTicket,
+}
+impl ResourceSnapshot {
+    /// Capture prepared leases from independent resource producers. Existing
+    /// snapshots survive retirement; a new snapshot cannot admit retired data.
+    pub fn capture(
+        resources: impl ExactSizeIterator<Item = Result<ResourceLease, ResourceError>>,
+        pool: &BudgetPool,
+    ) -> Result<Self, ResourceError> {
+        let bytes = resources
             .len()
             .checked_mul(size_of::<ResourceLease>())
             .ok_or(ResourceError::Bytes)?;
         let ticket = pool
             .reserve(bytes as u64)
             .map_err(|_| ResourceError::Bytes)?;
-        let mut leases = Vec::with_capacity(handles.len());
-        for &handle in handles {
-            let lease = self.acquire(handle)?;
-            if leases.iter().any(|l: &ResourceLease| {
-                l.handle() == handle || lookup_same_source(l.data(), lease.data())
+        let mut leases = Vec::with_capacity(resources.len());
+        for lease in resources {
+            let lease = lease?;
+            if lease.is_retired() {
+                return Err(ResourceError::RetiredOrForeign);
+            }
+            if leases.iter().any(|other: &ResourceLease| {
+                other.handle() == lease.handle() || lookup_same_source(other.data(), lease.data())
             }) {
                 return Err(ResourceError::ConflictingVersion);
             }
@@ -386,6 +404,7 @@ impl ResourceRegistry {
             (
                 r.data().blob().is_none(),
                 r.data().blob().map_or(0, Blob::id),
+                r.handle(),
             )
         });
         Ok(ResourceSnapshot {
@@ -393,13 +412,6 @@ impl ResourceRegistry {
             _ticket: ticket,
         })
     }
-}
-#[derive(Debug)]
-pub struct ResourceSnapshot {
-    pub(crate) leases: Vec<ResourceLease>,
-    _ticket: BudgetTicket,
-}
-impl ResourceSnapshot {
     fn matching(
         &self,
         blob: &Blob<u8>,

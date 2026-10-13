@@ -20,6 +20,14 @@ pub(super) const NODE_FIELDS: [&str; 12] = [
     "background",
 ];
 
+pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
+    match symbol {
+        "reel::text" => &["value"],
+        "reel::image" => &["source", "fit"],
+        _ => &[],
+    }
+}
+
 /// Host-owned metadata, supplied independently of the package being admitted.
 /// No package Signature/TypeId/FunctionId can be imported as a trust assertion.
 /// Parameter defaults are ordinary B01 default functions generated from these
@@ -136,13 +144,13 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: capabilities(),
     })
     .collect();
-    for name in ["text", "row", "column", "stack"] {
+    for name in ["text", "image", "row", "column", "stack"] {
         let mut parameters = Vec::new();
-        if name == "text" {
+        for &field in node_prefix(&format!("reel::{name}")) {
             parameters.push(NativeParameter {
-                name: "value".into(),
+                name: field.into(),
                 ty: BuiltinType::String,
-                default: None,
+                default: (field == "fit").then(|| bc::Const::Utf8("contain".into())),
             });
         }
         for (name, (ty, default)) in NODE_FIELDS.into_iter().zip([
@@ -165,7 +173,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 default: Some(default),
             });
         }
-        if name != "text" {
+        if matches!(name, "row" | "column" | "stack") {
             parameters.push(NativeParameter {
                 name: "children".into(),
                 ty: BuiltinType::Any,

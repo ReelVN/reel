@@ -8,7 +8,7 @@ Reel is a cross-platform visual novel engine with Aside, an embedded language im
 
 Design baseline 1.1 has passed architecture, language, and creator-interface review. Implementation is organized around shared contracts, the VM, the stage, and media. See [documentation](docs/README.md) for the architecture, language specification, and bilingual creator guide.
 
-当前已接通 Aside 组件组合、文字与行列/层叠布局、节点属性更新、对白和选择，以及源码/ASB 窗口运行。可从 [作者舞台示例](examples/author_stage.aside) 开始，字体路径替换为本机字体；完整命令与能力边界见[中文指南](docs/guide/zh-CN.md)或 [English guide](docs/guide/en.md)。
+当前已接通 Aside 组件组合、文字、PNG/JPEG 图片与行列/层叠布局、节点属性更新、对白和选择，以及源码/ASB 窗口运行。基础节点与剧情服务默认可用，无需逐文件导入。基础节点与剧情服务默认可用，无需逐文件导入。可从 [作者舞台示例](examples/author_stage.aside) 开始，字体路径替换为本机字体；完整命令与能力边界见[中文指南](docs/guide/zh-CN.md)或 [English guide](docs/guide/en.md)。
 
 ```sh
 cargo run --locked -p reel-cli -- check examples/author_stage.aside

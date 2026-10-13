@@ -25,6 +25,7 @@ pub fn run_session_host() -> Result<(), Error> {
 
 /// Native window options; logical_size is the window size, not a fixed stage canvas.
 pub struct StoryWindowOptions {
+    pub images: crate::images::ImageOptions,
     pub title: String,
     pub font: PathBuf,
     pub locale: String,
@@ -33,6 +34,7 @@ pub struct StoryWindowOptions {
 impl StoryWindowOptions {
     pub fn new(font: impl Into<PathBuf>) -> Self {
         Self {
+            images: Default::default(),
             title: "Reel".into(),
             font: font.into(),
             locale: "en".into(),
@@ -46,7 +48,8 @@ impl StoryWindowOptions {
 pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<(), Error> {
     let session = Session::new(SessionId(1), Epoch(1))?;
     let driver =
-        AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?;
+        AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
+            .with_image_options(options.images.clone());
     run_mode(Mode::Story(Box::new((driver, options))))
 }
 

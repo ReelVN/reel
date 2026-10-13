@@ -259,17 +259,30 @@ impl SessionVm {
             }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
+            | "reel::image"
             | "reel::row"
             | "reel::column"
             | "reel::stack"
             | "reel::stage::replace" => {
                 let arguments = self.vm.host_arguments(ticket)?.to_vec();
+                let origin = if symbol == "reel::image" {
+                    ticket.location.source.map(|span| {
+                        let source = &p.sources[span.file.index()];
+                        let before = &source.text[..span.start as usize];
+                        let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
+                        let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
+                        format!("{}:{line}:{column}", p.symbols[source.path.index()])
+                    })
+                } else {
+                    None
+                };
                 let value = self.stage.dispatch(
                     self.vm.heap_mut(),
                     self.root_owner,
                     &symbol,
                     &arguments,
                     self.read_limit,
+                    origin,
                 )?;
                 self.vm.respond(ticket, HostResponse::Ready(value))?;
                 self.issued = None;

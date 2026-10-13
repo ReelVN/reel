@@ -53,6 +53,145 @@ fn collect(vm: &mut SessionVm) {
 }
 
 #[test]
+fn default_reel_environment_respects_author_scopes_and_explicit_aliases() {
+    let code = r#"use reel::prelude::text as reel_text;
+        fn text(value) { value + " author" }
+        fn opening() {
+            if text("module") != "module author" { throw "module precedence"; }
+            let image = |value| value + " local";
+            if image("binding") != "binding local" { throw "local precedence"; }
+            let picture = reel_text("Reel");
+            stage.replace(column() { picture; row() { reel_text("nested"); } });
+            narrator("ready");
+            true
+        }"#;
+    let (mut session, mut vm) = setup(code, Context::Ordinary);
+    let mut waits = 0;
+    loop {
+        match next(&mut vm, &mut session) {
+            RunOutcome::HostCall(ticket) => {
+                if let NativeDispatch::Published { interaction, .. } =
+                    vm.dispatch(&mut session, ticket, "en", 8).unwrap()
+                {
+                    vm.sync_stage(&session).unwrap();
+                    assert!(vm.stage().nodes().any(|node| {
+                        node.kind == reel_ui::stage::NodeKind::Text("Reel".into())
+                    }));
+                    waits += 1;
+                    let owner = session.root_owner();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                }
+            }
+            RunOutcome::Returned(_) => break,
+            other => panic!("default environment script: {other:?}"),
+        }
+    }
+    assert_eq!(waits, 1);
+    assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
+    vm.finish(&mut session).unwrap();
+    assert!(
+        !aside_compiler::analyze_module(
+            "fn opening() { narrator(\"standalone\"); }",
+            &aside_compiler::AnalysisOptions::default(),
+            &mut aside_compiler::semantic::MemoryResolver::default(),
+        )
+        .unwrap()
+        .is_ok()
+    );
+}
+
+#[test]
+fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
+    use reel_ui::{properties::ObjectFit, stage::NodeKind};
+    let code = r#"use reel::prelude::*;
+        fn opening() {
+            let p = image("original.png", width: 200, opacity: 0.5);
+            let mut errors = 0;
+            try { p.source = ""; } catch e { errors += 1; }
+            try { p.fit = "unknown"; } catch e { errors += 1; }
+            try { p.source = 42; } catch e { errors += 1; }
+            if errors != 3 || p.source != "original.png" || p.fit != "contain" { throw "bad validation"; }
+            stage.replace(stack() { p; });
+            narrator("first");
+            p.source = "replacement.jpg";
+            p.fit = "cover";
+            p.height = 160;
+            narrator("second");
+            stage.replace(stack());
+            try { p.source = "retired.png"; return false; } catch e { return true; }
+        }"#;
+    let (mut session, mut vm) = setup(code, Context::Ordinary);
+    let mut identity = None;
+    let mut waits = 0;
+    loop {
+        match next(&mut vm, &mut session) {
+            RunOutcome::HostCall(ticket) => {
+                if let NativeDispatch::Published { interaction, .. } =
+                    vm.dispatch(&mut session, ticket, "en", 8).unwrap()
+                {
+                    collect(&mut vm);
+                    vm.sync_stage(&session).unwrap();
+                    let node = vm
+                        .stage()
+                        .nodes()
+                        .find(|node| matches!(node.kind, NodeKind::Image { .. }))
+                        .unwrap();
+                    assert_eq!(*identity.get_or_insert(node.id), node.id);
+                    let NodeKind::Image {
+                        source,
+                        fit,
+                        origin,
+                    } = &node.kind
+                    else {
+                        unreachable!()
+                    };
+                    assert_eq!(origin.as_deref(), Some("story:3:21"));
+                    assert_eq!(
+                        source,
+                        if waits == 0 {
+                            "original.png"
+                        } else {
+                            "replacement.jpg"
+                        }
+                    );
+                    assert_eq!(
+                        *fit,
+                        if waits == 0 {
+                            ObjectFit::Contain
+                        } else {
+                            ObjectFit::Cover
+                        }
+                    );
+                    assert_eq!(node.props.width, Some(200.));
+                    assert_eq!(
+                        node.props.height,
+                        if waits == 0 { None } else { Some(160.) }
+                    );
+                    waits += 1;
+                    let owner = session.root_owner();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                }
+            }
+            RunOutcome::Returned(_) => break,
+            other => panic!("image script: {other:?}"),
+        }
+    }
+    assert_eq!(waits, 2);
+    assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
+    vm.finish(&mut session).unwrap();
+}
+
+#[test]
 fn independent_registration_rejects_package_effect_mutability_abi_and_capability_lies() {
     for alteration in 0..4 {
         let story = source::compile_story(STORY, "story", 7, "opening").unwrap();
@@ -642,7 +781,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
 
     // An uncaught property error names the actual assignment, with the same
     // behavior for a not-yet-mounted node and a one-instruction VM budget.
-    let code = "use reel::prelude::*; fn opening() { let node = text(\"Fault\"); node.opacity = \"invalid\"; }";
+    let code = "fn opening() { let node = text(\"Fault\"); node.opacity = \"invalid\"; }";
     let (mut session, mut vm) = setup(code, Context::Ordinary);
     loop {
         match next(&mut vm, &mut session) {

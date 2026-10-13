@@ -1,0 +1,12 @@
+
+fn main() {
+    let picture = image("assets/panels.png", width: 320, height: 180);
+    stage.replace(column(gap: 16, padding: 24) {
+        picture;
+        image("assets/panels.png", width: 160, height: 160, fit: "cover");
+    });
+    narrator("The same resource can appear in different frames.");
+    picture.source = "assets/sun.jpg";
+    picture.fit = "cover";
+    narrator("The original node now displays the new image.");
+}

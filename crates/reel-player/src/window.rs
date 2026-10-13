@@ -102,7 +102,7 @@ impl State {
         event_loop: &ActiveEventLoop,
         generation: u64,
         limits: GpuLimits,
-        session: Option<WindowSession>,
+        mut session: Option<WindowSession>,
         options: Option<StoryWindowOptions>,
     ) -> Result<Self, Error> {
         let window = Arc::new(
@@ -127,6 +127,14 @@ impl State {
             )?,
         );
         let instance = wgpu::Instance::default();
+        if let Some(session) = &mut session {
+            let window = Arc::downgrade(&window);
+            session.ui_mut().set_image_waker(Arc::new(move || {
+                if let Some(window) = window.upgrade() {
+                    window.request_redraw();
+                }
+            }));
+        }
         let surface = instance.create_surface(window.clone())?;
         let gpu = pollster::block_on(Gpu::request(
             &instance,
@@ -332,7 +340,7 @@ impl State {
         let Some(session) = &mut self.session else {
             return Ok(());
         };
-        if !session.needs_tick() {
+        if !session.needs_tick() && !session.ui().images_need_poll() {
             return Ok(());
         }
         let origin = self.clock_origin;
@@ -358,6 +366,7 @@ impl State {
         self.demand = Demand::idle();
         self.bridge.clear();
         if let Some(session) = &mut self.session {
+            session.ui_mut().close_images();
             session.close()?;
         }
         Ok(())
@@ -479,6 +488,7 @@ impl State {
         Ok(())
     }
     pub(crate) fn redraw_requested(&mut self) -> Result<(), Error> {
+        self.tick_story()?;
         self.demand.exposed();
         self.render()
     }
@@ -496,10 +506,21 @@ impl State {
             .session
             .as_ref()
             .map(|session| session.ui().projection_stamp());
-        let snapshot = self
-            .registry
-            .freeze(&self.resources, &self.pool)
-            .map_err(|e| format!("snapshot: {e:?}"))?;
+        let images = self
+            .session
+            .as_ref()
+            .map_or(&[][..], |session| session.ui().image_resources());
+        let snapshot = reel_ui::resources::ResourceSnapshot::capture(
+            (0..self.resources.len() + images.len()).map(|index| {
+                if index < self.resources.len() {
+                    self.registry.acquire(self.resources[index])
+                } else {
+                    Ok(images[index - self.resources.len()].clone())
+                }
+            }),
+            &self.pool,
+        )
+        .map_err(|e| format!("snapshot: {e:?}"))?;
         let scale = self.window.scale_factor();
         let mut build = FrameBuild::new(
             source,
@@ -651,6 +672,9 @@ impl State {
             return;
         }
         self.next_reveal = self.session.as_ref().and_then(|session| {
+            if session.ui().images_pending() {
+                return None;
+            }
             match session.ui().session().view().interaction {
                 Some(reel_engine::InteractionView::Dialogue(dialogue))
                     if dialogue.lines().iter().any(|line| {
@@ -675,7 +699,7 @@ impl State {
             return Ok(());
         }
         if let Some(session) = &mut self.session {
-            if session.ui().gesture_active() {
+            if session.ui().gesture_active() || session.ui().images_pending() {
                 // Preserve the presented content bound at Down until Up/Cancel.
                 self.schedule_reveal();
                 return Ok(());

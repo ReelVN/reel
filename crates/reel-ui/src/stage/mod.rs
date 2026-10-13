@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Author-owned scene composition, shared by the script host and presentation.
+use crate::properties::ObjectFit;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -10,6 +11,12 @@ pub struct NodeId(pub u64);
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
     Text(String),
+    Image {
+        source: String,
+        fit: ObjectFit,
+        /// Author constructor location, retained through later source changes.
+        origin: Option<String>,
+    },
     Row,
     Column,
     Stack,

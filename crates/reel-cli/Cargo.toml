@@ -27,5 +27,9 @@ atomic-write-file = "=0.3.1"
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.190"
 
+[dev-dependencies]
+reel-core = { path = "../reel-core" }
+reel-ui = { path = "../reel-ui" }
+
 [lints]
 workspace = true

@@ -168,3 +168,5 @@ scene contract with real Chinese glyphs on Windows:
 $env:REEL_SESSION_FONT = "C:/Windows/Fonts/msyh.ttc"
 cargo test --locked -p reel-player --lib author_scene_renders_edits_original_nodes_and_keeps_final_picture
 ```
+
+Author source receives the registered Reel prelude automatically, while module declarations, local bindings and explicit imports take precedence. PNG/JPEG `image` nodes load only when mounted through the background resource loader. Source paths resolve against the source directory in `dev` and the ASB directory in `run`; `--assets <directory>` overrides that root, and library hosts configure `ImagesOptions`. ASB build does not copy assets. The previous complete scene remains visible with story input paused until all new images are ready. Loading errors end the run and include the path and constructor location. See the [image example](../../examples/author_images.aside) and [creator guide](../../docs/guide/en.md).
