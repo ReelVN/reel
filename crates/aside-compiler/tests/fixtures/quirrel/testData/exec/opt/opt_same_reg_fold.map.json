@@ -1,0 +1,245 @@
+{
+  "source": "testData/exec/opt/opt_same_reg_fold.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; assertion predicates, constants, and messages retained",
+  "segments": [
+    {
+      "original": [
+        0,
+        1529
+      ],
+      "aside": [
+        0,
+        1704
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declaration, strict condition, function, range, terminator and interpolation syntax"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        467,
+        513
+      ],
+      "aside": [
+        585,
+        631
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 17
+        }
+      ]
+    },
+    {
+      "original": [
+        516,
+        569
+      ],
+      "aside": [
+        635,
+        688
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 19
+        }
+      ]
+    },
+    {
+      "original": [
+        618,
+        659
+      ],
+      "aside": [
+        745,
+        786
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        662,
+        705
+      ],
+      "aside": [
+        790,
+        833
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        754,
+        795
+      ],
+      "aside": [
+        890,
+        931
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        798,
+        841
+      ],
+      "aside": [
+        935,
+        978
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        911,
+        954
+      ],
+      "aside": [
+        1056,
+        1099
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        957,
+        998
+      ],
+      "aside": [
+        1103,
+        1144
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        1066,
+        1109
+      ],
+      "aside": [
+        1056,
+        1099
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        1112,
+        1153
+      ],
+      "aside": [
+        1267,
+        1308
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        1230,
+        1276
+      ],
+      "aside": [
+        1393,
+        1439
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 18
+        }
+      ]
+    },
+    {
+      "original": [
+        1279,
+        1320
+      ],
+      "aside": [
+        1267,
+        1308
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 15
+        }
+      ]
+    },
+    {
+      "original": [
+        1397,
+        1443
+      ],
+      "aside": [
+        1569,
+        1615
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 18
+        }
+      ]
+    },
+    {
+      "original": [
+        1446,
+        1492
+      ],
+      "aside": [
+        1619,
+        1665
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 18
+        }
+      ]
+    }
+  ]
+}

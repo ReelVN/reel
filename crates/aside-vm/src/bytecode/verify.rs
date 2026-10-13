@@ -878,6 +878,9 @@ impl ParameterLayouts {
         let mut count = 0usize;
         let mut bindings = 0u64;
         for (fi, f) in p.functions.iter().enumerate() {
+            if matches!(f.kind, FunctionKind::Native(_)) {
+                continue;
+            }
             let result = (|| {
                 get(&p.modules, f.module.0, "function module")?;
                 symbol(p, f.name)?;
@@ -1059,6 +1062,22 @@ fn validate_function(
     get(&p.modules, f.module.0, "function module")?;
     symbol(p, f.name)?;
     let s = get(&p.signatures, f.signature.0, "function signature")?;
+    if let FunctionKind::Native(id) = f.kind {
+        let native = get(&p.natives, id.0, "callable native registration")?;
+        check(
+            f.signature == native.signature
+                && f.context == Context::Ordinary
+                && f.captures.is_empty()
+                && f.bindings.is_empty()
+                && f.descriptors.is_empty()
+                && f.code.is_empty()
+                && f.regions.is_empty()
+                && f.register_count == 0,
+            ErrorKind::Signature,
+            "native callable uses the registration's preparation contract",
+        )?;
+        return validate_source_map(p, f, true);
+    }
     b.work(s.parameters.len() as u64)?;
     for (i, param) in s.parameters.iter().enumerate() {
         if let Some(default_id) = param.default {
@@ -1096,10 +1115,22 @@ fn validate_function(
     for descriptor in &f.descriptors {
         validate_descriptor(p, f, descriptor, b)?;
     }
+    validate_source_map(p, f, false)?;
+    validate_regions(f, b)?;
+    for (pc, i) in f.code.iter().enumerate() {
+        validate_instruction(p, f, pc, i, b).map_err(|e| located(p, fi, pc, e))?;
+    }
+    Ok(())
+}
+fn validate_source_map(p: &BytecodePackage, f: &FunctionDef, native: bool) -> Result<(), Error> {
     let mut prev = None;
     for m in &f.source_map {
         check(
-            m.pc.index() < f.code.len() && prev.is_none_or(|p| p < m.pc),
+            (if native {
+                m.pc.0 == 0
+            } else {
+                m.pc.index() < f.code.len()
+            }) && prev.is_none_or(|p| p < m.pc),
             ErrorKind::Source,
             "source PC order/range",
         )?;
@@ -1113,10 +1144,6 @@ fn validate_function(
             "UTF-8 source byte span",
         )?;
         prev = Some(m.pc);
-    }
-    validate_regions(f, b)?;
-    for (pc, i) in f.code.iter().enumerate() {
-        validate_instruction(p, f, pc, i, b).map_err(|e| located(p, fi, pc, e))?;
     }
     Ok(())
 }

@@ -1,0 +1,51 @@
+{
+  "source": "testData/exec/closure_hoist_typed_return.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; assertion predicates, constants, and messages retained",
+  "segments": [
+    {
+      "original": [
+        0,
+        930
+      ],
+      "aside": [
+        0,
+        540
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declaration, strict condition, function, range, terminator and interpolation syntax"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        516,
+        542
+      ],
+      "aside": [
+        306,
+        332
+      ]
+    },
+    {
+      "original": [
+        696,
+        716
+      ],
+      "aside": [
+        396,
+        416
+      ]
+    },
+    {
+      "original": [
+        888,
+        914
+      ],
+      "aside": [
+        497,
+        523
+      ]
+    }
+  ]
+}

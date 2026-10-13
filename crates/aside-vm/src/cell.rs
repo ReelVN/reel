@@ -7,7 +7,8 @@ use crate::{Heap, HeapError, ObjectKind, Value, ValueTag};
 pub struct CellContract {
     pub mutable: bool,
     pub ty: BuiltinType,
-    pub type_id: TypeId,
+    /// None denotes a standalone heap contract without a bytecode type identity.
+    pub type_id: Option<TypeId>,
     pub module: ModuleId,
     pub code_version: u64,
     pub module_version: u64,
@@ -17,7 +18,7 @@ impl CellContract {
         Self {
             mutable: true,
             ty: BuiltinType::Any,
-            type_id: TypeId(0),
+            type_id: None,
             module: ModuleId(0),
             code_version: 0,
             module_version: 0,

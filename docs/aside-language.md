@@ -1,6 +1,11 @@
 # Aside VM 与完整语言规范
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
+显式 tuple 与 union 契约用于 `is`、绑定、共享捕获、参数和返回值；tuple 要求数量及逐项类型一致，union 接受任一分支。检查使用加载时计入容量的显式工作栈，执行前按类型 DAG 的工作上界计费，检查过程不分配临时容器。失败赋值不发布新值。
+CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类型)，独立宿主 Cell 保存 None 并服从自身的 builtin 契约；不会把宿主 Cell 的占位索引误当成当前包的类型。
+
+已链接的 native 函数可以作为普通函数值保存、传递、返回和可选调用，也可以交给宿主的 CallScript 回调入口。B01 FunctionKind 新增 Native(NativeId)，编码为 tag 3 后接 u32 注册索引；签名必须与注册一致，不携带脚本指令、寄存器、绑定、捕获或异常区域，源码映射可在 PC 0 保存取值位置。普通调用、宿主启动和 CallScript 都直接建立同一种 NativeFrame，完整参数只绑定一次；缺省闭包与可变参数共享原来的 Cell，不经过脚本转发帧。编译器为每个实际取值的注册建立一个 Native FunctionDef；VM 在模块常量根区持有稳定函数值，MakeClosure 读取该常量而不分配对象，也不要求 ALLOCATE 效果。不添加作者全局变量。实际脚本调用处优先作为故障来源；宿主直接启动该函数值时使用其取值位置。
+
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
 ## 一 定位与完成标准
@@ -15,7 +20,7 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、固定 tuple/array/table、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
-class/super、native 函数值、完整统一 callable、集合/具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
+class/super、完整统一 callable、集合/具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 ## 二 语法与求值顺序
 尾随 children 块调用作为独立语句时，可以像控制语句块一样省略分号。例如 `column { text("标题"); }` 后可直接书写下一个组件。显式分号同样有效，且不会取消子节点收集。独立 children 调用后的换行结束该语句，下一行的括号不会被解析成继续调用；取值上下文仍可正常链接后续操作。其他普通调用、绑定和赋值仍使用分号。
@@ -353,7 +358,7 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 公共格式位于 aside-vm::bytecode，只包含程序数据、验证和反汇编；aside-compiler 单向依赖它，格式模块不引用 Rowan、parser 或 Reel。下列合同承载完整语言目标，各实现任务分别记录已运行的指令与行为。
 
 程序与验证
-BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Signature 保存参数名称/顺序/类型/可变性、缺省表达式入口、rest、返回契约和效果；缺省仍在每次调用时运行，并继承被调用闭包的定义处词法捕获和 ModuleInstance；前序参数作为额外输入。捕获分析包含缺省表达式。
+BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Signature 保存参数名称/顺序/类型/可变性、缺省表达式入口、rest、返回契约和效果；缺省仍在每次调用时运行，并继承被调用闭包的定义处词法捕获和 ModuleInstance；前序参数作为额外输入。捕获分析包含缺省表达式。
 每次调用按参数顺序建立本次独立绑定，前序参数在后续缺省表达式开始前完成初始化。缺省表达式对前序参数的读写、其中产生的闭包与函数正文共享同一个词法绑定。需要共享可变身份的参数在这一步建立 Cell，正文入口复用它；捕获分析和 lowering 同时考虑缺省中的读写与闭包。已经初始化且身份无关的只读前缀可按值传递。全部调用实参仍先按源码顺序求值，再开始参数绑定。
 
 缺省函数由参数描述中的 default 入口选择。编译器为表达式/块尾结果生成的 Return 结束该缺省入口；源码中的显式 return 继续受缺省词法边界约束。只有 VM 内部的缺省前缀调用路径可以传递前序参数 Cell 身份；普通 CallTarget/Arguments 始终传递作者值并建立新的调用绑定。同一个缺省 FunctionDef 作为普通函数调用时也遵守普通规则。验证器允许 Parameter(i) 使用 Value(Reg(i)) 或 Cell(Reg(i))，并逐对核对被调用函数与其缺省入口的前缀名称、类型、可变性、存储布局及捕获布局。内部前缀路径验证真实 Cell 的初始化、内容和契约，Cell 句柄保持内部表示。缺省入口与正文共享的是本次调用绑定，定义处捕获仍来自被调用闭包的词法环境。
@@ -461,7 +466,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
-执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、结构 tuple 类型、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
 
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
 

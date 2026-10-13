@@ -176,6 +176,8 @@ persistent(id,defaults) 是显式进程级数据根，跨游戏会话存储；de
 普通运行期 state/persistent/node.state 调用原子补充缺失默认字段，下一语句可见。InitSafe 的 story.register、state、persistent 及组件状态默认补充先登记候选变更，候选读视图可见拟加入字段而活会话不可见，ModuleSet 提交时才一起生效；失败不修改旧注册表或全局进度。全局数据的普通修改立即可观察、后台合并写盘；flush 返回可等待的可靠提交请求。跨结构版本迁移使用版本化纯数据回调，在隔离数据图成功后再替换。
 
 ## 七 VM 与会话接口
+
+宿主函数也是可保存、传递、返回和可选调用的普通函数值。编译器保留可信注册身份，VM 在模块常量根区持有函数对象，重复取值不分配、不增加作者全局变量。动态调用直接进入 NativeFrame，与直接调用共享参数、缺省 Cell、效果和等待处理；不插入脚本转发帧。`text` 可作为组件工厂参数，`narrator` 经变量调用仍产生原来的交互等待，完整源码与 ASB 示例见 [function_values.aside](../examples/function_values.aside)。
 会话管理主剧情、UI 回调任务、交互数据和活动所有权。启动与主剧情任务归会话所有，UI 回调归发出事件的节点所有；替换场景结束旧节点及其活动，主剧情任务继续。主剧情同一时刻只有一个交互。game 服务身份稳定，game.dialogue 属于当前会话，settings.music 属于全局设置。发言更新完整文本与显现范围并追加一次历史，再等待推进；文字未显示完时首次推进只完成文字，后续推进才结束等待。choose 将输入普通表复制成引擎拥有的只读可观察选项行，id、key 与 label 均可读，id 是 InteractionId 加 key 的不透明稳定标识，列表用 id 区分连续选择；select 接收带 InteractionId 的 option.id，验证后返回业务 key。入口与剧情 helper 均为普通 fn，剧情元数据按需附加；具体语法见语言与 DSL 文档。
 VM 的 run_slice 接收指令、内部工作、分配和计时检查额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 保留帧、根和中间故障阶段；不能把它视为普通可丢弃错误，也不能假定 GC 会释放仍活跃的 catch/展开记录。宿主调用携带任务身份、参数和源码位置，返回 Ready、Pending、CallScript、Continue、Error(NewFault) 或 ForwardFault(FaultId)。Continue 保存 native 算法状态并于同 Task 下一预算片继续，无外部等待。CallScript 保存纯数据 native continuation，退出原生栈后在同一 Task 压入脚本回调帧；回调可按其效果上下文挂起，返回/异常恢复 continuation。Pending 先退出 Rust 调用，再建立显式恢复记录；恢复记录保留操作、可恢复参数、返回目的槽与下一指令位置。禁止把原生调用栈当作可保存续体。同步原生重入 VM 不得跨边界挂起，异步宿主算法使用显式状态机。
 SessionEpoch 在新游戏、读档和回滚时更新；任务、等待、节点、回调和活动各用独立代际身份。后台完成结果只有与仍存活的 SessionId/Epoch 及等待匹配时才交付一次。取消、节点销毁和会话替换使旧结果失效。

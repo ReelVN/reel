@@ -906,8 +906,16 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         },
         Options::default(),
     )
-    .unwrap_err();
-    assert_eq!(value.kind, lowering::ErrorKind::Unsupported);
+    .unwrap();
+    assert!(
+        value
+            .program
+            .package()
+            .functions
+            .iter()
+            .any(|f| f.kind == bc::FunctionKind::Native(bc::NativeId(0))
+                && f.name == value.program.package().natives[0].symbol)
+    );
 }
 
 #[test]

@@ -181,6 +181,8 @@ pub enum FunctionKind {
     Plain,
     Async,
     Generator,
+    /// A callable registration, prepared directly as a native frame.
+    Native(NativeId),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Context {

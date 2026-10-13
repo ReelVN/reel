@@ -679,8 +679,11 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         },
         Options::default(),
     )
-    .unwrap_err();
-    assert_eq!(e.kind, lowering::ErrorKind::Unsupported);
+    .unwrap();
+    assert_eq!(
+        pcs(function(e.program.package(), "f"), bc::Opcode::BranchNull).len(),
+        1
+    );
 
     // Resolver-native members use node identities rather than host symbols.
     let mut export = options.hosts[0].clone();

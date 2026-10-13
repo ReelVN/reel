@@ -2,6 +2,23 @@
 use super::*;
 
 impl Vm {
+    pub(super) fn check_cell_type(
+        &self,
+        contract: CellContract,
+        value: Value,
+    ) -> Result<(), FaultKind> {
+        if let Some(ty) = contract.type_id {
+            self.check_type(ty, value)
+        } else if self
+            .heap
+            .accepts_builtin(contract.ty, value)
+            .map_err(heap_fault)?
+        {
+            Ok(())
+        } else {
+            Err(FaultKind::Type)
+        }
+    }
     // Call only after the current stage's layout query work has been admitted.
     fn native_storage(&self, native: NativeId, parameter: u32) -> Result<BindingStorage, VmError> {
         #[cfg(test)]
@@ -18,7 +35,7 @@ impl Vm {
         shared: bool,
     ) -> Result<Value, FaultKind> {
         if matches!(storage, BindingStorage::Value(_)) {
-            self.check_type(contract.type_id, input)?;
+            self.check_cell_type(contract, input)?;
             return Ok(input);
         }
         if shared {
@@ -30,10 +47,10 @@ impl Vm {
                 return Err(FaultKind::Type);
             }
             let value = self.heap.cell_read(input).map_err(heap_fault)?;
-            self.check_type(contract.type_id, value)?;
+            self.check_cell_type(contract, value)?;
             return Ok(input);
         }
-        self.check_type(contract.type_id, input)?;
+        self.check_cell_type(contract, input)?;
         let cell = self
             .heap
             .alloc_language_cell(contract)
@@ -101,14 +118,14 @@ impl Vm {
                 } else {
                     0
                 };
-                if !m.take(0, 4, bytes) {
-                    return Ok(false);
-                }
                 let p = sig
                     .parameters
                     .get(parameter as usize)
                     .or(sig.rest.as_ref())
                     .unwrap();
+                if !m.take(0, 4 + self.type_checks.extra(p.ty), bytes) {
+                    return Ok(false);
+                }
                 let contract = self.contract(ModuleId(n.module.0), p.ty, p.mutable);
                 let input = self.value(n.bound, parameter)?;
                 match self.parameter_value(contract, input, storage, false) {
@@ -151,7 +168,11 @@ impl Vm {
                 }
             }
             NativePhase::Project { index, input } => {
-                if !m.take(0, self.native_layout_work() + 4, 0) {
+                if !m.take(
+                    0,
+                    self.native_layout_work() + 4 + self.type_checks.argument_extra(n.signature),
+                    0,
+                ) {
                     return Ok(false);
                 }
                 if index == count + u32::from(sig.rest.is_some()) {

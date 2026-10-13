@@ -9,6 +9,27 @@ fn significant(source: &str) -> Vec<String> {
         .map(|token| token.text(source).to_owned())
         .collect()
 }
+fn original_assertion(source: &str, mapping: &serde_json::Value) -> Vec<String> {
+    let tokens = lex(source).unwrap().tokens;
+    let mut translated = source.to_owned();
+    if let Some(edits) = mapping["syntax_edits"].as_array() {
+        for edit in edits {
+            assert_eq!(edit["kind"], "interpolation_prefix");
+            let offset = edit["offset"].as_u64().unwrap() as usize;
+            assert!(
+                tokens
+                    .windows(2)
+                    .any(|pair| pair[0].kind == SyntaxKind::ErrorToken
+                        && pair[0].text(source) == "$"
+                        && u32::from(pair[0].range.start()) as usize == offset
+                        && pair[1].kind == SyntaxKind::StringStart
+                        && pair[0].range.end() == pair[1].range.start())
+            );
+            translated.replace_range(offset..offset + 1, "f");
+        }
+    }
+    significant(&translated)
+}
 fn inputs(dir: &Path, result: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let p = entry.unwrap().path();
@@ -111,7 +132,8 @@ fn migrated_sources_preserve_original_assertions_and_analyze() {
             .unwrap()
             .iter()
             .map(|assertion| {
-                let original_tokens = significant(&original[range(&assertion["original"])]);
+                let original_tokens =
+                    original_assertion(&original[range(&assertion["original"])], assertion);
                 assert_eq!(
                     original_tokens,
                     significant(&source[range(&assertion["aside"])])
@@ -147,7 +169,7 @@ fn migrated_sources_preserve_original_assertions_and_analyze() {
         );
     }
     assert_eq!(
-        assertions, 52,
+        assertions, 102,
         "original assertion calls must remain intact"
     );
 }

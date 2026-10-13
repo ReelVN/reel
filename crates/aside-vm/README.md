@@ -201,8 +201,13 @@ Native Windows debug/release tests execute the VM, collection and source pipelin
 operand-fault and packed-argument admission defects; both fixes passed
 independent source recheck. The checks cover runtime/GC/cancellation, but not snapshot restoration or devices.
 
-Remaining unsupported forms include delegates/hooks, classes, structural tuple
-types, property-bag tails, ArgsNamedSpread, collection spread, patterns, full
+Structural tuple/union contracts check nested values, parameters, returns and
+Cell writes with a load-time charged scratch stack and no per-check allocation.
+Native function values are rooted code constants: repeated reads preserve
+identity without allocation and calls enter NativeFrame directly, including
+shared default-parameter Cells, waits and host callbacks.
+
+Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, collection spread, patterns, full
 module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
 
 ### Collection host access and execution source boundaries (PR #54)

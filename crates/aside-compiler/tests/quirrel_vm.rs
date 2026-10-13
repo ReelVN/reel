@@ -214,6 +214,26 @@ fn execute(source: &str, tiny: bool) -> Result<(String, usize), String> {
 }
 
 #[test]
+fn native_values_keep_identity_rest_and_optional_call_semantics() {
+    let source = r#"
+        fn forward(callback) { callback(...[40,2]); }
+        let output=print;
+        let check=assert;
+        let line=println;
+        check(output==print);
+        forward(output);
+        line?("done");
+        fn identity(value) { value }
+        identity(check)(line==println);
+        let absent=null;
+        absent?(output("unreachable"));
+    "#;
+    for tiny in [false, true] {
+        assert_eq!(execute(source, tiny).unwrap(), ("402done\n".into(), 2));
+    }
+}
+
+#[test]
 fn original_assertions_and_output_survive_bytecode_slices_and_gc() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quirrel");
     let provenance: serde_json::Value =
@@ -231,8 +251,8 @@ fn original_assertions_and_output_survive_bytecode_slices_and_gc() {
             match execute(&source, tiny) {
                 Ok((output, assertions)) => {
                     assert_eq!(
-                        output.replace("\r\n", "\n"),
-                        golden.replace("\r\n", "\n"),
+                        output.lines().collect::<Vec<_>>(),
+                        golden.lines().collect::<Vec<_>>(),
                         "{name}, tiny={tiny}"
                     );
                     println!("{name}: execution=passed assertions={assertions} tiny={tiny}");

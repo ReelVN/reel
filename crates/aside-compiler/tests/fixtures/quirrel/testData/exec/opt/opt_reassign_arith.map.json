@@ -1,0 +1,133 @@
+{
+  "source": "testData/exec/opt/opt_reassign_arith.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; assertion predicates, constants, and messages retained",
+  "segments": [
+    {
+      "original": [
+        0,
+        1196
+      ],
+      "aside": [
+        0,
+        1345
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declaration, strict condition, function, range, terminator and interpolation syntax"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        434,
+        476
+      ],
+      "aside": [
+        551,
+        593
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 17
+        }
+      ]
+    },
+    {
+      "original": [
+        543,
+        583
+      ],
+      "aside": [
+        666,
+        706
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        708,
+        748
+      ],
+      "aside": [
+        837,
+        877
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        865,
+        908
+      ],
+      "aside": [
+        1002,
+        1045
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        911,
+        954
+      ],
+      "aside": [
+        1049,
+        1092
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        1069,
+        1112
+      ],
+      "aside": [
+        1002,
+        1045
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        1115,
+        1158
+      ],
+      "aside": [
+        1262,
+        1305
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    }
+  ]
+}

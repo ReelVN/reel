@@ -4,6 +4,7 @@ mod collections;
 mod composition;
 mod expressions;
 mod locations;
+mod native_values;
 
 use super::{
     Error, ErrorKind, ExternalTarget, Linkage, Metadata, Options, budget::Budget, ir::*,
@@ -113,10 +114,18 @@ pub(super) fn lower<'a>(
         functions: Vec::new(),
         binding_identities: Vec::new(),
         native_identities: Vec::new(),
+        native_values: Vec::new(),
+        native_nodes: Vec::new(),
+        native_symbols: Vec::new(),
         source: bc::SourceId(0),
         module: bc::ModuleId(0),
     };
     lower.type_cache = lower.b.filled(m.types().len(), None)?;
+    lower.native_values = lower.b.filled(lower.package.natives.len(), None)?;
+    if !links.natives.is_empty() {
+        lower.native_nodes = lower.b.filled(m.hir().nodes.len(), None)?;
+        lower.native_symbols = lower.b.filled(symbol_count, None)?;
+    }
     lower.contracts = lower.b.filled(symbol_count, bc::TypeId(0))?;
     lower.globals = lower.b.filled(symbol_count, None)?;
     lower.owned = lower.b.filled(m.functions().len() + 1, Vec::new())?;
@@ -246,6 +255,9 @@ pub(super) fn lower<'a>(
     lower.b.release(lower.type_cache);
     lower.b.release(lower.contracts);
     let mut global_identities = Vec::new();
+    lower.b.release(lower.native_values);
+    lower.b.release(lower.native_nodes);
+    lower.b.release(lower.native_symbols);
     lower.b.work(lower.globals.len() as u64)?;
     for (i, &global) in lower.globals.iter().enumerate() {
         if let Some(global) = global {
@@ -404,6 +416,9 @@ struct Lowerer<'a> {
     functions: Vec<Function>,
     binding_identities: Vec<super::BindingIdentity>,
     native_identities: Vec<super::NativeIdentity>,
+    native_values: Vec<Option<bc::FunctionId>>,
+    native_nodes: Vec<Option<bc::NativeId>>,
+    native_symbols: Vec<Option<bc::NativeId>>,
     source: bc::SourceId,
     module: bc::ModuleId,
 }
@@ -830,10 +845,24 @@ impl Lowerer<'_> {
                         .clone(),
                 },
             )?;
+            let slot = match link.target {
+                ExternalTarget::Node(node) => &mut self.native_nodes[node.0 as usize],
+                ExternalTarget::Symbol(symbol) => &mut self.native_symbols[symbol.0 as usize],
+            };
+            if slot.is_some_and(|old| old != link.native) {
+                return Err(self
+                    .b
+                    .error(ErrorKind::LinkContract, "ambiguous native binding"));
+            }
+            *slot = Some(link.native);
         }
         Ok(())
     }
     fn native(&mut self, node: h::NodeId) -> Result<Option<bc::NativeId>, Box<Error>> {
+        self.b.work(1)?;
+        if self.links.natives.is_empty() {
+            return Ok(None);
+        }
         let mut node = node;
         while let Form::Single { child } = self.m.hir().node(node).form {
             if self.m.hir().node(node).kind != H::Group {
@@ -842,22 +871,17 @@ impl Lowerer<'_> {
             self.b.work(1)?;
             node = child;
         }
-        self.b.work(self.links.natives.len() as u64 + 1)?;
         let symbol = self.m.facts()[node.0 as usize].symbol;
-        let mut result = None;
-        for link in self.links.natives {
-            if link.target == ExternalTarget::Node(node)
-                || symbol.is_some_and(|s| link.target == ExternalTarget::Symbol(s))
-            {
-                if result.is_some_and(|native| native != link.native) {
-                    return Err(self
-                        .b
-                        .error(ErrorKind::LinkContract, "ambiguous native binding"));
-                }
-                result = Some(link.native);
-            }
+        let node_link = self.native_nodes[node.0 as usize];
+        let symbol_link = symbol.and_then(|s| self.native_symbols[s.0 as usize]);
+        if let (Some(a), Some(b)) = (node_link, symbol_link)
+            && a != b
+        {
+            return Err(self
+                .b
+                .error(ErrorKind::LinkContract, "ambiguous native binding"));
         }
-        Ok(result)
+        Ok(node_link.or(symbol_link))
     }
     fn check_imports(&mut self) -> Result<(), Box<Error>> {
         for import in self.m.imports() {
@@ -1228,13 +1252,10 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
                 self.op(bc::Opcode::CellRead, out.0, out.0, 0, n)?;
             }
         } else {
-            if self.l.native(n)?.is_some() {
-                return Err(self.l.b.error(
-                    ErrorKind::Unsupported,
-                    "native function values await the shared callable representation",
-                ));
-            }
-            return Err(self.l.b.error(ErrorKind::MissingLink, "external value is not a linked script binding; native values await unified callable support"));
+            return Err(self.l.b.error(
+                ErrorKind::MissingLink,
+                "external value has no linked binding",
+            ));
         }
         Ok(out)
     }
@@ -1592,36 +1613,6 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                 ));
             }
         }
-        if let Form::Call {
-            callee,
-            chain: true,
-            ..
-        } = node.form
-        {
-            let mut target = callee;
-            let mut depth = 0;
-            while let (H::Group, Form::Single { child }) =
-                (m.hir().node(target).kind, m.hir().node(target).form)
-            {
-                b.work(1)?;
-                depth += 1;
-                if depth >= b.limits.max_depth {
-                    return Err(b.error(ErrorKind::Limit, "optional callee depth exceeded"));
-                }
-                target = child;
-            }
-            let symbol = m.facts()[target.0 as usize].symbol;
-            b.work(m.external_bindings().len() as u64)?;
-            if m.external_bindings().iter().any(|e| {
-                (e.node == Some(target) || symbol.is_some_and(|s| e.symbol == Some(s)))
-                    && e.descriptor.reference.is_some()
-            }) {
-                return Err(b.error(
-                    ErrorKind::Unsupported,
-                    "optional native calls await native callable values",
-                ));
-            }
-        }
         if let Form::Condition {
             pattern: Some(_), ..
         } = node.form
@@ -1633,95 +1624,48 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
         }
         if node.kind == H::Member {
             b.work(m.external_bindings().len() as u64)?;
-            if !m
-                .external_bindings()
+            if m.external_bindings()
                 .iter()
-                .any(|e| e.node == Some(h::NodeId(i as u32)))
+                .any(|e| e.node == Some(h::NodeId(i as u32)) && e.descriptor.reference.is_some())
             {
-                // Ordinary runtime members use B01 MemberGet/MemberSet. Resolved
-                // namespace exports retain the trusted direct-native exception.
-                continue;
-            }
-            if matches!(node.form, Form::Member { chain: true, .. }) {
-                return Err(b.error(
-                    ErrorKind::Unsupported,
-                    "optional namespace members await native callable/full module linkage",
-                ));
-            }
-            // Only a resolved, trusted namespace-qualified direct native callee
-            // may bypass member evaluation. Arbitrary member reads never do.
-            let mut callee = h::NodeId(i as u32);
-            // Groups advance the expression without changing the member node
-            // whose resolved identity must match the trusted native link.
-            let mut expression = callee;
-            let mut parent = node.parent;
-            let mut group_depth = 1;
-            let call = loop {
-                b.work(1)?;
-                let Some(id) = parent else {
-                    break None;
-                };
-                match m.hir().node(id).form {
-                    Form::Member {
-                        object,
-                        optional: false,
-                        chain: false,
-                        ..
-                    } if object == expression => {
-                        callee = id;
-                        expression = id;
-                        parent = m.hir().node(id).parent;
-                    }
-                    Form::Single { child }
-                        if m.hir().node(id).kind == H::Group && child == expression =>
-                    {
-                        group_depth += 1;
-                        if group_depth >= b.limits.max_depth {
-                            return Err(
-                                b.error(ErrorKind::Limit, "qualified callee depth exceeded")
-                            );
-                        }
-                        expression = id;
-                        parent = m.hir().node(id).parent;
-                    }
-                    Form::Call {
-                        callee: target,
-                        optional: false,
-                        chain: false,
-                        ..
-                    } if target == expression => {
-                        break Some(callee);
-                    }
-                    _ => break None,
+                b.work(links.natives.len() as u64)?;
+                if !links
+                    .natives
+                    .iter()
+                    .any(|link| link.target == ExternalTarget::Node(h::NodeId(i as u32)))
+                {
+                    return Err(b.error(
+                        ErrorKind::MissingLink,
+                        "qualified native value has no trusted linkage",
+                    ));
                 }
-            };
-            let Some(callee) = call else {
-                return Err(b.error(
-                    ErrorKind::Unsupported,
-                    "namespace member values await native callable/full module linkage",
-                ));
-            };
-            b.work(m.external_bindings().len() as u64)?;
-            if !m
-                .external_bindings()
-                .iter()
-                .any(|e| e.node == Some(callee) && e.descriptor.reference.is_some())
-            {
-                return Err(b.error(
-                    ErrorKind::Unsupported,
-                    "direct native member callee lacks a resolved namespace identity",
-                ));
-            }
-            b.work(links.natives.len() as u64)?;
-            if !links
-                .natives
-                .iter()
-                .any(|link| link.target == ExternalTarget::Node(callee))
-            {
-                return Err(b.error(
-                    ErrorKind::MissingLink,
-                    "qualified native callee has no trusted linkage",
-                ));
+                let mut target = h::NodeId(i as u32);
+                let mut depth = 1;
+                while let Some(parent) = m.hir().node(target).parent {
+                    b.work(1)?;
+                    match m.hir().node(parent).form {
+                        Form::Single { child }
+                            if m.hir().node(parent).kind == H::Group && child == target =>
+                        {
+                            depth += 1;
+                            if depth >= b.limits.max_depth {
+                                return Err(
+                                    b.error(ErrorKind::Limit, "qualified callee depth exceeded")
+                                );
+                            }
+                            target = parent;
+                        }
+                        Form::Binary { left, .. }
+                            if m.hir().node(parent).kind == H::Assignment && left == target =>
+                        {
+                            return Err(b.error(
+                                ErrorKind::Unsupported,
+                                "imported native bindings are read-only",
+                            ));
+                        }
+                        _ => break,
+                    }
+                }
             }
         }
     }
