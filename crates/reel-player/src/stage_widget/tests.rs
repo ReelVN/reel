@@ -208,6 +208,53 @@ fn affine(actual: Affine, expected: [f64; 6]) {
 }
 
 #[test]
+fn structural_edits_keep_retained_widgets_and_remove_retired_geometry() {
+    let mut f = Fixture::new(None);
+    let first = f.record();
+    f.accept(&first);
+    let original = f.layouts();
+    let fresh = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(15.),
+                height: Some(10.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    f.stage.add(f.root, fresh, 1).unwrap();
+    let inserted = f.record();
+    f.accept(&inserted);
+    let after = f.layouts();
+    for id in [f.root, f.red, f.blue] {
+        assert_eq!(after[&id].0, original[&id].0);
+    }
+    assert!(inserted.geometry().get(after[&fresh].0).is_some());
+    assert_eq!(
+        after[&f.blue].1, original[&f.blue].1,
+        "unchanged text keeps its layout"
+    );
+    f.stage.remove(f.red).unwrap();
+    let removed = f.record();
+    f.accept(&removed);
+    assert!(removed.geometry().get(original[&f.red].0).is_none());
+    assert_eq!(f.layouts()[&f.blue].0, original[&f.blue].0);
+    assert_eq!(f.layouts()[&fresh].0, after[&fresh].0);
+    // The accepted old frame continues to describe its own immutable geometry.
+    assert!(first.geometry().get(original[&f.red].0).is_some());
+    f.stage.clear_children(f.root).unwrap();
+    let cleared = f.record();
+    f.accept(&cleared);
+    assert_eq!(f.layouts().len(), 1);
+    assert_eq!(f.layouts()[&f.root].0, original[&f.root].0);
+    assert!(cleared.geometry().get(original[&f.blue].0).is_none());
+    assert!(cleared.geometry().get(after[&fresh].0).is_none());
+}
+
+#[test]
 fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
     let font = std::env::var_os("REEL_SESSION_FONT")
         .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));

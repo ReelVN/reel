@@ -4,7 +4,7 @@
 显式 tuple 与 union 契约用于 `is`、绑定、共享捕获、参数和返回值；tuple 要求数量及逐项类型一致，union 接受任一分支。检查使用加载时计入容量的显式工作栈，执行前按类型 DAG 的工作上界计费，检查过程不分配临时容器。失败赋值不发布新值。
 CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类型)，独立宿主 Cell 保存 None 并服从自身的 builtin 契约；不会把宿主 Cell 的占位索引误当成当前包的类型。
 
-已链接的 native 函数可以作为普通函数值保存、传递、返回和可选调用，也可以交给宿主的 CallScript 回调入口。B01 FunctionKind 新增 Native(NativeId)，编码为 tag 3 后接 u32 注册索引；签名必须与注册一致，不携带脚本指令、寄存器、绑定、捕获或异常区域，源码映射可在 PC 0 保存取值位置。普通调用、宿主启动和 CallScript 都直接建立同一种 NativeFrame，完整参数只绑定一次；缺省闭包与可变参数共享原来的 Cell，不经过脚本转发帧。编译器为每个实际取值的注册建立一个 Native FunctionDef；VM 在模块常量根区持有稳定函数值，MakeClosure 读取该常量而不分配对象，也不要求 ALLOCATE 效果。不添加作者全局变量。实际脚本调用处优先作为故障来源；宿主直接启动该函数值时使用其取值位置。
+已链接的 native 函数可以作为普通函数值保存、传递、返回和可选调用，也可以交给宿主的 CallScript 回调入口。B01 FunctionKind 新增 Native(NativeId)，编码为 tag 3 后接 u32 注册索引；签名必须与注册一致，不携带脚本指令、寄存器、绑定、捕获或异常区域，源码映射可在 PC 0 保存取值位置。普通调用、宿主启动和 CallScript 都直接建立同一种 NativeFrame，完整参数只绑定一次；缺省闭包与可变参数共享原来的 Cell，不经过脚本转发帧。aside-host 为每个合同预置一个 Native FunctionDef，供宿主绑定方法；编译器复用已有定义，仅在缺失且实际取值时新建。VM 在模块常量根区持有稳定函数值，MakeClosure 读取该常量而不分配对象，也不要求 ALLOCATE 效果。不添加作者全局变量。实际脚本调用处优先作为故障来源；宿主直接启动该函数值时使用定义中的取值位置（若有）。
 
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
@@ -274,6 +274,8 @@ CallScript 不提升权限或取消已有受限上下文；sort 的同步 compar
 invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终返回 Returned、Error 或明确的同步控制失败；完整调用在本次同步边界内结束。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
 
 ## 十六 宿主 ABI 能力与标准库
+
+宿主可将一个已准入 native callable 的首参数绑定为接收者，产生普通可调用值。绑定值保留代码版本、模块和接收者身份，受既有 GC 跟踪；保存方法后调用仍使用原接收者。调用直接进入 NativeFrame，首参数预绑定，余下位置/具名/默认参数使用同一个 VM binder，显式重复指定首参数仍报重复绑定。脚本调用、宿主 start_closure 和 CallScript 回调使用相同协议，不建立合成脚本调用栈；诊断定位真实调用者。绑定不改变效果或等待许可，不保存 Rust 对象地址。
 
 native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。
 

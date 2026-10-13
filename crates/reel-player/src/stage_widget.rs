@@ -252,6 +252,25 @@ impl SceneWidget {
                 label.insert_prop(ContentColor::new(color(view.node.props.color)));
             }
         }
+        if this.widget.node.children != view.node.children {
+            let mut retained: BTreeMap<_, _> = std::mem::take(&mut this.widget.children)
+                .into_iter()
+                .map(|(node, pod)| (node.id, (node, pod)))
+                .collect();
+            this.widget.children = view
+                .children
+                .iter()
+                .map(|next| {
+                    retained
+                        .remove(&next.node.id)
+                        .unwrap_or_else(|| (next.node.clone(), WidgetPod::new(Self::new(next))))
+                })
+                .collect();
+            for (_, (_, pod)) in retained {
+                this.ctx.remove_child(pod);
+            }
+            this.ctx.children_changed();
+        }
         for ((node, pod), next) in this.widget.children.iter_mut().zip(&view.children) {
             if node.props.visible != next.node.props.visible {
                 this.ctx.request_layout();

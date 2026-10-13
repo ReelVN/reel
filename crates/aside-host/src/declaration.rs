@@ -370,6 +370,22 @@ pub fn seed(
             .iter()
             .map(|name| symbol(&mut package, name))
             .collect();
+        // Host objects can bind methods even when source never reads the native
+        // name. The compiler reuses these same callable definitions.
+        package.functions.push(bc::FunctionDef {
+            module: bc::ModuleId(0),
+            name,
+            kind: bc::FunctionKind::Native(bc::NativeId(package.natives.len() as u32)),
+            signature,
+            context: bc::Context::Ordinary,
+            captures: vec![],
+            register_count: 0,
+            bindings: vec![],
+            descriptors: vec![],
+            code: vec![],
+            regions: vec![],
+            source_map: vec![],
+        });
         package.natives.push(bc::NativeDef {
             symbol: name,
             signature,

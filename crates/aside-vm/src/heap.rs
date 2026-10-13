@@ -25,6 +25,7 @@ pub enum ObjectKind {
     Instance,
     Closure,
     BoundBuiltin,
+    BoundNative,
     Generator,
     Thread,
     Future,
@@ -61,6 +62,7 @@ impl ObjectKind {
                 | Self::Instance
                 | Self::Closure
                 | Self::BoundBuiltin
+                | Self::BoundNative
                 | Self::Generator
                 | Self::Thread
                 | Self::Future
@@ -775,7 +777,10 @@ impl Heap {
             || matches!(obj.payload, Payload::Table(_))
             || matches!(
                 obj.kind,
-                ObjectKind::Tuple | ObjectKind::Closure | ObjectKind::BoundBuiltin
+                ObjectKind::Tuple
+                    | ObjectKind::Closure
+                    | ObjectKind::BoundBuiltin
+                    | ObjectKind::BoundNative
             )
         {
             return Err(HeapError::WrongKind);
