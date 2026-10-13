@@ -1,0 +1,14 @@
+// Quirrel testData/exec/type_inference/test_arithmetic_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+// EXPECTED: no error - arithmetic on ints produces int
+let mut a: int = 10;
+let mut b: int = 20;
+let mut c: int = a + b;
+let mut d: int = a * b;
+let mut e: int = a - b;
+let mut f: int = a / b;
+let mut g: int = a % b;
+return [c, d, e, f, g];
+
+}
+migrated_script();

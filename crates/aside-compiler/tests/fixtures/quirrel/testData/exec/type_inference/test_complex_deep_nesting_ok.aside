@@ -1,0 +1,8 @@
+// Quirrel testData/exec/type_inference/test_complex_deep_nesting_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut a:int=1; let mut b:int=2; let mut c:int=3;
+let mut deep_result:string=if (((a+b)*c)>5) {"big"} else {"small"};
+return deep_result;
+
+}
+migrated_script();

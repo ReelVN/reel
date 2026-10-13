@@ -1,0 +1,10 @@
+// Quirrel testData/exec/destructuring/foreach_capture_plain_val.nut; complete reviewed migration, original oracle retained.
+let fns = [];
+for v in [10,20,30] { fns.append(||v); }
+for f in fns { println("v1:",f()); }
+let gs = [];
+for s in ["a","b","c"] { gs.append(||s); }
+for g in gs { println("v2:",g()); }
+let pairs = [];
+for a in [1,2] { for b in [10,20] { pairs.append(||a*100+b); } }
+for f in pairs { println("v3:",f()); }

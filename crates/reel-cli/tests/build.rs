@@ -102,12 +102,23 @@ fn builds_default_and_explicit_private_entry_reproducibly() {
 
 #[test]
 fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait() {
+    author_example(
+        include_str!("../../../examples/function_values.aside"),
+        &[(32., 48.), (32., 90.)],
+    );
+    author_example(
+        include_str!("../../../examples/collections.aside"),
+        &[(32., 48.), (32., 90.), (32., 132.)],
+    );
+}
+
+fn author_example(source: &str, coordinates: &[(f64, f64)]) {
     use reel_engine::aside::{
         GcBudget, NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits,
     };
     use reel_engine::{Epoch, InputAction, Session, SessionId};
 
-    let case = Case::new(include_str!("../../../examples/function_values.aside"));
+    let case = Case::new(source);
     let output = case.run(&[]);
     assert!(
         output.status.success(),
@@ -142,10 +153,10 @@ fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait()
                         vm.sync_stage(&session).unwrap();
                         let stage = vm.stage();
                         let children = &stage.node(stage.root().unwrap()).unwrap().children;
-                        assert_eq!(children.len(), 2);
-                        for (id, expected) in children.iter().zip([(32., 48.), (32., 90.)]) {
+                        assert_eq!(children.len(), coordinates.len());
+                        for (id, expected) in children.iter().zip(coordinates) {
                             let props = &stage.node(*id).unwrap().props;
-                            assert_eq!((props.x, props.y), expected);
+                            assert_eq!((props.x, props.y), *expected);
                         }
                         vm.begin_collection().unwrap();
                         while vm.vm().heap().phase() != aside_vm::GcPhase::Idle {
@@ -190,7 +201,7 @@ fn existing_output_survives_default_publication_and_all_source_failures() {
         "let =;",
         "missing();",
         "use reel::story;",
-        "fn main() { [...[1]] }",
+        "fn main() { let [a]=[1]; a }",
     ] {
         fs::write(case.dir.join("input.aside"), source).unwrap();
         let output = case.run(&["--overwrite"]);

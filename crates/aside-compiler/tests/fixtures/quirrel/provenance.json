@@ -151,6 +151,191 @@
       "path": "testData/exec/opt/opt_same_reg_fold.aside",
       "source": "original/testData/exec/opt/opt_same_reg_fold.nut",
       "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/deep_loop_variable.aside",
+      "source": "original/testData/exec/deep_loop_variable.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/parenCallee.aside",
+      "source": "original/testData/exec/parenCallee.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/ph_optimizer_null_call_1.aside",
+      "source": "original/testData/exec/ph_optimizer_null_call_1.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/ph_optimizer_null_call_2.aside",
+      "source": "original/testData/exec/ph_optimizer_null_call_2.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/ph_optimizer_null_call_3.aside",
+      "source": "original/testData/exec/ph_optimizer_null_call_3.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/destructuring/foreach_capture_plain_val.aside",
+      "source": "original/testData/exec/destructuring/foreach_capture_plain_val.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/destructuring/foreach_capture_shadowed.aside",
+      "source": "original/testData/exec/destructuring/foreach_capture_shadowed.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/spec/trystmt.aside",
+      "source": "original/testData/exec/spec/trystmt.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/array_incr_index_bounds.aside",
+      "source": "original/testData/exec/array_incr_index_bounds.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/assign_type_05.aside",
+      "source": "original/testData/exec/runtime_type_check/assign_type_05.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/assign_type_06.aside",
+      "source": "original/testData/exec/runtime_type_check/assign_type_06.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/return_type.aside",
+      "source": "original/testData/exec/runtime_type_check/return_type.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_call_result_ok.aside",
+      "source": "original/testData/exec/type_inference/test_call_result_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_complex_deep_nesting_ok.aside",
+      "source": "original/testData/exec/type_inference/test_complex_deep_nesting_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_complex_nested_ternary_ok.aside",
+      "source": "original/testData/exec/type_inference/test_complex_nested_ternary_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_complex_nullcoalesce_ok.aside",
+      "source": "original/testData/exec/type_inference/test_complex_nullcoalesce_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_function_literal_ok.aside",
+      "source": "original/testData/exec/type_inference/test_function_literal_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_return_literal_ok.aside",
+      "source": "original/testData/exec/type_inference/test_return_literal_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_table_literal_ok.aside",
+      "source": "original/testData/exec/type_inference/test_table_literal_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_table_return_ok.aside",
+      "source": "original/testData/exec/type_inference/test_table_return_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_ternary_ok.aside",
+      "source": "original/testData/exec/type_inference/test_ternary_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/fuzz_52807_min.aside",
+      "source": "original/testData/exec/opt/fuzz_52807_min.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/fuzz_min.aside",
+      "source": "original/testData/exec/opt/fuzz_min.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/modify_local_var.aside",
+      "source": "original/testData/exec/opt/modify_local_var.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/spec/constFolding.aside",
+      "source": "original/testData/exec/spec/constFolding.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/assign_type_01.aside",
+      "source": "original/testData/exec/runtime_type_check/assign_type_01.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/assign_type_02.aside",
+      "source": "original/testData/exec/runtime_type_check/assign_type_02.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/assign_type_03.aside",
+      "source": "original/testData/exec/runtime_type_check/assign_type_03.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/runtime_type_check/assign_type_04.aside",
+      "source": "original/testData/exec/runtime_type_check/assign_type_04.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_arithmetic_ok.aside",
+      "source": "original/testData/exec/type_inference/test_arithmetic_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_array_literal_ok.aside",
+      "source": "original/testData/exec/type_inference/test_array_literal_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_assignment_chain_ok.aside",
+      "source": "original/testData/exec/type_inference/test_assignment_chain_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_complex_assign_ok.aside",
+      "source": "original/testData/exec/type_inference/test_complex_assign_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/type_inference/test_literal_ok.aside",
+      "source": "original/testData/exec/type_inference/test_literal_ok.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/opt_reassign_chain.aside",
+      "source": "original/testData/exec/opt/opt_reassign_chain.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/inexpr_block/test_codeblock_return_in_try.aside",
+      "source": "original/testData/exec/inexpr_block/test_codeblock_return_in_try.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/inexpr_block/test_codeblock_try.aside",
+      "source": "original/testData/exec/inexpr_block/test_codeblock_try.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     }
   ]
 }

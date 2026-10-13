@@ -1,0 +1,67 @@
+// Quirrel testData/exec/inexpr_block/test_codeblock_try.nut; complete reviewed migration, original oracle retained.
+
+
+// Test 1: simple return from CodeBlockExpr inside try
+try {
+  let a = if true {42} else {null};
+  assert(a == 42, f"expected 42, got {a}");
+} catch e {
+  assert(false, f"unexpected exception: {e}");
+}
+
+// Test 2: conditional return from CodeBlockExpr inside try
+try {
+  let b = if true { let mut x=10; if x>5 {x*2} else {-1} } else {null};
+  assert(b == 20, f"expected 20, got {b}");
+} catch e {
+  assert(false, f"unexpected exception: {e}");
+}
+
+// Test 3: exception INSIDE CodeBlockExpr is caught by outer try
+let mut caught = false;
+try {
+  let c = if true {throw "boom"; 0} else {null};
+  assert(false, "should not reach here");
+} catch e {
+  caught = true;
+  assert(e == "boom", f"expected 'boom', got '{e}'");
+}
+assert(caught, "exception should have been caught");
+
+// Test 4: try inside CodeBlockExpr
+let d = if true {let mut result=null; try {throw "inner"; result=-1;} catch e {result=99;} result} else {null};
+assert(d == 99, f"expected 99, got {d}");
+
+// Test 5: try inside CodeBlockExpr inside try
+try {
+  let e = if true {let mut result=null; try {throw "nested"; result=-1;} catch ex {result=77;} result} else {null};
+  assert(e == 77, f"expected 77, got {e}");
+} catch ex {
+  assert(false, f"unexpected exception: {ex}");
+}
+
+// Test 6: foreach inside CodeBlockExpr inside try
+try {
+  let f = if true {let mut sum=0; for v in [1,2,3,4,5] {sum+=v;} sum} else {null};
+  assert(f == 15, f"expected 15, got {f}");
+} catch e {
+  assert(false, f"unexpected exception: {e}");
+}
+
+// Test 7: null return from CodeBlockExpr inside try
+try {
+  let g = if true {null} else {null};
+  assert(g == null, f"expected null, got {g}");
+} catch e {
+  assert(false, f"unexpected exception: {e}");
+}
+
+// Test 8: bare return (no value) from CodeBlockExpr inside try
+try {
+  let h = if true {} else {};
+  assert(h == null, f"expected null, got {h}");
+} catch e {
+  assert(false, f"unexpected exception: {e}");
+}
+
+print("ALL CODEBLOCK+TRY TESTS PASSED\n");

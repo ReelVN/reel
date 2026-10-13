@@ -1,0 +1,7 @@
+// Quirrel testData/exec/runtime_type_check/assign_type_02.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut y: table|null = null;
+return y;
+
+}
+migrated_script();

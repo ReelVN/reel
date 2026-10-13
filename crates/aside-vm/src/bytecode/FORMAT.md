@@ -64,7 +64,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 0048 | CallNoWait | d,q:Call | next after synchronous return; callees inherit NoWait | yes | - |
 | 0050 | MakeTuple | d,q:Sequence(window) | next | yes | - |
 | 0051 | MakeArray | d,q:Sequence | next | yes | - |
-| 0052 | MakeTable | d,q:Table(ordered key/value entries) | next | yes | - |
+| 0052 | MakeTable | d,q:Table/TableSources(ordered entries) | next | yes | - |
 | 0053 | IndexGet | d,x,y | next | yes | - |
 | 0054 | IndexSet | x,y,z | next | yes | - |
 | 0055 | MemberGet | d,x,s | next (bind class methods only; table closures remain plain functions) | yes | - |
@@ -75,6 +75,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 005a | SuperGet | d,x,q:Super(lexical base,symbol) | next | yes | - |
 | 005b | PropertyRef | d,x,q:Property(key,read/write) | next | yes | - |
 | 005c | ChildrenPush | x,y | append composable host value to array; ignore null | yes | - |
+| 005f | ArrayPush | x,y | append one value to array | yes | - |
 | 0060 | Match | d,x,q:Pattern(nodes,outputs) | next (bool; outputs committed on success) | yes | - |
 | 0061 | PatternRequire | x | next (PatternMismatch on false) | yes | - |
 | 0062 | IterInit | d,x | next | yes | - |
@@ -113,7 +114,7 @@ Header is 68 bytes: ASIDBC01 (8), format/language/host ABI (3×u32), content_ver
 
 Records use model.rs field order except ModuleDef and FunctionDef: module records start with an additional global count, then path/imports/exports/globals/initializer. Function records start with six counts (captures/bindings/descriptors/code/regions/source_map), register_count, then module/name/kind/signature/context and those six tables. PC range ends may equal code length; instruction targets may not. Empty register windows may begin at register_count.
 
-Constants: 0 Null, 1 Bool, 2 Int64, 3 Float64Bits, 4 Utf8, 5 Bytes, 6 Tuple. Type tags: 0 Builtin, 1 Tuple, 2 Union, 3 Function, 4 Named. FunctionKind: 0 Plain, 1 Async, 2 Generator, 3 Native(u32 NativeId). Context: 0 Ordinary, 1 NoWait, 2 Derived, 3 Init. CaptureKind: 0 Value, 1 Cell. Descriptor tags: 0 Global, 1 Closure, 2 Call, 3 Sequence, 4 Table, 5 Class, 6 Super, 7 Property, 8 Pattern, 9 Spawn. BindingInitialization: 0 Explicit, 1 Parameter(u32). Remaining tag numbers are explicit in codec.rs.
+Constants: 0 Null, 1 Bool, 2 Int64, 3 Float64Bits, 4 Utf8, 5 Bytes, 6 Tuple. Type tags: 0 Builtin, 1 Tuple, 2 Union, 3 Function, 4 Named. FunctionKind: 0 Plain, 1 Async, 2 Generator, 3 Native(u32 NativeId). Context: 0 Ordinary, 1 NoWait, 2 Derived, 3 Init. CaptureKind: 0 Value, 1 Cell. Descriptor tags: 0 Global, 1 Closure, 2 Call, 3 Sequence, 4 Table, 5 Class, 6 Super, 7 Property, 8 Pattern, 9 Spawn, 10 TableSources. BindingInitialization: 0 Explicit, 1 Parameter(u32). Remaining tag numbers are explicit in codec.rs.
 
 Signature additionally carries optional PropertyBagTail (target parameter, schema capability, writable/animatable requirements). Unknown names in this mode reach the actual target schema after ordinary parameters bind. Class field initializers/methods and pattern defaults carry capture-source mappings, preserving local lexical semantics. Ordinary structural types are backwards-referenced DAGs; a function-type/signature cycle is rejected, while Named types permit recursive class identity.
 
@@ -146,3 +147,23 @@ in charged chunks and seals the buffer without copying. Mutation during
 validation is a concurrent-modification error. Cancellation releases
 builders through the existing frame teardown. These operations use the
 shared verifier register roles and source locations.
+
+### Collection captures
+
+ArrayPush (005f: array, value) appends one value, including null. ArraySpread
+(0058: array, sequence) captures array/tuple elements; TableSpread (0057: table,
+source) captures own table entries. Invalid source types fail at the spread PC.
+Both operations check complete content versions while suspended. Self-array
+spread duplicates the initial prefix once; self-table spread is a no-op.
+These are allocating builder instructions; compiler output keeps destinations
+private through expression completion.
+
+MakeTable accepts both Table and TableSources descriptors. Tag 10 encodes an
+ordered vector whose element tags are 0 Pair([Reg;2]) and 1 Spread(Reg). Pair
+reads key/value; Spread reads a table. All reads participate in the shared
+verifier and register visitor. Source expressions and snapshots precede
+MakeTable; explicit keys are validated during construction. Overwrites retain
+first insertion order. Empty-destination TableSpread copies unique validated
+entries directly; nonempty merges compare only the original destination prefix.
+For n source entries and m existing keys this takes O(n*m) key comparisons,
+not O(n*(m+n)); key comparison itself remains sliced.

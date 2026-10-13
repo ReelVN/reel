@@ -1,0 +1,105 @@
+// Quirrel testData/exec/opt/opt_reassign_chain.nut; complete reviewed migration, original oracle retained.
+// Test: chained constant expressions after reassignment.
+// Ensures multi-step folding doesn't lose intermediate assignments.
+
+// Two-step chain: x = B; y = x op const1 op const2
+{
+  let mut x = 100;
+  x = 5;
+  let mut y = x + 10 + 20;
+  assert(x == 5, f"expected x==5, got {x}");
+  assert(y == 35, f"expected y==35, got {y}");
+}
+
+// Subtraction chain
+{
+  let mut x = 100;
+  x = 50;
+  let mut y = 100 - x - 10;
+  assert(x == 50, f"expected x==50, got {x}");
+  assert(y == 40, f"expected y==40, got {y}");
+}
+
+// Mixed operations
+{
+  let mut a = 0;
+  a = 6;
+  let mut b = 0;
+  b = 7;
+  let mut c = a + b;
+  assert(a == 6, f"expected a==6, got {a}");
+  assert(b == 7, f"expected b==7, got {b}");
+  assert(c == 13, f"expected c==13, got {c}");
+}
+
+// Multiple reassignments before use
+{
+  let mut x = 1;
+  x = 2;
+  x = 3;
+  let mut y = x + 10;
+  assert(x == 3, f"expected x==3, got {x}");
+  assert(y == 13, f"expected y==13, got {y}");
+}
+
+// Reassign used in comparison (JCMP fold path)
+{
+  let mut x = 100;
+  x = 5;
+  let mut r = x < 10;
+  assert(x == 5, f"expected x==5, got {x}");
+  assert(r, f"expected x < 10 to be true");
+}
+
+// Reassign with float
+{
+  let mut x = 1.0;
+  x = 3.0;
+  let mut y = x + 1.0;
+  assert(x == 3.0, f"expected x==3.0, got {x}");
+  assert(y == 4.0, f"expected y==4.0, got {y}");
+}
+
+// Reassign float, same-register fold
+{
+  let mut x = 1.0;
+  x = 5.0;
+  let mut y = x - x;
+  assert(x == 5.0, f"expected x==5.0, got {x}");
+  assert(y == 0.0, f"expected y==0.0, got {y}");
+}
+
+// JCMP same-register: both sides of comparison are the same reassigned variable (seed 916086 pattern)
+{
+  let mut v0 = -111;
+  v0 = -3;
+  if (v0 >= v0) {
+    assert(true, "v0 >= v0 should be true");
+  } else {
+    assert(false, "v0 >= v0 was false - optimizer used stale register value");
+  }
+}
+
+// JCMP same-register with different initial value
+{
+  let mut v0 = 999;
+  v0 = 42;
+  if (v0 == v0) {
+    assert(true, "v0 == v0 should be true");
+  } else {
+    assert(false, "v0 == v0 was false");
+  }
+}
+
+// JCMP same-register: less-than (always false for same value)
+{
+  let mut v0 = 100;
+  v0 = 7;
+  if (v0 < v0) {
+    assert(false, "v0 < v0 should be false");
+  } else {
+    assert(true, "v0 < v0 is correctly false");
+  }
+}
+
+println("opt_reassign_chain: OK");

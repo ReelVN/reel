@@ -168,6 +168,7 @@ instructions! {
     ChildrenPush = 0x005c => [ReadReg, ReadReg, Unused], Next, true, None;
     MakeRange = 0x005d => [WriteReg, ReadReg, ReadReg], Next, true, None;
     MakeRangeInclusive = 0x005e => [WriteReg, ReadReg, ReadReg], Next, true, None;
+    ArrayPush = 0x005f => [ReadReg, ReadReg, Unused], Next, true, None;
     Match = 0x0060 => [WriteReg, ReadReg, Descriptor(D::Pattern)], Next, true, None;
     PatternRequire = 0x0061 => [ReadReg, Unused, Unused], Next, true, None;
     IterInit = 0x0062 => [WriteReg, ReadReg, Unused], Next, true, None;
@@ -336,6 +337,18 @@ impl super::Descriptor {
                 for pair in pairs {
                     for reg in pair {
                         visitor.emit(*reg, Access::Read)?;
+                    }
+                }
+            }
+            Self::TableSources(sources) => {
+                visitor.work(sources.len() as u64)?;
+                for source in sources {
+                    match source {
+                        TableSource::Pair(pair) => {
+                            visitor.emit(pair[0], Access::Read)?;
+                            visitor.emit(pair[1], Access::Read)?;
+                        }
+                        TableSource::Spread(reg) => visitor.emit(*reg, Access::Read)?,
                     }
                 }
             }

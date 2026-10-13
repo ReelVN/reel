@@ -29,6 +29,10 @@ impl Heap {
             values.get(index + 1).ok_or(HeapError::OutOfBounds)?,
         ))
     }
+    /// Store at a position already resolved by the caller. Appended keys must
+    /// be valid and unique under Aside key equality; overwrites retain the
+    /// existing key and order. VM lookup validates keys before using this
+    /// storage primitive; host adapters uphold the same table invariant.
     pub fn table_store(
         &mut self,
         table: Value,

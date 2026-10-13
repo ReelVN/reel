@@ -1,0 +1,265 @@
+{
+  "source": "testData/exec/inexpr_block/test_codeblock_try.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; original assertions and stdout preserved",
+  "segments": [
+    {
+      "original": [
+        0,
+        1933
+      ],
+      "aside": [
+        0,
+        2065
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declarations, closures, loops, expression-valued blocks, type names, terminators; explicit function scope for top-level script return"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        116,
+        156
+      ],
+      "aside": [
+        218,
+        258
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        173,
+        216
+      ],
+      "aside": [
+        274,
+        317
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 14
+        }
+      ]
+    },
+    {
+      "original": [
+        371,
+        411
+      ],
+      "aside": [
+        462,
+        502
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        428,
+        471
+      ],
+      "aside": [
+        518,
+        561
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 14
+        }
+      ]
+    },
+    {
+      "original": [
+        617,
+        655
+      ],
+      "aside": [
+        712,
+        750
+      ]
+    },
+    {
+      "original": [
+        688,
+        738
+      ],
+      "aside": [
+        783,
+        833
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 20
+        }
+      ]
+    },
+    {
+      "original": [
+        741,
+        792
+      ],
+      "aside": [
+        837,
+        888
+      ]
+    },
+    {
+      "original": [
+        918,
+        958
+      ],
+      "aside": [
+        1039,
+        1079
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        1121,
+        1161
+      ],
+      "aside": [
+        1253,
+        1293
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        1179,
+        1223
+      ],
+      "aside": [
+        1310,
+        1354
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 14
+        }
+      ]
+    },
+    {
+      "original": [
+        1387,
+        1427
+      ],
+      "aside": [
+        1501,
+        1541
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 16
+        }
+      ]
+    },
+    {
+      "original": [
+        1444,
+        1487
+      ],
+      "aside": [
+        1557,
+        1600
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 14
+        }
+      ]
+    },
+    {
+      "original": [
+        1580,
+        1624
+      ],
+      "aside": [
+        1704,
+        1748
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 18
+        }
+      ]
+    },
+    {
+      "original": [
+        1641,
+        1684
+      ],
+      "aside": [
+        1764,
+        1807
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 14
+        }
+      ]
+    },
+    {
+      "original": [
+        1783,
+        1827
+      ],
+      "aside": [
+        1914,
+        1958
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 18
+        }
+      ]
+    },
+    {
+      "original": [
+        1844,
+        1887
+      ],
+      "aside": [
+        1974,
+        2017
+      ],
+      "syntax_edits": [
+        {
+          "kind": "interpolation_prefix",
+          "offset": 14
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+// Quirrel testData/exec/type_inference/test_complex_assign_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+// EXPECTED: no error
+// Variable with type annotation reassigned with correct type
+let mut x: int = 42;
+x = 100;
+x = 1 + 2 * 3;
+return null;
+
+}
+migrated_script();

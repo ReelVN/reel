@@ -1,0 +1,9 @@
+// Quirrel testData/exec/runtime_type_check/assign_type_03.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut y: array = [];
+y.append(333);
+y = [];
+return y;
+
+}
+migrated_script();

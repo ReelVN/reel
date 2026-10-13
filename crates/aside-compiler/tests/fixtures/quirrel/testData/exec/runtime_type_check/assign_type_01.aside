@@ -1,0 +1,8 @@
+// Quirrel testData/exec/runtime_type_check/assign_type_01.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let x = [4.0][0];
+let y: float = x;
+return y;
+
+}
+migrated_script();

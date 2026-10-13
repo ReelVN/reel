@@ -1,0 +1,5 @@
+// Quirrel testData/exec/type_inference/test_ternary_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let mut flag=true; let mut x:int=if flag {42} else {100}; return null;
+}
+migrated_script();

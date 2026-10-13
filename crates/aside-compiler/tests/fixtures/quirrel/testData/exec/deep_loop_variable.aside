@@ -1,0 +1,3 @@
+// Quirrel testData/exec/deep_loop_variable.nut; complete reviewed migration, original oracle retained.
+let x = {borders: [0,0,0,0]};
+while x.borders[2] < 5 { println(x.borders[2]); x.borders[2] += 1; }

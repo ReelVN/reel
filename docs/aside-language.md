@@ -18,9 +18,9 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 完成条件同时覆盖语言、标准库、扩展契约、调试工具和 Reel 作者场景。只运行一段剧情、只解析全部语法或只通过旧语言测试，都不算完整 Aside。
 
-实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、固定 tuple/array/table、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
+实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、tuple/array/table 与集合展开、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
-class/super、完整统一 callable、集合/具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
+class/super、完整统一 callable、具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 ## 二 语法与求值顺序
 尾随 children 块调用作为独立语句时，可以像控制语句块一样省略分号。例如 `column { text("标题"); }` 后可直接书写下一个组件。显式分号同样有效，且不会取消子节点收集。独立 children 调用后的换行结束该语句，下一行的括号不会被解析成继续调用；取值上下文仍可正常链接后续操作。其他普通调用、绑定和赋值仍使用分号。
@@ -392,7 +392,9 @@ Ready 先发布结果再提交返回槽并进入后继；Pending 保存等待描
 外部 enclosing 词法绑定保留原身份和逐层捕获关系，不得视作当前入口新声明或普通 host 符号。若编译调用未提供实际外部 Value/Cell 链接，lowering 给出定位的 MissingLink，不能以新建未初始化槽伪装接通；既有可信直接 native 链接另循其合同。
 
 绑定描述保存类型、可变性和初始化约束，共享 cell 写入遵守同一契约。Match 的输出仅在匹配成功时初始化。MemberGet 对类方法形成绑定接收者，表中的普通闭包保持普通函数。
-调用展开的参数容器为当前调用私有。array 的分片浅捕获从开始至完成检查完整内容版本，包括元素覆盖、增删和重排；变化则以 ConcurrentModification 失败且不调用目标。tuple 外层不可变。捕获完成后，源容器后续修改不使已捕获外层序列失效；内部对象修改仍通过共享引用可见。游标、版本、部分捕获和待释放存储均计入容量与根，失败沿既有异常清理释放；不得把 BudgetYield 当作外部等待或丢失中间状态。此合同不代替集合 ArraySpread/TableSpread 的独立提交设计。
+调用展开的参数容器为当前调用私有。array 的分片浅捕获从开始至完成检查完整内容版本，包括元素覆盖、增删和重排；变化则以 ConcurrentModification 失败且不调用目标。tuple 外层不可变。捕获完成后，源容器后续修改不使已捕获外层序列失效；内部对象修改仍通过共享引用可见。游标、版本、部分捕获和待释放存储均计入容量与根，失败沿既有异常清理释放；不得把 BudgetYield 当作外部等待或丢失中间状态。
+
+集合展开采用相同的分片浅捕获规则。`[...source]` 接受 array/tuple，`{...source}` 接受 table；null 或其他类型在展开位置报 Type。每个展开在其源码位置捕获完成，再执行后项表达式。表的显式键和值仍全部先求值，再按书写顺序构造并验证键；非法展开源则立即失败。后项覆盖已有键时保留键首次出现的顺序。构造结果在整条表达式完成后才发布，异常或取消释放未完成的容器。B01 使用 ArrayPush/ArraySpread 和有序 TableSources 描述符；TableSpread 复制已验证自有槽，空目标直接线性复制，合并到非空目标仅比较目标原有条目，不重复扫描本次已追加的源条目。每片工作及实际分配计入既有预算，不另设集合长度上限。
 
 赋值位置与实参保持源码求值顺序。全部实际参数完成求值后才按签名绑定；有序参数容器保留重复名称，最终绑定阶段报告冲突。无展开普通调用使用连续参数窗口；展开在其源码位置捕获元素，随后参数的副作用不能反向改变先前展开。可变捕获使用共享 cell，每轮循环的绑定独立；不会保存可移动窗口的地址作为 upvalue。
 
@@ -466,7 +468,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
-执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、property-bag、ArgsNamedSpread、集合展开和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、property-bag、ArgsNamedSpread 和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
 
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
 

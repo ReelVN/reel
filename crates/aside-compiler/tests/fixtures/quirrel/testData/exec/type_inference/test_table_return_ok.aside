@@ -1,0 +1,9 @@
+// Quirrel testData/exec/type_inference/test_table_return_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+fn make_table()->table {return {a:1,b:2};}
+fn make_array()->array {return [1,2,3];}
+fn make_either(flag:bool)->table|array {return if flag {({a:1})} else {[1,2]};}
+return [make_table(),make_array(),make_either(true)];
+
+}
+migrated_script();

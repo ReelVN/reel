@@ -5,7 +5,7 @@ The original Quirrel test inputs, expected results and runner reference remain i
 The original suite selected 1,296 inputs and 1,494 runs including iteration seeds.
 The C++ implementation is not part of this workspace.
 
-`provenance.json` lists 30 reviewed complete Aside migrations. All 102 original
+`provenance.json` lists 67 reviewed complete Aside migrations. All 140 original
 assertion call sites and original stdout are retained. `semantic_quirrel.rs`
 checks assertion tokens and copied source-map spans; `quirrel_vm.rs` compiles,
 round-trips B01 and executes each case in the real VM, both normally and with
@@ -26,3 +26,11 @@ language differences; a corresponding native Aside contract must be verified
 before a differing behavior is considered covered. No original assertion is
 weakened to make a conversion pass. The 10 original recipes remain as provenance;
 current reviewed sources and maps are the maintained inputs.
+
+The added closure-loop cases retain all output lines, including nested and
+shadowed captures. Runtime type cases retain the original no-error/output
+oracle and execute the complete script in an explicit function for top-level
+return. Quirrel code-block local returns translate to Aside expression tails
+and explicit local result slots; their original exception assertions remain
+unchanged. These translations do not implement Quirrel compiler internals or
+claim its optimizer/code-block opcodes exist in Aside.

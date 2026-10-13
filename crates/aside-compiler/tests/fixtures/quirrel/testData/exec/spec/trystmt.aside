@@ -1,0 +1,6 @@
+// Quirrel testData/exec/spec/trystmt.nut; complete reviewed migration, original oracle retained.
+fn foo(a,b,c) {
+try { println(f"TRYING {a}"); throw b; } catch e { println(f"CAUGHT {e}"); }
+println(f"FINISHING {c}");
+}
+foo(1,2,3);

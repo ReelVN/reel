@@ -1,0 +1,10 @@
+// Quirrel testData/exec/type_inference/test_assignment_chain_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+let x: int = 234;
+let y = x + 4;
+let z = 120.0 * y;
+let w = z;
+let f: float = w;
+
+}
+migrated_script();

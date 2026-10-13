@@ -1,0 +1,15 @@
+// Quirrel testData/exec/type_inference/test_literal_ok.nut; complete reviewed migration, original oracle retained.
+fn migrated_script() {
+// EXPECTED: no error - all types match
+let mut a: int = 42;
+let mut b: float = 3.14;
+let mut c: string = "hello";
+let mut d: bool = true;
+let mut e: int|null = null;
+let mut f: int|string = 42;
+let mut g: int|string = "world";
+let mut h: null = null;
+return [a, b, c, d, e, f, g, h];
+
+}
+migrated_script();

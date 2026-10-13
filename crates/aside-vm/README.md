@@ -207,7 +207,7 @@ Native function values are rooted code constants: repeated reads preserve
 identity without allocation and calls enter NativeFrame directly, including
 shared default-parameter Cells, waits and host callbacks.
 
-Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, collection spread, patterns, full
+Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, patterns, full
 module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
 
 ### Collection host access and execution source boundaries (PR #54)
@@ -246,3 +246,25 @@ is made. Runtime sequence construction is sliced; synchronous tuple constants
 still obey the strict per-constant max_mutation_values limit, and loading remains
 synchronous. Existing comparison-stack capacity limits still apply. Owner root
 retirement and provider-aware GC responsibilities above are unchanged.
+
+## Collection capture checks
+
+ArraySpread shares the resumable sequence capture with ArgsSpread. TableSpread
+copies own entries and checks source/destination content versions between
+slices. An empty table destination copies directly without repeated key scans;
+merging into an existing table uses sliced equality against its original prefix
+only. Newly copied source entries are already unique and are never rescanned.
+Compiler-generated builders remain private until the expression completes.
+Sources and nested values stay rooted across GC, faults and cancellation.
+
+```sh
+cargo test --locked -p aside-compiler --test execution --test semantic_quirrel --test quirrel_vm
+cargo test --locked -p aside-vm --release --lib collection_ -- --nocapture
+cargo test --locked -p aside-vm --release --lib table_merge -- --nocapture
+```
+
+The copy-cost check compares 1,024, 4,096 and 16,384 elements, asserting linear
+charged work and exactly the required payload chunks. The table_merge check
+separately verifies linear growth for a fixed two-entry destination prefix and
+retained overwrite order. Its timings are local
+measurements, not device or rendering performance claims.

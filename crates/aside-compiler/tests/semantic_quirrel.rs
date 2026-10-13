@@ -169,7 +169,7 @@ fn migrated_sources_preserve_original_assertions_and_analyze() {
         );
     }
     assert_eq!(
-        assertions, 102,
+        assertions, 140,
         "original assertion calls must remain intact"
     );
 }

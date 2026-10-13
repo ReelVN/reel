@@ -494,8 +494,6 @@ fn conditional_fallthrough_keeps_prepared_values_and_shared_cfg_dominance() {
 #[test]
 fn deferred_collection_and_pattern_forms_are_located() {
     for (source, span, detail) in [
-        ("fn f(a){[...a]}", "...a", "spread"),
-        ("fn f(a){({...a})}", "...a", "spread"),
         ("fn f(){let [a]=[1];}", "[a]", "pattern"),
         (
             "fn f(){let mut a=0;let mut b=0;(a,b)=(1,2);}",
@@ -508,6 +506,19 @@ fn deferred_collection_and_pattern_forms_are_located() {
         assert_eq!(e.kind, lowering::ErrorKind::Unsupported);
         assert_eq!(&source[byte_range(e.span)], span);
         assert!(e.detail.to_lowercase().contains(detail), "{}", e.detail);
+    }
+}
+
+#[test]
+fn collection_spreads_roundtrip_in_calls_and_optional_chains() {
+    for source in [
+        "fn f() { [1,...[]] }",
+        "fn f(a){[...a]}",
+        "fn f(a){({...a})}",
+        "fn f(a){a.x([...a])}",
+        "fn f(a){a?([...a])}",
+    ] {
+        compiled(source);
     }
 }
 
