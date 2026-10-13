@@ -12,6 +12,7 @@ pub(crate) struct StoryRuntime {
     retry_after_collection: bool,
     retried_collection: bool,
     closing: bool,
+    logical_ns: u64,
 }
 
 impl StoryRuntime {
@@ -24,11 +25,23 @@ impl StoryRuntime {
             retry_after_collection: false,
             retried_collection: false,
             closing: false,
+            logical_ns: 0,
         }
     }
 
     pub(crate) fn needs_tick(&self) -> bool {
-        self.runnable || self.collecting || self.driver.cleanup_pending()
+        self.needs_work() || self.driver.activities_need_time()
+    }
+
+    fn needs_work(&self) -> bool {
+        self.runnable
+            || self.collecting
+            || self.driver.cleanup_pending()
+            || self.driver.activities_pending()
+    }
+
+    pub(crate) fn tick_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(if self.needs_work() { 1 } else { 16 })
     }
 
     pub(crate) fn wake_input(&mut self) {
@@ -58,12 +71,22 @@ impl StoryRuntime {
         budget: SliceBudget,
         mut now: impl FnMut() -> u64,
     ) -> Result<(), Error> {
+        if !self.closing && self.needs_tick() {
+            self.logical_ns = self.logical_ns.max(now());
+            if self
+                .driver
+                .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?
+                .woke
+            {
+                self.runnable = true;
+            }
+        }
         loop {
             if budget.deadline_ns.is_some_and(|deadline| now() >= deadline) {
                 return Ok(());
             }
             self.step(budget, &mut now)?;
-            if budget.deadline_ns.is_none() || !self.needs_tick() {
+            if budget.deadline_ns.is_none() || !self.needs_work() {
                 return Ok(());
             }
         }
@@ -74,6 +97,16 @@ impl StoryRuntime {
     fn step(&mut self, budget: SliceBudget, now: impl FnMut() -> u64) -> Result<(), Error> {
         if self.driver.cleanup_pending() {
             self.driver.cleanup_step(256, budget, now)?;
+            return Ok(());
+        }
+        if self.driver.activities_pending() {
+            if self
+                .driver
+                .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?
+                .woke
+            {
+                self.runnable = true;
+            }
             return Ok(());
         }
         if self.collecting && (self.gc_turn || !self.runnable) {
@@ -193,6 +226,71 @@ mod tests {
             )
             .unwrap();
         clock
+    }
+
+    #[test]
+    fn animations_progress_with_dialogue_and_paused_windows_sleep() {
+        let mut story = runtime(
+            r#"fn main() {
+            let node = text("moving");
+            stage.replace(node);
+            let activity = run(tween(node, x: 100, duration: 1));
+            narrator("moving dialogue");
+            if node.x != 50 { throw "dialogue blocked animation"; }
+            pause(activity);
+            narrator("paused dialogue");
+            if node.x != 50 { throw "pause advanced"; }
+            resume(activity);
+            if await activity != "Completed" || node.x != 100 { throw "await not resumed"; }
+        }"#,
+        );
+        let work = |story: &mut StoryRuntime, ns| {
+            for _ in 0..10_000 {
+                if !story.needs_work() {
+                    return;
+                }
+                story.tick(SliceBudget::default(), || ns).unwrap();
+            }
+            panic!("window work did not settle");
+        };
+        let input = |story: &mut StoryRuntime| {
+            let owner = story.driver.ui().session().root_owner();
+            let id = story.driver.ui().session().view().interaction.unwrap().id();
+            for _ in 0..2 {
+                story
+                    .driver
+                    .ui_mut()
+                    .session_mut()
+                    .handle_local_input(owner, InputAction::Advance(id))
+                    .unwrap();
+            }
+            story.wake_input();
+        };
+        work(&mut story, 0);
+        assert!(story.needs_tick());
+        assert_eq!(story.tick_interval(), std::time::Duration::from_millis(16));
+        story.tick(SliceBudget::default(), || 500_000_000).unwrap();
+        assert!(
+            !story.needs_work(),
+            "animation must not busy-run the waiting VM"
+        );
+        input(&mut story);
+        work(&mut story, 500_000_000);
+        assert!(!story.needs_tick());
+        story
+            .tick(SliceBudget::default(), || {
+                panic!("paused window should sleep")
+            })
+            .unwrap();
+        input(&mut story);
+        work(&mut story, 10_000_000_000);
+        assert!(story.needs_tick());
+        story
+            .tick(SliceBudget::default(), || 10_500_000_000)
+            .unwrap();
+        work(&mut story, 10_500_000_000);
+        assert_eq!(story.driver.state(), StoryState::Finished);
+        assert!(!story.needs_tick());
     }
 
     #[test]

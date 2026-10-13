@@ -238,12 +238,12 @@ An ordinary fn is sufficient for story code. A chapter entry registered through 
 
 ## 4 Sequencing Changes and Running Them Together
 
-The action composition, animation activities and creator controls in this section are not implemented yet.
+Finite animation activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, in, out and in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --font <font.ttf>`. The sequence/parallel/repeat and scope interfaces below are not implemented yet.
 
-The language runtime supports awaiting host-registered awaitable objects. An ordinary fn can use `await request` to suspend its call chain while the host handles other work. Even settled objects return on a later scheduling step; failures point to the await expression and retain the producer's cause. This is an engine integration protocol; async fn, Future construction, and the run/tween activities below are not available yet. The runnable host integration check is [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs): `cargo test -p aside-compiler --test host_awaitables`.
+The language runtime supports awaiting host-registered awaitable objects. An ordinary fn can use `await request` to suspend its call chain while the host handles other work. Even settled objects return on a later scheduling step; failures point to the await expression and retain the producer's cause. Engine activities now use this protocol; async fn and Future construction are not available yet. The runnable host integration check is [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs): `cargo test -p aside-compiler --test host_awaitables`.
 
-tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. By default, run(action) belongs to the current scope, or to the current task's owner when outside a scope. Specify an explicit owner when the activity needs to outlive that boundary.
-An action reads its starting property values when it actually becomes active. In a sequence, a later step reads its starting values after the previous step finishes. Action descriptions are reusable, and every run creates independent progress. run atomically reserves every property that the entire action tree will write. These reservations last until the root activity ends, including future sequence segments, repeat iterations, and periods while paused. A sequence may write the same property in order; parallel branches must have disjoint write sets. A conflict is reported at the call site and leaves existing activities intact. To take over, first stop the old activity. Assigning directly to a reserved property first stops its root activity, then applies the assignment. This rule also applies to properties reserved for future segments. An activity releases all reservations when it ends.
+tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. Currently run(action) belongs to the session; specify a stage node with owner. The planned scope API will provide its own s.run entry point.
+An action reads its starting property values when it actually becomes active. In a sequence, a later step reads its starting values after the previous step finishes. Action descriptions are reusable, and every run creates independent progress. An activity acquires property writes when a segment actually starts. A new segment stops any conflicting older root activity and takes over from the current values, including from paused activities. A sequence may write the same property in order; parallel branches must have disjoint write sets. Direct assignment, including assignment of the same value, stops the root activity writing that property. Assignments to other properties are unaffected. Ending an activity releases all of its writes.
 ```aside
 let entrance = parallel(
     tween(view.portrait, x: 320, duration: 0.5),
@@ -285,7 +285,7 @@ visible=false hides the subtree and removes it from hit testing and focus; enabl
 
 ## 6 Logos, Title Screens, and Local Interaction
 
-Images, animation, button callbacks and game entry switching in this section are not connected to creator source yet.
+Images and finite animation are connected to creator source. Video, button callbacks and game entry switching in this section are not implemented yet.
 
 The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
 ```aside
@@ -358,7 +358,7 @@ Authors can use the same approach to wrap consistent fonts, button images, spaci
 
 ## 8 Styling and Moving Elements Together
 
-Ordinary functions and node property updates are available. The style spreading, transforms, animation and temporary overrides in this section remain unimplemented.
+Ordinary functions, node property updates, transforms and finite animation are available. Style spreading and temporary overrides remain unimplemented.
 
 Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
 ```aside
@@ -498,7 +498,7 @@ settings belongs to the engine's global preference service; restoring a story sa
 
 ## 13 Extending Your Own Building Blocks
 
-Ordinary node functions, named arguments, defaults, children and closures are available. The arrive example below depends on animation interfaces that are not implemented yet.
+Ordinary node functions, named arguments, defaults, children and closures are available. The arrive example below uses the implemented finite animation interface.
 
 The smallest unit of reuse is an ordinary fn. Functions returning nodes build scenes; functions returning actions choreograph them; ordinary objects expose parts that callers need to manipulate. Named arguments, children, closures, and module imports work together to support this approach.
 Default parameter expressions run in parameter order on each call, after every actual argument has been evaluated. They may refer to earlier parameters and use the expression or block's final value as their result. An explicit return belongs in a function body; it is invalid inside that function's parameter default, including conditional or short-circuit branches. A nested function defined within a default returns through its own body. break and continue may target only loops established inside the default, and throw propagates a parameter-preparation failure.

@@ -588,8 +588,8 @@ impl Heap {
         validator: Option<HostPropertyValidator>,
     ) -> Result<Value, HeapError> {
         self.table_len(fields)?;
-        let mut values = Vec::with_capacity(payload.len() + 2);
-        values.extend([fields, Value::bool(composable)]);
+        let mut values = Vec::with_capacity(payload.len() + 3);
+        values.extend([fields, Value::bool(composable), Value::NULL]);
         values.extend_from_slice(payload);
         let host = self.allocate_values(ObjectKind::Host, &values)?;
         let key = self.key(host)?;
@@ -627,13 +627,13 @@ impl Heap {
         if info.kind != ObjectKind::Host {
             return Err(HeapError::WrongKind);
         }
-        info.len.checked_sub(2).ok_or(HeapError::WrongKind)
+        info.len.checked_sub(3).ok_or(HeapError::WrongKind)
     }
     pub fn host_payload(&self, host: Value, index: u32) -> Result<Value, HeapError> {
         if index >= self.host_payload_len(host)? {
             return Err(HeapError::OutOfBounds);
         }
-        self.get_field(host, index + 2)
+        self.get_field(host, index + 3)
     }
     pub fn set_host_payload(
         &mut self,
@@ -645,7 +645,7 @@ impl Heap {
         if index >= self.host_payload_len(host)? {
             return Err(HeapError::OutOfBounds);
         }
-        self.set_field(host, index + 2, value)
+        self.set_field(host, index + 3, value)
     }
     pub(crate) fn validate_host_property(
         &self,
@@ -668,9 +668,47 @@ impl Heap {
         Ok(self.get_field(host, 1)?.as_bool() == Some(true))
     }
     pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
-        let slots = self.host_payload_len(host)? + 2;
+        let slots = self.host_payload_len(host)? + 3;
         for index in 0..slots {
             self.set_field(host, index, Value::NULL)?;
+        }
+        Ok(())
+    }
+
+    /// Opt into per-field script write tracking. Storage is a traced, budgeted
+    /// array; a host's own table_store updates do not count as script writes.
+    pub fn track_host_writes(&mut self, host: Value) -> Result<(), HeapError> {
+        let fields = self.host_fields(host)?;
+        if self.get_field(host, 2)?.same_bits(Value::NULL) {
+            let count = self.table_len(fields)?;
+            if count > self.limits.max_mutation_values {
+                return Err(HeapError::OperationLimit {
+                    requested: u64::from(count),
+                    limit: u64::from(self.limits.max_mutation_values),
+                });
+            }
+            let versions = self.alloc_array(&[])?;
+            for _ in 0..count {
+                self.array_push(versions, Value::int(0))?;
+            }
+            self.set_field(host, 2, versions)?;
+        }
+        Ok(())
+    }
+
+    pub fn host_write_version(&self, host: Value, field: u32) -> Result<u64, HeapError> {
+        self.host_fields(host)?;
+        Ok(self
+            .sequence_get(self.get_field(host, 2)?, field)?
+            .as_int()
+            .ok_or(HeapError::WrongKind)? as u64)
+    }
+
+    pub(crate) fn record_host_write(&mut self, host: Value, field: u32) -> Result<(), HeapError> {
+        let versions = self.get_field(host, 2)?;
+        if !versions.same_bits(Value::NULL) {
+            let version = self.sequence_get(versions, field)?.as_int().unwrap();
+            self.set_field(versions, field, Value::int(version.wrapping_add(1)))?;
         }
         Ok(())
     }

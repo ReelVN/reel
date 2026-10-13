@@ -20,7 +20,7 @@ struct NodeBinding {
 }
 
 impl StageBinding {
-    fn id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
+    pub(super) fn id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
         heap.host_fields(value)?;
         let id = NodeId(
             heap.host_payload(value, 0)?
@@ -33,6 +33,15 @@ impl StageBinding {
             return Err(AdapterError::Input("node is not owned by this stage"));
         }
         Ok(id)
+    }
+
+    pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
+        let id = self.id(heap, value)?;
+        Ok(match self.scene.node(id).unwrap().kind {
+            NodeKind::Text(_) => 1,
+            NodeKind::Image { .. } => 2,
+            _ => 0,
+        })
     }
 
     pub fn dispatch(
@@ -103,7 +112,12 @@ impl StageBinding {
         let id = self.scene.next_identity()?;
         let value = heap.alloc_composable_host(
             fields,
-            &[Value::int(id.0 as i64), references, Value::NULL],
+            &[
+                Value::int(id.0 as i64),
+                references,
+                Value::NULL,
+                Value::NULL,
+            ],
             Some(match symbol {
                 "reel::text" => validate_text_property,
                 "reel::image" => validate_image_property,
@@ -266,7 +280,7 @@ fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), 
     }
 }
 
-fn number(value: Value) -> Result<f64, AdapterError> {
+pub(super) fn number(value: Value) -> Result<f64, AdapterError> {
     let value = value
         .as_float()
         .or_else(|| value.as_int().map(|n| n as f64))
@@ -341,7 +355,11 @@ fn validate_text_property(heap: &Heap, index: u32, value: Value) -> Result<(), H
     }
     validate_layout_property(heap, index - 1, value)
 }
-fn validate_layout_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+pub(super) fn validate_layout_property(
+    heap: &Heap,
+    index: u32,
+    value: Value,
+) -> Result<(), HeapError> {
     let result = match index {
         0 | 1 => number(value).map(|_| ()),
         2 | 3 => dimension(value).map(|_| ()),

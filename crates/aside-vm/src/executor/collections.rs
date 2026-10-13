@@ -535,6 +535,12 @@ impl Vm {
                 if let Err(error) = self.heap.table_store(table, work.entry, key, value) {
                     return self.collection_fault(s, heap_fault(error));
                 }
+                if let TableAction::SetHost { object, .. } = work.action {
+                    let host = self
+                        .read(*s, object)
+                        .map_err(|_| VmError::Contract("validated host receiver"))?;
+                    self.heap.record_host_write(host, work.entry)?;
+                }
             }
             TableAction::Build {
                 dest,

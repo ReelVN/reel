@@ -1,0 +1,20 @@
+fn main() {
+    let card = stack(width: 420, height: 220, x: 80, y: 120,
+                     opacity: 0, background: "#27395d") {
+        text("雨后的窗边", x: 32, y: 32, font_size: 36);
+        text("同一组节点，同时承担画面与演出。", x: 32, y: 100);
+    };
+    stage.replace(card);
+    await run(tween(card, opacity: 1, x: 220, duration: 0.8, easing: "out"));
+
+    // 对白等待期间，画面的变化继续进行。
+    let drift = run(tween(card, x: 300, rotation: 4, duration: 4), owner: card);
+    narrator("窗外的雨渐渐停了。");
+    pause(drift);
+    narrator("画面停在此刻。继续后让它回到原位。");
+
+    // 新演出从当前值接管同一属性；旧活动结算为 Stopped。
+    await run(tween(card, x: 220, rotation: 0, duration: 0.5, easing: "in_out"));
+    narrator("写作时只需描述画面应该如何变化。");
+    await run(tween(card, opacity: 0, duration: 0.4));
+}

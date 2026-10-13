@@ -236,12 +236,12 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 ## 四 时间顺序与同时发生的变化
 
-本节动作组合、动画活动及其作者控制接口尚未实现。
+有限动画活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时归会话；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、in、out、in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --font <font.ttf>`。下文的 sequence/parallel/repeat 和 scope 尚未实现。
 
-语言底层现已支持等待宿主注册的可等待对象，普通 fn 可以直接写 `await request`；它会暂停当前调用链，让宿主继续处理其他工作。已完成对象也在下一调度步骤返回，错误在 await 位置报告并保留生产者原因。该协议供引擎服务接入使用，尚不提供 async fn、Future 构造或本节 run/tween 活动。可运行的宿主接入检查见 [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs)，命令为 `cargo test -p aside-compiler --test host_awaitables`。
+语言底层现已支持等待宿主注册的可等待对象，普通 fn 可以直接写 `await request`；它会暂停当前调用链，让宿主继续处理其他工作。已完成对象也在下一调度步骤返回，错误在 await 位置报告并保留生产者原因。引擎活动现已接入这一协议；async fn 与 Future 构造尚未实现。可运行的宿主接入检查见 [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs)，命令为 `cargo test -p aside-compiler --test host_awaitables`。
 
-tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。run(action) 默认归当前作用域所有，作用域外归当前任务的 owner；需要跨越此范围时显式指定 owner。
-动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。run 原子保留整个动作树会写入的属性，保留持续到根活动结束，包括未来的 sequence 分段、repeat 和暂停期间。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。冲突时在调用位置报告并保持已有活动。需要接管时先停止旧活动。直接给已保留属性赋值会先停止其根活动，再采用赋值；未来分段保留的属性也遵守这个规则。终止的活动释放所有保留。
+tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。当前 run(action) 默认归会话所有，显式 owner 可指定舞台节点。设计中的 scope 将提供自己的 s.run 入口。
+动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。活动只在动作段真正激活时取得属性写入权。新演出停止与之冲突的旧根活动并从当前值接管，暂停的旧活动也遵守此规则。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。直接赋值，包括赋相同的值，停止正在写该属性的根活动。其他属性的赋值不受影响；终止活动释放全部写入权。
 ```aside
 let entrance = parallel(
     tween(view.portrait, x: 320, duration: 0.5),
@@ -283,7 +283,7 @@ visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面�
 
 ## 六 Logo 标题与局部交互
 
-本节图片、动画、按钮回调和游戏入口切换尚未接入作者源码。
+图片与有限动画已接入作者源码；本节视频、按钮回调和游戏入口切换尚未实现。
 
 启动流程仍写普通 fn。媒体 play 返回活动句柄；点击可以通过正常事件停止播放，播放自然结束和主动停止都进入下一行。
 ```aside
@@ -356,7 +356,7 @@ bind 连接可观察属性，属性同时保留原来的读写权限；text 可�
 
 ## 八 风格与共同运动
 
-普通函数和节点属性修改已可用；本节样式展开、变换、动画与临时覆盖接口仍待实现。
+普通函数、节点属性修改、变换和有限动画已可用；本节样式展开与临时覆盖接口仍待实现。
 
 常用风格就是普通数据，组件函数决定如何把它应用到自己的节点。先写默认值，再用变体与显式参数覆盖；字段缺失才采用默认值，false、0 和 null 都保留作者的明确含义。临时 scope 覆盖优先于节点底层属性。
 ```aside
@@ -496,7 +496,7 @@ settings 属于引擎的全局偏好服务；剧情存档恢复时读取当前�
 
 ## 十三 作者怎样扩展自己的积木
 
-普通节点函数、命名参数、缺省值、children 和闭包已可用。下方 arrive 示例依赖尚未实现的动画接口。
+普通节点函数、命名参数、缺省值、children 和闭包已可用。下方 arrive 示例使用已实现的有限动画接口。
 
 复用的最小单位是普通 fn。返回节点的函数用于画面，返回动作的函数用于演出，普通对象用于把需要操作的部分交给调用者。命名实参、children、闭包和模块导入共同组成这套方式。
 参数缺省表达式在每次调用时按参数顺序运行，全部实际参数先完成求值。缺省可引用前序参数，以表达式或块尾值作为结果。显式 return 属于函数正文，不能写在该函数的参数缺省内，条件或短路分支也遵守这一规则；缺省内定义的嵌套函数按自己的正文返回。break 和 continue 只能指向缺省内部建立的循环，throw 则传播参数准备失败。

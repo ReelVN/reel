@@ -62,6 +62,13 @@ impl WindowSession {
         matches!(self, Self::Aside(story) if story.needs_tick())
     }
 
+    pub(crate) fn tick_interval(&self) -> std::time::Duration {
+        match self {
+            Self::Aside(story) => story.tick_interval(),
+            Self::Diagnostic(_) => std::time::Duration::from_millis(1),
+        }
+    }
+
     pub(crate) fn tick(
         &mut self,
         budget: SliceBudget,

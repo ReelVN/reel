@@ -334,7 +334,7 @@ impl State {
         self.session
             .as_ref()
             .filter(|session| session.needs_tick())
-            .map(|_| Instant::now() + Duration::from_millis(1))
+            .map(|session| Instant::now() + session.tick_interval())
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
         let Some(session) = &mut self.session else {

@@ -25,6 +25,8 @@ pub(super) const NODE_FIELDS: [&str; 17] = [
     "anchor_y",
 ];
 
+pub(super) const ANIMATED_FIELDS: [usize; 13] = [0, 1, 2, 3, 4, 7, 8, 9, 12, 13, 14, 15, 16];
+
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "reel::text" => &["value"],
@@ -211,6 +213,51 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         effects: Effects(Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],
     });
+    let parameter = |name: &str, default| NativeParameter {
+        name: name.into(),
+        ty: BuiltinType::Any,
+        default,
+    };
+    let mut tween = vec![
+        parameter("target", None),
+        parameter("duration", Some(bc::Const::FloatBits(0.3_f64.to_bits()))),
+        NativeParameter {
+            name: "easing".into(),
+            ty: BuiltinType::String,
+            default: Some(bc::Const::Utf8("linear".into())),
+        },
+    ];
+    tween.extend(ANIMATED_FIELDS.map(|i| parameter(NODE_FIELDS[i], Some(bc::Const::Null))));
+    for (name, parameters, waits) in [
+        ("tween", tween, false),
+        (
+            "run",
+            vec![
+                parameter("action", None),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        ("pause", vec![parameter("activity", None)], false),
+        ("resume", vec![parameter("activity", None)], false),
+        ("stop", vec![parameter("activity", None)], false),
+        ("finish", vec![parameter("activity", None)], false),
+        ("activity::await", vec![parameter("activity", None)], true),
+    ] {
+        contracts.push(NativeContract {
+            symbol: format!("reel::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(
+                Effects::ALLOCATE
+                    | Effects::WRITE
+                    | Effects::HOST
+                    | if waits { Effects::WAIT } else { 0 },
+            ),
+            required_capabilities: vec!["reel.stage".into()],
+        });
+    }
     contracts
 }
 
