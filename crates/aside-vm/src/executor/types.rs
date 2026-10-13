@@ -1,0 +1,180 @@
+//! Shared structural contracts. The verified type DAG bounds work and scratch.
+use super::*;
+use std::cell::RefCell;
+
+#[derive(Clone, Copy)]
+struct Cursor {
+    ty: TypeId,
+    value: Value,
+    next: usize,
+}
+
+pub(super) struct TypeChecks {
+    work: ChargedVec<u64>,
+    signature_work: ChargedVec<u64>,
+    stack: RefCell<ChargedVec<Cursor>>,
+}
+
+impl TypeChecks {
+    pub(super) fn new(p: &BytecodePackage, usage: &HeapBudgetUsage) -> Result<Self, VmError> {
+        let mut work = ChargedVec::new(usage, p.types.len())?;
+        let mut depths = ChargedVec::new(usage, p.types.len())?;
+        for ty in &p.types {
+            let (cost, depth) = match ty {
+                TypeDef::Builtin(_) => (1, 0usize),
+                TypeDef::Tuple(items) | TypeDef::Union(items) => {
+                    let mut cost = 3u64;
+                    let mut depth = 0;
+                    for id in items {
+                        cost = cost
+                            .checked_add(work.data[id.index()])
+                            .and_then(|n| n.checked_add(2))
+                            .ok_or(VmError::Limit)?;
+                        depth = depth.max(depths.data[id.index()] + 1);
+                    }
+                    (cost, depth)
+                }
+                _ => {
+                    return Err(VmError::Contract(
+                        "named/callable type handler is not connected",
+                    ));
+                }
+            };
+            work.data.push(cost);
+            depths.data.push(depth);
+        }
+        let mut signature_work = ChargedVec::new(usage, p.signatures.len())?;
+        for sig in &p.signatures {
+            signature_work.data.push(
+                sig.parameters
+                    .iter()
+                    .chain(sig.rest.iter())
+                    .map(|p| work.data[p.ty.index()] - 1)
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        let stack = ChargedVec::new(usage, depths.data.iter().copied().max().unwrap_or(0))?;
+        Ok(Self {
+            work,
+            signature_work,
+            stack: RefCell::new(stack),
+        })
+    }
+
+    pub(super) fn extra(&self, ty: TypeId) -> u64 {
+        self.work.data[ty.index()] - 1
+    }
+    pub(super) fn argument_extra(&self, sig: SignatureId) -> u64 {
+        self.signature_work.data[sig.index()]
+    }
+
+    pub(super) fn accepts(
+        &self,
+        p: &BytecodePackage,
+        heap: &Heap,
+        ty: TypeId,
+        value: Value,
+    ) -> Result<bool, HeapError> {
+        if let TypeDef::Builtin(kind) = p.types[ty.index()] {
+            return heap.accepts_builtin(kind, value);
+        }
+        let mut stack = self.stack.borrow_mut();
+        let result = (|| {
+            let mut current = Some((ty, value));
+            let mut accepted = false;
+            loop {
+                if let Some((ty, value)) = current.take() {
+                    match &p.types[ty.index()] {
+                        TypeDef::Builtin(kind) => accepted = heap.accepts_builtin(*kind, value)?,
+                        TypeDef::Tuple(items) => {
+                            if !heap.accepts_builtin(BuiltinType::Tuple, value)?
+                                || heap.sequence_len(value)? as usize != items.len()
+                            {
+                                accepted = false;
+                            } else if items.is_empty() {
+                                accepted = true;
+                            } else {
+                                stack.data.push(Cursor { ty, value, next: 1 });
+                                current = Some((items[0], heap.sequence_get(value, 0)?));
+                                continue;
+                            }
+                        }
+                        TypeDef::Union(items) => {
+                            if items.is_empty() {
+                                accepted = false;
+                            } else {
+                                stack.data.push(Cursor { ty, value, next: 1 });
+                                current = Some((items[0], value));
+                                continue;
+                            }
+                        }
+                        _ => unreachable!("load admits executable contracts"),
+                    }
+                }
+                loop {
+                    let Some(mut parent) = stack.data.pop() else {
+                        return Ok(accepted);
+                    };
+                    let (items, tuple) = match &p.types[parent.ty.index()] {
+                        TypeDef::Tuple(items) => (items, true),
+                        TypeDef::Union(items) => (items, false),
+                        _ => unreachable!(),
+                    };
+                    if accepted == tuple && parent.next < items.len() {
+                        let index = parent.next;
+                        parent.next += 1;
+                        stack.data.push(parent);
+                        current = Some((
+                            items[index],
+                            if tuple {
+                                heap.sequence_get(parent.value, index as u32)?
+                            } else {
+                                parent.value
+                            },
+                        ));
+                        break;
+                    }
+                }
+            }
+        })();
+        stack.data.clear();
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn structural_checks_reuse_charged_stack_without_allocations() {
+        let mut p = fixtures::helper_native();
+        let mut ty = TypeId(1); // int
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let mut value = Value::int(42);
+        for _ in 0..64 {
+            let next = TypeId(p.types.len() as u32);
+            p.types.push(TypeDef::Tuple(vec![ty]));
+            ty = next;
+            value = heap.alloc_tuple(&[value]).unwrap();
+        }
+        let checked = crate::bytecode::verify(p, crate::bytecode::Limits::default()).unwrap();
+        let checks = TypeChecks::new(checked.package(), &heap.budget_usage()).unwrap();
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..10_000 {
+                assert!(checks.accepts(checked.package(), &heap, ty, value).unwrap());
+                assert!(
+                    !checks
+                        .accepts(checked.package(), &heap, ty, Value::NULL)
+                        .unwrap()
+                );
+            }
+        });
+        assert_eq!(measured.count_total, 0);
+        assert!(checks.stack.borrow().data.is_empty());
+        println!(
+            "10000 successful depth-64 tuple checks and 10000 rejections: allocations={}",
+            measured.count_total
+        );
+    }
+}

@@ -1,0 +1,70 @@
+// Migrated from Quirrel testData/exec/opt/opt_same_reg_fold.nut; original oracle and assertions retained.
+// Test: both loads in 3-instruction fold target the same register.
+// When loadA and loadB write to the same register, loadA's value is dead
+// (overwritten by loadB). The optimizer must not use loadA's stale value.
+
+// Pattern: let mut x = A; x = B; let mut y = x - x
+// After peephole: LOADINT reg A, LOADINT reg B, SUB y_reg reg reg
+// Both loads target the same register. Result must be B - B = 0, not A - B.
+
+{
+  let mut v1 = -111;
+  v1 = 12;
+  let mut loop2 = v1 - v1;
+  assert(v1 == 12, f"expected v1==12, got {v1}");
+  assert(loop2 == 0, f"expected loop2==0, got {loop2}");
+}
+
+{
+  let mut x = 99;
+  x = 5;
+  let mut y = x + x;
+  assert(x == 5, f"expected x==5, got {x}");
+  assert(y == 10, f"expected y==10, got {y}");
+}
+
+{
+  let mut x = 99;
+  x = 7;
+  let mut y = x * x;
+  assert(x == 7, f"expected x==7, got {x}");
+  assert(y == 49, f"expected y==49, got {y}");
+}
+
+// Division by self
+{
+  let mut x = 50;
+  x = 13;
+  let mut y = x / x;
+  assert(x == 13, f"expected x==13, got {x}");
+  assert(y == 1, f"expected y==1, got {y}");
+}
+
+// Modulo by self
+{
+  let mut x = 50;
+  x = 13;
+  let mut y = x % x;
+  assert(x == 13, f"expected x==13, got {x}");
+  assert(y == 0, f"expected y==0, got {y}");
+}
+
+// Bitwise XOR with self
+{
+  let mut x = 50;
+  x = 0xFF;
+  let mut y = x ^ x;
+  assert(x == 0xFF, f"expected x==255, got {x}");
+  assert(y == 0, f"expected y==0, got {y}");
+}
+
+// Bitwise AND with self
+{
+  let mut x = 50;
+  x = 0xAB;
+  let mut y = x & x;
+  assert(x == 0xAB, f"expected x==171, got {x}");
+  assert(y == 0xAB, f"expected y==171, got {y}");
+}
+
+println("opt_same_reg_fold: OK");

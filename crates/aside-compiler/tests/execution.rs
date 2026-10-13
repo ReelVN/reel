@@ -74,6 +74,18 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         })
         .into();
     let mut cases = vec![
+        (
+            "fn main() { fn f(v:(int,string)|null=(41,\"x\"))->(int,string) { if v is null { (0,\"\") } else { v } } let value=f(); if value is (int,string) { value[0]+1 } else { 0 } }",
+            42,
+        ),
+        (
+            "let mut global:(int,string)=(1,\"old\"); fn main() { let mut pair:(int,string)=(2,\"local\"); let mut errors=0; fn replace(v) { pair=v; } fn ret(v)->(int,string) { v } fn arg(v:(int,string)) { v } let bad:any=(9,null); try { global=bad; } catch e { errors+=1; } try { replace(bad); } catch e { errors+=1; } try { ret(bad); } catch e { errors+=1; } try { arg(bad); } catch e { errors+=1; } try { let value:(int,string)=bad; } catch e { errors+=1; } replace((7,\"ok\")); global=(30,\"ok\"); global[0]+pair[0]+errors }",
+            42,
+        ),
+        (
+            "fn main() { let a=(((1,\"x\"),),true); if a is (((int,string),),bool) && !(a is (((int,int),),bool)) && !((1,2,3) is (int,int)) && ((1,2) is (null|(int,int))) && (() is ()) {42} else {0} }",
+            42,
+        ),
         (long_text.as_str(), 42),
         (long_sum.as_str(), 256),
         (long_members.as_str(), 84),

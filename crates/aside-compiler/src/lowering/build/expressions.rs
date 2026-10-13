@@ -33,6 +33,11 @@ impl FunctionBuilder<'_, '_> {
         let kind = self.l.m.hir().node(n).kind;
         let form = self.l.m.hir().node(n).form;
         let depth = depth + 1;
+        if matches!(kind, H::Name | H::Member)
+            && let Some(native) = self.l.native(n)?
+        {
+            return self.native_reference(native, n).map(Some);
+        }
         match (kind, form) {
             (
                 H::Member | H::Index | H::Call,

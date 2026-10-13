@@ -192,33 +192,38 @@ fn effective_no_wait_has_no_history_or_interaction_publication() {
 
 #[test]
 fn narrator_wait_maps_exact_task_and_resumes_once_across_gc() {
-    let (mut s, mut vm) = setup(STORY, Context::Ordinary);
-    let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
-        panic!("native ticket")
-    };
-    let id = vm.dispatch_narrator(&mut s, ticket, "en").unwrap();
-    assert_eq!(vm.pending.as_ref().unwrap().task, ticket.task);
-    assert_eq!(vm.pending.as_ref().unwrap().wait, ticket.wait_id());
-    assert_eq!(vm.pending.as_ref().unwrap().interaction, id);
-    assert!(vm.dispatch_narrator(&mut s, ticket, "en").is_err());
-    collect(&mut vm);
-    let owner = s.root_owner();
-    s.handle_local_input(owner, InputAction::Advance(id))
-        .unwrap();
-    assert!(s.completion.is_none());
-    s.handle_local_input(owner, InputAction::Advance(id))
-        .unwrap();
-    let RunOutcome::HostCall(second) = next(&mut vm, &mut s) else {
-        panic!("second native")
-    };
-    assert_ne!(ticket, second);
-    assert!(
-        vm.vm
-            .complete(ticket.wait_id(), VmCompletion::Ready(Value::NULL))
-            .is_err()
-    );
-    vm.dispatch_narrator(&mut s, second, "en").unwrap();
-    assert_eq!(s.view().history.len(), 2);
+    for source in [
+        STORY,
+        "use reel::prelude::*; pub fn opening() { let say=narrator; say(\"你好\"); say?(\"again\"); }",
+    ] {
+        let (mut s, mut vm) = setup(source, Context::Ordinary);
+        let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
+            panic!("native ticket")
+        };
+        let id = vm.dispatch_narrator(&mut s, ticket, "en").unwrap();
+        assert_eq!(vm.pending.as_ref().unwrap().task, ticket.task);
+        assert_eq!(vm.pending.as_ref().unwrap().wait, ticket.wait_id());
+        assert_eq!(vm.pending.as_ref().unwrap().interaction, id);
+        assert!(vm.dispatch_narrator(&mut s, ticket, "en").is_err());
+        collect(&mut vm);
+        let owner = s.root_owner();
+        s.handle_local_input(owner, InputAction::Advance(id))
+            .unwrap();
+        assert!(s.completion.is_none());
+        s.handle_local_input(owner, InputAction::Advance(id))
+            .unwrap();
+        let RunOutcome::HostCall(second) = next(&mut vm, &mut s) else {
+            panic!("second native")
+        };
+        assert_ne!(ticket, second);
+        assert!(
+            vm.vm
+                .complete(ticket.wait_id(), VmCompletion::Ready(Value::NULL))
+                .is_err()
+        );
+        vm.dispatch_narrator(&mut s, second, "en").unwrap();
+        assert_eq!(s.view().history.len(), 2);
+    }
 }
 
 #[test]

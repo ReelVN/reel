@@ -5,11 +5,15 @@ The original Quirrel test inputs, expected results and runner reference remain i
 The original suite selected 1,296 inputs and 1,494 runs including iteration seeds.
 The C++ implementation is not part of this workspace.
 
-`provenance.json` lists 24 reviewed complete Aside migrations. All 52 original
+`provenance.json` lists 30 reviewed complete Aside migrations. All 102 original
 assertion call sites and original stdout are retained. `semantic_quirrel.rs`
 checks assertion tokens and copied source-map spans; `quirrel_vm.rs` compiles,
 round-trips B01 and executes each case in the real VM, both normally and with
 tiny slices interleaved with GC. It compares stdout to the unchanged `.out`.
+Output comparison follows the original runner's line boundaries, accepting the
+presence or absence of the final line ending. Interpolation-prefix edits inside
+assertions are explicitly mapped and checked as `$"` to `f"`; predicates,
+constants, template text and expressions remain unchanged.
 
 ```sh
 cargo test --locked -p aside-compiler --test semantic_quirrel --test quirrel_vm

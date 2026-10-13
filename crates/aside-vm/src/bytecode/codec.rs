@@ -329,7 +329,28 @@ macro_rules! tuple_enum {
     (@get $r:ident $x:ident) => {Wire::get($r)?};
 }
 unit_enum!(BuiltinType {0=>Any,1=>Null,2=>Bool,3=>Int,4=>Float,5=>String,6=>Bytes,7=>Array,8=>Table,9=>Tuple,10=>Class,11=>Instance,12=>Closure,13=>Generator,14=>Thread,15=>Future,16=>WeakRef});
-unit_enum!(FunctionKind{0=>Plain,1=>Async,2=>Generator});
+impl Wire for FunctionKind {
+    fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        match self {
+            Self::Plain => 0u8.put(w),
+            Self::Async => 1u8.put(w),
+            Self::Generator => 2u8.put(w),
+            Self::Native(id) => {
+                3u8.put(w)?;
+                id.put(w)
+            }
+        }
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        match u8::get(r)? {
+            0 => Ok(Self::Plain),
+            1 => Ok(Self::Async),
+            2 => Ok(Self::Generator),
+            3 => Ok(Self::Native(Wire::get(r)?)),
+            _ => Err(r.error(ErrorKind::Encoding, "unknown FunctionKind tag")),
+        }
+    }
+}
 unit_enum!(Context{0=>Ordinary,1=>NoWait,2=>Derived,3=>Init});
 unit_enum!(CaptureKind{0=>Value,1=>Cell});
 tuple_enum!(BindingStorage{0=>Value(reg),1=>Cell(reg)});

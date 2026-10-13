@@ -1,0 +1,51 @@
+{
+  "source": "testData/exec/sub_int_min.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "mapping_rule": "complete reviewed syntax translation; assertion predicates, constants, and messages retained",
+  "segments": [
+    {
+      "original": [
+        0,
+        1140
+      ],
+      "aside": [
+        0,
+        1246
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Aside declaration, strict condition, function, range, terminator and interpolation syntax"
+    }
+  ],
+  "assertions": [
+    {
+      "original": [
+        929,
+        957
+      ],
+      "aside": [
+        1028,
+        1056
+      ]
+    },
+    {
+      "original": [
+        1057,
+        1086
+      ],
+      "aside": [
+        1161,
+        1190
+      ]
+    },
+    {
+      "original": [
+        1114,
+        1139
+      ],
+      "aside": [
+        1219,
+        1244
+      ]
+    }
+  ]
+}

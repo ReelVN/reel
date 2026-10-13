@@ -11,11 +11,14 @@ use std::rc::Rc;
 
 mod api;
 mod builtins;
+mod calls;
+use calls::NativeSite;
 #[cfg(test)]
 mod collection_tests;
 mod collections;
 mod iterators;
 mod text;
+mod types;
 use builtins::Builtin;
 use collections::{TableAction, TableWork};
 #[cfg(test)]
@@ -401,6 +404,8 @@ pub struct Vm {
     scratch: ChargedVec<Value>,
     text_scratch: ChargedVec<u8>,
     native_cells: ChargedVec<bool>,
+    native_values: ChargedVec<(FunctionId, u32)>,
+    type_checks: types::TypeChecks,
     globals: RootRangeToken,
     constants: RootRangeToken,
     heap: Heap,
@@ -455,13 +460,6 @@ impl Vm {
             return Err(VmError::Limit);
         }
         // Load rejects unsupported operand semantics as well as unsupported opcodes.
-        for ty in &p.types {
-            if !matches!(ty, TypeDef::Builtin(_)) {
-                return Err(VmError::Contract(
-                    "structural/named type handler is not connected",
-                ));
-            }
-        }
         for sig in &p.signatures {
             if sig.property_bag_tail.is_some()
                 || sig.parameters.len() + usize::from(sig.rest.is_some())
@@ -473,7 +471,7 @@ impl Vm {
             }
         }
         for f in &p.functions {
-            if f.kind != FunctionKind::Plain {
+            if !matches!(f.kind, FunctionKind::Plain | FunctionKind::Native(_)) {
                 return Err(VmError::Contract(
                     "async/generator handler is not connected",
                 ));
@@ -486,6 +484,7 @@ impl Vm {
         }
         let mut heap = Heap::new(epoch, limits.heap)?;
         let usage = heap.budget_usage();
+        let type_checks = types::TypeChecks::new(p, &usage)?;
         let program_charge = Reservation::new(
             &usage,
             program.stats().owned_capacity_bytes as u64
@@ -505,6 +504,12 @@ impl Vm {
                 .data
                 .push(program.native_parameters_need_cells(NativeId(index as u32))?);
         }
+        let native_count = p
+            .functions
+            .iter()
+            .filter(|f| matches!(f.kind, FunctionKind::Native(_)))
+            .count();
+        let mut native_values = ChargedVec::new(&usage, native_count)?;
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
         let mut tasks = ChargedVec::new(&usage, limits.max_tasks as usize)?;
         for _ in 0..limits.max_tasks {
@@ -534,6 +539,7 @@ impl Vm {
                 p.constants
                     .len()
                     .checked_add(p.symbols.len())
+                    .and_then(|n| n.checked_add(native_count))
                     .ok_or(VmError::Limit)?,
             )
             .map_err(|_| VmError::Limit)?,
@@ -585,6 +591,27 @@ impl Vm {
                 }
             }
         }
+        // Native function values are immutable code constants. Keep one rooted
+        // closure per function so reading a native name has stable identity and
+        // neither allocates nor adds a synthetic author-visible global.
+        for (index, function) in p.functions.iter().enumerate() {
+            if matches!(function.kind, FunctionKind::Native(_)) {
+                let position =
+                    (p.constants.len() + p.symbols.len() + native_values.data.len()) as u32;
+                let value = heap.alloc_record(
+                    ObjectKind::Closure,
+                    &[
+                        Value::int(index as i64),
+                        Value::int(p.content_version as i64),
+                        Value::int(function.module.0 as i64),
+                    ],
+                )?;
+                slots.write(&mut heap, at(constants, position), value)?;
+                native_values
+                    .data
+                    .push((FunctionId(index as u32), position));
+            }
+        }
         let globals = slots.open(
             &mut heap,
             RootOwner(u64::MAX),
@@ -594,13 +621,14 @@ impl Vm {
         let mut offset = 0;
         for (mi, module) in p.modules.iter().enumerate() {
             for global in &module.globals {
-                let TypeDef::Builtin(ty) = p.types[global.ty.index()] else {
-                    unreachable!()
+                let ty = match p.types[global.ty.index()] {
+                    TypeDef::Builtin(ty) => ty,
+                    _ => BuiltinType::Any,
                 };
                 let cell = heap.alloc_language_cell(CellContract {
                     mutable: global.mutable,
                     ty,
-                    type_id: global.ty,
+                    type_id: Some(global.ty),
                     module: ModuleId(mi as u32),
                     code_version: p.content_version,
                     module_version: p.content_version,
@@ -615,6 +643,9 @@ impl Vm {
                             Value::int(mi as i64),
                         ],
                     )?;
+                    if !type_checks.accepts(p, &heap, global.ty, closure)? {
+                        return Err(HeapError::TypeMismatch.into());
+                    }
                     heap.cell_initialize(cell, closure)?;
                 }
                 offset += 1;
@@ -632,6 +663,8 @@ impl Vm {
             scratch,
             text_scratch,
             native_cells,
+            native_values,
+            type_checks,
 
             globals,
             constants,
@@ -763,23 +796,25 @@ impl Vm {
         }
     }
     fn contract(&self, module: ModuleId, ty: TypeId, mutable: bool) -> CellContract {
-        let TypeDef::Builtin(kind) = self.program.package().types[ty.index()] else {
-            unreachable!()
+        let kind = match self.program.package().types[ty.index()] {
+            TypeDef::Builtin(kind) => kind,
+            _ => BuiltinType::Any,
         };
         CellContract {
             mutable,
             ty: kind,
-            type_id: ty,
+            type_id: Some(ty),
             module,
             code_version: self.program.package().content_version,
             module_version: self.program.package().content_version,
         }
     }
     fn check_type(&self, ty: TypeId, value: Value) -> Result<(), FaultKind> {
-        let TypeDef::Builtin(kind) = self.program.package().types[ty.index()] else {
-            unreachable!()
-        };
-        if self.heap.accepts_builtin(kind, value).map_err(heap_fault)? {
+        if self
+            .type_checks
+            .accepts(self.program.package(), &self.heap, ty, value)
+            .map_err(heap_fault)?
+        {
             Ok(())
         } else {
             Err(FaultKind::Type)
@@ -827,6 +862,9 @@ impl Vm {
     }
     fn script_push_cost(&self, function: FunctionId, count: u32) -> u64 {
         let f = &self.program.package().functions[function.index()];
+        if let FunctionKind::Native(native) = f.kind {
+            return self.native_push_cost(native, count);
+        }
         let values = f.register_count as u64
             + 3
             + 2 * f.regions.len() as u64
@@ -877,6 +915,10 @@ impl Vm {
             return Err(VmError::Limit);
         }
         let f = &self.program.package().functions[function.index()];
+        if let FunctionKind::Native(native) = f.kind {
+            let site = self.native_site(function, owner, context, effects, ret)?;
+            return self.push_native(native, source, count, site);
+        }
         let registers = f.register_count;
         let env_len = 3 + f.regions.len() as u32 * 2;
         let sig = &self.program.package().signatures[f.signature.index()];
@@ -1023,26 +1065,42 @@ impl Vm {
             self.active.task_owner = None;
             return Err(e);
         }
-        let Frame::Script(mut s) = *self.active.frames.data.last().unwrap() else {
-            unreachable!()
+        let mut frame = *self.active.frames.data.last().unwrap();
+        let arguments = match frame {
+            Frame::Script(s) => s.args,
+            Frame::Native(n) => n.args,
         };
         for (i, &v) in args.iter().enumerate() {
-            self.put(s.args, i as u32 * 2, Value::int(-1))?;
-            self.put(s.args, i as u32 * 2 + 1, v)?;
+            self.put(arguments, i as u32 * 2, Value::int(-1))?;
+            self.put(arguments, i as u32 * 2 + 1, v)?;
         }
         let signature = self.program.package().functions[function.index()].signature;
-        s.phase = if self.program.package().signatures[signature.index()]
+        let rest = self.program.package().signatures[signature.index()]
             .rest
-            .is_some()
-        {
-            ScriptPhase::Rest
-        } else {
-            ScriptPhase::Bind {
-                index: 0,
-                positional: 0,
+            .is_some();
+        match &mut frame {
+            Frame::Script(s) => {
+                s.phase = if rest {
+                    ScriptPhase::Rest
+                } else {
+                    ScriptPhase::Bind {
+                        index: 0,
+                        positional: 0,
+                    }
+                }
+            }
+            Frame::Native(n) => {
+                n.phase = if rest {
+                    NativePhase::Rest
+                } else {
+                    NativePhase::Bind {
+                        index: 0,
+                        positional: 0,
+                    }
+                }
             }
         };
-        *self.active.frames.data.last_mut().unwrap() = Frame::Script(s);
+        *self.active.frames.data.last_mut().unwrap() = frame;
         self.active.task_owner = Some(owner);
         self.active.task_id = Some(task);
         Ok(task)
@@ -1175,9 +1233,11 @@ impl Vm {
         native: NativeId,
         source: ArgSource,
         count: u32,
-        s: ScriptFrame,
-        dest: Reg,
+        site: NativeSite,
     ) -> Result<(), VmError> {
+        if site.effects.0 & Effects::HOST == 0 {
+            return Err(VmError::Effect);
+        }
         if self.active.frames.data.len() == self.limits.max_frames as usize
             || count > self.limits.max_arguments
         {
@@ -1189,8 +1249,8 @@ impl Vm {
         let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
         let needs_cells = self.native_cells.data[native.index()];
         let id = FrameId(self.serial()?);
-        let args = self.open(s.owner, RootKind::Arguments, count * 2)?;
-        let bound = match self.open(s.owner, RootKind::Arguments, n) {
+        let args = self.open(site.owner, RootKind::Arguments, count * 2)?;
+        let bound = match self.open(site.owner, RootKind::Arguments, n) {
             Ok(r) => r,
             Err(e) => {
                 self.slots.release(&mut self.heap, args)?;
@@ -1198,7 +1258,7 @@ impl Vm {
             }
         };
         let bindings = if needs_cells {
-            match self.open(s.owner, RootKind::Arguments, n) {
+            match self.open(site.owner, RootKind::Arguments, n) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     self.slots.release(&mut self.heap, bound)?;
@@ -1210,7 +1270,7 @@ impl Vm {
             None
         };
         let roots = match self.open(
-            s.owner,
+            site.owner,
             RootKind::NativeContinuation,
             3 + self.limits.max_continuation_values
                 + self.limits.max_arguments
@@ -1233,7 +1293,7 @@ impl Vm {
             args,
             bound,
             bindings,
-            module: s.module,
+            module: site.module,
             has_defaults,
             roots,
             argument_count: count,
@@ -1242,19 +1302,15 @@ impl Vm {
             continuation_version: 0,
             continuation_stage: 0,
             effects: Effects(
-                s.effects.0
+                site.effects.0
                     & self.program.package().signatures[signature.index()]
                         .effects
                         .0,
             ),
-            context: s.context,
-            owner: s.owner,
-            location: self.loc(s, s.pc),
-            ret: ReturnTo::Register {
-                frame: s.id,
-                reg: dest,
-                call: s.pc,
-            },
+            context: site.context,
+            owner: site.owner,
+            location: site.location,
+            ret: site.ret,
             callback_fault: None,
             fault_count: 0,
             pending_fault: None,
@@ -1988,7 +2044,12 @@ impl Vm {
                 } else {
                     0
                 };
-                if !m.take(0, n + 3, bytes) {
+                let extra = if index < s.argument_count && !s.shared_parameters && !tail {
+                    self.type_checks.argument_extra(signature)
+                } else {
+                    0
+                };
+                if !m.take(0, n + 3 + extra, bytes) {
                     return Ok(false);
                 }
                 if index < s.argument_count {
@@ -2084,15 +2145,15 @@ impl Vm {
                 } else {
                     0
                 };
-                if !m.take(0, 4, bytes) {
-                    return Ok(false);
-                }
                 let sig = &self.program.package().signatures[signature.index()];
                 let p = sig
                     .parameters
                     .get(parameter as usize)
                     .or(sig.rest.as_ref())
                     .unwrap();
+                if !m.take(0, 4 + self.type_checks.extra(p.ty), bytes) {
+                    return Ok(false);
+                }
                 let input = self.value(s.bound, parameter)?;
                 let contract = self.contract(ModuleId(s.parameter_module.0), p.ty, p.mutable);
                 let prepared = self.parameter_value(contract, input, storage, s.shared_parameters);
@@ -2408,10 +2469,30 @@ impl Vm {
         op: Opcode,
         _a: u32,
         b: u32,
-        _c: u32,
+        c: u32,
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
+            Opcode::BindInit | Opcode::BindWrite => {
+                (1 + self.type_checks.extra(f.bindings[_a as usize].ty), 0)
+            }
+            Opcode::CellWrite => {
+                let contract = self
+                    .heap
+                    .cell_info(self.slots.read(at(s.regs, _a))?)?
+                    .contract;
+                (
+                    1 + contract.type_id.map_or(0, |ty| self.type_checks.extra(ty)),
+                    0,
+                )
+            }
+            Opcode::Is => (1 + self.type_checks.extra(TypeId(c)), 0),
+            Opcode::Return => (
+                1 + self
+                    .type_checks
+                    .extra(self.program.package().signatures[f.signature.index()].return_type),
+                0,
+            ),
             Opcode::Call | Opcode::CallNoWait => {
                 let Descriptor::Call(d) = &f.descriptors[b as usize] else {
                     unreachable!()
@@ -2435,14 +2516,21 @@ impl Vm {
                 (cost + self.active.unwinds.data.len() as u64 + 1, 0)
             }
             Opcode::MakeClosure => {
-                let Descriptor::Closure { captures, .. } = &f.descriptors[b as usize] else {
+                let Descriptor::Closure { function, captures } = &f.descriptors[b as usize] else {
                     unreachable!()
                 };
-                (
-                    captures.len() as u64 + 1,
-                    ((captures.len() + 3) as u64).div_ceil(VALUE_CHUNK_LEN as u64)
-                        * VALUE_CHUNK_BYTES,
-                )
+                if matches!(
+                    self.program.package().functions[function.index()].kind,
+                    FunctionKind::Native(_)
+                ) {
+                    (self.native_values.data.len().ilog2() as u64 + 2, 0)
+                } else {
+                    (
+                        captures.len() as u64 + 1,
+                        ((captures.len() + 3) as u64).div_ceil(VALUE_CHUNK_LEN as u64)
+                            * VALUE_CHUNK_BYTES,
+                    )
+                }
             }
             Opcode::MakeTuple | Opcode::MakeArray => (1, 0),
             Opcode::Throw | Opcode::Rethrow => (
@@ -2451,7 +2539,17 @@ impl Vm {
             ),
             Opcode::EndFinally => (self.release_cost(1), 0),
             Opcode::GlobalRead | Opcode::GlobalInit | Opcode::GlobalWrite => {
-                (self.program.package().modules.len() as u64 + 1, 0)
+                let Descriptor::Global { module, global } = f.descriptors[b as usize] else {
+                    unreachable!()
+                };
+                let extra = if op == Opcode::GlobalRead {
+                    0
+                } else {
+                    self.type_checks.extra(
+                        self.program.package().modules[module.index()].globals[global.index()].ty,
+                    )
+                };
+                (self.program.package().modules.len() as u64 + 1 + extra, 0)
             }
             Opcode::MemberGet => {
                 let object = self.slots.read(at(s.regs, b))?;
@@ -2512,6 +2610,28 @@ impl Vm {
     ) -> Result<bool, FaultKind> {
         let r = |n| Reg(n);
         let f = &self.program.package().functions[s.code.function.index()];
+        if op == Opcode::MakeClosure {
+            let Descriptor::Closure { function, .. } = &f.descriptors[b as usize] else {
+                unreachable!()
+            };
+            if matches!(
+                self.program.package().functions[function.index()].kind,
+                FunctionKind::Native(_)
+            ) {
+                let index = self
+                    .native_values
+                    .data
+                    .binary_search_by_key(function, |(id, _)| *id)
+                    .unwrap();
+                let value = self
+                    .slots
+                    .read(at(self.constants, self.native_values.data[index].1))
+                    .map_err(heap_fault)?;
+                self.write(*s, r(a), value)?;
+                s.pc.0 += 1;
+                return Ok(true);
+            }
+        }
         if matches!(
             op,
             Opcode::CellWrite
@@ -2767,6 +2887,8 @@ impl Vm {
             Opcode::CellWrite => {
                 let cell = self.read(*s, r(a))?;
                 let v = self.read(*s, r(b))?;
+                let contract = self.heap.cell_info(cell).map_err(heap_fault)?.contract;
+                self.check_cell_type(contract, v)?;
                 self.heap.cell_write(cell, v).map_err(heap_fault)?;
             }
             Opcode::BindInit | Opcode::BindWrite => {
@@ -2833,6 +2955,10 @@ impl Vm {
                     self.write(*s, r(a), v)?;
                 } else {
                     let v = self.read(*s, r(a))?;
+                    self.check_type(
+                        self.program.package().modules[module.index()].globals[global.index()].ty,
+                        v,
+                    )?;
                     if op == Opcode::GlobalInit {
                         self.heap.cell_initialize(cell, v)
                     } else {
@@ -3051,11 +3177,19 @@ impl Vm {
                 self.active.frames.data[caller_index] = Frame::Script(*s);
                 match target {
                     CallTarget::Native(native) => {
-                        if s.effects.0 & Effects::HOST == 0 {
-                            s.pc = caller.pc;
-                            return Err(FaultKind::Effect);
-                        }
-                        if let Err(e) = self.push_native(native, source, count, caller, r(a)) {
+                        let site = NativeSite {
+                            owner: caller.owner,
+                            module: caller.module,
+                            context: caller.context,
+                            effects: caller.effects,
+                            location: self.loc(caller, caller.pc),
+                            ret: ReturnTo::Register {
+                                frame: caller.id,
+                                reg: r(a),
+                                call: caller.pc,
+                            },
+                        };
+                        if let Err(e) = self.push_native(native, source, count, site) {
                             s.pc = caller.pc;
                             return Err(vm_fault(e));
                         }
@@ -3725,7 +3859,12 @@ impl Vm {
                 } else {
                     0
                 };
-                if !m.take(0, sig.parameters.len() as u64 + 3, bytes) {
+                let extra = if index < n.argument_count && !tail {
+                    self.type_checks.argument_extra(n.signature)
+                } else {
+                    0
+                };
+                if !m.take(0, sig.parameters.len() as u64 + 3 + extra, bytes) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 if index < n.argument_count {
@@ -3871,7 +4010,13 @@ impl Vm {
                     });
             }
             NativePhase::Commit(error) => {
-                if !m.take(0, 1, 0) {
+                let extra = if error {
+                    0
+                } else {
+                    self.type_checks
+                        .extra(self.program.package().signatures[n.signature.index()].return_type)
+                };
+                if !m.take(0, 1 + extra, 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 let value = self.value(n.roots, 0)?;
@@ -3957,6 +4102,7 @@ fn heap_fault(e: HeapError) -> FaultKind {
 }
 fn language_fault(e: VmError) -> Result<FaultKind, VmError> {
     match e {
+        VmError::Effect => Ok(FaultKind::Effect),
         VmError::Limit => Ok(FaultKind::Resource),
         VmError::Contract("invalid argument name") => Ok(FaultKind::Type),
         VmError::Heap(
@@ -3980,6 +4126,7 @@ fn language_fault(e: VmError) -> Result<FaultKind, VmError> {
 }
 fn vm_fault(e: VmError) -> FaultKind {
     match e {
+        VmError::Effect => FaultKind::Effect,
         VmError::Heap(e) => heap_fault(e),
         _ => FaultKind::Resource,
     }

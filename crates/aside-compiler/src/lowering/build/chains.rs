@@ -14,6 +14,9 @@ impl FunctionBuilder<'_, '_> {
         let value = loop {
             self.l.b.span = self.span(base);
             self.l.b.work(1)?;
+            if let Some(native) = self.l.native(base)? {
+                break Some(self.native_reference(native, base)?);
+            }
             let receiver = match self.l.m.hir().node(base).form {
                 Form::Binary { left, .. } if self.l.m.hir().node(base).kind == H::Binary => left,
                 Form::Member {
@@ -117,6 +120,9 @@ impl FunctionBuilder<'_, '_> {
         loop {
             self.l.b.span = self.span(base);
             self.l.b.work(1)?;
+            if self.l.native(base)?.is_some() {
+                break;
+            }
             let receiver = match self.l.m.hir().node(base).form {
                 Form::Member {
                     object,

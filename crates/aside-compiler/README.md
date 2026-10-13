@@ -36,14 +36,15 @@ assignment chains and all ten compound assignments. MemberGet results feed the
 existing dynamic Call without compiler-injected self. Prepared locations retain
 the object value and SymbolId, not a resolved slot or setter. Trusted native
 namespace links keep their original identity and contract checks. See the
-[L07 static contract](LOWERING.md#member-values-and-locations-l07). Classes/super,
-native function values and complete unified callable support remain deferred;
+[L07 static contract](LOWERING.md#member-values-and-locations-l07). Classes/super
+and complete unified callable support remain deferred;
 actual receiver binding, hooks and GC behavior are not execution-validated.
 
 L08 / Issue #44 compiles optional Member/Index/Call value chains through existing
 BranchNull instructions. Only explicit optional segments guard; ordinary suffixes
 share the preceding short-circuit exit. Group ends propagation. Same-chain
-assignment targets and optional native values/calls remain located rejections.
+assignment targets remain located rejections. Linked native functions support
+values and optional calls through the same trusted registration.
 See [L08 contracts](LOWERING.md#optional-value-chains-l08). These are static
 compilation checks, not runtime side-effect, hook, GC or restoration acceptance.
 

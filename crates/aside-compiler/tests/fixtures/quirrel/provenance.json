@@ -121,6 +121,36 @@
       "path": "testData/exec/valid_syntax/variables.aside",
       "source": "original/testData/exec/valid_syntax/variables.nut",
       "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/sub_int_min.aside",
+      "source": "original/testData/exec/sub_int_min.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/closure_hoist_typed_return.aside",
+      "source": "original/testData/exec/closure_hoist_typed_return.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/opt_reassign_addi.aside",
+      "source": "original/testData/exec/opt/opt_reassign_addi.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/opt_reassign_arith.aside",
+      "source": "original/testData/exec/opt/opt_reassign_arith.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/opt_reassign_in_scope.aside",
+      "source": "original/testData/exec/opt/opt_reassign_in_scope.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
+    },
+    {
+      "path": "testData/exec/opt/opt_same_reg_fold.aside",
+      "source": "original/testData/exec/opt/opt_same_reg_fold.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
     }
   ]
 }

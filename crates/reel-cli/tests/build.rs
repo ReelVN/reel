@@ -101,6 +101,85 @@ fn builds_default_and_explicit_private_entry_reproducibly() {
 }
 
 #[test]
+fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait() {
+    use reel_engine::aside::{
+        GcBudget, NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits,
+    };
+    use reel_engine::{Epoch, InputAction, Session, SessionId};
+
+    let case = Case::new(include_str!("../../../examples/function_values.aside"));
+    let output = case.run(&[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let story = reel_cli::decode_story(&case.bytes()).unwrap();
+    let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+    let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
+    let mut publications = 0;
+    for entry in [story.initializer, story.entry] {
+        vm.start(&session, entry).unwrap();
+        let mut returned = false;
+        for _ in 0..10_000 {
+            let outcome = vm
+                .step(
+                    &mut session,
+                    SliceBudget {
+                        instructions: 1,
+                        ..Default::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            match outcome {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::HostCall(ticket) => {
+                    if let NativeDispatch::Published { interaction, .. } =
+                        vm.dispatch(&mut session, ticket, "zh-CN", 256).unwrap()
+                    {
+                        publications += 1;
+                        vm.sync_stage(&session).unwrap();
+                        let stage = vm.stage();
+                        let children = &stage.node(stage.root().unwrap()).unwrap().children;
+                        assert_eq!(children.len(), 2);
+                        for (id, expected) in children.iter().zip([(32., 48.), (32., 90.)]) {
+                            let props = &stage.node(*id).unwrap().props;
+                            assert_eq!((props.x, props.y), expected);
+                        }
+                        vm.begin_collection().unwrap();
+                        while vm.vm().heap().phase() != aside_vm::GcPhase::Idle {
+                            vm.gc_step(GcBudget {
+                                units: 1,
+                                ..Default::default()
+                            })
+                            .unwrap();
+                        }
+                        let owner = session.root_owner();
+                        session
+                            .handle_local_input(owner, InputAction::Advance(interaction))
+                            .unwrap();
+                        session
+                            .handle_local_input(owner, InputAction::Advance(interaction))
+                            .unwrap();
+                    }
+                }
+                RunOutcome::Returned(_) => {
+                    vm.discard_delivery(&session).unwrap();
+                    returned = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(returned);
+    }
+    assert_eq!(publications, 1);
+    assert_eq!(session.view().history.len(), 1);
+    assert!(vm.vm().is_idle());
+}
+
+#[test]
 fn existing_output_survives_default_publication_and_all_source_failures() {
     let case = Case::new("fn main() { 1 }");
     fs::write(case.dir.join("result.asb"), b"original bytes").unwrap();

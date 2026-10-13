@@ -504,7 +504,7 @@ fn member_positions_and_symbols_obey_register_work_capacity_and_depth_limits() {
 }
 
 #[test]
-fn resolved_native_members_keep_trusted_linkage_and_reject_function_values() {
+fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
     use aside_compiler::semantic::{
         CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, MemoryResolver,
         ModuleInterface, SymbolReference, TypeHint,
@@ -742,18 +742,25 @@ fn resolved_native_members_keep_trusted_linkage_and_reject_function_values() {
             native: bc::NativeId(0),
             reference: &reference,
         };
-        let error = lowering::lower(
+        let result = lowering::compile(
             &m,
             &Linkage {
                 package: Some(&seed),
                 natives: &[link],
             },
             Options::default(),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
-        assert!(source[byte_range(error.span)].starts_with("native.run"));
-        assert_eq!(error.stats.capacity_bytes, 0);
+        );
+        if expression.contains('=') && !expression.starts_with("let ") {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
+            assert_eq!(error.stats.capacity_bytes, 0);
+        } else {
+            let c = result.unwrap();
+            assert_eq!(
+                pcs(function(c.program.package(), "f"), bc::Opcode::MakeClosure).len(),
+                1
+            );
+        }
     }
     let c = compiled("fn f(){let native={run:|a|a};native.run(3)}");
     let f = function(c.program.package(), "f");

@@ -1,0 +1,59 @@
+// Migrated from Quirrel testData/exec/opt/opt_reassign_in_scope.nut; original oracle and assertions retained.
+// Test: reassigned locals used across nested scopes and control flow.
+// Ensures optimizer respects liveness in more complex code patterns.
+
+// Reassign inside block, use after
+{
+  let mut x = 10;
+  x = 20;
+  let mut y = x + 1;
+  if (y > 0) {
+    assert(x == 20, f"expected x==20, got {x}");
+  }
+  assert(y == 21, f"expected y==21, got {y}");
+}
+
+// Reassign, use in loop init
+{
+  let mut x = 100;
+  x = 3;
+  let mut sum = 0;
+  for i in (x+1)..10 { sum += i; }
+  assert(x == 3, f"expected x==3, got {x}");
+  assert(sum == 4+5+6+7+8+9, f"expected sum==39, got {sum}");
+}
+
+// Reassign, use in function call argument
+{
+  let mut x = 50;
+  x = 7;
+  let mut arr = [x + 1, x + 2, x + 3];
+  assert(x == 7, f"expected x==7, got {x}");
+  assert(arr[0] == 8, f"expected arr[0]==8, got {arr[0]}");
+  assert(arr[1] == 9, f"expected arr[1]==9, got {arr[1]}");
+  assert(arr[2] == 10, f"expected arr[2]==10, got {arr[2]}");
+}
+
+// Multiple locals reassigned
+{
+  let mut a = 1;
+  let mut b = 2;
+  a = 10;
+  b = 20;
+  let mut c = a + b;
+  assert(a == 10, f"expected a==10, got {a}");
+  assert(b == 20, f"expected b==20, got {b}");
+  assert(c == 30, f"expected c==30, got {c}");
+}
+
+// Reassign with compound expression using self
+{
+  let mut x = 100;
+  x = 8;
+  x = x + 2;  // x should be 10
+  let mut y = x + 5;
+  assert(x == 10, f"expected x==10, got {x}");
+  assert(y == 15, f"expected y==15, got {y}");
+}
+
+println("opt_reassign_in_scope: OK");

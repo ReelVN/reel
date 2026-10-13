@@ -1,0 +1,11 @@
+// Migrated from Quirrel testData/exec/closure_hoist_typed_return.nut; original oracle and assertions retained.
+let STR_CONST = "hello";
+fn fnReturnsInt(x)->int { x*x }
+fn fnReturnsStringOrInt(x)->(string|int) { if x!=0 { x } else { STR_CONST } }
+fn test1() { let call=|x:string=STR_CONST| { x }; call() }
+assert(test1() == "hello");
+fn test2() { let call=|x:int=fnReturnsInt(3)| { x }; call() }
+assert(test2() == 9);
+fn test3() { let call=|x:(string|int)=fnReturnsStringOrInt(0)| { x }; call() }
+assert(test3() == "hello");
+println("OK");

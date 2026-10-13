@@ -51,7 +51,9 @@ script parameters use Cells before later defaults. B01 derives and retains nativ
 prefix layouts once; the compiler preserves that shared contract.
 Native identities, ABI, capabilities and default implementations come from an
 explicit trusted verified linkage package. An external default-presence flag
-does not provide an implementation. Native values remain a later callable task.
+does not provide an implementation. Native values use a shared Native FunctionDef
+and MakeClosure; the VM reads a rooted code constant and dispatches directly to
+the native frame. Repeated reads allocate nothing and preserve identity.
 
 Try lowering records shared exception regions and emits Return/Leave/EndFinally;
 cleanup selection belongs to B01/V03. All emitted PCs have source maps.
@@ -67,8 +69,7 @@ initializer and ordinary function loops with cleanup-aware break/continue are su
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
 reads/writes are supported by L06; L07 adds nonoptional member values/locations
 and dynamic calls through their results; L08 adds optional value chains.
-Patterns/collection spread, optional-chain assignment targets, full script imports/linking, structural callable annotations, native
-values, generator/thread/async and the broader language/library scopes remain
+Patterns/collection spread, optional-chain assignment targets, full script imports/linking, structural callable annotations, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
 short-circuit branches. Nested author functions return through their own boundary;
@@ -227,15 +228,15 @@ source-order arguments; the compiler does not inject self or classify arbitrary
 callable values as methods. B01 retains its class-method binding contract and
 table closures remain ordinary functions. IndexGet is not rewritten to
 MemberGet, and this increment does not settle class string-index binding.
-Runtime method classification, field/delegate/hook results and native callable
-dispatch are not newly implemented here.
+Class method classification and field/delegate/hook behavior remain separate.
+Native values use the registration callable path described above.
 
 Resolved namespace exports retain the trusted direct-native call exception:
 identity, version, ABI, capabilities and actual default implementation checks
-still apply. Namespace function values and writes are rejected rather than
-treated as ordinary runtime members. Unlinked direct native calls still fail.
+still apply. Linked namespace function values and optional calls use the same
+registration; namespace writes and unlinked references are rejected.
 L08 extends value chains below. Optional-chain assignment targets, class/super,
-native function values, full module linking
+full module linking
 and complete unified callable support remain outside this increment.
 
 [Member static tests](tests/lowering/members.rs) inspect emitted operands,
@@ -282,9 +283,9 @@ A same-chain assignment target remains a located Unsupported result: this
 increment does not define optional assignment or RHS-skipping semantics.
 Group-separated outer ordinary locations such as (a?.b).c retain existing
 location preparation and writeback rules. Optional native values/calls, including
-native.run?() and native?.run(), remain rejected rather than using a non-null
-assumption to bypass missing native callable support. Ordinary trusted native
-calls, including multiple Groups and the prefix in native.run()?.x, retain
+native.run?() and native?.run(), use the linked native function value and the
+ordinary optional-chain joins. Trusted native calls, including multiple Groups
+and the prefix in native.run()?.x, retain
 exact Member identity, version, ABI, capability and default-implementation checks.
 
 [Optional-chain static tests](tests/lowering/optional_chains.rs) inspect null
@@ -325,8 +326,8 @@ Callee and builder remain live across argument side effects. L08 null exits
 skip builder/arguments/Call; terminated argument paths emit no pending append
 or Call and preserve existing cleanup routing. Trusted native direct calls
 retain exact symbol/node identity, version, ABI, capabilities and actual default
-implementation. Collection/tuple-literal spread, new named-spread syntax,
-optional native values and full dynamic forwarding remain deferred.
+implementation. Native values also support these argument and optional-call
+paths. Collection/tuple-literal spread and new named-spread syntax remain deferred.
 
 The source matrix in tests/lowering/call_arguments.rs verifies instruction
 order, Packed descriptors, parameter/capture identity, optional and cleanup CFG,
@@ -401,7 +402,7 @@ positional spread and script rest, including host entry. The `execution` test
 independently compiles source, round-trips B01 and checks ordinary/tiny slices
 with interleaved GC. B01 verification alone remains distinct from execution.
 Tuple constants remain subject to a synchronous per-constant limit. Property-bag
-tails, ArgsNamedSpread, delegates/hooks, structural tuple types and other unsupported
+tails, ArgsNamedSpread, delegates/hooks and other unsupported
 forms still reject; registration cannot add missing handlers. These CPU checks
 do not establish snapshot restoration, device behavior or performance bounds.
 

@@ -702,7 +702,7 @@ fn sequential_chains_clear_temporaries_and_reuse_registers() {
 }
 
 #[test]
-fn trusted_native_prechain_calls_and_groups_survive_without_optional_native_values() {
+fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
     let reference = SymbolReference {
         module: "registry::test".into(),
         version: "native-v19".into(),
@@ -830,7 +830,7 @@ fn trusted_native_prechain_calls_and_groups_survive_without_optional_native_valu
                     .filter(|&n| m.hir().node(n).kind == hir::HirKind::Member)
             })
             .unwrap();
-        let e = lowering::lower(
+        let c = lowering::compile(
             &m,
             &Linkage {
                 package: Some(&seed),
@@ -842,10 +842,8 @@ fn trusted_native_prechain_calls_and_groups_survive_without_optional_native_valu
             },
             Options::default(),
         )
-        .unwrap_err();
-        assert_eq!(e.kind, lowering::ErrorKind::Unsupported);
-        assert_eq!(e.stats.capacity_bytes, 0);
-        assert!(byte_range(e.span).len() < source.len());
+        .unwrap();
+        assert!(!pcs(function(c.program.package(), "f"), bc::Opcode::MakeClosure).is_empty());
     }
     for expr in ["host?()", "((host))?()"] {
         let options = AnalysisOptions {
@@ -860,7 +858,7 @@ fn trusted_native_prechain_calls_and_groups_survive_without_optional_native_valu
             .into_module()
             .unwrap();
         let symbol = m.external_bindings().iter().find_map(|e| e.symbol).unwrap();
-        let e = lowering::lower(
+        let c = lowering::compile(
             &m,
             &Linkage {
                 package: Some(&seed),
@@ -872,8 +870,10 @@ fn trusted_native_prechain_calls_and_groups_survive_without_optional_native_valu
             },
             Options::default(),
         )
-        .unwrap_err();
-        assert_eq!(e.kind, lowering::ErrorKind::Unsupported);
-        assert_eq!(e.stats.capacity_bytes, 0);
+        .unwrap();
+        assert_eq!(
+            pcs(function(c.program.package(), "f"), bc::Opcode::BranchNull).len(),
+            1
+        );
     }
 }

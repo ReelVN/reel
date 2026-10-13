@@ -120,6 +120,52 @@ const FIXTURES: &[Fixture] = &[
 fn limits() -> Limits {
     Limits::default()
 }
+
+#[test]
+fn native_callable_wire_preserves_registration_and_rejects_script_frame_metadata() {
+    let mut p = fixtures::helper_native();
+    let mut f = p.functions[1].clone();
+    f.kind = FunctionKind::Native(NativeId(0));
+    f.signature = p.natives[0].signature;
+    f.context = Context::Ordinary;
+    f.register_count = 0;
+    f.captures.clear();
+    f.bindings.clear();
+    f.descriptors.clear();
+    f.code.clear();
+    f.regions.clear();
+    f.source_map.truncate(1);
+    f.source_map[0].pc = Pc(0);
+    let index = p.functions.len();
+    p.functions.push(f);
+    let bytes = encode(&p, limits()).unwrap();
+    assert_eq!(
+        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        &p
+    );
+    for mutate in [
+        |f: &mut FunctionDef| f.register_count = 1,
+        |f: &mut FunctionDef| f.context = Context::NoWait,
+        |f: &mut FunctionDef| f.signature = SignatureId(1),
+        |f: &mut FunctionDef| f.code.push(Instruction::new(Opcode::Return, 0, 0, 0)),
+        |f: &mut FunctionDef| {
+            f.descriptors.push(Descriptor::Closure {
+                function: fixtures::ENTRY,
+                captures: vec![],
+            })
+        },
+    ] {
+        let mut invalid = p.clone();
+        mutate(&mut invalid.functions[index]);
+        bad(invalid, ErrorKind::Signature);
+    }
+    let mut invalid = p.clone();
+    invalid.functions[index].kind = FunctionKind::Native(NativeId(u32::MAX));
+    bad(invalid, ErrorKind::Index);
+    p.functions[index].source_map[0].pc = Pc(1);
+    bad(p, ErrorKind::Source);
+}
+
 fn bad(p: BytecodePackage, kind: ErrorKind) {
     let bytes = super::codec::encode_unverified(&p);
     assert_eq!(verify(p, limits()).unwrap_err().kind, kind);
