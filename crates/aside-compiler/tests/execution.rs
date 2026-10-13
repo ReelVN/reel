@@ -75,6 +75,45 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         .into();
     let mut cases = vec![
         (
+            r#"fn main() {
+            let shared={n:1}; let a=[shared,2,3]; let alias=a;
+            if a.insert(value:4,index:1)!=a {throw "identity";}
+            if a.remove(index:2)!=2 || a.top()!=3 {throw "remove";}
+            a.resize(value:shared,length:5); a[3].n=9;
+            if a[4].n!=9 || alias[0].n!=9 {throw "sharing";}
+            a.reverse(); a.swap(b:4,a:0);
+            let copy=a.slice(range:1..=3);
+            a.clear();
+            if alias.len()!=0 || copy.len()!=3 || copy[0].n!=9 || copy[1]!=3 || copy[2]!=4 {throw "slice/clear";}
+            a.extend((1,2)); a.extend(items:a); a.resize(length:6);
+            if a.len()!=6 || a[2]!=1 || a[3]!=2 || a[4]!=null || a[5]!=null {throw "extend/resize";}
+            if (1,2,3).slice(1..3)!=(2,3) || ().slice(0..0)!=() {throw "tuple slice";}
+            let t={x:shared,y:2}; let keys=t.keys(); let values=t.values(); let entries=t.entries();
+            if keys[0]!="x" || keys[1]!="y" || values[0]!=shared || entries[0]!=("x",shared) {throw "own fields";}
+            if t.clear()!=t || t.len()!=0 || entries.len()!=2 {throw "table clear";}
+            42
+        }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+            let a=[1,2]; let mut caught=0; let mut evaluated=0;
+            fn effect(){evaluated+=1; 9}
+            try {a.insert(0,index:effect(),value:3);} catch e {caught+=1;}
+            try {a.insert(value:3);} catch e {caught+=1;}
+            try {a.resize(length:3,unknown:effect());} catch e {caught+=1;}
+            try {a.insert(index:3,value:0);} catch e {caught+=1;}
+            try {a.remove(-1);} catch e {caught+=1;}
+            try {a.slice(0..3);} catch e {caught+=1;}
+            try {a.slice(1..0);} catch e {caught+=1;}
+            try {a.extend(null);} catch e {caught+=1;}
+            try {[].top();} catch e {caught+=1;}
+            try {a.swap(0,7);} catch e {caught+=1;}
+            if caught==10 && evaluated==2 && a.len()==2 && a[0]==1 && a[1]==2 {42} else {0}
+        }"#,
+            42,
+        ),
+        (
             "fn main() { let inner={n:1}; let a=[inner,2]; fn change(){a[0]=null; a[1]=9; inner.n=5; 7} let b=[0,...a,change(),...(8,9),null,...[]]; if b[1]==inner && b[1].n==5 && b[2]==2 && b[3]==7 && b[4]==8 && b[5]==9 && b[6]==null && b.len()==7 {42} else {0} }",
             42,
         ),

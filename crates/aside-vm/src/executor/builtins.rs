@@ -1,5 +1,7 @@
-//! Bound standard methods use the caller's rooted arguments and metered continuations.
+//! Bound collection methods share argument validation and resumable execution.
 use super::*;
+mod bulk;
+pub(super) use bulk::BulkWork;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(i64)]
@@ -8,26 +10,106 @@ pub(super) enum Builtin {
     Append,
     Pop,
     HasOwn,
+    Slice,
+    Insert,
+    Remove,
+    Resize,
+    Reverse,
+    Extend,
+    Clear,
+    Top,
+    Swap,
+    Keys,
+    Values,
+    Entries,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
+        use ObjectKind::*;
         match (kind, name) {
-            (ObjectKind::Array | ObjectKind::Tuple | ObjectKind::Table, "len") => Some(Self::Len),
-            (ObjectKind::Array, "append") => Some(Self::Append),
-            (ObjectKind::Array, "pop") => Some(Self::Pop),
-            (ObjectKind::Table, "has_own") => Some(Self::HasOwn),
+            (Array | Tuple | Table, "len") => Some(Self::Len),
+            (Array, "append") => Some(Self::Append),
+            (Array, "pop") => Some(Self::Pop),
+            (Table, "has_own") => Some(Self::HasOwn),
+            (Array | Tuple, "slice") => Some(Self::Slice),
+            (Array, "insert") => Some(Self::Insert),
+            (Array, "remove") => Some(Self::Remove),
+            (Array, "resize") => Some(Self::Resize),
+            (Array, "reverse") => Some(Self::Reverse),
+            (Array, "extend") => Some(Self::Extend),
+            (Array | Table, "clear") => Some(Self::Clear),
+            (Array, "top") => Some(Self::Top),
+            (Array, "swap") => Some(Self::Swap),
+            (Table, "keys") => Some(Self::Keys),
+            (Table, "values") => Some(Self::Values),
+            (Table, "entries") => Some(Self::Entries),
             _ => None,
         }
     }
     fn decode(id: i64) -> Result<Self, FaultKind> {
-        match id {
-            0 => Ok(Self::Len),
-            1 => Ok(Self::Append),
-            2 => Ok(Self::Pop),
-            3 => Ok(Self::HasOwn),
-            _ => Err(FaultKind::Type),
+        const METHODS: &[Builtin] = &[
+            Builtin::Len,
+            Builtin::Append,
+            Builtin::Pop,
+            Builtin::HasOwn,
+            Builtin::Slice,
+            Builtin::Insert,
+            Builtin::Remove,
+            Builtin::Resize,
+            Builtin::Reverse,
+            Builtin::Extend,
+            Builtin::Clear,
+            Builtin::Top,
+            Builtin::Swap,
+            Builtin::Keys,
+            Builtin::Values,
+            Builtin::Entries,
+        ];
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| METHODS.get(i))
+            .copied()
+            .ok_or(FaultKind::Type)
+    }
+    fn parameters(self) -> (&'static [&'static str], usize) {
+        match self {
+            Self::HasOwn => (&["key"], 1),
+            Self::Slice => (&["range"], 1),
+            Self::Insert => (&["index", "value"], 2),
+            Self::Remove => (&["index"], 1),
+            Self::Resize => (&["length", "value"], 1),
+            Self::Extend => (&["items"], 1),
+            Self::Swap => (&["a", "b"], 2),
+            _ => (&[], 0),
         }
     }
+    fn mutates(self) -> bool {
+        matches!(
+            self,
+            Self::Append
+                | Self::Pop
+                | Self::Insert
+                | Self::Remove
+                | Self::Resize
+                | Self::Reverse
+                | Self::Extend
+                | Self::Clear
+                | Self::Swap
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct BuiltinCall {
+    descriptor: DescriptorId,
+    dest: Reg,
+    method: Builtin,
+    count: u32,
+    index: u32,
+    positional: usize,
+    // Fixed by these declarations, not a limit on script function arity.
+    arguments: [Option<u32>; 2],
+    prepared: bool,
 }
 
 impl Vm {
@@ -64,33 +146,58 @@ impl Vm {
                 .as_int()
                 .ok_or(FaultKind::Type)?,
         )?;
-        let expected = match method {
-            Builtin::Len | Builtin::Pop => Some(0),
-            Builtin::HasOwn => Some(1),
-            Builtin::Append => None,
-        };
-        if let Some(expected) = expected {
-            if count < expected {
-                return Err(FaultKind::MissingArgument);
-            }
-            if count > expected {
-                return Err(FaultKind::UnknownArgument);
-            }
-        }
-        if matches!(method, Builtin::Append | Builtin::Pop)
-            && (s.context.derived || s.effects.0 & Effects::WRITE == 0)
-        {
+        if method.mutates() && (s.context.derived || s.effects.0 & Effects::WRITE == 0) {
             return Err(FaultKind::Effect);
         }
         self.put(s.env, 1, receiver).map_err(vm_fault)?;
-        s.phase = ScriptPhase::Builtin {
+        s.phase = ScriptPhase::Builtin(BuiltinCall {
             descriptor,
             dest,
             method,
             count,
             index: 0,
+            positional: 0,
+            arguments: [None; 2],
             prepared: false,
-        };
+        });
+        Ok(())
+    }
+
+    fn builtin_argument(
+        &self,
+        s: &ScriptFrame,
+        call: BuiltinCall,
+        parameter: usize,
+    ) -> Result<Value, VmError> {
+        match call.arguments[parameter] {
+            Some(index) => self
+                .argument(
+                    ArgSource::Caller {
+                        frame: s.id,
+                        descriptor: call.descriptor,
+                    },
+                    index,
+                )
+                .map(|(_, value)| value),
+            None => Ok(Value::NULL),
+        }
+    }
+
+    fn builtin_finish(
+        &mut self,
+        s: &mut ScriptFrame,
+        call: BuiltinCall,
+        result: Result<Value, FaultKind>,
+    ) -> Result<(), VmError> {
+        match result.and_then(|value| self.write(*s, call.dest, value)) {
+            Ok(()) => {
+                self.clear(s.env, 1)?;
+                self.clear(s.env, 2)?;
+                s.pc.0 += 1;
+                s.phase = ScriptPhase::Body;
+            }
+            Err(kind) => self.collection_fault(s, kind)?,
+        }
         Ok(())
     }
 
@@ -99,109 +206,137 @@ impl Vm {
         s: &mut ScriptFrame,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
-        let ScriptPhase::Builtin {
-            descriptor,
-            dest,
-            method,
-            count,
-            index,
-            prepared,
-        } = s.phase
-        else {
+        let ScriptPhase::Builtin(mut call) = s.phase else {
             unreachable!()
         };
         let receiver = self.value(s.env, 1)?;
         let source = ArgSource::Caller {
             frame: s.id,
-            descriptor,
+            descriptor: call.descriptor,
         };
-        // Check all names before starting effects. Argument values stay in the caller.
-        if !prepared && index < count {
-            if !meter.take(0, 1, 0) {
+        if !call.prepared {
+            if !meter.take(0, 3, 0) {
                 return Ok(false);
             }
-            let (name, _) = self.argument(source, index)?;
-            if name != -1
-                && !(matches!(method, Builtin::HasOwn)
-                    && self.program.package().symbols[name as usize] == "key")
-            {
-                self.collection_fault(s, FaultKind::UnknownArgument)?;
-            } else {
-                s.phase = ScriptPhase::Builtin {
-                    descriptor,
-                    dest,
-                    method,
-                    count,
-                    index: index + 1,
-                    prepared: false,
+            let (parameters, required) = call.method.parameters();
+            if call.index < call.count {
+                let (name, _) = self.argument(source, call.index)?;
+                let binding = if matches!(call.method, Builtin::Append) {
+                    if name == -1 {
+                        Ok(())
+                    } else {
+                        Err(FaultKind::UnknownArgument)
+                    }
+                } else {
+                    let position = if name == -1 {
+                        let position = call.positional;
+                        call.positional += 1;
+                        Some(position)
+                    } else {
+                        self.program
+                            .package()
+                            .symbols
+                            .get(name as usize)
+                            .and_then(|name| parameters.iter().position(|p| *p == name))
+                    };
+                    match position.filter(|p| *p < parameters.len()) {
+                        None => Err(FaultKind::UnknownArgument),
+                        Some(p) if call.arguments[p].is_some() => Err(FaultKind::DuplicateArgument),
+                        Some(p) => {
+                            call.arguments[p] = Some(call.index);
+                            Ok(())
+                        }
+                    }
                 };
+                if let Err(kind) = binding {
+                    self.collection_fault(s, kind)?;
+                } else {
+                    call.index += 1;
+                    s.phase = ScriptPhase::Builtin(call);
+                }
+                return Ok(true);
             }
+            if call.arguments[..required].iter().any(Option::is_none) {
+                self.collection_fault(s, FaultKind::MissingArgument)?;
+                return Ok(true);
+            }
+            call.prepared = true;
+            call.index = 0;
+            s.phase = ScriptPhase::Builtin(call);
             return Ok(true);
         }
-        let index = if prepared { index } else { 0 };
-        let extra = if matches!(method, Builtin::Append)
-            && index < count
+        let extra = if matches!(call.method, Builtin::Append)
+            && call.index < call.count
             && (self.heap.info(receiver)?.len as usize).is_multiple_of(VALUE_CHUNK_LEN)
         {
             VALUE_CHUNK_BYTES
         } else {
             0
         };
-        if !meter.take(0, 1, extra) {
+        if !meter.take(0, 3, extra) {
             return Ok(false);
         }
-        let result = match method {
-            Builtin::Len => Ok(Value::int(i64::from(
-                if self.heap.info(receiver)?.kind == ObjectKind::Table {
-                    self.heap.table_len(receiver)?
-                } else {
-                    self.heap.sequence_len(receiver)?
-                },
-            ))),
+        let result = match call.method {
+            Builtin::Len => Ok(Value::int(i64::from(self.heap.info(receiver)?.len))),
             Builtin::Pop => self
                 .heap
                 .array_pop(receiver)
                 .map_err(heap_fault)
                 .and_then(|v| v.ok_or(FaultKind::OutOfBounds)),
+            Builtin::Top => self
+                .heap
+                .sequence_len(receiver)?
+                .checked_sub(1)
+                .ok_or(FaultKind::OutOfBounds)
+                .and_then(|i| self.heap.sequence_get(receiver, i).map_err(heap_fault)),
+            Builtin::Swap => {
+                let a = self.builtin_argument(s, call, 0)?;
+                let b = self.builtin_argument(s, call, 1)?;
+                index(a)
+                    .and_then(|a| {
+                        index(b)
+                            .and_then(|b| self.heap.array_swap(receiver, a, b).map_err(heap_fault))
+                    })
+                    .map(|()| receiver)
+            }
             Builtin::HasOwn => {
-                let (_, key) = self.argument(source, 0)?;
-                if let Err(kind) = self.start_table(s, receiver, key, TableAction::HasOwn(dest)) {
+                let key = self.builtin_argument(s, call, 0)?;
+                if let Err(kind) =
+                    self.start_table(s, receiver, key, TableAction::HasOwn(call.dest))
+                {
                     self.collection_fault(s, kind)?;
                 }
                 return Ok(true);
             }
-            Builtin::Append if index < count => {
+            Builtin::Append if call.index < call.count => {
                 if s.effects.0 & Effects::ALLOCATE == 0 {
                     self.collection_fault(s, FaultKind::Effect)?;
                     return Ok(true);
                 }
-                let (_, value) = self.argument(source, index)?;
+                let (_, value) = self.argument(source, call.index)?;
                 match self.heap.array_push(receiver, value) {
                     Ok(()) => {
-                        s.phase = ScriptPhase::Builtin {
-                            descriptor,
-                            dest,
-                            method,
-                            count,
-                            index: index + 1,
-                            prepared: true,
-                        }
+                        call.index += 1;
+                        s.phase = ScriptPhase::Builtin(call);
                     }
                     Err(error) => self.collection_fault(s, heap_fault(error))?,
                 }
                 return Ok(true);
             }
             Builtin::Append => Ok(receiver),
-        };
-        match result {
-            Ok(value) => {
-                self.put(s.regs, dest.0, value)?;
-                self.clear(s.env, 1)?;
-                s.pc.0 += 1;
-                s.phase = ScriptPhase::Body;
+            _ => {
+                if let Err(kind) = self.start_bulk(s, call) {
+                    self.collection_fault(s, kind)?;
+                }
+                return Ok(true);
             }
-            Err(kind) => self.collection_fault(s, kind)?,
-        }
+        };
+        self.builtin_finish(s, call, result)?;
         Ok(true)
     }
+}
+
+fn index(value: Value) -> Result<u32, FaultKind> {
+    let value = value.as_int().ok_or(FaultKind::Type)?;
+    u32::try_from(value).map_err(|_| FaultKind::OutOfBounds)
 }

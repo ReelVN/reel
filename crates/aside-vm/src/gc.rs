@@ -156,6 +156,7 @@ impl Heap {
                             self.shade(value);
                             p.edges += 1;
                         } else {
+                            obj.queued = false;
                             self.gray.pop_front();
                         }
                         p.units += 1;

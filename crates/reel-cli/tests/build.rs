@@ -110,6 +110,10 @@ fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait()
         include_str!("../../../examples/collections.aside"),
         &[(32., 48.), (32., 90.), (32., 132.)],
     );
+    author_example(
+        include_str!("../../../examples/collection_editing.aside"),
+        &[(0., 0.); 7],
+    );
 }
 
 fn author_example(source: &str, coordinates: &[(f64, f64)]) {

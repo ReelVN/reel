@@ -7,6 +7,7 @@ const SCENES: &[(&str, E)] = &[
     ("title module", E::Module),
     ("ranges, collections and interpolation", E::Block),
     ("ordered array and table spreads", E::Block),
+    ("collection editing and own fields", E::Block),
     ("room module", E::Module),
     ("card component", E::Module),
     ("opening module", E::Module),

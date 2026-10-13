@@ -123,14 +123,8 @@ enum ScriptPhase {
     },
     TableValidate,
     TableScan,
-    Builtin {
-        descriptor: DescriptorId,
-        dest: Reg,
-        method: Builtin,
-        count: u32,
-        index: u32,
-        prepared: bool,
-    },
+    Builtin(builtins::BuiltinCall),
+    Bulk(builtins::BulkWork),
     Sequence {
         dest: Reg,
         window: RegWindow,
@@ -2291,8 +2285,13 @@ impl Vm {
                     return Ok(false);
                 }
             }
-            ScriptPhase::Builtin { .. } => {
+            ScriptPhase::Builtin(_) => {
                 if !self.builtin_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::Bulk(work) => {
+                if !self.bulk_step(&mut s, work, m)? {
                     return Ok(false);
                 }
             }

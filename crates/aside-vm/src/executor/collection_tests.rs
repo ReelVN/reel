@@ -1027,6 +1027,175 @@ fn copy_source(vm: &mut Vm, table: bool, len: u32) -> Value {
     value
 }
 
+fn method_package(method: &str) -> BytecodePackage {
+    let mut p = package(
+        vec![],
+        vec![
+            op(Opcode::MemberGet, 1, 0, 0),
+            op(Opcode::Call, 2, 0, 0),
+            op(Opcode::Return, 2, 0, 0),
+        ],
+        vec![Descriptor::Call(CallDesc {
+            target: CallTarget::Register(Reg(1)),
+            arguments: Arguments::Window(RegWindow {
+                start: Reg(0),
+                len: 0,
+            }),
+            names: vec![],
+        })],
+        3,
+    );
+    let name = SymbolId(p.symbols.len() as u32);
+    p.symbols.push(method.into());
+    p.functions[0].code[0].operands[2] = name.0;
+    p.signatures[0].parameters.push(Parameter {
+        name: SymbolId(4),
+        ty: TypeId(0),
+        mutable: false,
+        default: None,
+    });
+    p
+}
+
+#[test]
+fn bulk_edit_commit_cancel_and_concurrent_write_preserve_identity_and_gc_edges() {
+    for action in 0..3 {
+        let mut vm = load(method_package("reverse"));
+        let source = vm.heap_mut().alloc_array(&[]).unwrap();
+        for n in 0..130 {
+            let child = vm.heap_mut().alloc_array(&[Value::int(n)]).unwrap();
+            vm.heap_mut().array_push(source, child).unwrap();
+        }
+        let root = vm
+            .heap_mut()
+            .add_root(RootOwner(8), RootKind::Host, source)
+            .unwrap();
+        let task = vm
+            .start(FunctionId(0), &[source], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let mut admitted = 6;
+        loop {
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work: admitted,
+                        allocation_bytes: VALUE_CHUNK_BYTES,
+                        deadline_ns: None,
+                    },
+                    || 0,
+                )
+                .unwrap();
+            let RunOutcome::BudgetYield(usage) = outcome else {
+                panic!("{outcome:?}");
+            };
+            admitted = usage.required_work.max(6);
+            let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
+                panic!()
+            };
+            if matches!(s.phase, ScriptPhase::Bulk(_))
+                && vm.heap().info(vm.value(s.env, 2).unwrap()).unwrap().len >= 65
+            {
+                for n in 0..130 {
+                    let child = vm.heap().sequence_get(source, n).unwrap();
+                    assert_eq!(
+                        vm.heap().sequence_get(child, 0).unwrap().as_int(),
+                        Some(n as i64)
+                    );
+                }
+                break;
+            }
+        }
+        // Begin a new mark cycle after part of the private copy exists. A commit
+        // must not move still-unscanned edges behind a completed object cursor.
+        vm.begin_collection().unwrap();
+        match action {
+            0 => loop {
+                match tick(&mut vm, task) {
+                    RunOutcome::BudgetYield(_) => {}
+                    RunOutcome::Returned(id) => {
+                        assert!(vm.delivery_value(id).unwrap().same_bits(source));
+                        vm.discard_delivery(id).unwrap();
+                        break;
+                    }
+                    other => panic!("{other:?}"),
+                }
+            },
+            1 => {
+                vm.heap_mut().set_field(source, 0, Value::NULL).unwrap();
+                fault(&mut vm, task, FaultKind::ConcurrentModification);
+            }
+            _ => {
+                vm.cancel(RootOwner(9)).unwrap();
+                while let Ok(outcome) = vm.run_slice(task, SliceBudget::default(), || 0) {
+                    assert!(matches!(outcome, RunOutcome::BudgetYield(_)));
+                }
+            }
+        }
+        while vm.heap().phase() != GcPhase::Idle {
+            gc(&mut vm);
+        }
+        vm.begin_collection().unwrap();
+        while vm.heap().phase() != GcPhase::Idle {
+            gc(&mut vm);
+        }
+        for n in 0..130 {
+            let child = vm.heap().sequence_get(source, n).unwrap();
+            if action == 1 && n == 0 {
+                assert!(child.same_bits(Value::NULL));
+            } else {
+                assert_eq!(
+                    vm.heap().sequence_get(child, 0).unwrap().as_int(),
+                    Some(if action == 0 { 129 - n } else { n } as i64)
+                );
+            }
+        }
+        assert_eq!(vm.stats().frames, 0);
+        vm.heap_mut().release_root(root).unwrap();
+    }
+}
+
+#[test]
+fn bulk_edit_work_grows_with_elements_and_commit_has_no_payload_allocation() {
+    let mut costs = Vec::new();
+    for len in [1024, 4096, 16384] {
+        let mut vm = load(method_package("reverse"));
+        let source = copy_source(&mut vm, false, len);
+        let task = vm
+            .start(FunctionId(0), &[source], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let before = vm.heap().stats().chunk_allocations;
+        let mut work = 0;
+        loop {
+            let result = vm.run_slice(task, SliceBudget::default(), || 0).unwrap();
+            work += vm.stats().usage.work;
+            match result {
+                RunOutcome::BudgetYield(_) => {}
+                RunOutcome::Returned(id) => {
+                    assert!(vm.delivery_value(id).unwrap().same_bits(source));
+                    assert_eq!(
+                        vm.heap().sequence_get(source, 0).unwrap().as_int(),
+                        Some(len as i64 - 1)
+                    );
+                    assert_eq!(
+                        vm.heap().sequence_get(source, len - 1).unwrap().as_int(),
+                        Some(0)
+                    );
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let chunks = vm.heap().stats().chunk_allocations - before;
+        assert_eq!(chunks, 1 + (len as usize).div_ceil(VALUE_CHUNK_LEN) as u64);
+        println!("reverse len={len} work={work} chunks={chunks}");
+        costs.push(work);
+    }
+    assert_eq!(costs[1] - costs[0], 6 * (4096 - 1024));
+    assert_eq!(costs[2] - costs[1], 6 * (16384 - 4096));
+}
+
 #[test]
 fn collection_copy_cost_is_linear_and_allocates_only_payload_chunks() {
     for table in [false, true] {

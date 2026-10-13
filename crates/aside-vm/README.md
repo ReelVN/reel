@@ -210,6 +210,15 @@ shared default-parameter Cells, waits and host callbacks.
 Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, patterns, full
 module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
 
+Collection methods include array insert/remove/resize/reverse/extend/clear/top/swap,
+range slice on arrays and tuples, and table keys/values/entries/clear. Method
+parameters accept their declared names, with conflicts checked before writes.
+Bulk operations keep a rooted private buffer and source content versions across
+slices. Success swaps payload ownership in constant work; the original identity
+survives, and GC reclaims the old payload incrementally. A concurrent overwrite or
+cancellation cannot publish a partial edit. Storage accounting moves with payloads;
+GC restarts tracing moved edges using one queue entry per object.
+
 ### Collection host access and execution source boundaries (PR #54)
 
 sequence_len/get validate array/tuple kinds and bounds without exposing private
