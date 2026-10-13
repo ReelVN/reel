@@ -2,9 +2,13 @@
 
 Reel 是面向视觉小说的跨平台游戏引擎，Aside 是其 Rust 实现的嵌入式语言。
 
+**当前处于开发原型阶段：能运行简单交互场景，完整创作与发行链路尚未完成。** 实际可用能力、未接通部分和可运行示例见[能力表](docs/README.md#当前状态)；后续工作集中跟踪于[引擎完善总清单 #94](https://github.com/jhq223/reel/issues/94)。
+
 设计基线 1.1 已完成架构、语言与作者接口交叉审查，按公共协议、VM、舞台和媒体拆分实现。架构、语言和作者指南见 [docs](docs/README.md)。所有能力状态以文档标记和实际实现为准。
 
 Reel is a cross-platform visual novel engine with Aside, an embedded language implemented in Rust.
+
+It is currently a development prototype that runs simple interactive scenes. The full creation and distribution workflow is not yet complete. See the [capability table](docs/README.md#当前状态) and [implementation roadmap](https://github.com/jhq223/reel/issues/94).
 
 Design baseline 1.1 has passed architecture, language, and creator-interface review. Implementation is organized around shared contracts, the VM, the stage, and media. See [documentation](docs/README.md) for the architecture, language specification, and bilingual creator guide.
 
