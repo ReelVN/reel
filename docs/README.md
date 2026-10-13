@@ -15,7 +15,7 @@
 - **音频**：Kira/可选 CPAL 桥、有界活动账本和物理 owner 退休已实现。逻辑完成、PCM/预算票据实际释放、描述符释放分别观察。脚本媒体等待、完整恢复和硬件完成时钟尚未接通。[接口](../crates/reel-media/README.md) · [验证边界](../crates/reel-media/VERIFICATION.md)。
 - **开发工具**：第一方检查归入 Rust 测试和 reel-dev；Quirrel 保留固定来源、许可、原断言与转换映射。转换解析与真实执行分别记录。[可复现命令](../crates/reel-dev/README.md)。
 
-集合字面量展开、范围切片和基础容器编辑已接通；[集合编辑示例](../examples/collection_editing.aside) 可用源码和 ASB 运行。完整语言仍包括尚未实现的类/元方法、模式、具名展开、完整模块/标准库、generator/thread/async。节点事件、响应式绑定、动画活动、媒体等待和保存恢复仍需接通。具体边界以各模块契约为准。CPU/软件 GPU 检查不替代物理设备运行或性能测量。
+集合字面量展开、范围切片和基础容器编辑已接通；[集合编辑示例](../examples/collection_editing.aside) 可用源码和 ASB 运行。完整语言仍包括尚未实现的类/元方法、模式、具名展开、完整模块/标准库、generator/thread/async。有限动画活动已接通，可运行 [动画示例](../examples/author_activities.aside)。节点事件、响应式绑定、动作组合、媒体等待和保存恢复仍需接通。具体边界以各模块契约为准。CPU/软件 GPU 检查不替代物理设备运行或性能测量。
 
 ## 运行与维护
 

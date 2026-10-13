@@ -4,6 +4,8 @@
 //! ticket through its trusted registry. The adapter owns the main TaskId, each
 //! wait association and all independently retained result/key roots. It never
 //! interprets bytecode or assumes a table's private storage layout.
+mod activity;
+pub use activity::ActivityProgress;
 mod choice;
 mod publication;
 mod registry;
@@ -146,6 +148,7 @@ pub struct SessionVm {
     root_cursor: u32,
     root_end: u32,
     stage: stage::StageBinding,
+    activities: activity::Activities,
 }
 
 impl SessionVm {
@@ -182,6 +185,7 @@ impl SessionVm {
             root_cursor: 0,
             root_end: 0,
             stage: stage::StageBinding::default(),
+            activities: activity::Activities::default(),
         })
     }
 
@@ -239,6 +243,27 @@ impl SessionVm {
         self.revoked && (self.root_cursor < self.root_end || self.task.is_some())
     }
 
+    /// Advance the session's monotonic logical clock, independently of VM slice
+    /// timing. Work counts complete activity updates, each with fixed-schema
+    /// property work. Continue while pending before publishing the new frame.
+    pub fn advance_time(
+        &mut self,
+        session: &Session,
+        seconds: f64,
+        work: u32,
+    ) -> Result<ActivityProgress, AdapterError> {
+        self.live(session)?;
+        self.activities.advance(&mut self.vm, seconds, work)
+    }
+
+    pub fn activities_pending(&self) -> bool {
+        !self.revoked && self.activities.pending()
+    }
+
+    pub fn activities_need_time(&self) -> bool {
+        !self.revoked && self.activities.needs_time()
+    }
+
     pub fn dispatch(
         &mut self,
         session: &mut Session,
@@ -250,6 +275,40 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::tween"
+            | "reel::run"
+            | "reel::pause"
+            | "reel::resume"
+            | "reel::stop"
+            | "reel::finish"
+            | "reel::activity::await" => {
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let value = match symbol.as_str() {
+                    "reel::tween" => activity::Activities::describe(
+                        self.vm.heap_mut(),
+                        &self.stage,
+                        &args,
+                        self.read_limit,
+                    )?,
+                    "reel::run" => self.activities.start(
+                        &mut self.vm,
+                        &self.stage,
+                        self.root_owner,
+                        args[0],
+                        args[1],
+                    )?,
+                    "reel::activity::await" => {
+                        self.check_wait(session, ticket)?;
+                        self.activities.subscribe(&mut self.vm, ticket, args[0])?;
+                        self.issued = None;
+                        return Ok(NativeDispatch::Ready { work: 1 });
+                    }
+                    _ => self.activities.control(&mut self.vm, args[0], &symbol)?,
+                };
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::narrator" => {
                 self.dispatch_narrator(session, ticket, locale)
                     .map(|interaction| NativeDispatch::Published {
@@ -680,6 +739,7 @@ impl SessionVm {
             }
         }
         self.root_end = self.vm.heap().root_slots();
+        self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;
         session.revoke_owner_with_retirement(
             self.owner,

@@ -156,6 +156,23 @@ impl AsideSessionUi {
     pub fn cleanup_pending(&self) -> bool {
         self.vm.cleanup_pending()
     }
+    pub fn activities_need_time(&self) -> bool {
+        self.state == StoryState::Running && self.vm.activities_need_time()
+    }
+    pub fn activities_pending(&self) -> bool {
+        self.vm.activities_pending()
+    }
+    /// Logical seconds supplied by the host, with an explicit activity work quota.
+    pub fn advance_time(
+        &mut self,
+        seconds: f64,
+        work: u32,
+    ) -> Result<reel_engine::aside::ActivityProgress, Error> {
+        if self.state != StoryState::Running {
+            return Ok(Default::default());
+        }
+        Ok(self.vm.advance_time(self.ui.session(), seconds, work)?)
+    }
     pub fn begin_collection(&mut self) -> Result<(), Error> {
         Ok(self.vm.begin_collection()?)
     }
@@ -176,6 +193,9 @@ impl AsideSessionUi {
     }
 
     pub fn sync(&mut self, bridge: &mut PresentationBridge, root: WidgetId) -> Result<(), Error> {
+        if self.vm.activities_pending() {
+            return Ok(());
+        }
         if !matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             self.vm.sync_stage(self.ui.session())?;
             self.ui.set_stage(self.vm.stage());
