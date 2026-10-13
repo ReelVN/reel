@@ -210,16 +210,15 @@ impl SceneWidget {
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
+            && this.widget.node.kind != view.node.kind
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
-            if this.widget.node.kind != view.node.kind {
-                Image::set_image_data(&mut image, data.clone());
-                let NodeKind::Image { fit, .. } = view.node.kind else {
-                    unreachable!()
-                };
-                image.insert_prop(fit);
-                this.widget.image_size = Size::new(data.width.into(), data.height.into());
-            }
+            Image::set_image_data(&mut image, data.clone());
+            let NodeKind::Image { fit, .. } = view.node.kind else {
+                unreachable!()
+            };
+            image.insert_prop(fit);
+            this.widget.image_size = Size::new(data.width.into(), data.height.into());
         }
         if let (Some(pod), NodeKind::Text(text)) = (&mut this.widget.label, &view.node.kind)
             && let Some(mut label) = this.ctx.get_mut(pod)
