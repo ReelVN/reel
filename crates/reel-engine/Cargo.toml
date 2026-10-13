@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+aside-host = { path = "../aside-host" }
 aside-vm = { path = "../aside-vm" }
 aside-compiler = { path = "../aside-compiler" }
 reel-core = { path = "../reel-core" }

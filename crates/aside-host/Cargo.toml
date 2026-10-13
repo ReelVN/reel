@@ -1,0 +1,15 @@
+[package]
+name = "aside-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Rust host declarations and bindings for Aside"
+
+[dependencies]
+aside-vm = { path = "../aside-vm" }
+aside-compiler = { path = "../aside-compiler" }
+aside-host-macros = { path = "../aside-host-macros" }
+
+[lints]
+workspace = true

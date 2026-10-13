@@ -4,6 +4,7 @@
 
 - [引擎架构](engine-architecture.md)：模块、舞台、输入、媒体、持久化和资源预算。
 - [Aside 语言](aside-language.md)：语法、执行、字节码、宿主协议和快照。
+- [Aside Rust 宿主扩展](aside-host.md)：函数绑定宏、属性声明、编译链接与运行时注册。
 - [中文作者指南](guide/zh-CN.md) / [English creator guide](guide/en.md)：相同代码示例与各功能的实现状态。
 
 ## 当前状态

@@ -986,7 +986,7 @@ impl Heap {
         Ok(bytes.read(offset, output))
     }
     /// A bounded immutable chunk borrowed only for the current executor step.
-    pub(crate) fn byte_segment(&self, target: Value, offset: u32) -> Result<&[u8], HeapError> {
+    pub fn byte_segment(&self, target: Value, offset: u32) -> Result<&[u8], HeapError> {
         let obj = self.object(self.key(target)?)?;
         let Payload::Bytes(bytes) = &obj.payload else {
             return Err(HeapError::WrongKind);

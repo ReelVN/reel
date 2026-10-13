@@ -4,11 +4,8 @@ use super::{AdapterError, registry};
 use aside_compiler::{
     AnalysisOptions, analyze_module,
     hir::AnalyzedModule,
-    lowering::{self, ExternalTarget, Linkage, NativeLink},
-    semantic::{
-        CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, MemoryResolver,
-        ModuleInterface, NamespaceRef, SymbolReference, TypeHint,
-    },
+    lowering,
+    semantic::{ExternalSymbol, MemoryResolver, ModuleInterface, NamespaceRef},
 };
 use aside_vm::bytecode as bc;
 pub use bc::FunctionId as StoryFunction;
@@ -60,144 +57,6 @@ impl std::fmt::Display for SourceError {
 }
 impl std::error::Error for SourceError {}
 
-fn hint(ty: &bc::BuiltinType) -> TypeHint {
-    match ty {
-        bc::BuiltinType::Any => TypeHint::Any,
-        bc::BuiltinType::Bool => TypeHint::Bool,
-        bc::BuiltinType::Null => TypeHint::Null,
-        bc::BuiltinType::String => TypeHint::String,
-        bc::BuiltinType::Array => TypeHint::Array,
-        _ => unreachable!("fixed Reel registry types"),
-    }
-}
-fn reference(contract: &registry::NativeContract) -> SymbolReference {
-    let (module, export) = contract.symbol.rsplit_once("::").unwrap();
-    SymbolReference {
-        module: module.into(),
-        version: contract.abi_version.to_string(),
-        export: Some(export.into()),
-    }
-}
-
-fn seed(content_version: u64) -> Result<bc::VerifiedProgram, bc::Error> {
-    let mut package = bc::BytecodePackage {
-        content_version,
-        ..Default::default()
-    };
-    fn symbol(p: &mut bc::BytecodePackage, name: &str) -> bc::SymbolId {
-        let index = p.symbols.iter().position(|s| s == name).unwrap_or_else(|| {
-            p.symbols.push(name.into());
-            p.symbols.len() - 1
-        });
-        bc::SymbolId(index as u32)
-    }
-    fn ty(p: &mut bc::BytecodePackage, builtin: &bc::BuiltinType) -> bc::TypeId {
-        let ty = bc::TypeDef::Builtin(*builtin);
-        let index = p.types.iter().position(|t| t == &ty).unwrap_or_else(|| {
-            p.types.push(ty);
-            p.types.len() - 1
-        });
-        bc::TypeId(index as u32)
-    }
-    let defaults_path = symbol(&mut package, "reel::defaults");
-    package.modules.push(bc::ModuleDef {
-        path: defaults_path,
-        imports: vec![],
-        exports: vec![],
-        globals: vec![],
-        initializer: None,
-    });
-    for contract in registry::contracts() {
-        let mut parameters: Vec<bc::Parameter> = Vec::new();
-        for (index, parameter) in contract.parameters.iter().enumerate() {
-            let parameter_type = ty(&mut package, &parameter.ty);
-            let default = if let Some(value) = &parameter.default {
-                let constant = package.constants.len() as u32;
-                package.constants.push(value.clone());
-                let name = symbol(&mut package, &registry::default_name(&contract, index));
-                let signature = bc::SignatureId(package.signatures.len() as u32);
-                package.signatures.push(bc::Signature {
-                    parameters: parameters
-                        .iter()
-                        .cloned()
-                        .map(|mut p| {
-                            p.default = None;
-                            p
-                        })
-                        .collect(),
-                    rest: None,
-                    return_type: parameter_type,
-                    effects: bc::Effects(0),
-                    property_bag_tail: None,
-                });
-                let function = bc::FunctionId(package.functions.len() as u32);
-                package.functions.push(bc::FunctionDef {
-                    module: bc::ModuleId(0),
-                    name,
-                    kind: bc::FunctionKind::Plain,
-                    signature,
-                    context: bc::Context::NoWait,
-                    captures: vec![],
-                    register_count: index as u32 + 1,
-                    bindings: parameters
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| bc::BindingDef {
-                            name: p.name,
-                            ty: p.ty,
-                            mutable: false,
-                            storage: bc::BindingStorage::Value(bc::Reg(i as u32)),
-                            initialization: bc::BindingInitialization::Parameter(i as u32),
-                        })
-                        .collect(),
-                    descriptors: vec![],
-                    regions: vec![],
-                    source_map: vec![],
-                    code: vec![
-                        bc::Instruction::new(bc::Opcode::LoadConst, index as u32, constant, 0),
-                        bc::Instruction::new(bc::Opcode::Return, index as u32, 0, 0),
-                    ],
-                });
-                Some(function)
-            } else {
-                None
-            };
-            parameters.push(bc::Parameter {
-                name: symbol(&mut package, &parameter.name),
-                ty: parameter_type,
-                mutable: false,
-                default,
-            });
-        }
-        let result = ty(&mut package, &contract.result);
-        let signature = bc::SignatureId(package.signatures.len() as u32);
-        package.signatures.push(bc::Signature {
-            parameters,
-            rest: None,
-            return_type: result,
-            effects: contract.effects,
-            property_bag_tail: None,
-        });
-        let name = symbol(&mut package, &contract.symbol);
-        let capabilities = contract
-            .required_capabilities
-            .iter()
-            .map(|name| symbol(&mut package, name))
-            .collect();
-        package.natives.push(bc::NativeDef {
-            symbol: name,
-            signature,
-            abi_version: contract.abi_version,
-            capabilities,
-        });
-    }
-    package.capabilities = registry::capabilities()
-        .iter()
-        .map(|name| symbol(&mut package, name))
-        .collect();
-    bc::verify(package, bc::Limits::default())
-}
-
 /// One source analysis and its B01 lowering, shared with author tools.
 pub struct SourceCompilation {
     pub module: AnalyzedModule,
@@ -213,37 +72,13 @@ pub fn compile_module(
     content_version: u64,
 ) -> Result<SourceCompilation, SourceError> {
     let contracts = registry::contracts();
-    let references = contracts.iter().map(reference).collect::<Vec<_>>();
+    let references = contracts
+        .iter()
+        .map(registry::NativeContract::reference)
+        .collect::<Vec<_>>();
     let exports = contracts
         .iter()
-        .zip(&references)
-        .map(|(contract, reference)| {
-            ExternalSymbol::function(
-                reference.export.as_ref().unwrap(),
-                ExternalSignature {
-                    parameters: contract
-                        .parameters
-                        .iter()
-                        .map(|parameter| ExternalParameter {
-                            name: parameter.name.clone(),
-                            ty: hint(&parameter.ty),
-                            mutable: false,
-                            default: parameter.default.is_some(),
-                            rest: false,
-                        })
-                        .collect(),
-                    result: hint(&contract.result),
-                    effect: if contract.effects.0 & bc::Effects::WAIT != 0 {
-                        CallEffect::MayWait
-                    } else {
-                        CallEffect::NoWait
-                    },
-                    init_safe: Some(false),
-                    derived_safe: Some(false),
-                },
-            )
-            .with_reference(reference.clone())
-        })
+        .map(registry::NativeContract::external)
         .collect::<Vec<_>>();
     let mut resolver = MemoryResolver::default();
     let mut prelude = exports
@@ -286,40 +121,19 @@ pub fn compile_module(
         .map_err(SourceError::Source)?
         .into_module()
         .map_err(SourceError::Analysis)?;
-    let seed = seed(content_version).map_err(SourceError::Format)?;
-    let mut links = Vec::new();
-    for binding in module.external_bindings() {
-        let Some(reference) = binding.descriptor.reference.as_deref() else {
-            continue;
-        };
-        let Some(index) = references.iter().position(|r| r == reference) else {
-            continue;
-        };
-        let target = if let Some(symbol) = binding.symbol {
-            ExternalTarget::Symbol(symbol)
-        } else if let Some(node) = binding.node {
-            ExternalTarget::Node(node)
-        } else {
-            continue;
-        };
-        links.push(NativeLink {
-            target,
-            native: bc::NativeId(index as u32),
-            reference: &references[index],
-        });
-    }
-    let compiled = lowering::compile(
+    let compiled = aside_host::lower(
         &module,
-        &Linkage {
-            package: Some(&seed),
-            natives: &links,
-        },
+        &contracts,
+        &registry::capabilities(),
         lowering::Options {
             content_version,
             ..Default::default()
         },
     )
-    .map_err(SourceError::Lowering)?;
+    .map_err(|error| match error {
+        aside_host::BuildError::Format(error) => SourceError::Format(error),
+        aside_host::BuildError::Lowering(error) => SourceError::Lowering(error),
+    })?;
     Ok(SourceCompilation {
         module,
         compilation: compiled,
