@@ -1,4 +1,4 @@
-//! Analytic linear-premultiplied reference, not a rasterizer or a device test.
+//! Independent f64 test oracle; production conversion uses Peniko/color.
 pub fn srgb_to_linear(value: f64) -> f64 {
     if value <= 0.04045 {
         value / 12.92

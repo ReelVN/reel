@@ -1,3 +1,5 @@
+#[path = "support/color.rs"]
+mod color;
 #[allow(dead_code, reason = "shared real U02 fixtures")]
 #[path = "../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
@@ -316,7 +318,7 @@ fn invalid_upload_returns_original_busy_terminal_capacity_and_null_skip() {
 }
 #[test]
 fn linear_alpha_mask_group_and_crossfade_analytic_expectations() {
-    use reel_render::color::*;
+    use color::*;
     let gray = linear_premultiplied([0.5, 0.5, 0.5, 0.5]);
     assert!((gray[0] - 0.10702057024111628).abs() < 1e-12);
     assert!((luminance_mask(gray) - 0.10702057024111628).abs() < 1e-12);

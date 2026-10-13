@@ -3,7 +3,6 @@
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
-pub mod color;
 #[cfg(feature = "wgpu")]
 pub mod gpu;
 use reel_core::{

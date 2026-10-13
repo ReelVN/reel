@@ -1,6 +1,9 @@
 use super::{Gpu, GpuError};
 use reel_ui::frame::{RecordLocation, RenderFrame};
-use reel_ui::peniko::{ImageAlphaType, ImageFormat};
+use reel_ui::peniko::{
+    ImageAlphaType, ImageFormat,
+    color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
+};
 use reel_ui::resources::{ColorEncoding, ResourceData, ResourceHandle};
 use wgpu::util::DeviceExt;
 
@@ -63,20 +66,27 @@ pub fn image(
     }
     let mut pixels = Vec::with_capacity((u64::from(size[0]) * u64::from(size[1]) * 4) as usize);
     for rgba in image.data.data().chunks_exact(4) {
-        let a = f64::from(rgba[3]) / 255.;
-        let mut p = [0f32; 4];
-        for i in 0..3 {
-            let mut c = f64::from(rgba[i]) / 255.;
-            if image.alpha_type == ImageAlphaType::AlphaPremultiplied {
-                c = if a > 0. { c / a } else { 0. };
+        let components = std::array::from_fn(|i| f32::from(rgba[i]) / 255.);
+        let pixel = if rgba[3] == 0 {
+            // Hidden RGB must not become visible in interpolation or masks.
+            PremulColor::<LinearSrgb>::TRANSPARENT
+        } else {
+            match (encoding, image.alpha_type) {
+                (ColorEncoding::Srgb, ImageAlphaType::Alpha) => AlphaColor::<Srgb>::new(components)
+                    .convert::<LinearSrgb>()
+                    .premultiply(),
+                (ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied) => {
+                    PremulColor::<Srgb>::new(components).convert::<LinearSrgb>()
+                }
+                (ColorEncoding::Linear, ImageAlphaType::Alpha) => {
+                    AlphaColor::<LinearSrgb>::new(components).premultiply()
+                }
+                (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => {
+                    PremulColor::<LinearSrgb>::new(components)
+                }
             }
-            if *encoding == ColorEncoding::Srgb {
-                c = crate::color::srgb_to_linear(c);
-            }
-            p[i] = (c * a) as f32;
-        }
-        p[3] = a as f32;
-        pixels.extend(p);
+        };
+        pixels.extend(pixel.components);
     }
     upload(gpu, encoder, size, &pixels, available)
 }

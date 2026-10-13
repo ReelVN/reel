@@ -37,9 +37,9 @@ does not change input. For Accepted results it independently retains candidate
 qualification and matching geometry until resolve or the last notice drop, so
 caller frame drop and render completion may precede resolve. It retains no frame
 commands/resources. Notice fields have read-only accessors and a retaining
-`PresentationNotice::new` constructor. `color` supplies analytical sRGB-to-linear, premultiplying,
-over, whole-group alpha/mask and crossfade reference formulas; it is not a
-rasterizer. Structural CPU replay remains a separate U02 reference.
+`PresentationNotice::new` constructor. Independent analytical color/mask/crossfade
+formulas live in `tests/support/color.rs`; production uses Peniko's typed color
+conversion. Structural CPU replay remains a separate U02 reference.
 
 Run `cargo test -p reel-render --locked -- --test-threads=1`. Tests use actual
 Masonry image records for duplicate resource references, paused build retirement,
@@ -52,7 +52,7 @@ completion, slot generation, refusal and null presentation. See
 ## R02 optional real device profile
 
 Enable `wgpu` for the two-phase production adapter. It consumes RenderFrame
-without replay-to-Scene and uses Lyon, Swash and wgpu. See
+without replay-to-Scene and uses Kurbo dashing, Lyon, Swash and wgpu. See
 [R02-INTERFACE](R02-INTERFACE.md), [R02-REPORT](R02-REPORT.md), and the
 [winit diagnostic launch command](../reel-player/README.md). Recording/null
 remain feature-off semantic consumers; their simulated results are unchanged.
