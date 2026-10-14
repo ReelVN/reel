@@ -19,6 +19,10 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 作者活动与窗口时钟
 
+普通 UI 流程使用 `completion(owner: null)` 创建一次性结果，`await result` 等待，回调用 `result.resolve(value: null)`、`result.reject(error)` 或 `result.cancel()` 结算。owner 省略时沿用活动规则：主剧情归会话，回调归事件节点；显式节点退休使未结算结果取消。第一次结算返回 true，之后返回 false；null 也是合法结果。重复等待读取同一终态，resolve 原样返回值，不采用另一个可等待对象。结果不占用对白/选择权限，不记录剧情历史；组件可以返回 `{root, result}` 供主剧情或其他回调组合。
+
+此接口属于 Reel 的宿主 Awaitable，复用 Aside NativeFrame、WaitId、错误传播与任务取消；新增 native ABI 1，B01/ASB 不变，不增加依赖。结果、owner 和任意返回值在 VM 堆中追踪，终态释放 owner；服务只保存尚未交付的等待订阅，取消等待者不取消结果。订阅按登记顺序分批维护，每步最多检查 64 项，一轮完成后才调度脚本，避免结算顺序随切片变化。空闲不启动计时轮询，未被引用且未被等待的结果可直接 GC。验证范围为 reel-engine、公开组件示例、双语指南与本地移植烟测，覆盖源码/ASB、表单及子游戏返回值、失败、节点退休、多个消费者和 GC。
+
 工程直接从 main.aside 启动。main 中的 `game.configure(title: null, width: null, height: null, fonts: null, text_speed: null)` 更新会话的呈现设置；省略项保留当前设置，参数按普通 Aside 表达式求值。设置以不可变值发布给宿主，宿主只在值身份变化时应用。画布采用 contain 变换并共用绘制/输入几何；未设置画布时沿用视口。设置首个画布维度时，另一维默认 1920×1080 的对应值。fonts 接受一个字体文件或非空有序数组；作品须在首次呈现前显式配置字体，缺少字体时报错。节点 font 使用已提供字体中的字体族/回退列表，system-ui 指向配置的默认列表。文件相对资源根解析并共享计量后的数据，字体回退和文字整形复用 Fontique/Parley；作者播放器关闭系统字体发现。平台窗口句柄始终留在适配器。ASB 1.0 元数据 schema 3 只保存代码图与入口，运行设置由脚本执行产生。
 
 `sequence(...actions)`、`parallel(...actions)` 与 `repeat(action, times: null)` 产生不可变、可复用的描述。空组合与零次重复无写入地立即完成；持续循环要求单轮时长大于零，包含无限分支的组合在 finish 修改状态前报错。run 在接管前完整校验并行分支的写集合，顺序段到激活时才读取起值与取得属性。暂停、停止、失败、目标或 owner 退休均按整个根活动结算。

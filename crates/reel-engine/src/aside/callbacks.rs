@@ -231,7 +231,8 @@ impl SessionVm {
         if self.derived_task.is_some() || self.vm.heap().derived_pending() {
             return true;
         }
-        self.issued.is_some()
+        self.results.needs_work(self.stage.scene.revision())
+            || self.issued.is_some()
             || self.task.is_some()
                 && self
                     .main_wait
@@ -293,6 +294,7 @@ impl SessionVm {
             self.activities
                 .cancel_native(self.vm.heap_mut(), callback.task)?;
             self.vm.cancel_task(callback.task)?;
+            self.results.changed();
             callback.cancelling = true;
             callback.wait = None;
             if self
@@ -350,6 +352,12 @@ impl SessionVm {
         self.maintain_audio()?;
         self.maintain_localization()?;
         self.activities.maintain(&mut self.vm)?;
+        if self
+            .results
+            .maintain(&mut self.vm, self.stage.scene.revision())?
+        {
+            return Ok(SessionStep::Progress);
+        }
         if self.activities.pending() {
             self.activities.drain(&mut self.vm, 64)?;
             return Ok(SessionStep::Progress);

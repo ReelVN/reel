@@ -462,6 +462,26 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         ("activity::await", vec![parameter("activity", None)], true),
         (
+            "completion",
+            vec![parameter("owner", Some(bc::Const::Null))],
+            false,
+        ),
+        ("completion::await", vec![parameter("result", None)], true),
+        (
+            "completion::resolve",
+            vec![
+                parameter("result", None),
+                parameter("value", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        (
+            "completion::reject",
+            vec![parameter("result", None), parameter("error", None)],
+            false,
+        ),
+        ("completion::cancel", vec![parameter("result", None)], false),
+        (
             "repeat",
             vec![
                 parameter("action", None),

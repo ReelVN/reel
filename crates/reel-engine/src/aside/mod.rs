@@ -18,6 +18,7 @@ mod narrative;
 mod observable;
 mod publication;
 mod registry;
+mod results;
 mod rich_text;
 pub mod source;
 mod stage;
@@ -196,6 +197,7 @@ pub struct SessionVm {
     root_end: u32,
     stage: stage::StageBinding,
     activities: activity::Activities,
+    results: results::Results,
     audio: audio::Audio,
     translations: localization::Translations,
     game: std::sync::Arc<GameSettings>,
@@ -247,6 +249,7 @@ impl SessionVm {
             root_end: 0,
             stage,
             activities: activity::Activities::default(),
+            results: results::Results::default(),
             audio: audio::Audio::default(),
             translations: localization::Translations::default(),
             game: std::sync::Arc::new(GameSettings::default()),
@@ -444,6 +447,17 @@ impl SessionVm {
             }
             "reel::view" => {
                 self.dispatch_view(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::completion"
+            | "reel::completion::resolve"
+            | "reel::completion::reject"
+            | "reel::completion::cancel"
+            | "reel::completion::await" => {
+                if symbol == "reel::completion::await" {
+                    self.check_wait(session, ticket)?;
+                }
+                self.dispatch_result(ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::list" => {
@@ -1062,6 +1076,7 @@ impl SessionVm {
         self.root_end = self.vm.heap().root_slots();
         self.audio.close();
         self.translations.close();
+        self.results.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;
         session.revoke_owner_with_retirement(
