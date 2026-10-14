@@ -841,3 +841,5 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
         }
     }
 }
+
+mod reactive_views;

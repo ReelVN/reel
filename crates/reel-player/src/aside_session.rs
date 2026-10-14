@@ -209,7 +209,11 @@ impl AsideSessionUi {
         }
         if !matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             self.vm.sync_stage(self.ui.session())?;
-            self.ui.set_stage(self.vm.stage());
+            if self.vm.stage_is_input_feedback() {
+                self.ui.set_feedback_stage(self.vm.stage());
+            } else {
+                self.ui.set_stage(self.vm.stage());
+            }
         }
         self.sync_input(bridge, root)
     }
@@ -220,6 +224,9 @@ impl AsideSessionUi {
         bridge: &mut PresentationBridge,
         root: WidgetId,
     ) -> Result<(), Error> {
+        let settings = self.vm.game_settings();
+        self.ui
+            .set_default_views(settings.default_dialogue, settings.default_choices);
         self.ui.sync(bridge, root)?;
         let events = self.ui.take_events();
         self.accept_events(events)

@@ -45,6 +45,7 @@ impl Heap {
             if self.gc.phase == crate::GcPhase::Mark {
                 object.scan = 0;
                 object.metadata_scanned = false;
+                object.reactive_scanned = false;
                 object.mark = self.gc.cycle;
                 if !object.queued {
                     object.queued = true;
@@ -52,6 +53,7 @@ impl Heap {
                 }
             }
         }
+        self.invalidate_reactive(target_value, None)?;
         Ok(())
     }
     pub fn table_len(&self, table: Value) -> Result<u32, HeapError> {
@@ -176,6 +178,7 @@ impl Heap {
         }
         object.content_version = object.content_version.wrapping_add(1);
         object.charged += extra;
+        self.invalidate_reactive(table, Some(position))?;
         Ok(())
     }
 }

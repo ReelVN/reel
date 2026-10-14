@@ -1,5 +1,7 @@
 mod model;
 mod properties;
+mod reactive;
+pub(crate) use reactive::DerivedSlot;
 mod table;
 use crate::HeapBudgetUsage;
 use crate::gc::Collector;
@@ -233,8 +235,14 @@ pub(crate) struct Object {
     pub observable_writable: u32,
     pub property_owner: Option<HeapKey>,
     pub model: bool,
+    pub readonly_collection: bool,
     pub model_visit: u64,
     pub model_metadata: Value,
+    pub reactive_subscribers: Value,
+    pub reactive_scanned: bool,
+    pub derived: bool,
+    pub derived_dirty: bool,
+    pub evaluation: u64,
     pub property_generation: u64,
     pub payload: Payload,
     pub weak: Option<HeapHandle>,
@@ -273,6 +281,9 @@ pub struct Heap {
     property_work: Vec<PropertyId>,
     model_work: Vec<Value>,
     model_walk: u64,
+    reactive_queue: VecDeque<HeapKey>,
+    reactive_capture: Option<Value>,
+    evaluation: u64,
     property_proposal: Option<Value>,
     limits: HeapLimits,
     reserved: u64,
@@ -348,6 +359,9 @@ impl Heap {
             property_work: Vec::new(),
             model_work: Vec::new(),
             model_walk: 0,
+            reactive_queue: VecDeque::with_capacity(limits.max_objects as usize),
+            reactive_capture: None,
+            evaluation: 0,
             property_proposal: None,
             limits,
             reserved: estimate,
@@ -363,7 +377,10 @@ impl Heap {
             + heap.ranges.reserved_bytes()
             + (heap.range_index.capacity() * std::mem::size_of::<Option<RangeKey>>()) as u64
             + BOOK_BYTES
-            + ((heap.allocations.capacity() + heap.gray.capacity() + heap.release.capacity())
+            + ((heap.allocations.capacity()
+                + heap.gray.capacity()
+                + heap.release.capacity()
+                + heap.reactive_queue.capacity())
                 * std::mem::size_of::<HeapKey>()) as u64
             + std::mem::size_of::<Self>() as u64;
         if actual > estimate {
@@ -457,6 +474,7 @@ impl Heap {
             obj.mark = self.gc.cycle;
             obj.scan = 0;
             obj.metadata_scanned = false;
+            obj.reactive_scanned = false;
             obj.queued = true;
             assert!(self.gray.len() < self.limits.max_objects as usize);
             self.gray.push_back(key);
@@ -521,8 +539,21 @@ impl Heap {
             observable_writable: 0,
             property_owner: None,
             model: false,
+            readonly_collection: false,
             model_visit: 0,
             model_metadata: Value::NULL,
+            reactive_subscribers: Value::NULL,
+            reactive_scanned: false,
+            derived: false,
+            derived_dirty: false,
+            evaluation: self
+                .reactive_capture
+                .and_then(|output| {
+                    self.host_payload(output, DerivedSlot::Evaluation as u32)
+                        .ok()
+                })
+                .and_then(Value::as_int)
+                .unwrap_or(0) as u64,
             property_generation: 0,
             payload,
             weak,
@@ -783,7 +814,8 @@ impl Heap {
         self.allocate_bytes(ObjectKind::ByteBuffer, value)
     }
     // Only the executor owns this unpublished buffer, copied from valid strings.
-    pub(crate) fn seal_string(&mut self, builder: Value) -> Result<(), HeapError> {
+    /// Freeze a private byte builder after the caller has validated UTF-8.
+    pub fn seal_string(&mut self, builder: Value) -> Result<(), HeapError> {
         let key = self.key(builder)?;
         if self.object(key)?.kind != ObjectKind::ByteBuffer {
             return Err(HeapError::WrongKind);
@@ -860,6 +892,7 @@ impl Heap {
             _ => unreachable!(),
         }
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.invalidate_reactive(target, None)?;
         Ok(())
     }
     pub fn array_push(&mut self, target: Value, value: Value) -> Result<(), HeapError> {
@@ -888,6 +921,7 @@ impl Heap {
         obj.charged += extra;
         obj.content_version = obj.content_version.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
+        self.invalidate_reactive(target, None)?;
         Ok(())
     }
     /// Packed arguments use alternating name/value entries. Validate shape at
@@ -962,6 +996,7 @@ impl Heap {
         obj.content_version = obj.content_version.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.freed(freed);
+        self.invalidate_reactive(target, None)?;
         Ok(Some(value))
     }
     pub fn array_swap(&mut self, target: Value, a: u32, b: u32) -> Result<(), HeapError> {
@@ -981,6 +1016,7 @@ impl Heap {
         }
         obj.content_version = obj.content_version.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
+        self.invalidate_reactive(target, None)?;
         Ok(())
     }
     pub(crate) fn append_buffer(
@@ -1013,6 +1049,7 @@ impl Heap {
         if !input.is_empty() {
             obj.content_version = obj.content_version.wrapping_add(1);
         }
+        self.invalidate_reactive(target, None)?;
         Ok(())
     }
     pub fn text_append(&mut self, target: Value, input: &str) -> Result<(), HeapError> {

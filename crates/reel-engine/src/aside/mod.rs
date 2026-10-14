@@ -11,6 +11,7 @@ mod game;
 pub use game::GameSettings;
 mod choice;
 mod dialogue;
+mod narrative;
 mod publication;
 mod registry;
 pub mod source;
@@ -18,6 +19,7 @@ mod stage;
 #[cfg(test)]
 mod tests;
 mod text;
+mod views;
 
 use crate::{
     ChoiceInput, Completion, CompletionDelivery, CompletionOutcome, DialogueLineInput,
@@ -171,6 +173,9 @@ pub struct SessionVm {
     main_wait: Option<WaitId>,
     callbacks: Vec<callbacks::Callback>,
     schedule_cursor: usize,
+    derived_task: Option<TaskId>,
+    reactive_ready: bool,
+    feedback_only: bool,
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
     choice_reader: Option<choice::ChoiceReader>,
@@ -186,6 +191,7 @@ pub struct SessionVm {
     stage: stage::StageBinding,
     activities: activity::Activities,
     game: std::sync::Arc<GameSettings>,
+    narrative: Option<narrative::Narrative>,
 }
 
 impl SessionVm {
@@ -215,6 +221,9 @@ impl SessionVm {
             main_wait: None,
             callbacks: Vec::new(),
             schedule_cursor: 0,
+            derived_task: None,
+            reactive_ready: true,
+            feedback_only: false,
             issued: None,
             pending: None,
             choice_reader: None,
@@ -230,6 +239,7 @@ impl SessionVm {
             stage,
             activities: activity::Activities::default(),
             game: std::sync::Arc::new(GameSettings::default()),
+            narrative: None,
         })
     }
 
@@ -274,6 +284,9 @@ impl SessionVm {
     pub fn task(&self) -> Option<TaskId> {
         self.task
     }
+    pub fn stage_is_input_feedback(&self) -> bool {
+        self.feedback_only
+    }
     pub fn stage(&self) -> &reel_ui::stage::Stage {
         &self.stage.scene
     }
@@ -281,13 +294,20 @@ impl SessionVm {
     /// Publish the properties of the same mounted objects after script work.
     pub fn sync_stage(&mut self, session: &Session) -> Result<(), AdapterError> {
         self.same_session(session)?;
+        if self.reactive_ready && self.derived_task.is_none() {
+            self.sync_narrative(session)?;
+        }
+        if self.vm.heap().derived_pending() || self.derived_task.is_some() {
+            return Ok(());
+        }
         self.stage.sync(self.vm.heap_mut(), self.read_limit)
     }
     pub fn cleanup_pending(&self) -> bool {
         self.revoked
             && (self.root_cursor < self.root_end
                 || self.task.is_some()
-                || !self.callbacks.is_empty())
+                || !self.callbacks.is_empty()
+                || self.derived_task.is_some())
     }
 
     /// Advance the session's monotonic logical clock, independently of VM slice
@@ -300,7 +320,12 @@ impl SessionVm {
         work: u32,
     ) -> Result<ActivityProgress, AdapterError> {
         self.live(session)?;
-        self.activities.advance(&mut self.vm, seconds, work)
+        let mut progress = self.activities.advance(&mut self.vm, seconds, work)?;
+        if self.reactive_ready && self.derived_task.is_none() {
+            self.sync_narrative(session)?;
+        }
+        progress.woke |= self.vm.heap().derived_pending() || self.derived_task.is_some();
+        Ok(progress)
     }
 
     pub fn activities_pending(&self) -> bool {
@@ -322,6 +347,22 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::game::dialogue"
+            | "reel::game::choice"
+            | "reel::dialogue::clear"
+            | "reel::choice::select" => {
+                self.dispatch_narrative(session, ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::view" => {
+                self.dispatch_view(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::derive" => {
+                self.vm.respond_derive(ticket)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::model" => {
                 let work = self.vm.respond_model(ticket, work)?;
                 self.issued = None;
@@ -558,14 +599,17 @@ impl SessionVm {
     fn check_ticket(&self, session: &Session, ticket: HostTicket) -> Result<(), AdapterError> {
         self.live(session)?;
         if self.issued != Some(ticket)
-            || if self.task == Some(ticket.task) {
+            || if self.task == Some(ticket.task) || self.derived_task == Some(ticket.task) {
                 ticket.owner != self.root_owner
             } else {
                 self.callback_owner(session, ticket.task) != Some(ticket.owner)
             }
             || !matches!(
                 ticket.input,
-                NativeInput::Entry | NativeInput::Continue { .. }
+                NativeInput::Entry
+                    | NativeInput::Continue { .. }
+                    | NativeInput::CallbackReturned
+                    | NativeInput::CallbackFault
             )
         {
             return Err(AdapterError::Input("foreign or consumed native ticket"));
@@ -771,6 +815,7 @@ impl SessionVm {
             wait,
             keys,
         });
+        self.feedback_only = false;
         publication.commit(session);
         self.issued = None;
         Ok(())
@@ -861,6 +906,8 @@ impl SessionVm {
         if task == self.task {
             self.task = None;
             self.main_wait = None;
+        } else if task == self.derived_task {
+            self.derived_task = None;
         } else if let Some(index) = self
             .callbacks
             .iter()
@@ -879,6 +926,8 @@ impl SessionVm {
             || self.pending.is_some()
             || self.delivery.is_some()
             || !self.callbacks.is_empty()
+            || self.derived_task.is_some()
+            || self.vm.heap().derived_pending()
         {
             return Err(AdapterError::Input("main task has not finished"));
         }
@@ -916,7 +965,7 @@ impl SessionVm {
             self.owner,
             OwnerRetirementRequirements {
                 root_slots_end: self.root_end as usize,
-                tasks_pending: self.task.is_some(),
+                tasks_pending: self.task.is_some() || self.derived_task.is_some(),
                 external_resources_pending: false, // no host-owned RootRanges/resources
             },
         )?;
@@ -969,6 +1018,24 @@ impl SessionVm {
                 Ok(_) => {
                     return Err(AdapterError::Input(
                         "unexpected callback cancellation outcome",
+                    ));
+                }
+            }
+            return Ok(self.root_cursor - before);
+        }
+        if let Some(task) = self.derived_task {
+            match self.vm.run_slice(task, budget, now) {
+                Err(VmError::Idle) => {
+                    self.derived_task = None;
+                    if self.task.is_none() {
+                        session.confirm_owner_task_cleanup(self.owner)?;
+                    }
+                }
+                Ok(RunOutcome::BudgetYield(_)) | Ok(RunOutcome::ResourceBlocked(_)) => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return Err(AdapterError::Input(
+                        "unexpected derived cancellation outcome",
                     ));
                 }
             }

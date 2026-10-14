@@ -159,7 +159,8 @@ impl Vm {
         }
         Ok(index)
     }
-    pub(super) fn sequence_get(&self, object: Value, index: Value) -> Result<Value, FaultKind> {
+    pub(super) fn sequence_get(&mut self, object: Value, index: Value) -> Result<Value, FaultKind> {
+        self.heap.observe_read(object, None).map_err(heap_fault)?;
         let index = self.sequence_index(object, index, false)?;
         self.heap.get_field(object, index).map_err(heap_fault)
     }
@@ -169,6 +170,14 @@ impl Vm {
         index: Value,
         value: Value,
     ) -> Result<(), FaultKind> {
+        if self
+            .heap
+            .collection_is_readonly(object)
+            .map_err(heap_fault)?
+        {
+            return Err(FaultKind::ReadOnly);
+        }
+        self.heap.observe_write(object, None).map_err(heap_fault)?;
         let index = self.sequence_index(object, index, true)?;
         self.heap
             .set_field(object, index, value)
@@ -522,9 +531,13 @@ impl Vm {
                     Err(error) => return self.collection_fault(s, heap_fault(error)),
                 }
             }
-            TableAction::HasOwn(dest) => self.put(s.regs, dest.0, Value::bool(work.matched))?,
+            TableAction::HasOwn(dest) => {
+                self.heap.observe_read(table, None)?;
+                self.put(s.regs, dest.0, Value::bool(work.matched))?;
+            }
             TableAction::Get(dest) | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
+                    self.heap.observe_read(table, Some(work.entry))?;
                     self.heap.table_entry(table, work.entry)?.1
                 } else if let TableAction::MemberGet { symbol, .. } = work.action {
                     let Some(method) = Builtin::lookup(
@@ -556,6 +569,9 @@ impl Vm {
                         || self.heap.is_model_table(table)?)
                 {
                     return self.collection_fault(s, FaultKind::Effect);
+                }
+                if let Err(error) = self.heap.observe_write(table, Some(work.entry)) {
+                    return self.collection_fault(s, heap_fault(error));
                 }
                 let result = if let TableAction::SetHost { object, .. } = work.action {
                     let host = self.value(s.regs, object.0)?;

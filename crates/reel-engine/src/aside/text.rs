@@ -34,3 +34,17 @@ pub(super) fn read_string(
     }
     String::from_utf8(bytes).map_err(|_| AdapterError::Input("invalid UTF-8 string"))
 }
+
+/// Construct an immutable VM string through its existing chunked byte buffer.
+pub(super) fn alloc_string(
+    heap: &mut Heap,
+    text: &str,
+    chunk: usize,
+) -> Result<Value, AdapterError> {
+    let value = heap.alloc_byte_buffer(&[])?;
+    for bytes in text.as_bytes().chunks(chunk) {
+        heap.bytes_append(value, bytes)?;
+    }
+    heap.seal_string(value)?;
+    Ok(value)
+}

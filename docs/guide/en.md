@@ -12,7 +12,7 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model and node bind/unbind are available; derive, media and save/load are not connected to creator source yet. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; media and save/load are not connected to creator source yet. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
@@ -226,7 +226,7 @@ narrator, character, say and choose support sequential waiting and resumption. A
 
 `game.configure(text_speed: 30)` sets Unicode graphemes per second, defaulting to 30; 0 displays the complete text immediately, and omission preserves the current setting. Advance first completes the text, then finishes the interaction. Suspension, resource waits and paired input pause reveal without accumulating a catch-up burst. Rust hosts and the window share playback logic.
 
-The bindable dialogue model, custom dialogue views, bubbles/NVL, voice and chapter startup below remain design targets. Current say uses ADV groups and does not accept a mode parameter.
+Bindable dialogue, custom ADV/NVL and choice views are available in [author_narrative.aside](../../examples/author_narrative.aside). Voice and chapter startup remain planned. say submits a group sharing one advance interaction; author views determine its layout.
 
 Dialogue lines, choices, interaction text and session history grow with the content. History preserves the whole session; reaching a display cache capacity does not interrupt the story or discard earlier records. Actual allocation failure is reported.
 
@@ -237,7 +237,7 @@ use game::ui::room::room_view;
 let mio = character("Mio");
 
 pub fn opening() {
-    let view = room_view(game.dialogue);
+    let view = room_view(game.dialogue());
     stage.replace(view.root);
     mio("先别开灯。看玻璃上那条光。");
     narrator("雨水往下落，光却停在原处。");
@@ -249,20 +249,24 @@ While text is appearing character by character, the first advance reveals the re
 A character describes identity and speaking parameters. The author's components draw the dialogue box. Here is the simplest text layout; background images, nameplates, and shortcut buttons can be added to the node tree as usual.
 ```aside
 pub fn dialogue_view(model) {
-    column(x: 160, y: 780, width: 1600, gap: 12) {
+    column(gap: 12) {
         text(value: bind(model.speaker_name),
              visible: derive(|| model.speaker_name != ""));
         text(value: bind(model.text), reveal: bind(model.reveal));
     }
 }
+pub fn nvl_view(model) {
+    view(|| column(gap: 24) {
+        for line in model.lines { dialogue_view(line); }
+    })
+}
 ```
-game.dialogue.lines is the shared observable list of dialogue lines. speaker_name/text/reveal are read-only convenience projections of the first line in the currently active line group. ADV views commonly use these fields; NVL and speech-bubble views use the complete line list. model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the session history. Character calls accept resource parameters such as voice; voice playback is associated with the current line. Multiple characters speaking at once also share a single advance interaction:
+game.dialogue().lines is the shared observable list of dialogue lines. speaker_name/text/reveal are read-only convenience projections of the first line in the currently active line group. ADV views commonly use these fields; NVL and speech-bubble views use the complete line list. model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the session history. Voice parameters are not connected yet. Multiple characters speaking at once also share a single advance interaction:
 ```aside
 let eri = character("Eri");
-say([mio.line("你听见了吗？"), eri.line("在窗外。")],
-    mode: "bubbles");
+say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-Speech-bubble and NVL views use list to bind game.dialogue.lines, with current_line_ids distinguishing the current group from accumulated lines. The current group's convenience fields always refer to its first line. Choices also expose a data model. Authors use buttons to call game.choice.select(option_id), and choose returns the corresponding key.
+`game.dialogue()` returns the stable session model. The nvl_view above composes accumulated lines; `model.clear()` clears the displayed page while preserving history. ADV uses the first-line shortcuts, and current_line_ids identifies the current group. Reveal changes update properties without rebuilding the NVL page; appending lines or clearing the page rebuilds the view content. Ordinary layouts determine placement, backgrounds, spacing and bubble shapes.
 When you need a route map or chapter restarts, use an ordinary API to register a stable ID and display title for a function. The function still follows the same calling and waiting rules.
 ```aside
 fn opening() {
@@ -351,7 +355,7 @@ photo_panel is an author-defined component control object. The example only demo
 
 ## 7 Settings Pages and Image-Based Controls
 
-button, slider, toggle and node bind/unbind are implemented; tabs, settings, slider appearance slots and derive in this section remain design targets.
+button, slider, toggle and node bind/unbind are implemented; tabs, settings and slider appearance slots remain design targets.
 
 The following example combines tabs, pages, and sliders into a settings page. switcher preserves each page's nodes and local values; select changes only the selected page. Hidden pages leave input handling and focus navigation.
 ```aside
@@ -421,7 +425,7 @@ To move UI and character portraits together, place them in the same group and ap
 ```aside
 let cast = group() {
     image("assets/mio.png");
-    dialogue_view(game.dialogue);
+    dialogue_view(game.dialogue());
 };
 stage.replace(cast);
 await run(tween(cast, x: 80, duration: 0.5));
@@ -463,18 +467,18 @@ Pixels changed by an effect and logical input regions are declared separately. O
 
 ## 10 Choices and Changing Content
 
-choose supports option arrays, selection in the real window and returning the original key. The custom choice_view, game.choice bindings and list interfaces below remain design targets. The player currently supplies the default choice view.
+choose, custom choice_view and the read-only choice model are implemented. Call `game.configure(default_dialogue: false, default_choices: false)` to disable the corresponding default views, then mount author components on the stage. See [author_narrative.aside](../../examples/author_narrative.aside) for ADV/NVL switching and custom choices.
 
 choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(option_id). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.
 ```aside
 fn choice_view(model) {
-    list(items: bind(model.options),
-         key: |option| option.id,
-         build: |option| {
-             button(on_click: |event| model.select(option.id)) {
-                 text(value: bind(option.label));
-             }
-         })
+    view(|| column(gap: 12) {
+        for option in model.options {
+            button(on_click: |event| model.select(option.id)) {
+                text(value: bind(option.label));
+            }
+        }
+    })
 }
 let answer = choose([
     {key: "window", label: "走到窗边"},
@@ -483,8 +487,8 @@ let answer = choose([
 if answer == "window" { by_window(); }
 else { by_door(); }
 ```
-choice_view is mounted in the scene containing the dialogue UI; by_window and by_door are the author's story functions. choose copies the supplied ordinary records into engine-owned, read-only observable rows. id, key, and label can all be read and bound, while the input records remain unchanged. id is an opaque, stable identifier formed from the current InteractionId and key. The list uses option.id to preserve that identity; the next choice uses new IDs. game.choice.options is a read-only observable list of these rows, empty by default. It is populated while waiting for a choice and cleared when the choice is complete. select accepts option.id, which includes interaction identity, while the value returned to story code is still the application key. Stale or duplicate selections are filtered using that identity.
-A for loop inside ordinary children is appropriate for constructing a scene as it is now. list is for continuously changing lists: items connects to an observable collection, key determines element identity, and build creates a node for a new key. An observable item with the same key retains its identity while its fields update; only removing that key destroys the corresponding subtree. Layout is vertical by default. Virtualized display is governed by the viewport range and reusable measurement results. Duplicate keys produce errors at the corresponding list location. Passing an ordinary array as items constructs fixed content.
+choice_view is mounted in the scene containing the dialogue UI; by_window and by_door are the author's story functions. choose copies the supplied ordinary records into engine-owned, read-only observable rows. id, key, and label can all be read and bound, while the input records remain unchanged. id is an opaque, stable identifier formed from the current InteractionId and key. Buttons capture option.id to preserve that interaction identity; the next choice uses new IDs. game.choice().options is a read-only observable list of these rows, empty by default. It is populated while waiting for a choice and cleared when the choice is complete. select accepts option.id, which includes interaction identity, while the value returned to story code is still the application key. Stale or duplicate select calls return false; accepted calls return true. choose always returns the original key.
+A for loop inside ordinary children constructs current content. `view(|| ...)` rebuilds its subtree when observable data actually read by the factory changes, retaining the outer container. Successful construction replaces the old content and cancels tasks and activities owned by retired nodes. Use bind/derive to update individual properties while retaining node identity. Keyed node reuse and list virtualization remain planned list capabilities.
 
 ## 11 Saves, History, Routes, and Skipping
 
@@ -643,7 +647,7 @@ fn main() {
 
 A click passes the original button as event.target. A callback can await an animation. Synchronous code runs until it waits or ends before another script task executes, so engine budget slices do not interrupt ordinary read-modify-write operations. Multiple callbacks may await one activity; cancelling a consumer does not stop the shared producer.
 
-The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start, derive and general event subscriptions remain unimplemented; direct node property bindings are available below.
+The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start and general event subscriptions remain unimplemented; direct node property bindings are available below.
 
 Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons.aside). Native IME and system accessibility adapters remain future work.
 
@@ -732,7 +736,7 @@ Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `
 
 Sliders require finite increasing min/max and a finite value inside that range. step is null or finite and positive, anchored at min, with both endpoints reachable. Scripts may assign any in-range value regardless of input step. Assigning min/max must also leave the current value in range; invalid writes preserve the previous state. Mouse/touch dragging, arrow keys, Home/End, Shift acceleration, left/right controller navigation and accessibility actions share one control.
 
-Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Node values support bind/unbind; derive remains future work.
+Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Node values support bind/unbind; derive supplies read-only values for presentation and cannot be a slider/toggle writeback source.
 
 ```aside
 fn main() {

@@ -1,0 +1,46 @@
+// Supply fonts/body.ttf relative to this source before opening a native window.
+let dialogue = game.dialogue();
+let choices = game.choice();
+let ui = model({nvl: true});
+let mio = character("Mio");
+
+fn line_view(line) {
+    column(gap: 8) {
+        text(value: bind(line.speaker_name), visible: derive(|| line.speaker_name != ""), color: "#9ed8ff");
+        text(value: bind(line.text), reveal: bind(line.reveal), width: 780);
+    }
+}
+
+pub fn main() {
+    game.configure(width: 1000, height: 720, fonts: ["fonts/body.ttf"],
+                   default_dialogue: false, default_choices: false);
+    let reading = view(|| {
+        if ui.nvl {
+            column(gap: 24) { for line in dialogue.lines { line_view(line); } }
+        } else {
+            line_view(dialogue)
+        }
+    }, x: 60, y: 70, width: 880, padding: 24, background: "#182338ee");
+    let answers = view(|| {
+        column(gap: 14) {
+            for option in choices.options {
+                button(on_click: |event| choices.select(option.id), decorated: false,
+                       width: 800, padding: 16, background: "#25435fff") {
+                    text(value: bind(option.label));
+                }
+            }
+        }
+    }, x: 80, y: 420, visible: bind(choices.active));
+    stage.replace(stack() {
+        reading;
+        answers;
+        button("ADV / NVL", x: 800, y: 20, on_click: |event| { ui.nvl = !ui.nvl; });
+    });
+    mio("雨还没有停。");
+    narrator("窗上的水痕，把远处的灯分成了两半。");
+    say([mio.line("你听见了吗？"), character("Eri").line("在窗外。")]);
+    let answer = choose([{key: "window", label: "走到窗边"}, {key: "door", label: "留在门口"}]);
+    dialogue.clear();
+    if answer == "window" { mio("我们去看看。"); }
+    else { narrator("脚步停在门口。"); }
+}

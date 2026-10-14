@@ -298,3 +298,73 @@ fn author_models_example_initializes_from_source_and_asb() {
         );
     }
 }
+
+#[test]
+fn derived_pressed_visual_preserves_mouse_and_touch_activation() {
+    let source = SOURCE.replace(
+        "visible: bind(control.pressed)",
+        "visible: derive(|| control.pressed)",
+    );
+    let checked = reel_cli::check(&source, "derived_controls.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        compile_story(&source, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        let mut frame = 1;
+        present(&mut driver, &mut bridge, root, frame);
+        for kind in [PointerType::Mouse, PointerType::Touch] {
+            driver
+                .handle_pointer(&mut bridge, pointer(kind, Some(true)))
+                .unwrap();
+            settle(&mut driver);
+            frame += 1;
+            present(&mut driver, &mut bridge, root, frame);
+            driver
+                .handle_pointer(&mut bridge, pointer(kind, Some(false)))
+                .unwrap();
+            settle(&mut driver);
+            frame += 1;
+            present(&mut driver, &mut bridge, root, frame);
+        }
+        assert_eq!(clicks(&driver), 2.);
+    }
+}
+
+#[test]
+fn author_narrative_example_initializes_from_source_and_asb() {
+    let source = include_str!("../../../examples/author_narrative.aside");
+    let checked = reel_cli::check(source, "author_narrative.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        compile_story(source, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        assert!(!driver.adapter().game_settings().default_dialogue);
+        assert!(!driver.adapter().game_settings().default_choices);
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("雨还没有停。".into()))
+        );
+    }
+}

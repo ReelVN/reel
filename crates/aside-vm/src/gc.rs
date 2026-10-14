@@ -158,6 +158,13 @@ impl Heap {
                             let metadata = obj.model_metadata;
                             self.shade(metadata);
                             p.edges += 1;
+                        } else if !obj.reactive_scanned
+                            && !obj.reactive_subscribers.same_bits(crate::Value::NULL)
+                        {
+                            obj.reactive_scanned = true;
+                            let metadata = obj.reactive_subscribers;
+                            self.shade(metadata);
+                            p.edges += 1;
                         } else if let Some(value) = obj.payload.edge(obj.scan) {
                             obj.metadata_scanned = true;
                             obj.scan += 1;

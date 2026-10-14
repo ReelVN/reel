@@ -9,6 +9,7 @@ pub(super) struct Iteration {
 
 impl Vm {
     pub(super) fn iterator_new(&mut self, source: Value) -> Result<Value, HeapError> {
+        self.heap.observe_read(source, None)?;
         let info = self.heap.info(source)?;
         let cursor = if info.kind == ObjectKind::Range {
             self.heap.get_field(source, 0)?
