@@ -182,6 +182,11 @@ impl AsideSessionUi {
     pub fn activities_need_time(&self) -> bool {
         self.state == StoryState::Running && self.vm.activities_need_time()
     }
+    pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
+        (self.state == StoryState::Running)
+            .then(|| self.vm.activities_poll_after())
+            .flatten()
+    }
     pub fn activities_pending(&self) -> bool {
         self.vm.activities_pending()
     }
@@ -294,6 +299,9 @@ impl AsideSessionUi {
                         }
                         NodeEvent::Change(change) => {
                             changed |= self.vm.change(self.ui.session_mut(), change)?;
+                        }
+                        NodeEvent::Text(input) => {
+                            changed |= self.vm.text_input(self.ui.session_mut(), input)?;
                         }
                         NodeEvent::Action(action) => {
                             self.vm.input_action(self.ui.session_mut(), action)?;

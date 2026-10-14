@@ -30,6 +30,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 库宿主通过显式单调逻辑秒数推进活动；时间片计时与剧情时间分离。推进按调用者给定的活动工作额度分片，同一轮固定采样时间，未完成时保留上一完整呈现；属性占用直接索引对应活动，启动接管和终态摘链不扫描历史活动。窗口只在有运行中的动画时请求后续时间更新，暂停和纯输入等待可休眠。动画直接写现有节点字段，变换沿现有 compose 路径，不逐帧分配脚本对象或重做文字布局。验收检查源码/ASB、终态/取消/接管、时钟和画面投影，记录稳定推进期间堆分配与布局次数；所有动作、活动、属性写入版本与占用关系都位于既有 VM 堆；单一活动链根保活生产者，不设活动数量上限。会话适配器已调度主任务与按钮回调，活动等待维护多个独立消费者；取消消费者不取消共享生产者，订阅随真实等待失效或交付释放。可运行示例为 [author_activities.aside](../examples/author_activities.aside) 和 [author_buttons.aside](../examples/author_buttons.aside)。sequence/parallel/repeat 已贯通同一活动协议，scope 与快照恢复仍未实现。
 作者能够以符合直觉的接口表达、组合和改变想象中的画面与交互，是实现和设计取舍的共同标准。可运行的小场景用于验证表达能力，不限定引擎最终范围。实现过程中发现不自然的接口，应同步改进规范和作者指南，不为维持尚未发布的内部接口引入兼容层。
 
+`delay(seconds)` 描述有限非负时长的等待，与 tween 共用 run、sequence、parallel、repeat、暂停、停止、完成和 owner 取消协议；等待不拥有舞台属性，也不需要虚拟节点。`await run(delay(1))` 等待一秒，零时长立即完成。纯等待按最近截止时间唤醒；存在属性动画时沿正常呈现节奏采样，暂停和平台挂起不消耗等待时长。快进沿既有有限会话活动规则处理。接口为 Reel native ABI 1，不改变 B01/ASB。
+
 ### 按业务身份复用的作者列表
 
 `list(items, key:, build:, ...NodeProps)` 是 Reel native ABI 1，B01/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
@@ -43,6 +45,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 `game.configure(text_speed: null)` 配置每秒揭示字素数，默认 30，0 为即时完整显示，省略保留设置。播放器以公共单调逻辑时间播放，挂起、资源等待及正在配对的输入不积累欠账；完成后停止定时唤醒。文本始终按完整内容整形，时间推进只修改揭示范围。窗口只适配时间和唤醒，Rust 嵌入宿主使用同一播放逻辑。源码/ASB 示例见 [author_dialogue.aside](../examples/author_dialogue.aside)。
 
 ### 当前作者舞台实现合同
+
+`text_input(value: "", on_change: null, on_submit: null, ...NodeProps)` 是共同舞台的单行文本编辑节点，value 支持可写 bind。编辑复用 reel-text 的 PlainEditor；提交文本与 IME 预编辑分别管理，预编辑只存在于控件，提交才写回模型。on_change/on_submit 收到 target/value，Enter 提交而不推进剧情；失焦、隐藏和禁用撤销预编辑。外部值替换结束当前预编辑，普通值回显保留光标和选区。输入事件携带编辑前值，避免用旧呈现覆盖脚本已修改的文本。控件按需布局，空闲不定时轮询。字体、颜色、背景、尺寸、变换和输入范围沿共同节点；不规定字符数量上限。作者赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。平台适配器转发公共 IME 事件和候选框区域，系统负责转换与候选词；原生窗口类型不进入 UI 或 Aside。桌面复制、剪切和粘贴由可选适配器复用固定版本 arboard 3.6.1。新增节点 ABI 1，B01/ASB 不变。
 
 手柄输入通过公共设备标识、标准按钮/轴和动作映射接入；宿主可直接注入规范化输入，Gilrs 只属于可选平台适配器。ActionMap 汇总同一动作的多个设备/绑定，公开当前值与 Pressed/Changed/Released/Cancelled；松开一个绑定不会清除仍被另一个绑定保持的动作。断连或重置撤销该来源，重映射用新映射替换并显式取消旧状态。导航另将模拟量转换为带迟滞的方向/确认/返回，重复只由单调时钟与下次截止时间驱动，空闲没有逐帧输入轮询。
 

@@ -304,6 +304,13 @@ mio("听，雨又大了。");
 ```
 The example above demonstrates the rules for composing loops. Actual character breathing can use subtle movement or scaling instead, with the same script structure. Authors wrap common actions in ordinary fn functions that take any node and return an action value. UI and character portraits can share these actions.
 
+Use `delay(seconds)` to leave a pause in a scene without creating a display node. It shares the animation clock, composition, pause, stop, and owner cancellation rules; a player with only delays sleeps until the next deadline. Seconds must be finite and nonnegative; zero completes immediately. Runnable example: [author_timing.aside](../../examples/author_timing.aside).
+
+```aside
+await run(delay(1.5));
+await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
+```
+
 ## 5 Managing Temporary Scenes with Scopes
 
 The creator scope, temporary overrides and restoration behavior in this section remain design targets.
@@ -759,6 +766,17 @@ fn main() {
 Rust hosts submit AccessKit ActionRequest through `SessionUi::handle_access` / `AsideSessionUi::handle_access`, preserving accepted-frame and modal rules; the platform host supplies the native screen-reader connection.
 
 ## Connecting stage properties
+
+`text_input` edits a single line. Its value can bind to a writable model field; on_change runs after committed text changes, and on_submit runs on Enter. Both events carry target and value. IME preedit neither writes to the model nor triggers these callbacks. It supports cursor movement, selection, deletion, copy, cut, and paste. The system IME owns conversion and candidate selection; embedding hosts forward portable IME events and handle candidate-window position signals. Assigned values must be single-line strings; newlines in user input or paste become spaces. Style it with common node properties and compose your own background and focus indication; it adds no default border.
+
+```aside
+let profile = model({name: ""});
+text_input(value: bind(profile.name), width: 280, height: 40,
+    color: "#202020", background: "#ffffff",
+    on_submit: |event| { profile.name = event.value; });
+```
+
+Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).
 
 `bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
 

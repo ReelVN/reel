@@ -61,6 +61,13 @@ pub enum NodeEvent {
     Action(NodeAction),
     Change(NodeChange),
     Interaction(NodeInteraction),
+    Text(NodeText),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeText {
+    pub node: NodeId,
+    pub event: crate::widgets::TextInputEvent,
 }
 
 /// Transient interaction shared by native input and author-owned visuals.
@@ -102,6 +109,9 @@ pub struct NodeClick {
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
     Text(Arc<str>),
+    TextInput {
+        value: Arc<str>,
+    },
     Button {
         label: Option<String>,
         listening: bool,

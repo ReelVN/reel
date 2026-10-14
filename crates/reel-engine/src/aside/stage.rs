@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 pub(super) mod controls;
 pub(super) mod input;
 mod interaction;
+pub(super) mod text_input;
 
 use aside_vm::{
     Heap, HeapError, HeapHandle, ObjectKind, PropertyId, RootKind, RootOwner, RootToken, Value,
@@ -188,6 +189,7 @@ impl StageBinding {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
             NodeKind::Text(_) => 1,
+            NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
             NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
             NodeKind::Image { .. }
@@ -247,6 +249,7 @@ impl StageBinding {
         }
         let kind = match symbol {
             "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?.into()),
+            "reel::text_input" => text_input::kind(heap, fields, read_limit)?,
             "reel::slider" => controls::slider_kind(heap, fields)?,
             "reel::toggle" => controls::toggle_kind(heap, fields, read_limit)?,
             "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
@@ -308,6 +311,9 @@ impl StageBinding {
                     |heap, _, index, value| controls::validate_toggle(heap, index, value)
                 }
                 "reel::text" => |heap, _, index, value| validate_text_property(heap, index, value),
+                "reel::text_input" => {
+                    |heap, _, index, value| text_input::validate(heap, index, value)
+                }
                 "reel::image" => {
                     |heap, _, index, value| validate_image_property(heap, index, value)
                 }
@@ -332,6 +338,7 @@ impl StageBinding {
         let control_field = match symbol {
             "reel::slider" => Some(controls::SliderField::Value.index()),
             "reel::toggle" => Some(controls::ToggleField::Value.index()),
+            "reel::text_input" => Some(text_input::TextInputField::Value.index()),
             _ => None,
         };
         if let Some(field) = control_field {
@@ -395,7 +402,7 @@ impl StageBinding {
                 } else {
                     None
                 },
-                text_source: if symbol == "reel::text" {
+                text_source: if matches!(symbol, "reel::text" | "reel::text_input") {
                     Some(heap.handle(args[0])?)
                 } else {
                     None
@@ -474,6 +481,19 @@ impl StageBinding {
                         1,
                     )
                 }
+                NodeKind::TextInput { value } => {
+                    let source = heap.table_entry(fields, 0)?.1;
+                    (
+                        NodeKind::TextInput {
+                            value: if binding.text_source == Some(heap.handle(source)?) {
+                                value.clone()
+                            } else {
+                                read_text(heap, source, read_limit)?.into()
+                            },
+                        },
+                        text_input::TextInputField::PROPERTIES.len(),
+                    )
+                }
                 NodeKind::Image { origin, .. } => (
                     NodeKind::Image {
                         source: read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?,
@@ -488,7 +508,7 @@ impl StageBinding {
             updates.push((id, kind, props, version));
         }
         for (id, kind, props, version) in updates {
-            if matches!(kind, NodeKind::Text(_)) {
+            if matches!(kind, NodeKind::Text(_) | NodeKind::TextInput { .. }) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 let source = heap.table_entry(heap.host_fields(value)?, 0)?.1;
                 self.handles.get_mut(&id).unwrap().text_source = Some(heap.handle(source)?);
@@ -660,7 +680,9 @@ impl StageBinding {
         while let Some(id) = pending.pop() {
             let node = self.scene.node(id).unwrap();
             if match &node.kind {
-                NodeKind::Slider { .. } | NodeKind::Toggle { .. } => true,
+                NodeKind::Slider { .. } | NodeKind::Toggle { .. } | NodeKind::TextInput { .. } => {
+                    true
+                }
                 NodeKind::Button { listening, .. } => *listening,
                 NodeKind::Input { bindings, .. } => !bindings.is_empty(),
                 _ => false,

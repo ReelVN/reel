@@ -8,6 +8,8 @@ mod image;
 pub use image::*;
 mod label;
 pub use label::*;
+mod text_input;
+pub use text_input::*;
 mod slider;
 pub use slider::*;
 mod scroll;

@@ -458,6 +458,11 @@ impl Widget for SessionWidget {
                 NodeEvent::Change(change) if self.binding.borrow().permits_control() => {
                     self.events.borrow_mut().push(NodeEvent::Change(*change));
                 }
+                NodeEvent::Text(input) if self.binding.borrow().permits_control() => {
+                    self.events
+                        .borrow_mut()
+                        .push(NodeEvent::Text(input.clone()));
+                }
                 NodeEvent::Action(action)
                     if matches!(action.phase, ActionPhase::Released | ActionPhase::Cancelled)
                         || self.binding.borrow().permits_control() =>
@@ -1086,10 +1091,12 @@ impl SessionUi {
             }
         }
         let events = self.take_events();
-        if events
-            .iter()
-            .any(|event| matches!(event, reel_ui::stage::NodeEvent::Change(_)))
-        {
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                reel_ui::stage::NodeEvent::Change(_) | reel_ui::stage::NodeEvent::Text(_)
+            )
+        }) {
             // Restore authoritative control values even after a rejected proposal.
             self.stage_dirty = true;
         }
@@ -1221,7 +1228,7 @@ mod tests {
     pub(super) fn mount(ui: &SessionUi) -> (PresentationBridge, WidgetId) {
         mount_with_font(ui, None)
     }
-    fn mount_with_font(
+    pub(super) fn mount_with_font(
         ui: &SessionUi,
         font: Option<reel_ui::peniko::Blob<u8>>,
     ) -> (PresentationBridge, WidgetId) {

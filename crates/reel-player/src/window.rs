@@ -253,9 +253,10 @@ impl State {
         } else {
             (widget, None)
         };
+        let host = WinitHost::new(window.clone());
         let root = RenderRoot::new(
             widget,
-            |_| {},
+            host.ui_signal_handler(),
             RenderRootOptions {
                 default_properties: Arc::new(DefaultProperties::new()),
                 use_system_fonts: false,
@@ -283,7 +284,7 @@ impl State {
         let mut state = Self {
             backend,
             instance,
-            host: WinitHost::new(window.clone()),
+            host,
             window,
             presentation: Presentation::new(bridge, info),
             size: PhysicalSize::new(size.width, size.height),
@@ -641,6 +642,7 @@ impl State {
         Ok(())
     }
     pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<Handled, Error> {
+        let event = self.host.clipboard_paste(&event).unwrap_or(event);
         if let TextEvent::WindowFocusChange(focus) = &event {
             self.input_focused = *focus;
             if *focus && !self.is_suspended() {

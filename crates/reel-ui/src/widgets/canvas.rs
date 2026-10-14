@@ -1,3 +1,6 @@
+// Copyright 2026 Reel contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! A fixed logical canvas fitted into its available viewport.
 use crate::{
     core::*,

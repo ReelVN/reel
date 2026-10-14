@@ -304,6 +304,13 @@ mio("听，雨又大了。");
 ```
 上例展示循环组合规则。实际立绘呼吸可以改用细微位移或缩放，脚本结构相同。作者把常用动作封装成普通 fn，输入任意节点后返回动作值，UI 与立绘共用这些动作。
 
+`delay(seconds)` 可以在演出中留出停顿，无需创建画面节点。它与动画使用同一活动时钟，支持暂停、停止、owner 取消和组合；纯等待期间播放器休眠到截止时间。秒数须有限且非负，零秒立即完成。可运行示例：[author_timing.aside](../../examples/author_timing.aside)。
+
+```aside
+await run(delay(1.5));
+await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
+```
+
 ## 五 作用域管理临时画面
 
 本节作者 scope、临时覆盖与恢复行为属于设计目标。
@@ -759,6 +766,17 @@ fn main() {
 Rust 宿主可通过 `SessionUi::handle_access` / `AsideSessionUi::handle_access` 投递 AccessKit ActionRequest，沿用接受帧和模态规则；原生屏幕阅读器接入由平台宿主提供。
 
 ## 连接舞台属性
+
+`text_input` 提供单行文本编辑。value 可以连接可写模型字段；on_change 在提交文本改变后调用，on_submit 在 Enter 确认时调用，事件都有 target 和 value。中文输入法的预编辑不会提前写入模型或触发回调。支持光标移动、选区、删除及复制、剪切和粘贴。中文转换与候选词由系统输入法提供；嵌入宿主转发公共 IME 事件并响应候选窗位置通知。value 赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。外观使用共同节点属性，默认不绘制额外边框，作者可以自行组合背景和焦点提示。
+
+```aside
+let profile = model({name: ""});
+text_input(value: bind(profile.name), width: 280, height: 40,
+    color: "#202020", background: "#ffffff",
+    on_submit: |event| { profile.name = event.value; });
+```
+
+可运行示例：[author_text_input.aside](../../examples/author_text_input.aside)。
 
 `bind` 和 `unbind` 已支持现有节点属性。下面两个滑条共用一个位置值，文字位置和显隐也直接连接控件；不需要回调复制状态。可运行窗口示例见 [author_bindings.aside](../../examples/author_bindings.aside)，字体资源准备方式与第一节相同。
 

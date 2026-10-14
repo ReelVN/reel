@@ -7,6 +7,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "reel::scroll" => &["axis", "follow_end"],
         "reel::text" => &["value"],
+        "reel::text_input" => &["value", "on_change", "on_submit"],
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
@@ -85,7 +86,17 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     for name in [
-        "text", "image", "row", "column", "stack", "button", "input", "slider", "toggle", "scroll",
+        "text",
+        "text_input",
+        "image",
+        "row",
+        "column",
+        "stack",
+        "button",
+        "input",
+        "slider",
+        "toggle",
+        "scroll",
     ] {
         let mut parameters = Vec::new();
         if name == "scroll" {
@@ -101,6 +112,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     default: Some(bc::Const::Bool(false)),
                 },
             ]);
+        } else if name == "text_input" {
+            parameters.extend(
+                super::stage::text_input::TextInputField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
         } else if name == "slider" {
             parameters.extend(
                 super::stage::controls::SliderField::PROPERTIES
@@ -150,7 +167,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "scroll" { 1 } else { 4 },
+            abi_version: if matches!(name, "scroll" | "text_input") {
+                1
+            } else {
+                4
+            },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -426,6 +447,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     );
     for (name, parameters, waits) in [
         ("tween", tween, false),
+        ("delay", vec![parameter("seconds", None)], false),
         (
             "run",
             vec![

@@ -11,7 +11,18 @@ impl Activities {
         self.head.is_some()
     }
     pub fn needs_time(&self) -> bool {
-        self.running != 0
+        !self.events.is_empty()
+    }
+    pub fn poll_after(&self) -> Option<std::time::Duration> {
+        let (&key, _) = self.events.first_key_value()?;
+        let seconds = (f64::from_bits(key.0) - self.time).max(0.);
+        let deadline =
+            std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX);
+        Some(if self.sampling == 0 {
+            deadline
+        } else {
+            deadline.min(std::time::Duration::from_millis(16))
+        })
     }
     pub fn pending(&self) -> bool {
         self.round.is_some()
@@ -102,6 +113,9 @@ impl Activities {
     fn remove_event(&mut self, heap: &mut Heap, leaf: Value) -> Result<(), AdapterError> {
         if let Some(deadline) = get(heap, leaf, Slot::Event)?.as_float() {
             self.events.remove(&Self::event_key(heap, leaf, deadline)?);
+            if Self::needs_sampling(heap, leaf)? {
+                self.sampling -= 1;
+            }
             set(heap, leaf, Slot::Event, Value::NULL)?;
         }
         Ok(())
@@ -114,10 +128,21 @@ impl Activities {
         let deadline = (start + duration).max(start.next_up());
         self.events
             .insert(Self::event_key(heap, leaf, deadline)?, leaf);
+        if Self::needs_sampling(heap, leaf)? {
+            self.sampling += 1;
+        }
         set(heap, leaf, Slot::Event, Value::float(deadline))
     }
 
+    fn needs_sampling(heap: &Heap, leaf: Value) -> Result<bool, AdapterError> {
+        Ok(kind(heap, leaf)? == Kind::Tween
+            && heap.sequence_len(get(heap, leaf, Slot::Tracks)?)? != 0)
+    }
+
     fn sample(heap: &mut Heap, leaf: Value, time: f64, end: bool) -> Result<(), AdapterError> {
+        if kind(heap, leaf)? == Kind::Delay {
+            return Ok(());
+        }
         let action = get(heap, leaf, Slot::Action)?;
         let duration = action::duration(heap, action)?;
         let start_time = get(heap, leaf, Slot::StartedAt)?.as_float().unwrap();
@@ -239,7 +264,7 @@ impl Activities {
                 )?;
             }
         }
-        if kind(heap, current)? != Kind::Tween {
+        if !kind(heap, current)?.is_leaf() {
             set(heap, current, Slot::Phase, Value::int(Phase::Active as i64))?;
             let child = int(heap, current, Slot::FirstChild)?;
             return if child < 0 {
@@ -253,6 +278,9 @@ impl Activities {
                     false,
                 )
             };
+        }
+        if kind(heap, current)? == Kind::Delay {
+            return self.start_leaf(heap, current, time, forcing);
         }
         let target = payload(heap, action, TARGET)?;
         let fields = heap.host_fields(target)?;
@@ -332,6 +360,17 @@ impl Activities {
             )?;
             heap.set_property_claim(source, current)?;
         }
+        self.start_leaf(heap, current, time, forcing)
+    }
+
+    fn start_leaf(
+        &mut self,
+        heap: &mut Heap,
+        current: Value,
+        time: f64,
+        forcing: bool,
+    ) -> Result<(), AdapterError> {
+        let action = get(heap, current, Slot::Action)?;
         set(heap, current, Slot::StartedAt, Value::float(time))?;
         set(heap, current, Slot::Phase, Value::int(Phase::Active as i64))?;
         if forcing || action::duration(heap, action)? == 0. {
@@ -349,7 +388,7 @@ impl Activities {
         }
         let parent = node(heap, activity, parent_index)?;
         match kind(heap, parent)? {
-            Kind::Tween => unreachable!("tweens have no children"),
+            Kind::Tween | Kind::Delay => unreachable!("leaf actions have no children"),
             Kind::Sequence => {
                 let sibling = int(heap, current, Slot::Sibling)?;
                 if sibling >= 0 {
@@ -414,9 +453,6 @@ impl Activities {
         {
             self.control = None;
         }
-        if status == State::Running {
-            self.running -= 1;
-        }
         root_set(
             heap,
             activity,
@@ -450,7 +486,7 @@ impl Activities {
             let current = heap.sequence_get(graph, cleanup.index)?;
             cleanup.index += 1;
             let freeze = cleanup.freeze;
-            if kind(heap, current)? == Kind::Tween {
+            if kind(heap, current)?.is_leaf() {
                 if phase(heap, current)? == Phase::Active {
                     if let Some(time) = freeze
                         && Self::sample(heap, current, time, false).is_err()
@@ -584,7 +620,7 @@ impl Activities {
         if self.cleanup.is_some() {
             return Ok(());
         }
-        if kind(heap, current)? == Kind::Tween && phase(heap, current)? == Phase::Active {
+        if kind(heap, current)?.is_leaf() && phase(heap, current)? == Phase::Active {
             match command {
                 Command::Pause => self.remove_event(heap, current)?,
                 Command::Resume => {
@@ -633,8 +669,7 @@ impl Activities {
                         .is_finite()
                     {
                         root_set(heap, scan.activity, RootSlot::Forcing, Value::bool(true))?;
-                        if kind(heap, current)? == Kind::Tween
-                            && phase(heap, current)? == Phase::Active
+                        if kind(heap, current)?.is_leaf() && phase(heap, current)? == Phase::Active
                         {
                             self.leaf_done(heap, current, self.time)?;
                         }

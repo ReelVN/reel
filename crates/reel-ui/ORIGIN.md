@@ -25,6 +25,10 @@ Author-stage controls reuse the maintained Button activation behavior, extracted
 as `ButtonBehavior` for shared pointer, focus, keyboard and accessibility actions.
 The common stage node model also carries inherited enabled state.
 
+The first-party single-line TextInput widget uses the maintained Parley PlainEditor
+for shaping, selections and IME composition. Native IME and clipboard adapters live
+in reel-player; reel-ui retains no native window or clipboard dependencies.
+
 Slider range/stepping and thumb geometry are shared with author controls. Interaction
 configuration revisions preserve value-update gestures and cancel obsolete captures;
 source and ASB control flows are covered by `reel-cli/tests/author_controls.rs`.
