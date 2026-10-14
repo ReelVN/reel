@@ -31,7 +31,7 @@ pub use heap::{
 pub use payload::{
     BYTE_CHUNK_BYTES, BYTE_CHUNK_LEN, CHUNK_METADATA_BYTES, VALUE_CHUNK_BYTES, VALUE_CHUNK_LEN,
 };
-pub use root_ranges::{HeapBudgetUsage, RootRangeToken};
+pub use root_ranges::{HeapBudgetUsage, Reservation as HeapReservation, RootRangeToken};
 pub use value::{HeapHandle, HeapId, SessionEpoch, Value, ValueTag, WeakHandle};
 
 // Enforced by both native and 32-bit cross compilation, without runtime linking.

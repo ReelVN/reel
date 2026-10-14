@@ -1,0 +1,49 @@
+// Supply fonts/body.ttf relative to this source before opening a native window.
+let inventory = model({items: [
+    {id: "letter", label: "Letter", count: 1},
+    {id: "key", label: "Brass key", count: 2}
+], selected: ""});
+
+fn item_view(row) {
+    // Local state belongs to this key and survives changes elsewhere in the list.
+    let local = model({expanded: false});
+    column(gap: 8) {
+        button(width: 500, height: 50, on_click: |event| {
+            inventory.selected = row.value.label;
+            local.expanded = !local.expanded;
+        }) {
+            text(value: derive(|| f"{row.index + 1}. {row.value.label} × {row.value.count}"));
+        }
+        text(value: derive(|| f"Selected: {row.value.label}"), visible: bind(local.expanded));
+    }
+}
+
+pub fn main() {
+    game.configure(fonts: ["fonts/body.ttf"], width: 1000, height: 720);
+    stage.replace(column(x: 40, y: 30, width: 900, gap: 20) {
+        row(gap: 16) {
+            button("Reverse", on_click: |e| inventory.items.reverse());
+            button("Replace letter", on_click: |e| {
+                let mut i = 0;
+                for item in inventory.items {
+                    if item.id == "letter" {
+                        inventory.items[i] = {id: "letter", label: "Opened letter", count: item.count};
+                        break;
+                    }
+                    i += 1;
+                }
+            });
+            button("Add coin", on_click: |e| {
+                for item in inventory.items {
+                    if item.id == "coin" { item.count += 1; return; }
+                }
+                inventory.items.append({id: "coin", label: "Coin", count: 1});
+            });
+        }
+        scroll(width: 880, height: 360) {
+            list(|| inventory.items, key: |item| item.id, build: item_view, gap: 16);
+        }
+        text(value: derive(|| f"Last selection: {inventory.selected}"));
+    });
+    narrator("展开一项，再排序或替换记录：它的状态仍然保留。");
+}

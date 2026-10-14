@@ -48,7 +48,7 @@ pub(crate) struct ByteBook {
 pub(crate) const BOOK_BYTES: u64 =
     (std::mem::size_of::<ByteBook>() + 2 * std::mem::size_of::<usize>()) as u64;
 
-/// A live, read-only accounting observation; cloning it allocates nothing.
+/// A live accounting observation and reservation source; cloning allocates nothing.
 #[derive(Clone)]
 pub struct HeapBudgetUsage(pub(crate) Rc<ByteBook>);
 impl HeapBudgetUsage {
@@ -73,6 +73,11 @@ impl HeapBudgetUsage {
     }
     pub fn limit(&self) -> u64 {
         self.0.limit
+    }
+    /// Charge host-owned temporary storage against the same heap budget.
+    /// Keep the reservation until the corresponding allocation has been released.
+    pub fn reserve(&self, bytes: u64) -> Result<Reservation, HeapError> {
+        Reservation::new(self, bytes)
     }
     pub(crate) fn ensure(&self, bytes: u64) -> Result<(), HeapError> {
         if bytes > self.remaining_bytes() {
@@ -107,7 +112,7 @@ impl HeapBudgetUsage {
     }
 }
 
-pub(crate) struct Reservation {
+pub struct Reservation {
     usage: HeapBudgetUsage,
     bytes: u64,
 }

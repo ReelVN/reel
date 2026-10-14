@@ -10,16 +10,14 @@ fn history_page() {
     let history = game.history();
     stack(modal: true, width: 1000, height: 720, background: "#101926ff") {
         scroll(x: 40, y: 80, width: 920, height: 570, follow_end: true) {
-            column(gap: 24) {
-                for group in history {
-                    column(gap: 8) {
-                        for line in group.lines {
-                            text(line.speaker_name, color: "#9ed8ff");
-                            text(line.text, width: 850);
-                        }
+            list(|| history, key: |group| group.group_id, build: |row| {
+                column(gap: 8) {
+                    for line in row.value.lines {
+                        text(line.speaker_name, color: "#9ed8ff");
+                        text(line.text, width: 850);
                     }
                 }
-            }
+            }, gap: 24);
         }
         button("Close history", x: 40, y: 20,
                on_click: |event| game.pause_reading(false));

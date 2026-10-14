@@ -140,6 +140,35 @@ impl StageBinding {
         Ok(())
     }
 
+    pub(super) fn reconcile_list(
+        &mut self,
+        heap: &mut Heap,
+        container: Value,
+        references: Value,
+        read_limit: usize,
+    ) -> Result<(), AdapterError> {
+        let parent = self.id(heap, container)?;
+        let mut children = Vec::new();
+        children
+            .try_reserve_exact(heap.sequence_len(references)? as usize)
+            .map_err(|_| AdapterError::Allocation)?;
+        for i in 0..heap.sequence_len(references)? {
+            children.push(self.id(heap, heap.sequence_get(references, i)?)?);
+        }
+        self.scene.validate_children(parent, &children)?;
+        for &child in &children {
+            if self.scene.node(child).unwrap().parent.is_none() {
+                self.sync_tree(heap, child, read_limit)?;
+            }
+        }
+        for i in 0..heap.sequence_len(references)? {
+            heap.set_host_payload(heap.sequence_get(references, i)?, 2, container)?;
+        }
+        heap.set_host_payload(container, 1, references)?;
+        let retired = self.scene.reconcile_children(parent, children)?;
+        self.retire(heap, retired)
+    }
+
     pub(super) fn id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
         heap.host_fields(value)?;
         let id = NodeId(
