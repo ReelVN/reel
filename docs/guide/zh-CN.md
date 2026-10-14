@@ -595,13 +595,29 @@ fn arrive(node, destination_x, seconds = 0.5) {
 
 Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普通参数或 `...items` 调用；每次调用有独立的外层数组，元素保留通常的共享身份。默认参数与绑定方法使用相同规则。这项能力独立于 Reel，本身不代表动作组合已经实现。
 
-当前基础 text 使用真实文字布局；本节富文本类型、本地化、媒体和自定义绘制接口属于后续作者能力。
+当前基础 text 使用真实文字布局；外部语言包与响应式语言切换已实现。富文本类型、视频和 Aside 自定义绘制接口仍属后续能力。
 
 Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换；描边和几何裁剪均支持虚线，包括曲线、闭合路径和虚线偏移。全零虚线模式显示为实线，较小的斜接限制使用斜角连接。以上属于现有 Rust 绘制接口能力，Aside 自定义绘制入口仍待接通。
 
 作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。video 与精确音画同步仍属于设计合同。
 
-PlainText 表示普通文字，RichText 表示显式样式结构，LocalText 由 tr(id, fallback, params) 创建。翻译模板先解析结构，再把参数作为文字填入；参数中的标记字符保留为文字。当前对白组保持提交时的文字与语音，下组采用新语言，NVL 页在清页后切换；UI 和历史即时使用当前语言。reel loc 提取/更新目录并检查缺译和参数。
+`localization.load(locale, source)` 从资源目录读取 UTF-8 Fluent 语言包，当前任务等待后台读取和解析完成。成功后替换该语言的目录；读取、语法或重复 ID 错误可用 try/catch 处理，旧目录保留。取消调用任务会取消加载。`localization.set_locale(locale)` 切换语言，`localization.locale()` 返回可观察的语言标记。
+
+`tr(id, fallback, params: null)` 返回当前语言的普通字符串，查找精确语言、基础语言，再回退到原文。未传 params 时原文按字面使用；传入参数表时原文使用 Fluent 模板。译文始终使用 Fluent，参数接受 string/int/float，支持命名参数和复数选择。参数不会作为模板再次解析；缺参数等格式错误可捕获。Fluent 保留双向文本隔离标记，避免不同方向的姓名影响周围文字。
+
+界面使用 `derive(|| tr(...))`，语言改变时只重新计算订阅的表达式；普通 tr 调用、已提交对白/选择、输入草稿与历史字符串保留求值时的内容。需要即时翻译的聊天历史或选择外观，可以保存 ID、原文和参数，在展示绑定中调用 tr；分支 key 始终独立于文案。无需特殊 LocalText 类型。
+
+以下片段来自 [localization.aside](../../examples/localization.aside)，英文语言包为 [en.ftl](../../examples/locales/en.ftl)。运行时以 examples 为资源根目录，并在宿主或 game.configure 中提供字体。
+
+```aside
+localization.load("en", "locales/en.ftl");
+localization.set_locale("zh-CN");
+let data = model({name: "Mio", count: 2});
+text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data.name})));
+button("English", on_click: |event| localization.set_locale("en"));
+```
+
+PlainText/RichText、自动内容 ID、reel loc 提取/更新目录和翻译资源替代仍属后续能力。
 video 是普通节点，audio 提供音轨、队列、循环区间、滤镜与同步组。play 返回可等待活动，stop 停在当前状态，finish 用于有终点的活动。轨道与资源由稳定身份管理，设备重建和 seek 保留或重新绑定逻辑等待；错误有明确终态。
 custom_node 可以直接注册 Aside 的 state、measure、record、route 和 event。measure/record 是受预算的只读布局/绘制回调；route 同步决定消费、捕获与焦点，然后 event 作为普通可暂停任务执行。这样小游戏节点能够阻止同次输入推进剧情，也能在业务回调中等待资源。新的底层图形/平台能力通过 native 模块注册。
 Camera、Mesh、Material 和 Effect 提供透视舞台与可编程效果，状态和资源身份仍进入保存。不同后端用能力清单说明所支持的实现与后备。Live2D、系统朗读、移动/Web 打包和外部服务属于完整目标的适配能力，具体 API 文档随已验证实现提供同一风格的使用示例。

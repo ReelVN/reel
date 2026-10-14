@@ -17,5 +17,6 @@ pub mod assets;
 pub mod audio;
 pub mod fonts;
 mod images;
+pub mod localization;
 pub mod session;
 mod stage_widget;
