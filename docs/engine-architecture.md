@@ -30,6 +30,12 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 库宿主通过显式单调逻辑秒数推进活动；时间片计时与剧情时间分离。推进按调用者给定的活动工作额度分片，同一轮固定采样时间，未完成时保留上一完整呈现；属性占用直接索引对应活动，启动接管和终态摘链不扫描历史活动。窗口只在有运行中的动画时请求后续时间更新，暂停和纯输入等待可休眠。动画直接写现有节点字段，变换沿现有 compose 路径，不逐帧分配脚本对象或重做文字布局。验收检查源码/ASB、终态/取消/接管、时钟和画面投影，记录稳定推进期间堆分配与布局次数；所有动作、活动、属性写入版本与占用关系都位于既有 VM 堆；单一活动链根保活生产者，不设活动数量上限。会话适配器已调度主任务与按钮回调，活动等待维护多个独立消费者；取消消费者不取消共享生产者，订阅随真实等待失效或交付释放。可运行示例为 [author_activities.aside](../examples/author_activities.aside) 和 [author_buttons.aside](../examples/author_buttons.aside)。sequence/parallel/repeat 已贯通同一活动协议，scope 与快照恢复仍未实现。
 作者能够以符合直觉的接口表达、组合和改变想象中的画面与交互，是实现和设计取舍的共同标准。可运行的小场景用于验证表达能力，不限定引擎最终范围。实现过程中发现不自然的接口，应同步改进规范和作者指南，不为维持尚未发布的内部接口引入兼容层。
 
+### 按业务身份复用的作者列表
+
+`list(items, key:, build:, ...NodeProps)` 是 Reel native ABI 1，B01/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
+
+结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。当前列表保留全部行实例，滚动使用既有 scroll；可见范围虚拟化不属于这个接口的已实现能力。示例见 [author_list.aside](../examples/author_list.aside)。
+
 ### 角色对白与公共播放时钟
 
 `character(name, id: null)` 创建不可变角色；省略 id 使用 name，显式 id 区分同名角色。角色可直接调用并等待一句，`.line(text)` 返回不可变行描述；`say(lines)` 原子提交非空 ADV 行组并共用一次揭示/推进交互。角色名、身份、完整文本按提交时保存进历史；行描述可复用。旁白沿相同会话协议，回调不能抢占主剧情对白。可信宿主可调用协议由独立 Aside 提供，角色不引入语言特殊语法。组解码按工作额度让出，失败不产生部分历史。

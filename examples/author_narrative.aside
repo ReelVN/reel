@@ -16,21 +16,17 @@ pub fn main() {
                    default_dialogue: false, default_choices: false);
     let reading = view(|| {
         if ui.nvl {
-            column(gap: 24) { for line in dialogue.lines { line_view(line); } }
+            list(|| dialogue.lines, key: |line| line.id, build: |row| line_view(row.value), gap: 24)
         } else {
             line_view(dialogue)
         }
     }, width: 880, padding: 24, background: "#182338ee");
-    let answers = view(|| {
-        column(gap: 14) {
-            for option in choices.options {
-                button(on_click: |event| choices.select(option.id), decorated: false,
-                       width: 800, padding: 16, background: "#25435fff") {
-                    text(value: bind(option.label));
-                }
-            }
+    let answers = list(|| choices.options, key: |option| option.id, build: |row| {
+        button(on_click: |event| choices.select(row.value.id), decorated: false,
+               width: 800, padding: 16, background: "#25435fff") {
+            text(value: derive(|| row.value.label));
         }
-    }, visible: bind(choices.active));
+    }, gap: 14, visible: bind(choices.active));
     stage.replace(stack() {
         scroll(x: 40, y: 60, width: 920, height: 340, follow_end: true) { reading; }
         scroll(x: 60, y: 420, width: 880, height: 250) { answers; }

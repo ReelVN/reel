@@ -346,6 +346,68 @@ impl Stage {
         Ok(())
     }
 
+    /// Validate a complete child order, accepting retained children and detached roots.
+    pub fn validate_children(&self, parent: NodeId, children: &[NodeId]) -> Result<(), StageError> {
+        let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
+        if !matches!(
+            container.kind,
+            NodeKind::Row
+                | NodeKind::Column
+                | NodeKind::Scroll { .. }
+                | NodeKind::Stack
+                | NodeKind::Button { .. }
+                | NodeKind::Toggle { .. }
+                | NodeKind::Input { .. }
+        ) {
+            return Err(StageError::NotContainer);
+        }
+        let mut ancestors = BTreeSet::new();
+        let mut current = Some(parent);
+        while let Some(id) = current {
+            ancestors.insert(id);
+            current = self.nodes[&id].parent;
+        }
+        let mut seen = BTreeSet::new();
+        for &child in children {
+            let node = self.nodes.get(&child).ok_or(StageError::RetiredNode)?;
+            if ancestors.contains(&child) {
+                return Err(StageError::Cycle);
+            }
+            if node.parent.is_some_and(|p| p != parent) || self.root == Some(child) {
+                return Err(StageError::AlreadyParented);
+            }
+            if !seen.insert(child) {
+                return Err(StageError::DuplicateChild);
+            }
+        }
+        Ok(())
+    }
+
+    /// Reorder/adopt children atomically; only absent subtrees are retired.
+    pub fn reconcile_children(
+        &mut self,
+        parent: NodeId,
+        children: Vec<NodeId>,
+    ) -> Result<Vec<NodeId>, StageError> {
+        self.validate_children(parent, &children)?;
+        if self.nodes[&parent].children == children {
+            return Ok(Vec::new());
+        }
+        let retained: BTreeSet<_> = children.iter().copied().collect();
+        for &child in &children {
+            self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+        }
+        let old = std::mem::replace(&mut self.nodes.get_mut(&parent).unwrap().children, children);
+        let mut retired = Vec::new();
+        for child in old {
+            if !retained.contains(&child) {
+                retired.extend(self.remove_tree(child));
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(retired)
+    }
+
     /// Remove a component from its parent or the stage and retire its full tree.
     pub fn remove(&mut self, node: NodeId) -> Result<Vec<NodeId>, StageError> {
         let parent = self.nodes.get(&node).ok_or(StageError::RetiredNode)?.parent;

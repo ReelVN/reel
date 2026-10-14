@@ -487,7 +487,7 @@ if answer == "window" { by_window(); }
 else { by_door(); }
 ```
 choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作者的剧情函数。choose 把传入的普通记录复制成引擎拥有的只读可观察行，id、key 和 label 都可读取并绑定，输入记录保持原值。id 是本次 InteractionId 与 key 形成的不透明稳定标识，按钮捕获 option.id 保持这一交互身份；下一次选择使用新的 id。game.choice().options 是这些行构成的只读可观察列表，默认为空；等待选择时填入选项，选择完成后清空。select 接收包含交互身份的 option.id，返回剧情的仍是业务 key；过期或重复 select 返回 false，成功返回 true；choose 始终返回原 key。
-普通 children 中的 for 构造当下内容；`view(|| ...)` 在实际读取的可观察数据变化后重新构造子树，外层容器身份保持。计算成功后才替换旧内容；旧节点拥有的回调和活动随之取消。用 bind/derive 更新单个属性时保留节点身份。按 key 复用节点和列表虚拟化属于后续 list 能力。
+普通 children 中的 for 构造当下内容；`view(|| ...)` 在实际读取的可观察数据变化后重新构造子树，外层容器身份保持。计算成功后才替换旧内容；旧节点拥有的回调和活动随之取消。用 bind/derive 更新单个属性时保留节点身份。需要保留控件身份的集合使用 `list(|| data.items, key: |item| item.id, build: |row| text(value: derive(|| row.value.label)))`。插入、排序保留相同 key 的节点、焦点和局部状态；删除则退休其任务和活动。key 是列表内唯一的整数或字符串。每个新 key 只调用一次 build，参数 row 提供只读可观察 key、value（当前条目）和 index（从 0 开始）；返回 null 时该 key 不产生节点。回调读取 row.value 取得最新记录；derive 会跟随记录替换，bind(row.value.label) 则固定原字段位置。只有来源函数和 key 函数的读取决定列表协调；行内变化使用 bind/derive/view。重复 key 或组件失败不替换原树。列表子节点由来源数据管理，外层可组合 scroll。当前仍实例化全部条目，可见范围虚拟化尚待实现。见 [author_list.aside](../../examples/author_list.aside)。
 
 ## 十一 存档 历史 路线与跳过
 

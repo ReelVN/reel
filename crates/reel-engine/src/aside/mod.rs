@@ -12,7 +12,9 @@ mod game;
 pub use game::GameSettings;
 mod choice;
 mod dialogue;
+mod lists;
 mod narrative;
+mod observable;
 mod publication;
 mod registry;
 pub mod source;
@@ -381,6 +383,10 @@ impl SessionVm {
             }
             "reel::view" => {
                 self.dispatch_view(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::list" => {
+                self.dispatch_list(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::derive" => {

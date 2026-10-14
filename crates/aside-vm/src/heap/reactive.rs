@@ -60,6 +60,17 @@ impl Heap {
 
     pub fn begin_derived(&mut self, output: Value) -> Result<(), HeapError> {
         let candidate = self.alloc_array(&[])?;
+        self.begin_capture(output, candidate)
+    }
+
+    /// Isolate component construction from the enclosing observer. Nested
+    /// derivations still collect their own dependencies. The native frame owns
+    /// `output` and must end it on return/fault/cancellation, just like derive.
+    pub fn begin_untracked(&mut self, output: Value) -> Result<(), HeapError> {
+        self.begin_capture(output, Value::NULL)
+    }
+
+    fn begin_capture(&mut self, output: Value, candidate: Value) -> Result<(), HeapError> {
         self.set_host_payload(output, DerivedSlot::Candidate as u32, candidate)?;
         self.set_host_payload(
             output,
@@ -113,6 +124,10 @@ impl Heap {
         let Some(output) = self.reactive_capture else {
             return Ok(());
         };
+        let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
+        if dependencies.same_bits(Value::NULL) {
+            return Ok(());
+        }
         if value.tag() != crate::ValueTag::Object {
             return Ok(());
         }
@@ -142,7 +157,6 @@ impl Heap {
         {
             return Ok(());
         }
-        let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
         let selector = field.map_or(-1, i64::from);
         for index in (0..self.sequence_len(dependencies)?).step_by(2) {
             if self.sequence_get(dependencies, index)?.same_bits(source)
@@ -158,11 +172,14 @@ impl Heap {
         let Some(output) = self.reactive_capture else {
             return Ok(());
         };
+        let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
+        if dependencies.same_bits(Value::NULL) {
+            return Ok(());
+        }
         let object = self.object(self.key(value)?)?;
         let source = object
             .property_owner
             .map_or(value, |key| Value::object(self.id, key.data().as_ffi()));
-        let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
         for i in (0..self.sequence_len(dependencies)?).step_by(2) {
             let selector = self.sequence_get(dependencies, i + 1)?.as_int().unwrap();
             if self.sequence_get(dependencies, i)?.same_bits(source)
@@ -318,8 +335,10 @@ impl Heap {
     ) -> Result<(), HeapError> {
         let key = self.key(value)?;
         let source = self.object(key)?.property_owner.unwrap_or(key);
-        if let Some(output) = self.reactive_capture {
-            let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
+        if let Some(output) = self.reactive_capture
+            && let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?
+            && !dependencies.same_bits(Value::NULL)
+        {
             let source_value = Value::object(self.id, source.data().as_ffi());
             for i in (0..self.sequence_len(dependencies)?).step_by(2) {
                 let selector = self.sequence_get(dependencies, i + 1)?.as_int().unwrap();

@@ -200,6 +200,27 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ty: BuiltinType::Any,
         default: None,
     }];
+    let mut list_parameters: Vec<_> = ["items", "key", "build"]
+        .into_iter()
+        .map(|name| NativeParameter {
+            name: name.into(),
+            ty: BuiltinType::Any,
+            default: None,
+        })
+        .collect();
+    list_parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
+    for parameter in &mut list_parameters {
+        parameter.ty = BuiltinType::Any;
+    }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::list".into(),
+        abi_version: 1,
+        parameters: list_parameters,
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
     view_parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
     for parameter in &mut view_parameters {
         parameter.ty = BuiltinType::Any;
