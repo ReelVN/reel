@@ -42,6 +42,8 @@ pub struct NodeProps {
     pub opacity: f64,
     pub visible: bool,
     pub enabled: bool,
+    /// A visible subtree owns input until hidden, removed, or superseded in paint order.
+    pub modal: bool,
     pub clip: bool,
     pub gap: f64,
     pub padding: f64,
@@ -65,6 +67,7 @@ impl Default for NodeProps {
             opacity: 1.,
             visible: true,
             enabled: true,
+            modal: false,
             clip: false,
             gap: 0.,
             padding: 0.,

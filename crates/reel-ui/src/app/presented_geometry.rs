@@ -7,7 +7,7 @@ use crate::core::{WidgetArenaNode, WidgetId, WidgetState};
 use kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
 use std::sync::Arc;
 
-/// Explicit pointer input policy. Presented(None) intentionally has no hits.
+/// Input geometry and scope policy. Presented(None) blocks interaction.
 #[derive(Clone, Debug)]
 pub enum InputGeometrySource {
     /// Ordinary Masonry geometry and widget hit callbacks.
@@ -70,6 +70,8 @@ pub struct GeometryRecord {
     pub propagates_pointer_interaction: bool,
     /// Visibility at record time. Current stashed state is checked separately.
     pub is_stashed: bool,
+    /// Visible modal subtrees isolate input in painter order.
+    pub is_modal: bool,
 }
 impl GeometryRecord {
     fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
@@ -89,6 +91,7 @@ impl GeometryRecord {
             accepts_pointer_interaction: s.accepts_pointer_interaction,
             propagates_pointer_interaction: s.propagates_pointer_interaction,
             is_stashed: s.is_stashed,
+            is_modal: s.is_modal,
         }
     }
 }
@@ -100,6 +103,7 @@ pub struct PresentedGeometryView {
     ids: Vec<(WidgetId, usize)>,
     scale_factor: f64,
     root: usize,
+    modal_scope: Option<WidgetId>,
     max_depth: usize,
     retention_guard: Option<Arc<dyn std::fmt::Debug + Send + Sync>>,
     scratch_peak_bytes: usize,
@@ -139,6 +143,21 @@ impl PresentedGeometryView {
     /// Root identity.
     pub fn root_id(&self) -> WidgetId {
         self.records[self.root].id
+    }
+    /// Highest visible modal subtree captured by this frame.
+    pub fn modal_scope(&self) -> Option<WidgetId> {
+        self.modal_scope
+    }
+    pub(crate) fn contains_in_scope(&self, id: WidgetId, scope: WidgetId) -> bool {
+        let mut index = self.index(id);
+        while let Some(i) = index {
+            let record = &self.records[i];
+            if record.id == scope {
+                return true;
+            }
+            index = record.parent;
+        }
+        false
     }
     /// Maximum retained path depth.
     pub fn max_depth(&self) -> usize {
@@ -401,6 +420,7 @@ impl RenderRoot {
             ids: Vec::with_capacity(registered),
             scale_factor: self.global_state.scale_factor,
             root: 0,
+            modal_scope: None,
             max_depth: 0,
             retention_guard: None,
             scratch_peak_bytes: stack_bytes,
@@ -453,6 +473,9 @@ impl RenderRoot {
                 start..end,
             ));
             view.ids.push((node.item.state.id, index));
+            if node.item.state.is_modal && !node.item.state.is_stashed {
+                view.modal_scope = Some(node.item.state.id);
+            }
             for (slot, child) in (start..end).zip(children).rev() {
                 pending.push(Visit {
                     node: node.children.item(child).expect("registered direct child"),
@@ -482,6 +505,7 @@ impl RenderRoot {
         let old = self.global_state.input_geometry_source.clone();
         crate::passes::update::transition_pointer_geometry(self, old.borrow(), source.borrow());
         self.global_state.input_geometry_source = source;
+        self.accept_input_scope();
         self.run_rewrite_passes();
     }
     /// Reserve reusable pointer routes before presentation; existing active paths are preserved.
@@ -529,7 +553,7 @@ impl RenderRoot {
             )
     }
     pub(crate) fn pointer_hit_test(&self, pos: Point, view: GeometryView<'_>) -> Option<WidgetId> {
-        match view {
+        let hit = match view {
             GeometryView::Presented(Some(v)) => v.hit_test_filtered(pos, |id| {
                 self.widget_arena
                     .nodes
@@ -541,7 +565,8 @@ impl RenderRoot {
                 .get_widget(self.root_id())
                 .and_then(|w| w.find_widget_under_pointer(pos))
                 .map(|w| w.id()),
-        }
+        };
+        hit.filter(|&id| self.input_in_scope(id, view))
     }
     pub(crate) fn input_path_into(
         &self,

@@ -622,3 +622,33 @@ fn main() {
 用第一节的 dev/build/run 命令运行此文件。引擎的节点、输入和调度不依赖 Winit/WGPU；window feature 选择当前内置桌面组合，其他宿主可以复用同一会话和呈现接口。
 
 移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。原生 IME、触摸和系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
+
+## 模态菜单与焦点
+
+所有共同节点支持可写的 `modal` 属性，默认 false。可见的 modal 子树独占输入；它外部的点击和未处理的键盘事件不会继续推进剧情。多个 modal 按绘制顺序选择最上层，绘制层序由节点组合顺序决定。隐藏或移除节点释放输入范围；enabled 为 false 时仍隔离下层。
+
+进入菜单会选择其中可用的焦点，Tab/Shift-Tab 在菜单内循环；嵌套菜单关闭时恢复上一层焦点，关闭最后一层后恢复原控件仍有效的焦点。输入范围在新画面实际呈现后切换，并取消范围外的拖动。完整示例见 [author_modal.aside](../../examples/author_modal.aside)，可用第一节的 dev/build/run 命令运行。
+
+键盘激活需要在同一个按钮上按下并松开 Enter 或空格；切换焦点、隐藏、禁用或窗口失焦会取消未完成的按键。
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let status = text("Ready", x: 24, y: 96, width: 300, height: 40);
+    let menu = column(x: 260, y: 24, width: 220, gap: 12,
+        padding: 16, background: "#284860", modal: true, visible: false);
+    menu.add(button("Confirm", width: 180, height: 48,
+        on_click: |event| { status.value = "Confirmed"; }));
+    menu.add(button("Close", width: 180, height: 48,
+        on_click: |event| { menu.visible = false; }));
+    stage.replace(stack() {
+        button("Open menu", x: 24, y: 24, width: 180, height: 48,
+            on_click: |event| { menu.visible = true; });
+        status;
+        menu;
+    });
+    narrator("Open the menu. The story waits while you use it.");
+    status.value = "Story continued";
+    narrator("Closing the menu returns input to the story.");
+}
+```

@@ -63,13 +63,16 @@ fn present(
     driver.presented(stamp);
 }
 fn click(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64) {
+    click_at(driver, bridge, x, 50.);
+}
+fn click_at(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64, y: f64) {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),
         persistent_device_id: None,
         pointer_type: PointerType::Mouse,
     };
     let state = PointerState {
-        position: PhysicalPosition::new(x, 50.),
+        position: PhysicalPosition::new(x, y),
         ..Default::default()
     };
     for event in [
@@ -108,31 +111,7 @@ fn run(story: CompiledStory) {
         StoryState::Running,
         "main returned, mounted handlers remain usable"
     );
-    let widget = driver.widget().prepare();
-    let root_id = widget.id();
-    let root = RenderRoot::new(
-        widget,
-        |_| {},
-        RenderRootOptions {
-            default_properties: Arc::new(DefaultProperties::new()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(640, 420),
-            scale_factor: 1.,
-            default_font: None,
-        },
-    );
-    let mut bridge = PresentationBridge::new(
-        root,
-        SurfaceEpoch(1),
-        BridgeLimits {
-            geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
-            max_candidates: 4,
-            max_bridge_bytes: 64 << 10,
-            max_snapshot_bytes: 8 << 20,
-        },
-    )
-    .unwrap();
+    let (mut bridge, root_id) = bridge(&driver);
     present(&mut driver, &mut bridge, root_id, 1);
     let caption = driver
         .adapter()
@@ -171,4 +150,108 @@ fn source_and_asb_keep_buttons_live_then_finish_after_last_handler_retires() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     run(reel_cli::decode_story(&artifact.bytes).unwrap());
     run(reel_engine::aside::source::compile_story(SOURCE, "main", 1, "main").unwrap());
+}
+
+fn bridge(driver: &AsideSessionUi) -> (PresentationBridge, WidgetId) {
+    let widget = driver.widget().prepare();
+    let root_id = widget.id();
+    let root = RenderRoot::new(
+        widget,
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(DefaultProperties::new()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(640, 420),
+            scale_factor: 1.,
+            default_font: None,
+        },
+    );
+    let bridge = PresentationBridge::new(
+        root,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 8 << 20,
+        },
+    )
+    .unwrap();
+    (bridge, root_id)
+}
+
+#[test]
+fn source_and_asb_modal_menu_isolates_dialogue_and_restores_keyboard_focus() {
+    const MODAL: &str = include_str!("../../../examples/author_modal.aside");
+    let checked = reel_cli::check(MODAL, "author_modal.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_engine::aside::source::compile_story(MODAL, "main", 1, "main").unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        driver.reveal_more(usize::MAX).unwrap();
+        let (mut bridge, root) = bridge(&driver);
+        present(&mut driver, &mut bridge, root, 1);
+        let press = |driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, key| {
+            driver
+                .handle_text(bridge, TextEvent::key_down(keyboard::Key::Named(key)))
+                .unwrap();
+            driver
+                .handle_text(bridge, TextEvent::key_up(keyboard::Key::Named(key)))
+                .unwrap();
+        };
+        press(&mut driver, &mut bridge, keyboard::NamedKey::Tab);
+        let opener = bridge.root().focused_widget().unwrap();
+        let caption = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|node| node.kind == NodeKind::Text("Ready".into()))
+            .unwrap()
+            .id;
+        press(&mut driver, &mut bridge, keyboard::NamedKey::Enter);
+        settle(&mut driver);
+        present(&mut driver, &mut bridge, root, 2);
+        assert_ne!(bridge.root().focused_widget(), Some(opener));
+        // Both the dialogue region and the underlying opener are blocked.
+        click_at(&mut driver, &mut bridge, 400., 350.);
+        click_at(&mut driver, &mut bridge, 50., 50.);
+        assert_eq!(
+            driver.adapter().stage().node(caption).unwrap().kind,
+            NodeKind::Text("Ready".into())
+        );
+        press(&mut driver, &mut bridge, keyboard::NamedKey::Enter);
+        settle(&mut driver);
+        present(&mut driver, &mut bridge, root, 3);
+        assert_eq!(
+            driver.adapter().stage().node(caption).unwrap().kind,
+            NodeKind::Text("Confirmed".into())
+        );
+        press(&mut driver, &mut bridge, keyboard::NamedKey::Tab);
+        press(&mut driver, &mut bridge, keyboard::NamedKey::Enter);
+        settle(&mut driver);
+        present(&mut driver, &mut bridge, root, 4);
+        assert_eq!(bridge.root().focused_widget(), Some(opener));
+        click_at(&mut driver, &mut bridge, 400., 350.);
+        present(&mut driver, &mut bridge, root, 5);
+        assert_eq!(
+            driver.adapter().stage().node(caption).unwrap().kind,
+            NodeKind::Text("Story continued".into())
+        );
+        driver.cancel().unwrap();
+        while driver.cleanup_pending() {
+            driver
+                .cleanup_step(1, SliceBudget::default(), || 0)
+                .unwrap();
+        }
+    }
 }

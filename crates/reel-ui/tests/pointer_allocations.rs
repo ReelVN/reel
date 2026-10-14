@@ -21,7 +21,10 @@ static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 #[test]
 fn real_uncaptured_pointer_dispatch_allocations() {
-    for count in [32, 256, 1024] {
+    for (count, modal) in [32, 256, 1024]
+        .into_iter()
+        .flat_map(|count| [false, true].map(|modal| (count, modal)))
+    {
         let trace = Rc::new(RefCell::new(vec![]));
         let mut group = StageGroup::new(trace.clone(), 1., Rect::new(0., 0., 1920., 1080.));
         for i in 0..count {
@@ -37,7 +40,10 @@ fn real_uncaptured_pointer_dispatch_allocations() {
                 Size::new(60., 30.),
             );
         }
-        let (mut root, signals) = root(group.prepare());
+        let group = group.prepare();
+        let group_id = group.id();
+        let (mut root, signals) = root(group);
+        root.edit_widget(group_id, |mut w| w.ctx.set_modal(modal));
         root.handle_window_event(WindowEvent::Resize(reel_ui::dpi::PhysicalSize::new(
             1920, 1080,
         )));
@@ -93,7 +99,7 @@ fn real_uncaptured_pointer_dispatch_allocations() {
             );
             elapsed.sort_unstable();
             println!(
-                "real dispatch kind={kind} controls={count} actual_nodes={nodes} events=100 allocations={} reallocations={} allocated_bytes={} p95={}ns max={}ns",
+                "real dispatch modal={modal} kind={kind} controls={count} actual_nodes={nodes} events=100 allocations={} reallocations={} allocated_bytes={} p95={}ns max={}ns",
                 stats.allocations,
                 stats.reallocations,
                 stats.bytes_allocated,

@@ -1638,6 +1638,7 @@ impl_context_method!(
         /// This method will also call [`request_layout`](Self::request_layout).
         pub fn children_changed(&mut self) {
             trace!("children_changed");
+            self.global_state.modal_dirty = true;
             self.widget_state.children_changed = true;
             self.widget_state.needs_update_focusable = true;
             self.request_layout();
@@ -1763,6 +1764,17 @@ impl_context_method!(
             self.widget_state.is_explicitly_disabled = disabled;
         }
 
+        /// Give this visible subtree exclusive input. Presented hosts apply
+        /// the change when they accept the corresponding frame geometry.
+        /// Disabling the subtree keeps the modal barrier; stashing releases it.
+        pub fn set_modal(&mut self, modal: bool) {
+            if self.widget_state.is_modal != modal {
+                self.widget_state.is_modal = modal;
+                self.global_state.modal_dirty = true;
+                self.request_render();
+            }
+        }
+
         /// Sets the local transform for this widget.
         ///
         /// This maps this widget's border-box coordinate space
@@ -1826,6 +1838,7 @@ impl_context_method!(
                 child_state.is_explicitly_stashed = stashed;
                 child_state.needs_update_stashed = true;
                 self.widget_state.needs_update_stashed = true;
+                self.global_state.modal_dirty = true;
             }
         }
 

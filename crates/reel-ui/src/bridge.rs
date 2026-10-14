@@ -307,7 +307,7 @@ impl PresentationBridge {
     pub fn handle_pointer_event(&mut self, event: PointerEvent) -> Handled {
         self.root.handle_pointer_event(event)
     }
-    /// Text handling is Live; loss of focus cancels captured pointer input using its view.
+    /// Text input follows accepted geometry; loss of focus also cancels pointer capture.
     pub fn handle_text_event(&mut self, event: TextEvent) -> Handled {
         self.root.handle_text_event(event)
     }

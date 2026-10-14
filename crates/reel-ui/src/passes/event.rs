@@ -91,6 +91,10 @@ fn run_event_pass<E>(
     }
 
     let original_target = target;
+    // Cancellation and IME teardown still reach their original owner.
+    let scope = skip_if_disabled.then(|| root.input_scope(view)).flatten();
+    let mut outside_scope =
+        skip_if_disabled && target.is_some_and(|id| !root.input_in_scope(id, view));
     let owns_route = route.is_none();
     let mut buffer = if owns_route {
         std::mem::take(&mut root.global_state.pointer_route)
@@ -113,12 +117,13 @@ fn run_event_pass<E>(
         }
         let mut node = root.widget_arena.get_node_mut(widget_id);
 
-        if skip_if_disabled && node.item.state.is_disabled {
-            // If the widget is disabled, we skip it and bubble to its parent.
+        if skip_if_disabled && (node.item.state.is_disabled || node.item.state.is_stashed) {
+            // Ineligible widgets still delimit the accepted modal scope.
+            outside_scope |= scope == Some(widget_id);
             continue;
         }
 
-        if !is_handled {
+        if !is_handled && !outside_scope {
             let _span = enter_span(&node.item.state);
             let widget_type_id = node.item.widget.type_id();
             let stack = root
@@ -157,6 +162,7 @@ fn run_event_pass<E>(
         }
 
         merge_state_up(&mut root.widget_arena, widget_id);
+        outside_scope |= scope == Some(widget_id);
     }
 
     if owns_route {
@@ -233,7 +239,7 @@ pub(crate) fn run_on_pointer_event_with_view(
     for layer_id in layer_ids {
         // Layer interception is input behavior, not terminal capture cleanup.
         // Cancel for the captured widget is dispatched separately below.
-        if !root.is_still_interactive(layer_id) {
+        if !root.is_still_interactive(layer_id) || !root.input_in_scope(layer_id, view) {
             continue;
         }
         let Some(geometry) = view.bind_visible(layer_id) else {
@@ -330,7 +336,11 @@ pub(crate) fn run_on_pointer_event_with_view(
         );
     }
 
-    handled
+    if root.input_scope(view).is_some() || matches!(view, GeometryView::Presented(None)) {
+        Handled::Yes
+    } else {
+        handled
+    }
 }
 
 // --- MARK: TEXT EVENT
@@ -355,17 +365,37 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
         root.global_state.window_focused = *focused;
     }
 
-    let target = root.global_state.focused_widget.or_else(|| {
-        if let Some(focus_fallback) = root.global_state.focus_fallback
-            && root.is_still_interactive(focus_fallback)
-        {
-            Some(focus_fallback)
-        } else {
-            None
-        }
-    });
+    let cleanup = matches!(
+        event,
+        TextEvent::Ime(Ime::Disabled) | TextEvent::WindowFocusChange(false)
+    );
+    let source = root.global_state.input_geometry_source.clone();
+    let view = if cleanup {
+        GeometryView::Live
+    } else {
+        source.borrow()
+    };
+    if matches!(view, GeometryView::Presented(None)) {
+        return Handled::Yes;
+    }
 
-    let skip_if_disabled = !matches!(event, TextEvent::Ime(Ime::Disabled));
+    let target = root
+        .global_state
+        .focused_widget
+        .filter(|&id| cleanup || root.input_in_scope(id, view))
+        .or_else(|| {
+            if let Some(focus_fallback) = root.global_state.focus_fallback
+                && root.is_still_interactive(focus_fallback)
+                && (cleanup || root.input_in_scope(focus_fallback, view))
+            {
+                Some(focus_fallback)
+            } else {
+                None
+            }
+        })
+        .or(root.input_scope(view).filter(|&id| root.has_widget(id)));
+
+    let skip_if_disabled = !cleanup;
     let mut handled = run_event_pass(
         root,
         target,
@@ -376,7 +406,7 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
             widget.on_text_event(ctx, props, event);
         },
         true,
-        GeometryView::Live,
+        view,
         None,
     );
 
@@ -419,7 +449,11 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
         "ON_TEXT_EVENT finished",
     );
 
-    handled
+    if root.input_scope(view).is_some() {
+        Handled::Yes
+    } else {
+        handled
+    }
 }
 
 // --- MARK: ACCESS EVENT
@@ -432,6 +466,12 @@ pub(crate) fn run_on_access_event_pass(
     let _span = info_span!("access_event").entered();
     trace!("Running ON_ACCESS_EVENT pass with {}", event.short_name());
 
+    let source = root.global_state.input_geometry_source.clone();
+    let view = source.borrow();
+    if !root.input_in_scope(target, view) {
+        return Handled::Yes;
+    }
+
     let skip_if_disabled = true;
     let mut handled = run_event_pass(
         root,
@@ -443,13 +483,13 @@ pub(crate) fn run_on_access_event_pass(
             widget.on_access_event(ctx, props, event);
         },
         true,
-        GeometryView::Live,
+        view,
         None,
     );
 
     // Handle focus events
     match event.action {
-        accesskit::Action::Focus if !handled.is_handled() && root.is_still_interactive(target) => {
+        accesskit::Action::Focus if !handled.is_handled() && root.focus_in_scope(target) => {
             root.global_state.next_focused_widget = Some(target);
             handled = Handled::Yes;
         }
@@ -476,5 +516,9 @@ pub(crate) fn run_on_access_event_pass(
         "ON_ACCESS_EVENT finished",
     );
 
-    handled
+    if root.input_scope(view).is_some() {
+        Handled::Yes
+    } else {
+        handled
+    }
 }

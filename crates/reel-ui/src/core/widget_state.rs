@@ -168,6 +168,8 @@ pub(crate) struct WidgetState {
     /// Tracks whether widget gets text focus.
     /// Should be immutable after `WidgetAdded` event.
     pub(crate) accepts_focus: bool,
+    pub(crate) is_modal: bool,
+    pub(crate) modal_focus: Option<WidgetId>,
 
     /// Tracks whether widget is eligible for IME events.
     /// Should be immutable after `WidgetAdded` event.
@@ -312,6 +314,8 @@ impl WidgetState {
             accepts_pointer_interaction: true,
             propagates_pointer_interaction: true,
             accepts_focus: false,
+            is_modal: false,
+            modal_focus: None,
             accepts_text_input: false,
             ime_area: None,
 

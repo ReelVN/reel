@@ -28,6 +28,7 @@ use crate::widgets::Label;
 #[doc = include_str!("../doc/widgets/button.md")]
 pub struct Button {
     child: WidgetPod<dyn Widget>,
+    behavior: ButtonBehavior,
 }
 
 // --- MARK: BUILDERS
@@ -48,6 +49,7 @@ impl Button {
     pub fn new(child: NewWidget<impl Widget + ?Sized>) -> Self {
         Self {
             child: child.erased().to_pod(),
+            behavior: ButtonBehavior::default(),
         }
     }
 
@@ -93,7 +95,15 @@ pub struct ButtonPress {
 
 /// Shared activation behavior for buttons with independently owned content.
 /// Capture, focus and disabled state stay in the ordinary widget/input system.
-pub struct ButtonBehavior;
+#[derive(Default)]
+pub struct ButtonBehavior {
+    pressed_key: Option<ActivationKey>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActivationKey {
+    Enter,
+    Space,
+}
 impl ButtonBehavior {
     pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
         match event {
@@ -115,15 +125,36 @@ impl ButtonBehavior {
         }
         None
     }
-    pub fn text(event: &TextEvent) -> Option<ButtonPress> {
-        if let TextEvent::Keyboard(event) = event
-            && event.state.is_up()
-            && (matches!(&event.key, Key::Character(c) if c == " ")
-                || event.key == Key::Named(NamedKey::Enter))
-        {
-            return Some(ButtonPress { button: None });
+    pub fn text(&mut self, ctx: &mut EventCtx<'_>, event: &TextEvent) -> Option<ButtonPress> {
+        if matches!(event, TextEvent::WindowFocusChange(false)) {
+            self.pressed_key = None;
+        }
+        if let TextEvent::Keyboard(event) = event {
+            let key = match &event.key {
+                Key::Named(NamedKey::Enter) => ActivationKey::Enter,
+                Key::Character(c) if c == " " => ActivationKey::Space,
+                _ => return None,
+            };
+            ctx.set_handled();
+            if event.state.is_up() {
+                return (self.pressed_key.take() == Some(key))
+                    .then_some(ButtonPress { button: None });
+            }
+            if !event.repeat {
+                self.pressed_key = Some(key);
+            }
         }
         None
+    }
+    pub fn update(&mut self, event: &Update) {
+        if matches!(
+            event,
+            Update::FocusChanged(false)
+                | Update::DisabledChanged(true)
+                | Update::StashedChanged(true)
+        ) {
+            self.pressed_key = None;
+        }
     }
     pub fn access(event: &AccessEvent) -> Option<ButtonPress> {
         (event.action == accesskit::Action::Click).then_some(ButtonPress { button: None })
@@ -151,7 +182,7 @@ impl Widget for Button {
         _props: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        if let Some(press) = ButtonBehavior::text(event) {
+        if let Some(press) = self.behavior.text(ctx, event) {
             ctx.submit_action::<Self::Action>(press);
         }
     }
@@ -167,12 +198,8 @@ impl Widget for Button {
         }
     }
 
-    fn update(
-        &mut self,
-        _ctx: &mut UpdateCtx<'_>,
-        _props: &mut PropertiesMut<'_>,
-        _event: &Update,
-    ) {
+    fn update(&mut self, _ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
+        self.behavior.update(event);
     }
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {

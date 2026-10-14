@@ -29,6 +29,8 @@ pub(super) enum NodeProperty {
     Visible,
     #[aside(name = "enabled", ty = Bool, default = true)]
     Enabled,
+    #[aside(name = "modal", ty = Bool, default = false)]
+    Modal,
     #[aside(name = "clip", ty = Bool, default = false)]
     Clip,
     #[aside(name = "gap", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
@@ -351,9 +353,12 @@ impl StageBinding {
         if callback.tag() == ValueTag::Null {
             return Ok(None);
         }
+        let modal = self.modal_scope(heap)?;
+        let mut in_scope = modal.is_none();
         let mut current = Some(id);
         let mut root = id;
         while let Some(id) = current {
+            in_scope |= modal == Some(id);
             let value = self.value(heap, id)?;
             let fields = heap.host_fields(value)?;
             let offset = self.property_offset(heap, value)?;
@@ -370,7 +375,50 @@ impl StageBinding {
             root = id;
             current = self.scene.node(id).unwrap().parent;
         }
-        Ok((self.scene.root() == Some(root)).then_some((target, callback)))
+        Ok((in_scope && self.scene.root() == Some(root)).then_some((target, callback)))
+    }
+
+    /// Inspect current script flags, including writes not yet projected to the UI.
+    /// Reverse paint order stops at the first visible modal; no strings or full
+    /// node properties are copied on the activation path.
+    fn modal_scope(&self, heap: &Heap) -> Result<Option<NodeId>, AdapterError> {
+        let mut pending: Vec<_> = self
+            .scene
+            .root()
+            .map(|id| (id, false))
+            .into_iter()
+            .collect();
+        while let Some((id, children_visited)) = pending.pop() {
+            let value = self.value(heap, id)?;
+            let fields = heap.host_fields(value)?;
+            let offset = self.property_offset(heap, value)?;
+            let flag = |property: NodeProperty| -> Result<bool, AdapterError> {
+                Ok(heap
+                    .table_entry(fields, offset + property.index() as u32)?
+                    .1
+                    .as_bool()
+                    == Some(true))
+            };
+            if !flag(NodeProperty::Visible)? {
+                continue;
+            }
+            if children_visited {
+                if flag(NodeProperty::Modal)? {
+                    return Ok(Some(id));
+                }
+            } else {
+                pending.push((id, true));
+                pending.extend(
+                    self.scene
+                        .node(id)
+                        .unwrap()
+                        .children
+                        .iter()
+                        .map(|&id| (id, false)),
+                );
+            }
+        }
+        Ok(None)
     }
 
     pub fn has_handlers(&self) -> bool {
@@ -688,6 +736,7 @@ fn read_props(
         opacity: opacity(get(NodeProperty::Opacity)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
+        modal: boolean(get(NodeProperty::Modal)?)?,
         clip: boolean(get(NodeProperty::Clip)?)?,
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,

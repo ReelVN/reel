@@ -554,10 +554,14 @@ pub(crate) fn run_update_focusable_pass(root: &mut RenderRoot) {
 }
 
 pub(crate) fn find_next_focusable(root: &mut RenderRoot, forward: bool) -> Option<WidgetId> {
+    let scope = root.global_state.modal_scope.unwrap_or(root.root_id());
+    if !root.has_widget(scope) {
+        return None;
+    }
     let mut focus_anchor_id = root.global_state.focus_anchor;
 
     if let Some(id) = focus_anchor_id
-        && !root.has_widget(id)
+        && (!root.has_widget(id) || !root.is_descendant(id, scope))
     {
         focus_anchor_id = None;
     }
@@ -578,9 +582,9 @@ pub(crate) fn find_next_focusable(root: &mut RenderRoot, forward: bool) -> Optio
 
         // The list of items to skip, from the anchor to the root (which we immediately pop).
         let mut anchor_path = get_id_path(root, focus_anchor_id);
-        let _ = anchor_path.pop();
+        anchor_path.truncate(anchor_path.iter().position(|id| *id == scope).unwrap());
 
-        let found = find_first_focusable(root, &anchor_path, root.root_id(), forward);
+        let found = find_first_focusable(root, &anchor_path, scope, forward);
 
         // Restore the anchor.
         let anchor_state = root.widget_arena.get_state_mut(id);
@@ -594,19 +598,20 @@ pub(crate) fn find_next_focusable(root: &mut RenderRoot, forward: bool) -> Optio
 
     // If nothing is focused, or if we haven't found anything after the anchor,
     // we iterate through the entire tree again, this time without the anchor path.
-    find_first_focusable(root, &[], root.root_id(), forward)
+    find_first_focusable(root, &[], scope, forward)
 }
 
-fn find_first_focusable(
+pub(crate) fn find_first_focusable(
     root: &mut RenderRoot,
     anchor_path: &[WidgetId],
     node: WidgetId,
     forward: bool,
 ) -> Option<WidgetId> {
+    let eligible = root.focus_in_scope(node);
     let item = root.widget_arena.get_node_mut(node);
     let widget = &mut *item.item.widget;
     let state = &mut item.item.state;
-    let accepts_focus = state.accepts_focus;
+    let accepts_focus = state.accepts_focus && eligible;
 
     if !state.descendant_is_focusable {
         return None;
@@ -667,7 +672,7 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
     // If the next-focused widget is disabled, stashed or removed, we set
     // the focused id to None
     if let Some(id) = root.global_state.next_focused_widget
-        && !root.is_still_interactive(id)
+        && !root.focus_in_scope(id)
     {
         root.global_state.next_focused_widget = None;
     }
@@ -719,7 +724,7 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
         //
         // First do the disabled, stashed or removed check again.
         if let Some(id) = root.global_state.next_focused_widget
-            && !root.is_still_interactive(id)
+            && !root.focus_in_scope(id)
         {
             root.global_state.next_focused_widget = None;
         }
@@ -733,6 +738,25 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
     }
 
     let next_focused = root.global_state.next_focused_widget;
+
+    // Most input keeps the same focus and ancestry. Check the existing path in
+    // place, including reparenting, instead of allocating two vectors per event.
+    if prev_focused == next_focused {
+        let mut current = next_focused;
+        let same_path = root.global_state.focused_path.iter().all(|&id| {
+            if current != Some(id) {
+                return false;
+            }
+            current = root.widget_arena.parent_of(id);
+            true
+        }) && current.is_none();
+        if same_path {
+            if next_focused.is_some() {
+                root.global_state.focus_anchor = next_focused;
+            }
+            return;
+        }
+    }
 
     // "Focused path" means the focused widget, and all its parents.
     let prev_focused_path = std::mem::take(&mut root.global_state.focused_path);
@@ -891,7 +915,9 @@ pub(crate) fn transition_pointer_geometry(
     root.global_state.needs_pointer_pass = false;
     let physical = root.global_state.last_pointer_physical;
     if let Some(id) = root.global_state.pointer_capture_target
-        && (!root.is_still_interactive(id) || new.bind_visible(id).is_none())
+        && (!root.is_still_interactive(id)
+            || new.bind_visible(id).is_none()
+            || !root.input_in_scope(id, new))
     {
         if root.global_state.pointer_capture_terminal_delivered != Some(id) {
             crate::passes::event::run_on_pointer_event_with_view(
