@@ -140,6 +140,10 @@ pub enum Update {
     /// [focused]: crate::doc::concepts#text-focus
     ChildFocusChanged(bool),
 
+    /// A different descendant gained focus. Delivered after focus state is committed,
+    /// including moves between two children of the same ancestor.
+    DescendantFocusChanged(crate::core::WidgetId),
+
     /// Called when available fonts have changed.
     ///
     /// Widgets that directly use fonts should recompute their font selection.
@@ -283,6 +287,7 @@ impl Update {
             Self::ChildActiveChanged(true) => "ChildActiveChanged(true)",
             Self::FocusChanged(true) => "FocusChanged(true)",
             Self::ChildFocusChanged(true) => "ChildFocusChanged(true)",
+            Self::DescendantFocusChanged(_) => "DescendantFocusChanged",
             Self::FontsChanged => "FontsChanged",
         }
     }

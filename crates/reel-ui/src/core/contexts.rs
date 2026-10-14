@@ -1506,6 +1506,11 @@ impl_context_method!(
             self.global_state.focused_widget
         }
 
+        /// Whether the focused widget owns text editing and IME input.
+        pub fn is_text_input_focused(&self) -> bool {
+            self.global_state.is_ime_active
+        }
+
         /// Whether this widget gets pointer events and hovered status.
         ///
         /// See [`Widget::accepts_pointer_interaction()`] for details.

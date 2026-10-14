@@ -170,6 +170,8 @@ fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
         }) {
             text(value: bind(data.log), x: 0, y: 0);
             text_input(value: bind(data.name), x: 0, y: 100, width: 240, height: 50);
+            button("English", x: 0, y: 200, width: 240, height: 50,
+                on_click: |event| { data.log += "button;"; });
         });
     }"#;
     let checked = reel_cli::check(source, "keys.aside").unwrap();
@@ -238,6 +240,33 @@ fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
         };
         assert_eq!(log(&driver), expected);
         send(&mut driver, &mut bridge, TextEvent::WindowFocusChange(true));
+        click_at(&mut driver, &mut bridge, 20., 220.);
+        settle(&mut driver);
+        frame += 1;
+        present(&mut driver, &mut bridge, root, frame);
+        let mut send = |driver: &mut AsideSessionUi,
+                        bridge: &mut reel_ui::bridge::PresentationBridge,
+                        event| {
+            driver.handle_text(bridge, event).unwrap();
+            settle(driver);
+            frame += 1;
+            present(driver, bridge, root, frame);
+        };
+        // The language button keeps focus. Its confirmation stays local, while
+        // an unrelated typing key reaches the ancestor's author callback.
+        for state in [KeyState::Down, KeyState::Up] {
+            send(
+                &mut driver,
+                &mut bridge,
+                TextEvent::Keyboard(KeyboardEvent {
+                    code: Code::Enter,
+                    key: Key::Named(NamedKey::Enter),
+                    state,
+                    ..Default::default()
+                }),
+            );
+        }
+        let expected = format!("{expected}button;button;");
         send(
             &mut driver,
             &mut bridge,

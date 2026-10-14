@@ -808,7 +808,7 @@ text_input(value: bind(profile.name), width: 280, height: 40,
 
 可运行示例：[author_text_input.aside](../../examples/author_text_input.aside)。
 
-按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。on_key 在输入节点拥有键盘时消费事件，聚焦的文本编辑控件优先，系统输入法仍用于 text_input。bindings 可省略，on_action 可同时用于手柄或鼠标映射。示例：[author_keyboard.aside](../../examples/author_keyboard.aside)。
+按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。聚焦按钮先处理自己的确认键，其余未消费的键向祖先 on_key 冒泡，因此点击语言按钮后仍能继续按键打字。聚焦的文本编辑控件保留全部键盘和系统输入法事件。bindings 可省略，on_action 可同时用于手柄或鼠标映射，动作映射仍遵守焦点所有权。示例：[author_keyboard.aside](../../examples/author_keyboard.aside)。
 
 `bind` 和 `unbind` 已支持现有节点属性。下面两个滑条共用一个位置值，文字位置和显隐也直接连接控件；不需要回调复制状态。可运行窗口示例见 [author_bindings.aside](../../examples/author_bindings.aside)，字体资源准备方式与第一节相同。
 
