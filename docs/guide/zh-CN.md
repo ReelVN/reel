@@ -274,12 +274,14 @@ pub fn nvl_view(model) {
     }
 }
 ```
-game.dialogue().lines 是统一的可观察对白行列表。speaker_name/text/reveal 是当前活动行组第一行的只读快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留会话历史。语音参数尚未接入。多个角色同时发言也使用同一个推进交互：
+game.dialogue().lines 是统一的可观察对白行列表。每行提供只读 id/speaker_id/speaker_name/content_id/text/reveal/read；speaker_id 区分同名角色，旁白为 null，content_id 标识用于已读记录的内容。speaker_id/content_id/speaker_name/text/reveal 是当前显示行组第一行的快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。行的 read 保存提交前是否已读，顶层 read 表示整组提交前是否均已读；交互结束后保留这些值，退出动画不会突然变色。用 `color: derive(|| if model.read { "#aaaaaa" } else { "#ffffff" })` 定义已读颜色，角色配色可按 speaker_id 查询作者的样式表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留会话历史。语音参数尚未接入。多个角色同时发言也使用同一个推进交互：
 ```aside
 let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
 `game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll.aside)。
+换句时的上滚可封装在普通对白函数中：先等待角色对白，再 `await run(tween(...))` 移出旧文本，之后调用下一句。完整组件见 [author_dialogue_transition.aside](../../examples/author_dialogue_transition.aside)，包含裁剪、角色配色与已读配色；运行前提供 fonts/body.ttf。打字速度用 game.configure(text_speed:) 调整；逐字淡入、弹跳等字形效果尚未接通。
+
 需要路线图与章节重启时，用普通 API 给函数登记稳定 ID 与显示标题。函数仍按同一套调用与等待规则执行。
 ```aside
 fn opening() {

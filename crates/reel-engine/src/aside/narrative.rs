@@ -14,6 +14,8 @@ enum DialogueField {
     Reveal,
     Active,
     Read,
+    SpeakerId,
+    ContentId,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -22,6 +24,8 @@ enum LineField {
     SpeakerName,
     Text,
     Reveal,
+    SpeakerId,
+    ContentId,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -99,6 +103,8 @@ impl Narrative {
                 ("reveal", Value::int(0)),
                 ("active", Value::bool(false)),
                 ("read", Value::bool(false)),
+                ("speaker_id", Value::NULL),
+                ("content_id", Value::NULL),
             ],
             &[active],
         )?;
@@ -203,6 +209,10 @@ impl Narrative {
                     let ids = array(heap)?;
                     for line in dialogue.lines() {
                         let id = history::line_id(heap, line.id())?;
+                        let speaker = line
+                            .speaker_id()
+                            .map_or(Ok(Value::NULL), |id| text::alloc_string(heap, id, chunk))?;
+                        let content = text::alloc_string(heap, line.content_id(), chunk)?;
                         let name = text::alloc_string(heap, line.speaker_name(), chunk)?;
                         let text = text::alloc_string(heap, line.resolved_text(), chunk)?;
                         let row = record(
@@ -212,6 +222,9 @@ impl Narrative {
                                 ("speaker_name", name),
                                 ("text", text),
                                 ("reveal", Value::int(line.reveal().visible_bytes.end as i64)),
+                                ("speaker_id", speaker),
+                                ("content_id", content),
+                                ("read", Value::bool(line.previously_read())),
                             ],
                             &[],
                         )?;
@@ -243,6 +256,8 @@ impl Narrative {
                         for (target, source) in [
                             (DialogueField::SpeakerName, LineField::SpeakerName),
                             (DialogueField::Text, LineField::Text),
+                            (DialogueField::SpeakerId, LineField::SpeakerId),
+                            (DialogueField::ContentId, LineField::ContentId),
                         ] {
                             publish(
                                 heap,
@@ -254,7 +269,23 @@ impl Narrative {
                                 })?,
                             )?;
                         }
+                    } else {
+                        let empty = heap.alloc_string("")?;
+                        for (field, value) in [
+                            (DialogueField::SpeakerId, Value::NULL),
+                            (DialogueField::ContentId, Value::NULL),
+                            (DialogueField::SpeakerName, empty),
+                            (DialogueField::Text, empty),
+                        ] {
+                            publish(heap, self.dialogue, field as u32, value)?;
+                        }
                     }
+                    publish(
+                        heap,
+                        self.dialogue,
+                        DialogueField::Read as u32,
+                        Value::bool(dialogue.previously_read()),
+                    )?;
                     clear_collection(heap, self.choice, ChoiceField::Options as u32)?;
                 }
                 Some(InteractionView::Choice(choice)) => {
@@ -304,14 +335,6 @@ impl Narrative {
                 Value::int(dialogue.reveal().visible_bytes.end as i64),
             )?;
         }
-        publish(
-            heap,
-            self.dialogue,
-            DialogueField::Read as u32,
-            Value::bool(
-                matches!(active, Some(InteractionView::Dialogue(d)) if d.previously_read()),
-            ),
-        )?;
         self.sync_reading(heap, session)?;
         if let Some(history) = &mut self.history {
             history.sync(heap, session, self.interaction, self.dialogue, chunk)?;

@@ -2,6 +2,168 @@ use super::*;
 use reel_ui::stage::NodeKind;
 
 #[test]
+fn dialogue_identity_and_read_styling_survive_completion_choice_and_nvl_retention() {
+    let code = r##"
+    let d = game.dialogue();
+    let history = game.history();
+    fn opening() {
+        stage.replace(list(|| d.lines, key: |line| line.id, build: |row|
+            text(value: bind(row.value.text), reveal: bind(row.value.reveal),
+                color: derive(|| if row.value.read { "#aaaaaa" }
+                    else if row.value.speaker_id == "a" { "#ff0000" } else { "#0000ff" }))));
+        say([character("Same", id: "a").line("first"), character("Same", id: "b").line("second")]);
+        let a = d.lines[0]; let b = d.lines[1];
+        let all_read = a.read && b.read;
+        if d.active || d.speaker_id != "a" || d.content_id != a.content_id || d.read != all_read
+            || a.speaker_id != "a" || b.speaker_id != "b" || a.speaker_name != b.speaker_name
+            || a.content_id == b.content_id { throw "displayed identity/read lost"; }
+        if history[0].lines[0].speaker_id != a.speaker_id
+            || history[0].lines[1].content_id != b.content_id { throw "history identity"; }
+        let mut errors = 0;
+        try { a.read = false; } catch e { errors += 1; }
+        try { a.speaker_id = "other"; } catch e { errors += 1; }
+        if errors != 2 { throw "mutable dialogue metadata"; }
+        await run(delay(1));
+        choose([{key: "next", label: "Next"}]);
+        if d.read != all_read || d.speaker_id != "a" { throw "choice changed old display"; }
+        narrator("third");
+        if d.speaker_id != null || d.lines[2].speaker_id != null || d.read
+            || d.lines[0] != a || d.lines[1] != b || a.read != true
+            || a.reveal != a.text.byte_len() { throw "NVL state lost"; }
+    }"##;
+    // Discover content IDs from the actual compiled call site, then restore read
+    // progress into a fresh session for mixed and fully-read groups.
+    let (mut probe_session, mut probe_vm) = models::prepared(code, false);
+    models::drive(&mut probe_vm, &mut probe_session, false);
+    let crate::InteractionView::Dialogue(d) = probe_session.view().interaction.unwrap() else {
+        panic!()
+    };
+    let ids: Vec<_> = d
+        .lines()
+        .iter()
+        .map(|line| line.content_id().to_owned())
+        .collect();
+    for encoded in [false, true] {
+        for read_count in [1, 2] {
+            let progress =
+                crate::ReadProgress::from_ids(ids[..read_count].iter().cloned()).unwrap();
+            let mut session =
+                Session::new_with_read_progress(SessionId(41), Epoch(9), progress).unwrap();
+            let mut story = source::compile_story(code, "model", 1, "opening").unwrap();
+            if encoded {
+                let bytes = bc::encode(story.program.package(), bc::Limits::default()).unwrap();
+                story.program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
+            }
+            let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
+            vm.start(&session, story.initializer).unwrap();
+            models::drive(&mut vm, &mut session, false);
+            vm.start(&session, story.entry).unwrap();
+            models::drive(&mut vm, &mut session, false);
+            let crate::InteractionView::Dialogue(d) = session.view().interaction.unwrap() else {
+                panic!()
+            };
+            assert!(d.lines()[0].previously_read());
+            assert_eq!(d.lines()[1].previously_read(), read_count == 2);
+            let colors: Vec<_> = vm
+                .stage()
+                .nodes()
+                .filter(|n| matches!(n.kind, NodeKind::Text(_)))
+                .map(|n| (n.id, n.props.color))
+                .collect();
+            assert_eq!(colors[0].1, [170, 170, 170, 255]);
+            assert_eq!(
+                colors[1].1,
+                if read_count == 2 {
+                    [170, 170, 170, 255]
+                } else {
+                    [0, 0, 255, 255]
+                }
+            );
+            let id = d.id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                    .unwrap();
+            }
+            models::drive(&mut vm, &mut session, false);
+            assert!(session.view().interaction.is_none());
+            for &(node, color) in &colors {
+                assert_eq!(vm.stage().node(node).unwrap().props.color, color);
+            }
+            activities::advance_clock(&mut vm, &session, 1., 32);
+            models::drive(&mut vm, &mut session, false);
+            let crate::InteractionView::Choice(choice) = session.view().interaction.unwrap() else {
+                panic!()
+            };
+            let option = choice.options()[0].id().clone();
+            session
+                .handle_local_input(session.root_owner(), InputAction::Select(option))
+                .unwrap();
+            models::drive(&mut vm, &mut session, false);
+            let id = session.view().interaction.unwrap().id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                    .unwrap();
+            }
+            models::drive(&mut vm, &mut session, false);
+        }
+    }
+}
+
+#[test]
+fn authored_scroll_out_example_keeps_nodes_and_reveals_the_next_line_after_exit() {
+    let code = include_str!("../../../../../examples/author_dialogue_transition.aside")
+        .replace("fn main()", "fn opening()");
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(&code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let text_ids: Vec<_> = vm
+            .stage()
+            .nodes()
+            .filter(|n| matches!(n.kind, NodeKind::Text(_)))
+            .map(|n| n.id)
+            .collect();
+        let content = vm
+            .stage()
+            .nodes()
+            .find(|n| n.kind == NodeKind::Column)
+            .unwrap()
+            .id;
+        for step in 0..2 {
+            let id = session.view().interaction.unwrap().id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                    .unwrap();
+            }
+            models::drive(&mut vm, &mut session, false);
+            assert!(session.view().interaction.is_none());
+            let chunks = vm.vm.heap().stats().chunk_allocations;
+            activities::advance_clock(&mut vm, &session, step as f64 * 0.25 + 0.1, 32);
+            vm.sync_stage(&session).unwrap();
+            assert_eq!(vm.vm.heap().stats().chunk_allocations, chunks);
+            assert!(vm.stage().node(content).unwrap().props.y < 0.);
+            activities::advance_clock(&mut vm, &session, (step + 1) as f64 * 0.25, 32);
+            models::drive(&mut vm, &mut session, false);
+            for &id in &text_ids {
+                assert!(vm.stage().node(id).is_some());
+            }
+            if step == 0 {
+                assert_eq!(vm.stage().node(content).unwrap().props.y, 0.);
+                assert_eq!(
+                    vm.stage().node(text_ids[0]).unwrap().props.color,
+                    [255, 184, 212, 255]
+                );
+                assert_eq!(vm.stage().node(text_ids[1]).unwrap().props.reveal, Some(0));
+            }
+        }
+        assert!(session.view().interaction.is_none());
+        assert_eq!(vm.stage().node(content).unwrap().props.opacity, 0.);
+    }
+}
+
+#[test]
 fn derived_and_conditional_views_share_model_dependencies() {
     let code = r##"
     fn opening() {
