@@ -90,11 +90,7 @@ struct Projection {
     status: reel_engine::SessionStatus,
 }
 impl Projection {
-    fn from_session(
-        session: &Session,
-        default_dialogue: bool,
-        default_choices: bool,
-    ) -> Result<Self, Error> {
+    fn from_session(session: &Session, preview: bool) -> Result<Self, Error> {
         let view = session.view();
         let mut projection = Self {
             interaction: None,
@@ -106,7 +102,7 @@ impl Projection {
         match view.interaction {
             Some(InteractionView::Dialogue(dialogue)) => {
                 projection.interaction = Some(dialogue.id());
-                if !default_dialogue {
+                if !preview {
                     return Ok(projection);
                 }
                 projection.lines = dialogue
@@ -121,7 +117,7 @@ impl Projection {
             }
             Some(InteractionView::Choice(choice)) => {
                 projection.interaction = Some(choice.id());
-                if !default_choices {
+                if !preview {
                     return Ok(projection);
                 }
                 projection.choices = choice
@@ -161,7 +157,13 @@ struct ChoiceWidget {
     button: WidgetPod<Button>,
 }
 
-/// The actual UI tree: full-text Parley labels and the existing real Button widget.
+struct PreviewChrome {
+    title: WidgetPod<Label>,
+    status: WidgetPod<Label>,
+    backdrop: WidgetPod<DialogueBackdrop>,
+}
+
+/// Author stage and accepted session input. Diagnostic chrome is opt-in.
 pub struct SessionWidget {
     projection: Projection,
     stamp: ProjectionStamp,
@@ -169,8 +171,7 @@ pub struct SessionWidget {
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
     events: Rc<RefCell<Vec<reel_ui::stage::NodeEvent>>>,
-    title: WidgetPod<Label>,
-    status: WidgetPod<Label>,
+    preview: Option<PreviewChrome>,
     lines: Vec<LineWidgets>,
     choices: Vec<ChoiceWidget>,
     background: Color,
@@ -180,7 +181,6 @@ pub struct SessionWidget {
     viewport: Size,
     dialogue_rect: Rect,
     stage: WidgetPod<StageWidget>,
-    backdrop: WidgetPod<DialogueBackdrop>,
     authored: bool,
     dialogue_active: bool,
     custom_dialogue: bool,
@@ -202,8 +202,11 @@ impl SessionWidget {
             binding: ui.binding.clone(),
             inputs: ui.inputs.clone(),
             events: ui.events.clone(),
-            title: WidgetPod::new(Label::new("Reel")),
-            status: WidgetPod::new(Label::new(ui.status_text())),
+            preview: ui.preview.then(|| PreviewChrome {
+                title: WidgetPod::new(Label::new("Reel")),
+                status: WidgetPod::new(Label::new(ui.status_text())),
+                backdrop: WidgetPod::new(DialogueBackdrop { rect: Rect::ZERO }),
+            }),
             lines: vec![],
             choices: vec![],
             background: ui.background,
@@ -213,13 +216,12 @@ impl SessionWidget {
             viewport: Size::new(640., 420.),
             dialogue_rect: Rect::new(30., 245., 610., 380.),
             stage: WidgetPod::new(StageWidget::new(ui.stage.as_ref())),
-            backdrop: WidgetPod::new(DialogueBackdrop { rect: Rect::ZERO }),
-            authored: ui.stage.is_some(),
+            authored: (ui.stage.is_some() || !ui.preview),
             dialogue_active: matches!(
                 ui.session.view().interaction,
                 Some(InteractionView::Dialogue(_))
             ),
-            custom_dialogue: !ui.default_dialogue,
+            custom_dialogue: !ui.preview,
         };
         widget.make_children(&ui.choice_owners);
         widget
@@ -255,13 +257,13 @@ impl SessionWidget {
             .collect();
     }
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
-        let authored_changed = this.widget.authored != ui.stage.is_some();
-        this.widget.authored = ui.stage.is_some();
+        let authored_changed = this.widget.authored != (ui.stage.is_some() || !ui.preview);
+        this.widget.authored = ui.stage.is_some() || !ui.preview;
         this.widget.dialogue_active = matches!(
             ui.session.view().interaction,
             Some(InteractionView::Dialogue(_))
         );
-        this.widget.custom_dialogue = !ui.default_dialogue;
+        this.widget.custom_dialogue = !ui.preview;
         if ui.stage_dirty
             && let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage)
         {
@@ -309,7 +311,10 @@ impl SessionWidget {
             this.widget.make_children(&ui.choice_owners);
             this.ctx.children_changed();
         }
-        if status_changed && let Some(mut status) = this.ctx.get_mut(&mut this.widget.status) {
+        if status_changed
+            && let Some(preview) = &mut this.widget.preview
+            && let Some(mut status) = this.ctx.get_mut(&mut preview.status)
+        {
             Label::set_text(&mut status, ui.status_text());
         }
         if !same_interaction || status_changed || authored_changed {
@@ -501,9 +506,11 @@ impl Widget for SessionWidget {
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         ctx.register_child(&mut self.stage);
-        ctx.register_child(&mut self.backdrop);
-        ctx.register_child(&mut self.title);
-        ctx.register_child(&mut self.status);
+        if let Some(preview) = &mut self.preview {
+            ctx.register_child(&mut preview.backdrop);
+            ctx.register_child(&mut preview.title);
+            ctx.register_child(&mut preview.status);
+        }
         for line in &mut self.lines {
             ctx.register_child(&mut line.speaker);
             ctx.register_child(&mut line.text);
@@ -538,8 +545,10 @@ impl Widget for SessionWidget {
         ctx.set_clip_path(size.to_rect());
         ctx.run_layout(&mut self.stage, size);
         ctx.place_child(&mut self.stage, Point::ORIGIN);
-        ctx.set_stashed(&mut self.title, self.authored);
-        ctx.set_stashed(&mut self.status, self.authored);
+        if let Some(preview) = &mut self.preview {
+            ctx.set_stashed(&mut preview.title, self.authored);
+            ctx.set_stashed(&mut preview.status, self.authored);
+        }
         let text_width = (size.width - 90.).max(0.);
         let button_width = (size.width - 140.).max(0.);
         let preferred = |width| SizeDef::new(LenDef::Fixed(Length::px(width)), LenDef::MaxContent);
@@ -590,23 +599,31 @@ impl Widget for SessionWidget {
             false,
         );
         self.scroll.set(self.scrolling.offset().y);
-        if !self.authored {
-            ctx.run_layout(&mut self.title, Size::new((size.width - 60.).max(0.), 36.));
-            ctx.place_child(&mut self.title, Point::new(30., 20.));
-            ctx.run_layout(&mut self.status, Size::new((size.width - 60.).max(0.), 30.));
-            ctx.place_child(&mut self.status, Point::new(30., bottom + 5.));
+        if let Some(preview) = &mut self.preview {
+            if !self.authored {
+                ctx.run_layout(
+                    &mut preview.title,
+                    Size::new((size.width - 60.).max(0.), 36.),
+                );
+                ctx.place_child(&mut preview.title, Point::new(30., 20.));
+                ctx.run_layout(
+                    &mut preview.status,
+                    Size::new((size.width - 60.).max(0.), 30.),
+                );
+                ctx.place_child(&mut preview.status, Point::new(30., bottom + 5.));
+            }
+            if let Some((backdrop, mut context)) = ctx.get_raw_mut(&mut preview.backdrop) {
+                backdrop.rect =
+                    if self.authored && (!self.lines.is_empty() || !self.choices.is_empty()) {
+                        self.dialogue_rect
+                    } else {
+                        Rect::ZERO
+                    };
+                context.request_paint_only();
+            }
+            ctx.run_layout(&mut preview.backdrop, size);
+            ctx.place_child(&mut preview.backdrop, Point::ORIGIN);
         }
-        if let Some((backdrop, mut context)) = ctx.get_raw_mut(&mut self.backdrop) {
-            backdrop.rect = if self.authored && (!self.lines.is_empty() || !self.choices.is_empty())
-            {
-                self.dialogue_rect
-            } else {
-                Rect::ZERO
-            };
-            context.request_paint_only();
-        }
-        ctx.run_layout(&mut self.backdrop, size);
-        ctx.place_child(&mut self.backdrop, Point::ORIGIN);
         for (line, &(y, height)) in self.lines.iter_mut().zip(&positions) {
             ctx.place_child(&mut line.speaker, Point::new(45., origin + y));
             ctx.place_child(&mut line.text, Point::new(45., origin + y + height));
@@ -617,9 +634,11 @@ impl Widget for SessionWidget {
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
         let offset = -self.scrolling.offset();
-        ctx.set_child_scroll_translation(&mut self.title, offset);
-        ctx.set_child_scroll_translation(&mut self.status, offset);
-        ctx.set_child_scroll_translation(&mut self.backdrop, offset);
+        if let Some(preview) = &mut self.preview {
+            ctx.set_child_scroll_translation(&mut preview.title, offset);
+            ctx.set_child_scroll_translation(&mut preview.status, offset);
+            ctx.set_child_scroll_translation(&mut preview.backdrop, offset);
+        }
         for line in &mut self.lines {
             ctx.set_child_scroll_translation(&mut line.speaker, offset);
             ctx.set_child_scroll_translation(&mut line.text, offset);
@@ -647,12 +666,14 @@ impl Widget for SessionWidget {
         node.set_label("Story; scroll to see all content, click dialogue to reveal then advance, or select a choice");
     }
     fn children_ids(&self) -> ChildrenIds {
-        let mut ids = ChildrenIds::from_slice(&[
-            self.stage.id(),
-            self.backdrop.id(),
-            self.title.id(),
-            self.status.id(),
-        ]);
+        let mut ids = ChildrenIds::from_slice(&[self.stage.id()]);
+        if let Some(preview) = &self.preview {
+            ids.extend([
+                preview.backdrop.id(),
+                preview.title.id(),
+                preview.status.id(),
+            ]);
+        }
         for line in &self.lines {
             ids.push(line.speaker.id());
             ids.push(line.text.id());
@@ -739,17 +760,24 @@ pub struct SessionUi {
     pending_stage: Option<StageView>,
     images: crate::images::Images,
     playback: playback::Playback,
-    default_dialogue: bool,
-    default_choices: bool,
-    narrative_dirty: bool,
+    preview: bool,
     reading_modal: bool,
     input_fallback: Option<WidgetId>,
     reading_focused: bool,
 }
 impl SessionUi {
-    pub fn new(mut session: Session) -> Result<Self, Error> {
+    /// Present only the stage explicitly supplied by the author or Rust host.
+    pub fn new(session: Session) -> Result<Self, Error> {
+        Self::create(session, false)
+    }
+    /// Explicit session preview used by the native host diagnostic.
+    #[cfg(any(test, feature = "window"))]
+    fn preview(session: Session) -> Result<Self, Error> {
+        Self::create(session, true)
+    }
+    fn create(mut session: Session, preview: bool) -> Result<Self, Error> {
         let source_owner = session.create_owner()?;
-        let projection = Projection::from_session(&session, true, true)?;
+        let projection = Projection::from_session(&session, preview)?;
         let choice_owners = allocate_choice_owners(&mut session, projection.choices.len())?;
         let stamp = ProjectionStamp {
             dialogue_complete: dialogue_complete(&session),
@@ -773,9 +801,7 @@ impl SessionUi {
             stage_dirty: false,
             pending_stage: None,
             playback: Default::default(),
-            default_dialogue: true,
-            default_choices: true,
-            narrative_dirty: false,
+            preview,
             reading_modal: false,
             input_fallback: None,
             reading_focused: true,
@@ -783,13 +809,6 @@ impl SessionUi {
                 crate::assets::Assets::directory(Default::default()),
             ),
         })
-    }
-    pub fn set_default_views(&mut self, dialogue: bool, choices: bool) {
-        if self.default_dialogue != dialogue || self.default_choices != choices {
-            self.default_dialogue = dialogue;
-            self.default_choices = choices;
-            self.narrative_dirty = true;
-        }
     }
     pub fn session(&self) -> &Session {
         &self.session
@@ -938,12 +957,8 @@ impl SessionUi {
         let interaction = view.interaction.map(|i| i.id());
         let mut changed = view.status != self.projection.status
             || view.history.len() != self.projection.history_count;
-        if interaction != self.projection.interaction || self.narrative_dirty {
-            let projection = Projection::from_session(
-                &self.session,
-                self.default_dialogue,
-                self.default_choices,
-            )?;
+        if interaction != self.projection.interaction {
+            let projection = Projection::from_session(&self.session, self.preview)?;
             let replacement =
                 match allocate_choice_owners(&mut self.session, projection.choices.len()) {
                     Ok(owners) => owners,
@@ -956,7 +971,6 @@ impl SessionUi {
                 self.session.revoke_owner(owner)?;
             }
             self.projection = projection;
-            self.narrative_dirty = false;
             changed = true;
         } else {
             self.projection.status = view.status;
@@ -1150,7 +1164,7 @@ impl SessionHostDiagnostic {
             "en",
         )?;
         Ok(Self {
-            ui: SessionUi::new(session)?,
+            ui: SessionUi::preview(session)?,
             step: 0,
         })
     }
@@ -1516,7 +1530,7 @@ mod tests {
     fn presented_dialogue_reveals_then_advances_once_and_old_frame_cannot_start_successor() {
         let mut session = session();
         say(&mut session, "A full unchanged line");
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, id) = mount(&ui);
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(visible(&ui), 0);
@@ -1552,7 +1566,7 @@ mod tests {
         session
             .reveal_more(session.root_owner(), first, usize::MAX)
             .unwrap();
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, id) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         ui.handle_pointer(&mut bridge, mouse("move", (100., 300.)))
@@ -1596,7 +1610,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         let old_owners = ui.choice_owners.clone();
         accept(&mut ui, &mut bridge, 1);
@@ -1639,7 +1653,7 @@ mod tests {
     fn cancelled_session_and_cleared_surface_have_no_input_permission() {
         let mut session = session();
         say(&mut session, "Cancel this");
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         bridge.clear();
@@ -1661,7 +1675,7 @@ mod tests {
     fn revoked_source_owner_input_is_filtered_without_a_window_error() {
         let mut session = session();
         say(&mut session, "A live main interaction");
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, _) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         ui.session.revoke_owner(ui.source_owner).unwrap();
@@ -1684,7 +1698,7 @@ mod tests {
             }),
             Ok(reel_engine::InputOutcome::Revealed)
         );
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         click(&mut ui, &mut bridge, (100., 300.));
@@ -1703,7 +1717,7 @@ mod tests {
     fn inputs_through_session_mut_and_ui_share_one_sequence_source() {
         let mut session = session();
         let first = say(&mut session, "First");
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         click(&mut ui, &mut bridge, (100., 300.));
@@ -1755,7 +1769,7 @@ mod tests {
     fn zero_line_dialogue_advances_through_the_presented_pointer_path_once() {
         let mut session = session();
         let interaction = session.begin_say(session.root_owner(), &[], "en").unwrap();
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         click(&mut ui, &mut bridge, (100., 300.));
         assert!(ui.session_mut().take_completion().is_none());
@@ -1795,7 +1809,7 @@ mod tests {
 
     #[test]
     fn many_dialogue_rows_retain_full_text_and_scroll_without_negative_layout() {
-        let mut ui = SessionUi::new(session()).unwrap();
+        let mut ui = SessionUi::preview(session()).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         let text = "A complete long dialogue line. ".repeat(40);
@@ -1842,7 +1856,7 @@ mod tests {
             .map(|key| ChoiceInput { key, label: key })
             .collect();
         session.begin_choice(session.root_owner(), &rows).unwrap();
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         assert_eq!(
             ui.choice_owners.len(),
             1,
@@ -1899,7 +1913,7 @@ mod tests {
             .map(|key| ChoiceInput { key, label: key })
             .collect();
         session.begin_choice(session.root_owner(), &rows).unwrap();
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         for i in 0..keys.len() {
@@ -1940,7 +1954,7 @@ mod tests {
         for _ in 0..100 {
             session.create_owner().unwrap();
         }
-        let mut ui = SessionUi::new(session).unwrap();
+        let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         accept(&mut ui, &mut bridge, 1);
         ui.session

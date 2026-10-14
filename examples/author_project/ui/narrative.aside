@@ -1,0 +1,16 @@
+// A reusable author component; the engine supplies only data and interaction.
+pub fn narrative() {
+    let dialogue = game.dialogue();
+    let choices = game.choice();
+    stack() {
+        column(x: 40, y: 380, width: 880, padding: 16, gap: 8,
+               background: "#182338ee", visible: bind(dialogue.active)) {
+            text(value: bind(dialogue.speaker_name), color: "#9ed8ff");
+            text(value: bind(dialogue.text), reveal: bind(dialogue.reveal), width: 840);
+        }
+        list(|| choices.options, key: |option| option.id,
+             x: 280, y: 80, width: 400, gap: 12, visible: bind(choices.active),
+             build: |row| button(label: derive(|| row.value.label), width: 400,
+                 padding: 16, on_click: |event| choices.select(row.value.id)));
+    }
+}

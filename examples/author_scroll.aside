@@ -1,7 +1,6 @@
 // Supply fonts/body.ttf relative to the asset root.
 pub fn main() {
-    game.configure(width: 640, height: 420, fonts: ["fonts/body.ttf"],
-                   default_dialogue: false, default_choices: false);
+    game.configure(width: 640, height: 420, fonts: ["fonts/body.ttf"]);
     let choices = game.choice();
     stage.replace(scroll(x: 20, y: 20, width: 300, height: 180) {
         view(|| column() {

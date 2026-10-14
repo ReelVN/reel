@@ -9,8 +9,6 @@ pub struct GameSettings {
     pub canvas_size: Option<[u32; 2]>,
     pub fonts: Vec<String>,
     pub text_speed: f64,
-    pub default_dialogue: bool,
-    pub default_choices: bool,
     pub source: Option<String>,
 }
 impl Default for GameSettings {
@@ -20,8 +18,6 @@ impl Default for GameSettings {
             canvas_size: None,
             fonts: Vec::new(),
             text_speed: 30.,
-            default_dialogue: true,
-            default_choices: true,
             source: None,
         }
     }
@@ -76,16 +72,6 @@ impl SessionVm {
                     "text_speed must be finite and nonnegative",
                 ))?;
             next.text_speed = speed;
-        }
-        for (field, value) in [
-            (&mut next.default_dialogue, args[5]),
-            (&mut next.default_choices, args[6]),
-        ] {
-            if value.tag() != ValueTag::Null {
-                *field = value
-                    .as_bool()
-                    .ok_or(AdapterError::Input("default view setting requires bool"))?;
-            }
         }
         if next != *self.game {
             if next.fonts != self.game.fonts {

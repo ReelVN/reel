@@ -10,7 +10,6 @@ use support::*;
 fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
     let source = r#"
     fn main() {
-        game.configure(default_dialogue: false);
         let data = model({items: [{id: {}, name: "A"}, {id: [], name: "B"}], clicked: 0, latest: ""});
         let a = data.items[0].id; let b = data.items[1].id;
         stage.replace(column(width: 600, height: 400) {
@@ -75,7 +74,6 @@ fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
 #[test]
 fn opaque_choice_ids_work_as_list_keys_through_source_and_asb() {
     let source = r#"fn main() {
-        game.configure(default_dialogue: false, default_choices: false);
         let choices = game.choice();
         stage.replace(list(|| choices.options, key: |option| option.id, build: |row|
             button(row.value.label, width: 200, height: 50,
@@ -166,7 +164,6 @@ fn creator_ui_examples_initialize_from_source_and_asb() {
 fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
     use reel_ui::core::{Ime, TextEvent, keyboard::*};
     let source = r#"fn main() {
-        game.configure(default_dialogue: false);
         let data = model({log: "", name: ""});
         stage.replace(input(width: 600, height: 400, on_key: |e| {
             data.log += f"{e.code}:{e.phase};";

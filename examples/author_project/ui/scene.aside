@@ -1,3 +1,5 @@
+use game::ui::narrative::{narrative};
+
 pub fn scene() {
     let caption = text("雨后的窗边", font_size: 32, x: 24, y: 24);
     let card = stack(width: 360, height: 200, x: 300, y: 100, background: "#27395d") {
@@ -7,6 +9,6 @@ pub fn scene() {
             await run(tween(caption, x: 48, duration: 0.3));
         });
     };
-    let root = stack() { card; };
+    let root = stack() { card; narrative(); };
     return {root: root, card: card};
 }

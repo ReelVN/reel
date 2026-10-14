@@ -15,6 +15,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 组合动作的宿主声明先接通普通可变参数：NativeContract 的 rest 名称和 Rust `#[aside(rest)]` 映射为既有 B01 array rest。sequence/parallel 等库接口使用这条通路，不新增 Reel 专用编译语法或另一套参数收集器。范围和验收见 Aside host SDK 文档；动作组合运行器共用下面的活动合同。
 
+作者播放器只呈现显式挂载的舞台，不自动创建对白/选择控件或复制内置视图投影。game.configure 移除默认界面开关，native ABI 为 3；game.dialogue()/game.choice() 保持数据与交互服务。Rust 会话诊断的预览由诊断入口显式创建，不参与 Aside 作品设置。
+
 ### 作者活动与窗口时钟
 
 工程直接从 main.aside 启动。main 中的 `game.configure(title: null, width: null, height: null, fonts: null, text_speed: null)` 更新会话的呈现设置；省略项保留当前设置，参数按普通 Aside 表达式求值。设置以不可变值发布给宿主，宿主只在值身份变化时应用。画布采用 contain 变换并共用绘制/输入几何；未设置画布时沿用视口。设置首个画布维度时，另一维默认 1920×1080 的对应值。fonts 接受一个字体文件或非空有序数组；作品须在首次呈现前显式配置字体，缺少字体时报错。节点 font 使用已提供字体中的字体族/回退列表，system-ui 指向配置的默认列表。文件相对资源根解析并共享计量后的数据，字体回退和文字整形复用 Fontique/Parley；作者播放器关闭系统字体发现。平台窗口句柄始终留在适配器。ASB 1.0 元数据 schema 3 只保存代码图与入口，运行设置由脚本执行产生。

@@ -7,7 +7,6 @@ fn caption(mode) {
 }
 
 fn main() {
-    game.configure(default_dialogue: false);
     stage.replace(column(gap: 12) {
         text(caption("typing"));
         text(caption("稍后回来"));
