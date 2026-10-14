@@ -111,6 +111,18 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             false,
         ),
         ("activity::await", vec![parameter("activity", None)], true),
+        (
+            "repeat",
+            vec![
+                parameter("action", None),
+                parameter("times", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        ("pause", vec![parameter("activity", None)], false),
+        ("resume", vec![parameter("activity", None)], false),
+        ("stop", vec![parameter("activity", None)], false),
+        ("finish", vec![parameter("activity", None)], false),
     ] {
         contracts.push(NativeContract {
             rest: None,
@@ -127,12 +139,17 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec!["reel.stage".into()],
         });
     }
-    contracts.extend([
-        super::activity::pause::binding().contract,
-        super::activity::resume::binding().contract,
-        super::activity::stop::binding().contract,
-        super::activity::finish::binding().contract,
-    ]);
+    for name in ["sequence", "parallel"] {
+        contracts.push(NativeContract {
+            rest: Some("actions".into()),
+            symbol: format!("reel::{name}"),
+            abi_version: 1,
+            parameters: vec![],
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::HOST),
+            required_capabilities: vec!["reel.stage".into()],
+        });
+    }
     contracts.extend(super::stage::bindings().map(|binding| binding.contract));
     contracts
 }

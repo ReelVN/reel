@@ -31,7 +31,7 @@ fn settle(driver: &mut AsideSessionUi) {
             .unwrap()
         {
             StoryProgress::Idle | StoryProgress::Vm(reel_engine::aside::RunOutcome::Waiting(_))
-                if !driver.has_runnable_tasks() =>
+                if !driver.has_runnable_tasks() && !driver.activities_pending() =>
             {
                 return;
             }
