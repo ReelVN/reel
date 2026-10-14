@@ -30,7 +30,7 @@ wav = ["symphonia", "symphonia/wav"]
 
 [dependencies]
 atomic-arena = "=0.1.2"
-glam = { version = "=0.33.12", features = ["mint"] }
+glam = { version = "=0.34.1", features = ["mint-05"] }
 mint = "=0.5.9"
 pastey = "=0.2.3"
 rtrb = "=0.4.0"

@@ -15,3 +15,6 @@ pinned dependencies. This package has no upstream synchronization or patch workf
 Inline boxes support an explicit baseline with ascent/descent accounting for ruby;
 omitting it retains bottom-to-baseline alignment. Reel's markup and paragraph
 composition live in reel-core and reel-ui, respectively.
+
+Shaping uses HarfRust's shared font instances and reusable in-place buffer;
+cached instances share Fontique's font bytes without copying them.

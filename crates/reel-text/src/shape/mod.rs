@@ -5,7 +5,6 @@
 //! and `icu` for text analysis.
 
 use alloc::vec::Vec;
-use core::mem;
 use core::ops::RangeInclusive;
 
 use super::layout::Layout;
@@ -26,10 +25,10 @@ use fontique::{self, Query, QueryFamily, QueryFont};
 mod cache;
 
 pub(crate) struct ShapeContext {
-    shape_data_cache: LruCache<cache::ShapeDataKey, harfrust::ShaperData>,
-    shape_instance_cache: LruCache<cache::ShapeInstanceId, harfrust::ShaperInstance>,
+    shape_data_cache: LruCache<cache::ShapeDataKey, harfrust::Font>,
+    shape_instance_cache: LruCache<cache::ShapeInstanceId, harfrust::Font>,
     shape_plan_cache: LruCache<cache::ShapePlanId, harfrust::ShapePlan>,
-    unicode_buffer: Option<harfrust::UnicodeBuffer>,
+    buffer: harfrust::Buffer,
     features: Vec<harfrust::Feature>,
     char_cluster: CharCluster,
 }
@@ -41,7 +40,7 @@ impl Default for ShapeContext {
             shape_data_cache: LruCache::new(MAX_ENTRIES),
             shape_instance_cache: LruCache::new(MAX_ENTRIES),
             shape_plan_cache: LruCache::new(MAX_ENTRIES),
-            unicode_buffer: Some(harfrust::UnicodeBuffer::new()),
+            buffer: harfrust::Buffer::new(),
             features: Vec::new(),
             char_cluster: CharCluster::default(),
         }
@@ -355,14 +354,16 @@ fn shape_item<'a, B: Brush>(
         // Shape the entire segment text including newlines
         // The line breaking algorithm will handle newlines automatically
 
-        // TODO: How do we want to handle errors like this?
-        let font_ref =
-            harfrust::FontRef::from_index(font.font.blob.as_ref(), font.font.index).unwrap();
-
-        // Create harfrust shaper
-        let shaper_data = scx.shape_data_cache.entry(
+        // Share Fontique's bytes and HarfRust's parsed tables across variation instances.
+        let shaping_font = scx.shape_data_cache.entry(
             cache::ShapeDataKey::new(font.font.blob.id(), font.font.index),
-            || harfrust::ShaperData::new(&font_ref),
+            || {
+                harfrust::Font::new(
+                    harfrust::font::Blob::Shared(font.font.blob.clone().into_raw_parts().0),
+                    font.font.index,
+                )
+                .expect("Fontique selected a validated font")
+            },
         );
         let instance = scx.shape_instance_cache.entry(
             cache::ShapeInstanceKey::new(
@@ -372,10 +373,13 @@ fn shape_item<'a, B: Brush>(
                 rcx.variations(item.variations),
             ),
             || {
-                harfrust::ShaperInstance::from_variations(
-                    &font_ref,
-                    variations_iter(&font.font.synthesis, rcx.variations(item.variations)),
-                )
+                shaping_font
+                    .instance_builder()
+                    .variations(variations_iter(
+                        &font.font.synthesis,
+                        rcx.variations(item.variations),
+                    ))
+                    .build()
             },
         );
 
@@ -397,11 +401,7 @@ fn shape_item<'a, B: Brush>(
                 ..,
             ));
         }
-        let harf_shaper = shaper_data
-            .shaper(&font_ref)
-            .instance(Some(instance))
-            .point_size(Some(item.size))
-            .build();
+        let harf_shaper = harfrust::ShaperFont::new(instance);
         let shaper_plan = scx.shape_plan_cache.entry(
             cache::ShapePlanKey::new(
                 font.font.blob.id(),
@@ -415,7 +415,7 @@ fn shape_item<'a, B: Brush>(
             ),
             || {
                 harfrust::ShapePlan::new(
-                    &harf_shaper,
+                    instance,
                     direction,
                     Some(hb_script),
                     language.as_ref(),
@@ -425,7 +425,7 @@ fn shape_item<'a, B: Brush>(
         );
 
         // Prepare harfrust buffer
-        let mut buffer = mem::take(&mut scx.unicode_buffer).unwrap();
+        let buffer = &mut scx.buffer;
         buffer.clear();
 
         // Use the entire segment text including newlines
@@ -438,18 +438,23 @@ fn shape_item<'a, B: Brush>(
             // with `char_indices`, push each char individually via `.chars` with a cluster index
             // that matches its `infos` counterpart. This allows us to lookup `infos` via cluster
             // index in `data.rs`.
-            buffer.add(ch, i as u32);
+            buffer.push(ch as u32, i as u32);
         }
 
         buffer.set_direction(direction);
 
-        buffer.set_script(hb_script);
+        buffer.set_script(Some(hb_script));
+        buffer.set_language(language);
 
-        if let Some(lang) = language {
-            buffer.set_language(lang);
-        }
-
-        let glyph_buffer = harf_shaper.shape_with_plan(shaper_plan, buffer, &scx.features);
+        harfrust::shape(
+            &harf_shaper,
+            buffer,
+            harfrust::ShapeOptions::new()
+                .plan(Some(shaper_plan))
+                .point_size(Some(item.size))
+                .features(&scx.features),
+        )
+        .expect("fresh buffer and cached plan have matching segment properties");
 
         // Extract relevant CharInfo slice for this segment
         let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
@@ -464,7 +469,7 @@ fn shape_item<'a, B: Brush>(
             item.size,
             font.attrs,
             font.font.synthesis,
-            &glyph_buffer,
+            buffer,
             item.level,
             item.style_index,
             item.word_spacing,
@@ -472,11 +477,8 @@ fn shape_item<'a, B: Brush>(
             segment_text,
             segment_infos,
             (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
-            harf_shaper.coords(),
+            instance.normalized_coords(),
         );
-
-        // Replace buffer to reuse allocation in next iteration.
-        scx.unicode_buffer = Some(glyph_buffer.clear());
     }
 }
 
@@ -487,18 +489,18 @@ fn real_script(script: Script) -> bool {
 fn variations_iter<'a>(
     synthesis: &'a fontique::Synthesis,
     item: Option<&'a [FontVariation]>,
-) -> impl Iterator<Item = harfrust::Variation> + 'a {
+) -> impl Iterator<Item = harfrust::font::Variation> + 'a {
     synthesis
         .variation_settings()
         .iter()
-        .map(|(tag, value)| harfrust::Variation {
+        .map(|(tag, value)| harfrust::font::Variation {
             tag: *tag,
             value: *value,
         })
         .chain(
             item.unwrap_or(&[])
                 .iter()
-                .map(|variation| harfrust::Variation {
+                .map(|variation| harfrust::font::Variation {
                     tag: harfrust::Tag::new(&variation.tag.to_bytes()),
                     value: variation.value,
                 }),

@@ -16,7 +16,12 @@ pub fn root() -> PathBuf {
 }
 
 pub fn sha(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    use std::fmt::Write;
+    let mut encoded = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(encoded, "{byte:02x}").expect("formatting into a String");
+    }
+    encoded
 }
 
 pub fn json(path: &Path) -> Result<serde_json::Value> {
