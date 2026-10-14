@@ -42,6 +42,8 @@ pub fn title() {
 See section 3 for opening in story/opening.aside. The examples' relative file locations match their import paths; the root module main.aside handles startup only.
 let fixes a variable's binding while leaving node properties mutable. Use let mut when the variable must be rebound to another value. Ordinary expressions are evaluated once when executed. bind(model.value) connects an observable property; derive(|| expression) connects a read-only value computed from other properties. See the second document for the complete language rules.
 
+The desktop player rebuilds a lost graphics device while retaining the current story state. Diagnostics include the backend's device-loss reason. If rebuilding fails, the player reports the error and exits.
+
 ### Available Check, Build and Run Commands
 The examples configure fonts/body.ttf in main. Run these Windows commands from the repository root to copy Microsoft YaHei into a temporary asset directory for local verification. Supply fonts with distribution rights when publishing your work. Close the window opened by dev or run before continuing.
 

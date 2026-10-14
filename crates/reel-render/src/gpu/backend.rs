@@ -1,4 +1,4 @@
-use super::{Gpu, GpuError, Renderer, SurfacePass, surface::negotiate};
+use super::{Gpu, GpuError, Renderer, SurfacePass, device::SurfaceFailure, surface::negotiate};
 use crate::*;
 
 /// WGPU presentation adapter. The host supplies a surface; no window system is required.
@@ -106,12 +106,32 @@ impl RenderBackend for WgpuBackend {
         if info.physical_size.contains(&0) {
             return Ok(PresentOutcome::SurfaceUnavailable);
         }
-        let texture = match surface.get_current_texture() {
-            Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Timeout) => return Ok(PresentOutcome::SurfaceUnavailable),
-            Err(error) => return Err(GpuError::Surface(error)),
-        };
         let mut prepared = self.renderer.prepare(frame)?;
+        let texture = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            status => {
+                // Device loss may surface as Validation/Lost. Preserve the
+                // device's actual cause before choosing surface-only recovery.
+                self.renderer.gpu().check()?;
+                return match status {
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded => {
+                        Ok(PresentOutcome::SurfaceUnavailable)
+                    }
+                    wgpu::CurrentSurfaceTexture::Outdated => {
+                        Err(GpuError::Surface(SurfaceFailure::Outdated))
+                    }
+                    wgpu::CurrentSurfaceTexture::Lost => {
+                        Err(GpuError::Surface(SurfaceFailure::Lost))
+                    }
+                    wgpu::CurrentSurfaceTexture::Validation => {
+                        Err(GpuError::Surface(SurfaceFailure::Validation))
+                    }
+                    _ => unreachable!("successful acquisition handled above"),
+                };
+            }
+        };
         self.output
             .as_ref()
             .expect("configured surface output")
@@ -122,7 +142,8 @@ impl RenderBackend for WgpuBackend {
             );
         self.renderer.submit(prepared)?;
         before_present();
-        texture.present();
+        self.renderer.gpu().queue.present(texture);
+        self.renderer.gpu().check()?;
         Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
@@ -142,7 +163,11 @@ impl RenderBackend for WgpuBackend {
     fn suspend(&mut self) {
         // Native surface lifetime ends before the host releases its window. Submitted
         // frame leases stay in Renderer until completion is polled or device retirement.
-        let _ = self.renderer.gpu().device.poll(wgpu::PollType::Wait);
+        let _ = self
+            .renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely());
         self.surface = None;
         self.info = None;
         self.output = None;

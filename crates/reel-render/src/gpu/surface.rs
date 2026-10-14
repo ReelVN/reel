@@ -42,6 +42,7 @@ pub(crate) fn select(
         desired_maximum_frame_latency: 2,
         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
         view_formats: vec![],
+        color_space: wgpu::SurfaceColorSpace::Srgb,
     })
 }
 /// Requery the current adapter/surface pair. No configuration from an old
@@ -69,6 +70,7 @@ mod tests {
             present_modes: vec![wgpu::PresentMode::Fifo],
             alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
             usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            ..Default::default()
         }
     }
     #[test]

@@ -1,7 +1,7 @@
 //! Optional WGPU adapter. Native surface creation belongs to the host assembly.
 mod device;
 mod targets;
-pub use device::{DeviceGeneration, Gpu, GpuError, GpuLimits, Quality};
+pub use device::{DeviceGeneration, DeviceLoss, Gpu, GpuError, GpuLimits, Quality, SurfaceFailure};
 mod mesh;
 mod pipeline;
 mod renderer;

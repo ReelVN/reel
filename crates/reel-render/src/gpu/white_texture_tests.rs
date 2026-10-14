@@ -319,7 +319,11 @@ fn submitted_images_share_residency_under_overlapping_frame_pressure() {
     counts(&renderer, 2);
     assert_eq!(renderer.usage().resources, upload_bytes);
     drop(second);
-    renderer.gpu.device.poll(wgpu::PollType::Wait).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
     renderer.poll().unwrap();
     assert_eq!(
         renderer.usage().resources,
@@ -516,7 +520,11 @@ fn white_texture_concurrent_contexts_and_delayed_completion_keep_tickets() {
     drop(frame);
     let held = usage(&renderer);
     assert!(pool.usage().bytes > 0);
-    renderer.gpu.device.poll(wgpu::PollType::Wait).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
     assert_eq!(
         usage(&renderer),
         held,
@@ -537,14 +545,14 @@ fn white_texture_device_loss_foreign_submit_and_renderer_drop_release() {
     let mut old = renderer(Default::default());
     let mut other = renderer(Default::default());
     let p = old.prepare(&frame).unwrap();
-    assert!(matches!(other.submit(p), Err(GpuError::DeviceLost)));
+    assert!(matches!(other.submit(p), Err(GpuError::WrongDevice)));
     empty(&old);
     counts(&other, 0);
     let p = old.prepare(&frame).unwrap();
     old.gpu.device.destroy();
     let _ = old.gpu.device.poll(wgpu::PollType::Poll);
-    assert!(matches!(old.submit(p), Err(GpuError::DeviceLost)));
-    assert!(matches!(old.prepare(&frame), Err(GpuError::DeviceLost)));
+    assert!(matches!(old.submit(p), Err(GpuError::DeviceLost(_))));
+    assert!(matches!(old.prepare(&frame), Err(GpuError::DeviceLost(_))));
     counts(&old, 2);
     empty(&old);
     let p = other.prepare(&frame).unwrap();

@@ -324,7 +324,11 @@ fn bounded_admission_and_completion_preserve_frame_lease() {
     drop(frame);
     assert!(pool.usage().bytes > 0);
     assert!(renderer.usage().targets > 0);
-    renderer.gpu().device.poll(wgpu::PollType::Wait).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
     // Driver completion alone cannot release application ownership until poll observes it.
     assert!(renderer.usage().targets > 0);
     assert_eq!(renderer.poll().unwrap(), vec![id]);
@@ -486,10 +490,13 @@ fn explicit_quality_downgrade_and_device_loss() {
     }
     let renderer = device();
     renderer.gpu().device.destroy();
-    let _ = renderer.gpu().device.poll(wgpu::PollType::Wait);
+    let _ = renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely());
     assert!(matches!(
         renderer.gpu().check(),
-        Err(reel_render::gpu::GpuError::DeviceLost)
+        Err(reel_render::gpu::GpuError::DeviceLost(_))
     ));
     let replacement = device();
     assert!(replacement.gpu().check().is_ok());

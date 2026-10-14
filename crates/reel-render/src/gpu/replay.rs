@@ -64,6 +64,7 @@ impl Context<'_> {
             color_attachments: &[Some(target.attachment(true))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
+            multiview_mask: None,
             occlusion_query_set: None,
         });
         drop(_pass);

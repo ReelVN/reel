@@ -103,6 +103,7 @@ struct Varying { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
+                multiview_mask: None,
                 occlusion_query_set: None,
             });
         pass.set_pipeline(&self.pipeline);

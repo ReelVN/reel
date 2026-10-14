@@ -331,6 +331,7 @@ impl Context<'_> {
             color_attachments: &[Some(target.attachment(false))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
+            multiview_mask: None,
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.pipelines.paint);

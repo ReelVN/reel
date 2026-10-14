@@ -1,8 +1,5 @@
 use reel_ui::frame::RecordLocation;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceGeneration(pub u64);
@@ -30,14 +27,26 @@ pub struct Quality {
     pub degraded: bool,
 }
 #[derive(Debug)]
+pub struct DeviceLoss {
+    pub reason: wgpu::DeviceLostReason,
+    pub message: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceFailure {
+    Lost,
+    Outdated,
+    Validation,
+}
+#[derive(Debug)]
 pub enum GpuError {
-    Surface(wgpu::SurfaceError),
+    Surface(SurfaceFailure),
     SurfaceContract(super::surface::ContractError),
     InvalidSurface,
     WrongSurface,
     Adapter(String),
     Device(String),
-    DeviceLost,
+    DeviceLost(Arc<DeviceLoss>),
+    WrongDevice,
     Driver(Arc<wgpu::Error>),
     InvalidSize,
     IdentityExhausted,
@@ -86,7 +95,7 @@ pub struct Gpu {
     pub adapter: wgpu::Adapter,
     pub(super) generation: DeviceGeneration,
     pub(super) limits: GpuLimits,
-    lost: Arc<AtomicBool>,
+    lost: Arc<Mutex<Option<Arc<DeviceLoss>>>>,
     fault: Arc<Mutex<Option<Arc<wgpu::Error>>>>,
     #[cfg(test)]
     pub(super) upload_creations: super::resources::UploadCreations,
@@ -112,6 +121,7 @@ impl Gpu {
                 compatible_surface: surface,
                 power_preference: wgpu::PowerPreference::None,
                 force_fallback_adapter: false,
+                ..Default::default()
             })
             .await
             .map_err(|e| GpuError::Adapter(e.to_string()))?;
@@ -122,17 +132,19 @@ impl Gpu {
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,
+                ..Default::default()
             })
             .await
             .map_err(|e| GpuError::Device(e.to_string()))?;
-        let lost = Arc::new(AtomicBool::new(false));
+        let lost = Arc::new(Mutex::new(None));
         let flag = lost.clone();
-        device.set_device_lost_callback(move |_, _| {
-            flag.store(true, Ordering::Release);
+        device.set_device_lost_callback(move |reason, message| {
+            *flag.lock().expect("device loss state poisoned") =
+                Some(Arc::new(DeviceLoss { reason, message }));
         });
         let fault = Arc::new(Mutex::new(None));
         let capture = fault.clone();
-        device.on_uncaptured_error(Box::new(move |error| {
+        device.on_uncaptured_error(Arc::new(move |error| {
             let mut first = capture.lock().expect("device error state poisoned");
             if first.is_none() {
                 *first = Some(Arc::new(error));
@@ -151,8 +163,8 @@ impl Gpu {
         })
     }
     pub fn check(&self) -> Result<(), GpuError> {
-        if self.lost.load(Ordering::Acquire) {
-            Err(GpuError::DeviceLost)
+        if let Some(loss) = &*self.lost.lock().expect("device loss state poisoned") {
+            Err(GpuError::DeviceLost(loss.clone()))
         } else if let Some(error) = &*self.fault.lock().expect("device error state poisoned") {
             Err(GpuError::Driver(error.clone()))
         } else {
@@ -233,11 +245,12 @@ impl crate::BackendError for GpuError {
             | Self::Geometry { .. }
             | Self::InvalidSize
             | Self::InvalidSurface
-            | Self::WrongSurface => FailureKind::Refused,
-            Self::Surface(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            | Self::WrongSurface
+            | Self::WrongDevice => FailureKind::Refused,
+            Self::Surface(SurfaceFailure::Lost | SurfaceFailure::Outdated) => {
                 FailureKind::SurfaceLost
             }
-            Self::DeviceLost => FailureKind::DeviceLost,
+            Self::DeviceLost(_) => FailureKind::DeviceLost,
             _ => FailureKind::Fatal,
         }
     }
