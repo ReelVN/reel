@@ -12,7 +12,7 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. bind/derive, media and save/load are not connected to creator source yet. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. Node bind/unbind is available; model/derive, media and save/load are not connected to creator source yet. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
@@ -351,7 +351,7 @@ photo_panel is an author-defined component control object. The example only demo
 
 ## 7 Settings Pages and Image-Based Controls
 
-button is implemented; the other creator controls, settings, bind and derive interfaces in this section remain design targets.
+button, slider, toggle and node bind/unbind are implemented; tabs, settings, slider appearance slots and derive in this section remain design targets.
 
 The following example combines tabs, pages, and sliders into a settings page. switcher preserves each page's nodes and local values; select changes only the selected page. Hidden pages leave input handling and focus navigation.
 ```aside
@@ -395,6 +395,8 @@ bind connects an observable property while preserving that property's existing r
 Authors can use the same approach to wrap consistent fonts, button images, spacing, and animation, then import them as ordinary modules. Visual style is reused through components and parameters; shared property objects can also be organized using ordinary language rules.
 
 Use `bind(node.x)` or `bind(node[key])` to capture a stable property location. The receiver and key are evaluated once. Passing the reference to a node constructor or assigning it to a node property establishes a connection; subsequent ordinary assignments write through while keeping it connected. `unbind(bind(node.x))` disconnects that location and preserves and returns its current value. Constraints on every connected control are checked together, and a failed write changes none of them. Explicitly destroying a source node disconnects surviving targets at their last value; existing references can no longer access the retired source. See section 12 and the verified scope for the implementation status of business `model` and `derive`.
+
+Every node exposes read-only observable `hover`, `pressed`, `focused`, and `disabled` properties. Read them directly or connect them with `bind`; they cannot be assigned or used as writable slider/toggle values. Hover and focus include descendants; pressed includes pointer capture and the button’s own keyboard/controller confirmation hold. Disabled includes ancestor disabling. Cancellation, hiding, disabling, and window focus loss clear ongoing interaction. Set `decorated: false` on buttons and toggles to remove the default focus outline and toggle indicator/spacing, then compose the appearance from ordinary children. See [author_control_states.aside](../../examples/author_control_states.aside).
 
 ## 8 Styling and Moving Elements Together
 
@@ -718,7 +720,7 @@ Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `
 
 Sliders require finite increasing min/max and a finite value inside that range. step is null or finite and positive, anchored at min, with both endpoints reachable. Scripts may assign any in-range value regardless of input step. Assigning min/max must also leave the current value in range; invalid writes preserve the previous state. Mouse/touch dragging, arrow keys, Home/End, Shift acceleration, left/right controller navigation and accessibility actions share one control.
 
-Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Automatic bind/derive remains future data-binding work.
+Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Node values support bind/unbind; model/derive remains future work.
 
 ```aside
 fn main() {

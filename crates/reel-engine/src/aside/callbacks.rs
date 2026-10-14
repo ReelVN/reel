@@ -12,6 +12,25 @@ pub(super) struct Callback {
 }
 
 impl SessionVm {
+    /// Publish input feedback before dispatching callbacks. A batch uses one stage sync.
+    pub fn interactions(
+        &mut self,
+        session: &Session,
+        events: &[reel_ui::stage::NodeEvent],
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let mut changed = false;
+        for event in events {
+            if let reel_ui::stage::NodeEvent::Interaction(event) = event {
+                changed |= self.stage.interaction(self.vm.heap_mut(), event)?;
+            }
+        }
+        if changed {
+            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        }
+        Ok(changed)
+    }
+
     /// Called after the host routes a control activation through accepted geometry.
     /// Current node liveness, ancestor flags and modal scope are checked before task creation.
     pub fn click(&mut self, session: &mut Session, node: NodeId) -> Result<bool, AdapterError> {

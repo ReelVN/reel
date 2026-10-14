@@ -60,6 +60,21 @@ pub enum NodeEvent {
     Click(NodeClick),
     Action(NodeAction),
     Change(NodeChange),
+    Interaction(NodeInteraction),
+}
+
+/// Transient interaction shared by native input and author-owned visuals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InteractionState {
+    pub hover: bool,
+    pub pressed: bool,
+    pub focused: bool,
+    pub disabled: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodeInteraction {
+    pub node: NodeId,
+    pub state: InteractionState,
 }
 
 /// A user change to one stateful control. Range identifies the input configuration.
@@ -128,6 +143,8 @@ pub struct NodeProps {
     /// A visible subtree owns input until hidden, removed, or superseded in paint order.
     pub modal: bool,
     pub clip: bool,
+    /// Draw built-in button/toggle decorations; authored children are unaffected.
+    pub decorated: bool,
     pub gap: f64,
     pub padding: f64,
     pub font_size: f64,
@@ -152,6 +169,7 @@ impl Default for NodeProps {
             enabled: true,
             modal: false,
             clip: false,
+            decorated: true,
             gap: 0.,
             padding: 0.,
             font_size: 24.,

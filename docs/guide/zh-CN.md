@@ -12,7 +12,7 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。bind/derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。节点 bind/unbind 已可用；model/derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -349,7 +349,7 @@ photo_panel 是作者定义的组件控制对象，上例只演示与剧情交�
 
 ## 七 设置页与图片风格控件
 
-button 已实现；本节其余作者控件、settings、bind 和 derive 接口属于设计目标。
+button、slider、toggle 与节点 bind/unbind 已实现；页签、settings、滑条外观槽位和 derive 接口仍属于设计目标。
 
 下面将页签、页面和滑条组合成设置页。switcher 保留各页节点和局部值，select 只改变选中页。隐藏页离开输入与焦点导航。
 ```aside
@@ -393,6 +393,8 @@ bind 连接可观察属性，属性同时保留原来的读写权限；text 可�
 作者可用同样方式封装统一字体、按钮图片、留白和动效，再作为普通模块导入。风格复用来自组件和参数，共用的属性对象也可按普通语言规则组织。
 
 稳定位置引用使用 `bind(node.x)` 或 `bind(node[key])`。接收者和键只在创建引用时求值一次。将引用传给节点构造参数或赋给节点属性即可连接；之后赋入普通值会写回来源，连接仍保留。`unbind(bind(node.x))` 断开连接并保留、返回当前值。多个控件共享来源时，范围等约束会一并校验，失败不修改任何控件。来源节点被显式销毁时，仍存活的目标冻结最后值并断开；已有引用不能再用于已销毁的来源。业务 `model` 和 `derive` 的实现状态见第十二节及已验证范围。
+
+所有节点的 `hover`、`pressed`、`focused`、`disabled` 都可直接读取或用 `bind` 连接。它们由输入系统发布，脚本不可赋值，也不能绑定为 slider/toggle 的可写 value。hover/focused 包含后代；pressed 包含指针捕获与按钮自身的键盘、手柄确认按住；disabled 包含祖先禁用。取消、隐藏、禁用和失焦会清理交互状态。按钮和开关使用 `decorated: false` 关闭默认焦点框及开关指标/留白，再用普通 children 构成完整外观。实例见 [author_control_states.aside](../../examples/author_control_states.aside)。
 
 ## 八 风格与共同运动
 
@@ -710,7 +712,7 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 滑条要求有限且递增的 min/max、区间内的有限 value；step 为 null 或有限正数，以 min 为步进起点，两端均可选。脚本可赋任意区间内 value，不受输入步长限制。写 min/max 时当前 value 也须满足新范围，错误保留原值。鼠标或触摸拖动、方向键、Home/End、Shift 加速、手柄左右导航与可访问性操作共用同一控件。
 
-接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。自动 bind/derive 仍属于后续数据绑定能力。
+接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；model/derive 仍待实现。
 
 ```aside
 fn main() {

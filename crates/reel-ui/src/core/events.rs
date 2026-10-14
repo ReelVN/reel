@@ -84,6 +84,9 @@ pub enum Update {
     /// be done when constructing the widget.
     WidgetAdded,
 
+    /// The host window gained or lost focus; delivered to the whole widget tree.
+    WindowFocusChanged(bool),
+
     /// Called when the [disabled] state of the widget is changed.
     ///
     /// See also [`is_disabled`] and [`set_disabled`].
@@ -273,6 +276,8 @@ impl Update {
     pub fn short_name(&self) -> &str {
         match self {
             Self::WidgetAdded => "WidgetAdded",
+            Self::WindowFocusChanged(false) => "WindowFocusChanged(false)",
+            Self::WindowFocusChanged(true) => "WindowFocusChanged(true)",
             Self::DisabledChanged(false) => "DisabledChanged(false)",
             Self::StashedChanged(false) => "StashedChanged(false)",
             Self::HoveredChanged(false) => "HoveredChanged(false)",

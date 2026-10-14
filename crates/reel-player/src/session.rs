@@ -40,6 +40,7 @@ type Error = Box<dyn std::error::Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProjectionStamp {
     revision: u64,
+    button_revision: u64,
     interaction: Option<InteractionId>,
     scroll_bits: u64,
 }
@@ -48,13 +49,20 @@ struct InputBinding {
     accepted: Option<ProjectionStamp>,
     control_accepted: Option<ProjectionStamp>,
     down: Option<ProjectionStamp>,
-    contacts: Vec<(PointerInfo, ProjectionStamp)>,
+    contacts: Vec<(PointerInfo, ProjectionStamp, Option<u64>)>,
+    button_revision: u64,
+    accepted_buttons: Option<u64>,
+    button_down: Option<u64>,
     non_pointer: bool,
     navigation_down: Option<ProjectionStamp>,
 }
 impl InputBinding {
     fn permits_control(&self) -> bool {
         self.control_accepted.is_some() && (self.down.is_some() || self.non_pointer)
+    }
+    fn permits_button(&self) -> bool {
+        self.accepted_buttons == Some(self.button_revision)
+            && (self.button_down == Some(self.button_revision) || self.non_pointer)
     }
     fn permits(&self, current: ProjectionStamp) -> bool {
         self.accepted == Some(current) && (self.down == Some(current) || self.non_pointer)
@@ -124,16 +132,12 @@ enum UiInput {
         owner: OwnerHandle,
         action: InputAction,
     },
-    Node(reel_ui::stage::NodeClick),
-    Change(reel_ui::stage::NodeChange),
 }
 
 /// A control activation uses the same consumed input as the session projection.
 pub struct UiDispatch {
     pub handled: Handled,
-    pub click: Option<reel_ui::stage::NodeClick>,
-    pub change: Option<reel_ui::stage::NodeChange>,
-    pub actions: Vec<reel_ui::stage::NodeAction>,
+    pub events: Vec<reel_ui::stage::NodeEvent>,
 }
 struct LineWidgets {
     speaker: WidgetPod<Label>,
@@ -152,7 +156,7 @@ pub struct SessionWidget {
     source_owner: OwnerHandle,
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
-    actions: Rc<RefCell<Vec<reel_ui::stage::NodeAction>>>,
+    events: Rc<RefCell<Vec<reel_ui::stage::NodeEvent>>>,
     title: WidgetPod<Label>,
     status: WidgetPod<Label>,
     lines: Vec<LineWidgets>,
@@ -174,7 +178,7 @@ impl SessionWidget {
             source_owner: ui.source_owner,
             binding: ui.binding.clone(),
             inputs: ui.inputs.clone(),
-            actions: ui.actions.clone(),
+            events: ui.events.clone(),
             title: WidgetPod::new(Label::new("Reel")),
             status: WidgetPod::new(Label::new(ui.status_text())),
             lines: vec![],
@@ -297,7 +301,11 @@ impl Widget for SessionWidget {
                     .clamp(0., (self.content_height - self.viewport.height).max(0.));
                 if offset != self.scroll.get() {
                     self.scroll.set(offset);
-                    *self.binding.borrow_mut() = InputBinding::default();
+                    let mut binding = self.binding.borrow_mut();
+                    *binding = InputBinding {
+                        button_revision: binding.button_revision,
+                        ..Default::default()
+                    };
                     ctx.request_layout();
                     ctx.set_handled();
                 }
@@ -388,21 +396,24 @@ impl Widget for SessionWidget {
         if let Some(event) = action.downcast_ref::<reel_ui::stage::NodeEvent>() {
             use reel_ui::{input::ActionPhase, stage::NodeEvent};
             match event {
-                NodeEvent::Click(click) if self.binding.borrow().permits(self.current_stamp()) => {
-                    self.inputs
-                        .borrow_mut()
-                        .get_or_insert(UiInput::Node(*click));
+                NodeEvent::Click(click) if self.binding.borrow().permits_button() => {
+                    self.events.borrow_mut().push(NodeEvent::Click(*click));
                 }
                 NodeEvent::Change(change) if self.binding.borrow().permits_control() => {
-                    self.inputs
-                        .borrow_mut()
-                        .get_or_insert(UiInput::Change(*change));
+                    self.events.borrow_mut().push(NodeEvent::Change(*change));
                 }
                 NodeEvent::Action(action)
                     if matches!(action.phase, ActionPhase::Released | ActionPhase::Cancelled)
                         || self.binding.borrow().permits_control() =>
                 {
-                    self.actions.borrow_mut().push(action.clone());
+                    self.events
+                        .borrow_mut()
+                        .push(NodeEvent::Action(action.clone()));
+                }
+                NodeEvent::Interaction(state) => {
+                    self.events
+                        .borrow_mut()
+                        .push(NodeEvent::Interaction(*state));
                 }
                 _ => {}
             }
@@ -454,7 +465,11 @@ impl Widget for SessionWidget {
             .clamp(0., (self.content_height - self.viewport.height).max(0.));
         if offset != self.scroll.get() {
             self.scroll.set(offset);
-            *self.binding.borrow_mut() = InputBinding::default();
+            let mut binding = self.binding.borrow_mut();
+            *binding = InputBinding {
+                button_revision: binding.button_revision,
+                ..Default::default()
+            };
             ctx.request_layout();
         }
     }
@@ -653,7 +668,7 @@ pub struct SessionUi {
     choice_owners: Vec<OwnerHandle>,
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
-    actions: Rc<RefCell<Vec<reel_ui::stage::NodeAction>>>,
+    events: Rc<RefCell<Vec<reel_ui::stage::NodeEvent>>>,
     background: Color,
     scroll: Rc<Cell<f64>>,
     stage: Option<StageView>,
@@ -669,6 +684,7 @@ impl SessionUi {
         let choice_owners = allocate_choice_owners(&mut session, projection.choices.len())?;
         let stamp = ProjectionStamp {
             revision: 1,
+            button_revision: 0,
             interaction: projection.interaction,
             scroll_bits: 0_f64.to_bits(),
         };
@@ -680,7 +696,7 @@ impl SessionUi {
             choice_owners,
             binding: Rc::new(RefCell::new(InputBinding::default())),
             inputs: Rc::new(RefCell::new(None)),
-            actions: Rc::new(RefCell::new(Vec::new())),
+            events: Rc::new(RefCell::new(Vec::new())),
             background: Color::from_rgb8(35, 54, 74),
             scroll: Rc::new(Cell::new(0.)),
             stage: None,
@@ -705,6 +721,13 @@ impl SessionUi {
         SessionWidget::new(self)
     }
     pub fn set_stage(&mut self, stage: &reel_ui::stage::Stage) {
+        self.update_stage(stage, false);
+    }
+    /// Input feedback changes appearance without replacing the accepted button action.
+    pub(crate) fn set_feedback_stage(&mut self, stage: &reel_ui::stage::Stage) {
+        self.update_stage(stage, true);
+    }
+    fn update_stage(&mut self, stage: &reel_ui::stage::Stage, feedback: bool) {
         if self
             .pending_stage
             .as_ref()
@@ -714,7 +737,12 @@ impl SessionUi {
             let view = StageView::capture(stage);
             self.images.request(view.image_requests());
             self.pending_stage = Some(view);
-            self.binding.borrow_mut().accepted = None;
+            let mut binding = self.binding.borrow_mut();
+            binding.accepted = None;
+            if !feedback {
+                binding.button_revision = binding.button_revision.wrapping_add(1);
+                binding.accepted_buttons = None;
+            }
             // Stable control identities retain gestures across value/layout changes.
             // Scene retirement, configuration and modal changes are checked by routing.
         }
@@ -771,9 +799,13 @@ impl SessionUi {
     }
     /// Call only after PresentationBridge accepted the matching actual frame.
     pub fn presented(&mut self, stamp: ProjectionStamp) {
-        self.binding.borrow_mut().control_accepted = Some(stamp);
+        let mut binding = self.binding.borrow_mut();
+        binding.control_accepted = Some(stamp);
+        if stamp.button_revision == binding.button_revision {
+            binding.accepted_buttons = Some(binding.button_revision);
+        }
         if !self.images_pending() {
-            self.binding.borrow_mut().accepted = Some(stamp);
+            binding.accepted = Some(stamp);
         }
     }
     pub(crate) fn gesture_active(&self) -> bool {
@@ -782,7 +814,11 @@ impl SessionUi {
     }
     pub fn clear_presented(&mut self) {
         self.pause_dialogue();
-        *self.binding.borrow_mut() = InputBinding::default();
+        let mut binding = self.binding.borrow_mut();
+        *binding = InputBinding {
+            button_revision: binding.button_revision,
+            ..Default::default()
+        };
     }
     fn status_text(&self) -> String {
         format!(
@@ -843,6 +879,7 @@ impl SessionUi {
                 .checked_add(1)
                 .ok_or("UI projection revision exhausted")?;
             self.stamp.interaction = self.projection.interaction;
+            self.stamp.button_revision = self.binding.borrow().button_revision;
             bridge.edit_widget(root_id, |mut widget| {
                 SessionWidget::sync(&mut widget.downcast::<SessionWidget>(), self)
             });
@@ -868,28 +905,36 @@ impl SessionUi {
             if matches!(event, PointerEvent::Down(_))
                 && let Some(stamp) = binding.control_accepted
             {
-                if let Some((_, down)) = binding
+                let buttons = binding.accepted_buttons;
+                if let Some((_, down, button_down)) = binding
                     .contacts
                     .iter_mut()
-                    .find(|(info, _)| *info == pointer)
+                    .find(|(info, _, _)| *info == pointer)
                 {
                     *down = stamp;
+                    *button_down = buttons;
                 } else {
-                    binding.contacts.push((pointer, stamp));
+                    binding.contacts.push((pointer, stamp, buttons));
                 }
             }
             binding.down = binding
                 .contacts
                 .iter()
-                .find(|(info, _)| *info == pointer)
-                .map(|(_, stamp)| *stamp);
+                .find(|(info, _, _)| *info == pointer)
+                .map(|(_, stamp, _)| *stamp);
+            binding.button_down = binding
+                .contacts
+                .iter()
+                .find(|(info, _, _)| *info == pointer)
+                .and_then(|(_, _, buttons)| *buttons);
         }
         let result = bridge.handle_pointer_event(event);
         {
             let mut binding = self.binding.borrow_mut();
             binding.down = None;
+            binding.button_down = None;
             if terminal || result.is_err() {
-                binding.contacts.retain(|(info, _)| *info != pointer);
+                binding.contacts.retain(|(info, _, _)| *info != pointer);
             }
         }
         let handled = result?;
@@ -927,44 +972,34 @@ impl SessionUi {
         self.finish_input(handled)
     }
     fn finish_input(&mut self, handled: Handled) -> Result<UiDispatch, Error> {
-        let mut change = None;
-        let click = match self.inputs.borrow_mut().take() {
-            Some(UiInput::Node(click)) => Some(click),
-            Some(UiInput::Change(event)) => {
-                // Controls propose values; the host remains authoritative, including
-                // when a connected property's constraints reject this proposal.
-                self.stage_dirty = true;
-                change = Some(event);
-                None
+        if let Some(UiInput::Session { owner, action }) = self.inputs.borrow_mut().take() {
+            // Owner/session cancellation may race the final UI dispatch. Host
+            // rejections filter that event; they are not window failures.
+            // Assign the new event at final dispatch, after any external input
+            // through session_mut. Already-sequenced replays use handle_input.
+            if self.session.handle_local_input(owner, action)
+                == Err(InputRejection::SequenceExhausted)
+            {
+                return Err("input sequence exhausted".into());
             }
-            Some(UiInput::Session { owner, action }) => {
-                // Owner/session cancellation may race the final UI dispatch. Host
-                // rejections filter that event; they are not window failures.
-                // Assign the new event at final dispatch, after any external input
-                // through session_mut. Already-sequenced replays use handle_input.
-                if self.session.handle_local_input(owner, action)
-                    == Err(InputRejection::SequenceExhausted)
-                {
-                    return Err("input sequence exhausted".into());
-                }
-                None
-            }
-            None => None,
-        };
-        Ok(UiDispatch {
-            handled,
-            click,
-            change,
-            actions: self.take_actions(),
-        })
+        }
+        let events = self.take_events();
+        if events
+            .iter()
+            .any(|event| matches!(event, reel_ui::stage::NodeEvent::Change(_)))
+        {
+            // Restore authoritative control values even after a rejected proposal.
+            self.stage_dirty = true;
+        }
+        Ok(UiDispatch { handled, events })
     }
-    pub fn take_actions(&mut self) -> Vec<reel_ui::stage::NodeAction> {
-        std::mem::take(&mut *self.actions.borrow_mut())
+    pub fn take_events(&mut self) -> Vec<reel_ui::stage::NodeEvent> {
+        std::mem::take(&mut *self.events.borrow_mut())
     }
-    pub(crate) fn recycle_actions(&mut self, mut actions: Vec<reel_ui::stage::NodeAction>) {
-        actions.clear();
-        if self.actions.borrow().is_empty() {
-            *self.actions.borrow_mut() = actions;
+    pub(crate) fn recycle_events(&mut self, mut events: Vec<reel_ui::stage::NodeEvent>) {
+        events.clear();
+        if self.events.borrow().is_empty() {
+            *self.events.borrow_mut() = events;
         }
     }
     pub fn cancel(&mut self) -> bool {

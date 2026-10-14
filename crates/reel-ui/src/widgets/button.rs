@@ -106,6 +106,10 @@ enum ActivationKey {
     Space,
 }
 impl ButtonBehavior {
+    /// Keyboard/controller activation remains held until release or cancellation.
+    pub fn is_pressed(&self) -> bool {
+        self.pressed_key.is_some() || self.pressed_navigation
+    }
     pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
         match event {
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
@@ -169,6 +173,7 @@ impl ButtonBehavior {
         if matches!(
             event,
             Update::FocusChanged(false)
+                | Update::WindowFocusChanged(false)
                 | Update::DisabledChanged(true)
                 | Update::StashedChanged(true)
         ) {

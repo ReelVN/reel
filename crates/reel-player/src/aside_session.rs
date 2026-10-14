@@ -194,13 +194,13 @@ impl AsideSessionUi {
     }
     pub fn presented(&mut self, stamp: ProjectionStamp) -> Result<(), Error> {
         self.ui.presented(stamp);
-        let actions = self.ui.take_actions();
-        self.accept_actions(actions)
+        let events = self.ui.take_events();
+        self.accept_events(events)
     }
     pub fn clear_presented(&mut self) -> Result<(), Error> {
         self.ui.clear_presented();
-        let actions = self.ui.take_actions();
-        self.accept_actions(actions)
+        let events = self.ui.take_events();
+        self.accept_events(events)
     }
 
     pub fn sync(&mut self, bridge: &mut PresentationBridge, root: WidgetId) -> Result<(), Error> {
@@ -221,8 +221,8 @@ impl AsideSessionUi {
         root: WidgetId,
     ) -> Result<(), Error> {
         self.ui.sync(bridge, root)?;
-        let actions = self.ui.take_actions();
-        self.accept_actions(actions)
+        let events = self.ui.take_events();
+        self.accept_events(events)
     }
     pub fn handle_pointer(
         &mut self,
@@ -249,28 +249,39 @@ impl AsideSessionUi {
         self.accept_ui_input(result)
     }
     fn accept_ui_input(&mut self, result: crate::session::UiDispatch) -> Result<Handled, Error> {
-        if self.state == StoryState::Running
-            && let Some(click) = result.click
-        {
-            self.vm.click(self.ui.session_mut(), click.node)?;
-        }
-        if self.state == StoryState::Running
-            && let Some(change) = result.change
-            && self.vm.change(self.ui.session_mut(), &change)?
-        {
-            self.ui.set_stage(self.vm.stage());
-        }
-        self.accept_actions(result.actions)?;
+        self.accept_events(result.events)?;
         Ok(result.handled)
     }
-    fn accept_actions(&mut self, actions: Vec<reel_ui::stage::NodeAction>) -> Result<(), Error> {
-        if self.state == StoryState::Running {
-            for action in &actions {
-                self.vm.input_action(self.ui.session_mut(), action)?;
+    fn accept_events(&mut self, events: Vec<reel_ui::stage::NodeEvent>) -> Result<(), Error> {
+        use reel_ui::stage::NodeEvent;
+        let result = (|| {
+            if self.state == StoryState::Running {
+                if self.vm.interactions(self.ui.session(), &events)? {
+                    self.ui.set_feedback_stage(self.vm.stage());
+                }
+                let mut changed = false;
+                for event in &events {
+                    match event {
+                        NodeEvent::Click(click) => {
+                            self.vm.click(self.ui.session_mut(), click.node)?;
+                        }
+                        NodeEvent::Change(change) => {
+                            changed |= self.vm.change(self.ui.session_mut(), change)?;
+                        }
+                        NodeEvent::Action(action) => {
+                            self.vm.input_action(self.ui.session_mut(), action)?;
+                        }
+                        NodeEvent::Interaction(_) => {}
+                    }
+                }
+                if changed {
+                    self.ui.set_stage(self.vm.stage());
+                }
             }
-        }
-        self.ui.recycle_actions(actions);
-        Ok(())
+            Ok(())
+        })();
+        self.ui.recycle_events(events);
+        result
     }
     pub fn has_runnable_tasks(&self) -> bool {
         self.state == StoryState::Running && self.vm.has_runnable_tasks()
