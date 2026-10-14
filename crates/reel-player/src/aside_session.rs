@@ -117,6 +117,22 @@ impl AsideSessionUi {
             host_failure: None,
         })
     }
+    pub fn with_audio(
+        mut self,
+        backend: Box<dyn reel_engine::audio::AudioBackend>,
+    ) -> Result<Self, Error> {
+        self.vm.set_audio(backend)?;
+        Ok(self)
+    }
+    pub fn maintain_audio(&mut self) -> Result<bool, Error> {
+        Ok(self.vm.maintain_audio()?)
+    }
+    pub fn suspend_audio(&mut self) {
+        self.vm.suspend_audio();
+    }
+    pub fn resume_audio(&mut self) {
+        self.vm.resume_audio();
+    }
     pub fn state(&self) -> StoryState {
         self.state
     }

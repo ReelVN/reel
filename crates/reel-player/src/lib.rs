@@ -14,6 +14,7 @@ mod window_session;
 
 pub mod aside_session;
 pub mod assets;
+pub mod audio;
 pub mod fonts;
 mod images;
 pub mod session;

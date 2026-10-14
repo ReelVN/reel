@@ -21,7 +21,7 @@
 | 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、属性接管和 owner 退休；纯变换不重新布局。[可运行例](../examples/author_activities.aside) | 通用 scope、快进和活动快照尚未接通。组合动作合同：[#88](https://github.com/jhq223/reel/issues/88) |
 | 渲染 / 效果 | 共同帧描述、可选 WGPU 实际绘制、已呈现几何输入；作者可用图片、文字、透明度和基础裁剪。[渲染器](../crates/reel-render/README.md) | 内部遮罩/滤镜记录尚未接成作者接口；通用转场和自定义效果。[#92](https://github.com/jhq223/reel/issues/92) |
 | 工程 / 资源 | check/build/dev/run；脚本初始化、多字体与节点字体选择、多源码导入、循环链接与独立环境、固定画布；完整代码 ASB；图片与字体使用可替换 AssetIo/WorkExecutor，后台读取、共享输入及像素、原子画面切换与租约；资源根移动不改变资源身份。[命令](guide/zh-CN.md#当前可用的检查构建与运行) | 资源包/发布与媒体消费方接入。[#66](https://github.com/jhq223/reel/issues/66) · [#67](https://github.com/jhq223/reel/issues/67) |
-| 音频 / 视频 | Rust 层有 Kira mixer、可选 CPAL 输出、活动账本与 PCM 退休。[接口及边界](../crates/reel-media/README.md) | **作者音频接口尚未接通**；视频也未实现。不能把 Rust 音频检查算作剧本能播放媒体。[#67](https://github.com/jhq223/reel/issues/67) |
+| 音频 / 视频 | 作者 audio.play、循环/音量、pause/resume/stop、await、节点取消及 PCM 退休已接通；源码与 ASB 共用后台读取、解码和真实混音。[示例](../examples/author_audio.aside) | 当前是预解码播放；长轨流式、seek、分组混音、设备重建和视频继续由 [#67](https://github.com/jhq223/reel/issues/67) 跟踪。 |
 | 保存 / 恢复 | 有存储服务合同；ASB 是代码产物 | **VM、剧情及活动快照尚未实现**；没有可用的游戏存读档。[#91](https://github.com/jhq223/reel/issues/91) |
 | 输入 | 鼠标、多触点、键盘和手柄；命名动作、保持/模拟值与重映射；已接受画面的空间导航及焦点滚动。[作者动作](../examples/author_input.aside) | 手柄 Windows 后端初始化已验证，实体设备及其他平台仍待实测；小游戏会话/更新由 [#101](https://github.com/jhq223/reel/issues/101) 继续 |
 | 平台 | PlatformHost/Presentation/StoryRuntime/RenderBackend 与作者资源 HAL 已贯通，Winit 与 WGPU 可独立启用；内置窗口复用相同接口。[宿主接入](../crates/reel-player/README.md) | 媒体适配、原生 IME/可访问性及各设备运行仍需交付。[#93](https://github.com/jhq223/reel/issues/93) |

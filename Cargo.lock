@@ -2749,6 +2749,7 @@ dependencies = [
  "pollster",
  "reel-core",
  "reel-engine",
+ "reel-media",
  "reel-render",
  "reel-ui",
  "stats_alloc",

@@ -9,6 +9,7 @@
 use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
+pub mod audio;
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
 use unicode_segmentation::UnicodeSegmentation;

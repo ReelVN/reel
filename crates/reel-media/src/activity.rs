@@ -342,6 +342,7 @@ impl AudioActivityService {
         self.evidence[evidence_slot] = Weak::new();
         let state = ActivityState::new(id, epoch, owner.clone());
         let descriptor = DescriptorRelease(state.clone());
+        let volume_db = sound.volume_db();
         sound.track_retirement(PhysicalRelease(state.clone()));
         let playback = match self.mixer.play(sound) {
             Ok(playback) => playback,
@@ -374,7 +375,7 @@ impl AudioActivityService {
             scope,
             resource,
             group,
-            volume_db: 0.0,
+            volume_db,
             playback,
             terminal: None,
             _descriptor: descriptor,
@@ -443,6 +444,26 @@ impl AudioActivityService {
         e.playback.set_volume_db(db)?;
         e.volume_db = db;
         Ok(())
+    }
+    pub fn pause(&mut self, id: MediaId) {
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|e| e.id == id && e.terminal.is_none())
+        {
+            e.playback.pause();
+        }
+    }
+    pub fn resume(&mut self, id: MediaId) {
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|e| e.id == id && e.terminal.is_none())
+        {
+            e.playback.resume();
+        }
     }
     pub fn cancel_owner(
         &mut self,

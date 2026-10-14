@@ -39,6 +39,7 @@ const SCENES: &[(&str, E)] = &[
     ("named input actions module", E::Module),
     ("reading settings module", E::Module),
     ("shared property module", E::Module),
+    ("author audio", E::Module),
 ];
 fn snippets(doc: &str) -> Vec<(usize, String)> {
     let mut result = Vec::new();

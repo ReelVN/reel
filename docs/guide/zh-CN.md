@@ -12,7 +12,7 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；音频已接入作者源码，视频与存读档仍待实现；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -41,7 +41,6 @@ pub fn title() {
 ```
 story/opening.aside 中的 opening 见第三节。示例的相对文件位置与导入路径一致，根模块 main.aside 只负责启动。
 let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另一个值时使用 let mut。普通表达式在执行时求值一次。bind(model.value) 连接可观察属性，derive(|| expression) 连接由其他属性计算的只读值。语言的完整规则见第二份文档。
-
 
 ### 当前可用的检查、构建与运行
 示例在 main 中配置 fonts/body.ttf。从仓库根目录运行下列 Windows 命令，将微软雅黑复制到临时资源目录供本机验证；发布作品时应提供有分发授权的字体。运行 dev 或 run 后关闭窗口，再继续下一条命令。
@@ -577,8 +576,7 @@ Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普
 
 Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换；描边和几何裁剪均支持虚线，包括曲线、闭合路径和虚线偏移。全零虚线模式显示为实线，较小的斜接限制使用斜角连接。以上属于现有 Rust 绘制接口能力，Aside 自定义绘制入口仍待接通。
 
-
-实现状态（M01 / PR #14）：Rust 音频层已实现 Kira 桥、可选 CPAL 输出、有界回收和设备失败通知。Linux 离线真实 Kira、默认/关闭输出 feature 的契约检查及 Windows 交叉编译已独立通过；实体设备、硬件时钟、热插拔和原生启停/挂起仍未验收，CPAL 时钟为 Unavailable。以下作者 audio/video 接口、剧情等待与会话恢复仍是设计目标，不能由 Rust 探针通过推导为已接通。[音频验证范围](../../crates/reel-media/VERIFICATION.md)。
+作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。video 与精确音画同步仍属于设计合同。
 
 PlainText 表示普通文字，RichText 表示显式样式结构，LocalText 由 tr(id, fallback, params) 创建。翻译模板先解析结构，再把参数作为文字填入；参数中的标记字符保留为文字。当前对白组保持提交时的文字与语音，下组采用新语言，NVL 页在清页后切换；UI 和历史即时使用当前语言。reel loc 提取/更新目录并检查缺译和参数。
 video 是普通节点，audio 提供音轨、队列、循环区间、滤镜与同步组。play 返回可等待活动，stop 停在当前状态，finish 用于有终点的活动。轨道与资源由稳定身份管理，设备重建和 seek 保留或重新绑定逻辑等待；错误有明确终态。
@@ -608,12 +606,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 宿主自动推进旁白并选择第一项，实际经过编译、模块初始化、VM 等待/恢复和 owner 退休。导入符号及名称节点指向同一 native 时会正确合并；冲突注册仍拒绝。宿主链接包沿用请求的内容版本，ABI v1 保持独立。
 
-当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。有限动画与按钮事件已接通；角色接口、媒体等待、类、delegate/hooks、property-bag 和保存恢复仍未实现。
-音频实现进展（PR #53，限定 Rust 范围已独立验收）：Rust 层新增有界播放活动账本、owner 取消、精确等待身份过滤和一次终态交付。设备故障不会吞掉已结算结果；接收队列满时，后续取消记录仍能释放。这里的内容消费完成与设备播放完毕、PCM 内存释放分别记录；尚未接通指南中的作者音频 API、剧情等待或保存恢复。seek/reload、单活动暂停与分组混音仍待实现。现有示例继续表示最终作者接口。[Rust 接口与边界](../../crates/reel-media/README.md#logical-audio-activities-pr-53)。
-
-当前 Rust 音频层按实际 PCM 内存计账，不再额外规定单段音频的最大帧数或时长。宿主设定的队列和声音容量也不再被另一组固定数字压低；作者 audio 接口仍待接通。
-
-音频退休进展（PR #56，限定 Rust 独立验收通过）：播放请求改用注册的 AudioOwner，关闭准入后分片取消，再等待该 owner 的 PCM/预算票据和活动描述符分别实际释放。停止播放或收到逻辑完成消息不等于资源已释放。保留完成凭据仍占有界登记槽，挂起输出可能延长退休。这里尚未连接作者音频语法、剧情等待或保存恢复，指南中的 audio 接口仍是最终设计目标。
+当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。有限动画与按钮事件已接通；视频、类、delegate/hooks、property-bag 和保存恢复仍未实现。
 
 ## 可运行按钮与回调
 
@@ -782,4 +775,34 @@ fn main() {
     });
     narrator("Both sliders share a value.");
 }
+```
+
+## 作者音频
+
+```aside
+fn main() {
+    let music = audio.play("assets/chime.wav", looping: true, volume: 0.4);
+    pause(music);
+    resume(music);
+    audio.volume(music, 0.2);
+    let sound = audio.play("assets/chime.wav");
+    await sound;
+    stop(music);
+    await music;
+}
+```
+
+`audio.play` 在后台读取、解码并播放，立即返回活动。`await` 返回 `Completed` 或 `Stopped`；加载与设备错误可以 `try/catch`。`volume` 是非负线性增益，1 是原始音量，0 静音。pause/resume 保留播放位置，stop 不重启声音，重复等待保留同一个结果。
+
+缺省声音属于当前回调节点；在主剧情中属于会话。也可用 `owner: node` 指定：节点被移除时，加载与声音一起取消。取消等待者不停止共享声音。播放、节点取消与窗口退出复用同一资源回收路径。
+
+Windows 播放器向系统提交双声道音频，默认设备配置为多声道时同样可以使用。
+
+支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3 预解码播放。PCM 按宿主内存预算计账，不另限时长。长音轨流式、seek、分组混音和存档恢复仍按完整设计推进；Completed 表示混音器消费完成，不能用于精确声卡同步。实体设备的验证范围见[音频验证](../../crates/reel-media/VERIFICATION.md)。
+
+完整例子：[author_audio.aside](../../examples/author_audio.aside)，从 examples 资源根运行，与其他作者示例使用相同字体配置。示例 chime.wav 是仓库自制的短正弦提示音。
+
+```powershell
+./target/debug/reel.exe check examples/author_audio.aside
+./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```

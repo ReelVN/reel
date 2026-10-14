@@ -5,6 +5,10 @@ const BLOCKS: &[usize] = &[2, 3, 4, 12, 14, 15, 18, 22, 23, 24, 25, 27, 28];
 // These names are the documented reel::prelude symbols, not names harvested
 // from unresolved diagnostics. Their dynamic members remain runtime contracts.
 const PRELUDE: &[&str] = &[
+    "audio",
+    "pause",
+    "resume",
+    "stop",
     "stage",
     "game",
     "story",
@@ -122,7 +126,7 @@ fn snippets(doc: &str) -> Vec<String> {
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 36);
+    assert_eq!(zh.len(), 37);
     assert_eq!(zh, en);
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {

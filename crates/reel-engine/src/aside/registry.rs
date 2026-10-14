@@ -287,6 +287,39 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ty: BuiltinType::Any,
         default,
     };
+    for (name, parameters, waits) in [
+        (
+            "play",
+            vec![
+                parameter("source", None),
+                parameter("looping", Some(bc::Const::Bool(false))),
+                parameter("volume", Some(bc::Const::FloatBits(1_f64.to_bits()))),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        (
+            "volume",
+            vec![parameter("activity", None), parameter("value", None)],
+            false,
+        ),
+        ("await", vec![parameter("activity", None)], true),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::audio::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(
+                Effects::ALLOCATE
+                    | Effects::WRITE
+                    | Effects::HOST
+                    | if waits { Effects::WAIT } else { 0 },
+            ),
+            required_capabilities: vec!["reel.audio".into()],
+        });
+    }
     let mut tween = vec![
         parameter("target", None),
         parameter("duration", Some(bc::Const::FloatBits(0.3_f64.to_bits()))),
@@ -357,5 +390,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
 }
 
 pub(super) fn capabilities() -> Vec<String> {
-    vec!["reel.session".into(), "reel.stage".into()]
+    vec![
+        "reel.session".into(),
+        "reel.stage".into(),
+        "reel.audio".into(),
+    ]
 }

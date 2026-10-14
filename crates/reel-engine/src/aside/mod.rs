@@ -5,6 +5,7 @@
 //! wait association and all independently retained result/key roots. It never
 //! interprets bytecode or assumes a table's private storage layout.
 mod activity;
+mod audio;
 pub use activity::ActivityProgress;
 mod callbacks;
 mod game;
@@ -190,6 +191,7 @@ pub struct SessionVm {
     root_end: u32,
     stage: stage::StageBinding,
     activities: activity::Activities,
+    audio: audio::Audio,
     game: std::sync::Arc<GameSettings>,
     narrative: Option<narrative::Narrative>,
 }
@@ -238,6 +240,7 @@ impl SessionVm {
             root_end: 0,
             stage,
             activities: activity::Activities::default(),
+            audio: audio::Audio::default(),
             game: std::sync::Arc::new(GameSettings::default()),
             narrative: None,
         })
@@ -307,7 +310,8 @@ impl SessionVm {
             && (self.root_cursor < self.root_end
                 || self.task.is_some()
                 || !self.callbacks.is_empty()
-                || self.derived_task.is_some())
+                || self.derived_task.is_some()
+                || self.audio.cleanup_pending())
     }
 
     /// Advance the session's monotonic logical clock, independently of VM slice
@@ -347,6 +351,13 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::audio::play" | "reel::audio::volume" | "reel::audio::await" => {
+                if symbol == "reel::audio::await" {
+                    self.check_wait(session, ticket)?;
+                }
+                self.dispatch_audio(ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::game::dialogue"
             | "reel::game::choice"
             | "reel::dialogue::clear"
@@ -428,6 +439,10 @@ impl SessionVm {
             | "reel::stop"
             | "reel::finish"
             | "reel::activity::await" => {
+                if audio::is_audio(self.vm.heap(), self.vm.host_arguments(ticket)?[0]) {
+                    self.dispatch_audio(ticket, &symbol)?;
+                    return Ok(NativeDispatch::Ready { work: 1 });
+                }
                 let command = match symbol.as_str() {
                     "reel::pause" => activity::Command::Pause,
                     "reel::resume" => activity::Command::Resume,
@@ -960,6 +975,7 @@ impl SessionVm {
             }
         }
         self.root_end = self.vm.heap().root_slots();
+        self.audio.close();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;
         session.revoke_owner_with_retirement(
@@ -967,7 +983,7 @@ impl SessionVm {
             OwnerRetirementRequirements {
                 root_slots_end: self.root_end as usize,
                 tasks_pending: self.task.is_some() || self.derived_task.is_some(),
-                external_resources_pending: false, // no host-owned RootRanges/resources
+                external_resources_pending: self.audio.cleanup_pending(),
             },
         )?;
         self.revoked = true;
@@ -998,6 +1014,10 @@ impl SessionVm {
         self.same_session(session)?;
         if !self.revoked {
             return Err(AdapterError::Input("owner not revoked"));
+        }
+        self.maintain_audio()?;
+        if !self.audio.cleanup_pending() {
+            session.confirm_owner_resources_released(self.owner)?;
         }
         let before = self.root_cursor;
         let slots = root_work.min(self.root_end - self.root_cursor);

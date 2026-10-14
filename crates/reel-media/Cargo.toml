@@ -7,6 +7,7 @@ rust-version.workspace = true
 [features]
 default = ["cpal-output"]
 cpal-output = ["dep:cpal"]
+decode = ["reel-audio/wav", "reel-audio/pcm", "reel-audio/ogg", "reel-audio/vorbis", "reel-audio/flac", "reel-audio/mp3"]
 
 [dependencies]
 reel-core = { path = "../reel-core" }
