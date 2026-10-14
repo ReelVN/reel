@@ -924,9 +924,9 @@ impl Vm {
         if let FunctionKind::Native(native) = f.kind {
             let site = self.native_site(function, owner, context, effects, ret)?;
             let receiver = closure
-                .filter(|&value| self.is_text(value, ObjectKind::BoundNative))
-                .map(|value| self.heap.get_field(value, 3))
-                .transpose()?;
+                .map(|value| self.callable_receiver(value))
+                .transpose()?
+                .flatten();
             return self.push_native_bound(native, source, count, site, receiver);
         }
         let registers = f.register_count;
@@ -1109,9 +1109,48 @@ impl Vm {
         self.active.task_id = Some(task);
         Ok(task)
     }
+    /// Register a trusted callable host object. Its first native parameter is
+    /// the object itself; argument binding and effects share ordinary calls.
+    pub fn bind_callable(&mut self, object: Value, function: FunctionId) -> Result<(), VmError> {
+        self.validate_native_receiver(object, function)?;
+        self.heap.set_host_call(object, function)?;
+        Ok(())
+    }
+
+    fn callable_receiver(&self, value: Value) -> Result<Option<Value>, VmError> {
+        match self.heap.info(value)?.kind {
+            ObjectKind::BoundNative => Ok(Some(self.heap.get_field(value, 3)?)),
+            ObjectKind::Host => {
+                self.heap.host_call(value)?;
+                Ok(Some(value))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Bind the receiver of an admitted native callable. The immutable value
     /// traces its receiver and shares ordinary native argument preparation.
     pub fn bind_native(&mut self, receiver: Value, function: FunctionId) -> Result<Value, VmError> {
+        self.validate_native_receiver(receiver, function)?;
+        let p = self.program.package();
+        let f = &p.functions[function.index()];
+
+        Ok(self.heap.alloc_record(
+            ObjectKind::BoundNative,
+            &[
+                Value::int(function.0 as i64),
+                Value::int(p.content_version as i64),
+                Value::int(f.module.0 as i64),
+                receiver,
+            ],
+        )?)
+    }
+
+    fn validate_native_receiver(
+        &self,
+        receiver: Value,
+        function: FunctionId,
+    ) -> Result<(), VmError> {
         let p = self.program.package();
         let f = p
             .functions
@@ -1135,19 +1174,14 @@ impl Vm {
         {
             return Err(HeapError::TypeMismatch.into());
         }
-        Ok(self.heap.alloc_record(
-            ObjectKind::BoundNative,
-            &[
-                Value::int(function.0 as i64),
-                Value::int(p.content_version as i64),
-                Value::int(f.module.0 as i64),
-                receiver,
-            ],
-        )?)
+        Ok(())
     }
 
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
         let info = self.heap.info(closure)?;
+        if info.kind == ObjectKind::Host {
+            return Ok(self.heap.host_call(closure)?);
+        }
         let bound = info.kind == ObjectKind::BoundNative;
         if info.kind != ObjectKind::Closure && !bound {
             return Err(VmError::Contract("callee is not a closure"));

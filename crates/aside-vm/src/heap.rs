@@ -222,6 +222,7 @@ pub(crate) struct Object {
     pub kind: ObjectKind,
     pub host_validator: Option<HostPropertyValidator>,
     pub host_await: Option<crate::bytecode::NativeId>,
+    pub host_call: Option<crate::bytecode::FunctionId>,
     pub payload: Payload,
     pub weak: Option<HeapHandle>,
     pub mark: u64,
@@ -492,6 +493,7 @@ impl Heap {
             kind,
             host_validator: None,
             host_await: None,
+            host_call: None,
             payload,
             weak,
             mark,
@@ -613,6 +615,22 @@ impl Heap {
         self.object(self.key(host)?)?
             .host_await
             .ok_or(HeapError::WrongKind)
+    }
+    pub(crate) fn host_call(&self, host: Value) -> Result<crate::bytecode::FunctionId, HeapError> {
+        self.host_fields(host)?;
+        self.object(self.key(host)?)?
+            .host_call
+            .ok_or(HeapError::WrongKind)
+    }
+    pub(crate) fn set_host_call(
+        &mut self,
+        host: Value,
+        function: crate::bytecode::FunctionId,
+    ) -> Result<(), HeapError> {
+        self.host_fields(host)?;
+        let key = self.key(host)?;
+        self.objects.get_mut(key).unwrap().host_call = Some(function);
+        Ok(())
     }
     pub(crate) fn set_host_await(
         &mut self,

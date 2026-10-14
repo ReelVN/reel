@@ -15,8 +15,8 @@
 
 | 领域 | 现在实际可用 | 主要缺口与跟踪 |
 | --- | --- | --- |
-| Aside / VM | 多源码链接→B01→执行；函数、闭包、默认/命名参数、位置/具名 spread、rest、集合编辑、异常/finally、宿主对象/方法及 await、增量 GC。[语言执行边界](../crates/aside-compiler/LOWERING.md) | 类/元方法、完整模式/标准库、通用 async/Future、generator/thread 和快照。[#65](https://github.com/jhq223/reel/issues/65) |
-| 剧情 | narrator/choose 的等待、恢复、选择 key、输入消费和任务取消。[无窗口运行例](../crates/reel-engine/examples/story_contract.rs) | 角色发言与自定义剧情视图、历史回看、自动/跳读和本地化等完整创作流程，见总清单 |
+| Aside / VM | 多源码链接→B01→执行；函数、闭包、默认/命名参数、位置/具名 spread、rest、集合编辑、异常/finally、可调用宿主对象/方法及 await、增量 GC。[语言执行边界](../crates/aside-compiler/LOWERING.md) | 类/元方法、完整模式/标准库、通用 async/Future、generator/thread 和快照。[#65](https://github.com/jhq223/reel/issues/65) |
+| 剧情 | 角色/旁白、ADV 行组、choose 的等待与恢复、历史、Unicode 字素揭示和公共播放时钟。[角色对白](../examples/author_dialogue.aside) | 自定义剧情视图、历史回看、自动/跳读和本地化等完整创作流程，见总清单 |
 | 舞台 / UI | text/image/row/column/stack/button/input、PNG/JPEG、布局/变换/裁剪、原节点属性更新、局部 add/remove/clear；按钮回调可以等待活动；modal 隔离输入，支持嵌套焦点恢复。[动态组件](../examples/author_dynamic_stage.aside) · [按钮](../examples/author_buttons.aside) · [模态菜单](../examples/author_modal.aside) | bind/derive/model、作者滑条/输入框、通用事件和 scope。[#90](https://github.com/jhq223/reel/issues/90) · [#63](https://github.com/jhq223/reel/issues/63) |
 | 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、属性接管和 owner 退休；纯变换不重新布局。[可运行例](../examples/author_activities.aside) | 通用 scope、快进和活动快照尚未接通。组合动作合同：[#88](https://github.com/jhq223/reel/issues/88) |
 | 渲染 / 效果 | 共同帧描述、可选 WGPU 实际绘制、已呈现几何输入；作者可用图片、文字、透明度和基础裁剪。[渲染器](../crates/reel-render/README.md) | 内部遮罩/滤镜记录尚未接成作者接口；通用转场和自定义效果。[#92](https://github.com/jhq223/reel/issues/92) |

@@ -116,9 +116,13 @@ impl WindowSession {
         Ok(())
     }
     pub(crate) fn needs_tick(&self) -> bool {
-        matches!(self, Self::Aside(story) if story.needs_tick())
+        match self {
+            Self::Aside(story) => story.needs_tick(),
+            Self::Diagnostic(host) => host.ui.dialogue_needs_time(),
+        }
     }
     pub(crate) fn suspend(&mut self, now: u64) {
+        self.ui_mut().pause_dialogue();
         if let Self::Aside(story) = self {
             story.suspend(now);
         }
@@ -132,17 +136,20 @@ impl WindowSession {
     pub(crate) fn tick_interval(&self) -> std::time::Duration {
         match self {
             Self::Aside(story) => story.tick_interval(),
-            Self::Diagnostic(_) => std::time::Duration::from_millis(1),
+            Self::Diagnostic(host) => host.ui.dialogue_interval(30.),
         }
     }
 
     pub(crate) fn tick(
         &mut self,
         budget: SliceBudget,
-        now: impl FnMut() -> u64,
+        mut now: impl FnMut() -> u64,
     ) -> Result<(), Error> {
-        if let Self::Aside(story) = self {
-            story.tick(budget, now)?;
+        match self {
+            Self::Aside(story) => story.tick(budget, now)?,
+            Self::Diagnostic(host) => {
+                host.ui.advance_dialogue(now(), 30.)?;
+            }
         }
         Ok(())
     }

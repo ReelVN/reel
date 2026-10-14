@@ -107,6 +107,8 @@ Built-in conversions cover `i64`, `f64`, `bool`, `String`, `Value` and `Option<T
 
 The first parameter is already bound. Remaining positional, named and default arguments use the ordinary VM binder; explicitly supplying the receiver again reports a duplicate argument. The value can be stored in a host property, passed to script, invoked through `start_closure`, or used by a native `CallScript` callback. These paths enter the same NativeFrame without a generated script wrapper. Effects, waiting permissions and source diagnostics are unchanged. As with other VM values, root the method when retaining it across collection from Rust.
 
+For a host object with properties that should also be callable, use `Vm::bind_callable(object, function)`. It binds the object itself as the required first parameter without allocating a wrapper for each call. The trusted registration is separate from script-visible fields; argument preparation, entry calls, callbacks, GC and waiting use the same paths as bound methods. It does not implement user-defined class metamethods.
+
 The runnable [bound_native.rs](../crates/aside-host/tests/bound_native.rs) host verifies these call paths with interleaved GC and B01 encoding/decoding:
 
 ```sh

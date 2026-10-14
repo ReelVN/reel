@@ -33,6 +33,54 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: capabilities(),
     })
     .collect();
+    for (symbol, parameters, effects) in [
+        (
+            "character",
+            vec![
+                ("name", BuiltinType::String, None),
+                ("id", BuiltinType::Any, Some(bc::Const::Null)),
+            ],
+            Effects::ALLOCATE,
+        ),
+        (
+            "character::line",
+            vec![
+                ("character", BuiltinType::Any, None),
+                ("text", BuiltinType::String, None),
+            ],
+            Effects::ALLOCATE,
+        ),
+        (
+            "character::speak",
+            vec![
+                ("character", BuiltinType::Any, None),
+                ("text", BuiltinType::String, None),
+            ],
+            Effects::ALL.0,
+        ),
+        (
+            "say",
+            vec![("lines", BuiltinType::Array, None)],
+            Effects::ALL.0,
+        ),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::{symbol}"),
+            abi_version: 1,
+            parameters: parameters
+                .into_iter()
+                .map(|(name, ty, default)| NativeParameter {
+                    name: name.into(),
+                    ty,
+                    default,
+                })
+                .collect(),
+            result: BuiltinType::Any,
+            effects: Effects(effects),
+            required_capabilities: capabilities(),
+        });
+    }
     for name in ["text", "image", "row", "column", "stack", "button", "input"] {
         let mut parameters = Vec::new();
         for &field in node_prefix(&format!("reel::{name}")) {
@@ -85,7 +133,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         rest: None,
         symbol: "reel::game::configure".into(),
         abi_version: 1,
-        parameters: ["title", "width", "height", "fonts"]
+        parameters: ["title", "width", "height", "fonts", "text_speed"]
             .into_iter()
             .map(|name| NativeParameter {
                 name: name.into(),

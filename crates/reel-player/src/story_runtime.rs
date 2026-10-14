@@ -37,12 +37,15 @@ impl StoryRuntime {
 
     pub fn needs_tick(&self) -> bool {
         (self.suspended_at.is_none() || self.closing)
-            && (self.needs_work() || self.driver.activities_need_time())
+            && (self.needs_work()
+                || self.driver.activities_need_time()
+                || self.driver.ui().dialogue_needs_time())
     }
 
     /// Suspend story time. Execution deadlines always remain on the unadjusted host clock.
     pub fn suspend(&mut self, now_ns: u64) {
         self.suspended_at.get_or_insert(now_ns);
+        self.driver.ui_mut().pause_dialogue();
     }
     pub fn resume(&mut self, now_ns: u64) {
         if let Some(start) = self.suspended_at.take() {
@@ -60,7 +63,23 @@ impl StoryRuntime {
     }
 
     pub fn tick_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(if self.needs_work() { 1 } else { 16 })
+        if self.needs_work() {
+            return std::time::Duration::from_millis(1);
+        }
+        let reveal = self
+            .driver
+            .ui()
+            .dialogue_interval(self.driver.adapter().game_settings().text_speed);
+        if self.driver.activities_need_time() {
+            let interval = std::time::Duration::from_millis(16);
+            if self.driver.ui().dialogue_needs_time() {
+                reveal.min(interval)
+            } else {
+                interval
+            }
+        } else {
+            reveal
+        }
     }
 
     pub fn wake_input(&mut self) {
@@ -92,6 +111,10 @@ impl StoryRuntime {
         }
         if !self.closing && self.needs_tick() {
             self.logical_ns = self.logical_ns.max(now().saturating_sub(self.suspended_ns));
+            let speed = self.driver.adapter().game_settings().text_speed;
+            self.driver
+                .ui_mut()
+                .advance_dialogue(self.logical_ns, speed)?;
             let progress = self
                 .driver
                 .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;

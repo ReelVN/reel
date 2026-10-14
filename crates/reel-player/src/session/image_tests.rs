@@ -401,7 +401,10 @@ fn cancelled_story_sync_clears_published_images_and_keeps_only_submitted_leases(
             .unwrap()
             .downcast::<SessionWidget>()
             .unwrap();
-        assert_eq!(widget.projection.status, "Cancelled");
+        assert_eq!(
+            widget.projection.status,
+            reel_engine::SessionStatus::Cancelled
+        );
         assert!(widget.projection.lines.is_empty());
         assert!(widget.projection.choices.is_empty());
         assert!(

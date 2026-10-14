@@ -1,0 +1,12 @@
+let mio = character("Mio", id: "mio");
+let eri = character("Eri", id: "eri");
+
+fn main() {
+    game.configure(title: "Character dialogue", width: 640, height: 420,
+                   fonts: ["fonts/body.ttf"], text_speed: 10);
+    stage.replace(text("An ordinary story, with shared stage and dialogue."));
+    mio(text: "Aé👨‍👩‍👧‍👦雨");
+    say([mio.line("一二三"), eri.line("四五")]);
+    game.configure(text_speed: 0);
+    narrator("The conversation stays in history.");
+}
