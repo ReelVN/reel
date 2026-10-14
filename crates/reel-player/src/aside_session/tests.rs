@@ -167,18 +167,12 @@ fn entry_window_capacity_failure_is_a_stable_host_failure() {
         max_continuation_values: 1,
         ..Default::default()
     };
-    // Admit the actual constants/symbol window and the small initializer, but
-    // leave less than one entry window free after permanent roots are installed.
-    let native_values = p
-        .functions
-        .iter()
-        .filter(|f| matches!(f.kind, aside_vm::bytecode::FunctionKind::Native(_)))
-        .count();
-    let module_window = (p.constants.len() + p.symbols.len() + native_values) as u32;
-    let capacity = module_window + entry_window / 2;
+    // Module roots are reserved separately. Task/continuation storage leaves
+    // less than one entry window available in this explicitly small working set.
+    let capacity = entry_window;
     limits.slots.initial_capacity = capacity;
     limits.slots.max_capacity = capacity;
-    limits.slots.max_window_len = module_window.max(entry_window);
+    limits.slots.max_window_len = entry_window;
     let mut d = AsideSessionUi::from_compiled(session(), story, "en", limits).unwrap();
     terminal(&mut d);
     assert_eq!(

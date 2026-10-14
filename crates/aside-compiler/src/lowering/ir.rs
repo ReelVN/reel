@@ -27,6 +27,7 @@ pub enum Terminator {
     },
     Return(bc::Reg),
     Throw(bc::Reg),
+    MatchFail,
     Rethrow,
     EndFinally(bc::RegionId),
 }

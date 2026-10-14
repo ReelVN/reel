@@ -178,6 +178,7 @@ instructions! {
     AsyncIterNext = 0x0066 => [WriteReg, ReadReg, Unused], Next, true, None;
     AsyncIterClose = 0x0067 => [WriteReg, ReadReg, Unused], Next, true, None;
     IterAdvance = 0x0068 => [WriteReg, ReadReg, WriteReg], Next, true, None;
+    MatchFail = 0x0069 => [Unused, Unused, Unused], Throw, true, None;
     Throw = 0x0070 => [ReadReg, Unused, Unused], Throw, true, None;
     Rethrow = 0x0071 => [Unused, Unused, Unused], Throw, true, None;
     Leave = 0x0072 => [Pc, Unused, Unused], Leave, true, None;

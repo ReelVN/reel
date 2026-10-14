@@ -22,6 +22,7 @@ impl FunctionBuilder<'_, '_> {
             H::Assignment
                 | H::Block
                 | H::If
+                | H::Match
                 | H::For
                 | H::While
                 | H::Loop

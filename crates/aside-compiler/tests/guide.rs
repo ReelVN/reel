@@ -7,6 +7,7 @@ const SCENES: &[(&str, E)] = &[
     ("title module", E::Module),
     ("ranges, collections and interpolation", E::Block),
     ("ordered array and table spreads", E::Block),
+    ("value match expressions", E::Block),
     ("collection editing and own fields", E::Block),
     ("dynamic stage module", E::Module),
     ("image module", E::Module),
@@ -19,6 +20,7 @@ const SCENES: &[(&str, E)] = &[
     ("story registration", E::Module),
     ("entrance in story", E::Block),
     ("breathing in story", E::Block),
+    ("timed delay in story", E::Block),
     ("show_cg helper", E::Module),
     ("logo startup module", E::Module),
     ("temporary hint in story", E::Block),
@@ -38,6 +40,7 @@ const SCENES: &[(&str, E)] = &[
     ("modal menu module", E::Module),
     ("named input actions module", E::Module),
     ("reading settings module", E::Module),
+    ("editable text in story", E::Block),
     ("shared property module", E::Module),
     ("author audio", E::Module),
 ];

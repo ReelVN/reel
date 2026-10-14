@@ -143,6 +143,7 @@ impl FunctionBuilder<'_, '_> {
                     otherwise,
                 },
             ) => self.condition(n, condition, body, otherwise, depth),
+            (H::Match, Form::Match { value }) => self.match_value(n, value, depth),
             (H::Call, Form::Call { chain: false, .. }) => self.flat_chain(n, depth),
             (H::Return, Form::Transfer { value, .. }) => self.return_value(n, value, depth),
             (H::Throw, Form::Transfer { value, .. }) => self.throw_value(n, value, depth),
@@ -214,7 +215,7 @@ impl FunctionBuilder<'_, '_> {
                             terminated: false,
                             ..
                         }
-                    ) || matches!(self.l.m.hir().node(last).kind, H::Block | H::If)
+                    ) || matches!(self.l.m.hir().node(last).kind, H::Block | H::If | H::Match)
                 })
             }
             _ => None,
@@ -731,7 +732,7 @@ impl FunctionBuilder<'_, '_> {
         }
         Ok(())
     }
-    fn number(&mut self, text: &str, negative: bool) -> Result<bc::Const, Box<Error>> {
+    pub(super) fn number(&mut self, text: &str, negative: bool) -> Result<bc::Const, Box<Error>> {
         let mut bytes = Vec::new();
         self.l.b.work(text.len() as u64)?;
         self.l.b.reserve(&mut bytes, text.len())?;

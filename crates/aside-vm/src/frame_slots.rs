@@ -259,11 +259,37 @@ impl FrameSlots {
         kind: RootKind,
         len: u32,
     ) -> Result<RootRangeToken, HeapError> {
+        self.open_with_limit(heap, owner, kind, len, self.limits.max_window_len)
+    }
+    /// Loaded module roots are bounded by pool residency, not a single execution
+    /// operation. Opening them happens during explicit package admission.
+    pub(crate) fn open_module_set(
+        &mut self,
+        heap: &mut Heap,
+        owner: RootOwner,
+        len: u32,
+    ) -> Result<RootRangeToken, HeapError> {
+        self.open_with_limit(
+            heap,
+            owner,
+            RootKind::ModuleSet,
+            len,
+            self.limits.max_capacity,
+        )
+    }
+    fn open_with_limit(
+        &mut self,
+        heap: &mut Heap,
+        owner: RootOwner,
+        kind: RootKind,
+        len: u32,
+        limit: u32,
+    ) -> Result<RootRangeToken, HeapError> {
         self.check_heap(heap)?;
-        if len > self.limits.max_window_len {
+        if len > limit {
             return Err(HeapError::OperationLimit {
                 requested: len as u64,
-                limit: self.limits.max_window_len as u64,
+                limit: limit as u64,
             });
         }
         let free_index = if len == 0 {

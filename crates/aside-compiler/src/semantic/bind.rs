@@ -2406,6 +2406,7 @@ impl Binder<'_> {
         for &arm in children.iter().skip(1) {
             let previous = self.scope;
             self.scope = self.new_scope(Some(previous), ctx.function, self.span(arm));
+            self.out.facts[arm.0 as usize].scope = Some(self.scope);
             let parts = self.children(arm);
             if let Some(&p) = parts.first() {
                 self.bind_pattern(p, value, ctx, PatternUse::Branch, false);

@@ -69,7 +69,11 @@ initializer and ordinary function loops with cleanup-aware break/continue are su
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
 reads/writes are supported by L06; L07 adds nonoptional member values/locations
 and dynamic calls through their results; L08 adds optional value chains.
-Patterns, optional-chain assignment targets, full script imports/linking, structural callable annotations, generator/thread/async and the broader language/library scopes remain
+Value match arms support names, wildcards, literals, grouping, type tests, OR and
+NoWait guards. Tests reuse ordinary comparison/type/branch instructions; arm
+bindings initialize once after acceptance, and each entry prepares fresh storage.
+MatchFail reports MatchError through ordinary exception cleanup and source maps.
+Structural patterns, optional-chain assignment targets, full script imports/linking, structural callable annotations, generator/thread/async and the broader language/library scopes remain
 deferred. L03 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
 short-circuit branches. Nested author functions return through their own boundary;

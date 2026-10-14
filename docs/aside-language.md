@@ -153,6 +153,8 @@ let result = match event {
 
 match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，命中后只执行一个分支。guard 不可外部等待；其显式副作用不会因不命中而回滚。动态输入未匹配抛 MatchError，有限已知类型可作穷尽诊断，默认鼓励 _ 分支。if let/while let 使用同一模式规则。
 
+执行子集支持 match 的名称、通配符、字面值、分组、类型测试和 OR，以及 guard、分支取值和分支内控制流；结构解构及 if let/while let 仍待接通。分支绑定按每次进入创建，闭包保留当次值。匹配降低为共享比较、类型检查和控制流指令，字符串比较沿既有可恢复执行器运行；无分支命中由 MatchFail 指令产生 MatchError，源码和 ASB 行为相同。示例见 [match_values.aside](../examples/match_values.aside)。
+
 结构匹配只读取真实自有数据槽或注册的纯结构字段，不执行任意 _get、外部操作或等待。匹配失败不是异常；let 解构失败为 PatternMismatch。模式先校验结构与必需项，再按模式书写顺序求缺省，完成后一次建立绑定；失败不创建部分名称。解构赋值只允许已有的可重绑词法名称，先准备所有结果再提交，不能通过任意 setter 假装原子更新。全部模式遍历和临时值受预算且可保存。
 
 ## 八 函数 调用与类
@@ -237,7 +239,7 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `view(build, ...布局属性)` 返回稳定的普通容器。build 是不可等待的组件工厂，首次调用及其实际读取的可观察数据变化后生成一个 Node 或 null；成功时替换容器的旧内容并取消旧节点拥有的任务。构造失败保留旧内容并报告源码错误。该接口适合条件面板、选项与对白页；只需要更新属性时使用 bind/derive，避免重建节点。build 可以调用普通组件函数，计算依赖在每次成功构造后替换；构造期间再次修改自己读取的来源报循环错误。
 
-`list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的 int 或 string，类型也属于身份。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，当前实例化全部条目；虚拟化另行实现。
+`list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的值：标量保留类型，字符串按内容比较，其余对象按身份比较；对象键须复用原对象引用，null 也可作键。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，当前实例化全部条目；虚拟化另行实现。
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。`game.configure(default_dialogue: false, default_choices: false)` 关闭对应默认视图，输入与剧情交互保持不变。
 
@@ -347,6 +349,10 @@ Reel 的固定节点数值属性通过普通命名参数表达 tween；宿主根
 脚本对象图采用单线程、非移动的增量三色标记清扫。Value 复制和堆内强边由追踪管理，省去逐次引用计数。slotmap 提供存储、槽位复用和安全访问；Aside 实现适配对象种类的根扫描、边遍历游标、写屏障、弱引用处理与清扫状态机。gc-arena 用作成熟算法参照，其 Gc 字段接口与整数句柄图不同。
 
 外部根包括活任务 frame、活动会话、当前发布 ModuleSet 环境、待交付结果、native continuation 与宿主 root handle；分块算法的工作副本及 callback 状态同样属于根。对象字段、cell、集合元素和闭包捕获为堆内强边。旧模块缓存为弱索引；分配表及 GC 工作队列只作管理记录。不可变代码或资源可独立使用 Rust Rc/Arc，其计数与脚本对象图的可达性分开。
+
+ModuleSet 的常量、符号、native 值和全局根在包加载时按实际数量预留，不套用单次执行窗口的长度额度。VmLimits.slots 声明执行工作集，模块根容量在加载时加入同一根池；执行帧和 continuation 仍使用操作窗口额度。两类根共用 GC 扫描和堆总内存计账，模块大小不挤占配置的执行工作集。
+
+默认 HeapLimits 不设固定字节总额（max_bytes 为 u64::MAX）；宿主需要隔离预算时可显式设置。内存用量和峰值照常记录，真实分配失败仍报告错误。执行切片的工作和分配预算只决定何时让出，不是剧情内容容量上限。
 
 GC 步在 VM 安全点执行。标记期间采用强边插入屏障：每次强边写入和根发布，在新值可见前把目标纳入标记；新对象的初始强边及 weakref 升级使用同一入口。根扫描有持久游标，已扫描根的更新也经过屏障。大型容器保存边游标；插入、删除或重排若移动尚未扫描的边，须修正游标或补充标记这些边。全部根、灰队列与屏障工作完成后，在同一安全点进入弱引用判定和清扫。自开始弱引用判定直到本轮清扫结束，weakref 仅可升级本轮已确认存活或本轮新分配的对象；这一阶段切换是统一的存活判定截止点，代际有效本身不足以允许升级。新分配对象标为本轮存活，并纳入下一轮扫描。
 

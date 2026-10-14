@@ -5,6 +5,7 @@ mod composition;
 mod expressions;
 mod locations;
 mod native_values;
+mod patterns;
 
 use super::project::{PackageState, ProjectLinks};
 use super::{
@@ -1673,17 +1674,12 @@ fn preflight(
         if matches!(
             node.kind,
             H::Class
-                | H::Match
-                | H::MatchArm
                 | H::Yield
-                | H::LiteralPattern
                 | H::TuplePattern
                 | H::ArrayPattern
                 | H::ObjectPattern
                 | H::PatternField
                 | H::RestPattern
-                | H::OrPattern
-                | H::TypePattern
         ) {
             return Err(b.error(
                 ErrorKind::Unsupported,
