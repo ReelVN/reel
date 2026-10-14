@@ -1,14 +1,15 @@
 fn main() {
     game.configure(fonts: ["fonts/body.ttf"]);
-    let music = audio.play("assets/chime.wav", looping: true, volume: 0.4);
+    audio.group_volume("music", 0.7);
+    let music = audio.play("assets/chime.wav", group: "music", looping: true, volume: 0.4, fade_in: 0.5);
     narrator("音乐在后台播放，剧情和界面照常响应。");
     pause(music);
     narrator("音乐暂停。继续后恢复，再播放一个音效。");
     resume(music);
-    audio.volume(music, 0.2);
-    let sound = audio.play("assets/chime.wav");
+    audio.volume(music, 0.2, duration: 0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5);
     await sound;
-    stop(music);
+    audio.stop(music, fade: 0.5);
     await music;
     narrator("音效已结束，循环音乐已停止。");
 }

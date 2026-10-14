@@ -34,6 +34,11 @@ pub struct TrackHandle {
 }
 
 impl TrackHandle {
+	/// Transfers one retired sound to a caller-reserved reclamation destination.
+	pub fn try_take_unused_sound(&mut self) -> Option<Box<dyn Sound>> {
+		self.sound_controller.try_pop_unused()
+	}
+
 	/// Returns the current playback state of the track.
 	#[must_use]
 	pub fn state(&self) -> TrackPlaybackState {
@@ -49,7 +54,7 @@ impl TrackHandle {
 			.into_sound()
 			.map_err(PlaySoundError::IntoSoundError)?;
 		self.sound_controller
-			.insert(sound)
+			.insert_without_reclamation(sound)
 			.map_err(|_| PlaySoundError::SoundLimitReached)?;
 		Ok(handle)
 	}

@@ -96,17 +96,32 @@ fn request(looping: bool) -> AudioRequest {
         source: "assets/chime.wav".into(),
         looping,
         volume: 1.,
+        group: AudioGroup::Effects,
+        pan: 0.,
+        fade_in: Duration::ZERO,
     }
 }
 
 #[test]
 fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirement() {
     let text = r#"fn main() {
-        let early = audio.play("assets/chime.wav", looping: true);
-        stop(early);
+        audio.group_volume("music", 0.5);
+        audio.group_volume("master", 1, duration: 0.01);
+        let early = audio.play("assets/chime.wav", group: "ui", looping: true, pan: -1, fade_in: 0.01);
+        audio.stop(early, fade: 0.1);
         if await early != "Stopped" || await early != "Stopped" { throw "early stop"; }
-        let sound = audio.play("assets/chime.wav");
+        let crossfade = audio.play("assets/chime.wav", group: "music", looping: true, fade_in: 0.01);
+        let sound = audio.play("assets/chime.wav", group: "voice");
+        audio.pan(sound, 1, duration: 0.01);
+        audio.volume(sound, 0.5, duration: 0.01);
         if await sound != "Completed" || await sound != "Completed" { throw "completion"; }
+        audio.stop(crossfade, fade: 0.01);
+        if await crossfade != "Stopped" { throw "fade completion"; }
+        let mut invalid = 0;
+        try { audio.group_volume("typo", 1); } catch error { invalid += 1; }
+        try { audio.play("assets/chime.wav", pan: 2); } catch error { invalid += 1; }
+        try { audio.volume(crossfade, 1, duration: -1); } catch error { invalid += 1; }
+        if invalid != 3 { throw "audio validation"; }
         let music = audio.play("assets/chime.wav", looping: true);
         pause(music); audio.volume(music, 0); resume(music);
         stop(music);
@@ -182,12 +197,28 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
     assert!(player.take_result(id).is_none());
     player.command(id, AudioCommand::Resume).unwrap();
     until(|| output.render() > 0.1);
-    player.command(id, AudioCommand::Volume(0.)).unwrap();
+    player
+        .command(
+            id,
+            AudioCommand::Volume {
+                value: 0.,
+                duration: Duration::ZERO,
+            },
+        )
+        .unwrap();
     for _ in 0..4 {
         output.render();
     }
     assert_eq!(output.render(), 0.);
-    player.command(id, AudioCommand::Volume(1.)).unwrap();
+    player
+        .command(
+            id,
+            AudioCommand::Volume {
+                value: 1.,
+                duration: Duration::ZERO,
+            },
+        )
+        .unwrap();
     until(|| output.render() > 0.1);
     player.suspend();
     let before = output.clock_observation().generated_frames;

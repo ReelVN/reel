@@ -330,9 +330,15 @@ fn small_quota_scans_finish_and_suspend_retains_logical_position() {
         assert_eq!(p.needs_turn, i != 3);
     }
     assert!(events.is_empty());
-    rig.service().set_volume_db(id, -6.0).unwrap();
+    rig.service()
+        .set_volume_db(id, -6.0, std::time::Duration::ZERO)
+        .unwrap();
     assert_eq!(rig.service().snapshot(id).unwrap().volume_db, -6.0);
-    assert!(rig.service().set_volume_db(id, f32::NAN).is_err());
+    assert!(
+        rig.service()
+            .set_volume_db(id, f32::NAN, std::time::Duration::ZERO)
+            .is_err()
+    );
     rig.output.resume().unwrap();
     rig.render();
     assert_ne!(
@@ -437,7 +443,11 @@ fn observed_output_failure_precedes_later_stop_and_volume_commands() {
     rig.service()
         .fail_output(AudioErrorKind::DeviceFailure)
         .unwrap();
-    assert!(rig.service().set_volume_db(id, -3.0).is_err());
+    assert!(
+        rig.service()
+            .set_volume_db(id, -3.0, std::time::Duration::ZERO)
+            .is_err()
+    );
     assert!(rig.service().stop(id));
     assert!(!rig.service().stop(id));
     let mut events = Vec::with_capacity(1);
@@ -762,4 +772,60 @@ fn physical_release_alone_cannot_retire_owner_with_undrained_descriptor() {
     assert!(receipt.descriptor_released());
     assert!(receipt.is_retired());
     assert!(owner.is_retired());
+}
+
+#[test]
+fn faded_stop_waits_for_consumption_and_pause_or_failure_cannot_strand_it() {
+    use std::time::Duration;
+    let mut rig = Rig::new(4, 4096);
+    let id = rig.play(1, true);
+    rig.render();
+    rig.service().fade_out(id, Duration::from_millis(100));
+    for _ in 0..100 {
+        rig.service().maintain(64, 64);
+    }
+    assert!(
+        rig.service().snapshot(id).unwrap().terminal.is_none(),
+        "control polling must not advance audio time"
+    );
+    for _ in 0..3 {
+        rig.render();
+        rig.service().maintain(64, 64);
+    }
+    assert!(rig.service().snapshot(id).unwrap().terminal.is_none());
+    for _ in 0..10 {
+        rig.render();
+        rig.service().maintain(64, 64);
+    }
+    assert!(matches!(
+        rig.service().snapshot(id).unwrap().terminal,
+        Some(AudioActivityTerminal::Stopped { .. })
+    ));
+    assert!(!rig.service().stop(id), "terminal is immutable");
+
+    let paused = rig.play(1, true);
+    rig.render();
+    rig.service().fade_out(paused, Duration::from_secs(10));
+    rig.service().pause(paused);
+    assert!(matches!(
+        rig.service().snapshot(paused).unwrap().terminal,
+        Some(AudioActivityTerminal::Stopped { .. })
+    ));
+    rig.service().resume(paused);
+    assert!(matches!(
+        rig.service().snapshot(paused).unwrap().terminal,
+        Some(AudioActivityTerminal::Stopped { .. })
+    ));
+
+    let failed = rig.play(1, true);
+    rig.render();
+    rig.service().fade_out(failed, Duration::from_secs(10));
+    rig.service()
+        .fail_output(AudioErrorKind::DeviceFailure)
+        .unwrap();
+    rig.service().maintain(64, 64);
+    assert_eq!(
+        rig.service().snapshot(failed).unwrap().terminal,
+        Some(AudioActivityTerminal::Failed(AudioErrorKind::DeviceFailure))
+    );
 }

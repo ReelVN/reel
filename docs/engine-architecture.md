@@ -556,15 +556,21 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
 PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/image/row/column/stack、children 组合、属性更新、局部子树编辑和有限动画，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、事件/绑定、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
-## 作者音频活动（native ABI v1）
+## 作者音频活动（play/volume ABI v2，其余 v1）
 
 Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎的声道矩阵转换；设备默认多声道格式不再被单/双声道筛选排除。其他后端仅公布其已知有序布局，不根据未知原生声道数量猜测扬声器位置。
 
-`audio.play(source, looping:false, volume:1, owner:null)` 立即返回可等待活动，后台完成读取与预解码后开始播放。`volume` 是非负线性增益，0 静音；`audio.volume(activity, value)` 更新增益。`pause`、`resume`、`stop` 和 `await` 与演出活动共用作者入口。await 返回 Completed 或 Stopped；读取、解码、输出失败抛出错误，重复等待保留相同终态。Completed 表示混音器消费完内容，不承诺声卡已经播放完。
+`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0)` 立即返回可等待活动，后台完成读取与预解码后开始播放。`volume` 是非负线性增益，0 静音；`audio.volume(activity, value, duration:0)` 更新增益。`pause`、`resume`、`stop` 和 `await` 与演出活动共用作者入口。await 返回 Completed 或 Stopped；读取、解码、输出失败抛出错误，重复等待保留相同终态。Completed 表示混音器消费完内容，不承诺声卡已经播放完。
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 
-核心通过 AudioBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式、seek、分组混音和设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
+核心通过 AudioBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式、seek 和设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
+
+### 混音与音频过渡
+
+AudioGroup 位于 reel-core 的平台无关契约；media 与 engine 使用同一枚举。播放器将 music/voice/effects/ui 路由到四个 Kira 子轨道，主轨道负责 master 增益。每声增益、分组增益与主增益相乘，组设置影响已有与后续播放。子轨道只预留声音槽和内部缓冲，不复制 PCM；每组槽容量为 max_sounds，总播放准入仍共享 max_sounds。四组控制句柄随 manager 一起移交原后台退休服务，按轮转游标和统一配额取走已退休声音。
+
+作者 play 接收 group、pan、fade_in；volume/group_volume/pan 的 duration 和 audio.stop 的 fade 使用非负秒。Kira 在音频消费时钟推进过渡，命令通过现有合并槽传递，无逐帧脚本任务。声音暂停保留播放位置，音量/声像包络继续推进，输出挂起冻结全部包络；淡出停止期间再暂停立即停止；淡出停止只在混音器停止后结算 Stopped，加载中或已暂停则立即停止，owner 取消及会话关闭不等待淡出。新音量/声像命令从当前值覆盖前一个过渡；加载中变更只更新初始值。音量按分贝插值，静音端点 -60 dB，声像线性插值。实时回调不执行分配、析构 PCM、文件 IO 或控制线程等待。
 
 ## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
 

@@ -1,5 +1,5 @@
 use super::{AdapterError, HostTicket, SessionVm, stage, text};
-use crate::audio::{AudioBackend, AudioCommand, AudioId, AudioRequest, AudioResult};
+use crate::audio::{AudioBackend, AudioCommand, AudioGroup, AudioId, AudioRequest, AudioResult};
 use aside_vm::executor::{Completion, HostResponse, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
@@ -63,6 +63,28 @@ fn volume(value: Value) -> Result<f64, AdapterError> {
         return Err(AdapterError::Input("audio volume must be nonnegative"));
     }
     Ok(value)
+}
+fn duration(value: Value) -> Result<std::time::Duration, AdapterError> {
+    std::time::Duration::try_from_secs_f64(stage::number(value)?)
+        .map_err(|_| AdapterError::Input("audio duration must be finite and nonnegative"))
+}
+fn pan(value: Value) -> Result<f64, AdapterError> {
+    let value = stage::number(value)?;
+    if !(-1.0..=1.0).contains(&value) {
+        return Err(AdapterError::Input("audio pan must be between -1 and 1"));
+    }
+    Ok(value)
+}
+fn group(name: &str) -> Result<AudioGroup, AdapterError> {
+    match name {
+        "music" => Ok(AudioGroup::Music),
+        "voice" => Ok(AudioGroup::Voice),
+        "effects" => Ok(AudioGroup::Effects),
+        "ui" => Ok(AudioGroup::Ui),
+        _ => Err(AdapterError::Input(
+            "audio group must be music, voice, effects or ui",
+        )),
+    }
 }
 impl SessionVm {
     /// Install once before executing author code. No platform dependency enters the VM.
@@ -149,7 +171,26 @@ impl SessionVm {
         symbol: &str,
     ) -> Result<(), AdapterError> {
         let args = self.vm.host_arguments(ticket)?.to_vec();
-        if symbol == "reel::audio::play" {
+        if symbol == "reel::audio::group_volume" {
+            let name = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
+            let group = if name == "master" {
+                None
+            } else {
+                Some(group(&name)?)
+            };
+            let value = volume(args[1])?;
+            let duration = duration(args[2])?;
+            let result = self
+                .audio
+                .backend
+                .as_mut()
+                .ok_or_else(|| "audio output is not installed".to_string())
+                .and_then(|backend| backend.group_volume(group, value, duration));
+            match result {
+                Ok(()) => self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?,
+                Err(error) => self.audio_error(ticket, &error)?,
+            }
+        } else if symbol == "reel::audio::play" {
             let source = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
             let looping = args[1]
                 .as_bool()
@@ -165,6 +206,13 @@ impl SessionVm {
             } else {
                 Some(self.stage.id(self.vm.heap(), owner)?)
             };
+            let group = group(&text::read_string(
+                self.vm.heap(),
+                args[4],
+                self.read_limit,
+            )?)?;
+            let pan = pan(args[5])?;
+            let fade_in = duration(args[6])?;
             self.audio
                 .live
                 .try_reserve(1)
@@ -204,6 +252,9 @@ impl SessionVm {
                         source,
                         looping,
                         volume,
+                        group,
+                        pan,
+                        fade_in,
                     })
                 });
             match admitted {
@@ -256,7 +307,15 @@ impl SessionVm {
                     "reel::stop" => AudioCommand::Stop,
                     "reel::pause" => AudioCommand::Pause,
                     "reel::resume" => AudioCommand::Resume,
-                    "reel::audio::volume" => AudioCommand::Volume(volume(args[1])?),
+                    "reel::audio::volume" => AudioCommand::Volume {
+                        value: volume(args[1])?,
+                        duration: duration(args[2])?,
+                    },
+                    "reel::audio::pan" => AudioCommand::Pan {
+                        value: pan(args[1])?,
+                        duration: duration(args[2])?,
+                    },
+                    "reel::audio::stop" => AudioCommand::FadeOut(duration(args[1])?),
                     _ => {
                         return Err(AdapterError::Input(
                             "audio has no forced endpoint; use stop",

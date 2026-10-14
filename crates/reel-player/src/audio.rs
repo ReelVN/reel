@@ -258,7 +258,7 @@ impl AudioPlayer {
 }
 fn db(volume: f64) -> f32 {
     if volume == 0. {
-        f32::NEG_INFINITY
+        -60.0
     } else {
         (20. * volume.log10()) as f32
     }
@@ -270,6 +270,9 @@ impl AudioBackend for AudioPlayer {
         }
         if !request.volume.is_finite() || request.volume < 0. {
             return Err("audio volume must be finite and nonnegative".into());
+        }
+        if !(-1.0..=1.0).contains(&request.pan) {
+            return Err("audio pan must be between -1 and 1".into());
         }
         if self.entries.len() >= self.options.mixer.max_sounds {
             return Err("audio activity capacity exhausted".into());
@@ -289,7 +292,9 @@ impl AudioBackend for AudioPlayer {
         Ok(id)
     }
     fn command(&mut self, id: AudioId, command: AudioCommand) -> Result<(), String> {
-        if matches!(command, AudioCommand::Stop) {
+        if matches!(command, AudioCommand::Stop)
+            || matches!(command, AudioCommand::FadeOut(duration) if duration.is_zero() || self.entries.get(&id).is_some_and(|e| e.paused || !matches!(e.phase, Phase::Playing(_))))
+        {
             self.stop_entry(id, true);
             return Ok(());
         }
@@ -300,7 +305,10 @@ impl AudioBackend for AudioPlayer {
             return Ok(());
         }
         match command {
-            AudioCommand::Volume(volume) => {
+            AudioCommand::Volume {
+                value: volume,
+                duration,
+            } => {
                 if !volume.is_finite() || volume < 0. {
                     return Err("audio volume must be finite and nonnegative".into());
                 }
@@ -308,10 +316,28 @@ impl AudioBackend for AudioPlayer {
                     self.service
                         .as_mut()
                         .unwrap()
-                        .set_volume_db(media, db(volume))
+                        .set_volume_db(media, db(volume), duration)
                         .map_err(|e| e.to_string())?;
                 }
                 entry.request.volume = volume;
+            }
+            AudioCommand::Pan { value, duration } => {
+                if !(-1.0..=1.0).contains(&value) {
+                    return Err("audio pan must be between -1 and 1".into());
+                }
+                if let Phase::Playing(media) = entry.phase {
+                    self.service
+                        .as_mut()
+                        .unwrap()
+                        .set_pan(media, value as f32, duration)
+                        .map_err(|e| e.to_string())?;
+                }
+                entry.request.pan = value;
+            }
+            AudioCommand::FadeOut(duration) => {
+                if let Phase::Playing(media) = entry.phase {
+                    self.service.as_mut().unwrap().fade_out(media, duration);
+                }
             }
             AudioCommand::Pause | AudioCommand::Resume => {
                 entry.paused = matches!(command, AudioCommand::Pause);
@@ -327,6 +353,25 @@ impl AudioBackend for AudioPlayer {
             AudioCommand::Stop => unreachable!(),
         }
         Ok(())
+    }
+    fn group_volume(
+        &mut self,
+        group: Option<AudioGroup>,
+        value: f64,
+        duration: Duration,
+    ) -> Result<(), String> {
+        if self.closed {
+            return Err("audio session closed".into());
+        }
+        if !value.is_finite() || value < 0. {
+            return Err("audio volume must be finite and nonnegative".into());
+        }
+        self.initialize()?;
+        self.service
+            .as_mut()
+            .unwrap()
+            .set_group_volume_db(group, db(value), duration)
+            .map_err(|e| e.to_string())
     }
     fn cancel(&mut self, id: AudioId) {
         self.stop_entry(id, false);
@@ -395,13 +440,16 @@ impl AudioBackend for AudioPlayer {
                 if entry.request.looping {
                     sound = sound.looping();
                 }
-                sound = sound.with_volume_db(db(entry.request.volume));
+                sound = sound
+                    .with_volume_db(db(entry.request.volume))
+                    .with_pan(entry.request.pan as f32)
+                    .with_fade_in(entry.request.fade_in);
                 let service = self.service.as_mut().unwrap();
                 entry.phase = match service.play(AudioActivityRequest {
                     epoch: service.epoch(),
                     owner: self.owner.as_ref().unwrap().clone(),
                     resource: version,
-                    group: AudioGroup::Effects,
+                    group: entry.request.group,
                     sound,
                 }) {
                     Ok(media) => {

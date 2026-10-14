@@ -26,15 +26,9 @@ use reel_core::{
 pub struct MediaId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MediaEpoch(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioGroup {
-    Music,
-    Voice,
-    Effects,
-    Ui,
-}
-/// PCM and its existing ticket move unchanged on rejection. Loop configuration
-/// belongs to DecodedSound; group is routing metadata, not a new Kira sub-track.
+pub use reel_core::audio::AudioGroup;
+/// PCM and its existing ticket move unchanged on rejection. The group selects
+/// a persistent mixer bus; loop configuration belongs to DecodedSound.
 #[derive(Debug)]
 pub struct AudioActivityRequest {
     pub epoch: MediaEpoch,
@@ -78,6 +72,7 @@ struct Entry {
     group: AudioGroup,
     volume_db: f32,
     playback: Playback,
+    stopping: bool,
     terminal: Option<AudioActivityTerminal>,
     // Last: native control handle/resource key must be gone before publication.
     _descriptor: DescriptorRelease,
@@ -344,7 +339,7 @@ impl AudioActivityService {
         let descriptor = DescriptorRelease(state.clone());
         let volume_db = sound.volume_db();
         sound.track_retirement(PhysicalRelease(state.clone()));
-        let playback = match self.mixer.play(sound) {
+        let playback = match self.mixer.play_in(group, sound) {
             Ok(playback) => playback,
             Err(Rejected {
                 request: mut sound,
@@ -377,6 +372,7 @@ impl AudioActivityService {
             group,
             volume_db,
             playback,
+            stopping: false,
             terminal: None,
             _descriptor: descriptor,
         });
@@ -426,26 +422,70 @@ impl AudioActivityService {
         }
         changed
     }
-    pub fn set_volume_db(&mut self, id: MediaId, db: f32) -> Result<(), AudioError> {
+    pub fn set_volume_db(
+        &mut self,
+        id: MediaId,
+        db: f32,
+        duration: Duration,
+    ) -> Result<(), AudioError> {
+        let e = self.live_mut(id)?;
+        e.playback.set_volume_db(db, duration)?;
+        e.volume_db = db;
+        Ok(())
+    }
+    pub fn set_group_volume_db(
+        &mut self,
+        group: Option<AudioGroup>,
+        db: f32,
+        duration: Duration,
+    ) -> Result<(), AudioError> {
         if self.failed.is_some() {
             return Err(AudioError::new(
                 AudioErrorKind::Unavailable,
                 "output recovery is required",
             ));
         }
-        let e = self
-            .entries
+        self.mixer.set_group_volume_db(group, db, duration)
+    }
+    pub fn set_pan(&mut self, id: MediaId, pan: f32, duration: Duration) -> Result<(), AudioError> {
+        self.live_mut(id)?.playback.set_pan(pan, duration)
+    }
+    fn live_mut(&mut self, id: MediaId) -> Result<&mut Entry, AudioError> {
+        if self.failed.is_some() {
+            return Err(AudioError::new(
+                AudioErrorKind::Unavailable,
+                "output recovery is required",
+            ));
+        }
+        self.entries
             .iter_mut()
             .flatten()
             .find(|e| e.id == id && e.terminal.is_none())
             .ok_or_else(|| {
                 AudioError::new(AudioErrorKind::InvalidRequest, "no live audio activity")
-            })?;
-        e.playback.set_volume_db(db)?;
-        e.volume_db = db;
-        Ok(())
+            })
+    }
+    pub fn fade_out(&mut self, id: MediaId, duration: Duration) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|e| e.id == id && e.terminal.is_none() && !e.stopping)
+        {
+            entry.stopping = true;
+            entry.playback.fade_out(duration);
+        }
     }
     pub fn pause(&mut self, id: MediaId) {
+        if self
+            .entries
+            .iter()
+            .flatten()
+            .any(|e| e.id == id && e.stopping && e.terminal.is_none())
+        {
+            self.stop(id);
+            return;
+        }
         if let Some(e) = self
             .entries
             .iter_mut()
@@ -460,7 +500,7 @@ impl AudioActivityService {
             .entries
             .iter_mut()
             .flatten()
-            .find(|e| e.id == id && e.terminal.is_none())
+            .find(|e| e.id == id && e.terminal.is_none() && !e.stopping)
         {
             e.playback.resume();
         }
@@ -525,8 +565,14 @@ impl AudioActivityService {
                 let terminal = if let Some(reason) = self.failed {
                     Some(AudioActivityTerminal::Failed(reason))
                 } else if e.playback.is_stopped() {
-                    Some(AudioActivityTerminal::Completed {
-                        position_seconds: e.playback.position_seconds(),
+                    Some(if e.stopping {
+                        AudioActivityTerminal::Stopped {
+                            position_seconds: e.playback.position_seconds(),
+                        }
+                    } else {
+                        AudioActivityTerminal::Completed {
+                            position_seconds: e.playback.position_seconds(),
+                        }
                     })
                 } else {
                     None

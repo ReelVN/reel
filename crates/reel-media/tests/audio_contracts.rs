@@ -54,6 +54,192 @@ fn sound(pool: &BudgetPool, samples: Vec<[f32; 2]>) -> DecodedSound {
         .unwrap();
     DecodedSound::new(48_000, samples, ticket).unwrap()
 }
+
+fn stereo_tail(output: &mut OfflineOutput) -> [f32; 2] {
+    let mut pcm = [0.0_f32; 256];
+    output.render(&mut pcm, timing(0));
+    [pcm[254], pcm[255]]
+}
+fn near(actual: [f32; 2], expected: [f32; 2]) {
+    for (a, b) in actual.into_iter().zip(expected) {
+        assert!((a - b).abs() < 0.0001, "{actual:?} != {expected:?}");
+    }
+}
+
+#[test]
+fn group_buses_multiply_independently_and_share_one_admission_limit() {
+    let mut reclaimer =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let (mut output, format) = setup(ChannelLayout::Stereo, SampleFormat::F32, 128);
+    let mut mixer = KiraMixer::new(
+        &format,
+        MixerLimits {
+            max_sounds: 4,
+            internal_buffer_frames: 64,
+        },
+        &reclaimer,
+    )
+    .unwrap();
+    let pool = pool();
+    let half = 20.0 * 0.5_f32.log10();
+    mixer
+        .set_group_volume_db(Some(AudioGroup::Music), half, std::time::Duration::ZERO)
+        .unwrap();
+    mixer
+        .set_group_volume_db(Some(AudioGroup::Voice), -60.0, std::time::Duration::ZERO)
+        .unwrap();
+    mixer
+        .set_group_volume_db(Some(AudioGroup::Ui), half * 2.0, std::time::Duration::ZERO)
+        .unwrap();
+    mixer
+        .set_group_volume_db(None, half, std::time::Duration::ZERO)
+        .unwrap();
+    // Settings precede admission; every group may use the full shared capacity.
+    let mut handles = Vec::new();
+    for (i, group) in AudioGroup::ALL.into_iter().enumerate() {
+        let value = (i + 1) as f32 * 0.1;
+        handles.push(
+            mixer
+                .play_in(group, sound(&pool, vec![[value; 2]; 256]).looping())
+                .unwrap(),
+        );
+    }
+    let rejected = mixer
+        .play_in(AudioGroup::Ui, sound(&pool, vec![[0.1; 2]; 256]))
+        .err()
+        .unwrap();
+    assert!(rejected.reason.retryable());
+    drop(rejected);
+    assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+    for _ in 0..4 {
+        stereo_tail(&mut output);
+    }
+    near(stereo_tail(&mut output), [0.225; 2]);
+    // Changes affect active voices without replacing their individual gain.
+    mixer
+        .set_group_volume_db(Some(AudioGroup::Music), -60.0, std::time::Duration::ZERO)
+        .unwrap();
+    handles[AudioGroup::Effects as usize]
+        .set_volume_db(half, std::time::Duration::ZERO)
+        .unwrap();
+    for _ in 0..4 {
+        stereo_tail(&mut output);
+    }
+    near(stereo_tail(&mut output), [0.125; 2]);
+    mixer
+        .set_group_volume_db(None, -60.0, std::time::Duration::ZERO)
+        .unwrap();
+    for _ in 0..4 {
+        stereo_tail(&mut output);
+    }
+    near(stereo_tail(&mut output), [0.0; 2]);
+    // All four retirement queues must be serviced even with a quota of one.
+    for handle in &mut handles {
+        handle.stop();
+    }
+    for _ in 0..4 {
+        stereo_tail(&mut output);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while pool.usage().tickets != 0 {
+        mixer.reclaim_unused(1);
+        stereo_tail(&mut output);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    output.stop().unwrap();
+    drop(mixer);
+    reclaimer.drain_and_join().unwrap();
+}
+
+#[test]
+fn sound_and_bus_envelopes_pan_and_suspend_follow_consumed_frames() {
+    use std::time::Duration;
+    let mut reclaimer =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let (mut output, format) = setup(ChannelLayout::Stereo, SampleFormat::F32, 128);
+    let mut mixer = KiraMixer::new(
+        &format,
+        MixerLimits {
+            max_sounds: 4,
+            internal_buffer_frames: 64,
+        },
+        &reclaimer,
+    )
+    .unwrap();
+    let pool = pool();
+    let mut handle = mixer
+        .play_in(
+            AudioGroup::Music,
+            sound(&pool, vec![[0.2; 2]; 256])
+                .looping()
+                .with_fade_in(Duration::from_millis(100)),
+        )
+        .unwrap();
+    assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+    let first = stereo_tail(&mut output)[0];
+    for _ in 0..18 {
+        stereo_tail(&mut output);
+    }
+    let middle = stereo_tail(&mut output)[0];
+    assert!(
+        first >= 0.0 && middle > first && middle < 0.1,
+        "{first}, {middle}"
+    );
+    for _ in 0..25 {
+        stereo_tail(&mut output);
+    }
+    near(stereo_tail(&mut output), [0.2; 2]);
+    handle.set_pan(1.0, Duration::from_millis(100)).unwrap();
+    for _ in 0..45 {
+        stereo_tail(&mut output);
+    }
+    let right = stereo_tail(&mut output);
+    assert!(right[0].abs() < 0.0001 && right[1] > 0.2, "{right:?}");
+    handle.set_pan(0.0, Duration::ZERO).unwrap();
+    mixer
+        .set_group_volume_db(Some(AudioGroup::Music), -60.0, Duration::from_millis(100))
+        .unwrap();
+    for _ in 0..18 {
+        stereo_tail(&mut output);
+    }
+    let fading = stereo_tail(&mut output)[0];
+    assert!(fading > 0.0 && fading < 0.2);
+    let position = handle.position_seconds();
+    output.suspend().unwrap();
+    for _ in 0..60 {
+        near(stereo_tail(&mut output), [0.0; 2]);
+    }
+    assert_eq!(handle.position_seconds(), position);
+    output.resume().unwrap();
+    let resumed = stereo_tail(&mut output)[0];
+    assert!(resumed > 0.0 && resumed <= fading, "{fading}, {resumed}");
+    for _ in 0..25 {
+        stereo_tail(&mut output);
+    }
+    near(stereo_tail(&mut output), [0.0; 2]);
+    // A fresh tween from silence must remain finite, including Rust -inf input.
+    handle
+        .set_volume_db(f32::NEG_INFINITY, Duration::ZERO)
+        .unwrap();
+    mixer
+        .set_group_volume_db(Some(AudioGroup::Music), 0.0, Duration::ZERO)
+        .unwrap();
+    for _ in 0..4 {
+        stereo_tail(&mut output);
+    }
+    handle
+        .set_volume_db(0.0, Duration::from_millis(100))
+        .unwrap();
+    for _ in 0..45 {
+        assert!(stereo_tail(&mut output).iter().all(|v| v.is_finite()));
+    }
+    near(stereo_tail(&mut output), [0.2; 2]);
+    output.stop().unwrap();
+    drop(mixer);
+    reclaimer.drain_and_join().unwrap();
+    assert_eq!(pool.usage().tickets, 0);
+}
 #[test]
 fn real_kira_mixes_stereo_then_maps_explicit_71_and_freezes_on_suspend() {
     let service = AudioReclaimService::new(
@@ -300,7 +486,9 @@ fn kira_full_play_capacity_returns_original_budgeted_request_and_stop_commands_s
     assert_eq!(pool.usage().tickets, 2);
     assert!(output.start(mixer.take_fill().unwrap()).is_ok());
     output.render(&mut [0.0f32; 16], timing(1));
-    first.set_volume_db(-6.0).unwrap();
+    first
+        .set_volume_db(-6.0, std::time::Duration::ZERO)
+        .unwrap();
     first.stop();
     output.render(&mut [0.0f32; 16], timing(2));
     assert!(first.is_stopped());

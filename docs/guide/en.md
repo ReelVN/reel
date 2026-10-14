@@ -783,24 +783,27 @@ fn main() {
 
 ```aside
 fn main() {
-    let music = audio.play("assets/chime.wav", looping: true, volume: 0.4);
+    audio.group_volume("music", 0.7);
+    let music = audio.play("assets/chime.wav", group: "music", looping: true, volume: 0.4, fade_in: 0.5);
     pause(music);
     resume(music);
-    audio.volume(music, 0.2);
-    let sound = audio.play("assets/chime.wav");
+    audio.volume(music, 0.2, duration: 0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5);
     await sound;
-    stop(music);
+    audio.stop(music, fade: 0.5);
     await music;
 }
 ```
 
 `audio.play` reads, decodes and plays in the background, returning an activity immediately. `await` returns `Completed` or `Stopped`; loading and device errors can be caught with `try/catch`. `volume` is a nonnegative linear gain: 1 preserves the source level and 0 mutes it. pause/resume retain position, stop does not restart playback, and repeated waits retain the same result.
 
+Use `audio.group_volume("music", value)` for music/voice/effects/ui, or master for overall volume. Sound, group and master gains multiply; group settings also apply to later sounds. `audio.pan(sound, value, duration: seconds)` moves stereo position from -1 (left) to 1 (right), with 0 centered. `audio.volume` and `audio.group_volume` also accept duration; omission applies the change immediately. `fade_in` starts when playback actually begins. `audio.stop(sound, fade: seconds)` resolves await with Stopped after fading out; loading or paused sounds stop immediately. Pause retains playback position while volume/pan envelopes continue; output suspension freezes all envelopes. Pausing during a fade-out stop finishes the stop immediately. Volume transitions interpolate decibels with a -60 dB silence endpoint. New commands continue from the current value; controls during loading update initial playback values.
+
 By default, sound belongs to the current callback node, or to the session in the main story. Use `owner: node` to choose a node: removing it cancels loading and playback together. Cancelling a waiter does not stop shared playback. Playback, node cancellation and window shutdown use the same resource retirement path.
 
 The Windows player submits stereo audio to the system, including when the default output device uses multiple channels.
 
-WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Streaming long tracks, seek, group mixing and save restoration remain part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
+WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Streaming long tracks, seek and save restoration remain part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
 
 Runnable example: [author_audio.aside](../../examples/author_audio.aside), using examples as the asset root and the same font configuration as other author examples. Its chime.wav is an original short sine tone supplied by this repository.
 

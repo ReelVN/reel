@@ -783,24 +783,27 @@ fn main() {
 
 ```aside
 fn main() {
-    let music = audio.play("assets/chime.wav", looping: true, volume: 0.4);
+    audio.group_volume("music", 0.7);
+    let music = audio.play("assets/chime.wav", group: "music", looping: true, volume: 0.4, fade_in: 0.5);
     pause(music);
     resume(music);
-    audio.volume(music, 0.2);
-    let sound = audio.play("assets/chime.wav");
+    audio.volume(music, 0.2, duration: 0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5);
     await sound;
-    stop(music);
+    audio.stop(music, fade: 0.5);
     await music;
 }
 ```
 
 `audio.play` 在后台读取、解码并播放，立即返回活动。`await` 返回 `Completed` 或 `Stopped`；加载与设备错误可以 `try/catch`。`volume` 是非负线性增益，1 是原始音量，0 静音。pause/resume 保留播放位置，stop 不重启声音，重复等待保留同一个结果。
 
+分组音量用 `audio.group_volume("music", value)` 设置，可选 music/voice/effects/ui；master 控制总音量。每声、组、总增益相乘，设置也影响之后开始的声音。`audio.pan(sound, value, duration: seconds)` 将声像从 -1（左）移动到 1（右），0 居中；`audio.volume` 和 `audio.group_volume` 同样接受 duration，省略时立即生效。`fade_in` 从实际播放开始计时；`audio.stop(sound, fade: seconds)` 淡出结束后才让 await 返回 Stopped，加载中或已暂停的声音立即停止。暂停保留播放位置，音量/声像包络继续推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即停止。音量过渡在分贝域进行，静音端点为 -60 dB；新命令从当前值接续，加载中的控制更新首次播放值。
+
 缺省声音属于当前回调节点；在主剧情中属于会话。也可用 `owner: node` 指定：节点被移除时，加载与声音一起取消。取消等待者不停止共享声音。播放、节点取消与窗口退出复用同一资源回收路径。
 
 Windows 播放器向系统提交双声道音频，默认设备配置为多声道时同样可以使用。
 
-支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3 预解码播放。PCM 按宿主内存预算计账，不另限时长。长音轨流式、seek、分组混音和存档恢复仍按完整设计推进；Completed 表示混音器消费完成，不能用于精确声卡同步。实体设备的验证范围见[音频验证](../../crates/reel-media/VERIFICATION.md)。
+支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3 预解码播放。PCM 按宿主内存预算计账，不另限时长。长音轨流式、seek 和存档恢复仍按完整设计推进；Completed 表示混音器消费完成，不能用于精确声卡同步。实体设备的验证范围见[音频验证](../../crates/reel-media/VERIFICATION.md)。
 
 完整例子：[author_audio.aside](../../examples/author_audio.aside)，从 examples 资源根运行，与其他作者示例使用相同字体配置。示例 chime.wav 是仓库自制的短正弦提示音。
 

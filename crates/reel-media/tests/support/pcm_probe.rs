@@ -97,10 +97,48 @@ fn full_unused_queue_remains_allocation_free() {
         "full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_transfer=1+1 physical_release=worker"
     );
 }
+fn group_envelopes_are_allocation_free() {
+    use std::time::Duration;
+    let mut service = AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let pool = BudgetPool::new(BudgetCategory::CpuOutput, QueueLimits { max_requests: 4, max_bytes: 1 << 20 });
+    let mut output = OfflineOutput::new(AudioDeviceConfig { sample_rate_hz: 48_000, sample_format: SampleFormat::F32, layout: ChannelLayout::Stereo }, WakeSignal::new(|| {})).unwrap();
+    let format = output.configure(AudioRequest::default()).unwrap();
+    let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
+    let mut voices = AudioGroup::ALL.map(|group| mixer.play_in(group, decoded(&pool, [0.1, 0.1], 256).looping()).unwrap());
+    assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+    let mut pcm = [0.0_f32; 256];
+    for block in 0..1000 {
+        ENABLED.set(true);
+        let db = if block % 2 == 0 { -12.0 } else { 0.0 };
+        for (group, voice) in AudioGroup::ALL.into_iter().zip(&mut voices) {
+            mixer.set_group_volume_db(Some(group), db, Duration::from_millis(30)).unwrap();
+            voice.set_pan(if block % 2 == 0 { -1.0 } else { 1.0 }, Duration::from_millis(30)).unwrap();
+            voice.set_volume_db(db, Duration::from_millis(30)).unwrap();
+        }
+        output.render(&mut pcm, CallbackTiming { now: MonoTime(0), latency_frames: None, uncertainty_frames: None });
+        ENABLED.set(false);
+        assert!(pcm.iter().all(|v| v.is_finite()));
+    }
+    for voice in &mut voices { voice.fade_out(Duration::from_millis(20)); }
+    for _ in 0..20 {
+        ENABLED.set(true);
+        output.render(&mut pcm, CallbackTiming { now: MonoTime(0), latency_frames: None, uncertainty_frames: None });
+        ENABLED.set(false);
+    }
+    assert!(voices.iter().all(|voice| voice.is_stopped()));
+    output.stop().unwrap();
+    drop(mixer);
+    service.drain_and_join().unwrap();
+    assert_eq!(pool.usage().tickets, 0);
+    let counts = COUNTS.get();
+    assert_eq!((counts.allocations, counts.reallocations, counts.deallocations), (0, 0, 0));
+    println!("group_envelopes groups=4 coalesced_changes=12000 PCM_calls=1020 alloc=0 realloc=0 dealloc=0");
+}
 fn main() {
     let mut service =
         AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     full_unused_queue_remains_allocation_free();
+    group_envelopes_are_allocation_free();
     const BLOCKS: usize = 4096;
     const FRAMES: usize = 512;
     let pool = BudgetPool::new(
