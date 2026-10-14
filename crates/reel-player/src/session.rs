@@ -471,6 +471,12 @@ impl Widget for SessionWidget {
                         .borrow_mut()
                         .push(NodeEvent::Action(action.clone()));
                 }
+                NodeEvent::Key(input)
+                    if matches!(input.phase, ActionPhase::Released | ActionPhase::Cancelled)
+                        || self.binding.borrow().permits_control() =>
+                {
+                    self.events.borrow_mut().push(NodeEvent::Key(input.clone()));
+                }
                 NodeEvent::Interaction(state) => {
                     self.events
                         .borrow_mut()

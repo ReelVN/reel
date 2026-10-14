@@ -31,6 +31,8 @@ pub(super) enum Builtin {
     StartsWith,
     EndsWith,
     Join,
+    AsciiLowercase,
+    AsciiUppercase,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -59,6 +61,8 @@ impl Builtin {
             (String, "starts_with") => Some(Self::StartsWith),
             (String, "ends_with") => Some(Self::EndsWith),
             (String, "join") => Some(Self::Join),
+            (String, "to_ascii_lowercase") => Some(Self::AsciiLowercase),
+            (String, "to_ascii_uppercase") => Some(Self::AsciiUppercase),
             _ => None,
         }
     }
@@ -87,6 +91,8 @@ impl Builtin {
             Builtin::StartsWith,
             Builtin::EndsWith,
             Builtin::Join,
+            Builtin::AsciiLowercase,
+            Builtin::AsciiUppercase,
         ];
         usize::try_from(id)
             .ok()
@@ -383,7 +389,9 @@ impl Vm {
             | Builtin::SliceScalars
             | Builtin::StartsWith
             | Builtin::EndsWith
-            | Builtin::Join => {
+            | Builtin::Join
+            | Builtin::AsciiLowercase
+            | Builtin::AsciiUppercase => {
                 if let Err(kind) = self.start_text_builtin(s, call) {
                     self.collection_fault(s, kind)?;
                 }

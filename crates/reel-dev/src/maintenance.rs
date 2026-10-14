@@ -212,9 +212,7 @@ pub fn audit_ui() -> Result<()> {
         );
     }
     dependencies()?;
-    println!(
-        "Package Apache license, local provenance and single UI ownership verified"
-    );
+    println!("Package Apache license, local provenance and single UI ownership verified");
     Ok(())
 }
 

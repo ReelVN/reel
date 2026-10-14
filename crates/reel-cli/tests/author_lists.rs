@@ -94,6 +94,10 @@ fn creator_ui_examples_initialize_from_source_and_asb() {
             "author_timing.aside",
             include_str!("../../../examples/author_timing.aside"),
         ),
+        (
+            "author_keyboard.aside",
+            include_str!("../../../examples/author_keyboard.aside"),
+        ),
     ] {
         let checked = reel_cli::check(source, name).unwrap();
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
@@ -112,5 +116,125 @@ fn creator_ui_examples_initialize_from_source_and_asb() {
             assert!(driver.adapter().stage().root().is_some(), "{name}");
             driver.cancel().unwrap();
         }
+    }
+}
+
+#[test]
+fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
+    use reel_ui::core::{Ime, TextEvent, keyboard::*};
+    let source = r#"fn main() {
+        game.configure(default_dialogue: false);
+        let data = model({log: "", name: ""});
+        stage.replace(input(width: 600, height: 400, on_key: |e| {
+            data.log += f"{e.code}:{e.phase};";
+        }) {
+            text(value: bind(data.log), x: 0, y: 0);
+            text_input(value: bind(data.name), x: 0, y: 100, width: 240, height: 50);
+        });
+    }"#;
+    let checked = reel_cli::check(source, "keys.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        present(&mut driver, &mut bridge, root, 1);
+        let mut frame = 1;
+        let mut send = |driver: &mut AsideSessionUi,
+                        bridge: &mut reel_ui::bridge::PresentationBridge,
+                        event| {
+            driver.handle_text(bridge, event).unwrap();
+            settle(driver);
+            frame += 1;
+            present(driver, bridge, root, frame);
+        };
+        for (code, key, state, repeat) in [
+            (Code::KeyA, "a", KeyState::Down, false),
+            (Code::KeyB, "b", KeyState::Down, false),
+            (Code::KeyA, "a", KeyState::Down, true),
+            (Code::KeyA, "a", KeyState::Up, false),
+        ] {
+            send(
+                &mut driver,
+                &mut bridge,
+                TextEvent::Keyboard(KeyboardEvent {
+                    code,
+                    key: Key::Character(key.into()),
+                    state,
+                    repeat,
+                    location: Location::Standard,
+                    ..Default::default()
+                }),
+            );
+        }
+        send(
+            &mut driver,
+            &mut bridge,
+            TextEvent::WindowFocusChange(false),
+        );
+        let expected = "KeyA:pressed;KeyB:pressed;KeyA:repeated;KeyA:released;KeyB:cancelled;";
+        let log = |driver: &AsideSessionUi| {
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .find_map(|n| {
+                    if let NodeKind::Text(s) = &n.kind {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap()
+        };
+        assert_eq!(log(&driver), expected);
+        send(&mut driver, &mut bridge, TextEvent::WindowFocusChange(true));
+        send(
+            &mut driver,
+            &mut bridge,
+            TextEvent::Keyboard(KeyboardEvent {
+                code: Code::KeyC,
+                key: Key::Character("c".into()),
+                state: KeyState::Down,
+                location: Location::Standard,
+                ..Default::default()
+            }),
+        );
+        click_at(&mut driver, &mut bridge, 20., 120.);
+        let expected = format!("{expected}KeyC:pressed;KeyC:cancelled;");
+        send(
+            &mut driver,
+            &mut bridge,
+            TextEvent::Ime(Ime::Preedit("ni".into(), Some((2, 2)))),
+        );
+        send(
+            &mut driver,
+            &mut bridge,
+            TextEvent::Ime(Ime::Commit("你".into())),
+        );
+        send(
+            &mut driver,
+            &mut bridge,
+            TextEvent::Keyboard(KeyboardEvent {
+                code: Code::KeyX,
+                key: Key::Character("x".into()),
+                state: KeyState::Down,
+                location: Location::Standard,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(log(&driver), expected);
+        assert!(driver.adapter().stage().nodes().any(|n| matches!(&n.kind,
+            NodeKind::TextInput { value } if value.as_ref() == "你x")));
+        driver.cancel().unwrap();
     }
 }

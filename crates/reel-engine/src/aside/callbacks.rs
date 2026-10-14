@@ -12,6 +12,47 @@ pub(super) struct Callback {
 }
 
 impl SessionVm {
+    pub fn input_key(
+        &mut self,
+        session: &mut Session,
+        input: &reel_ui::stage::NodeKey,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, callback)) = self.stage.input_key(self.vm.heap(), input)? else {
+            return Ok(false);
+        };
+        use reel_ui::input::ActionPhase;
+        let phase = match input.phase {
+            ActionPhase::Pressed => "pressed",
+            ActionPhase::Repeated => "repeated",
+            ActionPhase::Released => "released",
+            ActionPhase::Cancelled => "cancelled",
+            ActionPhase::Changed => return Err(AdapterError::Input("invalid key phase")),
+        };
+        let heap = self.vm.heap_mut();
+        let event = heap.alloc_table()?;
+        let code = heap.alloc_string(&input.event.code.to_string())?;
+        let key = heap.alloc_string(&input.event.key.to_string())?;
+        let phase = heap.alloc_string(phase)?;
+        let mods = input.event.modifiers;
+        for (i, (name, value)) in [
+            ("target", target),
+            ("code", code),
+            ("key", key),
+            ("phase", phase),
+            ("shift", Value::bool(mods.shift())),
+            ("ctrl", Value::bool(mods.ctrl())),
+            ("alt", Value::bool(mods.alt())),
+            ("meta", Value::bool(mods.meta())),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = heap.alloc_string(name)?;
+            heap.table_store(event, i as u32, key, value)?;
+        }
+        self.start_callback(session, input.node, callback, event)
+    }
     /// Publish input feedback before dispatching callbacks. A batch uses one stage sync.
     pub fn interactions(
         &mut self,

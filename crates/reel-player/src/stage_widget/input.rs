@@ -1,15 +1,21 @@
 use reel_ui::{
-    core::{PointerButton, PointerEvent, pointer_info},
-    input::{ActionMap, Control, InputDeviceId, InputEvent},
-    stage::{InputBindings, NodeAction, NodeEvent, NodeId},
+    core::{
+        PointerButton, PointerEvent,
+        keyboard::{KeyState, KeyboardEvent},
+        pointer_info,
+    },
+    input::{ActionMap, ActionPhase, Control, InputDeviceId, InputEvent},
+    stage::{InputBindings, NodeAction, NodeEvent, NodeId, NodeKey},
 };
 
 pub(super) struct NodeInput {
     pub bindings: InputBindings,
     map: ActionMap<usize>,
+    pub keyboard: bool,
+    held_keys: Vec<KeyboardEvent>,
 }
 impl NodeInput {
-    pub fn new(bindings: InputBindings) -> Self {
+    pub fn new(bindings: InputBindings, keyboard: bool) -> Self {
         let map = ActionMap::new(
             bindings
                 .iter()
@@ -17,7 +23,41 @@ impl NodeInput {
                 .map(|(i, a)| (i, a.bindings.clone())),
         )
         .expect("validated stage bindings");
-        Self { bindings, map }
+        Self {
+            bindings,
+            map,
+            keyboard,
+            held_keys: Vec::new(),
+        }
+    }
+    pub fn key(
+        &mut self,
+        node: NodeId,
+        event: &KeyboardEvent,
+        mut emit: impl FnMut(NodeEvent),
+    ) -> bool {
+        if !self.keyboard || event.is_composing {
+            return false;
+        }
+        let held = self.held_keys.iter().position(|key| key.code == event.code);
+        let phase = match (event.state, held) {
+            (KeyState::Down, None) if !event.repeat => {
+                self.held_keys.push(event.clone());
+                ActionPhase::Pressed
+            }
+            (KeyState::Down, Some(_)) => ActionPhase::Repeated,
+            (KeyState::Up, Some(index)) => {
+                self.held_keys.swap_remove(index);
+                ActionPhase::Released
+            }
+            _ => return true,
+        };
+        emit(NodeEvent::Key(NodeKey {
+            node,
+            event: event.clone(),
+            phase,
+        }));
+        true
     }
     pub fn binds(&self, control: Control) -> bool {
         self.map.binds(control)
@@ -28,6 +68,12 @@ impl NodeInput {
         event: &InputEvent,
         mut emit: impl FnMut(NodeEvent),
     ) -> bool {
+        if matches!(
+            event,
+            InputEvent::Cancel | InputEvent::Disconnected(InputDeviceId::Keyboard)
+        ) {
+            self.cancel_keys(node, &mut emit);
+        }
         if let InputEvent::Value { control, .. } = event
             && !self.map.binds(*control)
         {
@@ -47,6 +93,17 @@ impl NodeInput {
     }
     pub fn cancel(&mut self, node: NodeId, emit: impl FnMut(NodeEvent)) {
         self.update(node, &InputEvent::Cancel, emit);
+    }
+    pub fn cancel_keys(&mut self, node: NodeId, mut emit: impl FnMut(NodeEvent)) {
+        for mut event in self.held_keys.drain(..) {
+            event.state = KeyState::Up;
+            event.repeat = false;
+            emit(NodeEvent::Key(NodeKey {
+                node,
+                event,
+                phase: ActionPhase::Cancelled,
+            }));
+        }
     }
     pub fn pointer(
         &mut self,

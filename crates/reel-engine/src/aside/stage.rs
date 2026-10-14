@@ -192,10 +192,8 @@ impl StageBinding {
             NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
             NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
-            NodeKind::Image { .. }
-            | NodeKind::Button { .. }
-            | NodeKind::Input { .. }
-            | NodeKind::Scroll { .. } => 2,
+            NodeKind::Input { .. } => input::InputField::PROPERTIES.len() as u32,
+            NodeKind::Image { .. } | NodeKind::Button { .. } | NodeKind::Scroll { .. } => 2,
             _ => 0,
         })
     }
@@ -255,9 +253,11 @@ impl StageBinding {
             "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
             "reel::input" => {
                 input::validate(heap, 1, args[1])?;
+                input::validate(heap, 2, args[2])?;
                 NodeKind::Input {
                     bindings: input::read_bindings(heap, args[0])?,
                     listening: args[1].tag() != ValueTag::Null,
+                    keyboard: args[2].tag() != ValueTag::Null,
                 }
             }
             "reel::image" => NodeKind::Image {
@@ -398,7 +398,7 @@ impl StageBinding {
                 interaction_offset: field_count as u32,
                 fields_version: heap.info(fields)?.content_version,
                 input_source: if symbol == "reel::input" {
-                    Some(heap.handle(args[0])?)
+                    input::source_handle(heap, args[0])?
                 } else {
                     None
                 },
@@ -437,19 +437,22 @@ impl StageBinding {
             let (kind, offset) = match &node.kind {
                 NodeKind::Input { bindings, .. } => {
                     let source = heap.table_entry(fields, 0)?.1;
-                    let bindings = if binding.input_source == Some(heap.handle(source)?) {
+                    let bindings = if binding.input_source == input::source_handle(heap, source)? {
                         bindings.clone()
                     } else {
                         input::read_bindings(heap, source)?
                     };
                     let callback = heap.table_entry(fields, 1)?.1;
                     input::validate(heap, 1, callback)?;
+                    let keyboard = heap.table_entry(fields, 2)?.1;
+                    input::validate(heap, 2, keyboard)?;
                     (
                         NodeKind::Input {
                             bindings,
                             listening: callback.tag() != ValueTag::Null,
+                            keyboard: keyboard.tag() != ValueTag::Null,
                         },
-                        2,
+                        input::InputField::PROPERTIES.len(),
                     )
                 }
                 NodeKind::Scroll { .. } => (scroll_kind(heap, fields)?, 2),
@@ -518,9 +521,9 @@ impl StageBinding {
                 let source = heap
                     .table_entry(heap.host_fields(heap.import_handle(binding.handle)?)?, 0)?
                     .1;
-                if binding.input_source != Some(heap.handle(source)?) {
+                if binding.input_source != input::source_handle(heap, source)? {
                     binding.input_values = bindings.iter().map(|a| (a.name.clone(), 0.)).collect();
-                    binding.input_source = Some(heap.handle(source)?);
+                    binding.input_source = input::source_handle(heap, source)?;
                 }
             }
             self.scene.update(id, kind, props)?;
@@ -684,7 +687,9 @@ impl StageBinding {
                     true
                 }
                 NodeKind::Button { listening, .. } => *listening,
-                NodeKind::Input { bindings, .. } => !bindings.is_empty(),
+                NodeKind::Input {
+                    bindings, keyboard, ..
+                } => *keyboard || !bindings.is_empty(),
                 _ => false,
             } {
                 return true;

@@ -2,12 +2,33 @@ use super::*;
 use aside_host::FromValue;
 use reel_ui::{
     input::{Binding, Control},
-    stage::{ActionDefinition, InputBindings, NodeAction},
+    stage::{ActionDefinition, InputBindings, NodeAction, NodeKey},
 };
 use std::sync::Arc;
 
+#[derive(aside_host::Properties)]
+pub(in crate::aside) enum InputField {
+    #[aside(name = "bindings", ty = Any, default = null, validate = validate_bindings)]
+    Bindings,
+    #[aside(name = "on_action", ty = Any, default = null, validate = validate_callback)]
+    OnAction,
+    #[aside(name = "on_key", ty = Any, default = null, validate = validate_callback)]
+    OnKey,
+}
+fn validate_bindings(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    read_bindings(heap, value)
+        .map(|_| ())
+        .map_err(|_| HeapError::TypeMismatch)
+}
+fn validate_callback(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    validate_button_property(heap, 1, value)
+}
+
 pub(super) fn read_bindings(heap: &Heap, value: Value) -> Result<InputBindings, AdapterError> {
     let mut definitions = Vec::new();
+    if value.tag() == ValueTag::Null {
+        return Ok(InputBindings::new(definitions).expect("empty bindings"));
+    }
     for i in 0..heap.table_len(value)? {
         let (name, values) = heap.table_entry(value, i)?;
         let name: Arc<str> = String::from_value(heap, name)?.into();
@@ -36,16 +57,38 @@ pub(super) fn read_bindings(heap: &Heap, value: Value) -> Result<InputBindings, 
         .map_err(|_| AdapterError::Input("invalid action name, scale or dead zone"))
 }
 pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
-    match index {
-        0 => read_bindings(heap, value)
-            .map(|_| ())
-            .map_err(|_| HeapError::TypeMismatch),
-        1 => validate_button_property(heap, 1, value),
-        _ => validate_layout_property(heap, index - 2, value),
+    let count = InputField::PROPERTIES.len() as u32;
+    if index < count {
+        InputField::validate(heap, index, value)
+    } else {
+        validate_layout_property(heap, index - count, value)
     }
 }
 
 impl StageBinding {
+    pub(in crate::aside) fn input_key(
+        &self,
+        heap: &Heap,
+        key: &NodeKey,
+    ) -> Result<Option<(Value, Value)>, AdapterError> {
+        use reel_ui::input::ActionPhase;
+        if !self
+            .scene
+            .node(key.node)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Input { .. }))
+        {
+            return Ok(None);
+        }
+        let terminal = matches!(key.phase, ActionPhase::Released | ActionPhase::Cancelled);
+        if !terminal && !self.mounted_in_scope(heap, key.node, self.modal_scope(heap)?)? {
+            return Ok(None);
+        }
+        let target = self.value(heap, key.node)?;
+        let callback = heap
+            .table_entry(heap.host_fields(target)?, InputField::OnKey.index() as u32)?
+            .1;
+        Ok((callback.tag() != ValueTag::Null).then_some((target, callback)))
+    }
     pub(in crate::aside) fn input_action(
         &mut self,
         heap: &Heap,
@@ -75,7 +118,12 @@ impl StageBinding {
                 *value = action.value;
             }
         }
-        let closure = heap.table_entry(heap.host_fields(target)?, 1)?.1;
+        let closure = heap
+            .table_entry(
+                heap.host_fields(target)?,
+                InputField::OnAction.index() as u32,
+            )?
+            .1;
         Ok((closure.tag() != ValueTag::Null).then_some((target, closure)))
     }
 }
@@ -120,8 +168,13 @@ pub(crate) fn value(
     let id = context.host.id(context.vm.heap(), receiver)?;
     // A synchronous read after bindings assignment observes the new neutral state.
     let heap = context.vm.heap();
-    let source = heap.table_entry(heap.host_fields(receiver)?, 0)?.1;
-    if context.host.handles[&id].input_source != Some(heap.handle(source)?) {
+    let source = heap
+        .table_entry(
+            heap.host_fields(receiver)?,
+            InputField::Bindings.index() as u32,
+        )?
+        .1;
+    if context.host.handles[&id].input_source != source_handle(heap, source)? {
         for i in 0..heap.table_len(source)? {
             if String::from_value(heap, heap.table_entry(source, i)?.0)? == action {
                 return Ok(0.);
@@ -134,4 +187,12 @@ pub(crate) fn value(
         .get(action.as_str())
         .ok_or(AdapterError::Input("unknown input action"))?;
     Ok((*value).into())
+}
+
+pub(super) fn source_handle(heap: &Heap, value: Value) -> Result<Option<HeapHandle>, HeapError> {
+    if value.tag() == ValueTag::Null {
+        Ok(None)
+    } else {
+        heap.handle(value).map(Some)
+    }
 }

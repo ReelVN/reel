@@ -262,7 +262,9 @@ impl SceneWidget {
             button: ButtonBehavior::default(),
             interaction: InteractionState::default(),
             input: match &view.node.kind {
-                NodeKind::Input { bindings, .. } => Some(NodeInput::new(bindings.clone())),
+                NodeKind::Input {
+                    bindings, keyboard, ..
+                } => Some(NodeInput::new(bindings.clone(), *keyboard)),
                 _ => None,
             },
             label,
@@ -356,14 +358,18 @@ impl SceneWidget {
                 });
             }
         }
-        if let (Some(input), NodeKind::Input { bindings, .. }) =
-            (&mut this.widget.input, &view.node.kind)
-            && input.bindings != *bindings
+        if let (
+            Some(input),
+            NodeKind::Input {
+                bindings, keyboard, ..
+            },
+        ) = (&mut this.widget.input, &view.node.kind)
+            && (input.bindings != *bindings || input.keyboard != *keyboard)
         {
             input.cancel(this.widget.node.id, |event| {
                 this.ctx.submit_action::<NodeEvent>(event)
             });
-            *input = NodeInput::new(bindings.clone());
+            *input = NodeInput::new(bindings.clone(), *keyboard);
         }
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
@@ -631,6 +637,11 @@ impl Widget for SceneWidget {
             if ctx.focus_target_id().is_some() && !ctx.is_focus_target() && !cleanup {
                 return;
             }
+            if let TextEvent::Keyboard(key) = event
+                && input.key(self.node.id, key, |e| ctx.submit_action::<NodeEvent>(e))
+            {
+                ctx.set_handled();
+            }
             let raw = match event {
                 TextEvent::Input(e) => Some(e.clone()),
                 TextEvent::Keyboard(e) if e.repeat => {
@@ -735,6 +746,12 @@ impl Widget for SceneWidget {
         if matches!(event, Update::WidgetAdded) {
             ctx.set_disabled(!self.node.props.enabled);
             ctx.set_modal(self.node.props.modal);
+        }
+        if matches!(event, Update::ChildFocusChanged(true))
+            && let Some(input) = &mut self.input
+        {
+            // Keys accepted by the root fallback must not survive a new focus owner.
+            input.cancel_keys(self.node.id, |e| ctx.submit_action::<NodeEvent>(e));
         }
         // These notifications run before the widget state's flag is committed.
         let disabled = match event {

@@ -12,7 +12,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
         "reel::toggle" => &["label", "value", "on_change"],
-        "reel::input" => &["bindings", "on_action"],
+        "reel::input" => &["bindings", "on_action", "on_key"],
         _ => &[],
     }
 }
@@ -112,6 +112,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     default: Some(bc::Const::Bool(false)),
                 },
             ]);
+        } else if name == "input" {
+            parameters.extend(
+                super::stage::input::InputField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
         } else if name == "text_input" {
             parameters.extend(
                 super::stage::text_input::TextInputField::PROPERTIES
@@ -139,7 +145,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     } else {
                         BuiltinType::String
                     },
-                    default: if name == "button" || field == "on_action" {
+                    default: if matches!(name, "button" | "input") {
                         Some(bc::Const::Null)
                     } else {
                         (field == "fit").then(|| bc::Const::Utf8("contain".into()))
@@ -167,7 +173,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if matches!(name, "scroll" | "text_input") {
+            abi_version: if name == "input" {
+                5
+            } else if matches!(name, "scroll" | "text_input") {
                 1
             } else {
                 4
