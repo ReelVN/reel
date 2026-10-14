@@ -808,7 +808,7 @@ text_input(value: bind(profile.name), width: 280, height: 40,
 
 Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).
 
-For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. The callback consumes keyboard input owned by the input node; a focused text editor takes priority, and text_input continues to use the system IME. Omit bindings when no action mapping is needed, or combine on_action for gamepad and pointer controls. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
+For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit bindings when no action mapping is needed, or combine on_action for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
 
 `bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
 

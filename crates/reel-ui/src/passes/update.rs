@@ -844,6 +844,15 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
 
     root.global_state.focused_widget = next_focused;
     root.global_state.focused_path = next_focused_path;
+    if prev_focused != next_focused {
+        run_targeted_update_pass(root, next_focused, |widget, ctx, props| {
+            if let Some(target) = next_focused
+                && ctx.widget_id() != target
+            {
+                widget.update(ctx, props, &Update::DescendantFocusChanged(target));
+            }
+        });
+    }
 }
 
 // ----------------

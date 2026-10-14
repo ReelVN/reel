@@ -627,8 +627,16 @@ impl Widget for SceneWidget {
         }
         if let Some(input) = &mut self.input {
             use reel_ui::input::{Control, InputDeviceId, InputEvent};
-            // Focused child controls own both keyboard and controller input.
-            // Cleanup still reaches the previous input owner after focus changed.
+            // Event propagation has already given child controls first refusal.
+            // Editors retain even unhandled keys; ordinary controls may bubble
+            // unrelated keys to this author callback. Action maps still require focus.
+            if !ctx.is_text_input_focused()
+                && let TextEvent::Keyboard(key) = event
+                && input.key(self.node.id, key, |e| ctx.submit_action::<NodeEvent>(e))
+            {
+                ctx.set_handled();
+            }
+            // Cleanup still reaches the previous owner after focus changed.
             let cleanup = matches!(
                 event,
                 TextEvent::WindowFocusChange(false)
@@ -636,11 +644,6 @@ impl Widget for SceneWidget {
             );
             if ctx.focus_target_id().is_some() && !ctx.is_focus_target() && !cleanup {
                 return;
-            }
-            if let TextEvent::Keyboard(key) = event
-                && input.key(self.node.id, key, |e| ctx.submit_action::<NodeEvent>(e))
-            {
-                ctx.set_handled();
             }
             let raw = match event {
                 TextEvent::Input(e) => Some(e.clone()),
@@ -747,10 +750,10 @@ impl Widget for SceneWidget {
             ctx.set_disabled(!self.node.props.enabled);
             ctx.set_modal(self.node.props.modal);
         }
-        if matches!(event, Update::ChildFocusChanged(true))
+        if matches!(event, Update::DescendantFocusChanged(_))
             && let Some(input) = &mut self.input
         {
-            // Keys accepted by the root fallback must not survive a new focus owner.
+            // Includes sibling-to-sibling moves with unchanged ancestor focus state.
             input.cancel_keys(self.node.id, |e| ctx.submit_action::<NodeEvent>(e));
         }
         // These notifications run before the widget state's flag is committed.
