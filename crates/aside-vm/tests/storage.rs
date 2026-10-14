@@ -1,6 +1,86 @@
 use aside_vm::*;
 
 #[test]
+fn default_storage_grows_past_old_content_quotas_during_each_gc_phase() {
+    for phase in [GcPhase::Idle, GcPhase::Mark, GcPhase::Weak, GcPhase::Sweep] {
+        let mut h = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let initial = h.stats().reserved_bytes;
+        let anchor = h.alloc_cell(Value::int(-1)).unwrap();
+        let token = root(&mut h, anchor);
+        if phase != GcPhase::Idle {
+            h.begin_collection().unwrap();
+            reach_phase(&mut h, phase);
+        }
+        let start = std::time::Instant::now();
+        let mut values = Vec::with_capacity(20_000);
+        for i in 0..20_000 {
+            let value = h.alloc_cell(Value::int(i)).unwrap();
+            values.push((value, root(&mut h, value)));
+        }
+        let elapsed = start.elapsed();
+        if h.phase() != GcPhase::Idle {
+            finish(&mut h, GcBudget::default());
+        }
+        let allocations = allocation_counter::measure(|| collect(&mut h));
+        assert_eq!(
+            allocations.count_total, 0,
+            "collection after growth allocates nothing"
+        );
+        assert_eq!(h.stats().live_objects, 20_001);
+        assert!(h.root_value(token).unwrap().same_bits(anchor));
+        for (i, &(value, token)) in values.iter().enumerate() {
+            assert!(h.root_value(token).unwrap().same_bits(value));
+            assert_eq!(h.cell_read(value).unwrap().as_int(), Some(i as i64));
+            h.release_root(token).unwrap();
+        }
+        h.release_root(token).unwrap();
+        collect(&mut h);
+        assert_eq!(h.stats().live_objects, 0);
+        assert_eq!(h.stats().charged_bytes, h.stats().reserved_bytes);
+        eprintln!(
+            "20k cells/roots in {phase:?}: {elapsed:?}; startup={initial}, reserved={}, peak={}",
+            h.stats().reserved_bytes,
+            h.stats().peak_charged_bytes
+        );
+    }
+}
+
+#[test]
+fn failed_growth_keeps_published_values_and_accounts_for_retained_capacity() {
+    let baseline = Heap::new(SessionEpoch(1), HeapLimits::default())
+        .unwrap()
+        .stats()
+        .reserved_bytes;
+    let mut h = Heap::new(
+        SessionEpoch(1),
+        HeapLimits {
+            max_bytes: baseline + 8_192,
+            ..HeapLimits::default()
+        },
+    )
+    .unwrap();
+    let first = h.alloc_cell(Value::int(42)).unwrap();
+    let token = root(&mut h, first);
+    for _ in 1..256 {
+        h.alloc_cell(Value::NULL).unwrap();
+    }
+    assert!(matches!(
+        h.alloc_cell(Value::NULL),
+        Err(HeapError::ResourceLimit { .. })
+    ));
+    assert_eq!(h.stats().live_objects, 256);
+    assert_eq!(h.stats().charged_bytes, h.stats().reserved_bytes);
+    assert_eq!(
+        h.cell_read(h.root_value(token).unwrap()).unwrap().as_int(),
+        Some(42)
+    );
+    collect(&mut h);
+    assert_eq!(h.stats().live_objects, 1);
+    h.alloc_cell(Value::int(7)).unwrap();
+    assert!(h.stats().charged_bytes <= h.budget_usage().limit());
+}
+
+#[test]
 fn single_root_gc_and_owner_scans_charge_used_high_water_and_holes() {
     for max_roots in [8, 4096] {
         let mut h = Heap::new(

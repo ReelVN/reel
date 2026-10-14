@@ -1,6 +1,7 @@
 mod model;
 mod properties;
 mod reactive;
+mod storage;
 pub(crate) use reactive::DerivedSlot;
 mod table;
 use crate::HeapBudgetUsage;
@@ -118,6 +119,7 @@ impl RootToken {
 
 #[derive(Clone, Copy, Debug)]
 pub struct HeapLimits {
+    /// Optional host count quotas. Defaults are the slotmap representation ceiling.
     pub max_objects: u32,
     pub max_roots: u32,
     pub max_root_ranges: u32,
@@ -130,9 +132,9 @@ pub struct HeapLimits {
 impl Default for HeapLimits {
     fn default() -> Self {
         Self {
-            max_objects: 16_384,
-            max_roots: 1024,
-            max_root_ranges: 1024,
+            max_objects: u32::MAX - 1,
+            max_roots: u32::MAX - 1,
+            max_root_ranges: u32::MAX - 1,
             max_bytes: u64::MAX,
             max_mutation_values: 256,
             max_mutation_bytes: 4096,
@@ -315,17 +317,20 @@ impl Heap {
         {
             return Err(HeapError::InvalidLimits);
         }
+        let initial_objects = limits.max_objects.min(256) as usize;
+        let initial_roots = limits.max_roots.min(64) as usize;
+        let initial_ranges = limits.max_root_ranges.min(64) as usize;
         let object_stride = std::mem::size_of::<crate::slots::Slot<Object>>()
             + 2 * std::mem::align_of::<crate::slots::Slot<Object>>().max(4);
         let root_stride = std::mem::size_of::<crate::slots::Slot<Root>>()
             + 2 * std::mem::align_of::<crate::slots::Slot<Root>>().max(4);
         let range_stride = std::mem::size_of::<crate::slots::Slot<RangeDescriptor>>()
             + 2 * std::mem::align_of::<crate::slots::Slot<RangeDescriptor>>().max(4);
-        let estimate = (limits.max_objects as u64 + 1) * object_stride as u64
-            + (limits.max_roots as u64 + 1) * root_stride as u64
-            + limits.max_objects as u64 * 3 * std::mem::size_of::<HeapKey>() as u64
-            + (limits.max_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
-            + (limits.max_root_ranges as u64 + 1)
+        let estimate = (initial_objects as u64 + 1) * object_stride as u64
+            + (initial_roots as u64 + 1) * root_stride as u64
+            + initial_objects as u64 * 4 * std::mem::size_of::<HeapKey>() as u64
+            + (initial_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
+            + (initial_ranges as u64 + 1)
                 * (range_stride as u64 + std::mem::size_of::<Option<RangeKey>>() as u64)
             + BOOK_BYTES
             + std::mem::size_of::<Self>() as u64;
@@ -345,23 +350,23 @@ impl Heap {
         let mut heap = Self {
             id: HeapId::fresh().ok_or(HeapError::IdentityExhausted)?,
             epoch,
-            objects: Slots::new(limits.max_objects as usize, retirement),
-            roots: Slots::new(limits.max_roots as usize, retirement),
-            root_index: vec![None; limits.max_roots as usize + 1],
+            objects: Slots::new(initial_objects, limits.max_objects as usize, retirement),
+            roots: Slots::new(initial_roots, limits.max_roots as usize, retirement),
+            root_index: vec![None; initial_roots + 1],
             root_scan_len: 0,
-            ranges: Slots::new(limits.max_root_ranges as usize, retirement),
-            range_index: vec![None; limits.max_root_ranges as usize + 1],
+            ranges: Slots::new(initial_ranges, limits.max_root_ranges as usize, retirement),
+            range_index: vec![None; initial_ranges + 1],
             range_scan_len: 0,
             next_attachment: 0,
             usage,
-            allocations: VecDeque::with_capacity(limits.max_objects as usize),
-            gray: VecDeque::with_capacity(limits.max_objects as usize),
-            release: VecDeque::with_capacity(limits.max_objects as usize),
+            allocations: VecDeque::with_capacity(initial_objects),
+            gray: VecDeque::with_capacity(initial_objects),
+            release: VecDeque::with_capacity(initial_objects),
             gc: Collector::default(),
             property_work: Vec::new(),
             model_work: Vec::new(),
             model_walk: 0,
-            reactive_queue: VecDeque::with_capacity(limits.max_objects as usize),
+            reactive_queue: VecDeque::with_capacity(initial_objects),
             reactive_capture: None,
             evaluation: 0,
             property_proposal: None,
@@ -576,9 +581,7 @@ impl Heap {
     }
     fn allocate_values(&mut self, kind: ObjectKind, input: &[Value]) -> Result<Value, HeapError> {
         self.input_values(input)?;
-        if self.objects.full() {
-            return Err(HeapError::ObjectCapacity);
-        }
+        self.ensure_object_slot()?;
         if kind == ObjectKind::Cell {
             self.shade(input[0]);
             return Ok(self.allocate(
@@ -794,9 +797,7 @@ impl Heap {
     }
     fn allocate_bytes(&mut self, kind: ObjectKind, input: &[u8]) -> Result<Value, HeapError> {
         u32::try_from(input.len()).map_err(|_| HeapError::OutOfBounds)?;
-        if self.objects.full() {
-            return Err(HeapError::ObjectCapacity);
-        }
+        self.ensure_object_slot()?;
         let chunks = (input.len() as u64).div_ceil(crate::BYTE_CHUNK_LEN as u64);
         self.ensure_bytes(chunks * BYTE_CHUNK_BYTES)?;
         let mut bytes = Bytes::default();
@@ -1137,9 +1138,7 @@ impl Heap {
     }
     pub fn alloc_weakref(&mut self, target: Value) -> Result<Value, HeapError> {
         let weak = self.downgrade(target)?;
-        if self.objects.full() {
-            return Err(HeapError::ObjectCapacity);
-        }
+        self.ensure_object_slot()?;
         Ok(self.allocate(ObjectKind::WeakRef, Payload::Empty, Some(weak.0), 0))
     }
     pub fn upgrade_weakref(&mut self, reference: Value) -> Result<Option<Value>, HeapError> {
@@ -1164,9 +1163,7 @@ impl Heap {
         kind: RootKind,
         value: Value,
     ) -> Result<RootToken, HeapError> {
-        if self.roots.full() {
-            return Err(HeapError::RootCapacity);
-        }
+        self.ensure_root_slot()?;
         self.barrier(value)?;
         let key = self.roots.insert(Root { value, owner, kind });
         self.root_index[index(key)] = Some(key);
@@ -1253,6 +1250,8 @@ impl Drop for Heap {
         drop(std::mem::take(&mut self.gray));
         drop(std::mem::take(&mut self.release));
         drop(std::mem::take(&mut self.property_work));
+        drop(std::mem::take(&mut self.model_work));
+        drop(std::mem::take(&mut self.reactive_queue));
         // The Rc book itself remains physically live while an observer/pool owns it.
         self.usage
             .refund(self.reserved - BOOK_BYTES + self.payload_bytes);

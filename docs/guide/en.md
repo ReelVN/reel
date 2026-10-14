@@ -91,7 +91,7 @@ for caption in captions {
 ## 2 Describing the Whole Scene in Code
 ### Organizing Component Data
 
-The story VM has no fixed default memory byte quota; embedding hosts can set an explicit budget for their environment. Long operations yield across execution slices to keep presentation responsive.
+The story VM has no fixed default memory byte quota. Object and root storage grows on demand, without the former default thresholds of 16,384 objects or 1,024 roots; embedding hosts can set an explicit budget for their environment. Long operations yield across execution slices to keep presentation responsive.
 
 Use `match` to select dialogue, UI or behavior by value. It supports literals, names, `_`, OR and type tests, with guards after `if`. Only the first matching arm with a true guard runs; its final expression supplies the result. No match raises MatchError. Structural destructuring is not implemented yet. See [match_values.aside](../../examples/match_values.aside) for a runnable example.
 

@@ -292,6 +292,8 @@ impl FrameSlots {
                 limit: limit as u64,
             });
         }
+        heap.ensure_range_slot()?;
+        self.grow_descriptors(heap.range_index.len())?;
         let free_index = if len == 0 {
             None
         } else {
@@ -328,6 +330,24 @@ impl FrameSlots {
         self.active_values += len;
         self.active_ranges += 1;
         Ok(token)
+    }
+    fn grow_descriptors(&mut self, slots: usize) -> Result<(), HeapError> {
+        if slots <= self.mappings.as_ref().unwrap().data.len() {
+            return Ok(());
+        }
+        let mut mappings = ChargedVec::new(&self.usage, slots)?;
+        mappings
+            .data
+            .extend_from_slice(&self.mappings.as_ref().unwrap().data);
+        mappings.data.resize(slots, None);
+        let mut free = ChargedVec::new(&self.usage, slots)?;
+        free.data
+            .extend_from_slice(&self.free.as_ref().unwrap().data);
+        // Both allocations succeeded. Existing windows and free spans retain
+        // their positions; no descriptor can become visible between these swaps.
+        self.mappings = Some(mappings);
+        self.free = Some(free);
+        Ok(())
     }
     pub fn read(&self, at: RangePosition) -> Result<Value, HeapError> {
         let i = self.position(at)?;

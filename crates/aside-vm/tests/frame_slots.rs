@@ -1,5 +1,49 @@
 use aside_vm::*;
 
+#[test]
+fn growing_range_descriptors_preserve_windows_and_incremental_gc() {
+    let mut h = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let mut f = FrameSlots::new(
+        &mut h,
+        FrameSlotsLimits {
+            initial_capacity: 2_048,
+            max_capacity: 2_048,
+            max_window_len: 2_048,
+        },
+    )
+    .unwrap();
+    let mut windows = Vec::new();
+    for i in 0..1_100 {
+        let value = h.alloc_cell(Value::int(i)).unwrap();
+        let range = f.open(&mut h, RootOwner(1), RootKind::Host, 1).unwrap();
+        f.write(&mut h, at(range, 0), value).unwrap();
+        windows.push(range);
+        if i == 32 {
+            h.begin_collection().unwrap();
+        }
+        if h.phase() != GcPhase::Idle {
+            step(&mut h, &f, one());
+        }
+    }
+    if h.phase() != GcPhase::Idle {
+        finish(&mut h, &f);
+    }
+    collect(&mut h, &f);
+    for (i, range) in windows.into_iter().enumerate() {
+        assert_eq!(
+            h.cell_read(f.read(at(range, 0)).unwrap()).unwrap().as_int(),
+            Some(i as i64)
+        );
+        f.release(&mut h, range).unwrap();
+    }
+    collect(&mut h, &f);
+    assert_eq!(h.stats().live_objects, 0);
+    assert_eq!(h.stats().root_ranges, 0);
+    f.close(&mut h).unwrap();
+    drop(f);
+    assert_eq!(h.stats().charged_bytes, h.stats().reserved_bytes);
+}
+
 fn limits() -> HeapLimits {
     HeapLimits {
         max_objects: 64,
