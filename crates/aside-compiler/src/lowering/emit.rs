@@ -2,6 +2,25 @@ use super::{Compilation, Error, ErrorKind, ir::*};
 use aside_vm::bytecode as bc;
 use std::mem::size_of;
 
+fn source_run(
+    output: &mut bc::FunctionDef,
+    span: bc::SourceSpan,
+    b: &mut super::budget::Budget,
+) -> Result<(), Box<Error>> {
+    if output
+        .source_map
+        .last()
+        .is_none_or(|entry| entry.span != span)
+    {
+        b.reserve(&mut output.source_map, 1)?;
+        output.source_map.push(bc::SourceMapEntry {
+            pc: bc::Pc(output.code.len() as u32),
+            span,
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
     let b = &mut ir.budget;
     for f in ir.functions.drain(..) {
@@ -29,7 +48,6 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
         boundaries.push(count);
         let output = &mut ir.package.functions[f.output.index()];
         b.reserve(&mut output.code, count as usize)?;
-        b.reserve(&mut output.source_map, count as usize)?;
         // Iterate layout by reference, then reclaim operations as each block is consumed.
         let mut blocks = f.blocks;
         for &id in &f.layout {
@@ -37,10 +55,7 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
             for op in block.operations.drain(..) {
                 b.span = op.span;
                 b.work(1)?;
-                output.source_map.push(bc::SourceMapEntry {
-                    pc: bc::Pc(output.code.len() as u32),
-                    span: source(ir.source, op.span),
-                });
+                source_run(output, source(ir.source, op.span), b)?;
                 output.code.push(op.instruction);
             }
             let (term, span) = block.terminator.take().expect("checked terminator");
@@ -79,10 +94,7 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
             };
             b.span = span;
             b.work(1)?;
-            output.source_map.push(bc::SourceMapEntry {
-                pc: bc::Pc(output.code.len() as u32),
-                span: source(ir.source, span),
-            });
+            source_run(output, source(ir.source, span), b)?;
             output.code.push(instruction);
             let ops = std::mem::take(&mut block.operations);
             b.release(ops);
@@ -116,6 +128,7 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
 
 pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     write(&mut ir)?;
+    super::constants::intern(&mut ir.package, &mut ir.budget)?;
     let b = &mut ir.budget;
     b.span = ir.metadata.source_span;
     let mut validation_limits = ir.options.bytecode_limits;

@@ -39,6 +39,12 @@ version independently of its native ABI version.
 
 The IR reuses B01 instructions, bindings, captures, types and descriptors.
 It adds ordered basic blocks, explicit terminators and exact source spans.
+Final emission interns identical UTF-8 constants across the complete package,
+including host defaults and all project modules. Tuple identities stay distinct;
+constant references in instructions, tuples and patterns are relocated together.
+Adjacent instruction locations with the same source span share one source-map
+run; every PC still resolves to the same source span. Both passes use the existing
+work/capacity ledger and leave B01 v1 and author behavior unchanged.
 Parameters occupy fixed prefix slots. Lexical bindings retain stable slots;
 temporary slots and contiguous call windows are reclaimed when their last
 lowering use ends. The callee and all actual arguments are evaluated before

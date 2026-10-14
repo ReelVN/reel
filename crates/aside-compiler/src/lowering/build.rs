@@ -426,21 +426,21 @@ pub(super) fn lower_prepared<'a>(
 
 /// Fallible heapsort: comparisons charge work before examining text. A trusted
 /// seed id wins ties, so duplicate source names retain the seed ABI identity.
-pub(super) fn sort_names(
-    values: &mut [(&str, Option<bc::SymbolId>)],
+pub(super) fn sort_names<T: Copy>(
+    values: &mut [(&str, Option<T>)],
     b: &mut Budget,
 ) -> Result<(), Box<Error>> {
-    fn less(
-        a: (&str, Option<bc::SymbolId>),
-        c: (&str, Option<bc::SymbolId>),
+    fn less<T: Copy>(
+        a: (&str, Option<T>),
+        c: (&str, Option<T>),
         b: &mut Budget,
     ) -> Result<bool, Box<Error>> {
         Ok(b.compare(a.0, c.0)?
             .then_with(|| a.1.is_none().cmp(&c.1.is_none()))
             .is_lt())
     }
-    fn sift(
-        values: &mut [(&str, Option<bc::SymbolId>)],
+    fn sift<T: Copy>(
+        values: &mut [(&str, Option<T>)],
         mut root: usize,
         end: usize,
         b: &mut Budget,

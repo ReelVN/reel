@@ -36,6 +36,7 @@ const SCENES: &[(&str, E)] = &[
     ("game variables in story", E::Block),
     ("settings component", E::Module),
     ("arrive helper", E::Module),
+    ("external translations in story", E::Block),
     ("runnable button module", E::Module),
     ("modal menu module", E::Module),
     ("named input actions module", E::Module),

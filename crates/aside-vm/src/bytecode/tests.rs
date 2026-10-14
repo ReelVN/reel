@@ -691,6 +691,25 @@ fn source_spans_preserve_utf8_byte_boundaries_and_locate_bad_instructions() {
     let bytes = encode(&p, limits()).unwrap();
     let v = VerifiedProgram::decode(&bytes, limits()).unwrap();
     assert_eq!(v.source_at(FunctionId(0), Pc(0)).unwrap().end, 6);
+    let code_len = p.functions[0].code.len();
+    for pc in 1..code_len {
+        assert_eq!(
+            v.source_at(FunctionId(0), Pc(pc as u32)),
+            v.source_at(FunctionId(0), Pc(0))
+        );
+    }
+    assert_eq!(v.source_at(FunctionId(0), Pc(code_len as u32)), None);
+    let mut malformed = p.clone();
+    malformed.functions[0].code[1].operands[0] = u32::MAX;
+    let error = verify(malformed, limits()).unwrap_err();
+    assert_eq!(error.source, v.source_at(FunctionId(0), Pc(1)));
+    p.functions[0].source_map[0].pc = Pc(1);
+    let sparse = verify(p.clone(), limits()).unwrap();
+    assert_eq!(sparse.source_at(FunctionId(0), Pc(0)), None);
+    assert_eq!(
+        sparse.source_at(FunctionId(0), Pc(1)),
+        v.source_at(FunctionId(0), Pc(0))
+    );
     p.functions[0].source_map[0].span.end = 1;
     bad(p, ErrorKind::Source);
     let mut p = fixtures::helper_native();
