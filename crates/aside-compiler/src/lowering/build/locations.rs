@@ -20,6 +20,58 @@ enum PreparedLocation {
 }
 
 impl FunctionBuilder<'_, '_> {
+    pub(super) fn property_reference(
+        &mut self,
+        node: h::NodeId,
+        arguments: Option<h::NodeId>,
+        children: Option<h::NodeId>,
+        depth: usize,
+    ) -> Result<Option<bc::Reg>, Box<Error>> {
+        let argument = arguments.and_then(|a| {
+            let mut args = self.l.m.hir().children(a);
+            let first = args.next()?;
+            if args.next().is_some() {
+                None
+            } else {
+                Some(first)
+            }
+        });
+        let value = match argument.map(|a| self.l.m.hir().node(a).form) {
+            Some(Form::Argument { name: None, value }) if children.is_none() => value,
+            _ => {
+                return Err(self.l.b.error(
+                    ErrorKind::Unsupported,
+                    "bind requires one positional property location",
+                ));
+            }
+        };
+        let Some(location) = self.prepare_location(value, depth + 1)? else {
+            return Ok(None);
+        };
+        let (object, key) = match location {
+            PreparedLocation::Index { object, key, .. } => (object, key),
+            PreparedLocation::Member { object, symbol, .. } => {
+                let name = self.l.package.symbols[symbol.index()].clone();
+                (object, self.constant(bc::Const::Utf8(name), node)?)
+            }
+            PreparedLocation::Name { .. } => {
+                return Err(self
+                    .l
+                    .b
+                    .error(ErrorKind::Unsupported, "bind requires a property location"));
+            }
+        };
+        let descriptor = self.descriptor(bc::Descriptor::Property {
+            key,
+            writable: true,
+        })?;
+        let out = self.temp()?;
+        self.op(bc::Opcode::PropertyRef, out.0, object.0, descriptor.0, node)?;
+        self.release(object)?;
+        self.release(key)?;
+        Ok(Some(out))
+    }
+
     fn prepare_location(
         &mut self,
         mut n: h::NodeId,

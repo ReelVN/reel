@@ -2686,7 +2686,8 @@ impl Vm {
         }
         if matches!(
             op,
-            Opcode::CellNew
+            Opcode::PropertyRef
+                | Opcode::CellNew
                 | Opcode::MakeClosure
                 | Opcode::MakeTuple
                 | Opcode::MakeArray
@@ -2822,6 +2823,27 @@ impl Vm {
                 self.put(s.env, 1, table).map_err(vm_fault)?;
                 self.next_table_field(s, r(a), DescriptorId(b), 0)
                     .map_err(vm_fault)?;
+                return Ok(false);
+            }
+            Opcode::PropertyRef => {
+                let host = self.read(*s, r(b))?;
+                let Descriptor::Property { key, writable } = self.program.package().functions
+                    [s.code.function.index()]
+                .descriptors[c as usize] else {
+                    unreachable!()
+                };
+                let key = self.read(*s, key)?;
+                let fields = self.heap.host_fields(host).map_err(heap_fault)?;
+                self.start_table(
+                    s,
+                    fields,
+                    key,
+                    TableAction::PropertyRef {
+                        dest: r(a),
+                        object: r(b),
+                        writable,
+                    },
+                )?;
                 return Ok(false);
             }
             Opcode::MemberGet | Opcode::MemberSet => {
@@ -4149,7 +4171,9 @@ fn heap_fault(e: HeapError) -> FaultKind {
         HeapError::ReadOnly => FaultKind::ReadOnly,
         HeapError::TypeMismatch | HeapError::WrongKind => FaultKind::Type,
         HeapError::AlreadyInitialized => FaultKind::AlreadyInitialized,
-        HeapError::InvalidHandle | HeapError::RetiredHost => FaultKind::InvalidState,
+        HeapError::InvalidHandle | HeapError::RetiredHost | HeapError::BindingCycle => {
+            FaultKind::InvalidState
+        }
         _ => FaultKind::Resource,
     }
 }

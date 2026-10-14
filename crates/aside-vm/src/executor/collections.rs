@@ -185,6 +185,11 @@ pub(super) enum TableAction {
         field: u32,
     },
     Get(Reg),
+    PropertyRef {
+        dest: Reg,
+        object: Reg,
+        writable: bool,
+    },
     MemberGet {
         dest: Reg,
         symbol: SymbolId,
@@ -346,16 +351,18 @@ impl Vm {
             && work.entry == len
             && !work.matched
             && matches!(work.action, TableAction::MemberGet { symbol, .. } if Builtin::lookup(ObjectKind::Table, &self.program.package().symbols[symbol.index()]).is_some());
-        let extra = if fallback
-            || (store
-                && !matches!(work.action, TableAction::SetHost { .. })
-                && !work.matched
-                && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN))
-        {
-            VALUE_CHUNK_BYTES
-        } else {
-            0
-        };
+        let extra =
+            if (store && work.matched && matches!(work.action, TableAction::PropertyRef { .. }))
+                || fallback
+                || (store
+                    && !matches!(work.action, TableAction::SetHost { .. })
+                    && !work.matched
+                    && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN))
+            {
+                VALUE_CHUNK_BYTES
+            } else {
+                0
+            };
         if !meter.take(0, 1, extra) {
             return Ok(false);
         }
@@ -495,6 +502,26 @@ impl Vm {
                 s.phase = ScriptPhase::TableSpread(spread);
                 return Ok(());
             }
+            TableAction::PropertyRef {
+                dest,
+                object,
+                writable,
+            } => {
+                if !work.matched {
+                    return self.collection_fault(s, FaultKind::MissingKey);
+                }
+                let host = self.value(s.regs, object.0)?;
+                match self.heap.alloc_property_ref(
+                    crate::PropertyId {
+                        host,
+                        field: work.entry,
+                    },
+                    writable,
+                ) {
+                    Ok(reference) => self.put(s.regs, dest.0, reference)?,
+                    Err(error) => return self.collection_fault(s, heap_fault(error)),
+                }
+            }
             TableAction::HasOwn(dest) => self.put(s.regs, dest.0, Value::bool(work.matched))?,
             TableAction::Get(dest) | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
@@ -523,23 +550,24 @@ impl Vm {
                     Ok(value) => value,
                     Err(kind) => return self.collection_fault(s, kind),
                 };
-                if let TableAction::SetHost { object, .. } = work.action {
-                    let host = match self.read(*s, object) {
-                        Ok(host) => host,
-                        Err(kind) => return self.collection_fault(s, kind),
-                    };
-                    if let Err(error) = self.heap.validate_host_property(host, work.entry, value) {
-                        return self.collection_fault(s, heap_fault(error));
+                let result = if let TableAction::SetHost { object, .. } = work.action {
+                    if self.heap.is_property_ref(value) && s.effects.0 & Effects::ALLOCATE == 0 {
+                        return self.collection_fault(s, FaultKind::Effect);
                     }
-                }
-                if let Err(error) = self.heap.table_store(table, work.entry, key, value) {
+                    let host = self.value(s.regs, object.0)?;
+                    self.heap.write_host_property(
+                        crate::PropertyId {
+                            host,
+                            field: work.entry,
+                        },
+                        value,
+                        true,
+                    )
+                } else {
+                    self.heap.table_store(table, work.entry, key, value)
+                };
+                if let Err(error) = result {
                     return self.collection_fault(s, heap_fault(error));
-                }
-                if let TableAction::SetHost { object, .. } = work.action {
-                    let host = self
-                        .read(*s, object)
-                        .map_err(|_| VmError::Contract("validated host receiver"))?;
-                    self.heap.record_host_write(host, work.entry)?;
                 }
             }
             TableAction::Build {

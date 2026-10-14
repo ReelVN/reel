@@ -392,6 +392,8 @@ fn picture_button(normal, hovered, pressed, clicked) {
 bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对读取的可观察属性建立依赖，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。标量写入可写绑定属性会写回绑定源并保留绑定；动画也保留和写入最终源属性，因此两个节点绑定同一源会发现真实写入冲突。源的显式改写停止相关根活动；被动投影更新属于读取。只读派生属性用 scope 覆盖做临时演出；重新绑定或 unbind 会先结束依赖旧绑定的活动，unbind 保留当前有效基础值。捕获存档的短暂期间，脚本派生与作者外观更新暂停，捕获完成后按最新状态恢复。普通 {...} 数据记录适合传参，持续变化的业务值用 model({...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
 作者可用同样方式封装统一字体、按钮图片、留白和动效，再作为普通模块导入。风格复用来自组件和参数，共用的属性对象也可按普通语言规则组织。
 
+稳定位置引用使用 `bind(node.x)` 或 `bind(node[key])`。接收者和键只在创建引用时求值一次。将引用传给节点构造参数或赋给节点属性即可连接；之后赋入普通值会写回来源，连接仍保留。`unbind(bind(node.x))` 断开连接并保留、返回当前值。多个控件共享来源时，范围等约束会一并校验，失败不修改任何控件。来源节点被显式销毁时，仍存活的目标冻结最后值并断开；已有引用不能再用于已销毁的来源。业务 `model` 和 `derive` 的实现状态见第十二节及已验证范围。
+
 ## 八 风格与共同运动
 
 普通函数、样式展开、节点属性修改、变换和有限动画已可用；临时 scope 覆盖仍待实现。
@@ -740,3 +742,24 @@ fn main() {
 ```
 
 Rust 宿主可通过 `SessionUi::handle_access` / `AsideSessionUi::handle_access` 投递 AccessKit ActionRequest，沿用接受帧和模态规则；原生屏幕阅读器接入由平台宿主提供。
+
+## 连接舞台属性
+
+`bind` 和 `unbind` 已支持现有节点属性。下面两个滑条共用一个位置值，文字位置和显隐也直接连接控件；不需要回调复制状态。可运行窗口示例见 [author_bindings.aside](../../examples/author_bindings.aside)，字体资源准备方式与第一节相同。
+
+```aside
+fn main() {
+    let shown = toggle("Show the scene", value: true);
+    let position = slider(value: 100, min: 0, max: 400, width: 400);
+    let mirror = slider(value: bind(position.value), min: 0, max: 400, width: 400);
+    stage.replace(column(gap: 12) {
+        shown;
+        position;
+        mirror;
+        text("Move me", x: bind(position.value), visible: bind(shown.value));
+        button("Detach", on_click: |event| { unbind(bind(mirror.value)); });
+        button("Reconnect", on_click: |event| { mirror.value = bind(position.value); });
+    });
+    narrator("Both sliders share a value.");
+}
+```

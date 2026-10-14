@@ -181,7 +181,7 @@ impl StageBinding {
                 Value::bool(value),
             )
         };
-        let (key, old) = heap.table_entry(fields, index as u32)?;
+        let (_, old) = heap.table_entry(fields, index as u32)?;
         let equal = if slider {
             number(old)? == number(value)?
         } else {
@@ -190,7 +190,20 @@ impl StageBinding {
         if equal {
             return Ok(None);
         }
-        heap.table_store(fields, index as u32, key, value)?;
+        match heap.write_host_property(
+            PropertyId {
+                host: target,
+                field: index as u32,
+            },
+            value,
+            true,
+        ) {
+            Ok(()) => {}
+            Err(HeapError::TypeMismatch | HeapError::ReadOnly | HeapError::RetiredHost) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        }
         let node = self.scene.node(change.node).unwrap();
         let mut kind = node.kind.clone();
         match &mut kind {

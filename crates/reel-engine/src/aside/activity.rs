@@ -10,7 +10,7 @@ use super::{
 };
 use aside_host::PropertySchema;
 use aside_vm::executor::{Completion, HostResponse, TaskId, Vm, WaitId};
-use aside_vm::{Heap, HeapError, RootKind, RootOwner, RootToken, Value, ValueTag};
+use aside_vm::{Heap, HeapError, PropertyId, RootKind, RootOwner, RootToken, Value, ValueTag};
 use std::collections::BTreeMap;
 
 const ACTION: i64 = -1001;
@@ -20,7 +20,6 @@ const TARGET: u32 = 1;
 const DURATION: u32 = 2;
 const EASING: u32 = 3;
 const GOALS: u32 = 4;
-const NODE_CLAIMS: u32 = 3;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]

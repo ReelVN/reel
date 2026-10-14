@@ -931,6 +931,9 @@ impl SessionUi {
         let click = match self.inputs.borrow_mut().take() {
             Some(UiInput::Node(click)) => Some(click),
             Some(UiInput::Change(event)) => {
+                // Controls propose values; the host remains authoritative, including
+                // when a connected property's constraints reject this proposal.
+                self.stage_dirty = true;
                 change = Some(event);
                 None
             }

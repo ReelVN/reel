@@ -328,6 +328,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::MakeTable,
     Opcode::MemberGet,
     Opcode::MemberSet,
+    Opcode::PropertyRef,
     Opcode::IndexGet,
     Opcode::IndexSet,
     Opcode::Call,

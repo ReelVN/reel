@@ -4,7 +4,8 @@ pub(super) mod controls;
 pub(super) mod input;
 
 use aside_vm::{
-    Heap, HeapError, HeapHandle, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag,
+    Heap, HeapError, HeapHandle, ObjectKind, PropertyId, RootKind, RootOwner, RootToken, Value,
+    ValueTag,
 };
 use reel_ui::stage::{NodeId, NodeKind, NodeProps, Stage};
 
@@ -158,6 +159,12 @@ impl StageBinding {
             return Ok(Value::NULL);
         }
 
+        let raw_args = args;
+        let resolved = args
+            .iter()
+            .map(|&value| heap.property_argument(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let args = resolved.as_slice();
         let prefix = registry::node_prefix(symbol);
         let fields = heap.alloc_table()?;
         let field_count = prefix.len() + NodeProperty::PROPERTIES.len();
@@ -216,12 +223,7 @@ impl StageBinding {
         let id = self.scene.next_identity()?;
         let value = heap.alloc_composable_host(
             fields,
-            &[
-                Value::int(id.0 as i64),
-                references,
-                Value::NULL,
-                Value::NULL,
-            ],
+            &[Value::int(id.0 as i64), references, Value::NULL],
             Some(match symbol {
                 "reel::slider" => controls::validate_slider,
                 "reel::toggle" => {
@@ -238,6 +240,30 @@ impl StageBinding {
                 _ => |heap, _, index, value| validate_layout_property(heap, index, value),
             }),
         )?;
+        heap.observe_host_properties(value, field_count as u32, true)?;
+        let control_field = match symbol {
+            "reel::slider" => Some(controls::SliderField::Value.index()),
+            "reel::toggle" => Some(controls::ToggleField::Value.index()),
+            _ => None,
+        };
+        if let Some(field) = control_field {
+            heap.require_writable_property(PropertyId {
+                host: value,
+                field: field as u32,
+            })?;
+        }
+
+        for (field, &argument) in raw_args.iter().take(field_count).enumerate() {
+            if heap.is_property_ref(argument) {
+                heap.bind_host_property(
+                    PropertyId {
+                        host: value,
+                        field: field as u32,
+                    },
+                    argument,
+                )?;
+            }
+        }
         for (i, (name, function)) in ["add", "remove", "clear", "value"]
             .into_iter()
             .zip(self.methods)
