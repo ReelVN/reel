@@ -10,7 +10,7 @@ pub(super) fn pcs(f: &bc::FunctionDef, opcode: bc::Opcode) -> Vec<usize> {
         .collect()
 }
 pub(super) fn text<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef, pc: usize) -> &'a str {
-    let span = f.source_map[pc].span;
+    let span = source_span(f, pc);
     &p.sources[span.file.index()].text[span.start as usize..span.end as usize]
 }
 pub(super) fn calls<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef) -> Vec<&'a str> {

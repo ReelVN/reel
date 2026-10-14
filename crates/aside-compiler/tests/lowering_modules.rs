@@ -53,6 +53,44 @@ fn value(vm: &mut Vm, function: bc::FunctionId) -> Value {
 }
 
 #[test]
+fn repeated_text_is_shared_across_modules_and_defaults_after_roundtrip() {
+    let compilation = compile(&[
+        ("shared", r#"pub fn word(value = "共同文本") { value }"#),
+        (
+            "main",
+            r#"use shared::word; fn main() { let tuple = ("共同文本", word()); if tuple[0] != tuple[1] { throw "relocation"; } match word() { "共同文本" => true, _ => false } }"#,
+        ),
+    ]);
+    let p = compilation.program.package();
+    assert_eq!(
+        p.constants
+            .iter()
+            .filter(|c| matches!(c, bc::Const::Utf8(s) if s == "共同文本"))
+            .count(),
+        1
+    );
+    let entry = compilation
+        .modules
+        .iter()
+        .find(|m| m.metadata.canonical_path == "main")
+        .unwrap()
+        .metadata
+        .functions[0]
+        .output;
+    let encoded = bc::encode(p, bc::Limits::default()).unwrap();
+    let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
+    let mut vm = Vm::load(
+        program,
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    value(&mut vm, compilation.initializer);
+    assert_eq!(value(&mut vm, entry).as_bool(), Some(true));
+}
+
+#[test]
 fn imported_functions_reexports_and_objects_keep_one_identity_and_private_environment() {
     let compilation = compile(&[
         (

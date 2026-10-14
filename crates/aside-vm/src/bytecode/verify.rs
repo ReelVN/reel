@@ -119,10 +119,10 @@ impl VerifiedProgram {
     }
     pub fn source_at(&self, function: FunctionId, pc: Pc) -> Option<SourceSpan> {
         let f = self.package.functions.get(function.index())?;
-        f.source_map
-            .binary_search_by_key(&pc, |m| m.pc)
-            .ok()
-            .map(|i| f.source_map[i].span)
+        if pc.index() >= f.code.len() && !(matches!(f.kind, FunctionKind::Native(_)) && pc.0 == 0) {
+            return None;
+        }
+        source_span(&f.source_map, pc)
     }
     pub fn decode(input: &[u8], limits: Limits) -> Result<Self, Error> {
         verify(decode(input, limits)?, limits)
@@ -2047,11 +2047,13 @@ fn located(p: &BytecodePackage, fi: usize, pc: usize, mut e: Error) -> Error {
     e.pc = Some(Pc(pc as u32));
     // All callers reach this after the source map's strict PC order is checked.
     let map = &p.functions[fi].source_map;
-    e.source = map
-        .binary_search_by_key(&Pc(pc as u32), |m| m.pc)
-        .ok()
-        .map(|i| map[i].span);
+    e.source = source_span(map, Pc(pc as u32));
     e
+}
+
+fn source_span(map: &[SourceMapEntry], pc: Pc) -> Option<SourceSpan> {
+    let end = map.partition_point(|entry| entry.pc <= pc);
+    end.checked_sub(1).map(|index| map[index].span)
 }
 
 /// Streaming disassembly to a caller-owned sink; text includes descriptor fields,

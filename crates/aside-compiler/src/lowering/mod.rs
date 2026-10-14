@@ -1,6 +1,7 @@
 //! Bounded IR v1 lowering through B01 verification. No VM execution occurs here.
 mod budget;
 mod build;
+mod constants;
 mod emit;
 pub mod ir;
 mod project;

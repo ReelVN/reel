@@ -39,7 +39,7 @@ fn compiled(source: &str) -> lowering::Compilation {
     bc::disassemble(&roundtrip, &mut disassembly).unwrap();
     assert!(disassembly.contains("Return"));
     for (i, function) in result.program.package().functions.iter().enumerate() {
-        assert_eq!(function.code.len(), function.source_map.len());
+        assert!(function.source_map.len() <= function.code.len());
         for pc in 0..function.code.len() {
             let span = result
                 .program
@@ -51,6 +51,73 @@ fn compiled(source: &str) -> lowering::Compilation {
         assert_temporary_initialization(function);
     }
     result
+}
+fn source_span(f: &bc::FunctionDef, pc: usize) -> bc::SourceSpan {
+    f.source_map[f.source_map.partition_point(|entry| entry.pc.index() <= pc) - 1].span
+}
+
+#[test]
+fn source_runs_preserve_every_ir_instruction_location() {
+    let module = analyzed(
+        r#"fn repeat(value = "same") { try { if value == "same" { return value + "same"; } throw value; } finally { let cleanup = "same"; } } let result = repeat();"#,
+    );
+    let ir = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap();
+    let expected: Vec<_> = ir
+        .functions()
+        .iter()
+        .map(|function| {
+            let spans: Vec<_> = function
+                .layout
+                .iter()
+                .flat_map(|id| {
+                    let block = &function.blocks[id.0 as usize];
+                    block
+                        .operations
+                        .iter()
+                        .map(|operation| operation.span)
+                        .chain(block.terminator.as_ref().map(|(_, span)| *span))
+                })
+                .collect();
+            (function.output, spans)
+        })
+        .collect();
+    let compiled = ir.emit().unwrap();
+    assert!(
+        compiled
+            .program
+            .package()
+            .functions
+            .iter()
+            .any(|f| f.source_map.len() < f.code.len())
+    );
+    for (function, spans) in expected {
+        assert_eq!(
+            compiled.program.package().functions[function.index()]
+                .code
+                .len(),
+            spans.len()
+        );
+        for (pc, expected) in spans.into_iter().enumerate() {
+            let actual = compiled
+                .program
+                .source_at(function, bc::Pc(pc as u32))
+                .unwrap();
+            assert_eq!(
+                (actual.start, actual.end),
+                (u32::from(expected.start()), u32::from(expected.end()))
+            );
+        }
+    }
+    assert_eq!(
+        compiled
+            .program
+            .package()
+            .constants
+            .iter()
+            .filter(|c| matches!(c, bc::Const::Utf8(s) if s == "same"))
+            .count(),
+        1
+    );
 }
 fn function<'a>(p: &'a bc::BytecodePackage, name: &str) -> &'a bc::FunctionDef {
     p.functions
@@ -126,8 +193,7 @@ fn dynamic_calls_have_contiguous_windows_and_preserve_live_values() {
     let spans: Vec<_> = pcs
         .iter()
         .map(|&pc| {
-            &p.sources[0].text
-                [f.source_map[pc].span.start as usize..f.source_map[pc].span.end as usize]
+            &p.sources[0].text[source_span(f, pc).start as usize..source_span(f, pc).end as usize]
         })
         .collect();
     assert_eq!(spans, ["one()", "two()", "one()", "take(two(), b: one())"]);

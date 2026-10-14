@@ -1,7 +1,9 @@
 use aside_compiler::{semantic::*, *};
 const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
 const EN: &str = include_str!("../../../docs/guide/en.md");
-const BLOCKS: &[usize] = &[2, 3, 4, 5, 13, 15, 16, 17, 20, 24, 25, 26, 27, 29, 30, 37];
+const BLOCKS: &[usize] = &[
+    2, 3, 4, 5, 13, 15, 16, 17, 20, 24, 25, 26, 27, 29, 30, 33, 38,
+];
 // These names are the documented reel::prelude symbols, not names harvested
 // from unresolved diagnostics. Their dynamic members remain runtime contracts.
 const PRELUDE: &[&str] = &[
@@ -51,6 +53,8 @@ const PRELUDE: &[&str] = &[
     "persistent",
     "model",
     "set",
+    "localization",
+    "tr",
 ];
 // Actual surrounding author scope described in the prose for each fragment.
 const CONTEXT: &[(usize, &[&str])] = &[
@@ -130,7 +134,7 @@ fn snippets(doc: &str) -> Vec<String> {
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 40);
+    assert_eq!(zh.len(), 41);
     assert_eq!(zh, en);
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {

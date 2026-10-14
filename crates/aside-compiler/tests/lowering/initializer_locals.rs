@@ -200,8 +200,8 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
             let pc = resets[0];
             preparations[identity.binding.index()] = Some(pc);
             let mapped = aside_compiler::TextRange::new(
-                f.source_map[pc].span.start.into(),
-                f.source_map[pc].span.end.into(),
+                source_span(f, pc).start.into(),
+                source_span(f, pc).end.into(),
             );
             // A function's parameter/body scope spans its full declaration,
             // while entry instructions map to its actual body Block node.
@@ -379,7 +379,7 @@ fn condition_body_catch_and_finally_entries_cover_cleanup_backedges() {
         .operands[0];
     for (pc, i) in f.code.iter().enumerate().filter(|(pc, _)| {
         matches!(
-            &source[f.source_map[*pc].span.start as usize..f.source_map[*pc].span.end as usize],
+            &source[source_span(f, *pc).start as usize..source_span(f, *pc).end as usize],
             "continue outer;" | "break outer;"
         )
     }) {
@@ -395,7 +395,7 @@ fn condition_body_catch_and_finally_entries_cover_cleanup_backedges() {
             .unwrap()
             .unwrap();
         assert_eq!(h.kind, bc::HandlerKind::Finally);
-        if &source[f.source_map[pc].span.start as usize..f.source_map[pc].span.end as usize]
+        if &source[source_span(f, pc).start as usize..source_span(f, pc).end as usize]
             == "continue outer;"
         {
             assert_eq!(i.operands[0], head);
