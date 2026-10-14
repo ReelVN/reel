@@ -2,6 +2,9 @@ use super::*;
 use reel_ui::stage::{NodeId, NodeKind};
 
 fn pump(vm: &mut SessionVm, session: &mut Session) {
+    drive(vm, session, true);
+}
+fn drive(vm: &mut SessionVm, session: &mut Session, project: bool) {
     for _ in 0..50_000 {
         match vm
             .step(
@@ -30,7 +33,9 @@ fn pump(vm: &mut SessionVm, session: &mut Session) {
             SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
                 if !vm.has_runnable_tasks() && !vm.activities_pending() =>
             {
-                vm.sync_stage(session).unwrap();
+                if project {
+                    vm.sync_stage(session).unwrap();
+                }
                 return;
             }
             _ => {}
@@ -48,6 +53,47 @@ fn text_x(vm: &SessionVm, name: &str) -> f64 {
         .unwrap()
         .props
         .x
+}
+
+#[test]
+fn modal_click_validation_reads_script_writes_before_projection() {
+    let (mut s, mut vm) = setup(
+        r#"fn opening() {
+        let count = text("count");
+        let panel = column(modal: true, visible: false);
+        panel.add(button("close", on_click: |event| { panel.visible = false; }));
+        stage.replace(stack() {
+            button("open", on_click: |event| { panel.visible = true; });
+            button("blocked", on_click: |event| { count.x += 1; });
+            count;
+            panel;
+        });
+    }"#,
+        Context::Ordinary,
+    );
+    pump(&mut vm, &mut s);
+    let open = button(&vm, "open");
+    let blocked = button(&vm, "blocked");
+    let close = button(&vm, "close");
+    let panel = vm.stage().nodes().find(|node| node.props.modal).unwrap().id;
+    assert!(vm.click(&mut s, open).unwrap());
+    drive(&mut vm, &mut s, false);
+    assert!(
+        !vm.stage().node(panel).unwrap().props.visible,
+        "projection still describes the old frame"
+    );
+    let before = vm.vm.heap().stats();
+    assert!(!vm.click(&mut s, blocked).unwrap());
+    assert_eq!(
+        before.chunk_allocations,
+        vm.vm.heap().stats().chunk_allocations
+    );
+    assert!(vm.callbacks.is_empty());
+    assert!(vm.click(&mut s, close).unwrap());
+    drive(&mut vm, &mut s, false);
+    assert!(vm.click(&mut s, blocked).unwrap());
+    pump(&mut vm, &mut s);
+    assert_eq!(text_x(&vm, "count"), 1.);
 }
 
 #[test]

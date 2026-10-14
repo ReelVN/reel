@@ -174,6 +174,7 @@ impl Widget for StageWidget {
 
 struct SceneWidget {
     node: StageNode,
+    button: ButtonBehavior,
     label: Option<WidgetPod<Label>>,
     image: Option<WidgetPod<Image>>,
     image_size: Size,
@@ -216,6 +217,7 @@ impl SceneWidget {
         };
         Self {
             node: view.node.clone(),
+            button: ButtonBehavior::default(),
             label,
             image: view.image.as_ref().map(|image| {
                 let NodeKind::Image { fit, .. } = view.node.kind else {
@@ -243,6 +245,9 @@ impl SceneWidget {
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
+        }
+        if this.widget.node.props.modal != view.node.props.modal {
+            this.ctx.set_modal(view.node.props.modal);
         }
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
             && this.widget.node.kind != view.node.kind
@@ -362,7 +367,7 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        if self.is_button() && ButtonBehavior::text(event).is_some() {
+        if self.is_button() && self.button.text(ctx, event).is_some() {
             ctx.set_handled();
             ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
         }
@@ -378,8 +383,10 @@ impl Widget for SceneWidget {
         }
     }
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
+        self.button.update(event);
         if matches!(event, Update::WidgetAdded) {
             ctx.set_disabled(!self.node.props.enabled);
+            ctx.set_modal(self.node.props.modal);
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {

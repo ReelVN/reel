@@ -105,6 +105,9 @@ pub(crate) struct RenderRootState {
 
     /// Widget which will get text events if no widget is focused.
     pub(crate) focus_fallback: Option<WidgetId>,
+    pub(crate) modal_scope: Option<WidgetId>,
+    pub(crate) modal_base_focus: Option<WidgetId>,
+    pub(crate) modal_dirty: bool,
 
     /// Whether the window is focused.
     pub(crate) window_focused: bool,
@@ -356,6 +359,9 @@ impl RenderRoot {
                 next_focused_widget: None,
                 focus_anchor: None,
                 focus_fallback: None,
+                modal_scope: None,
+                modal_base_focus: None,
+                modal_dirty: true,
                 window_focused: true,
                 scroll_request_targets: Vec::new(),
                 hovered_path: Vec::with_capacity(128),
@@ -886,6 +892,9 @@ impl RenderRoot {
             run_layout_pass(self);
             run_update_scroll_pass(self);
             run_compose_pass(self);
+            if self.refresh_live_input_scope() {
+                run_update_focus_pass(self);
+            }
             run_update_pointer_pass(self);
             run_update_props_pass(self);
 
@@ -1011,7 +1020,7 @@ impl RenderRoot {
     /// Returns false if the widget is not found in the tree or can't be focused.
     pub fn focus_on(&mut self, id: Option<WidgetId>) -> bool {
         if let Some(id) = id
-            && !self.is_still_interactive(id)
+            && !self.focus_in_scope(id)
         {
             return false;
         }
@@ -1172,6 +1181,7 @@ impl RenderRootState {
     /// All passes have a fast-path exit check; these together are the union of those checks.
     pub(crate) fn needs_rewrite_passes(&self) -> bool {
         self.needs_pointer_pass
+            || self.modal_dirty
             || self.focused_widget != self.next_focused_widget
             || !self.mutate_callbacks.is_empty()
             || !self.actions.is_empty()

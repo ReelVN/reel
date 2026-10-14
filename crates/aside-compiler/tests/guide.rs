@@ -34,6 +34,7 @@ const SCENES: &[(&str, E)] = &[
     ("settings component", E::Module),
     ("arrive helper", E::Module),
     ("runnable button module", E::Module),
+    ("modal menu module", E::Module),
 ];
 fn snippets(doc: &str) -> Vec<(usize, String)> {
     let mut result = Vec::new();

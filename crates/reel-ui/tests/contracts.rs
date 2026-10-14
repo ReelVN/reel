@@ -1,3 +1,5 @@
+#[path = "contracts/modal.rs"]
+mod modal;
 mod support;
 
 #[test]

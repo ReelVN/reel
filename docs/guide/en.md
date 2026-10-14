@@ -630,3 +630,33 @@ Mounted button handlers and activities remain usable after the main entry return
 Use the dev/build/run commands in section 1 with this file. Nodes, input and scheduling do not depend on Winit/WGPU. The window feature selects the built-in desktop combination; other hosts can reuse the same session and presentation interfaces.
 
 For ports and embedding, use PlatformHost, Presentation and StoryRuntime from reel-player, and RenderBackend from reel-render. Enabling reel-player/winit alone provides the Winit host without WGPU; reel-render/wgpu provides the independent WGPU backend. The built-in player uses these interfaces too: only an actually presented new frame updates input geometry, temporary resource pressure retries after submission completion, and permanent refusal preserves the previous frame. Story animations pause while the application is suspended and continue on resume; closing still completes task cleanup. Authors do not need to change their scripts or select a graphics API. Native IME, touch and system accessibility remain unimplemented. See the [player documentation](../../crates/reel-player/README.md) for host integration and reproducible checks.
+
+## Modal menus and focus
+
+Every shared node has a writable `modal` property, defaulting to false. A visible modal subtree owns input: clicks outside it and unhandled keyboard events cannot advance the story. With multiple modals, the last one in paint order takes input; node composition determines paint order. Hiding or removing the node releases the scope. Setting enabled to false still blocks underlying content.
+
+Opening a menu focuses an eligible control inside it. Tab/Shift-Tab cycle within the menu; closing a nested menu restores the previous scope’s focus, and closing the last menu restores the original control if it remains eligible. The input scope changes when the new frame is actually presented and cancels dragging outside it. Run [author_modal.aside](../../examples/author_modal.aside) with the dev/build/run commands in the first section.
+
+Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let status = text("Ready", x: 24, y: 96, width: 300, height: 40);
+    let menu = column(x: 260, y: 24, width: 220, gap: 12,
+        padding: 16, background: "#284860", modal: true, visible: false);
+    menu.add(button("Confirm", width: 180, height: 48,
+        on_click: |event| { status.value = "Confirmed"; }));
+    menu.add(button("Close", width: 180, height: 48,
+        on_click: |event| { menu.visible = false; }));
+    stage.replace(stack() {
+        button("Open menu", x: 24, y: 24, width: 180, height: 48,
+            on_click: |event| { menu.visible = true; });
+        status;
+        menu;
+    });
+    narrator("Open the menu. The story waits while you use it.");
+    status.value = "Story continued";
+    narrator("Closing the menu returns input to the story.");
+}
+```

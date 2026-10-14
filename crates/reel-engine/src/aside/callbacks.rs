@@ -12,7 +12,7 @@ pub(super) struct Callback {
 
 impl SessionVm {
     /// Called after the host routes a control activation through accepted geometry.
-    /// Current node liveness and enabled ancestors are checked before task creation.
+    /// Current node liveness, ancestor flags and modal scope are checked before task creation.
     pub fn click(&mut self, session: &mut Session, node: NodeId) -> Result<bool, AdapterError> {
         self.live(session)?;
         let Some((target, closure)) = self.stage.click(self.vm.heap(), node)? else {

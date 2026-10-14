@@ -3,6 +3,7 @@
 
 //! Types needed for running a Masonry app.
 
+mod input_scope;
 mod layer_stack;
 mod presented_geometry;
 pub(crate) use presented_geometry::{ContextGeometry, GeometryRef, GeometryView};
