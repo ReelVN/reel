@@ -489,6 +489,23 @@ Pixels changed by an effect and logical input regions are declared separately. O
 
 ## 10 Choices and Changing Content
 
+Forms, sign-in screens, settings and embedded games can return their own results. `completion(owner: root)` creates a one-shot awaitable. A callback submits any value with `.resolve(value)` (null when omitted), and the caller continues through `await` while other input and activities keep running. A component can return its node and result together:
+```aside
+fn name_form() {
+    let data = model({name: ""});
+    let root = column(gap: 12);
+    let result = completion(owner: root);
+    root.add(text_input(value: bind(data.name)));
+    root.add(button("确认", on_click: |event| result.resolve(data.name)));
+    return {root: root, result: result};
+}
+let form = name_form();
+stage.replace(form.root);
+let name = await form.result;
+```
+
+`.reject(error)` throws that value at await; `.cancel()` throws Cancelled. All three settlement methods return true the first time and false afterwards, so repeated clicks cannot replace a result. Repeated awaits observe the same terminal state. Removing the owner cancels pending results; hiding it does not. Cancelling one waiter leaves other waiters unaffected. Without owner, the result belongs to the session in the main story or the event node in a callback. Resolve passes objects through without adopting other awaitables. Results do not occupy choose or dialogue and add no history. See the complete form and child-game composition in [author_results.aside](../../examples/author_results.aside); provide fonts/body.ttf before running.
+
 choose, custom choice_view and the read-only choice model are implemented. The engine adds no automatic dialogue or choice UI; mount your own components on the stage and use ordinary functions to package reusable appearances. See [author_narrative.aside](../../examples/author_narrative.aside) for ADV/NVL switching and custom choices.
 
 choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(option_id). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.

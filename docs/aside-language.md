@@ -265,6 +265,8 @@ Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果�
 
 task.request_cancel(reason) 为合作请求，在下一个合法安全点注入一次 Cancelled；脚本可捕获并收尾，Future 按实际最终结果结算。owner.revoke 为不可阻止的硬终止，停止其任务，不运行这些脚本 finally；宿主幂等释放拥有的订阅、资源和活动。取消不自动撤销已经写入的共享状态。必要资源清理依赖 Owner/ResourceToken，不能仅靠可能被跳过的 finally。异步 close 必须在 owner 仍有效时显式 await。
 
+Reel 的 `completion(owner: null)` 是此协议的具体宿主接口：resolve(value)、reject(error)、cancel() 第一次结算返回 true，重复返回 false；await 返回原值或抛出拒绝值/Cancelled。它是归会话或舞台节点所有的一次性 UI 结果，不是上文尚未实现的语言 Future，不执行 adoption，也不引入 Aside 对舞台或平台的依赖。等待者被取消只解除其订阅；节点退休取消未结算结果，已结算值可重复等待。
+
 TaskGroup 拥有自己创建的子任务。all 返回输入顺序的结果 array；首次失败请求取消其余任务并等其终止，再抛含主/收尾失败的 GroupError。race 交付最先结算项的 (index,result) 或失败，同一调度步骤依完成队列顺序决定，按组策略取消其余自有任务并完成收尾。owner 硬撤销使整组立即失效。wait_any 对外部共享 Future 只解除本次订阅，不能取消其生产者。组、取消请求、待结果和收尾状态均进入快照。
 
 async 正文返回尚未结算的 Future 时进入 Adopting，任务及其结果仍受原 owner 管理。被采用者结算后才结算采用者并终止任务；owner 撤销解除本次 adoption 订阅，取消采用者自己的任务 Future，保留共享被采用者的生产者。取消请求与 adoption 订阅状态进入快照。

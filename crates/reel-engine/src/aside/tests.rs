@@ -7,6 +7,7 @@ mod buttons;
 mod dynamic_stage;
 mod localization;
 mod models;
+mod results;
 mod rich_text;
 
 const STORY: &str =

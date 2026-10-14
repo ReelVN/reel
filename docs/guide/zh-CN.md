@@ -497,6 +497,23 @@ await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
 
 ## 十 选择与会变化的内容
 
+表单、登录、设置或小游戏可以返回自己的结果。`completion(owner: root)` 创建一次性可等待对象，回调调用 `.resolve(value)` 提交任意值（省略为 null），主流程通过 `await` 继续；其他输入和活动照常执行。组件可以把节点和结果一起返回：
+```aside
+fn name_form() {
+    let data = model({name: ""});
+    let root = column(gap: 12);
+    let result = completion(owner: root);
+    root.add(text_input(value: bind(data.name)));
+    root.add(button("确认", on_click: |event| result.resolve(data.name)));
+    return {root: root, result: result};
+}
+let form = name_form();
+stage.replace(form.root);
+let name = await form.result;
+```
+
+`.reject(error)` 在 await 处抛出该值，`.cancel()` 抛出 Cancelled。三个结算方法首次返回 true，之后返回 false，便于处理重复点击；多次 await 得到同一终态。删除 owner 节点取消未结算结果，隐藏节点不会取消；取消一个等待者不影响其他等待者。省略 owner 时，主剧情归会话、回调归事件节点。resolve 原样传递对象，不自动等待其中的其他结果。此接口不占用 choose 或对白，也不产生历史记录。完整表单与子游戏组合见 [author_results.aside](../../examples/author_results.aside)；运行前提供 fonts/body.ttf。
+
 choose、自定义 choice_view 和只读选择模型已实现。引擎不自动叠加对白或选择界面；作者将自己的组件挂到舞台，普通函数可封装并复用外观。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative.aside)。
 
 choose(options) 接收具有稳定 key 和 label 的选项数组，更新 game.choice 并等待 select(option_id)。当前句与选择共用主剧情交互权限。作者把选择视图放在自己的画面里，位置和背景均可自定。

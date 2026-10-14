@@ -30,6 +30,7 @@ const SCENES: &[(&str, E)] = &[
     ("moving group in story", E::Block),
     ("shake helper and scope in story", E::Block),
     ("mask in story", E::Block),
+    ("component result in story", E::Block),
     ("choice component and branch in story", E::Block),
     ("save button construction", E::Module),
     ("shared model controls", E::Block),

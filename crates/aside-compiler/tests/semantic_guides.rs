@@ -2,7 +2,7 @@ use aside_compiler::{semantic::*, *};
 const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
 const EN: &str = include_str!("../../../docs/guide/en.md");
 const BLOCKS: &[usize] = &[
-    2, 3, 4, 5, 13, 15, 16, 17, 20, 24, 25, 26, 27, 29, 30, 33, 38,
+    2, 3, 4, 5, 13, 15, 16, 17, 20, 24, 25, 26, 27, 28, 30, 31, 34, 39,
 ];
 // These names are the documented reel::prelude symbols, not names harvested
 // from unresolved diagnostics. Their dynamic members remain runtime contracts.
@@ -39,6 +39,7 @@ const PRELUDE: &[&str] = &[
     "narrator",
     "say",
     "choose",
+    "completion",
     "parallel",
     "sequence",
     "repeat",
@@ -95,7 +96,7 @@ const CONTEXT: &[(usize, &[&str])] = &[
     (25, &["view", "repeat", "sequence", "tween", "scope"]),
     (26, &["view", "mask", "group", "image", "run", "tween"]),
     (
-        27,
+        28,
         &[
             "view",
             "column",
@@ -107,11 +108,11 @@ const CONTEXT: &[(usize, &[&str])] = &[
             "by_door",
         ],
     ),
-    (28, &["saves", "button"]),
-    (29, &["model", "slider", "toggle", "text", "bind"]),
-    (30, &["state", "persistent", "set"]),
-    (31, &["column", "button"]),
-    (32, &["parallel", "tween"]),
+    (29, &["saves", "button"]),
+    (30, &["model", "slider", "toggle", "text", "bind"]),
+    (31, &["state", "persistent", "set"]),
+    (32, &["column", "button"]),
+    (33, &["parallel", "tween"]),
 ];
 fn snippets(doc: &str) -> Vec<String> {
     let mut result = Vec::new();
@@ -134,7 +135,7 @@ fn snippets(doc: &str) -> Vec<String> {
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 41);
+    assert_eq!(zh.len(), 42);
     assert_eq!(zh, en);
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {
