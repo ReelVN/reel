@@ -309,7 +309,12 @@ pub(crate) fn run_on_pointer_event_with_view(
             || old_capture.is_none()
             || root.global_state.pointer.pointer_capture_allows_pan)
     {
-        let preview_target = root.global_state.pointer.pan_target.or(target_widget_id);
+        let preview_target = root
+            .global_state
+            .pointer
+            .pan_target
+            .filter(|id| root.has_widget(*id))
+            .or(target_widget_id);
         if preview_target != target_widget_id {
             route.clear();
             if let Some(id) = preview_target {

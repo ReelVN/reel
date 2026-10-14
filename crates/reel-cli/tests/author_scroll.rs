@@ -101,6 +101,9 @@ fn source_and_asb_long_choices_scroll_without_activating_the_dragged_button() {
         present(&mut driver, &mut bridge, root, 3);
         driver.handle_pointer(&mut bridge, wheel(10_000.)).unwrap();
         present(&mut driver, &mut bridge, root, 4);
+        driver
+            .handle_pointer(&mut bridge, touch("down", 80., 140.))
+            .unwrap();
         click_at(&mut driver, &mut bridge, 80., 180.);
         assert!(
             driver
@@ -108,6 +111,21 @@ fn source_and_asb_long_choices_scroll_without_activating_the_dragged_button() {
                 .stage()
                 .nodes()
                 .any(|n| n.kind == NodeKind::Text("Selected 19".into()))
+        );
+        let current = driver.ui().session().view().interaction.unwrap().id();
+        present(&mut driver, &mut bridge, root, 5);
+        // Replacing the menu retires the first contact's target. Its remainder
+        // cannot start a pan on a removed widget or advance the next dialogue.
+        driver
+            .handle_pointer(&mut bridge, touch("move", 80., 90.))
+            .unwrap();
+        driver
+            .handle_pointer(&mut bridge, touch("up", 80., 90.))
+            .unwrap();
+        settle(&mut driver);
+        assert_eq!(
+            driver.ui().session().view().interaction.unwrap().id(),
+            current
         );
     }
 }

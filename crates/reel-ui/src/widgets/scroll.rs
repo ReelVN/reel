@@ -142,13 +142,12 @@ impl ScrollState {
                     }
                 }
             }
-            PointerEvent::Up(_) | PointerEvent::Cancel(_) => {
+            PointerEvent::Up(_) | PointerEvent::Cancel(_)
                 if self
                     .touch
-                    .is_some_and(|touch| touch.info == info && !touch.dragging)
-                {
-                    self.cancel();
-                }
+                    .is_some_and(|touch| touch.info == info && !touch.dragging) =>
+            {
+                self.cancel();
             }
             _ => {}
         }
@@ -189,14 +188,14 @@ impl ScrollState {
                     return self.set_offset(self.offset + (touch.point - point));
                 }
             }
-            PointerEvent::Up(_) | PointerEvent::Cancel(_) => {
-                if self.touch.is_some_and(|touch| touch.info == info) {
-                    if self.touch.unwrap().dragging && ctx.is_active() {
-                        ctx.release_pointer();
-                        ctx.set_handled();
-                    }
-                    self.cancel();
+            PointerEvent::Up(_) | PointerEvent::Cancel(_)
+                if self.touch.is_some_and(|touch| touch.info == info) =>
+            {
+                if self.touch.unwrap().dragging && ctx.is_active() {
+                    ctx.release_pointer();
+                    ctx.set_handled();
                 }
+                self.cancel();
             }
             _ => {}
         }
