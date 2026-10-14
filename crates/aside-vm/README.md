@@ -266,7 +266,11 @@ UnhashableKey=16 and ConcurrentModification=17; prior IDs and B01 v1 are unchang
 
 Intermediate builders, comparison stacks and fault-detail paths retain roots
 until publication or budgeted cleanup. ArgsSpread captures array/tuple elements
-shallowly at the source argument position and validates source content version
+as positional arguments and own string-keyed table entries as named arguments.
+Dynamic names remain GC-traced values and use allocation-free, resumable byte
+comparisons. Script/native calls share the binder; builtins share name resolution.
+ArgumentOrder=19 reports a positional argument following a named argument, after
+all actual arguments are evaluated. Capture is shallow and validates source content version
 until capture completes. Packed destinations must satisfy shape and version
 invariants; both entries of each argument pair are preflighted/charged together.
 A fresh outer rest array is prepared for every call, including empty and host

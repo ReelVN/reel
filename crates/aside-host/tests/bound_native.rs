@@ -63,10 +63,20 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
         let method = bind("captured");
         if method() != "captured!" || method(suffix: "?") != "captured?" { throw "method arguments"; }
         if method("?", ...[1, 2]) != "captured?2" { throw "bound native rest"; }
+        if method(...{suffix: "?"}) != "captured?" { throw "bound named spread"; }
+        fn forward(callback, positional, named) { callback(...positional, ...named) }
+        if forward(method, [], {suffix: "."}) != "captured." { throw "forwarded native"; }
+        let mut order_rejected = false;
+        try { method(...{suffix: "?"}, ...[1]); } catch error { order_rejected = true; }
+        if !order_rejected { throw "rest after named"; }
         if relay(method) != "captured!" { throw "host callback"; }
+        if relay(|| method(...{suffix: "."})) != "captured." { throw "callback named spread"; }
         let mut rejected = false;
         try { method(receiver: "replacement"); } catch error { rejected = true; }
         if !rejected { throw "overridden receiver"; }
+        rejected = false;
+        try { method(...{receiver: "replacement"}); } catch error { rejected = true; }
+        if !rejected { throw "spread receiver"; }
         "ok"
     }
     fn invalid() { let method = bind("captured"); method(receiver: "replacement"); }

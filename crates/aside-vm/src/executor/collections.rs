@@ -3,7 +3,7 @@
 //! existing frame/return-slot teardown, so partially built values never escape.
 use super::*;
 mod spread;
-pub(super) use spread::{SequenceSpread, TableFinish, TableSpread};
+pub(super) use spread::{CaptureKind, SpreadCapture, TableFinish, TableSpread};
 
 impl Vm {
     pub(super) fn concat_step(

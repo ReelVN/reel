@@ -876,7 +876,7 @@ impl Parser<'_> {
                 self.bump();
                 self.bump();
             } else {
-                if !names.is_empty() {
+                if !names.is_empty() && self.peek() != K::Ellipsis {
                     self.error(
                         D::InvalidArgumentOrder,
                         "positional arguments must precede named arguments",

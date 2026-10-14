@@ -86,6 +86,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let module = aside_compiler::analyze_module(r#"fn main() {
         let f = add;
         if f(right: 8, left: 4) != 12 || add(3) != 5 { throw "binding"; }
+        if f(...{right: 8, left: 4}) != 12 || add(...{left: 3}) != 5 { throw "named forwarding"; }
         if decorate("你好") != "你好!" || decorate(suffix: "?", value: "为什么") != "为什么?" { throw "text"; }
         let node = gauge();
         node.x = 2.5;

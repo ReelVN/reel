@@ -1,17 +1,20 @@
+fn menu_button(label, clicked, style = {}) {
+    let defaults = {width: 180, height: 64, background: "#284860"};
+    button(label, on_click: clicked, ...{...defaults, ...style})
+}
+
 fn main() {
     game.configure(fonts: ["fonts/body.ttf"]);
     let caption = text("Ready", width: 320, height: 48);
     let controls = row(gap: 16) {
-        button("Move", width: 180, height: 64, background: "#284860",
-            on_click: |event| {
-                event.target.enabled = false;
-                await run(tween(caption, x: 120, duration: 0.4));
-                caption.value = "Arrived";
-                event.target.enabled = true;
-            }
-        );
-        button("Finish", width: 180, height: 64, background: "#603840",
-            on_click: |event| { stage.replace(text("Finished")); }
+        menu_button("Move", |event| {
+            event.target.enabled = false;
+            await run(tween(caption, x: 120, duration: 0.4));
+            caption.value = "Arrived";
+            event.target.enabled = true;
+        });
+        menu_button("Finish", |event| { stage.replace(text("Finished")); },
+            style: {background: "#603840"}
         );
     };
     stage.replace(column(x: 24, y: 24, gap: 24) { controls; caption; });

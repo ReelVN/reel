@@ -3,8 +3,15 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(in crate::executor) struct SequenceSpread {
-    pub arguments: bool,
+pub(in crate::executor) enum CaptureKind {
+    Elements,
+    PositionalArguments,
+    NamedArguments,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::executor) struct SpreadCapture {
+    pub kind: CaptureKind,
     pub index: u32,
     pub len: u32,
     pub version: u64,
@@ -36,7 +43,7 @@ impl Vm {
     pub(in crate::executor) fn spread_step(
         &mut self,
         s: &mut ScriptFrame,
-        mut work: SequenceSpread,
+        mut work: SpreadCapture,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         let target = self.value(s.env, 1)?;
@@ -63,11 +70,21 @@ impl Vm {
             s.pc.0 += 1;
             s.phase = ScriptPhase::Body;
         } else {
-            let value = self.heap.sequence_get(source, work.index)?;
-            let result = if work.arguments {
-                self.heap.packed_pair_push(target, Value::int(-1), value)
+            let (name, value) = if matches!(work.kind, CaptureKind::NamedArguments) {
+                let pair = self.heap.table_entry(source, work.index)?;
+                if !self.is_text(pair.0, ObjectKind::String) {
+                    self.collection_fault(s, FaultKind::Type)?;
+                    return Ok(true);
+                }
+                pair
             } else {
-                self.heap.array_push(target, value)
+                (Value::int(-1), self.heap.sequence_get(source, work.index)?)
+            };
+            let result = match work.kind {
+                CaptureKind::Elements => self.heap.array_push(target, value),
+                CaptureKind::PositionalArguments | CaptureKind::NamedArguments => {
+                    self.heap.packed_pair_push(target, name, value)
+                }
             };
             match result {
                 Ok(()) => {

@@ -392,25 +392,22 @@ Authors can use the same approach to wrap consistent fonts, button images, spaci
 
 ## 8 Styling and Moving Elements Together
 
-Ordinary functions, node property updates, transforms and finite animation are available. Style spreading and temporary overrides remain unimplemented.
+Ordinary functions, style spreading, node property updates, transforms and finite animation are available. Temporary scope overrides remain unimplemented.
 
 Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
 ```aside
-let default_look = {font: "system-ui", font_size: 32,
-                    color: "#ffffff", background: "assets/button.png"};
+let default_look = {width: 180, height: 64, background: "#284860"};
 
 fn menu_button(label, clicked, style = {}) {
-    let look = {...default_look, ...style};
-    button(on_click: clicked) {
-        image(look.background);
-        text(label, font: look.font, font_size: look.font_size,
-             color: look.color);
-    }
+    button(label, on_click: clicked, ...{...default_look, ...style})
 }
 
-menu_button("开始", |event| game.start(opening),
-            style: {color: "#ffd98a", font_size: 36});
+let status = text("Ready");
+let start = menu_button("Start", |event| { status.value = "Started"; },
+                        style: {background: "#603840"});
+stage.replace(column(gap: 16) { start; status; });
 ```
+`...style` passes own object fields as named arguments. Ordinary functions, node constructors and extracted methods share these rules. Merge overrides into one object first; supplying the same argument twice is an error. Positional arguments precede named arguments, including trailing children. See [author_buttons.aside](../../examples/author_buttons.aside) for initialization and button interaction.
 Node properties can be changed directly. Use bind/derive for appearance that should keep following application state or preference changes. Ordinary style records are used during construction. A shared runtime color palette can be stored in a model, with its properties bound to text and images. Authors can draw their components entirely themselves or reuse familiar layout and control behavior.
 To move UI and character portraits together, place them in the same group and apply the action to that group.
 ```aside

@@ -76,7 +76,7 @@ fn cancelled_preparation_stages_route_at_caller_without_entering_callee_pc_zero_
                 if let Some(Frame::Script(s)) = vm.active.frames.data.last() {
                     let phase = match s.phase {
                         ScriptPhase::Copy { .. } => "copy",
-                        ScriptPhase::Bind { .. } => "bind",
+                        ScriptPhase::Bind(_) => "bind",
                         ScriptPhase::Defaults { .. } => "defaults",
                         ScriptPhase::DefaultCall { .. } => "default-call",
                         ScriptPhase::Parameter { .. } => "parameter",

@@ -476,6 +476,123 @@ fn packed_spread_and_script_rest_capture_fresh_outer_arrays() {
         assert_eq!(vm.heap().sequence_get(array, 1).unwrap().as_int(), Some(20));
     }
 }
+
+#[test]
+fn named_capture_and_long_name_binding_survive_gc_mutation_and_cancellation() {
+    let name = "参数".repeat(150);
+    for action in 0..4 {
+        let mut p = spread_rest_package();
+        p.symbols[4] = name.clone();
+        p.constants = vec![Const::Utf8(name.clone()), Const::Int(42)];
+        p.functions[0].code[2] = op(Opcode::MakeTable, 2, 0, 0);
+        p.functions[0].descriptors[0] = Descriptor::Table(vec![[Reg(0), Reg(1)]]);
+        let parameter = p.signatures[1].rest.take().unwrap();
+        p.signatures[1].parameters.push(parameter);
+        let mut vm = load(p);
+        let task = vm
+            .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        loop {
+            if matches!(vm.active.frames.data.last(), Some(Frame::Script(s))
+                if s.pc == Pc(4) && matches!(s.phase, ScriptPhase::Body))
+            {
+                break;
+            }
+            assert!(matches!(tick(&mut vm, task), RunOutcome::BudgetYield(_)));
+        }
+        vm.run_slice(
+            task,
+            SliceBudget {
+                instructions: 1,
+                work: 1,
+                ..SliceBudget::default()
+            },
+            || 0,
+        )
+        .unwrap();
+        let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
+            panic!()
+        };
+        assert!(matches!(s.phase, ScriptPhase::Spread(_)));
+        let source = vm.value(s.env, 2).unwrap();
+        gc(&mut vm);
+        match action {
+            1 => {
+                let (key, _) = vm.heap().table_entry(source, 0).unwrap();
+                vm.heap_mut()
+                    .table_store(source, 0, key, Value::int(99))
+                    .unwrap();
+            }
+            2 => vm.cancel_cooperatively(task).unwrap(),
+            _ => {
+                // A small work grant exposes the binder while a multibyte name
+                // is incomplete. Matching does not allocate a copied name.
+                let mut budget = SliceBudget {
+                    instructions: 1,
+                    work: 1,
+                    allocation_bytes: 0,
+                    deadline_ns: None,
+                };
+                loop {
+                    let out = vm.run_slice(task, budget, || 0).unwrap();
+                    gc(&mut vm);
+                    let RunOutcome::BudgetYield(usage) = out else {
+                        panic!("{out:?}")
+                    };
+                    budget.work = usage.required_work.max(1);
+                    budget.allocation_bytes = usage.required_allocation;
+                    if matches!(vm.active.frames.data.last(), Some(Frame::Script(s))
+                        if s.code.function == FunctionId(1) && matches!(s.phase, ScriptPhase::Bind(_)))
+                    {
+                        break;
+                    }
+                }
+                let before = vm.heap().stats().chunk_allocations;
+                let out = vm
+                    .run_slice(
+                        task,
+                        SliceBudget {
+                            instructions: 1,
+                            work: 65,
+                            allocation_bytes: 0,
+                            deadline_ns: None,
+                        },
+                        || 0,
+                    )
+                    .unwrap();
+                assert!(matches!(out, RunOutcome::BudgetYield(_)));
+                assert_eq!(vm.heap().stats().chunk_allocations, before);
+                gc(&mut vm);
+                if action == 3 {
+                    vm.cancel_cooperatively(task).unwrap();
+                }
+            }
+        }
+        match terminal(&mut vm, task) {
+            RunOutcome::Returned(id) if action == 0 => {
+                assert_eq!(vm.delivery_value(id).unwrap().as_int(), Some(42));
+                vm.discard_delivery(id).unwrap();
+            }
+            RunOutcome::Fault(id) if action != 0 => {
+                let info = vm.delivery_fault(id).unwrap().unwrap();
+                assert_eq!(
+                    info.kind,
+                    if action == 1 {
+                        FaultKind::ConcurrentModification
+                    } else {
+                        FaultKind::Cancelled
+                    }
+                );
+                assert_eq!(info.location.code.function, FunctionId(0));
+                assert_eq!(info.location.pc, Pc(if action == 3 { 5 } else { 4 }));
+                vm.discard_delivery(id).unwrap();
+            }
+            other => panic!("action {action}: {other:?}"),
+        }
+        assert_eq!(vm.stats().frames, 0);
+        assert!(vm.is_idle());
+    }
+}
 #[test]
 fn spread_detects_overwrite_between_capture_steps() {
     let mut vm = load(spread_rest_package());
@@ -934,7 +1051,7 @@ fn spread_destination_overwrite_and_odd_append_invalidate_resume() {
                 };
                 assert!(matches!(
                     s.phase,
-                    ScriptPhase::Spread(collections::SequenceSpread { index: 1, .. })
+                    ScriptPhase::Spread(collections::SpreadCapture { index: 1, .. })
                 ));
                 packed = Some(vm.value(s.env, 1).unwrap());
                 break;
