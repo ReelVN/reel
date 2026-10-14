@@ -158,6 +158,21 @@ impl Context<'_> {
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
                         self.clip(&coverage, clip, transform, entry.at)?;
+                        if group.mask.is_none() {
+                            // Fold coverage and opacity into the final source-over pass.
+                            // No intermediate full-size clipped texture is needed.
+                            self.combine(
+                                &current.scopes.last().target,
+                                &source.view,
+                                &coverage.view,
+                                group.opacity,
+                                1,
+                                0.,
+                            )?;
+                            self.recycle_target(source)?;
+                            self.recycle_target(coverage)?;
+                            continue;
+                        }
                         let clipped = self.target()?;
                         self.combine(&clipped, &source.view, &coverage.view, 1., 1, 0.)?;
                         self.recycle_target(source)?;

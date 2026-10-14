@@ -1,4 +1,5 @@
-//! Filesystem font preparation shared by native startup and script settings.
+//! Explicit synchronous font preparation for Rust diagnostics and device tests.
+//! Author fonts use the asynchronous shared service in `assets`.
 use reel_core::{
     budget::{BudgetPool, OwnedBytes},
     identity::{AssetKey, ContentVersion, ResourceVersion},

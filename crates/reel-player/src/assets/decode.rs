@@ -1,0 +1,180 @@
+use super::worker::{Worker, check_completion};
+use image::{DynamicImage, ImageDecoder, ImageReader};
+use reel_core::{
+    budget::{BudgetCategory, OwnedBytes, QueueLimits},
+    identity::WorkId,
+    queue::{charge, invalid},
+    request_ids::RequestIds,
+    result::{RejectCode, RejectReason, Rejected, Terminal},
+    wake::WakeSignal,
+    work::*,
+};
+use std::{io::Cursor, sync::atomic::Ordering};
+
+pub fn image_probe() -> WorkKind {
+    WorkKind {
+        name: "image.probe".into(),
+        version: 1,
+        operation: WorkOperation::Decode,
+    }
+}
+pub fn image_decode() -> WorkKind {
+    WorkKind {
+        name: "image.rgba8".into(),
+        version: 1,
+        operation: WorkOperation::Decode,
+    }
+}
+pub struct ImageExecutor {
+    worker: Worker<(WorkId, WorkRequest), WorkEvent>,
+    ids: RequestIds<WorkId>,
+    limits: QueueLimits,
+}
+impl ImageExecutor {
+    pub fn new(limits: QueueLimits, wake: WakeSignal) -> Self {
+        Self {
+            worker: Worker::new(
+                limits,
+                wake,
+                |(id, request): (WorkId, WorkRequest), cancelled| {
+                    let WorkRequest {
+                        kind,
+                        input,
+                        scope,
+                        reservations,
+                        ..
+                    } = request;
+                    let WorkReservations {
+                        mut output,
+                        temporary,
+                        completion,
+                    } = reservations;
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err("decode cancelled".into());
+                        }
+                        let mut reader = ImageReader::new(Cursor::new(input.as_slice()))
+                            .with_guessed_format()
+                            .map_err(|e| e.to_string())?;
+                        if !matches!(
+                            reader.format(),
+                            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
+                        ) {
+                            return Err("expected PNG or JPEG image".into());
+                        }
+                        let mut limits = image::Limits::no_limits();
+                        limits.max_alloc = Some(temporary.bytes());
+                        reader.limits(limits);
+                        let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+                        let (width, height) = decoder.dimensions();
+                        let rgba = u64::from(width)
+                            .checked_mul(u64::from(height))
+                            .and_then(|n| n.checked_mul(4))
+                            .ok_or("image size overflow")?;
+                        let data = if kind == image_probe() {
+                            let mut data = Vec::with_capacity(24);
+                            data.extend_from_slice(&width.to_le_bytes());
+                            data.extend_from_slice(&height.to_le_bytes());
+                            data.extend_from_slice(&rgba.to_le_bytes());
+                            data.extend_from_slice(&decoder.total_bytes().to_le_bytes());
+                            data
+                        } else {
+                            if rgba > output.bytes()
+                                || decoder
+                                    .total_bytes()
+                                    .checked_add(rgba)
+                                    .is_none_or(|bytes| bytes > temporary.bytes())
+                            {
+                                return Err("image decode reservation too small".into());
+                            }
+                            DynamicImage::from_decoder(decoder)
+                                .map_err(|e| e.to_string())?
+                                .into_rgba8()
+                                .into_raw()
+                        };
+                        output
+                            .resize(data.capacity() as u64)
+                            .map_err(|e| e.message)?;
+                        OwnedBytes::new(data, output).map_err(|e| e.reason.message)
+                    }))
+                    .unwrap_or_else(|_| Err("image decoder panicked".into()));
+                    WorkEvent {
+                        id,
+                        scope,
+                        completion,
+                        result: match result {
+                            Ok(data) => Terminal::Completed(data),
+                            Err(message) => Terminal::Failed(WorkError {
+                                code: WorkErrorCode::OperationFailed,
+                                message,
+                            }),
+                        },
+                    }
+                },
+                |event| event.result = Terminal::Cancelled,
+            ),
+            ids: RequestIds::default(),
+            limits,
+        }
+    }
+}
+#[allow(
+    clippy::result_large_err,
+    reason = "rejection returns the owning request without allocating"
+)]
+impl WorkExecutor for ImageExecutor {
+    fn capabilities(&self) -> WorkCaps {
+        WorkCaps {
+            mode: WorkMode::Threaded,
+            kinds: vec![image_probe(), image_decode()],
+            queue: self.limits,
+        }
+    }
+    fn submit(&mut self, request: WorkRequest) -> Result<WorkId, Rejected<WorkRequest>> {
+        if request.kind != image_probe() && request.kind != image_decode() {
+            return Err(Rejected {
+                request,
+                reason: RejectReason::new(RejectCode::Unsupported, "unsupported image operation"),
+            });
+        }
+        let checks = check_completion(&request.reservations.completion).and_then(|_| {
+            if request.input.ticket().category() != BudgetCategory::CpuInput
+                || request.reservations.output.category() != BudgetCategory::CpuOutput
+                || request.reservations.temporary.category() != BudgetCategory::Temporary
+                || (request.kind == image_probe() && request.reservations.output.bytes() < 24)
+            {
+                return Err(invalid("image input/output/temporary reservations invalid"));
+            }
+            charge(&[
+                request.input.ticket().bytes(),
+                request.reservations.output.bytes(),
+                request.reservations.temporary.bytes(),
+                request.reservations.completion.bytes(),
+                request.kind.name.capacity() as u64,
+                size_of::<WorkRequest>() as u64,
+            ])
+        });
+        let bytes = match checks {
+            Ok(bytes) => bytes,
+            Err(reason) => return Err(Rejected { request, reason }),
+        };
+        self.ids.accept(request, |id, request| {
+            let priority = request.priority;
+            self.worker
+                .accept(id.0, (id, request), bytes, priority)
+                .map_err(|error| Rejected {
+                    request: error.request.1,
+                    reason: error.reason,
+                })
+        })
+    }
+    fn cancel(&mut self, id: WorkId) {
+        self.worker.cancel(id.0);
+    }
+    fn advance(&mut self, _: WorkBudget) -> WorkProgress {
+        WorkProgress::default()
+    }
+    fn drain(&mut self, out: &mut Vec<WorkEvent>, limit: usize) {
+        self.worker.drain(out, limit);
+    }
+}

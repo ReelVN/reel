@@ -10,8 +10,21 @@ export REEL_DIAGNOSTIC_FONT=/path/to/font.ttf
 cargo run --locked -p reel-player --features window --bin reel-diagnostic
 ```
 
-The font source reserves space in the shared CPU resource budget before reading; image
-and font ContentVersion values are BLAKE3 hashes computed during preparation.
+Author images and fonts use `assets::Assets`, with `DirectoryIo` for background
+reads and `ImageExecutor` for PNG/JPEG probing and decoding. `AssetOptions` controls
+the root and input/resident/temporary byte budgets. Image and font ContentVersion
+values are BLAKE3 hashes computed once from the encoded input during reading.
+`Assets::with_adapters(options, |wake| (io, executor))` lets a host supply the
+existing `AssetIo` and `WorkExecutor` contracts; pass it to `with_assets` and install
+`set_resource_waker` before driving the session. Closing the session closes its
+resource service; existing frame leases remain valid until released.
+
+Image work kinds are version 1 `image.probe` and `image.rgba8`, both Decode.
+They borrow the same `Arc<OwnedBytes>` compressed input. The probe returns 24
+little-endian bytes: width and height (u32), RGBA length and decoder output length
+(u64). The RGBA operation returns straight-alpha sRGB pixels. Reservations use
+CpuInput, CpuOutput, Temporary and at least 512 Completion bytes. The directory
+adapter accepts full reads and does not advertise range reads or save durability.
 
 Drag the shapes/white indicator; scroll to change the root transform. The checker
 image, overlapping transparent group, clip and optional Parley label use the same
@@ -198,7 +211,7 @@ $env:REEL_SESSION_FONT = "C:/Windows/Fonts/msyh.ttc"
 cargo test --locked -p reel-player --lib author_scene_renders_edits_original_nodes_and_keeps_final_picture
 ```
 
-Author source receives the registered Reel prelude automatically, while module declarations, local bindings and explicit imports take precedence. PNG/JPEG `image` nodes load only when mounted through the background resource loader. Source paths resolve against the source directory in `dev` and the ASB directory in `run`; `--assets <directory>` overrides that root, and library hosts configure `ImageOptions`. ASB build does not copy assets. The previous complete scene remains visible with story input paused until all new images are ready. Loading errors end the run and include the path and constructor location. See the [image example](../../examples/author_images.aside) and [creator guide](../../docs/guide/en.md).
+Author source receives the registered Reel prelude automatically, while module declarations, local bindings and explicit imports take precedence. PNG/JPEG `image` nodes load only when mounted through the background resource loader. Source paths resolve against the source directory in `dev` and the ASB directory in `run`; `--assets <directory>` overrides that root, and library hosts configure `AssetOptions`. ASB build does not copy assets. The previous complete scene remains visible with story input paused until all new images are ready. Loading errors end the run and include the path and constructor location. See the [image example](../../examples/author_images.aside) and [creator guide](../../docs/guide/en.md).
 
 Author nodes share rotation (clockwise degrees), scale_x/scale_y and proportional anchor_x/anchor_y. Negative scale mirrors and zero scale collapses without retiring the node. Position, transform and opacity edits preserve layout and widget identities; the compose pass supplies the same affine to drawing, clipping and presented input geometry. See [author_transforms.aside](../../examples/author_transforms.aside).
 

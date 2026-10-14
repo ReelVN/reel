@@ -41,9 +41,9 @@ pub(crate) struct State {
     size: PhysicalSize<u32>,
     pool: BudgetPool,
     resources: Vec<reel_ui::resources::ResourceLease>,
-    fonts: std::collections::BTreeMap<std::path::PathBuf, usize>,
-    active_fonts: Vec<std::path::PathBuf>,
-    asset_root: std::path::PathBuf,
+    fonts: std::collections::BTreeMap<String, usize>,
+    active_fonts: Vec<String>,
+    font_requests: std::collections::BTreeMap<String, crate::assets::LoadId>,
     canvas_id: Option<WidgetId>,
     game: Option<Arc<reel_engine::aside::GameSettings>>,
     epoch: u64,
@@ -127,7 +127,7 @@ impl State {
         let instance = wgpu::Instance::default();
         if let Some(session) = &mut session {
             let window = Arc::downgrade(&window);
-            session.ui_mut().set_image_waker(Arc::new(move || {
+            session.ui_mut().set_resource_waker(Arc::new(move || {
                 if let Some(window) = window.upgrade() {
                     window.request_redraw();
                 }
@@ -216,7 +216,7 @@ impl State {
                 unreachable!()
             };
             let font = font.clone();
-            fonts.insert(path.clone(), resources.len());
+            fonts.insert(path.to_string_lossy().into_owned(), resources.len());
             resources.push(lease);
             Some(font)
         } else {
@@ -274,10 +274,6 @@ impl State {
             .as_ref()
             .and_then(WindowSession::game_settings)
             .cloned();
-        let asset_root = options
-            .as_ref()
-            .map(|options| options.images.root.clone())
-            .unwrap_or_default();
         let mut state = Self {
             backend,
             instance,
@@ -288,8 +284,11 @@ impl State {
             pool,
             resources,
             fonts,
-            active_fonts: font_path.into_iter().collect(),
-            asset_root,
+            active_fonts: font_path
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            font_requests: Default::default(),
             canvas_id,
             game,
             epoch: 1,
@@ -361,10 +360,18 @@ impl State {
         };
         let before = session.ui().projection_stamp();
         session.tick(budget, now)?;
-        let settings_changed = self.apply_game_settings()?;
+        let settings_changed = if self.closing {
+            false
+        } else {
+            self.apply_game_settings()?
+        };
         if !self.closing {
             let session = self.session.as_mut().unwrap();
             session.check_fonts()?;
+            if self.settings_pending() {
+                return Ok(());
+            }
+            let session = self.session.as_mut().unwrap();
             session.sync(&mut self.presentation.bridge, self.root_id)?;
             if settings_changed || before != session.ui().projection_stamp() {
                 self.schedule_reveal();
@@ -372,6 +379,16 @@ impl State {
             }
         }
         Ok(())
+    }
+    fn settings_pending(&self) -> bool {
+        self.session
+            .as_ref()
+            .and_then(WindowSession::game_settings)
+            .is_some_and(|settings| {
+                self.game
+                    .as_ref()
+                    .is_none_or(|applied| !Arc::ptr_eq(applied, settings))
+            })
     }
     fn apply_game_settings(&mut self) -> Result<bool, Error> {
         let Some(settings) = self
@@ -387,24 +404,38 @@ impl State {
         else {
             return Ok(false);
         };
-        let paths = settings
-            .fonts
-            .iter()
-            .map(|font| self.asset_root.join(font))
-            .collect::<Vec<_>>();
+        self.session.as_mut().unwrap().ui_mut().clear_presented();
+        self.next_reveal = None;
+        let paths = settings.fonts.clone();
+        let assets = self.session.as_ref().unwrap().ui().assets();
+        self.font_requests.retain(|path, id| {
+            if paths.contains(path) {
+                true
+            } else {
+                assets.cancel(*id);
+                false
+            }
+        });
         if paths != self.active_fonts {
             let mut data = Vec::with_capacity(paths.len());
             for path in &paths {
                 let index = if let Some(&index) = self.fonts.get(path) {
                     index
                 } else {
-                    let lease = crate::fonts::load(path, &self.pool).map_err(|e| {
+                    let request = *self.font_requests.entry(path.clone()).or_insert_with(|| {
+                        assets.request(path.clone(), crate::assets::AssetKind::Font)
+                    });
+                    let lease = assets.poll(request).map_err(|e| {
                         format!(
                             "{}: font {}: {e}",
                             settings.source.as_deref().unwrap_or("game.configure"),
-                            path.display()
+                            path
                         )
                     })?;
+                    let Some(lease) = lease else {
+                        return Ok(false);
+                    };
+                    self.font_requests.remove(path);
                     let index = self.resources.len();
                     self.resources.push(lease);
                     self.fonts.insert(path.clone(), index);
@@ -415,6 +446,9 @@ impl State {
                     unreachable!()
                 };
                 data.push(font.clone());
+            }
+            if !self.session.as_mut().unwrap().ui_mut().prepare_assets()? {
+                return Ok(false);
             }
             if !self.presentation.bridge.set_default_fonts(&data) {
                 return Err(format!(
@@ -440,7 +474,7 @@ impl State {
         self.next_reveal = None;
         self.presentation.suspend();
         if let Some(session) = &mut self.session {
-            session.ui_mut().close_images();
+            session.ui_mut().close_resources();
             session.close()?;
         }
         Ok(())
@@ -500,6 +534,7 @@ impl State {
             result => result?,
         };
         if result.accepted
+            && !self.settings_pending()
             && let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
         {
             session.ui_mut().presented(stamp);
@@ -585,6 +620,9 @@ impl State {
         Ok(())
     }
     pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<(), Error> {
+        if self.settings_pending() {
+            return Ok(());
+        }
         if let Some(session) = &mut self.session {
             session.handle_text(&mut self.presentation.bridge, event)?;
             session.after_input(&mut self.presentation.bridge, self.root_id)?;
@@ -596,6 +634,9 @@ impl State {
         Ok(())
     }
     pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {
+        if self.settings_pending() && !matches!(kind, PointerKind::Cancel) {
+            return Ok(());
+        }
         let pointer = PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),
             persistent_device_id: None,
@@ -654,7 +695,11 @@ impl State {
         Ok(())
     }
     fn schedule_reveal(&mut self) {
-        if self.is_suspended() || self.size.width == 0 || self.size.height == 0 {
+        if self.settings_pending()
+            || self.is_suspended()
+            || self.size.width == 0
+            || self.size.height == 0
+        {
             self.next_reveal = None;
             return;
         }
@@ -679,6 +724,10 @@ impl State {
         self.next_reveal
     }
     pub(crate) fn tick_reveal(&mut self) -> Result<(), Error> {
+        if self.settings_pending() {
+            self.next_reveal = None;
+            return Ok(());
+        }
         if self
             .next_reveal
             .is_none_or(|deadline| Instant::now() < deadline)
@@ -840,6 +889,7 @@ mod tests {
         let probe_frame = probe.build_frame().unwrap();
         let prepared = probe.backend.renderer_mut().prepare(&probe_frame).unwrap();
         let single_targets = probe.backend.renderer_mut().usage().targets;
+        let minimum_single_target = u64::from(probe.size.width) * u64::from(probe.size.height) * 4;
         let second = probe.backend.renderer().prepare(&probe_frame).unwrap();
         let first_id = probe.backend.renderer_mut().submit(prepared).unwrap();
         let second_id = probe.backend.renderer_mut().submit(second).unwrap();
@@ -1104,7 +1154,7 @@ mod tests {
         // Permanent refusals stop preparation even when unrelated GPU work completes.
         for limits in [
             GpuLimits {
-                target_bytes: single_targets * 3 / 4,
+                target_bytes: minimum_single_target,
                 ..Default::default()
             },
             GpuLimits {
@@ -1328,6 +1378,7 @@ mod tests {
         impl ApplicationHandler for Harness {
             fn resumed(&mut self, event_loop: &ActiveEventLoop) {
                 exercise_session(event_loop);
+                exercise_author_resources(event_loop);
                 event_loop.exit();
             }
             fn window_event(
@@ -1347,6 +1398,144 @@ mod tests {
         #[cfg(target_os = "windows")]
         let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
         event_loop.run_app(&mut Harness).unwrap();
+    }
+    fn exercise_author_resources(event_loop: &ActiveEventLoop) {
+        use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+        let font = std::env::var("REEL_SESSION_FONT")
+            .unwrap()
+            .replace('\\', "/");
+        let alternate = {
+            let (parent, name) = font.rsplit_once('/').unwrap();
+            format!("{parent}/./{name}")
+        };
+        let source = format!(
+            r#"
+fn main() {{
+    game.configure(fonts: [{font:?}]);
+    let picture = image("assets/panels.png");
+    stage.replace(picture);
+    narrator("A");
+    game.configure(fonts: [{alternate:?}]);
+    picture.source = "assets/sun.jpg";
+    narrator("B");
+}}
+"#
+        );
+        let options = StoryWindowOptions {
+            assets: crate::assets::AssetOptions {
+                root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let driver = AsideSessionUi::from_source(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            &source,
+            "main",
+            1,
+            "main",
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap()
+        .with_asset_options(options.assets.clone());
+        let mut state = State::new_story(event_loop, 1, driver, options).unwrap();
+        let assets = state.session.as_ref().unwrap().ui().assets();
+        let (send, receive) = std::sync::mpsc::channel();
+        assets.set_waker(Arc::new(move || {
+            let _ = send.send(());
+        }));
+        let settle = |state: &mut State| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                state.tick_story().unwrap();
+                if !state.settings_pending()
+                    && !state.session.as_ref().unwrap().ui().images_pending()
+                    && !state.session.as_ref().unwrap().needs_tick()
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "author resources failed to settle"
+                );
+                if !state.session.as_ref().unwrap().needs_tick() {
+                    receive
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("author resources must wake window");
+                }
+            }
+        };
+        settle(&mut state);
+        assert_eq!(state.active_fonts, std::slice::from_ref(&font));
+        present_session(&mut state);
+        let old_frame = state.build_frame().unwrap();
+        let old_pixels = state.session.as_ref().unwrap().ui().image_resources()[0].clone();
+        let session = state.session.as_mut().unwrap();
+        let id = session.ui().session().view().interaction.unwrap().id();
+        let owner = session.ui().session().root_owner();
+        for _ in 0..2 {
+            session
+                .ui_mut()
+                .session_mut()
+                .handle_local_input(owner, reel_engine::InputAction::Advance(id))
+                .unwrap();
+        }
+        session
+            .after_input(&mut state.presentation.bridge, state.root_id)
+            .unwrap();
+        // Run the VM to the second wait, then deliberately leave IO completions unpolled.
+        while state.session.as_ref().unwrap().needs_tick() {
+            state
+                .session
+                .as_mut()
+                .unwrap()
+                .tick(Default::default(), || 0)
+                .unwrap();
+        }
+        assert!(state.settings_pending());
+        assert!(!state.apply_game_settings().unwrap());
+        assert_eq!(state.active_fonts, [font]);
+        assert_eq!(
+            state.session.as_ref().unwrap().ui().image_resources()[0].handle(),
+            old_pixels.handle()
+        );
+        let reveal = session_reveal(&state);
+        session_click(&mut state, 100., 300.);
+        state.next_reveal = Some(Instant::now());
+        state.tick_reveal().unwrap();
+        assert_eq!(
+            session_reveal(&state),
+            reveal,
+            "old frame cannot consume input while fonts load"
+        );
+        settle(&mut state);
+        assert_eq!(state.active_fonts, [alternate]);
+        let lease = &state.session.as_ref().unwrap().ui().image_resources()[0];
+        assert_eq!(lease.version().key.0, "assets/sun.jpg");
+        assert!(old_pixels.is_retired());
+        present_session(&mut state);
+        let frame = state.build_frame().unwrap();
+        let prepared = state.backend.renderer_mut().prepare(&frame).unwrap();
+        eprintln!(
+            "author window size={:?} quality={:?} usage={:?}",
+            prepared.size(),
+            prepared.quality(),
+            state.backend.renderer().usage()
+        );
+        let pixels = state.backend.renderer_mut().readback(prepared).unwrap();
+        assert_eq!(
+            pixels.len(),
+            state.size.width as usize * state.size.height as usize
+        );
+        assert!(!old_frame.resources().leases().is_empty());
+        state.close().unwrap();
+        while !state.close_complete() {
+            state.tick_story().unwrap();
+        }
+        eprintln!(
+            "author font/image IO, atomic replacement, input pause, GPU readback and close passed"
+        );
     }
     #[test]
     #[ignore = "requires a native display and actual graphics adapter"]

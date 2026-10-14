@@ -13,7 +13,8 @@ mod window;
 mod window_session;
 
 pub mod aside_session;
+pub mod assets;
 pub mod fonts;
-pub mod images;
+mod images;
 pub mod session;
 mod stage_widget;

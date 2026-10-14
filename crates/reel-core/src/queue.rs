@@ -16,11 +16,11 @@ pub struct QueueUsage {
 }
 
 /// Linear permission to enqueue exactly one terminal record.
-pub(super) struct CompletionSlot {
+pub struct CompletionSlot {
     pub id: u64,
     pub bytes: u64,
 }
-pub(super) struct Entry<R> {
+pub struct Entry<R> {
     pub slot: CompletionSlot,
     pub request: R,
     priority: usize,
@@ -31,7 +31,7 @@ struct Finished<E> {
 }
 
 /// Settlement follows removal of the owning Entry; no growing tombstone set.
-pub(super) struct Queue<R, E> {
+pub struct Queue<R, E> {
     limits: QueueLimits,
     pending: [VecDeque<Entry<R>>; 3],
     events: VecDeque<Finished<E>>,
@@ -154,7 +154,7 @@ impl<R, E> Queue<R, E> {
     }
 }
 
-pub(super) fn charge(parts: &[u64]) -> Result<u64, RejectReason> {
+pub fn charge(parts: &[u64]) -> Result<u64, RejectReason> {
     parts
         .iter()
         .try_fold(0u64, |total, n| total.checked_add(*n))
@@ -163,6 +163,6 @@ pub(super) fn charge(parts: &[u64]) -> Result<u64, RejectReason> {
         })
 }
 
-pub(super) fn invalid(message: &str) -> RejectReason {
+pub fn invalid(message: &str) -> RejectReason {
     RejectReason::new(RejectCode::InvalidRequest, message)
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     aside_session::{AsideSessionUi, StoryProgress, StoryState},
-    images::ImageOptions,
+    assets::AssetOptions,
 };
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
@@ -42,6 +42,14 @@ fn main() {
 "#;
 
 fn fixture() -> (AsideSessionUi, PresentationBridge, WidgetId, Receiver<()>) {
+    fixture_with_assets(crate::assets::Assets::directory(AssetOptions {
+        root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+        ..Default::default()
+    }))
+}
+fn fixture_with_assets(
+    assets: crate::assets::Assets,
+) -> (AsideSessionUi, PresentationBridge, WidgetId, Receiver<()>) {
     let mut driver = AsideSessionUi::from_source(
         super::tests::session(),
         STORY,
@@ -52,12 +60,9 @@ fn fixture() -> (AsideSessionUi, PresentationBridge, WidgetId, Receiver<()>) {
         VmLimits::default(),
     )
     .unwrap()
-    .with_image_options(ImageOptions {
-        root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
-        ..Default::default()
-    });
+    .with_assets(assets);
     let (send, receive) = mpsc::channel();
-    driver.set_image_waker(Arc::new(move || {
+    driver.set_resource_waker(Arc::new(move || {
         let _ = send.send(());
     }));
     let (bridge, root) = super::tests::mount(driver.ui());
@@ -228,7 +233,17 @@ fn image_pixel_ids(frame: &RenderFrame) -> Vec<u64> {
 }
 #[test]
 fn author_image_pipeline_preserves_atomic_scene_identity_and_final_frame() {
-    let (mut driver, mut bridge, root, wake) = fixture();
+    image_pipeline(fixture());
+    image_pipeline(fixture_with_assets(crate::assets::tests::memory_assets()));
+}
+fn image_pipeline(
+    (mut driver, mut bridge, root, wake): (
+        AsideSessionUi,
+        PresentationBridge,
+        WidgetId,
+        Receiver<()>,
+    ),
+) {
     drive(&mut driver);
     settle(&mut driver, &mut bridge, root, &wake);
     let mut id = 1;

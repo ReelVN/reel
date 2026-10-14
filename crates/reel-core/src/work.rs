@@ -45,7 +45,7 @@ pub struct WorkReservations {
 #[derive(Debug)]
 pub struct WorkRequest {
     pub kind: WorkKind,
-    pub input: OwnedBytes,
+    pub input: std::sync::Arc<OwnedBytes>,
     pub scope: Scope,
     pub priority: Priority,
     pub reservations: WorkReservations,

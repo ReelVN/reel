@@ -588,7 +588,9 @@ impl SessionUi {
             stage: None,
             stage_dirty: false,
             pending_stage: None,
-            images: crate::images::Images::new(Default::default()),
+            images: crate::images::Images::new(
+                crate::assets::Assets::directory(Default::default()),
+            ),
         })
     }
     pub fn session(&self) -> &Session {
@@ -617,15 +619,25 @@ impl SessionUi {
         }
     }
     /// Configure before creating a widget or driving the story.
-    pub fn with_image_options(mut self, options: crate::images::ImageOptions) -> Self {
-        self.images = crate::images::Images::new(options);
+    pub fn with_asset_options(mut self, options: crate::assets::AssetOptions) -> Self {
+        self.images = crate::images::Images::new(crate::assets::Assets::directory(options));
         if let Some(view) = &self.pending_stage {
             self.images.request(view.image_requests());
         }
         self
     }
-    /// Called from the decoder thread when a terminal result is ready to poll.
-    pub fn set_image_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+    pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
+        self.images = crate::images::Images::new(assets);
+        if let Some(view) = &self.pending_stage {
+            self.images.request(view.image_requests());
+        }
+        self
+    }
+    pub fn assets(&self) -> crate::assets::Assets {
+        self.images.assets.clone()
+    }
+    /// Called by resource adapters when a terminal result is ready to poll.
+    pub fn set_resource_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
         self.images.set_waker(wake);
     }
     pub fn images_pending(&self) -> bool {
@@ -639,7 +651,11 @@ impl SessionUi {
     pub fn image_resources(&self) -> &[reel_ui::resources::ResourceLease] {
         self.stage.as_ref().map_or(&[], |view| &view.resources)
     }
-    pub(crate) fn close_images(&mut self) {
+    #[cfg(feature = "window")]
+    pub(crate) fn prepare_assets(&mut self) -> Result<bool, Error> {
+        Ok(self.images.poll()?)
+    }
+    pub(crate) fn close_resources(&mut self) {
         self.pending_stage = None;
         self.images.close();
         self.stage = None;
@@ -774,7 +790,7 @@ impl SessionUi {
         Ok(UiDispatch { handled, click })
     }
     pub fn cancel(&mut self) -> bool {
-        self.close_images();
+        self.close_resources();
         self.clear_presented();
         self.session.cancel()
     }

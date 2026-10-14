@@ -1,12 +1,22 @@
 use super::*;
-use reel_ui::resources::ResourceData;
-use std::time::Duration;
+use crate::assets::AssetOptions;
+use reel_ui::resources::{ColorEncoding, ResourceData};
+use std::{
+    path::PathBuf,
+    sync::mpsc::{self, Receiver},
+    time::Duration,
+};
 
 fn loader() -> (Images, Receiver<()>) {
-    let mut images = Images::new(ImageOptions {
+    configured(256 << 20, 256 << 20)
+}
+fn configured(resident_bytes: u64, decode_bytes: u64) -> (Images, Receiver<()>) {
+    let mut images = Images::new(Assets::directory(AssetOptions {
         root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+        resident_bytes,
+        decode_bytes,
         ..Default::default()
-    });
+    }));
     let (send, receive) = mpsc::channel();
     images.set_waker(Arc::new(move || {
         let _ = send.send(());
@@ -117,23 +127,7 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
         ("assets/panels.png", 1, 1 << 20, "resident budget"),
         ("assets/panels.png", 1 << 20, 1, "limit"),
     ] {
-        let (mut images, wake) = loader();
-        images.options.resident_bytes = resident;
-        images.pool = BudgetPool::new(
-            BudgetCategory::CpuOutput,
-            QueueLimits {
-                max_requests: 32,
-                max_bytes: resident,
-            },
-        );
-        images.options.decode_bytes = decode;
-        images.work = BudgetPool::new(
-            BudgetCategory::Temporary,
-            QueueLimits {
-                max_requests: 1,
-                max_bytes: decode,
-            },
-        );
+        let (mut images, wake) = configured(resident, decode);
         images.request(wanted(&[source]));
         let error = ready(&mut images, &wake).unwrap_err();
         assert!(
@@ -148,7 +142,13 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
     assert!(!images.poll().unwrap());
     // Leave a successful decoded lease queued, then withdraw its request before
     // polling. This tests an actual late result, rather than only early IO cancellation.
-    wake.recv_timeout(Duration::from_secs(10)).unwrap();
+    loop {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        if images.pool.usage().bytes == 160 * 90 * 4 && images.work.usage().bytes == 0 {
+            break;
+        }
+        assert!(!images.poll().unwrap());
+    }
     assert_eq!(images.pool.usage().bytes, 160 * 90 * 4);
     assert_eq!(images.work.usage().bytes, 0);
     images.request(BTreeMap::new());

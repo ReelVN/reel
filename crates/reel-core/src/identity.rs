@@ -50,6 +50,21 @@ pub struct ResourceVersion {
     pub version: ContentVersion,
 }
 
+/// Resolve a named asset, optionally pinning an exact published content version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetSource {
+    pub key: AssetKey,
+    pub version: Option<ContentVersion>,
+}
+impl From<ResourceVersion> for AssetSource {
+    fn from(resource: ResourceVersion) -> Self {
+        Self {
+            key: resource.key,
+            version: Some(resource.version),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     Prefetch,

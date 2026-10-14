@@ -214,7 +214,25 @@ impl Renderer {
         self.gpu.check()?;
         let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
         let size = frame.info().physical_size;
-        let quality = self.gpu.quality(size)?;
+        let budget_scope = Budgets::new(self.gpu.limits);
+        let mut tickets = Vec::new();
+        let mut plan = |frame| {
+            super::targets::peak_targets(frame, |bytes| {
+                tickets.push(reserve(
+                    &self.budgets.transient,
+                    &budget_scope.transient,
+                    bytes,
+                    self.gpu.limits.transient_bytes,
+                    "transient",
+                )?);
+                Ok(())
+            })
+        };
+        let mut targets = plan(frame)?;
+        if let Some((second, _)) = second {
+            targets = targets.max(1 + plan(second)?).max(3);
+        }
+        let quality = self.gpu.quality_for_targets(size, targets)?;
         let mut ctx = Context {
             gpu: &self.gpu,
             encoder: self.gpu.device.create_command_encoder(&Default::default()),
@@ -222,8 +240,8 @@ impl Renderer {
             quality,
             size,
             budgets: &self.budgets,
-            budget_scope: Budgets::new(self.gpu.limits),
-            tickets: Vec::new(),
+            budget_scope,
+            tickets,
             images: HashMap::new(),
             white: None,
             available_targets: Vec::new(),

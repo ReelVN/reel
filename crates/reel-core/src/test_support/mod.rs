@@ -2,7 +2,7 @@
 //! No filesystem, device, VM, production codecs or durability simulation.
 mod cooperative;
 mod memory_io;
-mod queue;
+use crate::queue;
 
 pub use cooperative::COMPLETION_BYTES as WORK_COMPLETION_BYTES;
 pub use cooperative::CooperativeExecutor;

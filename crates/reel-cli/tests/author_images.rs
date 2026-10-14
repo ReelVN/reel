@@ -10,7 +10,7 @@ use reel_engine::{
 };
 use reel_player::{
     aside_session::{AsideSessionUi, StoryProgress, StoryState},
-    images::ImageOptions,
+    assets::AssetOptions,
 };
 use reel_ui::{
     app::{GeometryLimits, RenderRoot, RenderRootOptions, WindowSizePolicy},
@@ -47,12 +47,12 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
         VmLimits::default(),
     )
     .unwrap()
-    .with_image_options(ImageOptions {
+    .with_asset_options(AssetOptions {
         root: assets.into(),
         ..Default::default()
     });
     let (send, receive) = mpsc::channel();
-    driver.set_image_waker(Arc::new(move || {
+    driver.set_resource_waker(Arc::new(move || {
         let _ = send.send(());
     }));
     for _ in 0..10_000 {
@@ -150,7 +150,7 @@ struct ImageDraw {
     pixels: Vec<u8>,
 }
 
-fn images(frame: &RenderFrame, assets: &Path) -> Vec<ImageDraw> {
+fn images(frame: &RenderFrame) -> Vec<ImageDraw> {
     let mut blob_ids = Vec::new();
     let draws: Vec<_> = frame
         .commands()
@@ -209,7 +209,7 @@ fn images(frame: &RenderFrame, assets: &Path) -> Vec<ImageDraw> {
             [1., 0., 0., 1., 280., 0.],
         ),
     ] {
-        assert_eq!(Path::new(&draw.version.key.0), assets.join(file));
+        assert_eq!(draw.version.key.0, file);
         assert_eq!(draw.dimensions, dimensions);
         assert!(
             draw.transform
@@ -239,6 +239,12 @@ fn source_and_asb_share_real_image_frames_with_an_independent_asset_root() {
         .canonicalize()
         .unwrap();
     let mut expected = None;
+    let relocated = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/reel-artifacts/relocated-author-assets");
+    std::fs::create_dir_all(relocated.join("assets")).unwrap();
+    for file in ["assets/panels.png", "assets/sun.jpg"] {
+        std::fs::copy(assets.join(file), relocated.join(file)).unwrap();
+    }
     // These diagnostic paths intentionally have no relation to the actual assets.
     for source_path in [
         "source-only/原稿.aside",
@@ -253,9 +259,9 @@ fn source_and_asb_share_real_image_frames_with_an_independent_asset_root() {
             source_path
         );
         let direct = reel_cli::into_story(checked, "main::main").unwrap();
-        for story in [direct, packaged] {
-            let frame = render(story, &assets);
-            let actual = images(&frame, &assets);
+        for (story, root) in [(direct, &assets), (packaged, &relocated)] {
+            let frame = render(story, root);
+            let actual = images(&frame);
             if let Some(expected) = &expected {
                 assert_eq!(&actual, expected);
             } else {
