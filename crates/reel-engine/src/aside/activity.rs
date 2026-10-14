@@ -151,6 +151,7 @@ pub(super) struct Activities {
     job_tail: Option<Value>,
     // Every indexed leaf is also traced through the active root's graph.
     events: BTreeMap<EventKey, Value>,
+    sampling: usize,
     native: Option<NativeWork>,
     cleanup: Option<Cleanup>,
     control: Option<Control>,
@@ -160,6 +161,5 @@ pub(super) struct Activities {
     observed_time: f64,
     target_time: f64,
     serial: u64,
-    running: usize,
     waits: Vec<(WaitId, Value)>,
 }

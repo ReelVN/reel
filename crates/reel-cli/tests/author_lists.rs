@@ -72,7 +72,7 @@ fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
 }
 
 #[test]
-fn keyed_creator_examples_initialize_from_source_and_asb() {
+fn creator_ui_examples_initialize_from_source_and_asb() {
     for (name, source) in [
         (
             "author_list.aside",
@@ -85,6 +85,14 @@ fn keyed_creator_examples_initialize_from_source_and_asb() {
         (
             "author_reading.aside",
             include_str!("../../../examples/author_reading.aside"),
+        ),
+        (
+            "author_text_input.aside",
+            include_str!("../../../examples/author_text_input.aside"),
+        ),
+        (
+            "author_timing.aside",
+            include_str!("../../../examples/author_timing.aside"),
         ),
     ] {
         let checked = reel_cli::check(source, name).unwrap();

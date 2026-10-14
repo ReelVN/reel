@@ -200,6 +200,9 @@ impl ApplicationHandler for App {
                     ui_events_winit::keyboard::from_winit_keyboard_event(event, state.modifiers),
                 ))
                 .map(|_| ()),
+            WindowEvent::Ime(event) => state
+                .text_event(crate::platform::winit::ime(event))
+                .map(|_| ()),
             WindowEvent::Focused(focus) => {
                 let result = state
                     .text_event(TextEvent::WindowFocusChange(focus))

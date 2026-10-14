@@ -79,8 +79,7 @@ impl StoryRuntime {
             .driver
             .ui()
             .dialogue_interval(self.driver.adapter().game_settings().text_speed);
-        let interval = if self.driver.activities_need_time() {
-            let interval = std::time::Duration::from_millis(16);
+        let interval = if let Some(interval) = self.driver.activities_poll_after() {
             if self.driver.ui().dialogue_needs_time() {
                 reveal.min(interval)
             } else {
@@ -297,6 +296,44 @@ mod tests {
             )
             .unwrap();
         clock
+    }
+
+    #[test]
+    fn pure_delays_sleep_at_deadlines_and_suspension_preserves_remaining_time() {
+        let mut story = runtime("fn main() { await run(delay(2)); }");
+        for _ in 0..10_000 {
+            if !story.needs_work() {
+                break;
+            }
+            story.tick(SliceBudget::default(), || 0).unwrap();
+        }
+        assert!(!story.needs_work());
+        assert_eq!(story.tick_interval(), std::time::Duration::from_secs(2));
+        story.tick(SliceBudget::default(), || 500_000_000).unwrap();
+        assert_eq!(
+            story.tick_interval(),
+            std::time::Duration::from_millis(1500)
+        );
+        story.suspend(500_000_000);
+        assert!(!story.needs_tick());
+        story
+            .tick(SliceBudget::default(), || panic!("suspended timer polled"))
+            .unwrap();
+        story.resume(20_500_000_000);
+        story
+            .tick(SliceBudget::default(), || 21_000_000_000)
+            .unwrap();
+        assert_eq!(story.tick_interval(), std::time::Duration::from_secs(1));
+        for _ in 0..10_000 {
+            if !story.needs_tick() {
+                break;
+            }
+            story
+                .tick(SliceBudget::default(), || 22_000_000_000)
+                .unwrap();
+        }
+        assert_eq!(story.driver.state(), StoryState::Finished);
+        assert!(!story.needs_tick());
     }
 
     #[test]

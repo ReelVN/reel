@@ -110,7 +110,6 @@ impl Activities {
                 let heap = vm.heap_mut();
                 let scan = match command {
                     Command::Pause if old == State::Running => {
-                        self.running -= 1;
                         root_set(
                             heap,
                             activity,
@@ -121,7 +120,6 @@ impl Activities {
                         Some(0.)
                     }
                     Command::Resume if old == State::Paused => {
-                        self.running += 1;
                         root_set(
                             heap,
                             activity,
@@ -137,7 +135,6 @@ impl Activities {
                     }
                     Command::Finish => {
                         if old == State::Paused {
-                            self.running += 1;
                             root_set(
                                 heap,
                                 activity,
@@ -201,7 +198,6 @@ impl Activities {
                     root_set(heap, first, RootSlot::Previous, activity)?;
                 }
                 heap.set_root(self.head.unwrap(), activity)?;
-                self.running += 1;
                 operation.build = None;
                 self.queue(
                     heap,
@@ -350,10 +346,10 @@ impl Activities {
         }
         self.job_tail = None;
         self.events.clear();
+        self.sampling = 0;
         self.cleanup = None;
         self.control = None;
         self.round = None;
-        self.running = 0;
         self.waits.clear();
         Ok(())
     }

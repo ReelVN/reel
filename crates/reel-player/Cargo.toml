@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-winit = ["dep:winit", "dep:ui-events-winit"]
+winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 audio-output = ["reel-media/cpal-output"]
 window = ["audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
@@ -27,6 +27,7 @@ pollster = { version = "=0.4.0", optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 gilrs = { version = "=0.11.2", optional = true }
+arboard = { version = "=3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
 
 [dev-dependencies]
 stats_alloc = "=0.1.10"

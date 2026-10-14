@@ -1,5 +1,7 @@
 //! Winit host commands, usable with any RenderBackend.
 use super::PlatformHost;
+#[path = "winit_text.rs"]
+mod text;
 #[path = "winit_touch.rs"]
 mod touch;
 use reel_core::clock::{Clock, MonoTime, UnixMillis};
@@ -7,6 +9,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+pub use text::ime;
 pub use touch::TouchInput;
 use winit::{
     event_loop::{ActiveEventLoop, ControlFlow},
@@ -18,6 +21,7 @@ pub struct WinitHost {
     origin: Instant,
     deadline: Option<MonoTime>,
     exiting: bool,
+    text: text::TextInputHost,
 }
 impl WinitHost {
     pub fn new(window: Arc<Window>) -> Self {
@@ -26,6 +30,7 @@ impl WinitHost {
             origin: Instant::now(),
             deadline: None,
             exiting: false,
+            text: text::TextInputHost::default(),
         }
     }
     pub fn window(&self) -> &Window {

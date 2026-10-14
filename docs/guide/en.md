@@ -304,6 +304,13 @@ mio("听，雨又大了。");
 ```
 The example above demonstrates the rules for composing loops. Actual character breathing can use subtle movement or scaling instead, with the same script structure. Authors wrap common actions in ordinary fn functions that take any node and return an action value. UI and character portraits can share these actions.
 
+Use `delay(seconds)` to leave a pause in a scene without creating a display node. It shares the animation clock, composition, pause, stop, and owner cancellation rules; a player with only delays sleeps until the next deadline. Seconds must be finite and nonnegative; zero completes immediately. Runnable example: [author_timing.aside](../../examples/author_timing.aside).
+
+```aside
+await run(delay(1.5));
+await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
+```
+
 ## 5 Managing Temporary Scenes with Scopes
 
 The creator scope, temporary overrides and restoration behavior in this section remain design targets.
@@ -638,11 +645,11 @@ A click passes the original button as event.target. A callback can await an anim
 
 The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start and general event subscriptions remain unimplemented; direct node property bindings are available below.
 
-Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons.aside). Native IME and system accessibility adapters remain future work.
+Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons.aside). The built-in desktop host integrates the system IME; system accessibility adapters remain future work.
 
 Use the dev/build/run commands in section 1 with this file. Nodes, input and scheduling do not depend on Winit/WGPU. The window feature selects the built-in desktop combination; other hosts can reuse the same session and presentation interfaces.
 
-For ports and embedding, use PlatformHost, Presentation and StoryRuntime from reel-player, and RenderBackend from reel-render. Enabling reel-player/winit alone provides the Winit host without WGPU; reel-render/wgpu provides the independent WGPU backend. The built-in player uses these interfaces too: only an actually presented new frame updates input geometry, temporary resource pressure retries after submission completion, and permanent refusal preserves the previous frame. Story animations pause while the application is suspended and continue on resume; closing still completes task cleanup. Authors do not need to change their scripts or select a graphics API. Touch uses portable PointerEvent values; hosts enabling winit can reuse TouchInput to convert native contacts. Rust games and hosts can use reel_ui::input::ActionMap to bind keyboard, pointer and gamepad controls, read held values and receive press, change, release and cancellation events. NavigationInput supplies configurable thresholds, repeat timing and remapping. The independent gamepad feature uses Gilrs for desktop devices without requiring Winit/WGPU. Native IME and system accessibility remain unimplemented. See the [player documentation](../../crates/reel-player/README.md) for host integration and reproducible checks.
+For ports and embedding, use PlatformHost, Presentation and StoryRuntime from reel-player, and RenderBackend from reel-render. Enabling reel-player/winit alone provides the Winit host without WGPU; reel-render/wgpu provides the independent WGPU backend. The built-in player uses these interfaces too: only an actually presented new frame updates input geometry, temporary resource pressure retries after submission completion, and permanent refusal preserves the previous frame. Story animations pause while the application is suspended and continue on resume; closing still completes task cleanup. Authors do not need to change their scripts or select a graphics API. Touch uses portable PointerEvent values; hosts enabling winit can reuse TouchInput to convert native contacts. Rust games and hosts can use reel_ui::input::ActionMap to bind keyboard, pointer and gamepad controls, read held values and receive press, change, release and cancellation events. NavigationInput supplies configurable thresholds, repeat timing and remapping. The independent gamepad feature uses Gilrs for desktop devices without requiring Winit/WGPU. The Winit adapter forwards system IME events and candidate-window positions; system accessibility remains unimplemented. See the [player documentation](../../crates/reel-player/README.md) for host integration and reproducible checks.
 
 ## Modal menus and focus
 
@@ -759,6 +766,17 @@ fn main() {
 Rust hosts submit AccessKit ActionRequest through `SessionUi::handle_access` / `AsideSessionUi::handle_access`, preserving accepted-frame and modal rules; the platform host supplies the native screen-reader connection.
 
 ## Connecting stage properties
+
+`text_input` edits a single line. Its value can bind to a writable model field; on_change runs after committed text changes, and on_submit runs on Enter. Both events carry target and value. IME preedit neither writes to the model nor triggers these callbacks. It supports cursor movement, selection, deletion, copy, cut, and paste. The system IME owns conversion and candidate selection; embedding hosts forward portable IME events and handle candidate-window position signals. Assigned values must be single-line strings; newlines in user input or paste become spaces. Style it with common node properties and compose your own background and focus indication; it adds no default border.
+
+```aside
+let profile = model({name: ""});
+text_input(value: bind(profile.name), width: 280, height: 40,
+    color: "#202020", background: "#ffffff",
+    on_submit: |event| { profile.name = event.value; });
+```
+
+Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).
 
 `bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
 

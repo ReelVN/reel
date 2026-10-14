@@ -39,6 +39,59 @@ fn advance_dialogue(vm: &mut SessionVm, session: &mut Session) {
     assert!(matches!(drive(vm, session), RunOutcome::Waiting(_)));
 }
 
+#[test]
+fn delays_share_composition_controls_and_sleep_until_their_deadline() {
+    use std::time::Duration;
+    let (mut session, mut vm) = setup(
+        r#"fn opening() {
+        let node = text("timed"); stage.replace(node);
+        let mut rejected = false;
+        try { delay(-1); } catch e { rejected = true; }
+        if !rejected { throw "negative delay"; }
+        if await run(delay(0)) != "Completed" { throw "zero delay"; }
+        let action = sequence(delay(1), parallel(delay(0.5), tween(node, x: 100, duration: 0.5)));
+        let activity = run(action);
+        pause(activity); resume(activity);
+        if await activity != "Completed" || node.x != 100 { throw "composition"; }
+        let ended = run(repeat(delay(1), times: 3));
+        finish(ended);
+        if await ended != "Completed" { throw "finish"; }
+        let stopped = run(delay(4)); stop(stopped);
+        if await stopped != "Stopped" { throw "stop"; }
+        let owned = run(delay(20), owner: node);
+        stage.replace(text("replacement"));
+        let mut cancelled = false;
+        try { await owned; } catch e { cancelled = true; }
+        if !cancelled { throw "owner"; }
+        true
+    }"#,
+        Context::Ordinary,
+    );
+    assert!(matches!(
+        drive(&mut vm, &mut session),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(1)));
+    let chunks = vm.vm.heap().stats().chunk_allocations;
+    assert!(!advance_clock(&mut vm, &session, 0.5, 1).woke);
+    assert_eq!(vm.vm.heap().stats().chunk_allocations, chunks);
+    assert_eq!(vm.activities_poll_after(), Some(Duration::from_millis(500)));
+    advance_clock(&mut vm, &session, 1.25, 1);
+    assert_eq!(
+        vm.stage().node(vm.stage().root().unwrap()).unwrap().props.x,
+        0.,
+        "projection stays explicit"
+    );
+    assert_eq!(vm.activities_poll_after(), Some(Duration::from_millis(16)));
+    advance_clock(&mut vm, &session, 1.5, 1);
+    assert!(matches!(
+        drive(&mut vm, &mut session),
+        RunOutcome::Returned(_)
+    ));
+    assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
+    assert_eq!(vm.activities_poll_after(), None);
+}
+
 pub(super) fn advance_clock(
     vm: &mut SessionVm,
     session: &Session,

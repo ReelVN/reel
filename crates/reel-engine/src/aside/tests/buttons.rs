@@ -56,6 +56,91 @@ fn text_x(vm: &SessionVm, name: &str) -> f64 {
 }
 
 #[test]
+fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
+    use reel_ui::{stage::NodeText, widgets::TextInputEvent};
+    let (mut session, mut vm) = setup(
+        r#"fn opening() {
+        let profile = model({name: "old"});
+        let output = text("status");
+        let editor = text_input(value: bind(profile.name), on_change: |event| {
+            if event.target.value != event.value || profile.name != event.value { throw "binding not committed"; }
+            output.x += 1;
+        }, on_submit: |event| {
+            if event.value != "中文" { throw "wrong submit"; }
+            output.y += 1;
+            await run(delay(20));
+            throw "retired submit resumed";
+        });
+        stage.replace(column() { editor; output;
+            button("replace", on_click: |event| { profile.name = "author"; });
+            button("disable", on_click: |event| { editor.enabled = false; });
+            button("enable", on_click: |event| { editor.enabled = true; });
+            button("remove", on_click: |event| { editor.remove(); });
+        });
+        let mut rejected = 0;
+        try { text_input(value: derive(|| profile.name)); } catch e { rejected += 1; }
+        try { editor.value = "two\nlines"; } catch e { rejected += 1; }
+        if rejected != 2 { throw "invalid text binding"; }
+        narrator("still reading");
+    }"#,
+        Context::Ordinary,
+    );
+    pump(&mut vm, &mut session);
+    let node = vm
+        .stage()
+        .nodes()
+        .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+        .unwrap()
+        .id;
+    let change = |previous: &str, value: &str| NodeText {
+        node,
+        event: TextInputEvent::Changed {
+            previous: previous.into(),
+            value: value.into(),
+        },
+    };
+    assert!(vm.text_input(&mut session, &change("old", "中文")).unwrap());
+    pump(&mut vm, &mut session);
+    assert_eq!(text_x(&vm, "status"), 1.);
+    assert!(
+        vm.text_input(
+            &mut session,
+            &NodeText {
+                node,
+                event: TextInputEvent::Submitted("中文".into())
+            }
+        )
+        .unwrap()
+    );
+    pump(&mut vm, &mut session);
+    assert!(vm.activities_need_time());
+    vm.click(&mut session, button(&vm, "replace")).unwrap();
+    drive(&mut vm, &mut session, false);
+    assert!(
+        !vm.text_input(&mut session, &change("中文", "late"))
+            .unwrap()
+    );
+    vm.click(&mut session, button(&vm, "disable")).unwrap();
+    drive(&mut vm, &mut session, false);
+    assert!(
+        !vm.text_input(&mut session, &change("author", "disabled"))
+            .unwrap()
+    );
+    vm.click(&mut session, button(&vm, "enable")).unwrap();
+    pump(&mut vm, &mut session);
+    assert_eq!(text_x(&vm, "status"), 1.);
+    vm.click(&mut session, button(&vm, "remove")).unwrap();
+    pump(&mut vm, &mut session);
+    assert!(vm.callbacks.is_empty());
+    assert!(!vm.activities_need_time());
+    assert!(
+        !vm.text_input(&mut session, &change("author", "retired"))
+            .unwrap()
+    );
+    assert_eq!(session.storage_usage().pending_owner_retirements, 0);
+}
+
+#[test]
 fn modal_click_validation_reads_script_writes_before_projection() {
     let (mut s, mut vm) = setup(
         r#"fn opening() {

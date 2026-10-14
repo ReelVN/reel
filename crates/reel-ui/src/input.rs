@@ -1,3 +1,6 @@
+// Copyright 2026 Reel contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Portable controls and action state. No platform handles or event loop dependencies.
 use crate::core::{PointerButton, keyboard::Code};
 mod navigation;

@@ -11,6 +11,13 @@ pub(in crate::aside) enum Kind {
     Sequence,
     Parallel,
     Repeat,
+    Delay,
+}
+
+impl Kind {
+    pub(super) fn is_leaf(self) -> bool {
+        matches!(self, Self::Tween | Self::Delay)
+    }
 }
 
 pub(super) fn kind(heap: &Heap, action: Value) -> Result<Kind, AdapterError> {
@@ -19,6 +26,7 @@ pub(super) fn kind(heap: &Heap, action: Value) -> Result<Kind, AdapterError> {
         1 => Kind::Sequence,
         2 => Kind::Parallel,
         3 => Kind::Repeat,
+        4 => Kind::Delay,
         _ => unreachable!("private action schema"),
     })
 }
@@ -113,6 +121,14 @@ pub(in crate::aside) fn compose(
         vm.respond(ticket, HostResponse::Ready(value))?;
     }
     Ok(work)
+}
+
+pub(in crate::aside) fn delay(heap: &mut Heap, seconds: Value) -> Result<Value, AdapterError> {
+    let seconds = stage::number(seconds)?;
+    if seconds < 0. {
+        return Err(AdapterError::Input("delay seconds must be nonnegative"));
+    }
+    description(heap, Kind::Delay, Value::NULL, seconds, Value::NULL)
 }
 
 pub(in crate::aside) fn repeat(

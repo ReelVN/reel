@@ -1,3 +1,6 @@
+// Copyright 2026 Reel contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{
     event::run_event_pass,
     update::{find_first_focusable, run_update_focus_pass},

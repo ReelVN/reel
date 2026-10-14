@@ -108,6 +108,33 @@ impl SessionVm {
         Ok(true)
     }
 
+    /// Composition stays in the widget; only committed values enter script state.
+    pub fn text_input(
+        &mut self,
+        session: &mut Session,
+        input: &reel_ui::stage::NodeText,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, closure, value)) = self.stage.text_input(self.vm.heap_mut(), input)?
+        else {
+            return Ok(false);
+        };
+        self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        if closure.tag() != ValueTag::Null {
+            let heap = self.vm.heap_mut();
+            let event = heap.alloc_table()?;
+            for (i, (name, value)) in [("target", target), ("value", value)]
+                .into_iter()
+                .enumerate()
+            {
+                let key = heap.alloc_string(name)?;
+                heap.table_store(event, i as u32, key, value)?;
+            }
+            self.start_callback(session, input.node, closure, event)?;
+        }
+        Ok(true)
+    }
+
     fn start_callback(
         &mut self,
         session: &mut Session,

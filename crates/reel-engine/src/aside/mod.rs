@@ -351,6 +351,12 @@ impl SessionVm {
         !self.revoked && self.activities.needs_time()
     }
 
+    pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
+        (!self.revoked)
+            .then(|| self.activities.poll_after())
+            .flatten()
+    }
+
     pub fn dispatch(
         &mut self,
         session: &mut Session,
@@ -441,9 +447,10 @@ impl SessionVm {
                     Ok(NativeDispatch::Decoding { work })
                 }
             }
-            "reel::tween" | "reel::repeat" => {
+            "reel::tween" | "reel::repeat" | "reel::delay" => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let value = match symbol.as_str() {
+                    "reel::delay" => activity::action::delay(self.vm.heap_mut(), args[0])?,
                     "reel::tween" => activity::action::tween(
                         self.vm.heap_mut(),
                         &self.stage,
@@ -539,6 +546,7 @@ impl SessionVm {
             }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
+            | "reel::text_input"
             | "reel::slider"
             | "reel::toggle"
             | "reel::button"

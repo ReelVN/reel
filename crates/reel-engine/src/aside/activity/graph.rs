@@ -170,7 +170,8 @@ impl Build {
         slots[Slot::ChildCount as usize] = Value::int(0);
         let current = heap.alloc_array(&slots)?;
         heap.array_push(graph, current)?;
-        if kind(heap, current)? == action::Kind::Tween {
+        let action_kind = kind(heap, current)?;
+        if action_kind == action::Kind::Tween {
             let target = payload(heap, action, TARGET)?;
             stage.id(heap, target)?;
             heap.track_host_writes(target)?;
@@ -195,8 +196,9 @@ impl Build {
                 left: None,
                 right: index,
             });
-        } else if !(kind(heap, current)? == action::Kind::Repeat
-            && payload(heap, action, action::TIMES)?.as_int() == Some(0))
+        } else if !(action_kind.is_leaf()
+            || action_kind == action::Kind::Repeat
+                && payload(heap, action, action::TIMES)?.as_int() == Some(0))
         {
             self.branches.push(Branch {
                 index,

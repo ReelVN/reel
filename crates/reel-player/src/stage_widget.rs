@@ -10,9 +10,12 @@ use reel_ui::{
     resources::{ResourceData, ResourceLease},
     stage::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
-        NodeKind, Stage, StageNode,
+        NodeKind, NodeText, Stage, StageNode,
     },
-    widgets::{ButtonBehavior, Image, Label, ScrollAxis, ScrollState, Slider, SliderMoved},
+    widgets::{
+        ButtonBehavior, Image, Label, ScrollAxis, ScrollState, Slider, SliderMoved, TextInput,
+        TextInputEvent,
+    },
 };
 use std::collections::BTreeMap;
 mod input;
@@ -201,6 +204,7 @@ struct SceneWidget {
     input: Option<NodeInput>,
     slider: Option<WidgetPod<Slider>>,
     label: Option<WidgetPod<Label>>,
+    editor: Option<WidgetPod<TextInput>>,
     image: Option<WidgetPod<Image>>,
     image_size: Size,
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
@@ -262,6 +266,19 @@ impl SceneWidget {
                 _ => None,
             },
             label,
+            editor: if let NodeKind::TextInput { value } = &view.node.kind {
+                Some(
+                    NewWidget::new(
+                        TextInput::new(value.clone())
+                            .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
+                            .with_style(font_style(&view.node.props.font)),
+                    )
+                    .with_props(ContentColor::new(color(view.node.props.color)))
+                    .to_pod(),
+                )
+            } else {
+                None
+            },
             slider: if let NodeKind::Slider { range, value, .. } = view.node.kind {
                 let mut slider = Slider::new(range.min(), range.max(), value);
                 if let Some(step) = range.step() {
@@ -307,6 +324,24 @@ impl SceneWidget {
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
+        if let (Some(pod), NodeKind::TextInput { value }) =
+            (&mut this.widget.editor, &view.node.kind)
+            && let Some(mut editor) = this.ctx.get_mut(pod)
+        {
+            TextInput::set_value(&mut editor, value.clone());
+            if this.widget.node.props.font_size != view.node.props.font_size {
+                TextInput::insert_style(
+                    &mut editor,
+                    StyleProperty::FontSize(view.node.props.font_size as f32),
+                );
+            }
+            if this.widget.node.props.font != view.node.props.font {
+                TextInput::insert_style(&mut editor, font_style(&view.node.props.font));
+            }
+            if this.widget.node.props.color != view.node.props.color {
+                editor.insert_prop(ContentColor::new(color(view.node.props.color)));
+            }
+        }
         if let (Some(pod), NodeKind::Slider { range, value, .. }) =
             (&mut this.widget.slider, &view.node.kind)
             && let Some(mut slider) = this.ctx.get_mut(pod)
@@ -660,6 +695,20 @@ impl Widget for SceneWidget {
             }));
             ctx.set_handled();
         }
+        if self.editor.as_ref().is_some_and(|pod| pod.id() == source)
+            && let Some(event) = action.downcast_ref::<TextInputEvent>()
+        {
+            if let TextInputEvent::Changed { value, .. } = event {
+                self.node.kind = NodeKind::TextInput {
+                    value: value.clone(),
+                };
+            }
+            ctx.submit_action::<NodeEvent>(NodeEvent::Text(NodeText {
+                node: self.node.id,
+                event: event.clone(),
+            }));
+            ctx.set_handled();
+        }
     }
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
         self.button.update(event);
@@ -712,6 +761,9 @@ impl Widget for SceneWidget {
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
+        if let Some(editor) = &mut self.editor {
+            ctx.register_child(editor);
+        }
         if let Some(slider) = &mut self.slider {
             ctx.register_child(slider);
         }
@@ -764,6 +816,11 @@ impl Widget for SceneWidget {
         let context = ctx.context_size();
         let sequential = self.sequential(axis);
         let mut total: f64 = 0.;
+        if let Some(editor) = &mut self.editor {
+            total = ctx
+                .compute_length(editor, available, context, axis, cross)
+                .get();
+        }
         if let Some(slider) = &mut self.slider {
             total = ctx
                 .compute_length(slider, available, context, axis, cross)
@@ -819,6 +876,10 @@ impl Widget for SceneWidget {
             (size.width - padding * 2.).max(0.),
             (size.height - padding * 2.).max(0.),
         );
+        if let Some(editor) = &mut self.editor {
+            ctx.run_layout(editor, inner);
+            ctx.place_child(editor, Point::new(padding, padding));
+        }
         if let Some(slider) = &mut self.slider {
             ctx.run_layout(slider, inner);
             ctx.place_child(slider, Point::new(padding, padding));
@@ -1010,6 +1071,7 @@ impl Widget for SceneWidget {
             .map(WidgetPod::id)
             .chain(self.image.iter().map(WidgetPod::id))
             .chain(self.slider.iter().map(WidgetPod::id))
+            .chain(self.editor.iter().map(WidgetPod::id))
             .chain(self.children.iter().map(|(_, child)| child.id()))
             .collect()
     }

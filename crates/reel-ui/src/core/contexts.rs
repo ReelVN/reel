@@ -2070,6 +2070,21 @@ impl_context_method!(
             self.widget_state.ime_area = None;
         }
 
+        /// Restart the focused editor's system IME after replacing its value or selection.
+        /// Local preedit must be discarded before calling this method.
+        pub fn reset_ime(&mut self) {
+            if self.global_state.is_ime_active
+                && self.global_state.focused_widget == Some(self.widget_state.id)
+            {
+                self.global_state.emit_signal(RenderRootSignal::EndIme);
+                self.global_state.emit_signal(RenderRootSignal::StartIme);
+                self.global_state
+                    .emit_signal(RenderRootSignal::new_ime_moved_signal(
+                        self.widget_state.get_ime_area(),
+                    ));
+            }
+        }
+
         /// Sets the contents of the platform clipboard.
         ///
         /// For example, text widgets should call this for "cut" and "copy" user interactions.

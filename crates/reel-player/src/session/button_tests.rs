@@ -96,6 +96,182 @@ fn caption(runtime: &StoryRuntime) -> String {
 }
 
 #[test]
+#[ignore = "requires REEL_SESSION_FONT, an explicitly supplied TTF/OTF font"]
+fn text_input_ime_selection_cancel_submit_and_focus_use_the_real_stage() {
+    use keyboard::{Key, KeyState, Modifiers, NamedKey};
+    use reel_ui::core::Ime;
+    let font =
+        std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("REEL_SESSION_FONT")).unwrap();
+    let mut runtime = runtime(
+        r#"fn main() {
+        game.configure(text_speed: 0);
+        let data = model({name: "start", changes: 0, submits: 0});
+        stage.replace(column() {
+            text_input(value: bind(data.name), width: 240, height: 50,
+                on_change: |event| { data.changes += 1; },
+                on_submit: |event| { data.submits += 1; });
+            text(value: derive(|| f"{data.name}:{data.changes}:{data.submits}"));
+            button("other", width: 240, height: 50);
+        });
+        narrator("do not advance");
+    }"#,
+    );
+    // Reveal scheduling is part of the pending narrative; settle it once.
+    drain(&mut runtime);
+    let (mut bridge, root) = super::tests::mount_with_font(runtime.driver.ui(), Some(font.into()));
+    let mut frame = 1;
+    present(&mut runtime, &mut bridge, root, frame);
+    let interaction = runtime
+        .driver
+        .ui()
+        .session()
+        .view()
+        .interaction
+        .unwrap()
+        .id();
+    let state = |runtime: &StoryRuntime| {
+        runtime
+            .driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::Text(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let mut send = |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge, event| {
+        runtime.driver.handle_text(bridge, event).unwrap();
+        runtime.wake_input();
+        // One clock value; no real-time sleeps or native window/GPU dependency.
+        drain(runtime);
+        assert_eq!(runtime.driver.state(), StoryState::Running);
+        frame += 1;
+        present(runtime, bridge, root, frame);
+    };
+    send(
+        &mut runtime,
+        &mut bridge,
+        key(KeyState::Down, Key::Named(NamedKey::Tab)),
+    );
+    let focus = bridge.root().focused_widget().unwrap();
+    let mut all = key(KeyState::Down, Key::Character("a".into()));
+    if let TextEvent::Keyboard(event) = &mut all {
+        event.modifiers = if cfg!(target_os = "macos") {
+            Modifiers::META
+        } else {
+            Modifiers::CONTROL
+        };
+    }
+    send(&mut runtime, &mut bridge, all.clone());
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Preedit("zhong".into(), Some((5, 5)))),
+    );
+    assert_eq!(state(&runtime), "start:0:0");
+    send(
+        &mut runtime,
+        &mut bridge,
+        key(KeyState::Down, Key::Named(NamedKey::Enter)),
+    );
+    assert_eq!(
+        state(&runtime),
+        "start:0:0",
+        "IME confirmation must not submit the form"
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Preedit("".into(), None)),
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Commit("中文".into())),
+    );
+    assert_eq!(state(&runtime), "中文:1:0");
+    assert_eq!(
+        bridge.root().focused_widget(),
+        Some(focus),
+        "value echo preserves widget identity"
+    );
+    send(&mut runtime, &mut bridge, all.clone());
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Preedit("cancel".into(), None)),
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Preedit("".into(), None)),
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::ClipboardPaste("first\r\nsecond".into()),
+    );
+    assert_eq!(
+        state(&runtime),
+        "first second:2:0",
+        "cancel restores the original selection"
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        key(KeyState::Down, Key::Named(NamedKey::Enter)),
+    );
+    assert_eq!(state(&runtime), "first second:2:1");
+    send(&mut runtime, &mut bridge, all);
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Preedit("discard".into(), Some((7, 7)))),
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::WindowFocusChange(false),
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::WindowFocusChange(true),
+    );
+    send(
+        &mut runtime,
+        &mut bridge,
+        TextEvent::Ime(Ime::Commit("戻る".into())),
+    );
+    assert_eq!(state(&runtime), "戻る:3:1");
+    let mut alt_graph = key(KeyState::Down, Key::Character("€".into()));
+    if let TextEvent::Keyboard(event) = &mut alt_graph {
+        event.modifiers = Modifiers::ALT_GRAPH;
+    }
+    send(&mut runtime, &mut bridge, alt_graph);
+    assert_eq!(state(&runtime), "戻る€:4:1");
+    send(
+        &mut runtime,
+        &mut bridge,
+        key(KeyState::Down, Key::Named(NamedKey::Backspace)),
+    );
+    assert_eq!(state(&runtime), "戻る:5:1");
+    assert_eq!(
+        runtime
+            .driver
+            .ui()
+            .session()
+            .view()
+            .interaction
+            .unwrap()
+            .id(),
+        interaction
+    );
+}
+
+#[test]
 fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() {
     let mut runtime = runtime(
         r#"fn main() {

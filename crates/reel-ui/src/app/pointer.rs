@@ -1,3 +1,7 @@
+// Copyright 2019 the Xilem Authors and the Druid Authors
+// Copyright 2026 Reel contributors
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{RenderRoot, RenderRootState};
 use crate::core::{PointerEvent, PointerId, PointerInfo, PointerType, WidgetId};
 use crate::dpi::{LogicalPosition, PhysicalPosition};
