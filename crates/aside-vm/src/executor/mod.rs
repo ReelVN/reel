@@ -1198,11 +1198,12 @@ impl Vm {
                 };
                 match desc.arguments {
                     Arguments::Window(w) => {
-                        let name = desc
-                            .names
-                            .iter()
-                            .find(|a| a.offset == index)
-                            .map_or(-1, |a| a.name.0 as i64);
+                        // B01 verifies that names occupy the ordered window
+                        // tail; copying each argument needs no name-list scan.
+                        let positional = w.len as usize - desc.names.len();
+                        let name = (index as usize)
+                            .checked_sub(positional)
+                            .map_or(-1, |i| i64::from(desc.names[i].name.0));
                         Ok((
                             Value::int(name),
                             self.slots.read(at(s.regs, w.start.0 + index))?,
