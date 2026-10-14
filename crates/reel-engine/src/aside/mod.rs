@@ -194,6 +194,7 @@ pub struct SessionVm {
     audio: audio::Audio,
     game: std::sync::Arc<GameSettings>,
     narrative: Option<narrative::Narrative>,
+    skip_input: Option<reel_ui::stage::NodeId>,
 }
 
 impl SessionVm {
@@ -243,6 +244,7 @@ impl SessionVm {
             audio: audio::Audio::default(),
             game: std::sync::Arc::new(GameSettings::default()),
             narrative: None,
+            skip_input: None,
         })
     }
 

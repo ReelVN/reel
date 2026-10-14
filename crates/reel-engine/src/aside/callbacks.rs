@@ -242,6 +242,15 @@ impl SessionVm {
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
         self.live(session)?;
+        if self
+            .skip_input
+            .is_some_and(|node| self.stage.scene.node(node).is_none())
+        {
+            session.set_skip_reading(false, false);
+        }
+        if !session.reading().skipping() {
+            self.skip_input = None;
+        }
         self.activities.set_skipping(session.reading().skipping());
         if self.reactive_ready && self.derived_task.is_none() {
             self.sync_narrative(session)?;

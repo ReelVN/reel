@@ -374,3 +374,53 @@ fn reading_controls_are_observable_transactional_and_gate_narrative_input() {
         );
     }
 }
+
+#[test]
+fn retiring_the_input_scope_clears_skipping_even_when_its_cancel_callback_cannot_run() {
+    use reel_ui::{
+        input::ActionPhase,
+        stage::{NodeAction, NodeKind},
+    };
+    let code = r#"fn opening() {
+        stage.replace(input(bindings: {skip: [binding("ControlLeft")]},
+            on_action: |e| game.set_skip(e.phase == "pressed", unread: true)));
+        narrator("before");
+        stage.replace(text("new scene"));
+        narrator("after");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Input { .. }))
+            .unwrap();
+        let NodeKind::Input { bindings, .. } = &node.kind else {
+            unreachable!()
+        };
+        let action = NodeAction {
+            node: node.id,
+            action: "skip".into(),
+            value: 1.,
+            phase: ActionPhase::Pressed,
+            bindings: bindings.clone(),
+        };
+        vm.input_action(&mut session, &action).unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(session.reading().skipping());
+        let id = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        models::drive(&mut vm, &mut session, true);
+        assert!(!session.reading().skipping());
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("new scene".into()))
+        );
+    }
+}

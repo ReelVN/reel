@@ -419,6 +419,17 @@ impl SessionVm {
                     .as_bool()
                     .ok_or(AdapterError::Input("skip unread requires bool"))?;
                 session.set_skip_reading(enabled, unread);
+                self.skip_input = self
+                    .callbacks
+                    .iter()
+                    .find(|callback| callback.task == ticket.task)
+                    .map(|callback| callback.node)
+                    .filter(|node| {
+                        session.reading().skipping()
+                            && self.stage.scene.node(*node).is_some_and(|node| {
+                                matches!(node.kind, reel_ui::stage::NodeKind::Input { .. })
+                            })
+                    });
                 Value::NULL
             }
             "reel::game::pause_reading" => {

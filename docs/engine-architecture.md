@@ -309,7 +309,7 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 
 历史组提供 `group_id/interaction_id/locale/lines/speaker_name/text`，行提供 `id/speaker_id/speaker_name/content_id/text`。行 ID 与对白模型一致，在同一会话中稳定。历史全文在提交时记录一次；清页和界面替换不删除历史。首次访问按已有历史建立投影，之后只追加新增组，显现更新不扫描历史、不复制全文。数据/控制服务不创建 UI，作者用通用组件组合回看和阅读控件，示例见 [author_reading.aside](../examples/author_reading.aside)。新增 native ABI 1；B01/ASB 格式不变。恢复点、语音重播和已读跳过依赖各自后续服务，不在历史记录内提供占位字段。
 
-`game.set_skip(enabled, unread: false)` 控制快进，`game.reading().skipping/skip_unread` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白，仍不替玩家选择。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。
+`game.set_skip(enabled, unread: false)` 控制快进，`game.reading().skipping/skip_unread` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白，仍不替玩家选择。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。
 
 已读只在对白组完成推进后登记，取消和仅显现全文不登记。Session 使用按 content_id 索引的 `ReadProgress`，提交时预留空间，完成时移动已有内容 ID，输入热路径不分配。Rust 宿主通过 `Session::new_with_read_progress` 复用记录，`ReadProgress::ids/from_ids` 对接自己的持久存储；没有隐式磁盘访问。已有内容 ID 包含模块版本与源码位置，修改版本保守视为未读。历史的 group/line ID 是会话展示身份，不作为跨会话已读键。新增 native ABI 1。
 
