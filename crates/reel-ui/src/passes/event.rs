@@ -393,8 +393,14 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
 
     trace!("Running ON_TEXT_EVENT pass with {}", event.short_name());
 
-    if let TextEvent::WindowFocusChange(focused) = event {
+    if let TextEvent::WindowFocusChange(focused) = event
+        && root.global_state.window_focused != *focused
+    {
         root.global_state.window_focused = *focused;
+        super::update::run_global_update_pass(
+            root,
+            &crate::core::Update::WindowFocusChanged(*focused),
+        );
     }
 
     let cleanup = matches!(

@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 pub(super) mod controls;
 pub(super) mod input;
+mod interaction;
 
 use aside_vm::{
     Heap, HeapError, HeapHandle, ObjectKind, PropertyId, RootKind, RootOwner, RootToken, Value,
@@ -58,6 +59,8 @@ pub(super) enum NodeProperty {
     AnchorX,
     #[aside(name = "anchor_y", ty = Any, default = 0, validate = validate_number, animatable)]
     AnchorY,
+    #[aside(name = "decorated", ty = Bool, default = true)]
+    Decorated,
 }
 
 pub(super) struct StageBinding {
@@ -68,6 +71,7 @@ pub(super) struct StageBinding {
 }
 struct NodeBinding {
     handle: HeapHandle,
+    interaction_offset: u32,
     fields_version: u64,
     input_source: Option<HeapHandle>,
     input_values: BTreeMap<std::sync::Arc<str>, f32>,
@@ -240,7 +244,17 @@ impl StageBinding {
                 _ => |heap, _, index, value| validate_layout_property(heap, index, value),
             }),
         )?;
-        heap.observe_host_properties(value, field_count as u32, true)?;
+        for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
+            let key = heap.alloc_string(name)?;
+            let state = name == "disabled" && !props.enabled;
+            heap.table_store(
+                fields,
+                (field_count + offset) as u32,
+                key,
+                Value::bool(state),
+            )?;
+        }
+        heap.observe_host_properties(value, field_count as u32, interaction::FIELDS.len() as u32)?;
         let control_field = match symbol {
             "reel::slider" => Some(controls::SliderField::Value.index()),
             "reel::toggle" => Some(controls::ToggleField::Value.index()),
@@ -275,7 +289,12 @@ impl StageBinding {
             let method = vm.bind_native(value, function)?;
             let heap = vm.heap_mut();
             let key = heap.alloc_string(name)?;
-            heap.table_store(fields, (field_count + i) as u32, key, method)?;
+            heap.table_store(
+                fields,
+                (field_count + interaction::FIELDS.len() + i) as u32,
+                key,
+                method,
+            )?;
         }
         let heap = vm.heap_mut();
         let input_values = match &kind {
@@ -295,6 +314,7 @@ impl StageBinding {
             id,
             NodeBinding {
                 handle: heap.handle(value)?,
+                interaction_offset: field_count as u32,
                 fields_version: heap.info(fields)?.content_version,
                 input_source: if symbol == "reel::input" {
                     Some(heap.handle(args[0])?)
@@ -422,6 +442,7 @@ impl StageBinding {
             if let Some(binding) = self.handles.remove(&id)
                 && let Ok(value) = heap.import_handle(binding.handle)
             {
+                interaction::publish(heap, value, binding.interaction_offset, Default::default())?;
                 heap.retire_host(value)?;
             }
         }
@@ -806,7 +827,13 @@ pub(super) fn validate_layout_property(
     value: Value,
 ) -> Result<(), HeapError> {
     if index as usize >= NodeProperty::PROPERTIES.len() {
-        return Err(HeapError::TypeMismatch);
+        return if (index as usize) < NodeProperty::PROPERTIES.len() + interaction::FIELDS.len()
+            && value.as_bool().is_some()
+        {
+            Ok(())
+        } else {
+            Err(HeapError::TypeMismatch)
+        };
     }
     NodeProperty::validate(heap, index, value)
 }
@@ -860,6 +887,7 @@ fn read_props(
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,
         clip: boolean(get(NodeProperty::Clip)?)?,
+        decorated: boolean(get(NodeProperty::Decorated)?)?,
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,

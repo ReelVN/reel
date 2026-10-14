@@ -8,7 +8,10 @@ use reel_ui::{
     peniko::{Color, ImageData},
     properties::{ContentColor, ThumbColor, ThumbRadius, TrackColor, TrackThickness},
     resources::{ResourceData, ResourceLease},
-    stage::{ControlValue, NodeChange, NodeClick, NodeEvent, NodeId, NodeKind, Stage, StageNode},
+    stage::{
+        ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
+        NodeKind, Stage, StageNode,
+    },
     widgets::{ButtonBehavior, Image, Label, Slider, SliderMoved},
 };
 use std::collections::BTreeMap;
@@ -177,6 +180,7 @@ impl Widget for StageWidget {
 struct SceneWidget {
     node: StageNode,
     button: ButtonBehavior,
+    interaction: InteractionState,
     input: Option<NodeInput>,
     slider: Option<WidgetPod<Slider>>,
     label: Option<WidgetPod<Label>>,
@@ -225,6 +229,7 @@ impl SceneWidget {
         Self {
             node: view.node.clone(),
             button: ButtonBehavior::default(),
+            interaction: InteractionState::default(),
             input: match &view.node.kind {
                 NodeKind::Input { bindings, .. } => Some(NodeInput::new(bindings.clone())),
                 _ => None,
@@ -382,12 +387,38 @@ impl SceneWidget {
                 || old.font_size != new.font_size
                 || old.font != new.font
                 || old.clip != new.clip
+                || old.decorated != new.decorated
             {
                 this.ctx.request_layout();
             }
             this.widget.node = view.node.clone();
             this.ctx.request_render();
         }
+    }
+    fn interaction(
+        &mut self,
+        hover: bool,
+        active: bool,
+        focused: bool,
+        disabled: bool,
+        stashed: bool,
+        window_focused: bool,
+    ) -> Option<NodeEvent> {
+        let available = !disabled && !stashed && window_focused;
+        let next = InteractionState {
+            hover: available && hover,
+            pressed: available && (active || self.button.is_pressed()),
+            focused: available && focused,
+            disabled,
+        };
+        if next == self.interaction {
+            return None;
+        }
+        self.interaction = next;
+        Some(NodeEvent::Interaction(NodeInteraction {
+            node: self.node.id,
+            state: next,
+        }))
     }
     fn activate(&mut self) -> NodeEvent {
         if let NodeKind::Toggle { value, .. } = &mut self.node.kind {
@@ -407,6 +438,20 @@ impl SceneWidget {
             (NodeKind::Row, Axis::Horizontal) | (NodeKind::Column, Axis::Vertical)
         )
     }
+}
+macro_rules! publish_interaction {
+    ($widget:expr, $ctx:expr) => {
+        if let Some(event) = $widget.interaction(
+            $ctx.has_hovered(),
+            $ctx.has_active(),
+            $ctx.has_focus_target(),
+            $ctx.is_disabled(),
+            $ctx.is_stashed(),
+            $ctx.is_window_focused(),
+        ) {
+            $ctx.submit_action::<NodeEvent>(event);
+        }
+    };
 }
 impl Widget for SceneWidget {
     type Action = NodeEvent;
@@ -497,6 +542,7 @@ impl Widget for SceneWidget {
             ctx.submit_action::<Self::Action>(self.activate());
             ctx.request_render();
         }
+        publish_interaction!(self, ctx);
     }
     fn on_access_event(
         &mut self,
@@ -549,6 +595,29 @@ impl Widget for SceneWidget {
         if matches!(event, Update::WidgetAdded) {
             ctx.set_disabled(!self.node.props.enabled);
             ctx.set_modal(self.node.props.modal);
+        }
+        // These notifications run before the widget state's flag is committed.
+        let disabled = match event {
+            Update::DisabledChanged(value) => *value,
+            _ => ctx.is_disabled(),
+        };
+        let stashed = match event {
+            Update::StashedChanged(value) => *value,
+            _ => ctx.is_stashed(),
+        };
+        let focused = match event {
+            Update::ChildFocusChanged(value) => *value,
+            _ => ctx.has_focus_target(),
+        };
+        if let Some(event) = self.interaction(
+            ctx.has_hovered(),
+            ctx.has_active(),
+            focused,
+            disabled,
+            stashed,
+            ctx.is_window_focused(),
+        ) {
+            ctx.submit_action::<NodeEvent>(event);
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
@@ -611,7 +680,7 @@ impl Widget for SceneWidget {
                 .compute_length(label, available, context, axis, cross)
                 .get();
         }
-        if matches!(self.node.kind, NodeKind::Toggle { .. }) {
+        if self.node.props.decorated && matches!(self.node.kind, NodeKind::Toggle { .. }) {
             total = if axis == Axis::Horizontal {
                 total + 32.
             } else {
@@ -662,7 +731,9 @@ impl Widget for SceneWidget {
             let present = Self::caption(&self.node.kind).is_some();
             ctx.set_stashed(label, !present);
             if present {
-                let inset = if matches!(self.node.kind, NodeKind::Toggle { .. }) {
+                let inset = if self.node.props.decorated
+                    && matches!(self.node.kind, NodeKind::Toggle { .. })
+                {
                     32.
                 } else {
                     0.
@@ -740,7 +811,7 @@ impl Widget for SceneWidget {
         if let Some(background) = self.node.props.background {
             painter.fill_rect(self.size.to_rect(), color(background));
         }
-        if self.is_button() && ctx.is_focus_target() {
+        if self.node.props.decorated && self.is_button() && ctx.is_focus_target() {
             painter
                 .stroke(
                     self.size.to_rect().inset(-2.).to_rounded_rect(3.),
@@ -749,7 +820,9 @@ impl Widget for SceneWidget {
                 )
                 .draw();
         }
-        if let NodeKind::Toggle { value, .. } = self.node.kind {
+        if self.node.props.decorated
+            && let NodeKind::Toggle { value, .. } = self.node.kind
+        {
             let p = self.node.props.padding;
             let rect = reel_ui::kurbo::Rect::new(
                 p,

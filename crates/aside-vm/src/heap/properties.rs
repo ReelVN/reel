@@ -25,14 +25,17 @@ enum Slot {
 }
 
 impl Heap {
-    /// Register the stable prefix of a host's public field table. Other fields
+    /// Register a writable prefix followed by read-only observable outputs. Other fields
     /// (for example methods) remain ordinary, non-observable host properties.
     pub fn observe_host_properties(
         &mut self,
         host: Value,
-        count: u32,
-        writable: bool,
+        writable: u32,
+        readonly: u32,
     ) -> Result<(), HeapError> {
+        let count = writable
+            .checked_add(readonly)
+            .ok_or(HeapError::OutOfBounds)?;
         let fields = self.host_fields(host)?;
         if count > self.table_len(fields)? {
             return Err(HeapError::OutOfBounds);
@@ -53,7 +56,7 @@ impl Heap {
         if property.field >= object.observable_fields {
             return Err(HeapError::WrongKind);
         }
-        Ok(object.observable_writable)
+        Ok(property.field < object.observable_writable)
     }
 
     pub fn is_property_ref(&self, value: Value) -> bool {
@@ -520,8 +523,12 @@ mod tests {
                 .unwrap();
         }
         let host = heap.alloc_host(fields, &[], None).unwrap();
-        heap.observe_host_properties(host, values.len() as u32, writable)
-            .unwrap();
+        heap.observe_host_properties(
+            host,
+            if writable { values.len() as u32 } else { 0 },
+            if writable { 0 } else { values.len() as u32 },
+        )
+        .unwrap();
         host
     }
     fn collect(heap: &mut Heap) {
