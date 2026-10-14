@@ -5,13 +5,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tree_arena::{ArenaMut, ArenaMutList};
 use tracing::{info_span, trace};
-use ui_events::pointer::PointerType;
 
 use crate::app::{GeometryView, RenderRoot, RenderRootSignal, RenderRootState};
 use crate::core::{
-    ClassSetDiff, CursorIcon, DefaultProperties, Ime, PointerEvent, PointerInfo, PropertiesMut,
-    PropertiesRef, PropertyArena, PropertyCache, QueryCtx, RegisterCtx, TextEvent, Update,
-    UpdateCtx, Widget, WidgetArenaNode, WidgetId, WidgetState,
+    ClassSetDiff, CursorIcon, DefaultProperties, Ime, PointerEvent, PropertiesMut, PropertiesRef,
+    PropertyArena, PropertyCache, QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, Widget,
+    WidgetArenaNode, WidgetId, WidgetState,
 };
 use crate::passes::event::run_on_text_event_pass;
 use crate::passes::{enter_span, enter_span_if, merge_state_up, recurse_on_children};
@@ -33,15 +32,6 @@ fn get_id_path(root: &RenderRoot, widget_id: Option<WidgetId>) -> Vec<WidgetId> 
         .iter()
         .map(|id| WidgetId((*id).try_into().unwrap()))
         .collect()
-}
-
-/// Make a dummy [`PointerEvent::Cancel`].
-fn dummy_pointer_cancel() -> PointerEvent {
-    PointerEvent::Cancel(PointerInfo {
-        pointer_id: None,
-        persistent_device_id: None,
-        pointer_type: PointerType::default(),
-    })
 }
 
 fn run_targeted_update_pass(
@@ -911,27 +901,47 @@ pub(crate) fn transition_pointer_geometry(
     old: GeometryView<'_>,
     new: GeometryView<'_>,
 ) {
-    let _span = info_span!("update_pointer").entered();
     root.global_state.needs_pointer_pass = false;
-    let physical = root.global_state.last_pointer_physical;
-    if let Some(id) = root.global_state.pointer_capture_target
+    let count = root.global_state.other_pointers.len();
+    for i in 0..=count {
+        if i < count {
+            root.global_state.swap_pointer(i);
+        }
+        transition_contact_geometry(root, old, new);
+        if i < count {
+            root.global_state.swap_pointer(i);
+        }
+    }
+}
+
+fn transition_contact_geometry(
+    root: &mut RenderRoot,
+    old: GeometryView<'_>,
+    new: GeometryView<'_>,
+) {
+    let _span = info_span!("update_pointer").entered();
+    let mut physical = root.global_state.pointer.last_pointer_physical;
+    if let Some(id) = root.global_state.pointer.pointer_capture_target
         && (!root.is_still_interactive(id)
             || new.bind_visible(id).is_none()
             || !root.input_in_scope(id, new))
     {
-        if root.global_state.pointer_capture_terminal_delivered != Some(id) {
+        if root.global_state.pointer.pointer_capture_terminal_delivered != Some(id) {
             crate::passes::event::run_on_pointer_event_with_view(
                 root,
-                &dummy_pointer_cancel(),
+                &PointerEvent::Cancel(root.global_state.pointer.info),
                 old,
             );
         }
-        root.global_state.pointer_capture_target = None;
-        root.global_state.pointer_capture_terminal_delivered = None;
+        root.global_state.pointer.pointer_capture_target = None;
+        root.global_state.pointer.pointer_capture_terminal_delivered = None;
+        if root.global_state.pointer.info.pointer_type == crate::core::PointerType::Touch {
+            physical = None;
+        }
     }
-    root.global_state.last_pointer_physical = physical;
+    root.global_state.pointer.last_pointer_physical = physical;
     let position = physical.map(|p| p.to_logical(new.scale(root.global_state.scale_factor)));
-    root.global_state.last_mouse_pos = position;
+    root.global_state.pointer.last_mouse_pos = position;
     let pointer_pos = position.map(|p| (p.x, p.y).into());
     if root.global_state.inspector_state.is_picking_widget {
         root.global_state.inspector_state.hovered_widget =
@@ -941,7 +951,7 @@ pub(crate) fn transition_pointer_geometry(
     }
     let mut next_active = std::mem::take(&mut root.global_state.pointer_active_spare);
     next_active.clear();
-    if let Some(id) = root.global_state.pointer_capture_target {
+    if let Some(id) = root.global_state.pointer.pointer_capture_target {
         let _ = root.input_path_into(id, new, &mut next_active);
     }
     next_active.retain(|id| root.has_widget(*id));
@@ -951,7 +961,7 @@ pub(crate) fn transition_pointer_geometry(
         let _ = root.input_path_into(id, new, &mut next_hover);
     }
     next_hover.retain(|id| root.has_widget(*id));
-    if let Some(capture) = root.global_state.pointer_capture_target {
+    if let Some(capture) = root.global_state.pointer.pointer_capture_target {
         if let Some(index) = next_hover.iter().position(|id| *id == capture) {
             next_hover.drain(..index);
         } else {
@@ -964,8 +974,8 @@ pub(crate) fn transition_pointer_geometry(
     {
         next_hover.clear();
     }
-    let mut prev_active = std::mem::take(&mut root.global_state.active_path);
-    let mut prev_hover = std::mem::take(&mut root.global_state.hovered_path);
+    let mut prev_active = std::mem::take(&mut root.global_state.pointer.active_path);
+    let mut prev_hover = std::mem::take(&mut root.global_state.pointer.hovered_path);
     for (&kind, prev, next) in [
         (true, &prev_active, &next_active),
         (false, &prev_hover, &next_hover),
@@ -974,6 +984,9 @@ pub(crate) fn transition_pointer_geometry(
     .map(|(k, p, n)| (k, *p, *n))
     {
         for id in prev.iter().copied().filter(|id| !next.contains(id)) {
+            if root.global_state.other_pointer_has(id, kind, true) {
+                continue;
+            }
             run_single_update_with_view(root, Some(id), old, |widget, ctx, props| {
                 if kind {
                     ctx.widget_state.has_active = false;
@@ -989,7 +1002,11 @@ pub(crate) fn transition_pointer_geometry(
         (true, &prev_active, &next_active),
         (false, &prev_hover, &next_hover),
     ] {
-        if prev.first() != next.first() {
+        if prev.first() != next.first()
+            && !prev
+                .first()
+                .is_some_and(|id| root.global_state.other_pointer_has(*id, kind, false))
+        {
             run_single_update_with_view(root, prev.first().copied(), old, |widget, ctx, props| {
                 if kind {
                     ctx.widget_state.is_active = false;
@@ -1017,6 +1034,9 @@ pub(crate) fn transition_pointer_geometry(
         (false, &prev_hover, &next_hover),
     ] {
         for id in next.iter().copied().filter(|id| !prev.contains(id)) {
+            if root.global_state.other_pointer_has(id, kind, true) {
+                continue;
+            }
             run_single_update_with_view(root, Some(id), new, |widget, ctx, props| {
                 if kind {
                     ctx.widget_state.has_active = true;
@@ -1027,7 +1047,11 @@ pub(crate) fn transition_pointer_geometry(
                 }
             });
         }
-        if prev.first() != next.first() {
+        if prev.first() != next.first()
+            && !next
+                .first()
+                .is_some_and(|id| root.global_state.other_pointer_has(*id, kind, false))
+        {
             run_single_update_with_view(root, next.first().copied(), new, |widget, ctx, props| {
                 if kind {
                     ctx.widget_state.is_active = true;
@@ -1056,9 +1080,10 @@ pub(crate) fn transition_pointer_geometry(
     root.global_state.needs_pointer_pass |= next_hover
         .first()
         .is_some_and(|id| !root.is_still_interactive(*id))
-        || next_active.first().copied() != root.global_state.pointer_capture_target;
+        || next_active.first().copied() != root.global_state.pointer.pointer_capture_target;
     let icon_source = root
         .global_state
+        .pointer
         .pointer_capture_target
         .or(next_hover.first().copied());
     let new_icon = if let (Some(id), Some(pos)) = (icon_source, pointer_pos) {
@@ -1097,13 +1122,15 @@ pub(crate) fn transition_pointer_geometry(
     } else {
         CursorIcon::Default
     };
-    if root.global_state.cursor_icon != new_icon {
-        root.global_state
-            .emit_signal(RenderRootSignal::SetCursor(new_icon));
+    if root.global_state.pointer.info.pointer_type != crate::core::PointerType::Touch {
+        if root.global_state.cursor_icon != new_icon {
+            root.global_state
+                .emit_signal(RenderRootSignal::SetCursor(new_icon));
+        }
+        root.global_state.cursor_icon = new_icon;
     }
-    root.global_state.cursor_icon = new_icon;
-    root.global_state.active_path = next_active;
-    root.global_state.hovered_path = next_hover;
+    root.global_state.pointer.active_path = next_active;
+    root.global_state.pointer.hovered_path = next_hover;
     prev_active.clear();
     prev_hover.clear();
     root.global_state.pointer_active_spare = prev_active;

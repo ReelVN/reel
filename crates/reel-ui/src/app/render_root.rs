@@ -80,9 +80,9 @@ pub(crate) struct RenderRootState {
     /// Current size of the window.
     pub(crate) size: PhysicalSize<u32>,
 
-    /// Last mouse position. Updated by `on_pointer_event` pass, used by other passes.
-    pub(crate) last_mouse_pos: Option<LogicalPosition<f64>>,
-    pub(crate) last_pointer_physical: Option<dpi::PhysicalPosition<f64>>,
+    pub(crate) pointer: super::pointer::PointerContact,
+    pub(crate) other_pointers: Vec<super::pointer::PointerContact>,
+    pub(crate) dispatching_pointer: bool,
     pub(crate) input_geometry_source: super::InputGeometrySource,
     pub(crate) max_input_path: usize,
     pub(crate) pointer_route: Vec<WidgetId>,
@@ -119,19 +119,6 @@ pub(crate) struct RenderRootState {
     /// The `Rect` is the area it wants to be scrolled into view,
     /// in its border-box coordinate space.
     pub(crate) scroll_request_targets: Vec<(WidgetId, Rect)>,
-
-    /// List of ancestors of the currently hovered widget.
-    pub(crate) hovered_path: Vec<WidgetId>,
-
-    /// List of ancestors of the currently active widget.
-    pub(crate) active_path: Vec<WidgetId>,
-
-    /// Widget that currently has pointer capture.
-    pub(crate) pointer_capture_target: Option<WidgetId>,
-
-    /// Capture whose Up/Cancel callback has begun, before ancestor bubbling completes.
-    /// Keep capture active for the real control's terminal handler, without cancelling twice.
-    pub(crate) pointer_capture_terminal_delivered: Option<WidgetId>,
 
     /// Current cursor icon.
     pub(crate) cursor_icon: CursorIcon,
@@ -347,8 +334,9 @@ impl RenderRoot {
                 window_node_id: AccessCtx::next_node_id(),
                 size_policy,
                 size,
-                last_mouse_pos: None,
-                last_pointer_physical: None,
+                pointer: super::pointer::PointerContact::mouse(128),
+                other_pointers: Vec::new(),
+                dispatching_pointer: false,
                 input_geometry_source: super::InputGeometrySource::Live,
                 max_input_path: 128,
                 pointer_route: Vec::with_capacity(128),
@@ -364,10 +352,6 @@ impl RenderRoot {
                 modal_dirty: true,
                 window_focused: true,
                 scroll_request_targets: Vec::new(),
-                hovered_path: Vec::with_capacity(128),
-                active_path: Vec::with_capacity(128),
-                pointer_capture_target: None,
-                pointer_capture_terminal_delivered: None,
                 cursor_icon: CursorIcon::Default,
                 font_context: FontContext {
                     collection: Collection::new(CollectionOptions {
@@ -567,11 +551,22 @@ impl RenderRoot {
     /// Handles a pointer event.
     pub fn handle_pointer_event(&mut self, event: PointerEvent) -> Handled {
         let _span = info_span!("pointer_event");
+        if !self.select_pointer(
+            crate::core::pointer_info(&event),
+            matches!(event, PointerEvent::Down(_)),
+        ) {
+            return Handled::Yes;
+        }
+        let terminal_touch = matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_))
+            && self.global_state.pointer.info.pointer_type == crate::core::PointerType::Touch;
         let source = self.global_state.input_geometry_source.clone();
         let view = source.borrow();
         let handled = crate::passes::event::run_on_pointer_event_with_view(self, &event, view);
         crate::passes::update::run_update_pointer_with_view(self, view);
         self.run_rewrite_passes();
+        if terminal_touch {
+            self.retire_touch();
+        }
 
         handled
     }
@@ -1011,7 +1006,7 @@ impl RenderRoot {
 
     /// Returns the [`WidgetId`] of the widget which [captures pointer events](crate::doc::concepts#pointer-capture).
     pub fn pointer_capture_target(&self) -> Option<WidgetId> {
-        self.global_state.pointer_capture_target
+        self.global_state.pointer.pointer_capture_target
     }
 
     /// Sets the [focused widget](crate::doc::concepts#text-focus)

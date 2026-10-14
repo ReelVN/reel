@@ -394,3 +394,15 @@ pub enum ResizeDirection {
     SouthWest,
     West,
 }
+
+/// Stable device/contact identity carried by every pointer event.
+pub fn pointer_info(event: &super::PointerEvent) -> super::PointerInfo {
+    use super::PointerEvent::*;
+    match event {
+        Down(e) | Up(e) => e.pointer,
+        Move(e) => e.pointer,
+        Scroll(e) => e.pointer,
+        Gesture(e) => e.pointer,
+        Cancel(info) | Enter(info) | Leave(info) => *info,
+    }
+}

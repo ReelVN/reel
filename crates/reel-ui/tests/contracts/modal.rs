@@ -213,7 +213,9 @@ fn modal_activation_follows_acceptance_and_clear_preserves_restoration() {
     bridge.resolve(accept(&initial));
     bridge.handle_text_event(tab(false));
     assert_eq!(bridge.root().focused_widget(), Some(f.outside));
-    bridge.handle_pointer_event(mouse("down", Point::new(30., 30.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(30., 30.)))
+        .unwrap();
     bridge.edit_widget(f.panel, |mut w| w.ctx.set_modal(true));
     let rejected = bridge.record(FrameId(2)).unwrap();
     assert_eq!(rejected.geometry().modal_scope(), Some(f.panel));
@@ -227,7 +229,9 @@ fn modal_activation_follows_acceptance_and_clear_preserves_restoration() {
     assert_eq!(bridge.root().pointer_capture_target(), None);
     bridge.clear();
     assert_eq!(
-        bridge.handle_pointer_event(mouse("down", Point::new(30., 30.))),
+        bridge
+            .handle_pointer_event(mouse("down", Point::new(30., 30.)))
+            .unwrap(),
         Handled::Yes
     );
     assert_eq!(bridge.handle_text_event(tab(false)), Handled::Yes);

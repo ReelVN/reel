@@ -195,6 +195,7 @@ impl ApplicationHandler for App {
                     result
                 }
             }
+            WindowEvent::Touch(touch) => state.touch_event(touch),
             WindowEvent::CursorMoved { position, .. } => {
                 state.pointer = reel_ui::dpi::PhysicalPosition::new(position.x, position.y);
                 state.pointer_event(PointerKind::Move)

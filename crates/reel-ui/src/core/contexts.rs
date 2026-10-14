@@ -492,7 +492,7 @@ impl EventCtx<'_> {
             return;
         }
         // TODO: plumb pointer capture through to platform (through winit)
-        self.global_state.pointer_capture_target = Some(id);
+        self.global_state.pointer.pointer_capture_target = Some(id);
         self.global_state.needs_pointer_pass = true;
     }
 
@@ -502,15 +502,15 @@ impl EventCtx<'_> {
     /// [`capture_pointer`]: EventCtx::capture_pointer
     pub fn release_pointer(&mut self) {
         let id = self.widget_id();
-        if self.global_state.pointer_capture_target.is_none() {
+        if self.global_state.pointer.pointer_capture_target.is_none() {
             warn!("release_pointer - '{id}': no widget is captured");
             return;
         }
-        if self.global_state.pointer_capture_target != Some(self.widget_state.id) {
+        if self.global_state.pointer.pointer_capture_target != Some(self.widget_state.id) {
             warn!("release_pointer - '{id}': widget does not have pointer capture");
             return;
         }
-        self.global_state.pointer_capture_target = None;
+        self.global_state.pointer.pointer_capture_target = None;
         self.global_state.needs_pointer_pass = true;
     }
 
@@ -1383,14 +1383,25 @@ impl_context_method!(
         ///
         /// [captured]: crate::doc::concepts#pointer-capture
         pub fn is_hovered(&self) -> bool {
-            self.widget_state.is_hovered
+            if self.global_state.dispatching_pointer {
+                self.global_state.pointer.hovered_path.first() == Some(&self.widget_state.id)
+            } else {
+                self.widget_state.is_hovered
+            }
         }
 
         /// Whether this widget or any of its descendants are hovered.
         ///
         /// To check if only this specific widget is hovered use [`is_hovered`](Self::is_hovered).
         pub fn has_hovered(&self) -> bool {
-            self.widget_state.has_hovered
+            if self.global_state.dispatching_pointer {
+                self.global_state
+                    .pointer
+                    .hovered_path
+                    .contains(&self.widget_state.id)
+            } else {
+                self.widget_state.has_hovered
+            }
         }
 
         /// The "active" status of a widget.
@@ -1401,24 +1412,41 @@ impl_context_method!(
         ///
         /// [captured]: crate::doc::concepts#pointer-capture
         pub fn is_active(&self) -> bool {
-            self.widget_state.is_active
+            if self.global_state.dispatching_pointer {
+                self.global_state.pointer.pointer_capture_target == Some(self.widget_state.id)
+            } else {
+                self.widget_state.is_active
+            }
         }
 
         /// Whether this widget or any of its descendants are active.
         ///
         /// To check if only this specific widget is active use [`is_active`](Self::is_active).
         pub fn has_active(&self) -> bool {
-            self.widget_state.has_active
+            if self.global_state.dispatching_pointer {
+                self.global_state
+                    .pointer
+                    .active_path
+                    .contains(&self.widget_state.id)
+            } else {
+                self.widget_state.has_active
+            }
         }
 
         /// Whether a pointer is [captured] by this widget.
         ///
-        /// The pointer will usually be the mouse. In future versions, this
-        /// function will take a pointer id as input to test a specific pointer.
+        /// During pointer dispatch this refers to the event's contact. Other
+        /// contexts report whether any pointer is captured by this widget.
         ///
         /// [captured]: crate::doc::concepts#pointer-capture
         pub fn is_pointer_capture_target(&self) -> bool {
-            self.global_state.pointer_capture_target == Some(self.widget_state.id)
+            self.global_state.pointer.pointer_capture_target == Some(self.widget_state.id)
+                || (!self.global_state.dispatching_pointer
+                    && self
+                        .global_state
+                        .other_pointers
+                        .iter()
+                        .any(|p| p.pointer_capture_target == Some(self.widget_state.id)))
         }
 
         /// The [text focus] status of a widget.
@@ -1448,12 +1476,12 @@ impl_context_method!(
 
         /// The widget, if any, which has [pointer capture].
         ///
-        /// The pointer will usually be the mouse. In future versions, this
-        /// function will take a pointer id as input to test a specific pointer.
+        /// During pointer dispatch this refers to the event's contact. Other
+        /// contexts report whether any pointer is captured by this widget.
         ///
         /// [pointer capture]: crate::doc::concepts#pointer-capture
         pub fn pointer_capture_target_id(&self) -> Option<WidgetId> {
-            self.global_state.pointer_capture_target
+            self.global_state.pointer.pointer_capture_target
         }
 
         /// The widget, if any, which has [text focus].
@@ -1663,44 +1691,56 @@ impl_context_method!(
                 let widget = &mut *node.item.widget;
                 let state = &mut node.item.state;
 
-                if global_state.pointer_capture_target == Some(state.id)
-                    && global_state.pointer_capture_terminal_delivered != Some(state.id)
-                {
-                    global_state.pointer_capture_terminal_delivered = Some(state.id);
-                    let stack = property_arena.get(state.property_stack_id, widget_type_id);
-                    let mut props = PropertiesMut {
-                        local: &mut node.item.properties,
-                        default_map: property_arena.default_properties.for_widget(widget_type_id),
-                        stack,
-                        class_set: &node.item.class_set,
-                    };
-                    let target = state.id;
-                    if let Some(geometry) = view.bind(target) {
-                        let mut ctx = EventCtx {
-                            geometry,
-                            global_state,
-                            widget_state: state,
-                            children: children.reborrow_mut(),
-                            property_arena,
-                            target,
-                            allow_pointer_capture: false,
-                            is_handled: false,
-                        };
-                        widget.on_pointer_event(
-                            &mut ctx,
-                            &mut props,
-                            &crate::core::PointerEvent::Cancel(crate::core::PointerInfo {
-                                pointer_id: None,
-                                persistent_device_id: None,
-                                pointer_type: crate::core::PointerType::default(),
-                            }),
-                        );
+                let pointer_count = global_state.other_pointers.len();
+                for index in 0..=pointer_count {
+                    if index < pointer_count {
+                        global_state.swap_pointer(index);
                     }
-                }
-                if global_state.pointer_capture_target == Some(state.id) {
-                    global_state.pointer_capture_target = None;
-                    global_state.pointer_capture_terminal_delivered = None;
-                    global_state.needs_pointer_pass = true;
+                    if global_state.pointer.pointer_capture_target == Some(state.id)
+                        && global_state.pointer.pointer_capture_terminal_delivered != Some(state.id)
+                    {
+                        global_state.pointer.pointer_capture_terminal_delivered = Some(state.id);
+                        let stack = property_arena.get(state.property_stack_id, widget_type_id);
+                        let mut props = PropertiesMut {
+                            local: &mut node.item.properties,
+                            default_map: property_arena
+                                .default_properties
+                                .for_widget(widget_type_id),
+                            stack,
+                            class_set: &node.item.class_set,
+                        };
+                        let target = state.id;
+                        if let Some(geometry) = view.bind(target) {
+                            let mut ctx = EventCtx {
+                                geometry,
+                                global_state,
+                                widget_state: state,
+                                children: children.reborrow_mut(),
+                                property_arena,
+                                target,
+                                allow_pointer_capture: false,
+                                is_handled: false,
+                            };
+                            let info = ctx.global_state.pointer.info;
+                            let dispatching = ctx.global_state.dispatching_pointer;
+                            ctx.global_state.dispatching_pointer = true;
+                            widget.on_pointer_event(
+                                &mut ctx,
+                                &mut props,
+                                &crate::core::PointerEvent::Cancel(info),
+                            );
+                            ctx.global_state.dispatching_pointer = dispatching;
+                        }
+                    }
+                    if global_state.pointer.pointer_capture_target == Some(state.id) {
+                        global_state.pointer.pointer_capture_target = None;
+                        global_state.pointer.pointer_capture_terminal_delivered = None;
+                        global_state.needs_pointer_pass = true;
+                    }
+
+                    if index < pointer_count {
+                        global_state.swap_pointer(index);
+                    }
                 }
 
                 let parent_name = widget.short_type_name();

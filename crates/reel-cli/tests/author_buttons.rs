@@ -62,14 +62,20 @@ fn present(
     );
     driver.presented(stamp);
 }
-fn click(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64) {
-    click_at(driver, bridge, x, 50.);
-}
 fn click_at(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64, y: f64) {
+    click_with_pointer(driver, bridge, x, y, PointerType::Mouse);
+}
+fn click_with_pointer(
+    driver: &mut AsideSessionUi,
+    bridge: &mut PresentationBridge,
+    x: f64,
+    y: f64,
+    pointer_type: PointerType,
+) {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),
         persistent_device_id: None,
-        pointer_type: PointerType::Mouse,
+        pointer_type,
     };
     let state = PointerState {
         position: PhysicalPosition::new(x, y),
@@ -97,7 +103,7 @@ fn click_at(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64
     }
     settle(driver);
 }
-fn run(story: CompiledStory) {
+fn run(story: CompiledStory, pointer_type: PointerType) {
     let mut driver = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
         story,
@@ -121,7 +127,7 @@ fn run(story: CompiledStory) {
         .unwrap()
         .id;
     let moving = driver.adapter().stage().nodes().find(|node| matches!(&node.kind, NodeKind::Button { label: Some(label), .. } if label == "Move")).unwrap().id;
-    click(&mut driver, &mut bridge, 50.);
+    click_with_pointer(&mut driver, &mut bridge, 50., 50., pointer_type);
     present(&mut driver, &mut bridge, root_id, 2);
     assert!(!driver.adapter().stage().node(moving).unwrap().props.enabled);
     assert!(driver.activities_need_time());
@@ -135,7 +141,7 @@ fn run(story: CompiledStory) {
     assert_eq!(node.kind, NodeKind::Text("Arrived".into()));
     assert_eq!(node.props.x, 120.);
     assert!(driver.adapter().stage().node(moving).unwrap().props.enabled);
-    click(&mut driver, &mut bridge, 270.);
+    click_with_pointer(&mut driver, &mut bridge, 270., 50., pointer_type);
     assert_eq!(driver.state(), StoryState::Finished);
     present(&mut driver, &mut bridge, root_id, 5);
     while driver.cleanup_pending() {
@@ -148,8 +154,16 @@ fn run(story: CompiledStory) {
 fn source_and_asb_keep_buttons_live_then_finish_after_last_handler_retires() {
     let checked = reel_cli::check(SOURCE, "author_buttons.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-    run(reel_cli::decode_story(&artifact.bytes).unwrap());
-    run(reel_engine::aside::source::compile_story(SOURCE, "main", 1, "main").unwrap());
+    for pointer_type in [PointerType::Mouse, PointerType::Touch] {
+        run(
+            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            pointer_type,
+        );
+        run(
+            reel_engine::aside::source::compile_story(SOURCE, "main", 1, "main").unwrap(),
+            pointer_type,
+        );
+    }
 }
 
 fn bridge(driver: &AsideSessionUi) -> (PresentationBridge, WidgetId) {

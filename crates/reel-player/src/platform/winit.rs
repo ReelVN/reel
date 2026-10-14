@@ -1,10 +1,13 @@
 //! Winit host commands, usable with any RenderBackend.
 use super::PlatformHost;
+#[path = "winit_touch.rs"]
+mod touch;
 use reel_core::clock::{Clock, MonoTime, UnixMillis};
 use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+pub use touch::TouchInput;
 use winit::{
     event_loop::{ActiveEventLoop, ControlFlow},
     window::Window,

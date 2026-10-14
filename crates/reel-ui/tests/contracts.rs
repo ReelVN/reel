@@ -1,6 +1,8 @@
 #[path = "contracts/modal.rs"]
 mod modal;
 mod support;
+#[path = "contracts/touch.rs"]
+mod touch;
 
 #[test]
 fn composed_anchor_transform_uses_accepted_geometry_for_hits_and_capture() {
@@ -9,7 +11,9 @@ fn composed_anchor_transform_uses_accepted_geometry_for_hits_and_capture() {
     let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), bridge_limits()).unwrap();
     let first = bridge.record(FrameId(1)).unwrap();
     bridge.resolve(accept(&first));
-    bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
     bridge.edit_widget(group, |mut widget| {
         let mut group = widget.downcast::<StageGroup>();
@@ -45,7 +49,9 @@ fn composed_anchor_transform_uses_accepted_geometry_for_hits_and_capture() {
         Some(slider)
     );
     trace.borrow_mut().clear();
-    bridge.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+    bridge
+        .handle_pointer_event(mouse("move", Point::new(35., 20.)))
+        .unwrap();
     let old_local = trace
         .borrow()
         .iter()
@@ -62,7 +68,9 @@ fn composed_anchor_transform_uses_accepted_geometry_for_hits_and_capture() {
     bridge.resolve(accept(&next));
     assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
     trace.borrow_mut().clear();
-    bridge.handle_pointer_event(mouse("up", new_position));
+    bridge
+        .handle_pointer_event(mouse("up", new_position))
+        .unwrap();
     let new_local = trace
         .borrow()
         .iter()
@@ -81,7 +89,9 @@ fn composed_anchor_transform_uses_accepted_geometry_for_hits_and_capture() {
     let collapsed = bridge.record(FrameId(3)).unwrap();
     assert_ne!(collapsed.geometry().hit_test(new_position), Some(slider));
     bridge.resolve(accept(&collapsed));
-    bridge.handle_pointer_event(mouse("down", new_position));
+    bridge
+        .handle_pointer_event(mouse("down", new_position))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), None);
     assert!(bridge.root().has_widget(slider));
 }
@@ -106,15 +116,19 @@ fn hover_ancestor_removes_target_before_cursor() {
             g.widget.remove_on_hover_enter = !active;
             g.widget.remove_on_active_enter = active;
         });
-        bridge.handle_pointer_event(mouse(
-            if active { "down" } else { "move" },
-            Point::new(35., 20.),
-        ));
+        bridge
+            .handle_pointer_event(mouse(
+                if active { "down" } else { "move" },
+                Point::new(35., 20.),
+            ))
+            .unwrap();
         assert!(!bridge.root().has_widget(slider));
         assert_eq!(bridge.root().pointer_capture_target(), None);
         assert!(!bridge.root().get_widget(group).unwrap().ctx().has_hovered());
         assert!(!bridge.root().get_widget(group).unwrap().ctx().has_active());
-        bridge.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+        bridge
+            .handle_pointer_event(mouse("move", Point::new(35., 20.)))
+            .unwrap();
     }
 }
 
@@ -297,7 +311,9 @@ fn independent_lookup_workspace_is_reserved_before_configuration() {
     let first = bridge.record(FrameId(1)).unwrap();
     assert!(first.geometry().max_depth() > 64);
     bridge.resolve(accept(&first));
-    bridge.handle_pointer_event(mouse("down", Point::new(150., 100.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(150., 100.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), Some(slider_id));
     let before = bridge.routing_storage_bytes();
     let deeper = nested(image([255, 0, 0, 255]).prepare().erased(), 140);
@@ -311,7 +327,9 @@ fn independent_lookup_workspace_is_reserved_before_configuration() {
     assert!(bridge.routing_storage_bytes() > before);
     assert_eq!(bridge.root().pointer_capture_target(), Some(slider_id));
     bridge.resolve(accept(&second));
-    bridge.handle_pointer_event(mouse("up", Point::new(150., 100.)));
+    bridge
+        .handle_pointer_event(mouse("up", Point::new(150., 100.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), None);
 }
 
@@ -338,7 +356,9 @@ fn real_record_gate_first_frame_failures_identity_order_clear_and_epoch() {
     let group = f.group;
     let trace = f.trace.clone();
     let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(4), bridge_limits()).unwrap();
-    bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), None);
     let first = bridge.record(FrameId(1)).unwrap();
     assert!(!first.scene().is_empty());
@@ -355,7 +375,9 @@ fn real_record_gate_first_frame_failures_identity_order_clear_and_epoch() {
     assert_eq!(bridge.resolve(wrong_epoch), NoticeResult::StaleOrForeign);
     assert_eq!(bridge.resolve(accept(&first)), NoticeResult::Accepted);
     assert_eq!(bridge.resolve(accept(&first)), NoticeResult::StaleOrForeign);
-    bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
     bridge.edit_widget(group, |mut w| {
         StageGroup::geometry(
@@ -375,7 +397,9 @@ fn real_record_gate_first_frame_failures_identity_order_clear_and_epoch() {
             bridge.resolve(notice(&c, outcome)),
             NoticeResult::NotPresented
         );
-        bridge.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+        bridge
+            .handle_pointer_event(mouse("move", Point::new(35., 20.)))
+            .unwrap();
         assert_eq!(
             trace
                 .borrow()
@@ -421,12 +445,16 @@ fn real_record_gate_first_frame_failures_identity_order_clear_and_epoch() {
     assert_eq!(bridge.root().pointer_capture_target(), None);
     assert_eq!(bridge.resolve(accept(&own)), NoticeResult::StaleOrForeign);
     assert!(!bridge.replace_surface(SurfaceEpoch(5)));
-    bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), None);
     let new = bridge.record(FrameId(8)).unwrap();
     assert_eq!(new.key().surface_epoch(), SurfaceEpoch(5));
     assert_eq!(bridge.resolve(accept(&new)), NoticeResult::Accepted);
-    bridge.handle_pointer_event(mouse("down", Point::new(185., 90.)));
+    bridge
+        .handle_pointer_event(mouse("down", Point::new(185., 90.)))
+        .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
     bridge.clear();
     assert_eq!(bridge.root().pointer_capture_target(), None);
@@ -643,7 +671,9 @@ fn view_change_notifies_only_differences_and_uses_old_exit_geometry() {
     let mut bridge = PresentationBridge::new(root, SurfaceEpoch(1), bridge_limits()).unwrap();
     let first = bridge.record(FrameId(1)).unwrap();
     bridge.resolve(accept(&first));
-    bridge.handle_pointer_event(mouse("move", Point::new(35., 20.)));
+    bridge
+        .handle_pointer_event(mouse("move", Point::new(35., 20.)))
+        .unwrap();
     bridge.edit_widget(group_id, |mut w| {
         let mut g = w.downcast::<StageGroup>();
         StageGroup::geometry(&mut g, 0, Point::new(200., 10.), Size::new(100., 30.));
@@ -871,7 +901,9 @@ fn accepting_frozen_hidden_target_or_ancestor_cancels_old_visible_capture_once()
         }
         stash(&mut bridge, false);
         // A remains selected: live unstash makes its visible Slider eligible again.
-        bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+        bridge
+            .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+            .unwrap();
         assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
         trace.borrow_mut().clear();
         signals.borrow_mut().clear();
@@ -889,9 +921,15 @@ fn accepting_frozen_hidden_target_or_ancestor_cancels_old_visible_capture_once()
             .collect();
         assert_eq!(cancels.len(), 1);
         assert_eq!(cancels[0].size, Size::new(100., 30.));
-        bridge.handle_pointer_event(mouse("move", Point::new(80., 20.)));
-        bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
-        bridge.handle_pointer_event(mouse("up", Point::new(35., 20.)));
+        bridge
+            .handle_pointer_event(mouse("move", Point::new(80., 20.)))
+            .unwrap();
+        bridge
+            .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+            .unwrap();
+        bridge
+            .handle_pointer_event(mouse("up", Point::new(35., 20.)))
+            .unwrap();
         assert_eq!(bridge.root().pointer_capture_target(), None);
         assert_eq!(
             trace
@@ -914,9 +952,13 @@ fn accepting_frozen_hidden_target_or_ancestor_cancels_old_visible_capture_once()
             bridge.resolve(accept(&visible_again)),
             NoticeResult::Accepted
         );
-        bridge.handle_pointer_event(mouse("down", Point::new(35., 20.)));
+        bridge
+            .handle_pointer_event(mouse("down", Point::new(35., 20.)))
+            .unwrap();
         assert_eq!(bridge.root().pointer_capture_target(), Some(slider));
-        bridge.handle_pointer_event(mouse("up", Point::new(35., 20.)));
+        bridge
+            .handle_pointer_event(mouse("up", Point::new(35., 20.)))
+            .unwrap();
         assert_eq!(bridge.root().pointer_capture_target(), None);
         assert_eq!(
             trace
@@ -994,12 +1036,14 @@ fn actual_bridge_record_and_input_measurements() {
             ((count - 1) % 32) as f64 * 60. + 15.,
             ((count - 1) / 32) as f64 * 30. + 10.,
         );
-        bridge.handle_pointer_event(mouse("down", p));
+        bridge.handle_pointer_event(mouse("down", p)).unwrap();
         for i in 0..1100 {
             trace.borrow_mut().clear();
             signals.borrow_mut().clear();
             let start = Instant::now();
-            bridge.handle_pointer_event(mouse("move", p + ((i % 20) as f64, 0.)));
+            bridge
+                .handle_pointer_event(mouse("move", p + ((i % 20) as f64, 0.)))
+                .unwrap();
             if i >= 100 {
                 inputs.push(start.elapsed().as_nanos());
             }

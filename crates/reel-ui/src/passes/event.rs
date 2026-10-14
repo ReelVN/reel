@@ -7,8 +7,7 @@ use crate::app::{GeometryView, RenderRoot, RenderRootSignal};
 use crate::core::keyboard::{Key, KeyState, NamedKey};
 use crate::core::{
     AccessEvent, EventCtx, Handled, Ime, PointerButtonEvent, PointerEvent, PointerGestureEvent,
-    PointerInfo, PointerScrollEvent, PointerType, PointerUpdate, PropertiesMut, TextEvent, Widget,
-    WidgetId,
+    PointerScrollEvent, PointerType, PointerUpdate, PropertiesMut, TextEvent, Widget, WidgetId,
 };
 use crate::dpi::{LogicalPosition, PhysicalPosition};
 use crate::passes::update::find_next_focusable;
@@ -21,7 +20,7 @@ fn get_pointer_target(
     view: GeometryView<'_>,
 ) -> Option<WidgetId> {
     // See the [pointer capture documentation](../doc/concepts.md#pointer-capture).
-    if let Some(capture_target) = root.global_state.pointer_capture_target
+    if let Some(capture_target) = root.global_state.pointer.pointer_capture_target
         && root.widget_arena.has(capture_target)
     {
         return Some(capture_target);
@@ -174,10 +173,6 @@ fn run_event_pass<E>(
 
 // --- MARK: POINTER_EVENT
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
-pub(crate) fn run_on_pointer_event_pass(root: &mut RenderRoot, event: &PointerEvent) -> Handled {
-    let source = root.global_state.input_geometry_source.clone();
-    run_on_pointer_event_with_view(root, event, source.borrow())
-}
 pub(crate) fn run_on_pointer_event_with_view(
     root: &mut RenderRoot,
     event: &PointerEvent,
@@ -192,13 +187,16 @@ pub(crate) fn run_on_pointer_event_with_view(
 
     let scale = view.scale(root.global_state.scale_factor);
     let physical_pos = try_event_position(event);
-    root.global_state.last_pointer_physical = physical_pos;
+    root.global_state.pointer.last_pointer_physical = physical_pos;
     let event_pos = physical_pos.map(|p| p.to_logical(scale));
 
-    if event_pos != root.global_state.last_mouse_pos {
-        root.global_state.last_mouse_pos = event_pos;
+    if event_pos != root.global_state.pointer.last_mouse_pos {
+        root.global_state.pointer.last_mouse_pos = event_pos;
     }
     root.global_state.needs_pointer_pass = true;
+    if physical_pos.is_some() {
+        crate::passes::update::run_update_pointer_with_view(root, view);
+    }
 
     if root.global_state.inspector_state.is_picking_widget
         && matches!(event, PointerEvent::Move(..))
@@ -271,7 +269,9 @@ pub(crate) fn run_on_pointer_event_with_view(
                 class_set: &layer_root.item.class_set,
             };
 
+            ctx.global_state.dispatching_pointer = true;
             layer.capture_pointer_event(&mut ctx, &mut props, event);
+            ctx.global_state.dispatching_pointer = false;
         }
     }
 
@@ -306,12 +306,27 @@ pub(crate) fn run_on_pointer_event_with_view(
         skip_if_disabled,
         matches!(event, PointerEvent::Down { .. }),
         |widget, ctx, props, event| {
-            if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_))
-                && ctx.global_state.pointer_capture_target == Some(ctx.widget_state.id)
+            // Ordinary controls have one gesture owner. A second contact can
+            // operate another control but cannot steal an in-progress drag.
+            if matches!(event, PointerEvent::Down(_))
+                && ctx
+                    .global_state
+                    .other_pointers
+                    .iter()
+                    .any(|p| p.pointer_capture_target == Some(ctx.widget_state.id))
             {
-                ctx.global_state.pointer_capture_terminal_delivered = Some(ctx.widget_state.id);
+                ctx.set_handled();
+                return;
             }
+            if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_))
+                && ctx.global_state.pointer.pointer_capture_target == Some(ctx.widget_state.id)
+            {
+                ctx.global_state.pointer.pointer_capture_terminal_delivered =
+                    Some(ctx.widget_state.id);
+            }
+            ctx.global_state.dispatching_pointer = true;
             widget.on_pointer_event(ctx, props, event);
+            ctx.global_state.dispatching_pointer = false;
         },
         !is_very_frequent(event),
         view,
@@ -324,8 +339,13 @@ pub(crate) fn run_on_pointer_event_with_view(
         // Automatically release the pointer on pointer up or leave. If a widget holds the capture,
         // it is notified of the pointer event before the capture is released, so it knows it is
         // about to lose the pointer.
-        root.global_state.pointer_capture_target = None;
-        root.global_state.pointer_capture_terminal_delivered = None;
+        root.global_state.pointer.pointer_capture_target = None;
+        root.global_state.pointer.pointer_capture_terminal_delivered = None;
+        if root.global_state.pointer.info.pointer_type == PointerType::Touch {
+            root.global_state.pointer.last_pointer_physical = None;
+            root.global_state.pointer.last_mouse_pos = None;
+        }
+        root.global_state.needs_pointer_pass = true;
     }
 
     if !is_very_frequent(event) {
@@ -347,14 +367,7 @@ pub(crate) fn run_on_pointer_event_with_view(
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
 pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -> Handled {
     if matches!(event, TextEvent::WindowFocusChange(false)) {
-        run_on_pointer_event_pass(
-            root,
-            &PointerEvent::Cancel(PointerInfo {
-                pointer_id: None,
-                persistent_device_id: None,
-                pointer_type: PointerType::default(),
-            }),
-        );
+        root.cancel_pointer_inputs();
     }
 
     let _span = info_span!("dispatch_text_event").entered();

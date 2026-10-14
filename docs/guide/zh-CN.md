@@ -617,11 +617,11 @@ fn main() {
 
 回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start、可观察绑定和通用事件订阅仍待实现。
 
-主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认桌面宿主支持鼠标点击、Tab 焦点导航和 Enter/空格激活；原生 IME、触控和系统可访问性接入尚待适配。
+主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认宿主支持鼠标和触摸点击、Tab 焦点导航与 Enter/空格激活。多个触点可同时操作不同控件；拖出按钮后松开不触发点击，系统取消或窗口挂起会释放交互。已有按钮无需为触屏重写，可运行 [author_buttons.aside](../../examples/author_buttons.aside)。原生 IME 和系统可访问性尚待适配。
 
 用第一节的 dev/build/run 命令运行此文件。引擎的节点、输入和调度不依赖 Winit/WGPU；window feature 选择当前内置桌面组合，其他宿主可以复用同一会话和呈现接口。
 
-移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。原生 IME、触摸和系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
+移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。触摸使用公共 PointerEvent；启用 winit 时可复用 TouchInput 转换原生触摸。原生 IME 和系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
 
 ## 模态菜单与焦点
 

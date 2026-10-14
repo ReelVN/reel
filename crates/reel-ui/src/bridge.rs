@@ -243,8 +243,10 @@ impl PresentationBridge {
         epoch: SurfaceEpoch,
         limits: BridgeLimits,
     ) -> Result<Self, RecordError> {
-        let route_bytes =
-            RenderRoot::input_path_storage_bytes_for(0).ok_or(RecordError::BridgeBudget)?;
+        root.cancel_pointer_inputs();
+        let route_bytes = root
+            .planned_input_storage(0, None)
+            .ok_or(RecordError::BridgeBudget)?;
         let storage_bytes = route_bytes
             .checked_add(
                 (limits.max_candidates as usize)
@@ -304,12 +306,38 @@ impl PresentationBridge {
         self.root.edit_widget(id, edit)
     }
     /// Dispatch one event through a fixed accepted view.
-    pub fn handle_pointer_event(&mut self, event: PointerEvent) -> Handled {
-        self.root.handle_pointer_event(event)
+    pub fn handle_pointer_event(
+        &mut self,
+        event: PointerEvent,
+    ) -> Result<Handled, InputBudgetExceeded> {
+        let planned = self
+            .root
+            .planned_input_storage(self.route_depth, Some(&event))
+            .and_then(|bytes| bytes.checked_add(self.registry_bytes))
+            .ok_or(InputBudgetExceeded)?;
+        self._routes
+            .resize(planned as u64)
+            .map_err(|_| InputBudgetExceeded)?;
+        let handled = self.root.handle_pointer_event(event);
+        self.release_pointer_storage();
+        Ok(handled)
+    }
+    fn release_pointer_storage(&mut self) {
+        let actual = self.root.input_path_storage_bytes() + self.registry_bytes;
+        self._routes
+            .resize(actual as u64)
+            .expect("already reserved pointer storage");
+    }
+    /// Cancel all device/contact ownership, for example when suspending a host.
+    pub fn cancel_pointer_inputs(&mut self) {
+        self.root.cancel_pointer_inputs();
+        self.release_pointer_storage();
     }
     /// Text input follows accepted geometry; loss of focus also cancels pointer capture.
     pub fn handle_text_event(&mut self, event: TextEvent) -> Handled {
-        self.root.handle_text_event(event)
+        let handled = self.root.handle_text_event(event);
+        self.release_pointer_storage();
+        handled
     }
     /// Platform lifecycle/resize commands also work before the first accepted frame.
     pub fn handle_window_event(&mut self, event: WindowEvent) -> Handled {
@@ -355,7 +383,9 @@ impl PresentationBridge {
             .record_presented_geometry(self.limits.geometry)
             .map_err(RecordError::Geometry)?;
         if geometry.max_depth() > self.route_depth {
-            let route_bytes = RenderRoot::input_path_storage_bytes_for(geometry.max_depth())
+            let route_bytes = self
+                .root
+                .planned_input_storage(geometry.max_depth(), None)
                 .and_then(|bytes| bytes.checked_add(self.registry_bytes))
                 .ok_or(RecordError::BridgeBudget)?;
             self._routes
@@ -432,6 +462,7 @@ impl PresentationBridge {
     }
     /// Clear accepted input and pending identities; outstanding renderer leases stay charged.
     pub fn clear(&mut self) {
+        self.cancel_pointer_inputs();
         self.root
             .set_input_geometry_source(InputGeometrySource::Presented(None));
         self.accepted = None;
@@ -452,3 +483,14 @@ impl PresentationBridge {
         true
     }
 }
+
+/// A new contact would exceed the bridge's route storage budget.
+/// The event has not been dispatched and existing captures remain unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputBudgetExceeded;
+impl std::fmt::Display for InputBudgetExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("pointer input exceeds the presentation bridge storage budget")
+    }
+}
+impl std::error::Error for InputBudgetExceeded {}
