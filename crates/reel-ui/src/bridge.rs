@@ -343,6 +343,12 @@ impl PresentationBridge {
         self.release_pointer_storage();
         handled
     }
+    /// Accessibility actions obey the same accepted geometry and modal scope.
+    pub fn handle_access_event(&mut self, event: crate::accesskit::ActionRequest) -> Handled {
+        let handled = self.root.handle_access_event(event);
+        self.release_pointer_storage();
+        handled
+    }
     /// Platform lifecycle/resize commands also work before the first accepted frame.
     pub fn handle_window_event(&mut self, event: WindowEvent) -> Handled {
         self.root.handle_window_event(event)

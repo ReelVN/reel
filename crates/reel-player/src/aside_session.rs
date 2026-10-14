@@ -240,11 +240,25 @@ impl AsideSessionUi {
         let result = self.ui.handle_text(bridge, event)?;
         self.accept_ui_input(result)
     }
+    pub fn handle_access(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        event: reel_ui::accesskit::ActionRequest,
+    ) -> Result<Handled, Error> {
+        let result = self.ui.handle_access(bridge, event)?;
+        self.accept_ui_input(result)
+    }
     fn accept_ui_input(&mut self, result: crate::session::UiDispatch) -> Result<Handled, Error> {
         if self.state == StoryState::Running
             && let Some(click) = result.click
         {
             self.vm.click(self.ui.session_mut(), click.node)?;
+        }
+        if self.state == StoryState::Running
+            && let Some(change) = result.change
+            && self.vm.change(self.ui.session_mut(), &change)?
+        {
+            self.ui.set_stage(self.vm.stage());
         }
         self.accept_actions(result.actions)?;
         Ok(result.handled)

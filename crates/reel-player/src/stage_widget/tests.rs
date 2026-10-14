@@ -619,5 +619,122 @@ fn transformed_stage_pixels_obey_group_clip_opacity_mirroring_and_zero_scale() {
     for (x, y) in [(205, 220), (180, 160), (300, 300)] {
         near(collapsed[y * 640 + x], background);
     }
+    // The same renderer draws stateful controls, including endpoint thumb centers.
+    let range = reel_ui::widgets::SliderRange::new(0., 1., None).unwrap();
+    let slider = f
+        .stage
+        .create(
+            NodeKind::Slider {
+                range,
+                value: 0.,
+                listening: false,
+            },
+            NodeProps {
+                width: Some(220.),
+                height: Some(40.),
+                color: [255, 0, 0, 255],
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let toggle = f
+        .stage
+        .create(
+            NodeKind::Toggle {
+                label: None,
+                value: true,
+                listening: false,
+            },
+            NodeProps {
+                y: 60.,
+                width: Some(100.),
+                height: Some(40.),
+                color: [0, 255, 0, 255],
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let controls = f
+        .stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![slider, toggle])
+        .unwrap();
+    f.stage.replace(controls).unwrap();
+    let frame = f.render_frame();
+    let start = renderer
+        .readback(renderer.prepare(&frame).unwrap())
+        .unwrap();
+    near(start[20 * 640 + 10], [1., 0., 0., 1.]);
+    near(start[80 * 640 + 12], [0., 1., 0., 1.]);
+    let props = f.stage.node(slider).unwrap().props.clone();
+    f.stage
+        .update(
+            slider,
+            NodeKind::Slider {
+                range,
+                value: 1.,
+                listening: false,
+            },
+            props,
+        )
+        .unwrap();
+    let frame = f.render_frame();
+    let end = renderer
+        .readback(renderer.prepare(&frame).unwrap())
+        .unwrap();
+    near(end[20 * 640 + 210], [1., 0., 0., 1.]);
     assert_eq!(renderer.usage().targets, 0);
+}
+
+#[test]
+fn continuous_control_projection_preserves_widgets_and_layout() {
+    let mut f = Fixture::new(None);
+    let range = reel_ui::widgets::SliderRange::new(0., 1., None).unwrap();
+    let id = f
+        .stage
+        .create(
+            NodeKind::Slider {
+                range,
+                value: 0.,
+                listening: true,
+            },
+            NodeProps {
+                width: Some(220.),
+                height: Some(40.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    f.stage.replace(id).unwrap();
+    let source = f.record();
+    f.accept(&source);
+    let baseline = f.layouts();
+    let started = std::time::Instant::now();
+    for i in 1..=2_000 {
+        let props = f.stage.node(id).unwrap().props.clone();
+        f.stage
+            .update(
+                id,
+                NodeKind::Slider {
+                    range,
+                    value: f64::from(i % 100) / 100.,
+                    listening: true,
+                },
+                props,
+            )
+            .unwrap();
+        let source = f.record();
+        f.accept(&source);
+    }
+    assert_eq!(
+        f.layouts(),
+        baseline,
+        "value changes must not rebuild or relayout controls"
+    );
+    eprintln!(
+        "2000 control updates with CPU recording/presentation: {:?}; added layouts=0",
+        started.elapsed()
+    );
 }

@@ -930,7 +930,9 @@ fn transition_contact_geometry(
     if let Some(id) = root.global_state.pointer.pointer_capture_target
         && (!root.is_still_interactive(id)
             || new.bind_visible(id).is_none()
-            || !root.input_in_scope(id, new))
+            || !root.input_in_scope(id, new)
+            || root.widget_arena.get_state(id).input_revision
+                != root.global_state.pointer.pointer_capture_revision)
     {
         if root.global_state.pointer.pointer_capture_terminal_delivered != Some(id) {
             crate::passes::event::run_on_pointer_event_with_view(

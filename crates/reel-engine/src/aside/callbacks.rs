@@ -1,5 +1,6 @@
 //! Node-owned tasks share the VM and its bounded slices with the story task.
 use super::*;
+use aside_vm::ValueTag;
 use reel_ui::stage::NodeId;
 
 pub(super) struct Callback {
@@ -58,6 +59,31 @@ impl SessionVm {
             heap.table_store(event, i as u32, key, value)?;
         }
         self.start_callback(session, action.node, closure, event)
+    }
+
+    /// Commit the user value before scheduling the node-owned callback.
+    pub fn change(
+        &mut self,
+        session: &mut Session,
+        change: &reel_ui::stage::NodeChange,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, closure, value)) = self.stage.change(self.vm.heap_mut(), change)? else {
+            return Ok(false);
+        };
+        if closure.tag() != ValueTag::Null {
+            let heap = self.vm.heap_mut();
+            let event = heap.alloc_table()?;
+            for (i, (name, value)) in [("target", target), ("value", value)]
+                .into_iter()
+                .enumerate()
+            {
+                let key = heap.alloc_string(name)?;
+                heap.table_store(event, i as u32, key, value)?;
+            }
+            self.start_callback(session, change.node, closure, event)?;
+        }
+        Ok(true)
     }
 
     fn start_callback(

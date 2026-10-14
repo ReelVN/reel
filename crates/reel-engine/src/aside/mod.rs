@@ -443,6 +443,8 @@ impl SessionVm {
             }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
+            | "reel::slider"
+            | "reel::toggle"
             | "reel::button"
             | "reel::input"
             | "reel::image"

@@ -709,3 +709,42 @@ Events carry target, action, value and phase. Phases are pressed, changed, relea
 The input node receives keyboard and gamepad actions while it has focus. When a child control gains focus, it takes ownership and cancels the parent input node's held actions, so the parent cannot steal controller confirmation. Use modal: true to give an independent interaction scope focus immediately. Nonmodal nodes can receive focus through Tab; bound pointer presses also focus the node and capture that contact. Hiding, disabling, losing focus, changing modal scope or clearing the presented frame cancels held actions. Removing a node ends its tasks and activities. A consumed action does not also navigate or advance dialogue. Ordinary buttons and dialogue activate with the primary pointer button or touch; other mouse buttons remain available to author actions.
 
 Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `NodeKind::Input` and `NodeAction`. Route native controls through TextEvent::Input first; its Handled result reports whether an action in the current scope claimed the control. Unbound controls can feed NavigationInput within that same UI; raw events cannot cross modal boundaries. The fallible AsideSessionUi::presented and clear_presented calls deliver routing cancellations to the VM after presentation acceptance or revocation. Wake StoryRuntime when those calls create tasks.
+
+## Value controls and settings
+
+`slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` provides a horizontal slider; `toggle(label: null, value: false, on_change: null, children: [], ...)` provides a switch. Both share stage position, size, colors, visibility, enabled state and modal scope; toggles also compose child nodes. The following [author_settings.aside](../../examples/author_settings.aside) runs after supplying fonts/body.ttf.
+
+Sliders require finite increasing min/max and a finite value inside that range. step is null or finite and positive, anchored at min, with both endpoints reachable. Scripts may assign any in-range value regardless of input step. Assigning min/max must also leave the current value in range; invalid writes preserve the previous state. Mouse/touch dragging, arrow keys, Home/End, Shift acceleration, left/right controller navigation and accessibility actions share one control.
+
+Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Automatic bind/derive remains future data-binding work.
+
+```aside
+fn main() {
+    game.configure(title: "Reading settings", width: 640, height: 420,
+                   fonts: ["fonts/body.ttf"], text_speed: 30);
+    let speed = slider(value: 30, min: 0, max: 120, step: 1,
+        width: 300, height: 40,
+        on_change: |event| { game.configure(text_speed: event.value); });
+    let instant = toggle("Instant text", width: 300, height: 40,
+        on_change: |event| {
+            speed.enabled = !event.value;
+            if event.value { game.configure(text_speed: 0); }
+            else { game.configure(text_speed: speed.value); }
+        });
+    stage.replace(column(gap: 12, padding: 20) {
+        text("Text speed");
+        speed;
+        instant;
+        button("Reset", width: 300, height: 40, on_click: |event| {
+            speed.value = 30;
+            speed.enabled = true;
+            instant.value = false;
+            game.configure(text_speed: 30);
+        });
+    });
+    narrator("Adjust the controls while this text appears. The next line uses the same settings.");
+    narrator("Settings remain interactive after the story function returns.");
+}
+```
+
+Rust hosts submit AccessKit ActionRequest through `SessionUi::handle_access` / `AsideSessionUi::handle_access`, preserving accepted-frame and modal rules; the platform host supplies the native screen-reader connection.

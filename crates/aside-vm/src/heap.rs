@@ -216,7 +216,7 @@ pub struct HeapStats {
 /// Trusted, allocation-free validation at a host property's write boundary.
 /// The index identifies an existing own field. This callback must not execute
 /// script or wait; an error leaves the old property value unchanged.
-pub type HostPropertyValidator = fn(&Heap, u32, Value) -> Result<(), HeapError>;
+pub type HostPropertyValidator = fn(&Heap, Value, u32, Value) -> Result<(), HeapError>;
 
 pub(crate) struct Object {
     pub kind: ObjectKind,
@@ -675,7 +675,7 @@ impl Heap {
     ) -> Result<(), HeapError> {
         self.host_fields(host)?;
         if let Some(validate) = self.object(self.key(host)?)?.host_validator {
-            validate(self, index, value)?;
+            validate(self, host, index, value)?;
         }
         Ok(())
     }

@@ -8,6 +8,8 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::text" => &["value"],
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
+        "reel::slider" => &["value", "min", "max", "step", "on_change"],
+        "reel::toggle" => &["label", "value", "on_change"],
         "reel::input" => &["bindings", "on_action"],
         _ => &[],
     }
@@ -81,25 +83,44 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: capabilities(),
         });
     }
-    for name in ["text", "image", "row", "column", "stack", "button", "input"] {
+    for name in [
+        "text", "image", "row", "column", "stack", "button", "input", "slider", "toggle",
+    ] {
         let mut parameters = Vec::new();
-        for &field in node_prefix(&format!("reel::{name}")) {
-            parameters.push(NativeParameter {
-                name: field.into(),
-                ty: if matches!(name, "button" | "input") {
-                    BuiltinType::Any
-                } else {
-                    BuiltinType::String
-                },
-                default: if name == "button" || field == "on_action" {
-                    Some(bc::Const::Null)
-                } else {
-                    (field == "fit").then(|| bc::Const::Utf8("contain".into()))
-                },
-            });
+        if name == "slider" {
+            parameters.extend(
+                super::stage::controls::SliderField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
+        } else if name == "toggle" {
+            parameters.extend(
+                super::stage::controls::ToggleField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
+        } else {
+            for &field in node_prefix(&format!("reel::{name}")) {
+                parameters.push(NativeParameter {
+                    name: field.into(),
+                    ty: if matches!(name, "button" | "input") {
+                        BuiltinType::Any
+                    } else {
+                        BuiltinType::String
+                    },
+                    default: if name == "button" || field == "on_action" {
+                        Some(bc::Const::Null)
+                    } else {
+                        (field == "fit").then(|| bc::Const::Utf8("contain".into()))
+                    },
+                });
+            }
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
-        if matches!(name, "row" | "column" | "stack" | "button" | "input") {
+        if matches!(
+            name,
+            "row" | "column" | "stack" | "button" | "input" | "toggle"
+        ) {
             parameters.push(NativeParameter {
                 name: "children".into(),
                 ty: BuiltinType::Any,

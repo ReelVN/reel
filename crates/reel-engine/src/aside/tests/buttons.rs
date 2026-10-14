@@ -301,3 +301,90 @@ fn retiring_a_future_target_wakes_waiters_of_paused_compositions_without_clock_t
     assert!(vm.callbacks.is_empty());
     assert!(!vm.activities.has_active());
 }
+
+#[test]
+fn value_controls_recheck_current_flags_and_retire_waiting_change_tasks() {
+    use reel_ui::{
+        stage::{ControlValue, NodeChange},
+        widgets::SliderRange,
+    };
+    let (mut session, mut vm) = setup(
+        r#"fn opening() {
+        let count = text("count");
+        let value = slider(on_change: |event| {
+            if event.target.value != event.value { throw "uncommitted value"; }
+            await run(tween(count, y: 100, duration: 1));
+            throw "retired change callback resumed";
+        });
+        let silent = toggle();
+        stage.replace(column() { value; silent; count;
+            button("disable", on_click: |event| { value.enabled = false; });
+            button("enable", on_click: |event| { value.enabled = true; });
+            button("range", on_click: |event| { value.max = 2; });
+            button("remove", on_click: |event| { value.remove(); });
+        });
+        narrator("main wait");
+    }"#,
+        Context::Ordinary,
+    );
+    pump(&mut vm, &mut session);
+    let value = vm
+        .stage()
+        .nodes()
+        .find(|n| matches!(n.kind, NodeKind::Slider { .. }))
+        .unwrap()
+        .id;
+    let silent = vm
+        .stage()
+        .nodes()
+        .find(|n| matches!(n.kind, NodeKind::Toggle { .. }))
+        .unwrap()
+        .id;
+    assert!(
+        vm.change(
+            &mut session,
+            &NodeChange {
+                node: silent,
+                value: ControlValue::Bool(true),
+                range: None
+            }
+        )
+        .unwrap()
+    );
+    assert!(matches!(
+        vm.stage().node(silent).unwrap().kind,
+        NodeKind::Toggle { value: true, .. }
+    ));
+    assert!(vm.callbacks.is_empty());
+    let mut change = NodeChange {
+        node: value,
+        value: ControlValue::Number(0.5),
+        range: Some(SliderRange::new(0., 1., None).unwrap()),
+    };
+    vm.click(&mut session, button(&vm, "disable")).unwrap();
+    drive(&mut vm, &mut session, false);
+    assert!(
+        !vm.change(&mut session, &change).unwrap(),
+        "unprojected disable must win"
+    );
+    vm.click(&mut session, button(&vm, "enable")).unwrap();
+    pump(&mut vm, &mut session);
+    vm.click(&mut session, button(&vm, "range")).unwrap();
+    drive(&mut vm, &mut session, false);
+    assert!(
+        !vm.change(&mut session, &change).unwrap(),
+        "old input range must not write"
+    );
+    change.range = Some(SliderRange::new(0., 2., None).unwrap());
+    assert!(vm.change(&mut session, &change).unwrap());
+    pump(&mut vm, &mut session);
+    assert_eq!(vm.callbacks.len(), 1);
+    vm.click(&mut session, button(&vm, "remove")).unwrap();
+    pump(&mut vm, &mut session);
+    assert!(vm.callbacks.is_empty());
+    assert!(!vm.change(&mut session, &change).unwrap());
+    vm.advance_time(&session, 2., 16).unwrap();
+    pump(&mut vm, &mut session);
+    assert!(!vm.activities_need_time());
+    assert_eq!(session.storage_usage().pending_owner_retirements, 0);
+}

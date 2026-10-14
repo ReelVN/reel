@@ -90,7 +90,7 @@ fn tagged(heap: &Heap, value: Value, tag: i64) -> Result<(), AdapterError> {
     }
     Ok(())
 }
-fn readonly(_: &Heap, _: u32, _: Value) -> Result<(), HeapError> {
+fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::TypeMismatch)
 }
 fn present(value: Value) -> bool {

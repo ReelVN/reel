@@ -46,12 +46,16 @@ pub struct ProjectionStamp {
 #[derive(Default)]
 struct InputBinding {
     accepted: Option<ProjectionStamp>,
+    control_accepted: Option<ProjectionStamp>,
     down: Option<ProjectionStamp>,
     contacts: Vec<(PointerInfo, ProjectionStamp)>,
     non_pointer: bool,
     navigation_down: Option<ProjectionStamp>,
 }
 impl InputBinding {
+    fn permits_control(&self) -> bool {
+        self.control_accepted.is_some() && (self.down.is_some() || self.non_pointer)
+    }
     fn permits(&self, current: ProjectionStamp) -> bool {
         self.accepted == Some(current) && (self.down == Some(current) || self.non_pointer)
     }
@@ -121,12 +125,14 @@ enum UiInput {
         action: InputAction,
     },
     Node(reel_ui::stage::NodeClick),
+    Change(reel_ui::stage::NodeChange),
 }
 
 /// A control activation uses the same consumed input as the session projection.
 pub struct UiDispatch {
     pub handled: Handled,
     pub click: Option<reel_ui::stage::NodeClick>,
+    pub change: Option<reel_ui::stage::NodeChange>,
     pub actions: Vec<reel_ui::stage::NodeAction>,
 }
 struct LineWidgets {
@@ -387,9 +393,14 @@ impl Widget for SessionWidget {
                         .borrow_mut()
                         .get_or_insert(UiInput::Node(*click));
                 }
+                NodeEvent::Change(change) if self.binding.borrow().permits_control() => {
+                    self.inputs
+                        .borrow_mut()
+                        .get_or_insert(UiInput::Change(*change));
+                }
                 NodeEvent::Action(action)
                     if matches!(action.phase, ActionPhase::Released | ActionPhase::Cancelled)
-                        || self.binding.borrow().permits(self.current_stamp()) =>
+                        || self.binding.borrow().permits_control() =>
                 {
                     self.actions.borrow_mut().push(action.clone());
                 }
@@ -703,7 +714,9 @@ impl SessionUi {
             let view = StageView::capture(stage);
             self.images.request(view.image_requests());
             self.pending_stage = Some(view);
-            self.clear_presented();
+            self.binding.borrow_mut().accepted = None;
+            // Stable control identities retain gestures across value/layout changes.
+            // Scene retirement, configuration and modal changes are checked by routing.
         }
     }
     /// Configure before creating a widget or driving the story.
@@ -758,6 +771,7 @@ impl SessionUi {
     }
     /// Call only after PresentationBridge accepted the matching actual frame.
     pub fn presented(&mut self, stamp: ProjectionStamp) {
+        self.binding.borrow_mut().control_accepted = Some(stamp);
         if !self.images_pending() {
             self.binding.borrow_mut().accepted = Some(stamp);
         }
@@ -852,7 +866,7 @@ impl SessionUi {
         {
             let mut binding = self.binding.borrow_mut();
             if matches!(event, PointerEvent::Down(_))
-                && let Some(stamp) = binding.accepted
+                && let Some(stamp) = binding.control_accepted
             {
                 if let Some((_, down)) = binding
                     .contacts
@@ -901,9 +915,25 @@ impl SessionUi {
         }
         self.finish_input(handled)
     }
+    /// Submit an accessibility action from the host through accepted UI geometry.
+    pub fn handle_access(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        event: reel_ui::accesskit::ActionRequest,
+    ) -> Result<UiDispatch, Error> {
+        self.binding.borrow_mut().non_pointer = true;
+        let handled = bridge.handle_access_event(event);
+        self.binding.borrow_mut().non_pointer = false;
+        self.finish_input(handled)
+    }
     fn finish_input(&mut self, handled: Handled) -> Result<UiDispatch, Error> {
+        let mut change = None;
         let click = match self.inputs.borrow_mut().take() {
             Some(UiInput::Node(click)) => Some(click),
+            Some(UiInput::Change(event)) => {
+                change = Some(event);
+                None
+            }
             Some(UiInput::Session { owner, action }) => {
                 // Owner/session cancellation may race the final UI dispatch. Host
                 // rejections filter that event; they are not window failures.
@@ -921,6 +951,7 @@ impl SessionUi {
         Ok(UiDispatch {
             handled,
             click,
+            change,
             actions: self.take_actions(),
         })
     }

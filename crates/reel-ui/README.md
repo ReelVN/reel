@@ -58,7 +58,8 @@ Native device tests and window Expose/recovery commands are documented in the
 [R02 report](../reel-render/R02-REPORT.md). Those require a Vulkan device and an
 actual window/display; software Vulkan/Xvfb results establish only that environment.
 The shared author stage and Aside composition are connected through reel-engine
-and reel-player; author image and slider APIs remain separate implementation work.
+and reel-player, including author images, sliders and toggles. See the
+[creator guide](../../docs/guide/en.md#value-controls-and-settings) for state and callback contracts.
 Geometry export uses an explicit traversal stack. Node counts and path depth
 follow the recorded tree; input route storage grows before publication within
 its memory account, preserving the accepted view and active pointer capture.
