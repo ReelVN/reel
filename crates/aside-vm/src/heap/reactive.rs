@@ -15,6 +15,7 @@ pub(crate) enum DerivedSlot {
     CallPc,
     Arguments,
     State,
+    Suspended,
 }
 
 impl Heap {
@@ -26,6 +27,7 @@ impl Heap {
             fields,
             &[
                 closure,
+                Value::NULL,
                 Value::NULL,
                 Value::NULL,
                 Value::NULL,
@@ -307,6 +309,7 @@ impl Heap {
                 self.objects.get_mut(key).unwrap().reactive_subscribers = subscribers;
             }
             self.packed_pair_push(subscribers, weak, self.sequence_get(dependencies, i + 1)?)?;
+            self.reconnect_derived(source)?;
         }
         let old = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
         if !old.same_bits(Value::NULL) {
@@ -388,8 +391,88 @@ impl Heap {
             }
         }
         self.set_host_payload(output, DerivedSlot::Dependencies as u32, Value::NULL)?;
+        self.set_host_payload(output, DerivedSlot::Suspended as u32, Value::NULL)?;
         let key = self.key(output)?;
         self.objects.get_mut(key).unwrap().derived_dirty = false;
+        Ok(())
+    }
+
+    /// A retired host can no longer be read. Freeze computations that subscribed
+    /// to it, including ones already queued by its last interaction update.
+    pub(super) fn disconnect_reactive_source(&mut self, source: Value) -> Result<(), HeapError> {
+        let subscribers = self.object(self.key(source)?)?.reactive_subscribers;
+        if subscribers.same_bits(Value::NULL) {
+            return Ok(());
+        }
+        while self.sequence_len(subscribers)? != 0 {
+            let weak = self.sequence_get(subscribers, 0)?;
+            let selector = self.sequence_get(subscribers, 1)?;
+            if let Some(output) = self.subscriber_target(weak)? {
+                self.disconnect_derived(output)?;
+            } else {
+                self.reactive_remove(source, weak, selector)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn reconnect_derived(&mut self, output: Value) -> Result<(), HeapError> {
+        let key = self.key(output)?;
+        if self.object(key)?.derived
+            && self
+                .host_payload(output, DerivedSlot::Suspended as u32)?
+                .as_bool()
+                == Some(true)
+        {
+            self.set_host_payload(output, DerivedSlot::Suspended as u32, Value::NULL)?;
+            self.enqueue_derived(key);
+        }
+        Ok(())
+    }
+
+    /// Detaching the last consumer releases computed inputs transitively. Keep
+    /// shared computations live; reconnecting a retained reference refreshes it.
+    pub(super) fn disconnect_unobserved_derived(&mut self, output: Value) -> Result<(), HeapError> {
+        if !self.object(self.key(output)?)?.derived {
+            return Ok(());
+        }
+        let mut work = crate::root_ranges::ChargedVec::new(&self.usage, 8)?;
+        work.data.push(output);
+        while let Some(output) = work.data.pop() {
+            let object = self.object(self.key(output)?)?;
+            if !object.derived {
+                continue;
+            }
+            let downstream = object.reactive_subscribers;
+            let bound = self.subscribers(PropertyId {
+                host: output,
+                field: 0,
+            })?;
+            if (!downstream.same_bits(Value::NULL) && self.sequence_len(downstream)? != 0)
+                || (!bound.same_bits(Value::NULL) && self.sequence_len(bound)? != 0)
+            {
+                continue;
+            }
+            let dependencies = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
+            if dependencies.same_bits(Value::NULL) {
+                continue;
+            }
+            let len = self.sequence_len(dependencies)?;
+            let needed = work.data.len() + len as usize / 2;
+            if needed > work.data.capacity() {
+                let mut larger = crate::root_ranges::ChargedVec::new(
+                    &self.usage,
+                    needed.max(work.data.capacity() * 2),
+                )?;
+                larger.data.append(&mut work.data);
+                work = larger;
+            }
+            for index in (0..len).step_by(2) {
+                work.data.push(self.sequence_get(dependencies, index)?);
+            }
+            self.disconnect_derived(output)?;
+            self.set_host_payload(output, DerivedSlot::Suspended as u32, Value::bool(true))?;
+        }
         Ok(())
     }
 

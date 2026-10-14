@@ -44,6 +44,7 @@ pub(crate) struct State {
     font_requests: std::collections::BTreeMap<String, crate::assets::LoadId>,
     canvas_id: Option<WidgetId>,
     game: Option<Arc<reel_engine::aside::GameSettings>>,
+    fit_initial_canvas: bool,
     epoch: u64,
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
@@ -123,9 +124,12 @@ impl State {
                         |options| options.title.as_str(),
                     ))
                     .with_inner_size({
-                        let [width, height] = options
-                            .as_ref()
-                            .map_or([640, 420], |options| options.logical_size);
+                        let [width, height] = options.as_ref().map_or([640, 420], |options| {
+                            options
+                                .logical_size
+                                .or(options.canvas_size)
+                                .unwrap_or([1280, 720])
+                        });
                         winit::dpi::LogicalSize::new(width, height)
                     }),
             )?,
@@ -298,6 +302,9 @@ impl State {
             font_requests: Default::default(),
             canvas_id,
             game,
+            fit_initial_canvas: options.as_ref().is_some_and(|options| {
+                options.logical_size.is_none() && options.canvas_size.is_none()
+            }),
             epoch: 1,
             pointer: Default::default(),
             modifiers: Default::default(),
@@ -472,6 +479,17 @@ impl State {
             self.active_fonts = paths;
         }
         self.window.set_title(&settings.title);
+        if self.fit_initial_canvas
+            && let Some([width, height]) = settings.canvas_size
+        {
+            self.fit_initial_canvas = false;
+            if let Some(size) = self
+                .window
+                .request_inner_size(winit::dpi::LogicalSize::new(width, height))
+            {
+                self.resize(size)?;
+            }
+        }
         if let Some(id) = self.canvas_id {
             self.presentation.bridge.edit_widget(id, |mut widget| {
                 let mut canvas = widget.downcast::<reel_ui::widgets::Canvas>();
@@ -1466,7 +1484,8 @@ mod tests {
         impl ApplicationHandler for Harness {
             fn resumed(&mut self, event_loop: &ActiveEventLoop) {
                 exercise_session(event_loop);
-                exercise_author_resources(event_loop);
+                exercise_author_resources(event_loop, None);
+                exercise_author_resources(event_loop, Some([720, 480]));
                 event_loop.exit();
             }
             fn window_event(
@@ -1487,7 +1506,7 @@ mod tests {
         let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
         event_loop.run_app(&mut Harness).unwrap();
     }
-    fn exercise_author_resources(event_loop: &ActiveEventLoop) {
+    fn exercise_author_resources(event_loop: &ActiveEventLoop, initial_size: Option<[u32; 2]>) {
         use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
         let font = std::env::var("REEL_SESSION_FONT")
             .unwrap()
@@ -1499,17 +1518,18 @@ mod tests {
         let source = format!(
             r#"
 fn main() {{
-    game.configure(fonts: [{font:?}]);
+    game.configure(width: 640, height: 400, fonts: [{font:?}]);
     let picture = image("assets/panels.png");
     stage.replace(picture);
     narrator("A");
-    game.configure(fonts: [{alternate:?}]);
+    game.configure(width: 800, height: 600, fonts: [{alternate:?}]);
     picture.source = "assets/sun.jpg";
     narrator("B");
 }}
 "#
         );
         let options = StoryWindowOptions {
+            logical_size: initial_size,
             assets: crate::assets::AssetOptions {
                 root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
                 ..Default::default()
@@ -1556,6 +1576,25 @@ fn main() {{
         };
         settle(&mut state);
         assert_eq!(state.active_fonts, std::slice::from_ref(&font));
+        #[cfg(target_os = "windows")]
+        {
+            let [width, height] = initial_size.unwrap_or([640, 400]);
+            assert_eq!(
+                state.window.inner_size(),
+                winit::dpi::LogicalSize::new(width, height)
+                    .to_physical(state.window.scale_factor()),
+                "the first canvas sets the default client size; explicit window sizes take precedence"
+            );
+            let requested = winit::dpi::PhysicalSize::new(850, 625);
+            let _ = state.window.request_inner_size(requested);
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            while state.window.inner_size() != requested && Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(state.window.inner_size(), requested);
+            state.resize(requested).unwrap();
+        }
+        let player_size = state.window.inner_size();
         present_session(&mut state);
         let old_frame = state.build_frame().unwrap();
         let old_pixels = state.session.as_ref().unwrap().ui().image_resources()[0].clone();
@@ -1598,6 +1637,11 @@ fn main() {{
         );
         settle(&mut state);
         assert_eq!(state.active_fonts, [alternate]);
+        assert_eq!(
+            state.window.inner_size(),
+            player_size,
+            "later configuration preserves the player's window size"
+        );
         let lease = &state.session.as_ref().unwrap().ui().image_resources()[0];
         assert_eq!(lease.version().key.0, "assets/sun.jpg");
         assert!(old_pixels.is_retired());

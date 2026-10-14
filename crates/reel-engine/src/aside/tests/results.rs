@@ -21,6 +21,110 @@ fn click(vm: &mut SessionVm, session: &mut Session, label: &str) {
 }
 
 #[test]
+fn removing_a_hovered_control_freezes_its_pending_skin_derivations() {
+    use reel_ui::stage::{InteractionState, NodeEvent, NodeInteraction};
+    let code = r#"fn opening() {
+        let data = model({caption: "hovered"});
+        let control = button("dismiss", on_click: |event| event.target.remove());
+        let skin = derive(|| if control.hover { data.caption } else { "idle" });
+        control.add(text(skin));
+        let extra = column();
+        stage.replace(column() {
+            control; extra;
+            text(skin);
+            button("change", on_click: |event| { data.caption = "changed"; });
+            button("reuse", on_click: |event| extra.add(text(skin)));
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        let control = button(&vm, "dismiss");
+        vm.interactions(
+            &session,
+            &[NodeEvent::Interaction(NodeInteraction {
+                node: control,
+                state: InteractionState {
+                    hover: true,
+                    ..Default::default()
+                },
+            })],
+        )
+        .unwrap();
+        drive(&mut vm, &mut session, true);
+        click(&mut vm, &mut session, "dismiss");
+        collect(&mut vm);
+        click(&mut vm, &mut session, "change");
+        click(&mut vm, &mut session, "reuse");
+        assert!(vm.stage().node(control).is_none());
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("hovered".into()))
+        );
+        assert!(
+            !vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("changed".into()))
+        );
+    }
+}
+
+#[test]
+fn retired_consumers_release_conditional_skins_and_retained_derivations_can_rebind() {
+    let code = r#"fn opening() {
+        let data = model({active: true, count: 1});
+        let control = button("dismiss", on_click: |event| event.target.remove());
+        control.add(text(derive(|| if data.active { "selected" }
+            else if control.hover { "hover" } else { "idle" })));
+        let value = derive(|| data.count * 2);
+        let caption = derive(|| f"count {value.value}");
+        let first = text(caption);
+        let second = text(caption);
+        let extra = column();
+        stage.replace(column() {
+            control; first; second; extra;
+            button("remove first", on_click: |event| first.remove());
+            button("remove second", on_click: |event| second.remove());
+            button("change", on_click: |event| { data.active = false; data.count += 1; });
+            button("reuse", on_click: |event| extra.add(text(caption)));
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        click(&mut vm, &mut session, "dismiss");
+        click(&mut vm, &mut session, "remove first");
+        collect(&mut vm);
+        click(&mut vm, &mut session, "change");
+        assert_eq!(
+            vm.stage()
+                .nodes()
+                .filter(|node| node.kind == NodeKind::Text("count 4".into()))
+                .count(),
+            1,
+            "a shared consumer keeps the computed chain live"
+        );
+        click(&mut vm, &mut session, "remove second");
+        click(&mut vm, &mut session, "change");
+        collect(&mut vm);
+        click(&mut vm, &mut session, "reuse");
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("count 6".into())),
+            "rebinding refreshes the entire suspended chain"
+        );
+        click(&mut vm, &mut session, "change");
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("count 8".into()))
+        );
+    }
+}
+
+#[test]
 fn form_and_child_game_return_values_without_story_interactions() {
     let code = include_str!("../../../../../examples/author_results.aside")
         .replace("fn main()", "fn opening()");

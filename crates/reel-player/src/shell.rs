@@ -24,13 +24,13 @@ pub fn run_session_host() -> Result<(), Error> {
     run_mode(Mode::SessionDiagnostic)
 }
 
-/// Native window options; logical_size is the window size, not a fixed stage canvas.
+/// Native window options. An explicit logical_size overrides the first story canvas.
 pub struct StoryWindowOptions {
     pub assets: crate::assets::AssetOptions,
     pub audio: crate::audio::AudioOptions,
     pub title: String,
     pub locale: String,
-    pub logical_size: [u32; 2],
+    pub logical_size: Option<[u32; 2]>,
     pub canvas_size: Option<[u32; 2]>,
 }
 impl Default for StoryWindowOptions {
@@ -40,7 +40,7 @@ impl Default for StoryWindowOptions {
             audio: Default::default(),
             title: "Reel".into(),
             locale: "en".into(),
-            logical_size: [960, 540],
+            logical_size: None,
             canvas_size: None,
         }
     }

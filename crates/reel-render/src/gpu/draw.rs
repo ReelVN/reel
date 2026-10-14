@@ -64,6 +64,11 @@ impl Context<'_> {
             .resource_bytes
             .saturating_sub(self.budget_scope.resources.usage().bytes);
         let cost = resources::upload_cost(size)?;
+        self.image_cache.make_room(
+            &self.budgets.resources,
+            cost,
+            self.gpu.limits.resource_bytes,
+        );
         self.tickets.push(reserve(
             &self.budgets.resources,
             &self.budget_scope.resources,
@@ -149,6 +154,17 @@ impl Context<'_> {
                 }
                 let image = if let Some(image) = self.images.get(&brush.image) {
                     image.clone()
+                } else if let Some(image) = self.image_cache.get(brush.image) {
+                    self.tickets.push(super::renderer::Reservation {
+                        _shared: None,
+                        _local: super::image_cache::reserve_local(
+                            &self.budget_scope.resources,
+                            image.residency.as_ref().unwrap().bytes(),
+                            self.gpu.limits.resource_bytes,
+                        )?,
+                    });
+                    self.images.insert(brush.image, image.clone());
+                    image
                 } else {
                     let lease = frame
                         .resources()
@@ -166,14 +182,16 @@ impl Context<'_> {
                         });
                     };
                     let cost = resources::upload_cost([image.width, image.height])?;
-                    self.tickets.push(reserve(
+                    let resident = u64::from(image.width) * u64::from(image.height) * 8;
+                    let (upload, residency) = self.image_cache.reserve_upload(
                         &self.budgets.resources,
                         &self.budget_scope.resources,
                         cost,
+                        resident,
                         self.gpu.limits.resource_bytes,
-                        "image upload",
-                    )?);
-                    let (image, _) = resources::image(
+                    )?;
+                    self.tickets.push(upload);
+                    let (mut image, _) = resources::image(
                         self.gpu,
                         &mut self.encoder,
                         frame,
@@ -181,6 +199,8 @@ impl Context<'_> {
                         at,
                         cost,
                     )?;
+                    image.residency = Some(residency);
+                    image.source = Some(lease.clone());
                     let image = Arc::new(image);
                     self.images.insert(brush.image, image.clone());
                     image

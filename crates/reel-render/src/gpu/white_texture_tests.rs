@@ -225,7 +225,127 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
             .iter()
             .all(|p| p.iter().all(|c| (*c - 1.).abs() < 0.006))
     );
+    assert_eq!(usage(&renderer), [0, 8, 0]);
+    let cached = renderer.prepare(&image_only).unwrap();
+    counts(&renderer, 3);
+    assert_eq!(usage(&renderer)[1], 8);
+    drop(cached);
+    renderer.retire(std::slice::from_ref(lease.version()));
     empty(&renderer);
+
+    let mut limited = self::renderer(super::super::GpuLimits {
+        resource_bytes: 536,
+        ..Default::default()
+    });
+    let prepared = limited.prepare(&image_only).unwrap();
+    limited.readback(prepared).unwrap();
+    let held = limited.prepare(&image_only).unwrap();
+    let solid = frame(workload(1, 0, Color::WHITE), &pool);
+    assert!(matches!(
+        limited.prepare(&solid),
+        Err(GpuError::Pressure { .. })
+    ));
+    drop(held);
+    let prepared = limited
+        .prepare(&solid)
+        .expect("unused image residency is evictable for non-image uploads too");
+    limited.readback(prepared).unwrap();
+    empty(&limited);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn submitted_images_share_residency_under_overlapping_frame_pressure() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+    let mut handles = Vec::new();
+    let mut scene = Scene::new();
+    let size = [1280, 720];
+    for (index, pixel) in [[255, 0, 0, 255], [0, 255, 0, 255]].into_iter().enumerate() {
+        let bytes = pixel.repeat((size[0] * size[1]) as usize);
+        let ticket = pool.reserve(bytes.len() as u64).unwrap();
+        let handle = registry
+            .register_image(
+                ResourceVersion {
+                    key: AssetKey(format!("cache-{index}")),
+                    version: ContentVersion([index as u8; 32]),
+                },
+                OwnedBytes::new(bytes, ticket).unwrap(),
+                size,
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
+            )
+            .unwrap();
+        let lease = registry.acquire(handle).unwrap();
+        let ResourceData::Image { image, .. } = lease.data() else {
+            unreachable!()
+        };
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Image(ImageBrush::new(image.clone())),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
+            composite: Composite::default(),
+        });
+        handles.push(handle);
+    }
+    let frame = frame_with_snapshot(scene, registry.freeze(&handles, &pool).unwrap(), &pool);
+    let mut renderer = renderer(super::super::GpuLimits {
+        resource_bytes: 80 << 20,
+        ..Default::default()
+    });
+    let first = renderer.prepare(&frame).unwrap();
+    let upload_bytes = 2 * super::super::resources::upload_cost(size).unwrap();
+    assert_eq!(renderer.usage().resources, upload_bytes);
+    assert!(
+        matches!(renderer.prepare(&frame), Err(GpuError::Pressure { .. })),
+        "unsubmitted copies cannot initialize the cache"
+    );
+    counts(&renderer, 2);
+    renderer.submit(first).unwrap();
+    let second = renderer
+        .prepare(&frame)
+        .expect("submitted images can be reused before completion without duplicating uploads");
+    counts(&renderer, 2);
+    assert_eq!(renderer.usage().resources, upload_bytes);
+    drop(second);
+    renderer.gpu.device.poll(wgpu::PollType::Wait).unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(
+        renderer.usage().resources,
+        2 * u64::from(size[0]) * u64::from(size[1]) * 8
+    );
+    let reused = renderer.prepare(&frame).unwrap();
+    counts(&renderer, 2);
+    let pixels = renderer.readback(reused).unwrap();
+    assert!(pixels.iter().all(|p| {
+        p.iter()
+            .zip([0., 1., 0., 1.])
+            .all(|(a, b)| (*a - b).abs() < 0.006)
+    }));
+    // Retirement clears cache ownership but an existing preparation still owns the textures.
+    let retained = renderer.prepare(&frame).unwrap();
+    for handle in handles {
+        assert!(registry.retire(handle));
+    }
+    renderer.retire(&[]);
+    assert!(renderer.usage().resources > 0);
+    drop(retained);
+    empty(&renderer);
+    eprintln!(
+        "two 720p images: uploads={upload_bytes} bytes, resident={} bytes; overlapping and subsequent frames perform zero new image uploads",
+        2 * u64::from(size[0]) * u64::from(size[1]) * 8
+    );
 }
 
 #[test]

@@ -22,6 +22,7 @@ pub(super) struct Context<'a> {
     pub(super) budget_scope: Budgets,
     pub(super) tickets: Vec<Reservation>,
     pub(super) images: HashMap<reel_ui::resources::ResourceHandle, Arc<resources::Image>>,
+    pub(super) image_cache: &'a super::image_cache::ImageCache,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) available_targets: Vec<Target>,
 }

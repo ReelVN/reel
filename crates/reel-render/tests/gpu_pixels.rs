@@ -735,6 +735,9 @@ fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
                 );
             }
             assert_eq!(renderer.usage().targets, 0);
+            assert_eq!(renderer.usage().resources, 256 * 8);
+            assert!(registry.retire(handle));
+            renderer.poll().unwrap();
             assert_eq!(renderer.usage().resources, 0);
             assert_eq!(renderer.usage().transient, 0);
         }
