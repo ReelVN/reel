@@ -272,7 +272,7 @@ impl ApplicationHandler for App {
             _ => Ok(()),
         };
         if let Err(e) = result {
-            if matches!(e.downcast_ref::<GpuError>(), Some(GpuError::DeviceLost)) {
+            if matches!(e.downcast_ref::<GpuError>(), Some(GpuError::DeviceLost(_))) {
                 if let Err(e) = self.state.as_mut().unwrap().recover_device() {
                     self.fail(event_loop, e);
                 }
@@ -318,7 +318,7 @@ impl ApplicationHandler for App {
                 return;
             }
             if let Err(e) = state.poll_completions() {
-                if matches!(e, GpuError::DeviceLost) {
+                if matches!(e, GpuError::DeviceLost(_)) {
                     if let Err(e) = state.recover_device() {
                         self.fail(event_loop, e);
                     }

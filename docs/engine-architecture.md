@@ -525,6 +525,8 @@ Vello 0.8 的编码/渐变与 blend 路径采用 sRGB，imaging_vello 0.0.1 对 
 
 设备适配实施合同见 [R02-INTERFACE](../crates/reel-render/R02-INTERFACE.md)；该文档区分 device generation 与 SurfaceEpoch、实际队列完成和表面接受，以及独立目标/资源/临时预算。实现与设备验证状态以 R02 报告为准。
 
+WGPU 适配器使用锁定的 wgpu 30.0.1。设备丢失保留后端提供的 reason/message；已丢失设备上的帧获取、丢弃与呈现统一进入设备恢复，不将清理失败变成进程 panic。帧准备先于交换链获取，提交后仍检查设备错误，只有成功呈现才接受输入几何。恢复只替换 GPU、表面与其缓存，保留剧情 VM 和 CPU 资源；旧设备的 prepared 不能提交到新设备。此修复范围为 reel-render 与 reel-player，无脚本/ASB 接口变化；验证真实窗口持帧期间设备销毁、恢复后的呈现与剧情状态，以及既有 GPU 渲染与预算生命周期。
+
 ### 实施验收
 
 R01 固定帧、资源租约、可恢复导出和外部内容顺序，保留 U02 的真实接受/输入回归。后续 wgpu 实施在同一合同上验证实际像素、alpha/亮度 mask、嵌套透明组、crossfade、字形与图片缓存、resize/挂起/设备丢失以及上传/回收边界。每份结果区分源码审查、CPU/null 和具体图形设备；完整帧、导出、光栅、合成、提交与物理完成分开计时。

@@ -287,7 +287,7 @@ impl Renderer {
         self.gpu.check()?;
         if !Arc::ptr_eq(&prepared.owner, &self.owner) || prepared.generation != self.gpu.generation
         {
-            return Err(GpuError::DeviceLost);
+            return Err(GpuError::WrongDevice);
         }
         Ok(())
     }
@@ -295,7 +295,7 @@ impl Renderer {
         self.gpu.check()?;
         if !Arc::ptr_eq(&prepared.owner, &self.owner) || prepared.generation != self.gpu.generation
         {
-            return Err(GpuError::DeviceLost);
+            return Err(GpuError::WrongDevice);
         }
         if self.inflight.len() >= self.gpu.limits.max_inflight {
             return Err(GpuError::Busy);
@@ -325,7 +325,7 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         // The queue may own the last references to buffers and images. Keep frame
         // leases and accounting live until it has completed or reported device loss.
-        let _ = self.gpu.device.poll(wgpu::PollType::Wait);
+        let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
         self.inflight.clear();
     }
 }

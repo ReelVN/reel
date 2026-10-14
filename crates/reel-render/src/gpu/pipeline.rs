@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 #[derive(Default)]
 pub(super) struct PipelineSlots {
     slots: [Mutex<Option<Arc<Pipelines>>>; 3],
-    // wgpu 26 native error scopes share one device stack, including across tiers.
+    // Publish the first failed constructor before another quality tier starts.
     construction: Mutex<()>,
     #[cfg(test)]
     pub(super) creations: Creations,
@@ -41,13 +41,12 @@ impl PipelineSlots {
             .lock()
             .expect("pipeline construction poisoned");
         gpu.check()?;
-        for filter in [
+        let scopes = [
             wgpu::ErrorFilter::Validation,
             wgpu::ErrorFilter::Internal,
             wgpu::ErrorFilter::OutOfMemory,
-        ] {
-            gpu.device.push_error_scope(filter);
-        }
+        ]
+        .map(|filter| gpu.device.push_error_scope(filter));
         let pipelines = Arc::new(Pipelines::new(
             &gpu.device,
             quality,
@@ -59,8 +58,8 @@ impl PipelineSlots {
         // for queue completion. Never infer success from an uncaptured handler,
         // nor block this synchronous API on a WebGPU Promise.
         let mut pending = false;
-        for _ in 0..3 {
-            let mut result = std::pin::pin!(gpu.device.pop_error_scope());
+        for scope in scopes.into_iter().rev() {
+            let mut result = std::pin::pin!(scope.pop());
             match result
                 .as_mut()
                 .poll(&mut Context::from_waker(Waker::noop()))
@@ -253,6 +252,7 @@ impl Pipelines {
             color_attachments: &[Some(target.attachment(false))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
+            multiview_mask: None,
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.composite);
@@ -293,15 +293,15 @@ pub fn pipeline(
     }
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("reel"),
-        bind_group_layouts: &[layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
     });
     let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
-    let buffers = [wgpu::VertexBufferLayout {
+    let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: size_of::<Vertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &attributes,
-    }];
+    })];
     #[cfg(test)]
     if let Some(counts) = counts {
         counts
@@ -333,7 +333,7 @@ pub fn pipeline(
             count: quality.samples,
             ..Default::default()
         },
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }

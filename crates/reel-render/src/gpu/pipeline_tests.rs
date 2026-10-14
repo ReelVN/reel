@@ -226,21 +226,21 @@ fn pipeline_reuse_instance_and_recovery_isolation() {
     ));
     assert!(matches!(
         same_generation.submit(a),
-        Err(GpuError::DeviceLost)
+        Err(GpuError::WrongDevice)
     ));
     drop(b);
     empty(&old);
     empty(&same_generation);
     let stale = old.prepare(&frame).unwrap();
     old.gpu.device.destroy();
-    let _ = old.gpu.device.poll(wgpu::PollType::Wait);
-    assert!(matches!(old.prepare(&frame), Err(GpuError::DeviceLost)));
+    let _ = old.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+    assert!(matches!(old.prepare(&frame), Err(GpuError::DeviceLost(_))));
     counts(&old, 1);
     let mut replacement = renderer(Default::default());
     counts(&replacement, 0);
     assert!(matches!(
         replacement.readback(stale),
-        Err(GpuError::DeviceLost)
+        Err(GpuError::WrongDevice)
     ));
     empty(&old);
     let pixels = replacement
@@ -325,7 +325,11 @@ fn pipeline_reuse_refusals_and_completion_lifecycle() {
     drop((white, blue, oversized, bad));
     assert!(pool.usage().bytes > 0);
     let used = renderer.usage();
-    renderer.gpu.device.poll(wgpu::PollType::Wait).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
     assert_eq!(renderer.usage().targets, used.targets);
     assert_eq!(renderer.usage().resources, used.resources);
     assert_eq!(renderer.usage().transient, used.transient);
@@ -502,7 +506,7 @@ fn pipeline_reuse_outer_scope_cannot_hide_construction_failure() {
     let pool = pool();
     let frame = frame(scene(Color::WHITE), [400, 300], &pool);
     let renderer = renderer(Default::default());
-    renderer
+    let outer_scope = renderer
         .gpu
         .device
         .push_error_scope(wgpu::ErrorFilter::Validation);
@@ -526,7 +530,7 @@ fn pipeline_reuse_outer_scope_cannot_hide_construction_failure() {
     assert!(matches!(renderer.prepare(&frame), Err(GpuError::Driver(_))));
     assert_eq!(renderer.pipelines.creations.snapshot(), attempted);
     // Renderer owns its construction error; the caller's scope stays balanced.
-    assert!(pollster::block_on(renderer.gpu.device.pop_error_scope()).is_none());
+    assert!(pollster::block_on(outer_scope.pop()).is_none());
     assert!(matches!(renderer.gpu.check(), Err(GpuError::Driver(_))));
     empty(&renderer);
 }
@@ -537,7 +541,7 @@ fn pipeline_reuse_outer_scope_preserves_caller_errors_and_warm_pixels() {
     let pool = pool();
     let frame = frame(scene(Color::WHITE), [400, 300], &pool);
     let mut renderer = renderer(Default::default());
-    renderer
+    let outer_scope = renderer
         .gpu
         .device
         .push_error_scope(wgpu::ErrorFilter::Validation);
@@ -553,7 +557,7 @@ fn pipeline_reuse_outer_scope_preserves_caller_errors_and_warm_pixels() {
     drop(renderer.prepare(&frame).unwrap());
     counts(&renderer, 1);
     assert!(matches!(
-        pollster::block_on(renderer.gpu.device.pop_error_scope()),
+        pollster::block_on(outer_scope.pop()),
         Some(wgpu::Error::Validation { .. })
     ));
     assert!(renderer.gpu.check().is_ok());
@@ -579,7 +583,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             .creations
             .invalid_shader
             .store(invalid, Ordering::Relaxed);
-        renderer
+        let outer_scope = renderer
             .gpu
             .device
             .push_error_scope(wgpu::ErrorFilter::Validation);
@@ -630,9 +634,9 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             assert!(results.iter().all(Result::is_ok));
             counts(&renderer, 3);
         }
-        assert!(pollster::block_on(renderer.gpu.device.pop_error_scope()).is_none());
+        assert!(pollster::block_on(outer_scope.pop()).is_none());
         // A subsequent scoped error must still belong to the caller, not a leaked inner scope.
-        renderer
+        let outer_scope = renderer
             .gpu
             .device
             .push_error_scope(wgpu::ErrorFilter::Validation);
@@ -644,7 +648,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
                 source: wgpu::ShaderSource::Wgsl("invalid caller WGSL".into()),
             });
         assert!(matches!(
-            pollster::block_on(renderer.gpu.device.pop_error_scope()),
+            pollster::block_on(outer_scope.pop()),
             Some(wgpu::Error::Validation { .. })
         ));
         assert_eq!(renderer.gpu.check().is_ok(), !invalid);

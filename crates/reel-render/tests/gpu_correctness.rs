@@ -305,7 +305,11 @@ fn shared_pressure_and_completion_differ_from_single_frame_oversize() {
         .into_iter()
         .map(|prepared| renderer.submit(prepared).unwrap())
         .collect();
-    renderer.gpu().device.poll(wgpu::PollType::Wait).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
     assert_eq!(renderer.usage().targets, used);
     assert_eq!(renderer.poll().unwrap(), ids);
     drop(

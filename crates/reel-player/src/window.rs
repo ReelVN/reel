@@ -558,10 +558,18 @@ impl State {
                 if matches!(
                     error.downcast_ref::<GpuError>(),
                     Some(GpuError::Surface(
-                        wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated
+                        reel_render::gpu::SurfaceFailure::Lost
+                            | reel_render::gpu::SurfaceFailure::Outdated
                     ))
                 ) =>
             {
+                if matches!(
+                    error.downcast_ref::<GpuError>(),
+                    Some(GpuError::Surface(reel_render::gpu::SurfaceFailure::Lost))
+                ) {
+                    self.backend
+                        .resume(self.instance.create_surface(self.window.clone())?);
+                }
                 self.resize(self.window.inner_size())?;
                 return Ok(());
             }
@@ -596,6 +604,9 @@ impl State {
         self.render()
     }
     pub(crate) fn recover_device(&mut self) -> Result<(), Error> {
+        if let Err(error) = self.backend.renderer().gpu().check() {
+            eprintln!("recovering graphics device: {error}");
+        }
         self.pointer_event(PointerKind::Cancel)?;
         let size = self.window.inner_size();
         self.invalidate_surface(size)?;
@@ -988,7 +999,7 @@ mod tests {
             .renderer()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         let mut events = Vec::new();
         probe.backend.poll(&mut events, 0).unwrap();
@@ -1028,7 +1039,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         let before_expose = state.presentation.frame;
@@ -1041,7 +1052,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         // Successful idle never creates a timer-driven model preparation.
@@ -1080,7 +1091,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         assert_eq!(
             state.presentation.bridge.accepted_key().unwrap().frame_id(),
@@ -1099,7 +1110,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         // R01 can freeze this finite f64 transform; GPU conversion cannot represent it.
@@ -1133,7 +1144,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         for _ in 0..10 {
@@ -1157,7 +1168,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         let old_frame = state.build_frame().unwrap();
@@ -1171,14 +1182,25 @@ mod tests {
         );
         let old_epoch = state.epoch;
         // Recovery negotiates a fresh configuration for the new device generation.
-
+        let acquired = match state.backend.surface().unwrap().get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(texture)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            other => panic!("expected an acquired surface frame: {other:?}"),
+        };
         state.backend.renderer_mut().gpu().device.destroy();
         let _ = state
             .backend
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait);
+            .poll(wgpu::PollType::wait_indefinitely());
+        // Regression: wgpu 26 panicked in Surface::discard_texture here,
+        // preventing the device recovery below from ever running.
+        drop(acquired);
+        let Err(GpuError::DeviceLost(loss)) = state.backend.renderer().gpu().check() else {
+            panic!("surface cleanup must preserve the original device loss");
+        };
+        assert_eq!(loss.reason, wgpu::DeviceLostReason::Destroyed);
         state.recover_device().unwrap();
         assert_eq!(
             state.backend.renderer_mut().gpu().generation(),
@@ -1194,7 +1216,7 @@ mod tests {
         );
         assert!(matches!(
             state.backend.renderer_mut().submit(old),
-            Err(GpuError::DeviceLost)
+            Err(GpuError::WrongDevice)
         ));
         state.render().unwrap();
         assert_eq!(
@@ -1237,6 +1259,26 @@ mod tests {
         assert!(state.presentation.bridge.accepted_key().is_none());
         assert!(state.presentation.accepted_frame.is_none());
         state.resize(state.window.inner_size()).unwrap();
+        state.render().unwrap();
+        assert!(state.presentation.bridge.accepted_key().is_some());
+        state
+            .backend
+            .renderer()
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        state.poll_completions().unwrap();
+        let frame = state.build_frame().unwrap();
+        let device = state.backend.renderer().gpu().device.clone();
+        // Loss after queue submission but before presentation must not report
+        // PresentAccepted or panic in Queue::present / SurfaceTexture::drop.
+        let result = state.backend.render_present(&frame, || {
+            device.destroy();
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        });
+        assert!(matches!(result, Err(GpuError::DeviceLost(_))));
+        state.recover_device().unwrap();
         state.render().unwrap();
         assert!(state.presentation.bridge.accepted_key().is_some());
         drop(state);
@@ -1300,7 +1342,7 @@ mod tests {
             .renderer()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         let frame = state.build_frame().unwrap();
@@ -1326,7 +1368,7 @@ mod tests {
             .renderer()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
         state.render().unwrap();
@@ -1335,7 +1377,7 @@ mod tests {
             .renderer()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         state.poll_completions().unwrap();
     }
@@ -1390,7 +1432,7 @@ mod tests {
             .renderer_mut()
             .gpu()
             .device
-            .poll(wgpu::PollType::Wait);
+            .poll(wgpu::PollType::wait_indefinitely());
         state.recover_device().unwrap();
         assert_eq!(session_reveal(&state), 1);
         assert!(state.story_deadline().is_none());

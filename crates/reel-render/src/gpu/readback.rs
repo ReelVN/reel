@@ -49,13 +49,16 @@ impl Renderer {
             });
         self.gpu
             .device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|e| GpuError::Readback(e.to_string()))?;
         receiver
             .recv()
             .map_err(|e| GpuError::Readback(e.to_string()))?
             .map_err(|e| GpuError::Readback(e.to_string()))?;
-        let mapped = buffer.slice(..).get_mapped_range();
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| GpuError::Readback(e.to_string()))?;
         let mut out = Vec::with_capacity(size[0] as usize * size[1] as usize);
         for y in 0..size[1] as usize {
             for x in 0..size[0] as usize {

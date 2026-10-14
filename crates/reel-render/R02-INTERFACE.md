@@ -216,13 +216,12 @@ Inner construction errors are reported as Driver by Renderer, even when a
 matching outer scope exists; outer scopes retain their own previously captured
 errors. Caller-captured errors from other raw-device operations remain the
 caller's responsibility and do not automatically enter Gpu's uncaptured state.
-wgpu 26 native scopes share one device stack. The caller must pair its push/pop
-and avoid interleaving stack mutations with Renderer's construction transaction
-or other callers' scope transactions; private locks cannot coordinate arbitrary
-public-device push/pop from another thread. Parallel Renderer preparations are
-still supported, with cold construction serialized across tiers.
+wgpu 30 native scopes are thread-local RAII guards. The caller retains each guard
+until popping its result; scopes on another thread do not capture construction
+errors. Parallel Renderer preparations remain supported, with cold construction
+serialized across tiers so the first failure is published before another starts.
 
-The native wgpu-core 26 backend returns immediately ready scope-pop futures.
+The native wgpu-core 30 backend returns immediately ready scope-pop futures.
 Confirmation polls each future once and never waits for submitted GPU work. This
 is not a WebGPU Promise guarantee: an unresolved pop causes a permanent Device
 refusal, drops the attempted Pipelines and publishes no slot. Supporting a backend
