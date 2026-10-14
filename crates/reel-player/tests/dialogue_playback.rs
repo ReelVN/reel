@@ -77,6 +77,32 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
     assert_eq!(dialogue.text(), text);
     assert_eq!(dialogue.reveal().revealed_count, 10_001);
     assert!(!ui.dialogue_needs_time());
+    ui.session_mut()
+        .set_auto_reading(true, Some(std::time::Duration::from_secs(3600)));
+    ui.presented(ui.projection_stamp());
+    ui.advance_dialogue(20_000_000_000, 1000.).unwrap();
+    let auto_started = Instant::now();
+    let auto_region = Region::new(GLOBAL);
+    for i in 1..=10_000 {
+        assert!(
+            !ui.advance_dialogue(20_000_000_000 + i * 1_000_000, 1000.)
+                .unwrap()
+        );
+    }
+    let auto_stats = auto_region.change();
+    ui.session_mut().set_skip_reading(true, true);
+    let skip_region = Region::new(GLOBAL);
+    assert!(ui.advance_dialogue(40_000_000_000, 1000.).unwrap());
+    let skip_stats = skip_region.change();
+    assert_eq!((skip_stats.allocations, skip_stats.reallocations), (0, 0));
+    assert!(ui.session().read_progress().contains("cost"));
+
+    assert_eq!((auto_stats.allocations, auto_stats.reallocations), (0, 0));
+    eprintln!(
+        "10000 auto clock updates: {:?}; allocations=0, reallocations=0",
+        auto_started.elapsed()
+    );
+
     eprintln!(
         "10000 typewriter + projection updates: {elapsed:?}; allocations={}, reallocations={}",
         stats.allocations, stats.reallocations

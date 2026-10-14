@@ -242,6 +242,7 @@ impl SessionVm {
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
         self.live(session)?;
+        self.activities.set_skipping(session.reading().skipping());
         if self.reactive_ready && self.derived_task.is_none() {
             self.sync_narrative(session)?;
         }

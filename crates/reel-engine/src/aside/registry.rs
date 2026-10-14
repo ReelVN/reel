@@ -160,6 +160,13 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     for (symbol, parameters, effects) in [
         ("reel::game::dialogue", vec![], Effects::ALLOCATE),
         ("reel::game::choice", vec![], Effects::ALLOCATE),
+        ("reel::game::history", vec![], Effects::ALLOCATE),
+        ("reel::game::reading", vec![], Effects::ALLOCATE),
+        (
+            "reel::game::pause_reading",
+            vec!["paused"],
+            Effects::ALLOCATE | Effects::WRITE | Effects::HOST,
+        ),
         (
             "reel::dialogue::clear",
             vec!["dialogue"],
@@ -320,6 +327,30 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec!["reel.audio".into()],
         });
     }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::game::set_auto".into(),
+        abi_version: 1,
+        parameters: vec![
+            parameter("enabled", None),
+            parameter("delay", Some(bc::Const::Null)),
+        ],
+        result: BuiltinType::Null,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec![],
+    });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::game::set_skip".into(),
+        abi_version: 1,
+        parameters: vec![
+            parameter("enabled", None),
+            parameter("unread", Some(bc::Const::Bool(false))),
+        ],
+        result: BuiltinType::Null,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec![],
+    });
     let mut tween = vec![
         parameter("target", None),
         parameter("duration", Some(bc::Const::FloatBits(0.3_f64.to_bits()))),

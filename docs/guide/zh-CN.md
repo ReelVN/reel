@@ -491,7 +491,7 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 ## 十一 存档 历史 路线与跳过
 
-本节作者存读档、历史视图、路线跳转与跳过接口尚未实现。内部会话记录不代表这些作者服务已经可用。
+本节的历史数据和自动阅读控制已实现；存读档、路线切换与按章节跳转仍是后续设计。界面由作者组合，服务不生成固定页面。
 
 saves 是独立服务。save(slot_id) 返回 SaveRequest，quick_save() 使用快速槽；load(slot_id) 和 quick_load() 返回 LoadRequest。请求有只读 status 与 error，可用 derive 或 bind 显示进度；请求本身可等待，保存按钮通常只提交请求并观察模型。成功意味着槽位已提交到存储。调用者也可直接等待自己发出的保存请求：捕获在调用后的可恢复边界进行，这份存档里的对应请求恢复为已成功结果，等待者继续执行后面的语句。保存调用始终只执行一次。其他在途外部写请求跨进程恢复时，以可处理的 OperationInterrupted 错误结算；当前存档对应的请求使用上述成功规则。载入请求成功会替换会话，旧会话拥有的回调任务结束，进程级服务继续发布结果。
 saves.slots(page: 1, page_size: 12) 返回 SlotPage，可观察 items 包含稳定 id、occupied、chapter、saved_at、thumbnail 和 status。saves.delete(slot_id) 返回 DeleteRequest，成功后对应摘要变为空槽。每页页码从 1 开始，page_size 与页码决定固定普通槽位集合；快速槽独立。作者通过 grid、image、text、button 组成页面，翻页只更换显示的集合。
@@ -502,12 +502,14 @@ let save_button = button("保存", on_click: |event| {
 });
 ```
 保存、读档和删除请求共用 Queued、Running、Succeeded、Failed 状态；保存额外公开 phase = Capturing 或 Writing。error 在失败时包含说明，成功时为 null。await request 返回请求结果；请求失败抛出对应错误。槽位摘要只在成功提交后替换，失败保留原摘要。
-game.history 是只读可观察列表，每条是 HistoryGroup，含 group_id、interaction_id、lines 与恢复点信息；lines 保存当时的角色、内容身份、参数、显示文本和语音。单行快捷字段只投影该组第一行。用 scroll 包含 list 即可按需显示历史条目；读档或回滚时列表切换到恢复的会话状态。普通 UI 更换保持历史。
+`game.history()` 已实现：返回会话稳定的只读可观察数组。每组提供 `group_id/interaction_id/locale/lines/speaker_name/text`；每行提供 `id/speaker_id/speaker_name/content_id/text`，旁白的 speaker_id 为 null。行 ID 与 game.dialogue().lines 一致；快捷姓名/文本只取组内第一行。全文在提交时记录一次，清页、显现与更换 UI 不修改历史。作者用 view、scroll 和任意控件组合界面，完整示例见 [author_reading.aside](../../examples/author_reading.aside)。恢复点、语音重播和读档/回滚仍由后续对应服务实现。
 game.stories.entries 为章节索引，条目有 id、title、visited；game.stories.links 保存显式登记的 from/to 连接。模块发布从 story.register 收集入口，动态连接由 game.stories.link(from_id, to_id) 登记。作者用按钮代表章节、路径节点画连接，布局可手排或由自己的算法计算。
 game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命名章节入口重新执行剧情任务，保留当前剧情变量，结束旧主剧情任务及其交互；目标函数负责构造自己的画面。game.start(entry) 创建全新会话，适合新游戏。saves.load 恢复保存的位置、变量和画面。作者据此给路线按钮选择含义清楚的操作。
-按住快进、自动播放、分段跳过使用统一的剧情推进服务。game.skip_to(story_id) 以正常控制流加速执行，抵达目标章节入口、选项或未读边界时停止；目标不可达时按正常剧情结束，并报告目标未抵达。game.set_auto(enabled) 控制自动播放。按住快进由输入层的 skip 动作保持状态驱动，作者可以将键盘或手柄绑定到该动作。
-快进缩短可跳过的已读等待和有限演出，变量计算仍按顺序执行；松开、失焦、打开菜单、新游戏和读档清除按住状态。tween 完成到终值，有限等待结束，媒体按播放策略停止或继续；循环活动仍由 owner 管理。作者显示的控制提示跟随同一服务状态。
-这些服务提供数据与操作，页面的外观由作者组合。本版列出的签名属于待实现规范；对应功能达到契约验收后，指南为该节标注已实现版本与运行命令。
+`game.reading()` 返回稳定的只读可观察 `auto/paused/delay` 状态。`game.set_auto(enabled, delay: null)` 控制自动阅读；delay 为全文实际呈现后等待的有限非负秒数，默认 2 秒，省略时保留原值。`game.pause_reading(paused)` 暂停文字显现、自动推进和对白/选项输入，普通 UI 控件仍可用于关闭回看页。自动阅读在选择处等待玩家操作，之后继续；失焦、挂起、模态界面、待加载资源和正在进行的输入手势均停止计时，恢复后重新等待完整 delay。设置属于会话，更换 UI 保留，新会话默认手动、未暂停。有限演出和独立音频有各自控制，不随阅读暂停。按钮外观、布局、打开/关闭回看页的方式均由作者决定。
+`game.set_skip(enabled, unread: false)` 已实现。`game.reading().skipping/skip_unread` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白，选择仍等待玩家。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。Rust 宿主用 `Session::new_with_read_progress` 复用 `ReadProgress`，通过 `ids/from_ids` 接自己的持久存储；新建会话默认空记录。源码模块版本变化保守视为未读。
+按章节跳过 `game.skip_to(story_id)` 仍依赖后续章节注册服务。
+
+这些服务提供数据与操作，页面外观由作者组合。上述存读档、路线切换和章节跳转仍是设计；历史、快进与自动阅读已可通过对应 API 和示例使用。
 
 ## 十二 游戏变量与组件状态
 
@@ -674,7 +676,7 @@ fn main() {
 
 ## 命名动作与输入节点
 
-`input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
+`input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。根 input 在控件尚未获得焦点时即可接收键盘/手柄输入；已聚焦的子控件保持优先权。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
 
 ```aside
 fn main() {

@@ -507,3 +507,46 @@ fn bound_animation_sources_share_claims_and_release_old_connections() {
     assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
     assert!(!vm.activities_need_time());
 }
+
+#[test]
+fn skipping_finishes_story_sequences_with_a_small_budget_without_finishing_ui_or_loops() {
+    let code = r#"fn opening() {
+        let moving = text("story");
+        let ui = text("ui");
+        let looped = text("loop");
+        let paused = text("paused");
+        stage.replace(column() { moving; ui; looped; paused; });
+        let ui_job = run(tween(ui, x: 100, duration: 100), owner: ui);
+        let loop_job = run(repeat(tween(looped, x: 100, duration: 100)));
+        let paused_job = run(tween(paused, x: 100, duration: 100));
+        pause(paused_job);
+        let job = run(sequence(tween(moving, x: 40, duration: 100),
+                              repeat(tween(moving, x: 80, duration: 100), times: 1000000)));
+        narrator("enable skip");
+        if await job != "Completed" || moving.x != 80 { throw "story finish"; }
+        if ui.x != 0 || looped.x != 0 || paused.x != 0 { throw "other owner/control advanced"; }
+        stop(ui_job); stop(loop_job); stop(paused_job);
+        narrator("finished");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        session.set_skip_reading(true, true);
+        let progress = advance_clock(&mut vm, &session, 0., 1);
+        assert!(
+            progress.work < 200,
+            "finish must not iterate a million repetitions"
+        );
+        let id = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        models::drive(&mut vm, &mut session, false);
+        let Some(crate::InteractionView::Dialogue(d)) = session.view().interaction else {
+            panic!("dialogue")
+        };
+        assert_eq!(d.text(), "finished");
+    }
+}

@@ -1,0 +1,65 @@
+// Supply fonts/body.ttf relative to this file to open the native window.
+let reading = game.reading();
+let dialogue = game.dialogue();
+let choices = game.choice();
+let mio = character("Mio", id: "mio");
+
+fn history_page() {
+    if !reading.paused { return null; }
+    // The view observes history only while the page is open.
+    let history = game.history();
+    stack(modal: true, width: 1000, height: 720, background: "#101926ff") {
+        scroll(x: 40, y: 80, width: 920, height: 570, follow_end: true) {
+            column(gap: 24) {
+                for group in history {
+                    column(gap: 8) {
+                        for line in group.lines {
+                            text(line.speaker_name, color: "#9ed8ff");
+                            text(line.text, width: 850);
+                        }
+                    }
+                }
+            }
+        }
+        button("Close history", x: 40, y: 20,
+               on_click: |event| game.pause_reading(false));
+    }
+}
+
+pub fn main() {
+    game.configure(width: 1000, height: 720, fonts: ["fonts/body.ttf"],
+                   default_dialogue: false, default_choices: false);
+    stage.replace(input(width: 1000, height: 720,
+        bindings: {skip: [binding("ControlLeft"), binding("RightShoulder")]},
+        on_action: |event| {
+            if event.phase == "pressed" { game.set_skip(true); }
+            if event.phase == "released" || event.phase == "cancelled" { game.set_skip(false); }
+        }) { stack() {
+        column(x: 40, y: 420, width: 920, gap: 16) {
+            text(value: bind(dialogue.speaker_name), color: "#9ed8ff");
+            text(value: bind(dialogue.text), reveal: bind(dialogue.reveal), width: 880);
+            view(|| row(gap: 16) {
+                for option in choices.options {
+                    button(option.label, on_click: |event| choices.select(option.id));
+                }
+            });
+        }
+        row(x: 40, y: 20, gap: 24) {
+            button(on_click: |event| game.set_auto(!reading.auto, delay: 2.0)) {
+                text(value: derive(|| if reading.auto { "Auto: on" } else { "Auto: off" }));
+            }
+            button(on_click: |event| game.set_skip(!reading.skipping)) {
+                text(value: derive(|| if reading.skipping { "Skip: on" } else { "Skip read" }));
+            }
+            button("History", on_click: |event| game.pause_reading(true));
+        }
+        view(history_page);
+    } });
+    mio("这一次，阅读的节奏由你来定。");
+    narrator("打开历史，可以回看已经出现的完整对白。");
+    say([mio.line("打开回看页时，剧情会等你。"), character("Eri").line("关掉后再继续。")]);
+    let answer = choose([{key: "rain", label: "听雨"}, {key: "light", label: "看灯"}]);
+    dialogue.clear();
+    if answer == "rain" { mio("雨声还在。前面的对白也仍在历史里。"); }
+    else { narrator("灯光亮着。自动阅读也会等你作出选择。"); }
+}

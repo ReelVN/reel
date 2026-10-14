@@ -305,6 +305,12 @@ impl SessionVm {
         }
         self.stage.sync(self.vm.heap_mut(), self.read_limit)
     }
+    /// Reactive factories must settle before a host acknowledges their narrative frame.
+    pub fn stage_ready(&self) -> bool {
+        !self.activities.pending()
+            && self.derived_task.is_none()
+            && !self.vm.heap().derived_pending()
+    }
     pub fn cleanup_pending(&self) -> bool {
         self.revoked
             && (self.root_cursor < self.root_end
@@ -324,6 +330,7 @@ impl SessionVm {
         work: u32,
     ) -> Result<ActivityProgress, AdapterError> {
         self.live(session)?;
+        self.activities.set_skipping(session.reading().skipping());
         let mut progress = self.activities.advance(&mut self.vm, seconds, work)?;
         if self.reactive_ready && self.derived_task.is_none() {
             self.sync_narrative(session)?;
@@ -360,6 +367,11 @@ impl SessionVm {
             }
             "reel::game::dialogue"
             | "reel::game::choice"
+            | "reel::game::history"
+            | "reel::game::reading"
+            | "reel::game::set_auto"
+            | "reel::game::set_skip"
+            | "reel::game::pause_reading"
             | "reel::dialogue::clear"
             | "reel::choice::select" => {
                 self.dispatch_narrative(session, ticket, &symbol)?;

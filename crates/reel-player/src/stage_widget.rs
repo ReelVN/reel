@@ -53,6 +53,12 @@ impl StageView {
             resources: Vec::new(),
         }
     }
+    pub fn has_modal(&self) -> bool {
+        fn visit(node: &SceneNode) -> bool {
+            node.node.props.visible && (node.node.props.modal || node.children.iter().any(visit))
+        }
+        self.root.as_ref().is_some_and(visit)
+    }
     pub fn image_requests(&self) -> BTreeMap<String, Option<String>> {
         let mut requests = BTreeMap::new();
         let mut pending: Vec<_> = self.root.iter().collect();
@@ -88,6 +94,7 @@ impl StageView {
 pub(crate) struct StageWidget {
     root: Option<WidgetPod<SceneWidget>>,
     root_id: Option<NodeId>,
+    root_input: bool,
     root_props: reel_ui::stage::NodeProps,
 }
 impl StageWidget {
@@ -96,11 +103,21 @@ impl StageWidget {
         Self {
             root: root.map(|node| WidgetPod::new(SceneWidget::new(node))),
             root_id: root.map(|node| node.node.id),
+            root_input: root.is_some_and(|node| matches!(node.node.kind, NodeKind::Input { .. })),
             root_props: root.map(|node| node.node.props.clone()).unwrap_or_default(),
         }
     }
+    pub fn input_fallback(&self) -> Option<WidgetId> {
+        (self.root_input && self.root_props.visible)
+            .then(|| self.root.as_ref().map(WidgetPod::id))
+            .flatten()
+    }
     pub fn sync(this: &mut WidgetMut<'_, Self>, view: &StageView) {
         let id = view.root.as_ref().map(|node| node.node.id);
+        this.widget.root_input = view
+            .root
+            .as_ref()
+            .is_some_and(|node| matches!(node.node.kind, NodeKind::Input { .. }));
         if id != this.widget.root_id {
             if let Some(root) = this.widget.root.take() {
                 this.ctx.remove_child(root);
@@ -576,7 +593,7 @@ impl Widget for SceneWidget {
                 TextEvent::WindowFocusChange(false)
                     | TextEvent::Input(InputEvent::Cancel | InputEvent::Disconnected(_))
             );
-            if !ctx.is_focus_target() && !cleanup {
+            if ctx.focus_target_id().is_some() && !ctx.is_focus_target() && !cleanup {
                 return;
             }
             let raw = match event {
