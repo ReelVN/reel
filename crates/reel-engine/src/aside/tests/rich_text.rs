@@ -2,6 +2,58 @@ use super::*;
 use reel_ui::stage::{NodeKind, NodeLink};
 
 #[test]
+fn published_rich_nvl_example_retains_styled_lines_and_activates_the_glossary() {
+    let code = include_str!("../../../../../examples/author_rich_text.aside")
+        .replace("fn main()", "fn opening()");
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(&code, encoded);
+        for count in 1..=4 {
+            models::drive(&mut vm, &mut session, true);
+            assert_eq!(session.view().history.len(), count);
+            let id = session.view().interaction.unwrap().id();
+            session
+                .reveal_more(session.root_owner(), id, usize::MAX)
+                .unwrap();
+            vm.sync_narrative(&session).unwrap();
+            models::drive(&mut vm, &mut session, true);
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        models::drive(&mut vm, &mut session, true);
+        assert!(vm.has_live_work());
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(&n.kind, NodeKind::Text(t) if t.has_links()))
+            .unwrap();
+        let NodeKind::Text(text) = &node.kind else {
+            unreachable!()
+        };
+        let link = NodeLink {
+            node: node.id,
+            id: "star-map".into(),
+            text: text.clone(),
+        };
+        assert!(vm.text_link(&mut session, &link).unwrap());
+        models::drive(&mut vm, &mut session, true);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| matches!(&n.kind, NodeKind::Text(t) if t.contains("记录恒星的位置")))
+        );
+        assert!(
+            session.view().history[2].lines()[0]
+                .content()
+                .styled()
+                .ruby()
+                .len()
+                == 1
+        );
+    }
+}
+
+#[test]
 fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
     let code = r##"
     let d = game.dialogue(); let h = game.history();

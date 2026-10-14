@@ -247,7 +247,7 @@ impl SceneWidget {
         let label = match &view.node.kind {
             NodeKind::Text(_) | NodeKind::Button { .. } | NodeKind::Toggle { .. } => Some(
                 NewWidget::new(
-                    Label::new(Self::caption(&view.node.kind).unwrap_or("").to_owned())
+                    Label::new("")
                         .with_rich_text(match &view.node.kind {
                             NodeKind::Text(text) => text.clone(),
                             kind => Self::caption(kind).unwrap_or("").into(),
