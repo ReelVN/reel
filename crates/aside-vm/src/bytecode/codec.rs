@@ -207,26 +207,29 @@ impl<T: Wire> Wire for Vec<T> {
         Ok(())
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let count = r.count::<T>()?;
-        let mut out = Vec::new();
-        if r.materialize {
-            out.try_reserve_exact(count)
-                .map_err(|_| r.error(ErrorKind::Allocation, "vector reservation"))?;
-            r.charge(
-                0,
-                (out.capacity() - count)
-                    .checked_mul(size_of::<T>())
-                    .ok_or_else(|| r.error(ErrorKind::Limit, "capacity overflow"))?,
-            )?;
-        }
-        for _ in 0..count {
-            let x = T::get(r)?;
-            if r.materialize {
-                out.push(x);
-            }
-        }
-        Ok(out)
+        counted_vec(r).map(|(values, _)| values)
     }
+}
+fn counted_vec<T: Wire>(r: &mut Reader<'_>) -> Result<(Vec<T>, usize), Error> {
+    let count = r.count::<T>()?;
+    let mut out = Vec::new();
+    if r.materialize {
+        out.try_reserve_exact(count)
+            .map_err(|_| r.error(ErrorKind::Allocation, "vector reservation"))?;
+        r.charge(
+            0,
+            (out.capacity() - count)
+                .checked_mul(size_of::<T>())
+                .ok_or_else(|| r.error(ErrorKind::Limit, "capacity overflow"))?,
+        )?;
+    }
+    for _ in 0..count {
+        let x = T::get(r)?;
+        if r.materialize {
+            out.push(x);
+        }
+    }
+    Ok((out, count))
 }
 impl Wire for String {
     const MIN: usize = 4;
@@ -764,10 +767,18 @@ impl Wire for ModuleDef {
         }
         r.global_bound = globals;
         // This small, bounded count directory is the only scan-pass allocation.
+        let module = r.globals.len();
         r.globals.push(globals);
+        let path = Wire::get(r)?;
+        let (imports, import_count) = counted_vec(r)?;
+        let bindings = globals
+            .checked_add(import_count as u32)
+            .ok_or_else(|| r.error(ErrorKind::Limit, "module binding count"))?;
+        r.globals[module] = bindings;
+        r.global_bound = bindings;
         let out = Self {
-            path: Wire::get(r)?,
-            imports: Wire::get(r)?,
+            path,
+            imports,
             exports: Wire::get(r)?,
             globals: r.expected(globals)?,
             initializer: Wire::get(r)?,
@@ -777,7 +788,7 @@ impl Wire for ModuleDef {
         }
         if r.materialize {
             for export in &out.exports {
-                r.index(export.global.0, globals)?;
+                r.index(export.global.0, bindings)?;
             }
         }
         Ok(out)

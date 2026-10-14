@@ -73,7 +73,7 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 窗口入口为 `reel_player::shell::run_story(CompiledStory, StoryWindowOptions)`。选项包含标题、字体文件、locale 和原生窗口 logical_size；后者不冒充尚未接通的固定画布变换。窗口复用 SessionUi、PresentationBridge 和现有渲染路径，交替推进 VM 与增量 GC 工作片；等待玩家输入时完成当前回收周期后休眠，输入完成后继续。正常剧情结束保留画面；关闭执行任务取消及清理后退出。ResourceBlocked 保留执行状态，允许 GC 后重试，持续阻塞时停止忙等。源码和 ASB 入口共用编译/注册描述及运行宿主。新能力使用已有资源所有权和预算，不再叠加仅为演示设定的行数、选项或节点上限。
 
-作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v1 保存既有 B01 原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside> --font <font.ttf>` 运行源码，`reel run <file.asb> --font <font.ttf>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main，完整 game.toml 工程、多源码模块和资源包另行实现。
+作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v1 保存既有 B01 原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside> --font <font.ttf>` 运行源码，`reel run <file.asb> --font <font.ttf>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main；game.toml 或工程目录按配置入口加载实际多源码模块。模块共用一个字节码程序、固定导入和独立的会话全局环境，函数先链接，顶层表达式按依赖/SCC 顺序初始化。配置标题与 contain 画布沿共同 UI 变换处理绘制和输入。资源包与 release.json 仍由发布链路交付。
 
 一次窗口推进在既有 2 ms deadline 内连续处理同步调用与 VM/GC 工作，直到真实等待、终态或时间片耗尽，再同步画面。创建多个组件或同步替换场景不会被拆成每个 native 一次重绘；时间片包含宿主调用耗时。没有 deadline 的库级 tick 保留单片推进语义。
 
@@ -296,22 +296,24 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 工具：reel check/dev/build/loc/test 提供诊断、资源检查、调试与构建。节点、样式、属性绑定、资源、活动及任务可检查；工具模式的表达式默认纯读。测试驱动输入、截图及行为结果可自动对照，演出编辑辅助输出可维护源码。语言 LSP 与 debugger 使用同一签名和源映射元数据。
 
 ## 十二 字节码与资源分包发布
+ASB 1.0 的模块元数据使用 schema_version=2：保存全部源码模块、各自来源/声明/绑定、完整初始化顺序、实际启动函数及可选工程显示设置；B01 与 native ABI 保持 v1。导入和重导出共享原绑定，运行时使用一次验证后缓存的模块索引，不扫描模块表。源码文件与模块身份分开保存，构建产物直接执行已链接的完整模块图。
+
 发布产物分为字节码包 .asb 与资源包 .rpk，随目标平台播放器和 release.json 清单发布。一个游戏可以有多个代码模块包与多个资源分包；脚本修订和图片/音频更新独立构建。此分层借鉴 YU-RIS 的脚本二进制与资源归档组织，格式由 Reel 自行定义。
 .asb 保存入口、模块/函数/导入导出、常量、稳定内容与恢复标识、语言/字节码/宿主 ABI 版本和所需能力。源码映射可作为独立调试包，去掉源码后仍运行完整字节码语义。.rpk 保存 AssetKey、内容版本、目录索引、块表、编码/压缩信息和数据；索引与 offset/len 使用固定宽度，range read 支持流式音视频。已压缩媒体可原样储存，通用数据按独立 zstd frame 压缩，避免为一个 seek 解压整包。
 
-### ASB v1 单模块容器（PR #52，已实现，限定静态独立验收通过）
+### ASB v1 代码容器
 
 共享容器由 reel-package 定义，只依赖便携 B01 格式与必要序列化/摘要库，不依赖编译器、UI 或 GPU；编译器 HIR 到便携元数据的转换和文件写入由 reel-cli 完成。B01 继续是代码、模块、函数、导入导出、常量、ABI 与能力表的唯一数据来源，容器不复制另一套同义表。
 
 所有整数小端、偏移为文件绝对字节位置。固定头 72 字节：magic[8]=REELASB 加零字节、major:u16=1、minor:u16=0、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。索引项固定 56 字节：kind:u32、flags:u32、offset:u64、len:u64、blake3[32]。v1 必需且唯一的区段为 kind=1 的既有 B01 字节流和 kind=2 的版本化 UTF-8 JSON 元数据；未定义的必需语义拒绝，已知 flags 外的位不默许。读入先检查总长度、索引长度可整除记录宽度、数量/字节/工作预算，以及 checked offset+len、区段重复和与头/索引的重叠，再验证摘要及内容。不会用磁盘长度直接进行无界分配。摘要检测完整性，不证明来源或授予宿主能力。
 
-元数据保存 schema 版本、唯一模块引用及规范路径、源码版本/摘要/范围、source symbol 范围、函数/绑定/global 的必要映射，和分别命名的 initializer 与可空 game_entry。记录使用稳定 DTO 与精确整数，不序列化 Rust Debug、Arc、裸 HIR 节点或内存容量。函数映射不包含编译器生成的全部默认 thunk 或 initializer，不能以其条数等同 B01 函数数。读取端交叉验证模块/函数归属、范围、映射键唯一性、源码 UTF-8 边界及精确 B01 摘要；元数据里的源槽与效果摘要仅为编译器声明，不可替代 B01 验证、可信 native 注册或运行期效果检查。JSON 输入同时受字节、深度、字符串/记录和工作量限制，重复字段拒绝。
+schema_version=2 元数据保存全部源码模块的规范路径、源码版本/摘要/范围、source symbol 范围和函数/绑定/global 映射，以及工程初始化顺序、initializer、可空 game_entry 和可选显示配置。记录使用稳定 DTO 与精确整数。函数映射包含作者函数；编译器生成的默认 thunk 和 initializer 由已验证 B01 保存。读取端交叉验证模块/函数归属、范围、映射键唯一性、源码 UTF-8 边界及精确 B01 摘要；源槽与效果摘要和 B01 验证、可信 native 注册、运行期效果检查各有明确职责。JSON 输入受字节、深度、字符串/记录和工作量预算约束，重复字段拒绝。
 
-Compilation.entry 对应模块 initializer，不是游戏启动函数。CLI build 与 dev 默认选择 main::main，可用 --entry main::name 选择其他普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口；声明经 HIR/编译器输出映射到 B01 FunctionId，不能依赖通常为空的 GlobalDef.linked_function。CLI build 缺少有效入口时在源码位置报错，不生成无法启动的故事包。底层容器 API 仍可显式生成 game_entry=null 的模块产物。reader 也独立要求入口 context=Ordinary，而非仅凭元数据声明普通函数。消费者必须先完成 initializer，再启动选定函数；CLI 编译与验证不执行这些步骤。当前 producer 接受一个作者源码模块及编译器生成的宿主默认值模块，记录实际模块与源码 ID；已注册的 Reel native 经共享解析器链接。任意用户模块导入、外部绑定和完整工程构建仍待实现。
+ProjectCompilation.initializer 调用完整源码图的模块初始化器。单文件 build/dev 默认选择 main::main，工程使用 game.entry；--entry 可选择其他普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口。具名函数经 HIR 输出映射到 link-time global 与 B01 FunctionId，重导出入口解析到原声明。缺少有效入口时在对应源码位置报错；底层容器 API 可显式生成 game_entry=null 的模块产物。reader 验证实际入口为 Ordinary，并核对初始化器与完整顺序。消费者完成工程 initializer 后启动入口；CLI 编译与验证只构建产物。源码模块、固定版本依赖和已注册 Reel native 通过同一个链接程序执行。
 
 命令为 reel check <source> [--format human|json] 与 reel build <source> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]。build 在目标同目录完成唯一暂存文件，编码与验证成功后以原子不覆盖操作发布；只有显式 --overwrite 允许原子替换。先检查 exists 再 rename 不构成不覆盖保证；失败保留已有目标且只清理本次暂存。原子可见与断电持久性分别说明，不能把普通成功当持久存档承诺。
 
-静态检查读取上限目前为 8 MiB，后续编译/B01 仍各自执行更紧的预算；例如当前 B01 源码字符串限制为 1 MiB。诊断 JSON 保留字节范围及零起始 byte/scalar/UTF-16 坐标，人读输出用实际路径及可读位置。逻辑模块标识（如 main）与物理源码路径独立；B01 SourceFile.path 保存调用方提供的源码路径，dev 与 ASB run 的故障使用包内来源和源码定位，不把逻辑模块名当文件名。完整 .asb 的 BLAKE3 用于产物身份；占位 source_version="source" 或 content_version=1 不代表唯一内容。当前 B01 包含源码与映射，不能称作已剥离源码的发行包。.rpk、release.json 与完整作者模块链接仍待实现；源码及 .asb 已接入真实剧情窗口，物理 GPU 的验证范围另行记录。
+静态检查读取上限目前为 8 MiB，后续编译/B01 仍各自执行更紧的预算；例如当前 B01 源码字符串限制为 1 MiB。诊断 JSON 保留字节范围及零起始 byte/scalar/UTF-16 坐标，人读输出用实际路径及可读位置。逻辑模块标识（如 main）与物理源码路径独立；B01 SourceFile.path 保存调用方提供的源码路径，dev 与 ASB run 的故障使用包内来源和源码定位，不把逻辑模块名当文件名。完整 .asb 的 BLAKE3 用于产物身份；占位 source_version="source" 或 content_version=1 不代表唯一内容。当前 B01 包含源码与映射，不能称作已剥离源码的发行包。.rpk 与 release.json 仍待实现；源码及 .asb 已接入真实剧情窗口，物理 GPU 的验证范围另行记录。
 
 release.json 使用 UTF-8 JSON，列出 release_id、入口、引擎/格式范围、必须能力、代码包与资源包的路径、大小和 BLAKE3 内容摘要。代码与资源头部各有魔数、major/minor、索引位置与长度；加载先检查清单及索引，再按需校验数据块。路径规范化到包命名空间，长度/偏移与解码预算在访问前验证。包格式不依赖 Rust struct 的内存布局。
 构建从干净输出目录生成产物，清单最后提交；更新先下载到候选目录并验证匹配关系，再原子切换活动 release 指针。失败保留原 release，用户存档、设置与 persistent 位于独立用户数据目录。代码包保留精确模块版本，资源引用带内容版本，防止静默混用旧代码与新索引。可选发行签名通过显式签名步骤完成，清单摘要用于完整性和缓存身份。
@@ -517,9 +519,9 @@ owner 注册与活动凭据各有 max_requests 容量上限，保留已完成凭
 
 ### ASB 声明映射验证边界
 
-PR #52 的 reader 从已验证 B01 initializer 开头连续的 MakeClosure → GlobalInit → Clear 三指令结构恢复真实 global/function 绑定；要求同一寄存器、模块、名称、不可变 global、无捕获及唯一关联，并与声明元数据交叉核对。所有 PC 操作数与异常区间不得进入该前缀；还扫描所有函数，禁止相同声明 global 在前缀外被初始化或改写。扫描和有序表操作计入工作额度，不能证明的结构明确拒绝。
+reader 从已验证 B01 的 GlobalDef.linked_function 恢复具名模块函数，核对模块、名称、不可变 global、无捕获及唯一声明映射。具名函数在顶层执行前完成链接，支持合法的函数循环引用。一次程序扫描禁止代码初始化或改写这些声明 global；工程 wrapper 的调用顺序与全部源码初始化器逐项核对。扫描和有序表操作计入工作额度。
 
-这是当前编译器单模块输出 profile 的保守结构验证，不执行或模拟字节码，不重新编译内嵌源码，也不证明任意 B01 与源码语义等价。仅修改元数据把入口指向同名嵌套函数不能通过。以后编译器改变声明前缀时，必须同步 profile 规则和兼容验收，不能默许降级。
+声明映射来自实际链接绑定和源码映射，嵌套函数不能仅靠同名元数据成为模块入口。编译器更改声明结构时，同步 reader 规则与对应行为验收。
 
 5138fa9 的 37 项作者静态测试及 16 项独立回归均通过，两个原始入口反例均被拒绝；前缀关联、控制流/异常区、跨函数重复写和预算边界已复验。独立 Clippy 与 reel-package 的 wasm32（32 位指针）编译检查通过，但未执行 32 位代码。Linux x86_64/overlayfs 上已独立观察 12 路不覆盖竞争仅一个完整产物胜出、80 次覆盖的并发读取只见完整旧/新文件；这些结果不代表其他文件系统、平台或断电持久性，也不构成 VM/剧情运行验收。
 

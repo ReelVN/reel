@@ -31,7 +31,7 @@ const SOURCE: &str = r##"fn main() {
     ));
 }"##;
 
-fn frames(story: CompiledStory) -> Vec<[f64; 6]> {
+fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
     let mut driver = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
         story,
@@ -50,6 +50,13 @@ fn frames(story: CompiledStory) -> Vec<[f64; 6]> {
     assert!(driver.activities_need_time());
     let widget = driver.widget().prepare();
     let root_id = widget.id();
+    let widget = if let Some(size) = canvas {
+        reel_ui::widgets::Canvas::new(widget, size)
+            .prepare()
+            .erased()
+    } else {
+        widget.erased()
+    };
     let root = RenderRoot::new(
         widget,
         |_| {},
@@ -157,8 +164,8 @@ fn frames(story: CompiledStory) -> Vec<[f64; 6]> {
 fn source_and_asb_animate_the_same_presented_geometry() {
     let checked = reel_cli::check(SOURCE, "activity.aside").unwrap();
     let built = reel_cli::build(&checked, Some("main::main")).unwrap();
-    let direct = frames(reel_cli::into_story(checked, "main::main").unwrap());
-    let packaged = frames(reel_cli::decode_story(&built.bytes).unwrap());
+    let direct = frames(reel_cli::into_story(checked, "main::main").unwrap(), None);
+    let packaged = frames(reel_cli::decode_story(&built.bytes).unwrap(), None);
     assert_eq!(direct, packaged);
     let c = std::f64::consts::FRAC_1_SQRT_2;
     for (actual, expected) in direct.iter().zip([
@@ -169,5 +176,20 @@ fn source_and_asb_animate_the_same_presented_geometry() {
         for (a, b) in actual.iter().zip(expected) {
             assert!((a - b).abs() < 1e-9, "{actual:?}");
         }
+    }
+}
+
+#[test]
+fn fixed_canvas_uses_the_same_composed_frame_with_uniform_scale_and_letterboxing() {
+    let checked = reel_cli::check(SOURCE, "activity.aside").unwrap();
+    let built = reel_cli::build(&checked, Some("main::main")).unwrap();
+    let transforms = frames(
+        reel_cli::decode_story(&built.bytes).unwrap(),
+        Some([1280, 420]),
+    );
+    assert_eq!(transforms[0], [0.5, 0., 0., 0.5, 5., 110.]);
+    let end = transforms.last().unwrap();
+    for (actual, expected) in end.iter().zip([0., 0.5, -0.5, 0., 45., 130.]) {
+        assert!((actual - expected).abs() < 1e-9, "{end:?}");
     }
 }

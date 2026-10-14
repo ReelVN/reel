@@ -199,6 +199,7 @@ pub enum FaultKind {
     MissingKey = 15,
     UnhashableKey = 16,
     ConcurrentModification = 17,
+    ModuleInitializationCycle = 18,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -373,6 +374,7 @@ impl FaultKind {
             Self::MissingKey => "missing table key",
             Self::UnhashableKey => "unhashable table key",
             Self::ConcurrentModification => "collection modified during operation",
+            Self::ModuleInitializationCycle => "module binding read before initialization",
         }
     }
 }

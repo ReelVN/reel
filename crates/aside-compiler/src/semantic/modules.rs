@@ -221,6 +221,12 @@ impl std::fmt::Display for ResolveError {
 }
 impl std::error::Error for ResolveError {}
 pub trait ModuleResolver {
+    fn canonical_request<'a>(
+        &self,
+        request: &'a ImportRequest,
+    ) -> std::borrow::Cow<'a, ImportRequest> {
+        std::borrow::Cow::Borrowed(request)
+    }
     /// Resolver owns manifest/version/path/capability policy. A Symbol request
     /// (explicit grouped import) never silently becomes a namespace.
     fn resolve(&mut self, request: &ImportRequest) -> Result<ResolvedImport, ResolveError>;
@@ -240,6 +246,7 @@ impl ModuleResolver for NoModules {
 #[derive(Debug, Default, Clone)]
 pub struct MemoryResolver {
     pub modules: BTreeMap<String, ModuleInterface>,
+    pub aliases: BTreeMap<String, String>,
 }
 impl MemoryResolver {
     pub fn insert(&mut self, mut module: ModuleInterface) {
@@ -274,10 +281,47 @@ impl MemoryResolver {
             .collect()
     }
 }
+pub fn canonical_import<'a>(
+    request: &'a ImportRequest,
+    aliases: &BTreeMap<String, String>,
+) -> std::borrow::Cow<'a, ImportRequest> {
+    if aliases.is_empty() {
+        return std::borrow::Cow::Borrowed(request);
+    }
+    let full = request.path.join("::");
+    let mut end = full.len();
+    loop {
+        if let Some(canonical) = aliases
+            .get(&full[..end])
+            .filter(|canonical| *canonical != &full[..end])
+        {
+            let prefix = full[..end].split("::").count();
+            let mut normalized = request.clone();
+            normalized.path = canonical
+                .split("::")
+                .map(str::to_owned)
+                .chain(request.path[prefix..].iter().cloned())
+                .collect();
+            return std::borrow::Cow::Owned(normalized);
+        }
+        let Some(prefix) = full[..end].rfind("::") else {
+            break;
+        };
+        end = prefix;
+    }
+    std::borrow::Cow::Borrowed(request)
+}
 impl ModuleResolver for MemoryResolver {
+    fn canonical_request<'a>(
+        &self,
+        request: &'a ImportRequest,
+    ) -> std::borrow::Cow<'a, ImportRequest> {
+        canonical_import(request, &self.aliases)
+    }
     fn resolve(&mut self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
+        let r = self.canonical_request(r);
         let full = r.path.join("::");
-        let (namespace, symbol_module) = self.candidates(r);
+        let (namespace, symbol_module) = self.candidates(&r);
         let symbol = r.path.last().and_then(|last| {
             let module = symbol_module?;
             module

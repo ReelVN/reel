@@ -1,6 +1,7 @@
 use aside_compiler::SourceMap;
+use aside_compiler::semantic::SourceModule;
 use codespan_reporting::{files::SimpleFile, term};
-use reel_cli::{build, check, diagnostic_json, package_limits_json, read_source};
+use reel_cli::{build, diagnostic_json, package_limits_json};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -91,9 +92,6 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     let playing = raw[0] == "dev" || raw[0] == "run";
     if playing && (output.is_some() || overwrite || format.is_some()) {
         return Err("dev/run accept --font/--assets and dev also accepts --entry".into());
-    }
-    if playing && font.is_none() {
-        return Err("dev/run require --font <font.ttf>".into());
     }
     if raw[0] == "run" && entry.is_some() {
         return Err("run uses the entry selected when the package was built".into());
@@ -188,46 +186,100 @@ fn run() -> io::Result<u8> {
                 return Ok(2);
             }
         };
-        return match reel_cli::decode_story(&bytes) {
-            Ok(story) => launch(story, parsed.font.unwrap(), parsed.assets, path),
+        return match reel_package::decode(&bytes, reel_package::Limits::default()) {
+            Ok(package) => {
+                let game = package.metadata().game.clone();
+                let root = parsed.source.parent().unwrap_or(std::path::Path::new("."));
+                let font = parsed.font.or_else(|| {
+                    game.as_ref()
+                        .and_then(|game| game.font.as_ref())
+                        .map(|font| root.join(font))
+                });
+                let Some(font) = font else {
+                    failure(
+                        false,
+                        "input",
+                        Some(path),
+                        "set game.font or provide --font <font.ttf>",
+                    )?;
+                    return Ok(2);
+                };
+                match reel_cli::story_from_package(package) {
+                    Ok(story) => launch(story, font, parsed.assets, path, game),
+                    Err(error) => {
+                        failure(false, "package", Some(path), &error.to_string())?;
+                        Ok(1)
+                    }
+                }
+            }
             Err(error) => {
                 failure(false, "package", Some(path), &error.to_string())?;
                 Ok(1)
             }
         };
     }
-    let source = match read_source(&parsed.source) {
-        Ok(source) => source,
-        Err(error) => {
-            if parsed.json {
-                report_json(
-                    &json!({"schema_version": 1, "status": "error", "source": path, "limits": package_limits_json(),
-                    "stage": "input", "executed": false, "diagnostics": [{"code": error.code, "severity": "error", "message": error.message,
-                        "range": error.byte_range.as_ref().map(|range| json!({"byte_start": range.start, "byte_end": range.end, "start": null, "end": null}))}]}),
-                )?;
-            } else {
-                failure(false, "input", Some(path), &error.message)?;
+    let loaded = match reel_cli::project::load(&parsed.source) {
+        Ok(project) => project,
+        Err(error) if error.sources.is_empty() => {
+            if let Some(input) = error.input_error {
+                if parsed.json {
+                    report_json(
+                        &json!({"schema_version": 1, "status": "error", "source": path, "stage": "input", "executed": false,
+                        "diagnostics": [{"code": input.code, "severity": "error", "message": input.message,
+                        "range": input.byte_range.map(|range| json!({"byte_start": range.start, "byte_end": range.end, "start": null, "end": null}))}]}),
+                    )?;
+                } else {
+                    failure(false, "input", Some(path), &input.message)?;
+                }
+                return Ok(input.exit_code);
             }
-            return Ok(error.exit_code);
+            failure(
+                parsed.json,
+                error.failure.stage,
+                Some(path),
+                &error.failure.diagnostics[0].diagnostic.message,
+            )?;
+            return Ok(2);
         }
+        Err(error) => return source_error(parsed.json, path, &error.sources, error.failure),
     };
-    let checked = match check(&source, path) {
+    let inputs = &loaded.sources;
+    let selected_entry = loaded.entry(parsed.entry.as_deref());
+    let checked = match loaded.check() {
         Ok(checked) => checked,
-        Err(failed) => return source_error(parsed.json, path, &source, failed),
+        Err(failed) => return source_error(parsed.json, path, inputs, failed),
     };
     if parsed.command == "dev" {
-        return match reel_cli::into_story(checked, parsed.entry.as_deref().unwrap_or("main::main"))
-        {
-            Ok(story) => launch(story, parsed.font.unwrap(), parsed.assets, path),
-            Err(failed) => source_error(false, path, &source, failed),
+        let font = parsed.font.or_else(|| {
+            loaded
+                .game
+                .as_ref()
+                .and_then(|game| game.font.as_ref())
+                .map(|font| loaded.root.join(font))
+        });
+        let Some(font) = font else {
+            failure(
+                false,
+                "input",
+                Some(path),
+                "set game.font or provide --font <font.ttf>",
+            )?;
+            return Ok(2);
+        };
+        return match reel_cli::into_story(checked, &selected_entry) {
+            Ok(story) => launch(
+                story,
+                font,
+                parsed.assets.or_else(|| Some(loaded.root.clone())),
+                path,
+                loaded.game.clone(),
+            ),
+            Err(failed) => source_error(false, path, inputs, failed),
         };
     }
     let result = (|| {
         let artifact = if parsed.output.is_some() {
-            Some(build(
-                &checked,
-                Some(parsed.entry.as_deref().unwrap_or("main::main")),
-            )?)
+            Some(build(&checked, Some(&selected_entry))?)
         } else {
             None
         };
@@ -239,7 +291,7 @@ fn run() -> io::Result<u8> {
             if let (Some(output), Some(artifact)) = (&parsed.output, &artifact) {
                 match reel_cli::output::write(
                     output,
-                    &parsed.source,
+                    &loaded.input,
                     &artifact.bytes,
                     parsed.overwrite,
                 ) {
@@ -255,8 +307,8 @@ fn run() -> io::Result<u8> {
                     &json!({"schema_version": 1, "status": if artifact.is_some() { "built" } else { "verified" }, "source": path,
                     "scope": if artifact.is_some() { "static-compilation-asb-b01-roundtrip" } else { "static-compilation-b01-roundtrip" },
                     "executed": false, "runtime_admitted": false, "release_package": false, "diagnostics": [], "encoded_bytes": checked.bytes.len(),
-                    "entry": {"kind": "module-initializer", "function_id": checked.compilation.entry.0},
-                    "module": checked.compilation.metadata.canonical_path, "source_version": checked.compilation.metadata.source_version,
+                    "entry": {"kind": "project-initializer", "function_id": checked.compilation.initializer.0},
+                    "modules": checked.modules.iter().map(|m| json!({"module": m.canonical_path, "source_version": m.source_version})).collect::<Vec<_>>(),
                     "limits": package_limits_json(),
                     "artifact": artifact.as_ref().map(|a| json!({"path": parsed.output.as_ref().and_then(|p| p.to_str()),
                         "format": "ASB", "major": 1, "minor": 0, "bytes": a.bytes.len(), "blake3": a.blake3,
@@ -279,23 +331,27 @@ fn run() -> io::Result<u8> {
             }
             Ok(0)
         }
-        Err(failed) => source_error(parsed.json, path, &source, failed),
+        Err(failed) => source_error(parsed.json, path, inputs, failed),
     }
 }
 
 fn source_error(
     json_format: bool,
     path: &str,
-    source: &str,
+    sources: &[SourceModule],
     failed: reel_cli::Failure,
 ) -> io::Result<u8> {
     if json_format {
-        let map = SourceMap::new(source);
         let diagnostics: Vec<_> = failed
             .diagnostics
             .iter()
             .map(|d| {
-                let mut value = diagnostic_json(d, &map);
+                let input = sources
+                    .iter()
+                    .find(|input| d.source.as_deref() == input.source_path.as_deref())
+                    .unwrap_or(&sources[0]);
+                let mut value = diagnostic_json(&d.diagnostic, &SourceMap::new(&input.source));
+                value["source"] = json!(input.source_path.as_deref().unwrap_or(path));
                 if let Some(code) = &failed.code {
                     value["code"] = json!(code);
                 }
@@ -307,10 +363,14 @@ fn source_error(
                     "stage": failed.stage, "executed": false, "diagnostics": diagnostics}),
         )?;
     } else {
-        let file = SimpleFile::new(path, &source);
         let mut output = io::stderr().lock();
         for d in &failed.diagnostics {
-            let mut rendered = d.to_codespan(());
+            let input = sources
+                .iter()
+                .find(|input| d.source.as_deref() == input.source_path.as_deref())
+                .unwrap_or(&sources[0]);
+            let file = SimpleFile::new(input.source_path.as_deref().unwrap_or(path), &input.source);
+            let mut rendered = d.diagnostic.to_codespan(());
             if let Some(code) = &failed.code {
                 rendered.code = Some(code.clone());
             }
@@ -326,17 +386,22 @@ fn launch(
     font: PathBuf,
     assets: Option<PathBuf>,
     path: &str,
+    game: Option<reel_package::GameSettings>,
 ) -> io::Result<u8> {
     #[cfg(feature = "window")]
     let result = {
         let mut options = reel_player::shell::StoryWindowOptions::new(font);
+        if let Some(game) = game {
+            options.title = game.title;
+            options.canvas_size = Some([game.display.width, game.display.height]);
+        }
         options.images.root =
             assets.unwrap_or_else(|| std::path::Path::new(path).parent().unwrap().to_path_buf());
         reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
     };
     #[cfg(not(feature = "window"))]
     let result: Result<(), String> = {
-        let _ = (story, font, assets);
+        let _ = (story, font, assets, game);
         Err("build the window player with: cargo build -p reel-cli --features window".into())
     };
     match result {

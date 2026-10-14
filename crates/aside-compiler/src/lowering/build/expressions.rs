@@ -38,6 +38,11 @@ impl FunctionBuilder<'_, '_> {
         {
             return self.native_reference(native, n).map(Some);
         }
+        if matches!(kind, H::Name | H::Member)
+            && let Some(global) = self.l.global(n)?
+        {
+            return self.global_reference(global, n).map(Some);
+        }
         match (kind, form) {
             (
                 H::Member | H::Index | H::Call,

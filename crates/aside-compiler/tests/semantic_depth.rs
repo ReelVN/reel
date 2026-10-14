@@ -82,12 +82,14 @@ fn reexport_drop_child() {
         .spawn(|| {
             let mut inputs = Vec::with_capacity(10_000);
             inputs.push(SourceModule {
+                source_path: None,
                 canonical_path: "m0".into(),
                 version: "drop-v1".into(),
                 source: "pub let x=1;".into(),
             });
             for i in 1..10_000 {
                 inputs.push(SourceModule {
+                    source_path: None,
                     canonical_path: format!("m{i}"),
                     version: "drop-v1".into(),
                     source: format!("pub use m{}::{{x}};", i - 1).into(),

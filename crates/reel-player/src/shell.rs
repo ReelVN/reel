@@ -32,6 +32,7 @@ pub struct StoryWindowOptions {
     pub font: PathBuf,
     pub locale: String,
     pub logical_size: [u32; 2],
+    pub canvas_size: Option<[u32; 2]>,
 }
 impl StoryWindowOptions {
     pub fn new(font: impl Into<PathBuf>) -> Self {
@@ -41,6 +42,7 @@ impl StoryWindowOptions {
             font: font.into(),
             locale: "en".into(),
             logical_size: [960, 540],
+            canvas_size: None,
         }
     }
 }

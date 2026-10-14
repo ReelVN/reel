@@ -34,7 +34,20 @@ impl CompiledStory {
                 .parameters
                 .iter()
                 .any(|parameter| parameter.default.is_none())
-            || p.modules[function.module.index()].initializer != Some(self.initializer)
+        {
+            return Err(SourceError::Entry);
+        }
+        let initializer = p
+            .functions
+            .get(self.initializer.index())
+            .ok_or(SourceError::Entry)?;
+        let init_signature = &p.signatures[initializer.signature.index()];
+        if initializer.kind != bc::FunctionKind::Plain
+            || initializer.context != bc::Context::Init
+            || !initializer.captures.is_empty()
+            || !init_signature.parameters.is_empty()
+            || init_signature.rest.is_some()
+            || p.modules[initializer.module.index()].initializer != Some(self.initializer)
         {
             return Err(SourceError::Entry);
         }
@@ -49,6 +62,8 @@ pub enum SourceError {
     Lowering(Box<lowering::Error>),
     Format(bc::Error),
     Entry,
+    ProjectAnalysis(aside_compiler::semantic::ProjectAnalysis),
+    ProjectLowering(lowering::ProjectError),
 }
 impl std::fmt::Display for SourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,14 +78,18 @@ pub struct SourceCompilation {
     pub compilation: lowering::Compilation,
 }
 
+pub struct ProjectSourceCompilation {
+    pub modules: Vec<AnalyzedModule>,
+    pub compilation: lowering::ProjectCompilation,
+}
+
 /// The author CLI and runtime share this resolver and trusted native registry.
 /// `content_version` is supplied by the asset/module resolver, not a save ID.
-pub fn compile_module(
-    source: &str,
-    module_path: &str,
-    source_path: &str,
-    content_version: u64,
-) -> Result<SourceCompilation, SourceError> {
+fn environment() -> (
+    Vec<registry::NativeContract>,
+    MemoryResolver,
+    Vec<ExternalSymbol>,
+) {
     let contracts = registry::contracts();
     let references = contracts
         .iter()
@@ -110,6 +129,16 @@ pub fn compile_module(
             .map(|(export, _)| export.clone())
             .collect(),
     });
+    (contracts, resolver, prelude)
+}
+
+pub fn compile_module(
+    source: &str,
+    module_path: &str,
+    source_path: &str,
+    content_version: u64,
+) -> Result<SourceCompilation, SourceError> {
+    let (contracts, mut resolver, prelude) = environment();
     let options = AnalysisOptions {
         module: module_path.into(),
         source_path: Some(source_path.into()),
@@ -177,6 +206,44 @@ pub fn compile_story(
     };
     story.validate()?;
     Ok(story)
+}
+
+pub fn compile_project(
+    inputs: &[aside_compiler::semantic::SourceModule],
+    aliases: &std::collections::BTreeMap<String, String>,
+    content_version: u64,
+) -> Result<ProjectSourceCompilation, SourceError> {
+    let (contracts, mut resolver, prelude) = environment();
+    resolver.aliases = aliases.clone();
+    let options = AnalysisOptions {
+        version: content_version.to_string(),
+        hosts: prelude,
+        ..Default::default()
+    };
+    let mut analysis = aside_compiler::semantic::analyze_project(inputs, &options, &mut resolver)
+        .map_err(SourceError::Source)?;
+    if !analysis.is_ok() {
+        return Err(SourceError::ProjectAnalysis(analysis));
+    }
+    let plan = std::mem::take(&mut analysis.plan);
+    let modules = analysis
+        .into_modules()
+        .map_err(SourceError::ProjectAnalysis)?;
+    let compilation = aside_host::lower_project(
+        &modules,
+        &plan,
+        &contracts,
+        &registry::capabilities(),
+        lowering::Options {
+            content_version,
+            ..Default::default()
+        },
+    )
+    .map_err(SourceError::ProjectLowering)?;
+    Ok(ProjectSourceCompilation {
+        modules,
+        compilation,
+    })
 }
 
 impl From<SourceError> for AdapterError {

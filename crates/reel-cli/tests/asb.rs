@@ -74,7 +74,7 @@ fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
             init: context == bc::Context::Init,
             derived: context == bc::Context::Derived,
         };
-        metadata.functions[0].declared_context = declared.clone();
+        metadata.modules[0].functions[0].declared_context = declared.clone();
         let bytes = bc::encode(&p, bc::Limits::default()).unwrap();
         metadata.bytecode_blake3 = rp::digest(&bytes);
         let encoded = assemble(&bytes, &serde_json::to_vec(&metadata).unwrap());
@@ -82,15 +82,14 @@ fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
         assert!(error.detail.contains("Ordinary"), "{context:?}: {error}");
         checked.bytes = bytes;
         checked.compilation.program = bc::verify(p, bc::Limits::default()).unwrap();
-        checked.compilation.metadata.functions[0].declared_context =
-            aside_compiler::hir::DeclaredContext {
-                no_wait: declared.no_wait,
-                init: declared.init,
-                derived: declared.derived,
-            };
+        checked.modules[0].functions[0].declared_context = rp::DeclaredContext {
+            no_wait: declared.no_wait,
+            init: declared.init,
+            derived: declared.derived,
+        };
         let error = reel_cli::build(&checked, Some("main::main")).err().unwrap();
         assert_eq!(error.stage, "entry");
-        assert!(error.diagnostics[0].message.contains("Ordinary"));
+        assert!(error.diagnostics[0].diagnostic.message.contains("Ordinary"));
         // Restricted-context helpers are still legal in a module-only artifact.
         reel_cli::build(&checked, None).unwrap();
     }
@@ -104,23 +103,21 @@ fn metadata_only_cannot_redirect_main_to_same_named_nested_function() {
     )
     .bytes;
     let mut metadata: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
-    let nested = metadata["functions"][2]["output"].clone();
-    metadata["declarations"][0]["source_function_id"] = serde_json::json!(2);
-    metadata["declarations"][0]["function_id"] = nested.clone();
+    let nested = metadata["modules"][0]["functions"][2]["output"].clone();
+    metadata["modules"][0]["declarations"][0]["source_function_id"] = serde_json::json!(2);
+    metadata["modules"][0]["declarations"][0]["function_id"] = nested.clone();
     metadata["game_entry"]["function_id"] = nested;
     let forged = repack(&original, &serde_json::to_vec(&metadata).unwrap());
     assert_eq!(section(&original, 0), section(&forged, 0));
     let error = rp::decode(&forged, Limits::default()).unwrap_err();
     assert!(
-        error
-            .detail
-            .contains("B01 initializer global/function binding"),
+        error.detail.contains("linked B01 global/function binding"),
         "{error}"
     );
 }
 
 #[test]
-fn declaration_prefix_rejects_control_entry_duplicate_and_later_global_writes() {
+fn project_initializer_and_linked_declarations_reject_forged_control_and_writes() {
     use aside_vm::bytecode as bc;
     let original = artifact("fn main(){1}", Some("main::main")).bytes;
     let decoded = rp::decode(&original, Limits::default()).unwrap();
@@ -143,26 +140,41 @@ fn declaration_prefix_rejects_control_entry_duplicate_and_later_global_writes() 
                 init.code.splice(3..3, copy);
             }
             "overwrite" => {
-                let write = init.code[1];
-                init.code.insert(init.code.len() - 1, write);
+                let source = &metadata.modules[0];
+                let function = &mut p.functions[source.initializer.function_id as usize];
+                let descriptor = function.descriptors.len() as u32;
+                function.descriptors.push(bc::Descriptor::Global {
+                    module: bc::ModuleId(source.module_id),
+                    global: bc::GlobalId(source.declarations[0].global_id),
+                });
+                function.code.insert(
+                    function.code.len() - 1,
+                    bc::Instruction::new(bc::Opcode::GlobalWrite, 0, descriptor, 0),
+                );
+                function.source_map.clear();
             }
             "clear-register" => {
                 init.code[2].operands[0] = init.register_count;
                 init.register_count += 1;
             }
             "omitted-metadata" => {
-                metadata.declarations.clear();
+                metadata.modules[0].declarations.clear();
                 metadata.game_entry = None;
             }
             _ => unreachable!(),
         }
-        init.source_map.clear();
+        p.functions[metadata.initializer.function_id as usize]
+            .source_map
+            .clear();
         let b01 = bc::encode(&p, bc::Limits::default()).unwrap();
         metadata.bytecode_blake3 = rp::digest(&b01);
         let bad = assemble(&b01, &serde_json::to_vec(&metadata).unwrap());
         let error = rp::decode(&bad, Limits::default()).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Metadata, "{case}: {error}");
-        assert!(error.detail.contains("declaration"), "{case}: {error}");
+        assert!(
+            error.detail.contains("declaration") || error.detail.contains("initializer"),
+            "{case}: {error}"
+        );
     }
 }
 
@@ -179,7 +191,7 @@ fn anonymous_module_closures_do_not_become_declarations_and_hoisted_functions_re
 }
 
 #[test]
-fn private_entry_comes_from_declaration_not_initializer_or_linked_global() {
+fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
     let a = artifact(
         "fn helper() { 1 } fn main(a = 1, b = a) { let local = 2; let f = || { local + a }; f() + b }",
         Some("main::main"),
@@ -190,28 +202,35 @@ fn private_entry_comes_from_declaration_not_initializer_or_linked_global() {
     let entry = m.game_entry.as_ref().unwrap();
     assert_ne!(entry.function_id, m.initializer.function_id);
     assert_eq!(
-        p.modules[m.module_id as usize].initializer.unwrap().0,
+        p.modules[m.initializer.module_id as usize]
+            .initializer
+            .unwrap()
+            .0,
         m.initializer.function_id
     );
-    let d = &m.declarations[entry.declaration_index as usize];
+    let d = &m.modules[0].declarations[entry.declaration_index as usize];
     assert_eq!(d.name, "main");
     assert_eq!(
-        m.functions[d.source_function_id as usize].output,
+        m.modules[0].functions[d.source_function_id as usize].output,
         entry.function_id
     );
     assert_eq!(
         p.symbols[p.functions[entry.function_id as usize].name.index()],
         "main"
     );
-    assert!(p.modules[m.module_id as usize].exports.is_empty());
     assert!(
-        p.modules[m.module_id as usize].globals[d.global_id as usize]
-            .linked_function
-            .is_none()
+        p.modules[m.modules[0].module_id as usize]
+            .exports
+            .is_empty()
     );
-    assert!(p.functions.len() > m.functions.len());
-    assert!(m.bindings.iter().enumerate().any(|(i, a)| {
-        m.bindings[i + 1..]
+    assert!(
+        p.modules[m.modules[0].module_id as usize].globals[d.global_id as usize]
+            .linked_function
+            .is_some()
+    );
+    assert!(p.functions.len() > m.modules[0].functions.len());
+    assert!(m.modules[0].bindings.iter().enumerate().any(|(i, a)| {
+        m.modules[0].bindings[i + 1..]
             .iter()
             .any(|b| a.source == b.source && a.function != b.function)
     }));
@@ -301,23 +320,29 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
     let original = artifact("let x = 1; fn main(a = 2) { a }", Some("main::main")).bytes;
     let initial: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
     for (pointer, value) in [
-        ("/schema_version", serde_json::json!(2)),
+        ("/schema_version", serde_json::json!(3)),
         ("/bytecode_blake3", serde_json::json!("wrong")),
-        ("/module_id", serde_json::json!(u32::MAX)),
-        ("/canonical_path", serde_json::json!("foreign")),
-        ("/source_blake3", serde_json::json!("wrong")),
-        ("/source_span/end", serde_json::json!(u32::MAX)),
+        ("/modules/0/module_id", serde_json::json!(u32::MAX)),
+        ("/modules/0/canonical_path", serde_json::json!("foreign")),
+        ("/modules/0/source_blake3", serde_json::json!("wrong")),
+        ("/modules/0/source_span/end", serde_json::json!(u32::MAX)),
         ("/initializer/function_id", serde_json::json!(u32::MAX)),
         ("/game_entry/function_id", serde_json::json!(u32::MAX)),
         ("/game_entry/declaration_index", serde_json::json!(u32::MAX)),
-        ("/declarations/0/name", serde_json::json!("foreign")),
-        ("/declarations/0/global_id", serde_json::json!(u32::MAX)),
         (
-            "/declarations/0/source_function_id",
+            "/modules/0/declarations/0/name",
+            serde_json::json!("foreign"),
+        ),
+        (
+            "/modules/0/declarations/0/global_id",
             serde_json::json!(u32::MAX),
         ),
-        ("/bindings/0/binding", serde_json::json!(u32::MAX)),
-        ("/globals/0/source", serde_json::json!(u32::MAX)),
+        (
+            "/modules/0/declarations/0/source_function_id",
+            serde_json::json!(u32::MAX),
+        ),
+        ("/modules/0/bindings/0/binding", serde_json::json!(u32::MAX)),
+        ("/modules/0/globals/0/source", serde_json::json!(u32::MAX)),
     ] {
         let mut json = initial.clone();
         *json.pointer_mut(pointer).unwrap() = value;
@@ -331,8 +356,11 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
         );
     }
     let mut duplicate = initial.clone();
-    let binding = duplicate["bindings"][0].clone();
-    duplicate["bindings"].as_array_mut().unwrap().push(binding);
+    let binding = duplicate["modules"][0]["bindings"][0].clone();
+    duplicate["modules"][0]["bindings"]
+        .as_array_mut()
+        .unwrap()
+        .push(binding);
     assert!(
         rp::decode(
             &repack(&original, &serde_json::to_vec(&duplicate).unwrap()),
@@ -474,7 +502,8 @@ fn unicode_span_boundaries_and_all_mapping_keys_are_checked() {
     let original = artifact("fn 中文(a = 1) { a }", Some("main::中文")).bytes;
     let initial: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
     let mut broken_span = initial.clone();
-    broken_span["declarations"][0]["declaration_span"]["start"] = serde_json::json!(4);
+    broken_span["modules"][0]["declarations"][0]["declaration_span"]["start"] =
+        serde_json::json!(4);
     assert!(
         rp::decode(
             &repack(&original, &serde_json::to_vec(&broken_span).unwrap()),
@@ -484,8 +513,11 @@ fn unicode_span_boundaries_and_all_mapping_keys_are_checked() {
     );
     for array in ["functions", "globals", "declarations"] {
         let mut duplicate = initial.clone();
-        let value = duplicate[array][0].clone();
-        duplicate[array].as_array_mut().unwrap().push(value);
+        let value = duplicate["modules"][0][array][0].clone();
+        duplicate["modules"][0][array]
+            .as_array_mut()
+            .unwrap()
+            .push(value);
         assert!(
             rp::decode(
                 &repack(&original, &serde_json::to_vec(&duplicate).unwrap()),
@@ -505,7 +537,7 @@ fn ordinary_thousand_function_module_fits_default_static_budgets() {
     }
     let a = artifact(&source, Some("main::f999"));
     let read = rp::decode(&a.bytes, Limits::default()).unwrap();
-    assert_eq!(read.metadata().declarations.len(), 1000);
+    assert_eq!(read.metadata().modules[0].declarations.len(), 1000);
     assert!(a.bytes.len() < Limits::default().max_file_bytes);
 }
 
@@ -513,8 +545,9 @@ fn ordinary_thousand_function_module_fits_default_static_budgets() {
 fn repeated_source_slots_must_keep_their_b01_binding_contract() {
     let original = artifact("fn first(a) { a } fn second(b) { b }", None).bytes;
     let mut json: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
-    assert_eq!(json["bindings"].as_array().unwrap().len(), 2);
-    json["bindings"][1]["source"] = json["bindings"][0]["source"].clone();
+    assert_eq!(json["modules"][0]["bindings"].as_array().unwrap().len(), 2);
+    json["modules"][0]["bindings"][1]["source"] =
+        json["modules"][0]["bindings"][0]["source"].clone();
     let error = rp::decode(
         &repack(&original, &serde_json::to_vec(&json).unwrap()),
         Limits::default(),

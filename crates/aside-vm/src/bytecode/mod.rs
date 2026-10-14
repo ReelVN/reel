@@ -14,8 +14,8 @@ pub use codec::{decode, encode};
 pub use model::*;
 pub use spec::*;
 pub use verify::{
-    CleanupDestination, HandlerKind, HandlerTarget, PackageStats, VerifiedProgram, disassemble,
-    verify,
+    CleanupDestination, GlobalBinding, HandlerKind, HandlerTarget, PackageStats, VerifiedProgram,
+    disassemble, verify,
 };
 
 /// All limits apply to the whole package, including nested descriptor records.

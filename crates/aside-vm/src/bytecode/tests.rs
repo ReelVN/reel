@@ -1997,7 +1997,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
             expected
         );
     }
-    assert_eq!(program.stats().derived_capacity_bytes, 2 * 8);
+    assert_eq!(program.stats().derived_capacity_bytes, 2 * 8 + 2 * 4);
     assert_eq!(
         program
             .native_parameter_storage(NativeId(0), 4)
@@ -2021,7 +2021,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
     );
     let ordinary = verify(fixtures::helper_native(), limits()).unwrap();
     assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
-    assert_eq!(ordinary.stats().derived_capacity_bytes, 0);
+    assert_eq!(ordinary.stats().derived_capacity_bytes, 2 * 4);
     assert_eq!(
         ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
         BindingStorage::Value(Reg(0))
@@ -2037,7 +2037,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
     ];
     let ordinary = verify(no_defaults, limits()).unwrap();
     assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
-    assert_eq!(ordinary.stats().derived_capacity_bytes, 0);
+    assert_eq!(ordinary.stats().derived_capacity_bytes, 2 * 4);
     assert_eq!(
         ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
         BindingStorage::Value(Reg(0))
@@ -2145,7 +2145,7 @@ fn verified_native_cache_capacity_matches_actual_retained_allocation() {
         allocation.bytes_current as usize,
         stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
     );
-    assert_eq!(stats.derived_capacity_bytes, 16);
+    assert_eq!(stats.derived_capacity_bytes, 16 + 2 * 4);
     assert!(
         allocation.bytes_max as usize
             <= stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()

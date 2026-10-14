@@ -241,6 +241,13 @@ impl State {
                 .erased()
         };
         let root_id = widget.id();
+        let widget = if let Some(size) = options.as_ref().and_then(|options| options.canvas_size) {
+            reel_ui::widgets::Canvas::new(widget, size)
+                .prepare()
+                .erased()
+        } else {
+            widget
+        };
         let root = RenderRoot::new(
             widget,
             |_| {},
