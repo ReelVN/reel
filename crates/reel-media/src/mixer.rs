@@ -3,7 +3,7 @@ use crate::maintenance::{
     TeardownCredit, try_producer,
 };
 use crate::retirement::PhysicalRelease;
-use crate::{AudioError, AudioErrorKind, AudioFormat, PcmFill};
+use crate::{AudioError, AudioErrorKind, AudioFormat, AudioGroup, PcmFill};
 use reel_audio::{
     AudioManager, AudioManagerSettings, Decibels, Frame, Tween,
     backend::{Backend, Renderer},
@@ -12,7 +12,7 @@ use reel_audio::{
         PlaybackState, Sound, SoundData,
         static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
     },
-    track::MainTrackBuilder,
+    track::{MainTrackBuilder, TrackBuilder, TrackHandle},
 };
 #[cfg(test)]
 use reel_core::wake::WakeSignal;
@@ -164,7 +164,15 @@ impl DecodedSound {
     }
     /// Set initial gain before admission; no first-buffer volume race.
     pub fn with_volume_db(mut self, db: f32) -> Self {
-        self.data.settings.volume = Decibels(db).into();
+        self.data.settings.volume = Decibels(db.max(Decibels::SILENCE.0)).into();
+        self
+    }
+    pub fn with_pan(mut self, pan: f32) -> Self {
+        self.data.settings.panning = reel_audio::Panning(pan).into();
+        self
+    }
+    pub fn with_fade_in(mut self, duration: Duration) -> Self {
+        self.data.settings.fade_in_tween = (!duration.is_zero()).then(|| tween(duration));
         self
     }
     pub(crate) fn volume_db(&self) -> f32 {
@@ -241,9 +249,15 @@ impl SoundData for BudgetedData {
 
 /// Kira native handles stay private to this adapter. Capacity and all control
 /// allocations are established before real-time consumption starts.
+pub(crate) struct MixerControl {
+    pub groups: Vec<TrackHandle>,
+    pub manager: AudioManager<Bridge>,
+}
 pub struct KiraMixer {
     manager: DeferredManager,
     signal: Arc<RetirementSignal>,
+    max_sounds: usize,
+    reclaim_cursor: usize,
 }
 /// A count of pure ownership transfers. Destruction/budget return is asynchronous.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,16 +290,36 @@ impl KiraMixer {
         let manager = AudioManager::<Bridge>::new(AudioManagerSettings {
             backend_settings: (format.sample_rate_hz, signal.clone(), renderer_credit),
             capacities: reel_audio::Capacities {
-                sub_track_capacity: 0,
+                sub_track_capacity: AudioGroup::ALL.len(),
                 send_track_capacity: 0,
                 clock_capacity: 0,
                 modulator_capacity: 0,
                 listener_capacity: 0,
             },
-            main_track_builder: MainTrackBuilder::new().sound_capacity(limits.max_sounds),
+            main_track_builder: MainTrackBuilder::new().sound_capacity(0),
             internal_buffer_size: limits.internal_buffer_frames,
         })?;
-        let manager = DeferredManager::new(manager, manager_credit);
+        let mut manager = DeferredManager::new(
+            MixerControl {
+                groups: Vec::with_capacity(AudioGroup::ALL.len()),
+                manager,
+            },
+            manager_credit,
+        );
+        let control = manager.manager.as_mut().unwrap();
+        for _ in AudioGroup::ALL {
+            let track = control
+                .manager
+                .add_sub_track(
+                    TrackBuilder::new()
+                        .sound_capacity(limits.max_sounds)
+                        .sub_track_capacity(0),
+                )
+                .map_err(|_| {
+                    AudioError::new(AudioErrorKind::InvalidRequest, "group track capacity")
+                })?;
+            control.groups.push(track);
+        }
         #[cfg(test)]
         if service
             .shared
@@ -297,7 +331,12 @@ impl KiraMixer {
                 "injected construction abort",
             ));
         }
-        Ok(Self { manager, signal })
+        Ok(Self {
+            manager,
+            signal,
+            max_sounds: limits.max_sounds,
+            reclaim_cursor: 0,
+        })
     }
     /// Linear transfer, at most once. Keep this manager alive while the output owns fill.
     pub fn take_fill(&mut self) -> Option<PcmFill> {
@@ -305,6 +344,7 @@ impl KiraMixer {
             .manager
             .as_mut()
             .expect("owned manager")
+            .manager
             .backend_mut()
             .fill
             .take()
@@ -314,15 +354,11 @@ impl KiraMixer {
     /// Quota/full returns needs_maintenance. No physical destructor runs here.
     pub fn reclaim_unused(&mut self, limit: usize) -> ReclaimProgress {
         let signal = self.signal.clone();
-        let track = self
-            .manager
-            .manager
-            .as_mut()
-            .expect("owned manager")
-            .main_track();
-        let limit = limit.min(track.sound_capacity());
+        let groups = &mut self.manager.manager.as_mut().expect("owned manager").groups;
+        let limit = limit.min(self.max_sounds);
         let mut transferred_sounds = 0;
         let mut needs_maintenance = true;
+        let mut empty = 0;
         if signal.shared.accepting()
             && let Some(mut producer) = try_producer(&signal.shared)
         {
@@ -330,15 +366,22 @@ impl KiraMixer {
                 let Ok(chunk) = producer.write_chunk_uninit(1) else {
                     break;
                 };
-                let Some(sound) = track.try_take_unused_sound() else {
-                    needs_maintenance = false;
-                    break;
-                };
-                chunk.fill_from_iter(std::iter::once(Envelope::normal(
-                    Job::Sound(sound),
-                    &signal,
-                )));
-                transferred_sounds += 1;
+                let track = &mut groups[self.reclaim_cursor];
+                self.reclaim_cursor = (self.reclaim_cursor + 1) % AudioGroup::ALL.len();
+                if let Some(sound) = track.try_take_unused_sound() {
+                    chunk.fill_from_iter(std::iter::once(Envelope::normal(
+                        Job::Sound(sound),
+                        &signal,
+                    )));
+                    transferred_sounds += 1;
+                    empty = 0;
+                } else {
+                    empty += 1;
+                    if empty == AudioGroup::ALL.len() {
+                        needs_maintenance = false;
+                        break;
+                    }
+                }
             }
         }
         if needs_maintenance || transferred_sounds != 0 {
@@ -364,6 +407,27 @@ impl KiraMixer {
     /// Rejection returns the unchanged unaccepted request. Success transfers
     /// EVERY internal PCM reference, including the original data, to the worker.
     pub fn play(&mut self, sound: DecodedSound) -> Result<Playback, Rejected<DecodedSound>> {
+        self.play_in(AudioGroup::Effects, sound)
+    }
+    pub fn set_group_volume_db(
+        &mut self,
+        group: Option<AudioGroup>,
+        db: f32,
+        duration: Duration,
+    ) -> Result<(), AudioError> {
+        let db = validate_db(db)?;
+        let control = self.manager.manager.as_mut().expect("owned manager");
+        match group {
+            Some(group) => control.groups[group as usize].set_volume(db, tween(duration)),
+            None => control.manager.main_track().set_volume(db, tween(duration)),
+        }
+        Ok(())
+    }
+    pub fn play_in(
+        &mut self,
+        group: AudioGroup,
+        sound: DecodedSound,
+    ) -> Result<Playback, Rejected<DecodedSound>> {
         let signal = self.signal.clone();
         let reject = |request| Rejected {
             request,
@@ -372,7 +436,18 @@ impl KiraMixer {
                 "Kira or background ownership capacity exhausted",
             ),
         };
-        if !signal.shared.accepting() {
+        if !signal.shared.accepting()
+            || self
+                .manager
+                .manager
+                .as_ref()
+                .unwrap()
+                .groups
+                .iter()
+                .map(TrackHandle::num_sounds)
+                .sum::<usize>()
+                >= self.max_sounds
+        {
             return Err(reject(sound));
         }
         let Some(mut producer) = try_producer(&signal.shared) else {
@@ -387,11 +462,7 @@ impl KiraMixer {
             budget: sound.budget.clone(),
             signal: signal.clone(),
         };
-        match self
-            .manager
-            .manager
-            .as_mut()
-            .expect("owned manager")
+        match self.manager.manager.as_mut().expect("owned manager").groups[group as usize]
             .play(data)
         {
             Ok(handle) => {
@@ -425,15 +496,23 @@ impl Playback {
         self.handle.state() == PlaybackState::Stopped
     }
     /// Coalesced Kira command slots; never competes for the bounded play queue.
-    pub fn set_volume_db(&mut self, db: f32) -> Result<(), AudioError> {
-        if db.is_nan() || db == f32::INFINITY {
+    pub fn set_volume_db(&mut self, db: f32, duration: Duration) -> Result<(), AudioError> {
+        let db = validate_db(db)?;
+        self.handle.set_volume(db, tween(duration));
+        Ok(())
+    }
+    pub fn set_pan(&mut self, pan: f32, duration: Duration) -> Result<(), AudioError> {
+        if !(-1.0..=1.0).contains(&pan) {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidRequest,
-                "volume must not be NaN or positive infinity",
+                "pan must be between -1 and 1",
             ));
         }
-        self.handle.set_volume(db, immediate());
+        self.handle.set_panning(pan, tween(duration));
         Ok(())
+    }
+    pub fn fade_out(&mut self, duration: Duration) {
+        self.handle.stop(tween(duration));
     }
     pub fn pause(&mut self) {
         self.handle.pause(immediate());
@@ -445,9 +524,21 @@ impl Playback {
         self.handle.stop(immediate());
     }
 }
+fn validate_db(db: f32) -> Result<f32, AudioError> {
+    if db.is_nan() || db == f32::INFINITY {
+        return Err(AudioError::new(
+            AudioErrorKind::InvalidRequest,
+            "volume must not be NaN or positive infinity",
+        ));
+    }
+    Ok(db.max(Decibels::SILENCE.0))
+}
 fn immediate() -> Tween {
+    tween(Duration::ZERO)
+}
+fn tween(duration: Duration) -> Tween {
     Tween {
-        duration: Duration::ZERO,
+        duration,
         ..Tween::default()
     }
 }

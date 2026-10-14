@@ -11,7 +11,7 @@ workspace version, Rust edition and safe-code policy. There is no upstream
 package alias, patch, source-hash gate or synchronization requirement.
 
 The sound arena checks retirement queue capacity before releasing a slot.
-Main-track control exposes bounded, pure ownership transfer of retired sounds;
+Main-track and sub-track control expose bounded, pure ownership transfer of retired sounds;
 playing a new sound does not silently destroy old PCM. Deterministic scheduling
 checks remain in `src/backend/resources/reel_tests.rs`. Device output, callback
 lifecycle and deferred PCM destruction belong to `reel-media`; the duplicate

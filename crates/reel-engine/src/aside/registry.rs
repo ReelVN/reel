@@ -323,12 +323,45 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("looping", Some(bc::Const::Bool(false))),
                 parameter("volume", Some(bc::Const::FloatBits(1_f64.to_bits()))),
                 parameter("owner", Some(bc::Const::Null)),
+                parameter("group", Some(bc::Const::Utf8("effects".into()))),
+                parameter("pan", Some(bc::Const::Int(0))),
+                parameter("fade_in", Some(bc::Const::Int(0))),
             ],
             false,
         ),
         (
             "volume",
-            vec![parameter("activity", None), parameter("value", None)],
+            vec![
+                parameter("activity", None),
+                parameter("value", None),
+                parameter("duration", Some(bc::Const::Int(0))),
+            ],
+            false,
+        ),
+        (
+            "group_volume",
+            vec![
+                parameter("group", None),
+                parameter("value", None),
+                parameter("duration", Some(bc::Const::Int(0))),
+            ],
+            false,
+        ),
+        (
+            "pan",
+            vec![
+                parameter("activity", None),
+                parameter("value", None),
+                parameter("duration", Some(bc::Const::Int(0))),
+            ],
+            false,
+        ),
+        (
+            "stop",
+            vec![
+                parameter("activity", None),
+                parameter("fade", Some(bc::Const::Int(0))),
+            ],
             false,
         ),
         ("await", vec![parameter("activity", None)], true),
@@ -336,7 +369,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::audio::{name}"),
-            abi_version: 1,
+            abi_version: if matches!(name, "play" | "volume") {
+                2
+            } else {
+                1
+            },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(

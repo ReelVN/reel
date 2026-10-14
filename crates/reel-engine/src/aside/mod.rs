@@ -362,7 +362,12 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
-            "reel::audio::play" | "reel::audio::volume" | "reel::audio::await" => {
+            "reel::audio::play"
+            | "reel::audio::volume"
+            | "reel::audio::await"
+            | "reel::audio::group_volume"
+            | "reel::audio::pan"
+            | "reel::audio::stop" => {
                 if symbol == "reel::audio::await" {
                     self.check_wait(session, ticket)?;
                 }

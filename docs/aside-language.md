@@ -537,6 +537,10 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 源码定位使用首尾有效语法 token，不把前导空白或注释作为错误位置；实际源码文件路径与逻辑模块身份分别保存。窗口显示源码路径、行列以及脚本抛出的字符串或标量值。
 
-## Reel 音频宿主绑定（ABI v1）
+## Reel 音频宿主绑定
 
-Reel 的外围名称环境包含 `audio` 命名空间：`audio.play(source, looping:false, volume:1, owner:null)` 与 `audio.volume(activity,value)`。播放活动通过标准 native awaitable 协议接入 await，pause/resume/stop 由 Reel 按活动类型分派；独立 Aside 不注册音频名称。读取与设备错误通过同一 host completion 传播到原始 await 位置。活动是只读宿主值，终态保存在 VM 堆内，活跃生产者保留宿主根；取消消费者仅撤销等待，owner 退休才取消生产者。
+Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0)` 与 `audio.volume(activity,value,duration:0)` 使用 ABI v2；新增 `audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 B01，旧音频调用产物需要重新编译。
+
+分组为 music/voice/effects/ui，group_volume 另接受 master 控制总音量。音量为非负有限线性增益，pan 为 [-1,1]（左到右），时间为非负有限秒。每声、组、总音量相乘。过渡复用 Kira：音量在分贝域插值，声像线性插值，静音端点为 -60 dB；新命令从当前值替换未完成过渡。加载中的音量/声像变更设置首次播放值，fade_in 从实际播放开始。组设置也影响随后播放的声音。
+
+播放活动通过标准 native awaitable 协议接入 await；pause/resume/stop 仍由 Reel 按活动类型分派。audio.stop 的淡出使用音频消费时钟，真正停止后才返回 Stopped；尚未开始或已暂停的声音立即停止。音量/声像控制返回原活动，group_volume 返回 null。暂停保留播放位置，音量/声像包络继续按混音时钟推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即完成停止。owner 取消与关闭立即终止。读取与设备错误通过同一 host completion 传播到原始 await 位置。活动是只读宿主值，终态保存在 VM 堆内，活跃生产者保留宿主根；取消消费者仅撤销等待，owner 退休才取消生产者。

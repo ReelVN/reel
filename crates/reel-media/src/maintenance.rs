@@ -1,9 +1,9 @@
 //! Host-owned, bounded non-RT destruction. PCM reaches only atomic flags.
 use crate::{
     AudioError, AudioErrorKind,
-    mixer::{Bridge, DecodedSound},
+    mixer::{DecodedSound, MixerControl},
 };
-use reel_audio::{AudioManager, backend::Renderer, sound::Sound};
+use reel_audio::{backend::Renderer, sound::Sound};
 use reel_core::wake::WakeSignal;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
@@ -315,7 +315,7 @@ pub(crate) enum Job {
     Sound(Box<dyn Sound>),
     AcceptedData(DecodedSound),
     Renderer(Renderer),
-    Manager(AudioManager<Bridge>),
+    Manager(MixerControl),
 }
 impl Job {
     fn kind(&self) -> JobKind {
@@ -374,7 +374,7 @@ fn submit_teardown<T>(
     shared.unsubmitted.fetch_sub(1, Ordering::AcqRel);
     let mut job = make(value.take().expect("owned teardown value"));
     if let Job::Manager(manager) = &mut job
-        && manager.backend_mut().has_fill()
+        && manager.manager.backend_mut().has_fill()
     {
         // The untaken fill is now inside a worker-owned Manager; its
         // reserved Renderer credit is still valid but no host owner remains.
@@ -415,11 +415,11 @@ impl Drop for DeferredRenderer {
     }
 }
 pub(crate) struct DeferredManager {
-    pub manager: Option<AudioManager<Bridge>>,
+    pub manager: Option<MixerControl>,
     credit: Option<TeardownCredit>,
 }
 impl DeferredManager {
-    pub fn new(manager: AudioManager<Bridge>, credit: TeardownCredit) -> Self {
+    pub fn new(manager: MixerControl, credit: TeardownCredit) -> Self {
         Self {
             manager: Some(manager),
             credit: Some(credit),

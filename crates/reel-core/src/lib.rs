@@ -2,6 +2,7 @@
 // Returning a large *original* request is an intentional ownership contract.
 #![allow(clippy::result_large_err)]
 
+pub mod audio;
 pub mod budget;
 pub mod clock;
 pub mod identity;
