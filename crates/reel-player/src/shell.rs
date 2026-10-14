@@ -27,6 +27,7 @@ pub fn run_session_host() -> Result<(), Error> {
 /// Native window options; logical_size is the window size, not a fixed stage canvas.
 pub struct StoryWindowOptions {
     pub assets: crate::assets::AssetOptions,
+    pub audio: crate::audio::AudioOptions,
     pub title: String,
     pub locale: String,
     pub logical_size: [u32; 2],
@@ -36,6 +37,7 @@ impl Default for StoryWindowOptions {
     fn default() -> Self {
         Self {
             assets: Default::default(),
+            audio: Default::default(),
             title: "Reel".into(),
             locale: "en".into(),
             logical_size: [960, 540],
@@ -62,6 +64,24 @@ enum Mode {
 
 fn run_mode(mode: Mode) -> Result<(), Error> {
     let event_loop = EventLoop::new()?;
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let mode = match mode {
+        Mode::Story(story) => {
+            let (driver, options) = *story;
+            let proxy = event_loop.create_proxy();
+            let wake = reel_core::wake::WakeSignal::new(move || {
+                let _ = proxy.send_event(());
+            });
+            let driver = driver.with_audio(Box::new(crate::audio::AudioPlayer::desktop(
+                crate::assets::Assets::directory(options.assets.clone()),
+                options.audio.clone(),
+                wake,
+            )))?;
+            Mode::Story(Box::new((driver, options)))
+        }
+        mode => mode,
+    };
+
     let mut app = App {
         state: None,
         error: None,

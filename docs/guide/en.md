@@ -12,7 +12,7 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; media and save/load are not connected to creator source yet. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; audio is connected to creator source; video and save/load remain planned. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
@@ -41,7 +41,6 @@ pub fn title() {
 ```
 See section 3 for opening in story/opening.aside. The examples' relative file locations match their import paths; the root module main.aside handles startup only.
 let fixes a variable's binding while leaving node properties mutable. Use let mut when the variable must be rebound to another value. Ordinary expressions are evaluated once when executed. bind(model.value) connects an observable property; derive(|| expression) connects a read-only value computed from other properties. See the second document for the complete language rules.
-
 
 ### Available Check, Build and Run Commands
 The examples configure fonts/body.ttf in main. Run these Windows commands from the repository root to copy Microsoft YaHei into a temporary asset directory for local verification. Supply fonts with distribution rights when publishing your work. Close the window opened by dev or run before continuing.
@@ -113,8 +112,6 @@ Use byte_len for the UTF-8 byte length and scalar_count for the Unicode scalar c
 Registered functions can be stored and passed as values, for example `let say = narrator; say("你好");`; waiting behaves exactly as in a direct call. A function default can also be a constructor such as `text`. Use `(int,int)` for a coordinate pair and `(int,int)|null` for an optional pair. `is`, parameters, returns and variable assignments check these contracts; a failed assignment preserves the previous value. See the runnable [function_values.aside](../../examples/function_values.aside) example and use its path with the earlier `dev` or `build` commands.
 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
-
-
 
 Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
 
@@ -579,8 +576,7 @@ Basic text currently uses real text layout. The rich-text types, localization, m
 
 Rust custom drawing shares linear-premultiplied color conversion for solid colors, text and images. Both strokes and geometric clips support dashes, including curves, closed paths and dash offsets. An all-zero dash pattern draws a solid line; small miter limits use bevel joins. These capabilities belong to the existing Rust drawing interface; the Aside custom drawing entry point is still pending.
 
-
-Implementation status (M01 / PR #14): the Rust audio layer implements the Kira bridge, optional CPAL output, bounded reclamation and device-failure notification. Independent checks cover actual Kira with offline Linux output, default/output-feature-off contracts and Windows cross compilation. Physical devices, hardware clocks, hot-plug and native start/stop/suspend behavior are not accepted; the CPAL clock remains Unavailable. The author-facing audio/video APIs, story waits and session recovery below remain design targets; passing Rust probes does not establish their integration. See [audio verification scope](../../crates/reel-media/VERIFICATION.md).
+Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video and precise audiovisual synchronization remain design contracts.
 
 PlainText represents ordinary text, RichText represents explicit styled structure, and tr(id, fallback, params) creates LocalText. A translation template's structure is parsed first, then parameters are inserted as text; markup characters inside parameters remain literal text. The current dialogue group retains the text and voices from submission, and the next group uses the new language. An NVL page switches after it is cleared; UI and history use the current language immediately. reel loc extracts and updates catalogs and checks for missing translations and parameter issues.
 video is an ordinary node; audio provides tracks, queues, loop regions, filters, and synchronization groups. play returns an awaitable activity, stop leaves it at its current state, and finish is for activities with an endpoint. Tracks and resources are managed by stable identity. Device reconstruction and seek preserve or rebind logical waits; errors have explicit terminal states.
@@ -610,18 +606,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 The host advances dialogue and selects the first option through actual compilation, module initialization, VM waiting/resumption and owner retirement. Symbol and name-use links to the same native coalesce; conflicting registrations still reject. The host linkage package uses the requested content version independently of native ABI v1.
 
-Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Finite animation and button events now work. Character APIs, action composition, media waits, full modules/classes, delegates/hooks, property-bag tails and save/restore remain unimplemented.
-Audio implementation progress (PR #53, independently accepted for the limited Rust scope): the Rust layer adds a bounded playback-activity ledger, owner cancellation, exact wait-identity filtering and one terminal delivery. Output faults preserve already-settled results; a full receiver queue does not prevent later cancelled records from being released. Content consumption, hardware playback completion and PCM memory release remain separate observations. This layer is not yet connected to the creator audio APIs, story waits or save/restore. Seek/reload, per-activity pause and group mixing remain unimplemented. Existing examples continue to describe the final creator interface. [Rust API and limits](../../crates/reel-media/README.md#logical-audio-activities-pr-53).
-
-The current Rust audio layer accounts actual PCM memory without an additional per-sound frame or duration ceiling. Host-selected queue and sound capacities are no longer clamped by a second set of fixed numbers. Creator audio interfaces remain unconnected.
-
-Audio retirement progress (PR #56, independently accepted for the limited Rust scope):
-requests use a registered AudioOwner. Closing admission starts bounded cancellation;
-owner retirement additionally waits for actual PCM/budget-ticket and activity
-descriptor release. Stopping playback or receiving a logical terminal is not
-physical resource release. Retained completed receipts occupy bounded registration
-slots, and suspended output can delay retirement. Creator audio syntax, story
-waits and save/restore are not connected by this increment.
+Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Finite animation and button events now work. Video, classes, delegates/hooks, property-bags and save/restore remain unimplemented.
 
 ## Runnable Buttons and Callbacks
 
@@ -790,4 +775,34 @@ fn main() {
     });
     narrator("Both sliders share a value.");
 }
+```
+
+## Author audio
+
+```aside
+fn main() {
+    let music = audio.play("assets/chime.wav", looping: true, volume: 0.4);
+    pause(music);
+    resume(music);
+    audio.volume(music, 0.2);
+    let sound = audio.play("assets/chime.wav");
+    await sound;
+    stop(music);
+    await music;
+}
+```
+
+`audio.play` reads, decodes and plays in the background, returning an activity immediately. `await` returns `Completed` or `Stopped`; loading and device errors can be caught with `try/catch`. `volume` is a nonnegative linear gain: 1 preserves the source level and 0 mutes it. pause/resume retain position, stop does not restart playback, and repeated waits retain the same result.
+
+By default, sound belongs to the current callback node, or to the session in the main story. Use `owner: node` to choose a node: removing it cancels loading and playback together. Cancelling a waiter does not stop shared playback. Playback, node cancellation and window shutdown use the same resource retirement path.
+
+The Windows player submits stereo audio to the system, including when the default output device uses multiple channels.
+
+WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Streaming long tracks, seek, group mixing and save restoration remain part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
+
+Runnable example: [author_audio.aside](../../examples/author_audio.aside), using examples as the asset root and the same font configuration as other author examples. Its chime.wav is an original short sine tone supplied by this repository.
+
+```powershell
+./target/debug/reel.exe check examples/author_audio.aside
+./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```

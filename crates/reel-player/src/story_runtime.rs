@@ -38,6 +38,7 @@ impl StoryRuntime {
     pub fn needs_tick(&self) -> bool {
         (self.suspended_at.is_none() || self.closing)
             && (self.needs_work()
+                || self.driver.adapter().audio_poll_after().is_some()
                 || self.driver.activities_need_time()
                 || self.driver.ui().dialogue_needs_time())
     }
@@ -46,8 +47,10 @@ impl StoryRuntime {
     pub fn suspend(&mut self, now_ns: u64) {
         self.suspended_at.get_or_insert(now_ns);
         self.driver.ui_mut().pause_dialogue();
+        self.driver.suspend_audio();
     }
     pub fn resume(&mut self, now_ns: u64) {
+        self.driver.resume_audio();
         if let Some(start) = self.suspended_at.take() {
             self.suspended_ns = self
                 .suspended_ns
@@ -66,11 +69,12 @@ impl StoryRuntime {
         if self.needs_work() {
             return std::time::Duration::from_millis(1);
         }
+        let audio = self.driver.adapter().audio_poll_after();
         let reveal = self
             .driver
             .ui()
             .dialogue_interval(self.driver.adapter().game_settings().text_speed);
-        if self.driver.activities_need_time() {
+        let interval = if self.driver.activities_need_time() {
             let interval = std::time::Duration::from_millis(16);
             if self.driver.ui().dialogue_needs_time() {
                 reveal.min(interval)
@@ -79,7 +83,8 @@ impl StoryRuntime {
             }
         } else {
             reveal
-        }
+        };
+        audio.map_or(interval, |audio| audio.min(interval))
     }
 
     pub fn wake_input(&mut self) {
@@ -108,6 +113,13 @@ impl StoryRuntime {
     pub fn tick(&mut self, budget: SliceBudget, mut now: impl FnMut() -> u64) -> Result<(), Error> {
         if self.suspended_at.is_some() && !self.closing {
             return Ok(());
+        }
+        if self.driver.maintain_audio()?
+            || (self.driver.adapter().task().is_none()
+                && !self.driver.adapter().has_live_work()
+                && self.driver.state() == StoryState::Running)
+        {
+            self.runnable = true;
         }
         if !self.closing && self.needs_tick() {
             self.logical_ns = self.logical_ns.max(now().saturating_sub(self.suspended_ns));

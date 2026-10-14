@@ -166,7 +166,10 @@ impl SessionVm {
         if self.derived_task.is_some() || self.vm.heap().derived_pending() {
             return true;
         }
-        !self.callbacks.is_empty() || self.activities.has_active() || self.stage.has_handlers()
+        !self.callbacks.is_empty()
+            || self.activities.has_active()
+            || self.audio.active()
+            || self.stage.has_handlers()
     }
 
     pub(super) fn callback_owner(&self, session: &Session, task: TaskId) -> Option<RootOwner> {
@@ -251,6 +254,7 @@ impl SessionVm {
                 self.cancel_callback(session, index)?;
             }
         }
+        self.maintain_audio()?;
         self.activities.maintain(&mut self.vm)?;
         if self.activities.pending() {
             self.activities.drain(&mut self.vm, 64)?;

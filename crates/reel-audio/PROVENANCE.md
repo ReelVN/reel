@@ -17,3 +17,7 @@ checks remain in `src/backend/resources/reel_tests.rs`. Device output, callback
 lifecycle and deferred PCM destruction belong to `reel-media`; the duplicate
 CPAL backend was removed from this library. Optional decoding and serialization
 features remain opt-in, with ordinary dependencies pinned in the workspace lock.
+
+Static decoding exposes a PCM reservation/cancellation checkpoint, used by the
+media adapter before buffer growth and final Arc transfer. The same decoder
+continues to serve file and host-provided sources.

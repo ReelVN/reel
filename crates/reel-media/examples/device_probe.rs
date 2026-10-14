@@ -19,6 +19,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+    use cpal::traits::{DeviceTrait, HostTrait};
+    if let Some(device) = cpal::default_host().default_output_device() {
+        println!("native_default={:?}", device.default_output_config());
+    }
     println!("caps={:?}", output.capabilities());
     let format = output
         .configure(AudioRequest::default())
@@ -45,6 +49,19 @@ fn main() {
         "status={:?} clock={:?}",
         output.status(),
         output.clock_observation()
+    );
+    output.suspend().expect("native output suspension");
+    let at_suspend = calls.load(Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(calls.load(Ordering::Relaxed), at_suspend);
+    output
+        .resume()
+        .expect("native output resume with retained mixer");
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    assert!(calls.load(Ordering::Relaxed) > at_suspend);
+    println!(
+        "suspend_fill_calls=0 resumed_fill_calls={}",
+        calls.load(Ordering::Relaxed) - at_suspend
     );
     println!("stop={:?}", output.stop());
     assert_eq!(output.status().state, AudioState::Stopped);

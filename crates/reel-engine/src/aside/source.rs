@@ -128,6 +128,23 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(game);
+    let mut audio = ExternalSymbol::dynamic("audio");
+    audio.namespace = Some(NamespaceRef {
+        module: "reel::audio".into(),
+        version: "1".into(),
+    });
+    prelude.push(audio);
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::audio".into(),
+        version: "1".into(),
+        exports: exports
+            .iter()
+            .zip(&references)
+            .filter(|(_, r)| r.module == "reel::audio" && r.export.as_deref() != Some("await"))
+            .map(|(e, _)| e.clone())
+            .collect(),
+    });
+
     for path in ["reel", "reel::prelude"] {
         resolver.insert(ModuleInterface {
             canonical_path: path.into(),

@@ -530,3 +530,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 宿主对象可以携带 HostPropertyValidator 纯函数，接收只读 Heap、接收者 Value、已定位的固定属性索引和新 Value，在现有属性赋值提交前返回结果。验证不进入脚本、不等待、不改堆；失败走原赋值点的语言错误路径，try/catch 可捕获且旧值保持。alloc_host 与 alloc_composable_host 显式传入可选验证器，元数据归对象所有，不建立额外能力注册。私有字段更新使用 set_host_payload 并经过统一 GC 写屏障；退休清除属性表和所有私有强边。退休后的宿主对象访问返回明确的 RetiredHost，并在属性访问或宿主调用原位变为可捕获的 InvalidState；它与损坏、跨堆等无效句柄错误保持区分。
 
 源码定位使用首尾有效语法 token，不把前导空白或注释作为错误位置；实际源码文件路径与逻辑模块身份分别保存。窗口显示源码路径、行列以及脚本抛出的字符串或标量值。
+
+## Reel 音频宿主绑定（ABI v1）
+
+Reel 的外围名称环境包含 `audio` 命名空间：`audio.play(source, looping:false, volume:1, owner:null)` 与 `audio.volume(activity,value)`。播放活动通过标准 native awaitable 协议接入 await，pause/resume/stop 由 Reel 按活动类型分派；独立 Aside 不注册音频名称。读取与设备错误通过同一 host completion 传播到原始 await 位置。活动是只读宿主值，终态保存在 VM 堆内，活跃生产者保留宿主根；取消消费者仅撤销等待，owner 退休才取消生产者。

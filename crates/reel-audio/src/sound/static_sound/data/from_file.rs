@@ -32,6 +32,17 @@ impl StaticSoundData {
 	fn from_boxed_media_source(
 		media_source: Box<dyn MediaSource + '_>,
 	) -> Result<Self, FromFileError> {
+		Self::decode_with(media_source, |_| Ok(()))
+	}
+
+	/// Decode with a control-side reservation/cancellation checkpoint before PCM
+	/// growth. `bytes` includes conversion scratch, reallocation and Arc transfer.
+	/// The callback must reserve the requested peak before returning success.
+	pub fn decode_with(
+		media_source: Box<dyn MediaSource + '_>,
+		mut reserve: impl FnMut(usize) -> Result<(), std::io::Error>,
+	) -> Result<Self, FromFileError> {
+		reserve(0)?;
 		let codecs = symphonia::default::get_codecs();
 		let probe = symphonia::default::get_probe();
 		let mss = MediaSourceStream::new(media_source, Default::default());
@@ -53,12 +64,33 @@ impl StaticSoundData {
 			.sample_rate
 			.ok_or(FromFileError::UnknownSampleRate)?;
 		let mut decoder = codecs.make_audio_decoder(audio_params, &Default::default())?;
-		let mut frames = vec![];
+		let mut frames: Vec<crate::Frame> = vec![];
 		loop {
+			reserve(frames.capacity() * std::mem::size_of::<crate::Frame>())?;
 			match format_reader.next_packet() {
 				Ok(Some(packet)) => {
 					if default_track_id == packet.track_id {
 						let buffer = decoder.decode(&packet)?;
+						let required = frames
+							.len()
+							.checked_add(buffer.frames())
+							.ok_or_else(|| std::io::Error::other("PCM size overflow"))?;
+						let capacity = if required > frames.capacity() {
+							required.max(frames.capacity().saturating_mul(2))
+						} else {
+							frames.capacity()
+						};
+						let peak = capacity
+							.checked_add(frames.capacity())
+							.and_then(|n| n.checked_add(buffer.frames()))
+							.and_then(|n| n.checked_mul(std::mem::size_of::<crate::Frame>()))
+							.ok_or_else(|| std::io::Error::other("PCM size overflow"))?;
+						reserve(peak)?;
+						if capacity > frames.capacity() {
+							frames
+								.try_reserve_exact(capacity - frames.len())
+								.map_err(std::io::Error::other)?;
+						}
 						frames.append(&mut load_frames_from_buffer_ref(&buffer)?);
 					}
 				}
@@ -66,6 +98,7 @@ impl StaticSoundData {
 				Err(error) => return Err(error.into()),
 			}
 		}
+		reserve((frames.capacity() + frames.len()) * std::mem::size_of::<crate::Frame>())?;
 		Ok(Self {
 			sample_rate,
 			frames: frames.into(),

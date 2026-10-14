@@ -3,7 +3,7 @@ mod decode;
 mod io;
 #[cfg(test)]
 pub(crate) mod tests;
-mod worker;
+pub(crate) mod worker;
 pub use decode::ImageExecutor;
 pub use io::DirectoryIo;
 use reel_core::{
@@ -49,6 +49,7 @@ pub struct LoadId(u64);
 pub enum AssetKind {
     Image,
     Font,
+    Bytes,
 }
 enum Phase {
     Describe,
@@ -60,6 +61,7 @@ enum Phase {
     Decode,
     Decoding(WorkId),
     Done(Result<ResourceLease, String>),
+    Bytes(ResourceVersion, Arc<OwnedBytes>),
 }
 struct Load {
     source: AssetSource,
@@ -218,6 +220,38 @@ impl Assets {
             Ok(None)
         }
     }
+    /// Take raw bytes after calling maintain; does not re-run the shared pump.
+    pub fn poll_bytes(
+        &self,
+        id: LoadId,
+    ) -> Result<Option<(ResourceVersion, Arc<OwnedBytes>)>, String> {
+        let mut service = self.0.borrow_mut();
+        let load = service
+            .loads
+            .get(&id)
+            .ok_or("asset request no longer active")?;
+        match &load.phase {
+            Phase::Bytes(_, _) => {
+                let Phase::Bytes(version, bytes) = service.loads.remove(&id).unwrap().phase else {
+                    unreachable!()
+                };
+                Ok(Some((version, bytes)))
+            }
+            Phase::Done(Err(_)) => {
+                let Phase::Done(Err(error)) = service.loads.remove(&id).unwrap().phase else {
+                    unreachable!()
+                };
+                Err(error)
+            }
+            _ if load.kind != AssetKind::Bytes => Err("asset is not a raw byte request".into()),
+            _ => Ok(None),
+        }
+    }
+    /// Includes cancelled IO whose owned buffers/completions have not returned yet.
+    pub fn pending_io(&self) -> bool {
+        let service = self.0.borrow();
+        service.completion.usage().tickets != 0 || service.input.usage().tickets != 0
+    }
     pub fn cancel(&self, id: LoadId) {
         let mut service = self.0.borrow_mut();
         if let Some(load) = service.loads.remove(&id) {
@@ -273,9 +307,7 @@ impl Service {
                             load.phase = Phase::Read(length);
                             Ok(())
                         }
-                        None => Err(
-                            "asset must have a bounded length for font/image preparation".into(),
-                        ),
+                        None => Err("asset must have a bounded length for preparation".into()),
                     }
                 }
                 Terminal::Completed(IoPayload::Read(read)) => {
@@ -390,6 +422,15 @@ impl Service {
                 Err(error) if error.reason.retryable() => {}
                 Err(error) => return Err(error.reason.message),
             },
+            Phase::Probe if load.kind == AssetKind::Bytes => {
+                load.phase = Phase::Bytes(
+                    ResourceVersion {
+                        key: load.source.key.clone(),
+                        version: load.source.version.unwrap(),
+                    },
+                    load.input.take().unwrap(),
+                );
+            }
             Phase::Decode if load.kind == AssetKind::Font => {
                 let input = load.input.take().unwrap();
                 let ticket = self
@@ -464,6 +505,7 @@ fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
     let mut registry = ResourceRegistry::new(1, 1024 + version.key.0.capacity() as u64)
         .map_err(|e| format!("asset descriptor: {e:?}"))?;
     let handle = match load.kind {
+        AssetKind::Bytes => return Err("raw bytes do not use the UI registry".into()),
         AssetKind::Font => registry.register_font(version, data),
         AssetKind::Image => registry.register_image(
             version,

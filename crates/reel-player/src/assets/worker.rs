@@ -33,7 +33,7 @@ pub(super) fn check_completion(ticket: &BudgetTicket) -> Result<(), RejectReason
 }
 
 /// One bounded background lane, shared by all resource kinds using the adapter.
-pub(super) struct Worker<R, E> {
+pub(crate) struct Worker<R, E> {
     state: Shared<R, E>,
     handler: Arc<Handler<R, E>>,
     cancel_event: fn(&mut E),
@@ -146,6 +146,9 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         drop(state);
         self.state.1.notify_one();
         Ok(())
+    }
+    pub fn is_idle(&self) -> bool {
+        self.state.0.lock().unwrap().queue.usage().requests == 0
     }
     pub fn cancel(&mut self, id: u64) {
         if let Some(cancelled) = self.state.0.lock().unwrap().active.get(&id) {

@@ -9,9 +9,11 @@ publish = false
 default = []
 winit = ["dep:winit", "dep:ui-events-winit"]
 gamepad = ["dep:gilrs"]
-window = ["gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
+audio-output = ["reel-media/cpal-output"]
+window = ["audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
+reel-media = { path = "../reel-media", default-features = false, features = ["decode"] }
 reel-ui.workspace = true
 reel-engine = { path = "../reel-engine" }
 blake3 = { version = "=1.8.2" }

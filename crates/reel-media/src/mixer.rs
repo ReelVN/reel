@@ -5,7 +5,7 @@ use crate::maintenance::{
 use crate::retirement::PhysicalRelease;
 use crate::{AudioError, AudioErrorKind, AudioFormat, PcmFill};
 use reel_audio::{
-    AudioManager, AudioManagerSettings, Frame, Tween,
+    AudioManager, AudioManagerSettings, Decibels, Frame, Tween,
     backend::{Backend, Renderer},
     info::Info,
     sound::{
@@ -131,6 +131,47 @@ impl DecodedSound {
                 release: None,
             }),
         })
+    }
+    /// Decode off the realtime thread, reserving PCM growth and checking cancellation.
+    #[cfg(feature = "decode")]
+    pub fn decode(
+        bytes: impl AsRef<[u8]> + Send + Sync + 'static,
+        mut ticket: BudgetTicket,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, String> {
+        let data = StaticSoundData::decode_with(Box::new(std::io::Cursor::new(bytes)), |bytes| {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(std::io::Error::other("audio decode cancelled"));
+            }
+            ticket
+                .resize(bytes as u64)
+                .map_err(|e| std::io::Error::other(e.message))
+        })
+        .map_err(|e| e.to_string())?;
+        if data.frames.is_empty() {
+            return Err("audio contains no PCM frames".into());
+        }
+        ticket
+            .resize(std::mem::size_of_val(data.frames.as_ref()) as u64)
+            .map_err(|e| e.message)?;
+        Ok(Self {
+            data,
+            budget: Arc::new(Residency {
+                ticket,
+                release: None,
+            }),
+        })
+    }
+    /// Set initial gain before admission; no first-buffer volume race.
+    pub fn with_volume_db(mut self, db: f32) -> Self {
+        self.data.settings.volume = Decibels(db).into();
+        self
+    }
+    pub(crate) fn volume_db(&self) -> f32 {
+        match self.data.settings.volume {
+            reel_audio::Value::Fixed(value) => value.0,
+            _ => unreachable!("decoded sounds use fixed initial volume"),
+        }
     }
     /// Loop the decoded region using Kira's transport, without duplicating PCM.
     pub fn looping(mut self) -> Self {
@@ -385,14 +426,20 @@ impl Playback {
     }
     /// Coalesced Kira command slots; never competes for the bounded play queue.
     pub fn set_volume_db(&mut self, db: f32) -> Result<(), AudioError> {
-        if !db.is_finite() {
+        if db.is_nan() || db == f32::INFINITY {
             return Err(AudioError::new(
                 AudioErrorKind::InvalidRequest,
-                "volume must be finite",
+                "volume must not be NaN or positive infinity",
             ));
         }
         self.handle.set_volume(db, immediate());
         Ok(())
+    }
+    pub fn pause(&mut self) {
+        self.handle.pause(immediate());
+    }
+    pub fn resume(&mut self) {
+        self.handle.resume(immediate());
     }
     pub fn stop(&mut self) {
         self.handle.stop(immediate());

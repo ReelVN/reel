@@ -52,21 +52,29 @@ pub(crate) fn native_error(shared: &crate::output::Shared, kind: cpal::ErrorKind
 fn capabilities(device: &cpal::Device) -> Result<AudioCaps, AudioError> {
     let mut configurations = Vec::new();
     for config in device.supported_output_configs().map_err(error)? {
-        // CPAL exposes a count, not an ordered native speaker map. Only these are known.
-        let layout = match config.channels() {
-            1 => ChannelLayout::Mono,
-            2 => ChannelLayout::Stereo,
+        // These describe the client stream, not the device's physical speakers.
+        // CPAL's WASAPI output enables AUTOCONVERTPCM: the system supplies the
+        // channel matrix. Its enumeration reports only the default device count.
+        // https://learn.microsoft.com/windows/win32/coreaudio/audclnt-streamflags-xxx-constants
+        #[cfg(target_os = "windows")]
+        let layouts = &[ChannelLayout::Stereo, ChannelLayout::Mono][..];
+        #[cfg(not(target_os = "windows"))]
+        let layouts = match config.channels() {
+            1 => &[ChannelLayout::Mono][..],
+            2 => &[ChannelLayout::Stereo][..],
             _ => continue,
         };
         let Some(sample_format) = sample_format(config.sample_format()) else {
             continue;
         };
-        configurations.push(AudioConfigRange {
-            min_sample_rate_hz: config.min_sample_rate(),
-            max_sample_rate_hz: config.max_sample_rate(),
-            sample_format,
-            layout,
-        });
+        for &layout in layouts {
+            configurations.push(AudioConfigRange {
+                min_sample_rate_hz: config.min_sample_rate(),
+                max_sample_rate_hz: config.max_sample_rate(),
+                sample_format,
+                layout,
+            });
+        }
     }
     Ok(AudioCaps {
         clock: CPAL_CLOCK_CAPABILITY,
