@@ -75,7 +75,7 @@ impl Pools {
     }
     fn read(&self, resource: ResourceVersion, offset: u64, len: u32, scope: Scope) -> ReadRequest {
         ReadRequest {
-            resource,
+            resource: resource.into(),
             offset,
             len,
             scope,
@@ -86,7 +86,7 @@ impl Pools {
     }
     fn describe(&self, resource: ResourceVersion, scope: Scope) -> DescribeRequest {
         DescribeRequest {
-            resource,
+            resource: resource.into(),
             scope,
             priority: Priority::Normal,
             completion: self.completion.reserve(IO_COMPLETION_BYTES).unwrap(),
@@ -110,7 +110,7 @@ impl Pools {
         };
         WorkRequest {
             kind,
-            input: self.bytes(data),
+            input: self.bytes(data).into(),
             scope,
             priority: Priority::Normal,
             reservations: WorkReservations {
@@ -259,7 +259,7 @@ fn fixed_versions_ranges_failures_and_stale_scope_keep_owned_output() {
     };
     assert_eq!(
         (info.length, info.version, info.range_read, info.seekable),
-        (Some(9), version(1).version, true, true)
+        (Some(9), Some(version(1).version), true, true)
     );
     assert_eq!(info.media_type.as_deref(), Some("image/fixture"));
     assert_eq!(events[1].id, old);

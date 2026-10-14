@@ -1,4 +1,75 @@
 use super::{GpuError, Quality};
+use reel_ui::frame::{FrameCommand, FrameOp, RenderFrame};
+
+/// Count simultaneously live targets using the same lifetime boundaries as replay.
+/// Masks use an explicit stack; nesting does not consume the Rust call stack.
+pub(super) fn peak_targets(
+    frame: &RenderFrame,
+    mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
+) -> Result<u64, GpuError> {
+    struct Stream<'a> {
+        commands: &'a [FrameCommand],
+        next: usize,
+        live: u64,
+        peak: u64,
+    }
+    let stream = |commands| Stream {
+        commands,
+        next: 0,
+        live: 1,
+        peak: 1,
+    };
+    let mut stack = Vec::new();
+    super::scopes::push_stack(&mut stack, stream(frame.commands()), &mut reserve)?;
+    loop {
+        let current = stack.last_mut().unwrap();
+        let Some(command) = current.commands.get(current.next) else {
+            let finished = stack.pop().unwrap();
+            let Some(parent) = stack.last_mut() else {
+                return Ok(finished.peak);
+            };
+            parent.peak = parent.peak.max(parent.live + finished.peak);
+            continue;
+        };
+        current.next += 1;
+        match &command.op {
+            FrameOp::PushClip(_) => {
+                current.live += 1;
+                current.peak = current.peak.max(current.live + 1);
+            }
+            FrameOp::PushGroup(group) => {
+                current.live += 1;
+                let clip_targets = if group.clip.is_none() {
+                    0
+                } else if group.mask.is_some() {
+                    2
+                } else {
+                    1
+                };
+                current.peak = current.peak.max(current.live + clip_targets);
+                if let Some(mask) = group.mask {
+                    let definition =
+                        frame
+                            .masks()
+                            .get(mask.mask as usize)
+                            .ok_or(GpuError::Unsupported {
+                                at: command.origin.at,
+                                record: "missing mask",
+                            })?;
+                    super::scopes::push_stack(
+                        &mut stack,
+                        stream(&definition.commands),
+                        &mut reserve,
+                    )?;
+                }
+            }
+            FrameOp::PopClip | FrameOp::PopGroup => {
+                current.live -= 1;
+            }
+            _ => {}
+        }
+    }
+}
 pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
     let bytes = match quality.format {
         wgpu::TextureFormat::Rgba16Float => 8,

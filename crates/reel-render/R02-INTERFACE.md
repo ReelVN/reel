@@ -35,7 +35,7 @@ backend owns its device and surface as one lifetime; a zero-sized view needs no
 temporary nonzero swapchain and does not acquire a surface texture.
 
 Quality is negotiated from actual adapter format usages/flags and configured
-budgets: linear premultiplied Rgba16Float/4x preferred, explicit Rgba16Float/1x
+budgets and the whole frame's peak simultaneous targets: linear premultiplied Rgba16Float/4x preferred, explicit Rgba16Float/1x
 or linear Rgba8Unorm/1x fallback. Targets account resolve plus multisample
 attachments separately, including nested groups, mask coverage, frozen crossfade
 inputs, and overlapping submissions. Default target budget 128 MiB. Resource,
@@ -124,7 +124,10 @@ The target budget charges actual full-viewport allocations, including 4x attachm
 plus resolve. Within one preparation, completed scope, clip coverage and mask targets
 are cleared and reused after their reads have been encoded. Active parents, pending
 mask inputs and frozen crossfade inputs remain exclusive until composed. Thus sibling
-scopes share storage rather than accumulating targets. Reservations remain live through
+scopes share storage rather than accumulating targets. Clip-only groups apply coverage
+and opacity directly into their parent, without a separate clipped intermediate.
+A budgeted CPU pass counts group, clip, nested mask and crossfade target lifetimes
+before selecting one quality tier for the complete preparation. Reservations remain live through
 queue completion; reuse never refunds still-submitted GPU storage. Exhaustion refuses
 the whole frame; there is no implicit per-group quality change or cache eviction.
 Application-accounted extents do not measure driver allocator/pipeline memory or
@@ -205,7 +208,7 @@ existing checks. Slots in a lost/faulted Renderer are unusable and are released
 when that instance drops. Driver-private pipeline memory remains outside the
 measurable application budgets; the three-slot bound is an object-count bound,
 not an engine-wide memory or latency guarantee. This change adds no white-texture,
-atlas, mesh/image/glyph reuse or scene-wide quality negotiation.
+atlas or mesh/image/glyph reuse.
 
 Caller error scopes are reachable through `Renderer::gpu().device` and may
 normally enclose prepare/crossfade, including a group of concurrent preparations.

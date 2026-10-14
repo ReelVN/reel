@@ -302,7 +302,7 @@ fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions(
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
-fn white_texture_late_target_and_transient_budget_failures_release() {
+fn white_texture_whole_frame_quality_and_budget_failures_release() {
     let pool = pool();
     let mut nested = workload(1, 0, Color::WHITE);
     nested.push_group(Group::default());
@@ -311,8 +311,26 @@ fn white_texture_late_target_and_transient_budget_failures_release() {
     nested.pop_group();
     let nested = frame(nested, &pool);
     let two_solids = frame(workload(2, 0, Color::WHITE), &pool);
-    let target_limited = renderer(super::super::GpuLimits {
+    let mut target_limited = renderer(super::super::GpuLimits {
         target_bytes: 2 * 64 * 48 * 40,
+        ..Default::default()
+    });
+    let prepared = target_limited.prepare(&nested).unwrap();
+    assert_eq!(
+        prepared.quality().samples,
+        1,
+        "quality must fit all three live targets"
+    );
+    let pixels = target_limited.readback(prepared).unwrap();
+    assert!(
+        pixels
+            .iter()
+            .all(|pixel| pixel.iter().all(|c| (*c - 1.).abs() < 0.002))
+    );
+    counts(&target_limited, 1);
+    empty(&target_limited);
+    let target_limited = renderer(super::super::GpuLimits {
+        target_bytes: 2 * 64 * 48 * 4,
         ..Default::default()
     });
     assert!(matches!(
@@ -322,7 +340,7 @@ fn white_texture_late_target_and_transient_budget_failures_release() {
             ..
         })
     ));
-    counts(&target_limited, 1);
+    counts(&target_limited, 0); // Admission fails before creating GPU resources.
     empty(&target_limited);
     let one_solid = frame(workload(1, 0, Color::WHITE), &pool);
     let baseline = renderer(Default::default());

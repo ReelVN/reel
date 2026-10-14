@@ -223,9 +223,22 @@ fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_ide
             max_bytes: 64 << 20,
         },
     );
+    let assets = crate::assets::Assets::directory(Default::default());
+    let (send, receive) = std::sync::mpsc::channel();
+    assets.set_waker(std::sync::Arc::new(move || {
+        let _ = send.send(());
+    }));
     let font = |key| {
         let path = std::env::var_os(key).expect(key);
-        let lease = crate::fonts::load(std::path::Path::new(&path), &pool).unwrap();
+        let id = assets.request(path.to_str().unwrap(), crate::assets::AssetKind::Font);
+        let lease = loop {
+            if let Some(lease) = assets.poll(id).unwrap() {
+                break lease;
+            }
+            receive
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("font read must wake the host");
+        };
         let ResourceData::Font(data) = lease.data() else {
             unreachable!()
         };

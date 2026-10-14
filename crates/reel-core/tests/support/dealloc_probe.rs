@@ -128,7 +128,7 @@ fn observe(exit: Exit) -> [Record; 3] {
     };
     let request = WorkRequest {
         kind,
-        input,
+        input: input.into(),
         scope: Scope::Process,
         priority: Priority::Normal,
         reservations: WorkReservations {

@@ -167,7 +167,15 @@ impl Gpu {
             *first = Some(Arc::new(error));
         }
     }
+    /// Capability probe for one target. Renderer negotiates the complete frame's peak.
     pub fn quality(&self, size: [u32; 2]) -> Result<Quality, GpuError> {
+        self.quality_for_targets(size, 1)
+    }
+    pub(super) fn quality_for_targets(
+        &self,
+        size: [u32; 2],
+        targets: u64,
+    ) -> Result<Quality, GpuError> {
         self.check()?;
         let max = self.device.limits().max_texture_dimension_2d;
         if size.contains(&0) || size.iter().any(|&v| v > max) {
@@ -194,13 +202,16 @@ impl Gpu {
                 samples,
                 degraded: samples != 4 || format != wgpu::TextureFormat::Rgba16Float,
             };
-            if super::targets::target_bytes(size, q)? <= self.limits.target_bytes {
+            if super::targets::target_bytes(size, q)?
+                .checked_mul(targets)
+                .is_some_and(|bytes| bytes <= self.limits.target_bytes)
+            {
                 return Ok(q);
             }
         }
         Err(GpuError::Budget {
             domain: "targets",
-            requested: u64::from(size[0]) * u64::from(size[1]) * 4,
+            requested: (u64::from(size[0]) * u64::from(size[1]) * 4).saturating_mul(targets),
             available: self.limits.target_bytes,
         })
     }

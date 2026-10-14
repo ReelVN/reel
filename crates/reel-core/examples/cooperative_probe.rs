@@ -40,7 +40,7 @@ fn observe(label: &str, requests: u32) {
             OwnedBytes::new(data, input_pool.reserve(bytes_per_request as u64).unwrap()).unwrap();
         let request = WorkRequest {
             kind: CooperativeExecutor::<FakeClock>::copy_kind(),
-            input,
+            input: input.into(),
             scope: Scope::Process,
             priority: Priority::Normal,
             reservations: WorkReservations {

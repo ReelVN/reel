@@ -361,7 +361,7 @@ fn launch(
     #[cfg(feature = "window")]
     let result = {
         let mut options = reel_player::shell::StoryWindowOptions::default();
-        options.images.root =
+        options.assets.root =
             assets.unwrap_or_else(|| std::path::Path::new(path).parent().unwrap().to_path_buf());
         reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
     };

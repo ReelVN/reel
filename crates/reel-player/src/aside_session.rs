@@ -121,14 +121,18 @@ impl AsideSessionUi {
         self.state
     }
     /// Select asset resolution and memory policy before driving the story.
-    pub fn with_image_options(mut self, options: crate::images::ImageOptions) -> Self {
-        self.ui = self.ui.with_image_options(options);
+    pub fn with_asset_options(mut self, options: crate::assets::AssetOptions) -> Self {
+        self.ui = self.ui.with_asset_options(options);
         self
     }
-    /// Install the host's completion wake-up before first synchronizing images.
-    /// The callback runs on the decoder thread; synchronize on the host thread.
-    pub fn set_image_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        self.ui.set_image_waker(wake);
+    pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
+        self.ui = self.ui.with_assets(assets);
+        self
+    }
+    /// Install the host's completion wake-up before requesting resources.
+    /// Adapters may call it from a worker; synchronize on the host thread.
+    pub fn set_resource_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.ui.set_resource_waker(wake);
     }
     pub fn host_failure(&self) -> Option<&HostFailure> {
         self.host_failure.as_ref()
@@ -348,7 +352,7 @@ impl AsideSessionUi {
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {
-        self.ui.close_images();
+        self.ui.close_resources();
         if matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             return Ok(());
         }

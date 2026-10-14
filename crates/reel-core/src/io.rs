@@ -1,7 +1,7 @@
 //! Fast, owning IO submission. Adapters reserve a completion slot before accepting.
 use crate::{
     budget::{BudgetTicket, OwnedBytes, QueueLimits},
-    identity::{ContentVersion, IoId, Priority, ProcessRequestId, ResourceVersion, Scope},
+    identity::{AssetSource, ContentVersion, IoId, Priority, ProcessRequestId, Scope},
     result::{Rejected, Terminal},
 };
 
@@ -22,7 +22,7 @@ pub struct IoCaps {
 
 #[derive(Debug)]
 pub struct DescribeRequest {
-    pub resource: ResourceVersion,
+    pub resource: AssetSource,
     pub priority: Priority,
     pub scope: Scope,
     pub completion: BudgetTicket,
@@ -33,13 +33,13 @@ pub struct AssetInfo {
     pub length: Option<u64>,
     pub range_read: bool,
     pub seekable: bool,
-    pub version: ContentVersion,
+    pub version: Option<ContentVersion>,
     pub media_type: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct ReadRequest {
-    pub resource: ResourceVersion,
+    pub resource: AssetSource,
     pub offset: u64,
     pub len: u32,
     pub priority: Priority,

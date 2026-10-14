@@ -1,7 +1,7 @@
 use super::queue::{Queue, QueueUsage, charge, invalid};
 use crate::{
     budget::{BudgetCategory, BudgetTicket, OwnedBytes, QueueLimits},
-    identity::{IoId, Priority, ResourceVersion, Scope},
+    identity::{AssetSource, IoId, Priority, ResourceVersion, Scope},
     io::*,
     request_ids::RequestIds,
     result::{RejectCode, Rejected, Terminal},
@@ -109,19 +109,19 @@ impl MemoryAssetIo {
         };
         let (scope, completion, result) = match entry.request {
             ReadOp::Describe(r) => {
-                let result = self.find(&r.resource).map(|a| {
+                let result = self.find(&r.resource).map(|(version, a)| {
                     IoPayload::Described(AssetInfo {
                         length: Some(a.bytes.as_slice().len() as u64),
                         range_read: true,
                         seekable: true,
-                        version: r.resource.version,
+                        version: Some(version.version),
                         media_type: a.media_type.clone(),
                     })
                 });
                 (r.scope, r.completion, terminal(result))
             }
             ReadOp::Read(r) => {
-                let result = self.find(&r.resource).and_then(|a| {
+                let result = self.find(&r.resource).and_then(|(version, a)| {
                     let source = a.bytes.as_slice();
                     let start = r.offset.min(source.len() as u64) as usize;
                     let count = (source.len() - start).min(r.len as usize);
@@ -140,7 +140,7 @@ impl MemoryAssetIo {
                     Ok(IoPayload::Read(ReadResult {
                         bytes: OwnedBytes::new(bytes, r.output).expect("capacity checked"),
                         eof: start + count == source.len(),
-                        version: r.resource.version,
+                        version: version.version,
                     }))
                 });
                 (r.scope, r.completion, terminal(result))
@@ -199,15 +199,23 @@ impl MemoryAssetIo {
         true
     }
 
-    fn find(&self, resource: &ResourceVersion) -> Result<&MemoryAsset, IoError> {
-        self.assets.get(resource).ok_or_else(|| IoError {
-            code: if self.assets.keys().any(|v| v.key == resource.key) {
-                IoErrorCode::VersionUnavailable
-            } else {
-                IoErrorCode::NotFound
-            },
-            message: "exact resource version unavailable".into(),
-        })
+    fn find(&self, resource: &AssetSource) -> Result<(&ResourceVersion, &MemoryAsset), IoError> {
+        self.assets
+            .iter()
+            .find(|(version, _)| {
+                version.key == resource.key
+                    && resource
+                        .version
+                        .is_none_or(|expected| expected == version.version)
+            })
+            .ok_or_else(|| IoError {
+                code: if self.assets.keys().any(|v| v.key == resource.key) {
+                    IoErrorCode::VersionUnavailable
+                } else {
+                    IoErrorCode::NotFound
+                },
+                message: "exact resource version unavailable".into(),
+            })
     }
 }
 
@@ -264,7 +272,10 @@ impl AssetIo for MemoryAssetIo {
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
         let checks = check_completion(&request.completion).and_then(|_| {
             if request.offset.checked_add(u64::from(request.len)).is_none()
-                || request.output.category() != BudgetCategory::CpuOutput
+                || !matches!(
+                    request.output.category(),
+                    BudgetCategory::CpuInput | BudgetCategory::CpuOutput
+                )
                 || request.output.bytes() < u64::from(request.len)
             {
                 return Err(invalid("read range or output reservation invalid"));

@@ -39,7 +39,7 @@ impl WorkBuffer {
 struct Job {
     output: WorkBuffer,
     scratch: WorkBuffer,
-    input: OwnedBytes,
+    input: std::sync::Arc<OwnedBytes>,
     kind: WorkKind,
     scope: Scope,
     priority: Priority,

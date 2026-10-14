@@ -283,11 +283,12 @@ fn pipeline_reuse_refusals_and_completion_lifecycle() {
     empty(&renderer);
     counts(&renderer, 1);
     let mut nested = Scene::new();
-    for _ in 0..3 {
+    // Exceed the configured bytes even in the smallest whole-frame quality tier.
+    for _ in 0..32 {
         nested.push_group(Group::default());
     }
     nested.append_transformed(&scene(Color::WHITE), Affine::IDENTITY);
-    for _ in 0..3 {
+    for _ in 0..32 {
         nested.pop_group();
     }
     let oversized = frame(nested, [400, 300], &pool);
@@ -457,7 +458,7 @@ fn pipeline_reuse_budget_domains_and_renderer_drop() {
                 ..Default::default()
             },
             "transient",
-            1,
+            0,
         ),
     ] {
         let renderer = renderer(limits);
