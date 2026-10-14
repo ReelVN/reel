@@ -4,7 +4,6 @@
 //! Text shaping implementation using `harfrust`for shaping
 //! and `icu` for text analysis.
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::RangeInclusive;
 
@@ -360,7 +359,7 @@ fn shape_item<'a, B: Brush>(
             cache::ShapeDataKey::new(font.font.blob.id(), font.font.index),
             || {
                 harfrust::Font::new(
-                    harfrust::font::Blob::Shared(Arc::new(font.font.blob.clone())),
+                    harfrust::font::Blob::Shared(font.font.blob.clone().into_raw_parts().0),
                     font.font.index,
                 )
                 .expect("Fontique selected a validated font")

@@ -14,7 +14,7 @@ name = "reel_text"
 [features]
 default = ["system"]
 accesskit = ["dep:accesskit"]
-libm = ["fontique/libm", "skrifa/libm", "dep:core_maths"]
+libm = ["fontique/libm", "harfrust/libm", "skrifa/libm", "dep:core_maths"]
 std = ["fontique/std", "harfrust/std", "skrifa/std", "parlance/std"]
 system = ["std", "fontique/system"]
 
