@@ -12,6 +12,8 @@ aside-compiler = { path = "../aside-compiler" }
 reel-core = { path = "../reel-core" }
 reel-ui = { path = "../reel-ui" }
 unicode-segmentation = "=1.13.3"
+fluent-bundle = "=0.16.0"
+unic-langid = "=0.9.6"
 
 [dev-dependencies]
 stats_alloc = "=0.1.10"

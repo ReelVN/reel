@@ -106,6 +106,9 @@ impl AsideSessionUi {
         story.validate()?;
         let mut ui = SessionUi::new(session)?;
         let mut vm = SessionVm::load(ui.session(), story.program, limits)?;
+        vm.set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
+            ui.assets(),
+        )))?;
         vm.start(ui.session(), story.initializer)?;
         ui.set_stage(vm.stage());
         Ok(Self {
@@ -127,6 +130,9 @@ impl AsideSessionUi {
     pub fn maintain_audio(&mut self) -> Result<bool, Error> {
         Ok(self.vm.maintain_audio()?)
     }
+    pub fn maintain_localization(&mut self) -> Result<bool, Error> {
+        Ok(self.vm.maintain_localization()?)
+    }
     pub fn suspend_audio(&mut self) {
         self.vm.suspend_audio();
     }
@@ -139,10 +145,20 @@ impl AsideSessionUi {
     /// Select asset resolution and memory policy before driving the story.
     pub fn with_asset_options(mut self, options: crate::assets::AssetOptions) -> Self {
         self.ui = self.ui.with_asset_options(options);
+        self.vm
+            .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
+                self.ui.assets(),
+            )))
+            .expect("select assets before driving the story");
         self
     }
     pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
         self.ui = self.ui.with_assets(assets);
+        self.vm
+            .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
+                self.ui.assets(),
+            )))
+            .expect("select assets before driving the story");
         self
     }
     /// Install the host's completion wake-up before requesting resources.

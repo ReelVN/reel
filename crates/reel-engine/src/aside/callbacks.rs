@@ -333,6 +333,7 @@ impl SessionVm {
             }
         }
         self.maintain_audio()?;
+        self.maintain_localization()?;
         self.activities.maintain(&mut self.vm)?;
         if self.activities.pending() {
             self.activities.drain(&mut self.vm, 64)?;

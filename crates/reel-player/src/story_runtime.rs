@@ -39,6 +39,7 @@ impl StoryRuntime {
         (self.suspended_at.is_none() || self.closing)
             && (self.needs_work()
                 || self.driver.adapter().audio_poll_after().is_some()
+                || self.driver.adapter().localization_pending()
                 || self.driver.activities_need_time()
                 || self.driver.ui().dialogue_needs_time())
     }
@@ -75,6 +76,13 @@ impl StoryRuntime {
             return std::time::Duration::from_millis(1);
         }
         let audio = self.driver.adapter().audio_poll_after();
+        let audio = if self.driver.adapter().localization_pending() {
+            Some(audio.map_or(std::time::Duration::from_millis(10), |t| {
+                t.min(std::time::Duration::from_millis(10))
+            }))
+        } else {
+            audio
+        };
         let reveal = self
             .driver
             .ui()
@@ -118,7 +126,7 @@ impl StoryRuntime {
         if self.suspended_at.is_some() && !self.closing {
             return Ok(());
         }
-        if self.driver.maintain_audio()?
+        if self.driver.maintain_audio()? | self.driver.maintain_localization()?
             || (self.driver.adapter().task().is_none()
                 && !self.driver.adapter().has_live_work()
                 && self.driver.state() == StoryState::Running)

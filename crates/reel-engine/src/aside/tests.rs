@@ -5,6 +5,7 @@ use aside_vm::bytecode as bc;
 mod activities;
 mod buttons;
 mod dynamic_stage;
+mod localization;
 mod models;
 
 const STORY: &str =

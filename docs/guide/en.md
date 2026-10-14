@@ -595,13 +595,29 @@ Developers extending script interfaces from Rust can refer to the [Aside host SD
 
 Rust extensions can also declare variadic positional arguments with `#[aside(rest)]`. Authors call them with ordinary arguments or `...items`; each call receives a fresh outer array while its elements retain their normal shared identity. Defaults and bound methods use the same rules. This facility is independent of Reel and does not by itself enable action combinators.
 
-Basic text currently uses real text layout. The rich-text types, localization, media and custom drawing interfaces in this section remain future creator capabilities.
+Basic text uses real text layout; external catalogs and reactive language switching are implemented. Rich-text types, video and Aside custom drawing remain future capabilities.
 
 Rust custom drawing shares linear-premultiplied color conversion for solid colors, text and images. Both strokes and geometric clips support dashes, including curves, closed paths and dash offsets. An all-zero dash pattern draws a solid line; small miter limits use bevel joins. These capabilities belong to the existing Rust drawing interface; the Aside custom drawing entry point is still pending.
 
 Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video and precise audiovisual synchronization remain design contracts.
 
-PlainText represents ordinary text, RichText represents explicit styled structure, and tr(id, fallback, params) creates LocalText. A translation template's structure is parsed first, then parameters are inserted as text; markup characters inside parameters remain literal text. The current dialogue group retains the text and voices from submission, and the next group uses the new language. An NVL page switches after it is cleared; UI and history use the current language immediately. reel loc extracts and updates catalogs and checks for missing translations and parameter issues.
+`localization.load(locale, source)` reads a UTF-8 Fluent catalog through the asset service. The calling task waits for background IO and parsing. Success replaces that locale's catalog; IO, syntax and duplicate-ID errors can be caught with try/catch and preserve the old catalog. Cancelling the task cancels the load. `localization.set_locale(locale)` selects a language; `localization.locale()` reads the observable language tag.
+
+`tr(id, fallback, params: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
+
+Use `derive(|| tr(...))` for live UI: changing language reevaluates subscribed expressions. Ordinary tr calls, submitted dialogue/choices, input drafts and stored history strings retain their evaluated content. For live chat history or choice presentation, retain IDs, source text and parameters and call tr in the display binding; branch keys remain independent of labels. No special LocalText type is required.
+
+This fragment comes from [localization.aside](../../examples/localization.aside), with the English catalog in [en.ftl](../../examples/locales/en.ftl). Use examples as the asset root and supply fonts through the host or game.configure.
+
+```aside
+localization.load("en", "locales/en.ftl");
+localization.set_locale("zh-CN");
+let data = model({name: "Mio", count: 2});
+text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data.name})));
+button("English", on_click: |event| localization.set_locale("en"));
+```
+
+PlainText/RichText, automatic content IDs, reel loc extraction/catalog updates and localized asset substitution remain future capabilities.
 video is an ordinary node; audio provides tracks, queues, loop regions, filters, and synchronization groups. play returns an awaitable activity, stop leaves it at its current state, and finish is for activities with an endpoint. Tracks and resources are managed by stable identity. Device reconstruction and seek preserve or rebind logical waits; errors have explicit terminal states.
 custom_node can directly register state, measure, record, route, and event implemented in Aside. measure/record are read-only layout/rendering callbacks with execution budgets. route synchronously decides event consumption, capture, and focus, then event runs as an ordinary suspendable task. A minigame node can therefore prevent the same input from advancing the story while still being able to wait for resources in its application callback. New low-level graphics and platform capabilities are registered through native modules.
 Camera, Mesh, Material, and Effect provide perspective stages and programmable effects, with state and resource identities still included in saves. Each backend declares its supported implementations and fallbacks in a capability list. Live2D, system text-to-speech, mobile/Web packaging, and external services are adapter capabilities within the full target scope. Their specific API documentation will provide examples in the same style alongside verified implementations.

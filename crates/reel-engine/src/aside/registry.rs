@@ -497,6 +497,46 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     contracts.extend(super::stage::bindings().map(|binding| binding.contract));
+    for (symbol, parameters, effects, result) in [
+        (
+            "reel::tr",
+            vec![
+                parameter("id", None),
+                parameter("fallback", None),
+                parameter("params", Some(bc::Const::Null)),
+            ],
+            Effects::ALLOCATE,
+            BuiltinType::String,
+        ),
+        (
+            "reel::localization::load",
+            vec![parameter("locale", None), parameter("source", None)],
+            Effects::ALL.0,
+            BuiltinType::Null,
+        ),
+        (
+            "reel::localization::set_locale",
+            vec![parameter("locale", None)],
+            Effects::ALLOCATE | Effects::WRITE | Effects::HOST,
+            BuiltinType::Null,
+        ),
+        (
+            "reel::localization::locale",
+            vec![],
+            Effects::ALLOCATE,
+            BuiltinType::String,
+        ),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: symbol.into(),
+            abi_version: 1,
+            parameters,
+            result,
+            effects: Effects(effects),
+            required_capabilities: vec![],
+        });
+    }
     contracts
 }
 

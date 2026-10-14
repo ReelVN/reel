@@ -1,0 +1,12 @@
+fn main() {
+    localization.load("en", "locales/en.ftl");
+    localization.set_locale("zh-CN");
+    let data = model({name: "Mio", count: 2});
+    stage.replace(column(gap: 12) {
+        text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data.name})));
+        text(value: derive(|| tr("messages", "{ $count } 条新消息", params: {count: data.count})));
+        button("中文", on_click: |event| localization.set_locale("zh-CN"));
+        button("English", on_click: |event| localization.set_locale("en"));
+    });
+    narrator(tr("opening", "雨停了。"));
+}

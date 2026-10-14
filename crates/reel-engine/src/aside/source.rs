@@ -134,6 +134,22 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(audio);
+    let mut localization = ExternalSymbol::dynamic("localization");
+    localization.namespace = Some(NamespaceRef {
+        module: "reel::localization".into(),
+        version: "1".into(),
+    });
+    prelude.push(localization);
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::localization".into(),
+        version: "1".into(),
+        exports: exports
+            .iter()
+            .zip(&references)
+            .filter(|(_, r)| r.module == "reel::localization")
+            .map(|(e, _)| e.clone())
+            .collect(),
+    });
     resolver.insert(ModuleInterface {
         canonical_path: "reel::audio".into(),
         version: "1".into(),

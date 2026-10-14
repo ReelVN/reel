@@ -13,6 +13,7 @@ pub use game::GameSettings;
 mod choice;
 mod dialogue;
 mod lists;
+mod localization;
 mod narrative;
 mod observable;
 mod publication;
@@ -194,6 +195,7 @@ pub struct SessionVm {
     stage: stage::StageBinding,
     activities: activity::Activities,
     audio: audio::Audio,
+    translations: localization::Translations,
     game: std::sync::Arc<GameSettings>,
     narrative: Option<narrative::Narrative>,
     skip_input: Option<reel_ui::stage::NodeId>,
@@ -244,6 +246,7 @@ impl SessionVm {
             stage,
             activities: activity::Activities::default(),
             audio: audio::Audio::default(),
+            translations: localization::Translations::default(),
             game: std::sync::Arc::new(GameSettings::default()),
             narrative: None,
             skip_input: None,
@@ -368,6 +371,16 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::tr"
+            | "reel::localization::load"
+            | "reel::localization::locale"
+            | "reel::localization::set_locale" => {
+                if symbol == "reel::localization::load" {
+                    self.check_wait(session, ticket)?;
+                }
+                self.dispatch_localization(ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::audio::play"
             | "reel::audio::volume"
             | "reel::audio::await"
@@ -780,6 +793,8 @@ impl SessionVm {
         locale: &str,
     ) -> Result<InteractionId, AdapterError> {
         self.check_story_wait(session, ticket)?;
+        let selected_locale = self.locale();
+        let locale = selected_locale.as_deref().unwrap_or(locale);
         let publication =
             publication::Publication::stage(session, |s| s.begin_say(self.owner, lines, locale))?;
         let interaction = publication.id();
@@ -1009,6 +1024,7 @@ impl SessionVm {
         }
         self.root_end = self.vm.heap().root_slots();
         self.audio.close();
+        self.translations.close();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;
         session.revoke_owner_with_retirement(

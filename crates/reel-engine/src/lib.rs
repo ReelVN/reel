@@ -10,6 +10,7 @@ use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
 pub mod audio;
+pub mod localization;
 mod reading;
 pub use reading::{ReadProgress, ReadingState};
 

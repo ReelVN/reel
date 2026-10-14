@@ -160,6 +160,15 @@ impl Assets {
     pub fn set_waker(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         *self.0.borrow().notify.lock().unwrap() = notify;
     }
+    pub(crate) fn wake_signal(&self) -> WakeSignal {
+        self.0.borrow().wake.clone()
+    }
+    pub(crate) fn worker_limits(&self) -> QueueLimits {
+        QueueLimits {
+            max_requests: 32,
+            max_bytes: self.0.borrow().options.input_bytes,
+        }
+    }
     pub fn maintain(&self) {
         self.0.borrow_mut().pump();
     }
