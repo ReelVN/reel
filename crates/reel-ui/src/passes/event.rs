@@ -275,7 +275,7 @@ pub(crate) fn run_on_pointer_event_with_view(
         }
     }
 
-    let target_widget_id = get_pointer_target(root, event_pos, view);
+    let mut target_widget_id = get_pointer_target(root, event_pos, view);
 
     let mut route = std::mem::take(&mut root.global_state.pointer_route);
     route.clear();
@@ -294,6 +294,82 @@ pub(crate) fn run_on_pointer_event_with_view(
             // Focused_widget isn't ancestor of target_widget_id
             if !route.contains(&focused_widget) {
                 root.global_state.next_focused_widget = None;
+            }
+        }
+    }
+
+    // Pan recognition uses the same accepted ancestor path and storage as bubbling.
+    // Exclusive drag captures (e.g. sliders) do not participate in takeover.
+    if matches!(event, PointerEvent::Down(_)) {
+        root.global_state.pointer.pan_target = target_widget_id;
+    }
+    let old_capture = root.global_state.pointer.pointer_capture_target;
+    if root.global_state.pointer.info.pointer_type == PointerType::Touch
+        && (!matches!(event, PointerEvent::Move(_))
+            || old_capture.is_none()
+            || root.global_state.pointer.pointer_capture_allows_pan)
+    {
+        let preview_target = root
+            .global_state
+            .pointer
+            .pan_target
+            .filter(|id| root.has_widget(*id))
+            .or(target_widget_id);
+        if preview_target != target_widget_id {
+            route.clear();
+            if let Some(id) = preview_target {
+                let _ = root.input_path_into(id, view, &mut route);
+            }
+        }
+        run_event_pass(
+            root,
+            preview_target,
+            event,
+            !matches!(event, PointerEvent::Cancel(_)),
+            matches!(event, PointerEvent::Move(_)),
+            |widget, ctx, props, event| {
+                ctx.global_state.dispatching_pointer = true;
+                widget.on_pointer_preview(ctx, props, event);
+                ctx.global_state.dispatching_pointer = false;
+            },
+            false,
+            view,
+            Some(&route),
+        );
+        let captured = root.global_state.pointer.pointer_capture_target;
+        if captured != old_capture
+            && let Some(new_target) = captured
+        {
+            let revision = root.global_state.pointer.pointer_capture_revision;
+            if let Some(old) = old_capture {
+                root.global_state.pointer.pointer_capture_target = Some(old);
+                let cancel = PointerEvent::Cancel(root.global_state.pointer.info);
+                run_event_pass(
+                    root,
+                    Some(old),
+                    &cancel,
+                    false,
+                    false,
+                    |widget, ctx, props, event| {
+                        ctx.global_state.dispatching_pointer = true;
+                        widget.on_pointer_event(ctx, props, event);
+                        ctx.global_state.dispatching_pointer = false;
+                    },
+                    false,
+                    view,
+                    Some(&[old]),
+                );
+            }
+            root.global_state.pointer.pointer_capture_target = Some(new_target);
+            root.global_state.pointer.pointer_capture_revision = revision;
+            root.global_state.pointer.pointer_capture_allows_pan = false;
+            root.global_state.pointer.pointer_capture_terminal_delivered = None;
+            target_widget_id = Some(new_target);
+        }
+        if preview_target != target_widget_id {
+            route.clear();
+            if let Some(id) = target_widget_id {
+                let _ = root.input_path_into(id, view, &mut route);
             }
         }
     }
@@ -355,6 +431,7 @@ pub(crate) fn run_on_pointer_event_with_view(
         // it is notified of the pointer event before the capture is released, so it knows it is
         // about to lose the pointer.
         root.global_state.pointer.pointer_capture_target = None;
+        root.global_state.pointer.pan_target = None;
         root.global_state.pointer.pointer_capture_terminal_delivered = None;
         if root.global_state.pointer.info.pointer_type == PointerType::Touch {
             root.global_state.pointer.last_pointer_physical = None;

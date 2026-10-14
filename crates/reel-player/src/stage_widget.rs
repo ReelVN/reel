@@ -3,7 +3,7 @@ use reel_ui::{
     accesskit::{Node, Role},
     core::*,
     imaging::{Composite, GroupRef, Painter},
-    kurbo::{Axis, Point, Size},
+    kurbo::{Axis, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
     peniko::{Color, ImageData},
     properties::{ContentColor, ThumbColor, ThumbRadius, TrackColor, TrackThickness},
@@ -12,7 +12,7 @@ use reel_ui::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
         NodeKind, Stage, StageNode,
     },
-    widgets::{ButtonBehavior, Image, Label, Slider, SliderMoved},
+    widgets::{ButtonBehavior, Image, Label, ScrollAxis, ScrollState, Slider, SliderMoved},
 };
 use std::collections::BTreeMap;
 mod input;
@@ -188,6 +188,7 @@ struct SceneWidget {
     image_size: Size,
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
     size: Size,
+    scroll: ScrollState,
     #[cfg(test)]
     layouts: usize,
 }
@@ -283,6 +284,7 @@ impl SceneWidget {
                 .map(|child| (child.node.clone(), WidgetPod::new(Self::new(child))))
                 .collect(),
             size: Size::ZERO,
+            scroll: ScrollState::default(),
             #[cfg(test)]
             layouts: 0,
         }
@@ -400,6 +402,8 @@ impl SceneWidget {
                 || old.font != new.font
                 || old.clip != new.clip
                 || old.decorated != new.decorated
+                || matches!(view.node.kind, NodeKind::Scroll { .. })
+                    && this.widget.node.kind != view.node.kind
             {
                 this.ctx.request_layout();
             }
@@ -447,7 +451,22 @@ impl SceneWidget {
     fn sequential(&self, axis: Axis) -> bool {
         matches!(
             (&self.node.kind, axis),
-            (NodeKind::Row, Axis::Horizontal) | (NodeKind::Column, Axis::Vertical)
+            (NodeKind::Row, Axis::Horizontal)
+                | (NodeKind::Column, Axis::Vertical)
+                | (
+                    NodeKind::Scroll {
+                        axis: ScrollAxis::Horizontal,
+                        ..
+                    },
+                    Axis::Horizontal
+                )
+                | (
+                    NodeKind::Scroll {
+                        axis: ScrollAxis::Vertical | ScrollAxis::Both,
+                        ..
+                    },
+                    Axis::Vertical
+                )
         )
     }
 }
@@ -467,12 +486,46 @@ macro_rules! publish_interaction {
 }
 impl Widget for SceneWidget {
     type Action = NodeEvent;
+    fn on_pointer_preview(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &PointerEvent,
+    ) {
+        if matches!(self.node.kind, NodeKind::Scroll { .. }) {
+            self.scroll.preview(ctx, event);
+        }
+    }
+    fn scroll_to_child(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        rect: Rect,
+    ) -> Rect {
+        if !matches!(self.node.kind, NodeKind::Scroll { .. }) {
+            return rect;
+        }
+        let delta = self
+            .scroll
+            .reveal(rect - Vec2::splat(self.node.props.padding));
+        if delta != Vec2::ZERO {
+            ctx.request_compose();
+        }
+        rect + delta
+    }
+
     fn on_pointer_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
+        if matches!(self.node.kind, NodeKind::Scroll { .. }) {
+            if self.scroll.pointer(ctx, event) {
+                ctx.request_compose();
+            }
+            return;
+        }
         if let Some(input) = &mut self.input
             && input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e))
         {
@@ -511,6 +564,9 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
+        if matches!(event, TextEvent::WindowFocusChange(false)) {
+            self.scroll.cancel();
+        }
         if let Some(input) = &mut self.input {
             use reel_ui::input::{Control, InputDeviceId, InputEvent};
             // Focused child controls own both keyboard and controller input.
@@ -590,6 +646,12 @@ impl Widget for SceneWidget {
     }
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
         self.button.update(event);
+        if matches!(
+            event,
+            Update::DisabledChanged(true) | Update::StashedChanged(true)
+        ) {
+            self.scroll.cancel();
+        }
         if self.is_button() && matches!(event, Update::FocusChanged(_) | Update::DisabledChanged(_))
         {
             ctx.request_render();
@@ -662,6 +724,11 @@ impl Widget for SceneWidget {
         } {
             return Length::px(fixed);
         }
+        if matches!(self.node.kind, NodeKind::Scroll { .. })
+            && let LenReq::FitContent(space) = request
+        {
+            return space;
+        }
         let padding = Length::px(props.padding * 2.);
         if self.image.is_some() {
             let other = if axis == Axis::Horizontal {
@@ -725,7 +792,7 @@ impl Widget for SceneWidget {
             self.layouts += 1;
         }
         self.size = size;
-        if self.node.props.clip {
+        if self.node.props.clip || matches!(self.node.kind, NodeKind::Scroll { .. }) {
             ctx.set_clip_path(size.to_rect());
         } else {
             ctx.clear_clip_path();
@@ -774,33 +841,60 @@ impl Widget for SceneWidget {
             ctx.place_child(image, Point::new(padding, padding));
         }
         let mut cursor = 0.;
+        let mut extent = Size::ZERO;
         for (node, child) in &mut self.children {
             ctx.set_stashed(child, !node.props.visible);
             if !node.props.visible {
                 continue;
             }
-            let chosen = ctx.compute_size(child, SizeDef::fit(inner), inner.into());
+            let definition = if let NodeKind::Scroll { axis, .. } = self.node.kind {
+                SizeDef::new(
+                    if axis.horizontal() {
+                        LenDef::MaxContent
+                    } else {
+                        LenDef::Fixed(Length::px(inner.width))
+                    },
+                    if axis.vertical() {
+                        LenDef::MaxContent
+                    } else {
+                        LenDef::Fixed(Length::px(inner.height))
+                    },
+                )
+            } else {
+                SizeDef::fit(inner)
+            };
+            let chosen = ctx.compute_size(child, definition, inner.into());
             let offset = match self.node.kind {
-                NodeKind::Row => {
+                NodeKind::Row
+                | NodeKind::Scroll {
+                    axis: ScrollAxis::Horizontal,
+                    ..
+                } => {
                     let offset = Point::new(cursor, 0.);
                     cursor += chosen.width + self.node.props.gap;
                     offset
                 }
-                NodeKind::Column => {
+                NodeKind::Column | NodeKind::Scroll { .. } => {
                     let offset = Point::new(0., cursor);
                     cursor += chosen.height + self.node.props.gap;
                     offset
                 }
                 _ => Point::ORIGIN,
             };
+            extent.width = extent.width.max(offset.x + chosen.width);
+            extent.height = extent.height.max(offset.y + chosen.height);
             ctx.run_layout(child, chosen);
             ctx.place_child(child, Point::new(padding + offset.x, padding + offset.y));
+        }
+        if let NodeKind::Scroll { axis, follow_end } = self.node.kind {
+            self.scroll.layout(inner, extent, axis, follow_end);
         }
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
         for (node, child) in &mut self.children {
             let transform = node.props.transform(ctx.child_size(child));
             ctx.set_child_transform(child, transform);
+            ctx.set_child_scroll_translation(child, -self.scroll.offset());
         }
     }
     fn pre_paint(
@@ -903,7 +997,9 @@ impl Widget for SceneWidget {
             .collect()
     }
     fn accepts_pointer_interaction(&self) -> bool {
-        self.is_button() || self.input.is_some()
+        self.is_button()
+            || self.input.is_some()
+            || matches!(self.node.kind, NodeKind::Scroll { .. })
     }
     fn accepts_focus(&self) -> bool {
         self.is_button() || self.input.is_some()

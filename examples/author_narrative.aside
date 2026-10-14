@@ -20,7 +20,7 @@ pub fn main() {
         } else {
             line_view(dialogue)
         }
-    }, x: 60, y: 70, width: 880, padding: 24, background: "#182338ee");
+    }, width: 880, padding: 24, background: "#182338ee");
     let answers = view(|| {
         column(gap: 14) {
             for option in choices.options {
@@ -30,10 +30,10 @@ pub fn main() {
                 }
             }
         }
-    }, x: 80, y: 420, visible: bind(choices.active));
+    }, visible: bind(choices.active));
     stage.replace(stack() {
-        reading;
-        answers;
+        scroll(x: 40, y: 60, width: 920, height: 340, follow_end: true) { reading; }
+        scroll(x: 60, y: 420, width: 880, height: 250) { answers; }
         button("ADV / NVL", x: 800, y: 20, on_click: |event| { ui.nvl = !ui.nvl; });
     });
     mio("雨还没有停。");

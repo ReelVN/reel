@@ -116,7 +116,7 @@ let has_opening = caption.starts_with(prefix: "第二章");
 
 已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，仍持有的旧节点不能继续读写，也不会因此保活整棵旧树。完整代码见[作者舞台示例](../../examples/author_stage.aside)。
 
-stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。专用 scroll 容器仍属于后续作者能力。
+stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。`scroll(height: 360) { ... }` 创建纵向滚动区域；axis 可设为 "horizontal" 或 "both"。滚轮、触摸拖动和键盘/手柄焦点跟随共用正常输入；滚动不会重建文字布局。`follow_end: true` 使已处于末端的 NVL 页跟随新内容，上滚阅读后保留位置。
 
 ### 在运行中修改组件
 
@@ -254,9 +254,11 @@ pub fn dialogue_view(model) {
     }
 }
 pub fn nvl_view(model) {
-    view(|| column(gap: 24) {
-        for line in model.lines { dialogue_view(line); }
-    })
+    scroll(height: 600, follow_end: true) {
+        view(|| column(gap: 24) {
+            for line in model.lines { dialogue_view(line); }
+        });
+    }
 }
 ```
 game.dialogue().lines 是统一的可观察对白行列表。speaker_name/text/reveal 是当前活动行组第一行的只读快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留会话历史。语音参数尚未接入。多个角色同时发言也使用同一个推进交互：
@@ -264,7 +266,7 @@ game.dialogue().lines 是统一的可观察对白行列表。speaker_name/text/r
 let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-`game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。
+`game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll.aside)。
 需要路线图与章节重启时，用普通 API 给函数登记稳定 ID 与显示标题。函数仍按同一套调用与等待规则执行。
 ```aside
 fn opening() {

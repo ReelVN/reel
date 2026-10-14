@@ -118,7 +118,7 @@ Component calls with a trailing children block may omit the ending semicolon whe
 
 Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
 
-Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. A dedicated scroll container remains a future creator capability.
+Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
 ### Editing components while running
 
@@ -256,9 +256,11 @@ pub fn dialogue_view(model) {
     }
 }
 pub fn nvl_view(model) {
-    view(|| column(gap: 24) {
-        for line in model.lines { dialogue_view(line); }
-    })
+    scroll(height: 600, follow_end: true) {
+        view(|| column(gap: 24) {
+            for line in model.lines { dialogue_view(line); }
+        });
+    }
 }
 ```
 game.dialogue().lines is the shared observable list of dialogue lines. speaker_name/text/reveal are read-only convenience projections of the first line in the currently active line group. ADV views commonly use these fields; NVL and speech-bubble views use the complete line list. model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the session history. Voice parameters are not connected yet. Multiple characters speaking at once also share a single advance interaction:
@@ -266,7 +268,7 @@ game.dialogue().lines is the shared observable list of dialogue lines. speaker_n
 let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-`game.dialogue()` returns the stable session model. The nvl_view above composes accumulated lines; `model.clear()` clears the displayed page while preserving history. ADV uses the first-line shortcuts, and current_line_ids identifies the current group. Reveal changes update properties without rebuilding the NVL page; appending lines or clearing the page rebuilds the view content. Ordinary layouts determine placement, backgrounds, spacing and bubble shapes.
+`game.dialogue()` returns the stable session model. The nvl_view above composes accumulated lines; `model.clear()` clears the displayed page while preserving history. ADV uses the first-line shortcuts, and current_line_ids identifies the current group. Reveal changes update properties without rebuilding the NVL page; appending lines or clearing the page rebuilds the view content. Ordinary layouts determine placement, backgrounds, spacing and bubble shapes. In a custom dialogue view, taps not consumed by controls advance the current line; touch drags only scroll. See [author_scroll.aside](../../examples/author_scroll.aside) for a long menu.
 When you need a route map or chapter restarts, use an ordinary API to register a stable ID and display title for a function. The function still follows the same calling and waiting rules.
 ```aside
 fn opening() {

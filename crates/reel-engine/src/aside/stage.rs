@@ -161,7 +161,10 @@ impl StageBinding {
             NodeKind::Text(_) => 1,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
             NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
-            NodeKind::Image { .. } | NodeKind::Button { .. } | NodeKind::Input { .. } => 2,
+            NodeKind::Image { .. }
+            | NodeKind::Button { .. }
+            | NodeKind::Input { .. }
+            | NodeKind::Scroll { .. } => 2,
             _ => 0,
         })
     }
@@ -230,6 +233,7 @@ impl StageBinding {
                 fit: read_fit(heap, args[1])?,
                 origin,
             },
+            "reel::scroll" => scroll_kind(heap, fields)?,
             "reel::row" => NodeKind::Row,
             "reel::column" => NodeKind::Column,
             "reel::stack" => NodeKind::Stack,
@@ -242,6 +246,7 @@ impl StageBinding {
             kind,
             NodeKind::Row
                 | NodeKind::Column
+                | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
@@ -266,6 +271,9 @@ impl StageBinding {
                 Value::NULL,
             ],
             Some(match symbol {
+                "reel::scroll" => {
+                    |heap, _, index, value| validate_scroll_property(heap, index, value)
+                }
                 "reel::slider" => controls::validate_slider,
                 "reel::toggle" => {
                     |heap, _, index, value| controls::validate_toggle(heap, index, value)
@@ -408,6 +416,7 @@ impl StageBinding {
                         2,
                     )
                 }
+                NodeKind::Scroll { .. } => (scroll_kind(heap, fields)?, 2),
                 NodeKind::Slider { .. } => (
                     controls::slider_kind(heap, fields)?,
                     controls::SliderField::PROPERTIES.len(),
@@ -970,4 +979,35 @@ fn read_props(
         anchor_x: number(get(NodeProperty::AnchorX)?)?,
         anchor_y: number(get(NodeProperty::AnchorY)?)?,
     })
+}
+
+fn scroll_axis(heap: &Heap, value: Value) -> Result<reel_ui::widgets::ScrollAxis, HeapError> {
+    use reel_ui::widgets::ScrollAxis;
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 10 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 10];
+    for i in 0..info.len {
+        heap.read_bytes(value, i, &mut bytes[i as usize..i as usize + 1])?;
+    }
+    match &bytes[..info.len as usize] {
+        b"vertical" => Ok(ScrollAxis::Vertical),
+        b"horizontal" => Ok(ScrollAxis::Horizontal),
+        b"both" => Ok(ScrollAxis::Both),
+        _ => Err(HeapError::TypeMismatch),
+    }
+}
+fn scroll_kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError> {
+    Ok(NodeKind::Scroll {
+        axis: scroll_axis(heap, heap.table_entry(fields, 0)?.1)?,
+        follow_end: boolean(heap.table_entry(fields, 1)?.1)?,
+    })
+}
+fn validate_scroll_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+    match index {
+        0 => scroll_axis(heap, value).map(|_| ()),
+        1 => value.as_bool().map(|_| ()).ok_or(HeapError::TypeMismatch),
+        _ => validate_layout_property(heap, index - 2, value),
+    }
 }

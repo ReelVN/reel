@@ -114,7 +114,7 @@ impl ButtonBehavior {
         match event {
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
                 ctx.request_focus();
-                ctx.capture_pointer();
+                ctx.capture_pointer_for_click();
                 ctx.request_paint_only();
                 trace!("Button {:?} pressed", ctx.widget_id());
             }

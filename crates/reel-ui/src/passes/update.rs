@@ -868,18 +868,13 @@ pub(crate) fn run_update_scroll_pass(root: &mut RenderRoot) {
             // Convert the target_rect from border-box space to content-box space.
             let local_rect = target_rect - ctx.widget_state.border_box_translation();
 
-            let event = Update::RequestPanToChild(local_rect);
-            widget.update(ctx, props, &event);
-
-            // TODO - We should run the compose method after this, so
-            // translations are updated and the rect passed to parents
-            // is more accurate. Until then we don't add scroll_translation
-            // at all and only support a single scrolling parent.
-
-            // Before continuing to the parent, we need to convert the target_rect from this
-            // widget's border-box coordinate space to the parent's border-box coordinate space.
+            let adjusted = widget.scroll_to_child(ctx, props, local_rect);
             let state = &ctx.widget_state;
-            target_rect = target_rect + state.origin.to_vec2();
+            target_rect = state
+                .transform
+                .transform_rect_bbox(adjusted + state.border_box_translation())
+                + state.origin.to_vec2()
+                + state.scroll_translation;
         });
     }
 }
