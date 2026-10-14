@@ -16,14 +16,14 @@ window = ["audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-
 reel-media = { path = "../reel-media", default-features = false, features = ["decode"] }
 reel-ui.workspace = true
 reel-engine = { path = "../reel-engine" }
-blake3 = { version = "=1.8.2" }
+blake3 = { version = "=1.8.7" }
 image = { workspace = true, features = ["png", "jpeg"] }
 reel-core = { path = "../reel-core" }
 reel-render = { path = "../reel-render" }
-winit = { version = "=0.30.12", optional = true }
+winit = { version = "=0.30.13", optional = true }
 ui-events-winit = { version = "=0.3.0", optional = true }
 wgpu = { version = "=30.0.1", optional = true }
-pollster = { version = "=0.4.0", optional = true }
+pollster = { version = "=1.0.1", optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 gilrs = { version = "=0.11.2", optional = true }
