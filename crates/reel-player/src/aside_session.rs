@@ -248,9 +248,6 @@ impl AsideSessionUi {
         bridge: &mut PresentationBridge,
         root: WidgetId,
     ) -> Result<(), Error> {
-        let settings = self.vm.game_settings();
-        self.ui
-            .set_default_views(settings.default_dialogue, settings.default_choices);
         self.ui.sync(bridge, root)?;
         let events = self.ui.take_events();
         self.accept_events(events)

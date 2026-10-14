@@ -357,8 +357,6 @@ fn author_narrative_example_initializes_from_source_and_asb() {
         )
         .unwrap();
         settle(&mut driver);
-        assert!(!driver.adapter().game_settings().default_dialogue);
-        assert!(!driver.adapter().game_settings().default_choices);
         assert!(
             driver
                 .adapter()

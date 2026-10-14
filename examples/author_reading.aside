@@ -25,8 +25,7 @@ fn history_page() {
 }
 
 pub fn main() {
-    game.configure(width: 1000, height: 720, fonts: ["fonts/body.ttf"],
-                   default_dialogue: false, default_choices: false);
+    game.configure(width: 1000, height: 720, fonts: ["fonts/body.ttf"]);
     stage.replace(input(width: 1000, height: 720,
         bindings: {skip: [binding("ControlLeft"), binding("RightShoulder")]},
         on_action: |event| {

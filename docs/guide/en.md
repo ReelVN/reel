@@ -487,7 +487,7 @@ Pixels changed by an effect and logical input regions are declared separately. O
 
 ## 10 Choices and Changing Content
 
-choose, custom choice_view and the read-only choice model are implemented. Call `game.configure(default_dialogue: false, default_choices: false)` to disable the corresponding default views, then mount author components on the stage. See [author_narrative.aside](../../examples/author_narrative.aside) for ADV/NVL switching and custom choices.
+choose, custom choice_view and the read-only choice model are implemented. The engine adds no automatic dialogue or choice UI; mount your own components on the stage and use ordinary functions to package reusable appearances. See [author_narrative.aside](../../examples/author_narrative.aside) for ADV/NVL switching and custom choices.
 
 choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(option_id). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.
 ```aside

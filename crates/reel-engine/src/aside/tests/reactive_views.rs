@@ -48,7 +48,6 @@ fn narrative_models_compose_nvl_clear_pages_and_select_original_keys() {
     let dialogue = game.dialogue();
     let choices = game.choice();
     fn opening() {
-        game.configure(default_dialogue: false, default_choices: false);
         let page = view(|| column() { for line in dialogue.lines { text(value: bind(line.text), reveal: bind(line.reveal)); } });
         let options = view(|| column() { for option in choices.options { button(option.label, on_click: |e| {
             if !choices.select(option.id) { throw "valid selection rejected"; }

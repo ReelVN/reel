@@ -173,10 +173,10 @@ fn runnable_project_example_checks_and_builds_the_complete_source_graph() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/author_project");
     let loaded =
         reel_cli::project::load(&path).unwrap_or_else(|error| panic!("{:?}", error.failure));
-    assert_eq!(loaded.sources.len(), 3);
+    assert_eq!(loaded.sources.len(), 4);
     let checked = loaded.check().unwrap();
     let artifact = reel_cli::build(&checked, Some(&loaded.entry(None))).unwrap();
     let package = reel_package::decode(&artifact.bytes, Default::default()).unwrap();
-    assert_eq!(package.metadata().modules.len(), 3);
+    assert_eq!(package.metadata().modules.len(), 4);
     assert!(package.metadata().game_entry.is_some());
 }

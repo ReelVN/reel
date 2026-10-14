@@ -408,9 +408,10 @@ fn cancelled_story_sync_clears_published_images_and_keeps_only_submitted_leases(
         assert!(widget.projection.lines.is_empty());
         assert!(widget.projection.choices.is_empty());
         assert!(
-            !widget.authored,
-            "the cancellation status must remain visible"
+            widget.preview.is_none(),
+            "cancellation must not inject diagnostic UI"
         );
+        assert!(widget.lines.is_empty() && widget.choices.is_empty());
         let cancelled = frame(&mut driver, &mut bridge, id + 1);
         assert!(image_transforms(&cancelled).is_empty());
         assert!(

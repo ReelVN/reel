@@ -237,7 +237,6 @@ fn scroll_preserves_exclusive_slider_drag_and_rejects_invalid_axis_writes() {
 #[test]
 fn custom_nvl_taps_advance_but_pans_preserve_the_current_dialogue() {
     let source = r#"fn main() {
-        game.configure(default_dialogue: false);
         let dialogue = game.dialogue();
         stage.replace(scroll(x: 20, y: 20, width: 300, height: 120, follow_end: true) {
             view(|| column() { for line in dialogue.lines { text(value: bind(line.text), reveal: bind(line.reveal), height: 100); } });

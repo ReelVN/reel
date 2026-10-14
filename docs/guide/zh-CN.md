@@ -487,7 +487,7 @@ await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
 
 ## 十 选择与会变化的内容
 
-choose、自定义 choice_view 和只读选择模型已实现。通过 `game.configure(default_dialogue: false, default_choices: false)` 关闭对应默认界面，再把作者组件挂到自己的舞台。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative.aside)。
+choose、自定义 choice_view 和只读选择模型已实现。引擎不自动叠加对白或选择界面；作者将自己的组件挂到舞台，普通函数可封装并复用外观。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative.aside)。
 
 choose(options) 接收具有稳定 key 和 label 的选项数组，更新 game.choice 并等待 select(option_id)。当前句与选择共用主剧情交互权限。作者把选择视图放在自己的画面里，位置和背景均可自定。
 ```aside

@@ -59,7 +59,7 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
     let c = game.choice();
     let menu = model({open: false});
     fn main() {
-        game.configure(text_speed: 0, default_dialogue: false, default_choices: false);
+        game.configure(text_speed: 0);
         stage.replace(stack(width: 640, height: 420) {
             button("History", x: 10, y: 10, width: 120, height: 40,
                    on_click: |e| game.pause_reading(true));
