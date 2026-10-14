@@ -222,7 +222,11 @@ Keeping a reference to any node also keeps its unmounted parent component alive;
 
 ## 3 Story Code Is Ordinary Sequential Code
 
-narrator and choose currently support sequential waiting and resumption. The character API, bindable dialogue model, custom dialogue views and voice interfaces below remain design targets.
+narrator, character, say and choose support sequential waiting and resumption. After `let mio = character("Mio", id: "mio");`, call `mio("你好。");` directly. The default id is the name; explicit ids distinguish characters with the same name. Characters are immutable. `.line(text)` creates a reusable line descriptor; `say([mio.line("你好。"), eri.line("晚上好。")])` displays one ADV group with a shared reveal and advance interaction. History keeps each submitted identity, name and full text. Runnable example: [author_dialogue.aside](../../examples/author_dialogue.aside).
+
+`game.configure(text_speed: 30)` sets Unicode graphemes per second, defaulting to 30; 0 displays the complete text immediately, and omission preserves the current setting. Advance first completes the text, then finishes the interaction. Suspension, resource waits and paired input pause reveal without accumulating a catch-up burst. Rust hosts and the window share playback logic.
+
+The bindable dialogue model, custom dialogue views, bubbles/NVL, voice and chapter startup below remain design targets. Current say uses ADV groups and does not accept a mode parameter.
 
 Dialogue lines, choices, interaction text and session history grow with the content. History preserves the whole session; reaching a display cache capacity does not interrupt the story or discard earlier records. Actual allocation failure is reported.
 

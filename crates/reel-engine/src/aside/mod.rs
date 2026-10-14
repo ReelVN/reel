@@ -10,6 +10,7 @@ mod callbacks;
 mod game;
 pub use game::GameSettings;
 mod choice;
+mod dialogue;
 mod publication;
 mod registry;
 pub mod source;
@@ -170,6 +171,7 @@ pub struct SessionVm {
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
     choice_reader: Option<choice::ChoiceReader>,
+    dialogue_reader: Option<dialogue::DialogueReader>,
     claimed: Option<Completion>,
     delivery: Option<DeliveryId>,
     delivery_task: Option<TaskId>,
@@ -213,6 +215,7 @@ impl SessionVm {
             issued: None,
             pending: None,
             choice_reader: None,
+            dialogue_reader: None,
             claimed: None,
             delivery: None,
             delivery_task: None,
@@ -401,6 +404,16 @@ impl SessionVm {
                     Ok(NativeDispatch::Decoding { work })
                 }
             }
+            "reel::character" | "reel::character::line" => {
+                if symbol == "reel::character" {
+                    self.character(ticket)?;
+                } else {
+                    self.character_line(ticket)?;
+                }
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::character::speak" => self.character_speak(session, ticket, locale),
+            "reel::say" => self.dispatch_say(session, ticket, locale, work),
             "reel::narrator" => {
                 self.dispatch_narrator(session, ticket, locale)
                     .map(|interaction| NativeDispatch::Published {
@@ -579,6 +592,9 @@ impl SessionVm {
         if let Some(reader) = self.choice_reader.take() {
             reader.release(self.vm.heap_mut())?;
         }
+        if let Some(reader) = self.dialogue_reader.take() {
+            reader.release(self.vm.heap_mut())?;
+        }
         self.issued = None;
         Ok(())
     }
@@ -602,9 +618,25 @@ impl SessionVm {
             return Err(AdapterError::Input("narrator arity"));
         };
         let text = text::read_string(self.vm.heap(), *text, self.read_limit)?;
+        let content_id = self.dialogue_content_id(ticket);
+        self.publish_say(
+            session,
+            ticket,
+            &[DialogueLineInput {
+                speaker_id: None,
+                speaker_name: "",
+                content_id: &content_id,
+                text: &text,
+            }],
+            locale,
+        )
+    }
+
+    fn dialogue_content_id(&self, ticket: HostTicket) -> String {
+        let p = self.vm.program().package();
         let function = &p.functions[ticket.location.code.function.index()];
         let module = &p.symbols[p.modules[function.module.index()].path.index()];
-        let content_id = match ticket.location.source {
+        match ticket.location.source {
             Some(span) => format!(
                 "source:{}:{}:v{}:file{}:{}..{}",
                 module.len(),
@@ -622,18 +654,7 @@ impl SessionVm {
                 ticket.location.code.function.0,
                 ticket.location.pc.0
             ),
-        };
-        self.publish_say(
-            session,
-            ticket,
-            &[DialogueLineInput {
-                speaker_id: None,
-                speaker_name: "",
-                content_id: &content_id,
-                text: &text,
-            }],
-            locale,
-        )
+        }
     }
 
     /// Publish already decoded ADV lines from a trusted native implementation.
@@ -884,6 +905,7 @@ impl SessionVm {
         // Tokens are invalidated by the owner scan; never release them twice.
         self.pending = None;
         self.choice_reader = None;
+        self.dialogue_reader = None;
         self.claimed = None;
         self.result_root = None;
         self.delivery = None;

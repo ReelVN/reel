@@ -3,11 +3,17 @@ use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc
 
 #[native(symbol = "sample::decorate")]
 fn decorate(
-    receiver: String,
+    receiver: Value,
     #[aside(default = "!")] suffix: String,
     #[aside(rest)] extras: Value,
     #[aside(context)] context: &mut CallContext<'_, ()>,
 ) -> Result<String, Error> {
+    let receiver = if context.vm.heap().info(receiver)?.kind == aside_vm::ObjectKind::Host {
+        context.vm.heap().host_payload(receiver, 0)?
+    } else {
+        receiver
+    };
+    let receiver = <String as aside_host::FromValue>::from_value(context.vm.heap(), receiver)?;
     let count = context.vm.heap().sequence_len(extras)?;
     Ok(if count == 0 {
         format!("{receiver}{suffix}")
@@ -17,6 +23,7 @@ fn decorate(
 }
 struct Host {
     decorate: bc::FunctionId,
+    callable: bool,
 }
 #[native(symbol = "sample::bind")]
 fn bind(
@@ -24,7 +31,27 @@ fn bind(
     receiver: String,
 ) -> Result<Value, Error> {
     let value = context.vm.heap_mut().alloc_string(&receiver)?;
-    Ok(context.vm.bind_native(value, context.host.decorate)?)
+    make_callable(
+        context.vm,
+        value,
+        context.host.decorate,
+        context.host.callable,
+    )
+}
+fn make_callable(
+    vm: &mut Vm,
+    value: Value,
+    function: bc::FunctionId,
+    host: bool,
+) -> Result<Value, Error> {
+    if host {
+        let fields = vm.heap_mut().alloc_table()?;
+        let value = vm.heap_mut().alloc_host(fields, &[value], None)?;
+        vm.bind_callable(value, function)?;
+        Ok(value)
+    } else {
+        Ok(vm.bind_native(value, function)?)
+    }
 }
 
 fn collect(vm: &mut Vm) {
@@ -40,6 +67,11 @@ fn collect(vm: &mut Vm) {
 
 #[test]
 fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
+    for callable in [false, true] {
+        exercise_callable(callable);
+    }
+}
+fn exercise_callable(callable: bool) {
     let decorate = decorate::binding();
     let bind = bind::binding();
     let contracts = [
@@ -51,7 +83,7 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
             abi_version: 1,
             parameters: vec![NativeParameter {
                 name: "callback".into(),
-                ty: bc::BuiltinType::Closure,
+                ty: bc::BuiltinType::Any,
                 default: None,
             }],
             result: bc::BuiltinType::String,
@@ -109,19 +141,26 @@ fn bound_native_shares_script_entry_and_callback_binding_across_gc() {
     let invalid = function("invalid");
     let mut host = Host {
         decorate: function("sample::decorate"),
+        callable,
     };
     let support = aside_host::runtime_support(program.package(), &contracts, &[]).unwrap();
     let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
     let receiver = vm.heap_mut().alloc_string("entry").unwrap();
-    let entry_method = vm.bind_native(receiver, host.decorate).unwrap();
+    let entry_method = make_callable(&mut vm, receiver, host.decorate, callable).unwrap();
     let method_root = vm
         .heap_mut()
         .add_root(RootOwner(1), aside_vm::RootKind::Host, entry_method)
         .unwrap();
+    if !callable {
+        assert!(
+            vm.heap_mut()
+                .set_field(entry_method, 3, Value::NULL)
+                .is_err()
+        );
+    }
     assert!(
-        vm.heap_mut()
-            .set_field(entry_method, 3, Value::NULL)
-            .is_err()
+        vm.bind_callable(entry_method, main).is_err(),
+        "only admitted native functions are callable adapters"
     );
     for entry in [Some(compiled.entry), Some(main), None, Some(invalid)] {
         let task = match entry {

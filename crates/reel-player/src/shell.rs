@@ -294,10 +294,6 @@ impl ApplicationHandler for App {
                 self.fail(event_loop, error);
                 return;
             }
-            if let Err(e) = state.tick_reveal() {
-                self.fail(event_loop, e);
-                return;
-            }
             if let Err(e) = state.poll_completions() {
                 if matches!(e, GpuError::DeviceLost) {
                     if let Err(e) = state.recover_device() {
@@ -315,11 +311,7 @@ impl ApplicationHandler for App {
             let completion_deadline = (state.presentation.needs_redraw()
                 || state.backend.has_pending())
             .then(|| Instant::now() + Duration::from_millis(8));
-            let deadline = match (completion_deadline, state.reveal_deadline()) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            let deadline = match (deadline, state.story_deadline()) {
+            let deadline = match (completion_deadline, state.story_deadline()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };

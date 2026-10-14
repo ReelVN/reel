@@ -154,7 +154,6 @@ impl AsideSessionUi {
     pub fn ui(&self) -> &SessionUi {
         &self.ui
     }
-    #[cfg(any(test, feature = "window"))]
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
     }

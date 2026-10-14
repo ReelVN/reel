@@ -2,6 +2,7 @@
 //!
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
+mod playback;
 use crate::stage_widget::{StageView, StageWidget};
 #[cfg(test)]
 mod button_tests;
@@ -72,7 +73,7 @@ struct Projection {
     lines: Vec<TextRow>,
     choices: Vec<OptionRow>,
     history_count: usize,
-    status: String,
+    status: reel_engine::SessionStatus,
 }
 impl Projection {
     fn from_session(session: &Session) -> Result<Self, Error> {
@@ -82,7 +83,7 @@ impl Projection {
             lines: vec![],
             choices: vec![],
             history_count: view.history.len(),
-            status: format!("{:?}", view.status),
+            status: view.status,
         };
         match view.interaction {
             Some(InteractionView::Dialogue(dialogue)) => {
@@ -230,21 +231,28 @@ impl SessionWidget {
             this.widget.background = ui.background;
             this.ctx.request_render();
         }
-        if !authored_changed && this.widget.projection == ui.projection {
-            return;
-        }
         let same_interaction = this.widget.projection.interaction == ui.projection.interaction;
-        if !same_interaction {
-            this.widget.scroll.set(0.);
-        }
-        if same_interaction && this.widget.lines.len() == ui.projection.lines.len() {
-            for (widgets, row) in this.widget.lines.iter_mut().zip(&ui.projection.lines) {
-                if let Some(mut label) = this.ctx.get_mut(&mut widgets.text) {
-                    // Reveal never substitutes a prefix for the original full text.
-                    Label::set_visible_bytes(&mut label, row.visible.clone());
+        let status_changed = this.widget.projection.status != ui.projection.status
+            || this.widget.projection.history_count != ui.projection.history_count;
+        if same_interaction {
+            for ((widgets, previous), row) in this
+                .widget
+                .lines
+                .iter_mut()
+                .zip(&mut this.widget.projection.lines)
+                .zip(&ui.projection.lines)
+            {
+                if previous.visible != row.visible {
+                    if let Some(mut label) = this.ctx.get_mut(&mut widgets.text) {
+                        Label::set_visible_bytes(&mut label, row.visible.clone());
+                    }
+                    previous.visible = row.visible.clone();
                 }
             }
+            this.widget.projection.status = ui.projection.status;
+            this.widget.projection.history_count = ui.projection.history_count;
         } else {
+            this.widget.scroll.set(0.);
             for line in std::mem::take(&mut this.widget.lines) {
                 this.ctx.remove_child(line.speaker);
                 this.ctx.remove_child(line.text);
@@ -256,11 +264,12 @@ impl SessionWidget {
             this.widget.make_children(&ui.choice_owners);
             this.ctx.children_changed();
         }
-        if let Some(mut status) = this.ctx.get_mut(&mut this.widget.status) {
+        if status_changed && let Some(mut status) = this.ctx.get_mut(&mut this.widget.status) {
             Label::set_text(&mut status, ui.status_text());
         }
-        this.widget.projection = ui.projection.clone();
-        this.ctx.request_layout();
+        if !same_interaction || status_changed || authored_changed {
+            this.ctx.request_layout();
+        }
     }
 }
 impl Widget for SessionWidget {
@@ -640,6 +649,7 @@ pub struct SessionUi {
     stage_dirty: bool,
     pending_stage: Option<StageView>,
     images: crate::images::Images,
+    playback: playback::Playback,
 }
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
@@ -665,6 +675,7 @@ impl SessionUi {
             stage: None,
             stage_dirty: false,
             pending_stage: None,
+            playback: Default::default(),
             images: crate::images::Images::new(
                 crate::assets::Assets::directory(Default::default()),
             ),
@@ -751,17 +762,17 @@ impl SessionUi {
             self.binding.borrow_mut().accepted = Some(stamp);
         }
     }
-    #[cfg(feature = "window")]
     pub(crate) fn gesture_active(&self) -> bool {
         let binding = self.binding.borrow();
         !binding.contacts.is_empty() || binding.navigation_down.is_some()
     }
     pub fn clear_presented(&mut self) {
+        self.pause_dialogue();
         *self.binding.borrow_mut() = InputBinding::default();
     }
     fn status_text(&self) -> String {
         format!(
-            "{} | history: {} | scroll for more; click dialogue twice; close window to exit",
+            "{:?} | history: {} | scroll for more; click dialogue twice; close window to exit",
             self.projection.status, self.projection.history_count
         )
     }
@@ -781,34 +792,43 @@ impl SessionUi {
         } else if self.images_pending() {
             return Ok(());
         }
-        let projection = match Projection::from_session(&self.session) {
-            Ok(projection) => projection,
-            Err(error) => {
-                self.clear_presented();
-                return Err(error);
+        let view = self.session.view();
+        let interaction = view.interaction.map(|i| i.id());
+        let mut changed = view.status != self.projection.status
+            || view.history.len() != self.projection.history_count;
+        if interaction != self.projection.interaction {
+            let projection = Projection::from_session(&self.session)?;
+            let replacement =
+                match allocate_choice_owners(&mut self.session, projection.choices.len()) {
+                    Ok(owners) => owners,
+                    Err(error) => {
+                        self.clear_presented();
+                        return Err(error);
+                    }
+                };
+            for owner in std::mem::replace(&mut self.choice_owners, replacement) {
+                self.session.revoke_owner(owner)?;
             }
-        };
-        if projection != self.projection || self.stage_dirty {
-            if projection.interaction != self.projection.interaction {
-                let replacement =
-                    match allocate_choice_owners(&mut self.session, projection.choices.len()) {
-                        Ok(owners) => owners,
-                        Err(error) => {
-                            self.clear_presented();
-                            return Err(error);
-                        }
-                    };
-                for owner in std::mem::replace(&mut self.choice_owners, replacement) {
-                    self.session.revoke_owner(owner)?;
+            self.projection = projection;
+            changed = true;
+        } else {
+            self.projection.status = view.status;
+            self.projection.history_count = view.history.len();
+            if let Some(InteractionView::Dialogue(dialogue)) = view.interaction {
+                for (row, line) in self.projection.lines.iter_mut().zip(dialogue.lines()) {
+                    let visible = line.reveal().visible_bytes;
+                    changed |= row.visible != visible;
+                    row.visible = visible;
                 }
             }
+        }
+        if changed || self.stage_dirty {
             self.stamp.revision = self
                 .stamp
                 .revision
                 .checked_add(1)
                 .ok_or("UI projection revision exhausted")?;
-            self.stamp.interaction = projection.interaction;
-            self.projection = projection;
+            self.stamp.interaction = self.projection.interaction;
             bridge.edit_widget(root_id, |mut widget| {
                 SessionWidget::sync(&mut widget.downcast::<SessionWidget>(), self)
             });
@@ -821,6 +841,12 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         event: PointerEvent,
     ) -> Result<UiDispatch, Error> {
+        if matches!(
+            event,
+            PointerEvent::Down(_) | PointerEvent::Up(_) | PointerEvent::Cancel(_)
+        ) {
+            self.pause_dialogue();
+        }
         let pointer = pointer_info(&event);
         let terminal = matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_));
         {
@@ -860,10 +886,14 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         event: TextEvent,
     ) -> Result<UiDispatch, Error> {
+        let was_held = self.gesture_active();
         self.binding.borrow_mut().non_pointer = true;
         let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
         let handled = bridge.handle_text_event(event);
         self.binding.borrow_mut().non_pointer = false;
+        if was_held || self.gesture_active() {
+            self.pause_dialogue();
+        }
         if lost_focus {
             let mut binding = self.binding.borrow_mut();
             binding.down = None;

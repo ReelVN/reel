@@ -2751,6 +2751,7 @@ dependencies = [
  "reel-engine",
  "reel-render",
  "reel-ui",
+ "stats_alloc",
  "ui-events-winit",
  "wgpu",
  "winit",

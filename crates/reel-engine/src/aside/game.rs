@@ -3,11 +3,12 @@ use super::{AdapterError, HostTicket, SessionVm, text};
 use aside_vm::{Value, ValueTag, executor::HostResponse};
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameSettings {
     pub title: String,
     pub canvas_size: Option<[u32; 2]>,
     pub fonts: Vec<String>,
+    pub text_speed: f64,
     pub source: Option<String>,
 }
 impl Default for GameSettings {
@@ -16,6 +17,7 @@ impl Default for GameSettings {
             title: "Reel".into(),
             canvas_size: None,
             fonts: Vec::new(),
+            text_speed: 30.,
             source: None,
         }
     }
@@ -60,6 +62,16 @@ impl SessionVm {
             if next.fonts.is_empty() || next.fonts.iter().any(String::is_empty) {
                 return Err(AdapterError::Input("provide at least one font file"));
             }
+        }
+        if args[4].tag() != ValueTag::Null {
+            let speed = args[4]
+                .as_float()
+                .or_else(|| args[4].as_int().map(|n| n as f64))
+                .filter(|n| n.is_finite() && *n >= 0.)
+                .ok_or(AdapterError::Input(
+                    "text_speed must be finite and nonnegative",
+                ))?;
+            next.text_speed = speed;
         }
         if next != *self.game {
             if next.fonts != self.game.fonts {

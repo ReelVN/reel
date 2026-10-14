@@ -25,10 +25,7 @@ use reel_ui::{
     core::*,
     dpi::PhysicalSize,
 };
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 type Error = Box<dyn std::error::Error>;
@@ -63,7 +60,6 @@ pub(crate) struct State {
     pub(crate) zoom: f64,
     pub(crate) session: Option<WindowSession>,
     recorded_projection: Option<ProjectionStamp>,
-    next_reveal: Option<Instant>,
     closing: bool,
     completions: Vec<RenderEvent<GpuError>>,
 }
@@ -317,13 +313,11 @@ impl State {
             zoom: 1.,
             session,
             recorded_projection: None,
-            next_reveal: None,
             closing: false,
             completions: Vec::new(),
         };
         state.start_gamepads();
 
-        state.schedule_reveal();
         Ok(state)
     }
     pub(crate) fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) -> Result<(), Error> {
@@ -331,7 +325,6 @@ impl State {
         if self.backend.surface().is_some() {
             self.backend.configure(self.presentation.surface_info())?;
         }
-        self.schedule_reveal();
         self.window.request_redraw();
         Ok(())
     }
@@ -345,7 +338,6 @@ impl State {
             ..self.presentation.surface_info()
         });
         // Invalidates candidates even if fresh negotiation subsequently fails.
-        self.next_reveal = None;
         if let Some(session) = &mut self.session {
             session.ui_mut().clear_presented();
         }
@@ -364,7 +356,7 @@ impl State {
         self.session
             .as_ref()
             .filter(|session| session.needs_tick())
-            .map(|session| Instant::now() + session.tick_interval())
+            .and_then(|session| Instant::now().checked_add(session.tick_interval()))
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
         let Some(session) = &mut self.session else {
@@ -395,7 +387,6 @@ impl State {
             let session = self.session.as_mut().unwrap();
             session.sync(&mut self.presentation.bridge, self.root_id)?;
             if settings_changed || before != session.ui().projection_stamp() {
-                self.schedule_reveal();
                 self.invalidate();
             }
         }
@@ -426,7 +417,6 @@ impl State {
             return Ok(false);
         };
         self.session.as_mut().unwrap().ui_mut().clear_presented();
-        self.next_reveal = None;
         let paths = settings.fonts.clone();
         let assets = self.session.as_ref().unwrap().ui().assets();
         self.font_requests.retain(|path, id| {
@@ -497,7 +487,6 @@ impl State {
         }
         self.input.cancel(|_| {});
         self.closing = true;
-        self.next_reveal = None;
         self.presentation.suspend();
         if let Some(session) = &mut self.session {
             session.ui_mut().close_resources();
@@ -611,7 +600,6 @@ impl State {
         backend.configure(self.presentation.surface_info())?;
         // Retire the old surface and device together, including zero-sized views.
         self.backend = backend;
-        self.schedule_reveal();
         self.window.request_redraw();
         eprintln!(
             "device recovered generation={generation}, epoch={}",
@@ -630,7 +618,6 @@ impl State {
         let _ = self.pointer_event(PointerKind::Cancel);
         self.presentation.suspend();
         self.backend.suspend();
-        self.next_reveal = None;
         if let Some(session) = &mut self.session {
             session.ui_mut().clear_presented();
             session.suspend(self.host.monotonic_now().0);
@@ -687,7 +674,6 @@ impl State {
         } else {
             self.presentation.bridge.handle_text_event(event)
         };
-        self.schedule_reveal();
         self.invalidate();
         Ok(handled)
     }
@@ -759,9 +745,6 @@ impl State {
             }
         } else {
             self.presentation.bridge.handle_pointer_event(event)?;
-        }
-        if released {
-            self.schedule_reveal();
         }
         self.invalidate();
         Ok(())
@@ -847,74 +830,6 @@ impl State {
         for i in 0..self.input_events.len() {
             self.text_event(TextEvent::Navigation(self.input_events[i]))?;
         }
-        Ok(())
-    }
-    fn schedule_reveal(&mut self) {
-        if self.settings_pending()
-            || self.is_suspended()
-            || self.size.width == 0
-            || self.size.height == 0
-        {
-            self.next_reveal = None;
-            return;
-        }
-        self.next_reveal = self.session.as_ref().and_then(|session| {
-            if session.ui().images_pending() {
-                return None;
-            }
-            match session.ui().session().view().interaction {
-                Some(reel_engine::InteractionView::Dialogue(dialogue))
-                    if dialogue.lines().iter().any(|line| {
-                        let reveal = line.reveal();
-                        reveal.revealed_count < reveal.total_count
-                    }) =>
-                {
-                    Some(Instant::now() + Duration::from_millis(35))
-                }
-                _ => None,
-            }
-        });
-    }
-    pub(crate) fn reveal_deadline(&self) -> Option<Instant> {
-        self.next_reveal
-    }
-    pub(crate) fn tick_reveal(&mut self) -> Result<(), Error> {
-        if self.settings_pending() {
-            self.next_reveal = None;
-            return Ok(());
-        }
-        if self
-            .next_reveal
-            .is_none_or(|deadline| Instant::now() < deadline)
-        {
-            return Ok(());
-        }
-        if let Some(session) = &mut self.session {
-            if session.ui().gesture_active() || session.ui().images_pending() {
-                // Preserve the presented content bound at Down until Up/Cancel.
-                self.schedule_reveal();
-                return Ok(());
-            }
-            let interaction = session
-                .ui()
-                .session()
-                .view()
-                .interaction
-                .map(|interaction| interaction.id());
-            if let Some(interaction) = interaction {
-                let owner = session.ui().session().root_owner();
-                if session
-                    .ui_mut()
-                    .session_mut()
-                    .reveal_more(owner, interaction, 1)?
-                {
-                    session.sync(&mut self.presentation.bridge, self.root_id)?;
-                    self.invalidate();
-                }
-            }
-        }
-        // Advance at most one grapheme per timer wake; no unbounded catch-up after a sleep.
-        self.schedule_reveal();
         Ok(())
     }
 }
@@ -1404,6 +1319,16 @@ mod tests {
             .unwrap();
         state.poll_completions().unwrap();
     }
+    fn advance_session_text(state: &mut State) {
+        let session = state.session.as_mut().unwrap();
+        session.ui_mut().pause_dialogue();
+        session.ui_mut().advance_dialogue(0, 30.).unwrap();
+        session.ui_mut().advance_dialogue(33_333_334, 30.).unwrap();
+        session
+            .sync(&mut state.presentation.bridge, state.root_id)
+            .unwrap();
+        state.invalidate();
+    }
     fn exercise_session(event_loop: &ActiveEventLoop) {
         let mut state = State::new_session(event_loop, 1).unwrap();
         let identity = state.session.as_ref().unwrap().ui().session().identity();
@@ -1420,8 +1345,7 @@ mod tests {
             hidden_pixels, 0,
             "hidden full-text layout paints no dialogue glyph pixels"
         );
-        state.next_reveal = Some(Instant::now());
-        state.tick_reveal().unwrap();
+        advance_session_text(&mut state);
         assert_eq!(session_reveal(&state), 1);
         assert_eq!(
             state
@@ -1436,7 +1360,7 @@ mod tests {
             1
         );
         state.resize(state.window.inner_size()).unwrap();
-        assert!(state.reveal_deadline().is_some());
+        assert!(state.story_deadline().is_none());
         assert_eq!(session_reveal(&state), 1);
         assert!(state.presentation.bridge.accepted_key().is_none());
         present_session(&mut state);
@@ -1449,14 +1373,14 @@ mod tests {
             .poll(wgpu::PollType::Wait);
         state.recover_device().unwrap();
         assert_eq!(session_reveal(&state), 1);
-        assert!(state.reveal_deadline().is_some());
+        assert!(state.story_deadline().is_none());
         assert!(state.presentation.bridge.accepted_key().is_none());
         present_session(&mut state);
         state.suspend();
-        assert!(state.reveal_deadline().is_none());
+        assert!(state.story_deadline().is_none());
         assert!(state.presentation.bridge.accepted_key().is_none());
         state.resume().unwrap();
-        assert!(state.reveal_deadline().is_some());
+        assert!(state.story_deadline().is_none());
         assert_eq!(session_reveal(&state), 1);
         assert_eq!(
             state.session.as_ref().unwrap().ui().session().identity(),
@@ -1470,14 +1394,13 @@ mod tests {
         state
             .pointer_event(PointerKind::Down(PointerButton::Primary))
             .unwrap();
-        state.next_reveal = Some(Instant::now());
-        state.tick_reveal().unwrap();
+        advance_session_text(&mut state);
         assert_eq!(session_reveal(&state), 1);
         state
             .pointer_event(PointerKind::Up(PointerButton::Primary))
             .unwrap();
         assert!(session_reveal(&state) > 1);
-        assert!(state.reveal_deadline().is_none());
+        assert!(state.story_deadline().is_none());
         present_session(&mut state);
         let shown_pixels = dark_dialogue_pixels(&mut state);
         assert!(
@@ -1609,7 +1532,7 @@ fn main() {{
             let _ = send.send(());
         }));
         let settle = |state: &mut State| {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + std::time::Duration::from_secs(15);
             loop {
                 state.tick_story().unwrap();
                 if !state.settings_pending()
@@ -1624,7 +1547,7 @@ fn main() {{
                 );
                 if !state.session.as_ref().unwrap().needs_tick() {
                     receive
-                        .recv_timeout(Duration::from_secs(10))
+                        .recv_timeout(std::time::Duration::from_secs(10))
                         .expect("author resources must wake window");
                 }
             }
@@ -1665,8 +1588,7 @@ fn main() {{
         );
         let reveal = session_reveal(&state);
         session_click(&mut state, 100., 300.);
-        state.next_reveal = Some(Instant::now());
-        state.tick_reveal().unwrap();
+        advance_session_text(&mut state);
         assert_eq!(
             session_reveal(&state),
             reveal,
