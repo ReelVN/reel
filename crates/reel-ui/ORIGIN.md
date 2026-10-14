@@ -32,3 +32,7 @@ in reel-player; reel-ui retains no native window or clipboard dependencies.
 Slider range/stepping and thumb geometry are shared with author controls. Interaction
 configuration revisions preserve value-update gestures and cancel obsolete captures;
 source and ASB control flows are covered by `reel-cli/tests/author_controls.rs`.
+
+Reel's Label paragraph composer adds ranged markup styles, baseline-aligned ruby,
+emphasis dots and owned inline-link actions. Text reveal shares the complete layout;
+interactive-region changes update focus and presented input configuration.

@@ -299,7 +299,7 @@ fn render_text_inner(
 /// precedes its continuations in visual order, including RTL runs where those
 /// continuations precede the start in logical order. Group in visual order, then
 /// restore logical indexing; no prefix scan repeats for a ligature or style run.
-fn revealed_clusters(
+pub(crate) fn revealed_clusters(
     run: &reel_text::Run<'_, BrushIndex>,
     visible: &std::ops::Range<usize>,
 ) -> SmallVec<[bool; 64]> {

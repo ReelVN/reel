@@ -19,7 +19,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
                 speaker_id: Some("mio"),
                 speaker_name: "Mio",
                 content_id: "opening",
-                text: "e\u{301}👩🏽‍🚀 雨水停在玻璃上。",
+                text: "e\u{301}👩🏽‍🚀 雨水停在玻璃上。".into(),
             }],
             "zh-CN",
         )
@@ -54,7 +54,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "cancel",
-                text: "cleanup",
+                text: ("cleanup").into(),
             }],
             "en",
         )

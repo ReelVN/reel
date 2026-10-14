@@ -23,7 +23,7 @@ fn begin_dialogue(session: &mut Session) -> InteractionId {
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "retirement",
-                text: "retained history",
+                text: ("retained history").into(),
             }],
             "en",
         )

@@ -12,6 +12,76 @@ use support::*;
 
 const SOURCE: &str = include_str!("../../../examples/author_buttons.aside");
 
+#[test]
+#[ignore = "requires REEL_SESSION_FONT for real inline link hit geometry"]
+fn rich_links_consume_presented_mouse_touch_and_gamepad_input_without_advancing_story() {
+    let source = r#"
+    let d = game.dialogue(); let state = model({clicks: 0});
+    fn main() {
+        stage.replace(stack(width: 640, height: 420) {
+            text(value: bind(d.text), reveal: bind(d.reveal), x: 20, y: 20, width: 300, height: 100, font_size: 32,
+                on_link: |e| { if e.id != "entry" { throw "wrong link"; } state.clicks += 1; });
+            text(value: derive(|| f"clicks {state.clicks}"), y: 150);
+        });
+        narrator(rich("[link=entry][b]Entry[/b][/link] then stay"));
+        narrator("advanced");
+    }"#;
+    let font = reel_ui::peniko::Blob::from(
+        std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+    );
+    let checked = reel_cli::check(source, "rich-links.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for encoded in [false, true] {
+        for pointer in [Some(PointerType::Mouse), Some(PointerType::Touch), None] {
+            let story = if encoded {
+                reel_cli::decode_story(&artifact.bytes).unwrap()
+            } else {
+                reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap()
+            };
+            let mut driver = AsideSessionUi::from_compiled(
+                Session::new(SessionId(1), Epoch(1)).unwrap(),
+                story,
+                "en",
+                VmLimits::default(),
+            )
+            .unwrap();
+            settle(&mut driver);
+            let (mut bridge, root) = bridge_with_font(&driver, Some(font.clone()));
+            present(&mut driver, &mut bridge, root, 1);
+            click_at(&mut driver, &mut bridge, 500., 300.);
+            present(&mut driver, &mut bridge, root, 2);
+            let interaction = driver.ui().session().view().interaction.unwrap().id();
+            if let Some(pointer) = pointer {
+                click_with_pointer(&mut driver, &mut bridge, 35., 40., pointer);
+            } else {
+                gamepad_press(
+                    &mut driver,
+                    &mut bridge,
+                    reel_ui::input::GamepadButton::South,
+                );
+            }
+            present(&mut driver, &mut bridge, root, 3);
+            assert!(
+                driver
+                    .adapter()
+                    .stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text("clicks 1".into())),
+                "link callback: encoded={encoded}, pointer={pointer:?}"
+            );
+            assert_eq!(
+                driver.ui().session().view().interaction.unwrap().id(),
+                interaction
+            );
+            click_at(&mut driver, &mut bridge, 500., 300.);
+            assert_ne!(
+                driver.ui().session().view().interaction.unwrap().id(),
+                interaction
+            );
+        }
+    }
+}
+
 fn run(story: CompiledStory, pointer_type: Option<PointerType>) {
     let mut driver = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),

@@ -10,6 +10,7 @@ pub mod io;
 pub mod queue;
 pub mod request_ids;
 pub mod result;
+pub mod text;
 pub mod wake;
 pub mod work;
 

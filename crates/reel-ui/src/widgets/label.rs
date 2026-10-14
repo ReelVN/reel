@@ -5,24 +5,27 @@ use std::any::TypeId;
 use std::mem::Discriminant;
 
 use accesskit::{Node, Role};
+use reel_core::text::Text;
 use smallvec::SmallVec;
 use tracing::{Span, trace_span};
+mod paragraph;
+use paragraph::Paragraph;
 
 use crate::core::{
-    AccessCtx, ArcStr, BrushIndex, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
-    PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, StyleSet, Update, UpdateCtx,
-    UsesProperty, Widget, WidgetId, WidgetMut, render_text, render_text_revealed,
+    AccessCtx, ArcStr, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx,
+    PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty,
+    StyleSet, TextEvent, Update, UpdateCtx, UsesProperty, Widget, WidgetId, WidgetMut,
     set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Size};
 use crate::layout::{AsUnit, LenReq, Length};
 use crate::properties::{ContentColor, LineBreaking};
-use crate::reel_text::{FontContext, Layout, LayoutAccessibility, LayoutContext};
+use crate::reel_text::{FontContext, LayoutAccessibility, LayoutContext};
 use crate::theme::default_text_styles;
 use crate::{TextAlign, TextAlignOptions, theme};
 
-/// A widget displaying non-interactive text.
+/// A text paragraph with optional inline links.
 ///
 /// This is useful for creating interactive widgets which internally
 /// need support for displaying text, such as a button.
@@ -43,10 +46,13 @@ pub struct Label {
     /// During which any value larger than the cache capacity will be ignored.
     active_layout: usize,
 
-    text: ArcStr,
+    text: Text,
     visible_bytes: Option<std::ops::Range<usize>>,
     styles: StyleSet,
     text_alignment: TextAlign,
+    pressed_link: Option<usize>,
+    focused_link: usize,
+    link_button: super::ButtonBehavior,
 
     /// Whether to hint whilst drawing the text.
     ///
@@ -61,7 +67,7 @@ pub struct Label {
 /// Text layout computation inputs and output.
 struct TextLayout {
     /// Computed text layout.
-    layout: Layout<BrushIndex>,
+    layout: Paragraph,
     /// Max advance value that was used when calculating this layout.
     max_advance: Option<f32>,
     /// Text alignment of this layout.
@@ -79,7 +85,7 @@ impl TextLayout {
     /// Creates a new [`TextLayout`] with the specified `max_advance` constraint and `timestamp`.
     fn new(max_advance: Option<f32>, timestamp: u8) -> Self {
         Self {
-            layout: Layout::new(),
+            layout: Paragraph::default(),
             max_advance,
             alignment: TextAlign::Start,
             alignment_width: -1., // Not aligned yet
@@ -161,6 +167,17 @@ impl TextLayout {
                     if a_line.text_range() != b_line.text_range() {
                         return false;
                     }
+                    let boxes = |item| match item {
+                        crate::reel_text::PositionedLayoutItem::InlineBox(b) => Some(b.id),
+                        _ => None,
+                    };
+                    if !a_line
+                        .items()
+                        .filter_map(boxes)
+                        .eq(b_line.items().filter_map(boxes))
+                    {
+                        return false;
+                    }
                 }
                 _ => return false,
             }
@@ -181,10 +198,13 @@ impl Label {
             layouts: Vec::new(),
             cache_time: 0,
             active_layout: usize::MAX,
-            text: text.into(),
+            text: Text::from(text.into()),
             visible_bytes: None,
             styles,
             text_alignment: TextAlign::Start,
+            pressed_link: None,
+            focused_link: 0,
+            link_button: Default::default(),
             hint: true,
             accessibility_hidden: false,
             accessibility: LayoutAccessibility::default(),
@@ -204,6 +224,11 @@ impl Label {
                 && self.text.is_char_boundary(range.end)
         );
         self.visible_bytes = Some(range);
+        self
+    }
+
+    pub fn with_rich_text(mut self, text: Text) -> Self {
+        self.text = text;
         self
     }
 
@@ -283,7 +308,7 @@ impl Label {
     ///
     /// To update the text of an active label, use [`set_text`](Self::set_text).
     pub fn text(&self) -> &ArcStr {
-        &self.text
+        self.text.plain()
     }
 }
 
@@ -341,7 +366,15 @@ impl Label {
 
     /// Replaces the text of this widget.
     pub fn set_text(this: &mut WidgetMut<'_, Self>, new_text: impl Into<ArcStr>) {
-        this.widget.text = new_text.into();
+        Self::set_rich_text(this, Text::from(new_text.into()));
+    }
+
+    pub fn set_rich_text(this: &mut WidgetMut<'_, Self>, text: Text) {
+        this.ctx.set_interactive(text.has_links(), text.has_links());
+        this.widget.text = text;
+        this.widget.pressed_link = None;
+        this.widget.focused_link = 0;
+        this.widget.link_button = Default::default();
         this.widget.visible_bytes = None;
 
         this.widget.clear_cache();
@@ -455,13 +488,8 @@ impl Label {
 
         // TODO: Should we use a different scale?
         // See https://github.com/linebender/xilem/issues/1264
-        let mut builder = layout_ctx.ranged_builder(font_ctx, &self.text, 1.0, true);
-        for prop in self.styles.inner().values() {
-            builder.push_default(prop.to_owned());
-        }
-        builder.build_into(&mut layout.layout, &self.text);
-
-        layout.layout.break_all_lines(max_advance);
+        layout.layout =
+            Paragraph::build(font_ctx, layout_ctx, &self.text, &self.styles, max_advance);
 
         // Check if the layout result matches an existing cache entry.
         // This happens when slightly increasing max_advance, as we can't then safely pre-identify
@@ -507,12 +535,120 @@ impl Label {
 impl UsesProperty<ContentColor> for Label {}
 impl UsesProperty<LineBreaking> for Label {}
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkActivated {
+    pub id: ArcStr,
+    pub text: Text,
+}
+impl Label {
+    fn link_at(&self, point: Point) -> Option<usize> {
+        let offset = self
+            .layouts
+            .get(self.active_layout)?
+            .layout
+            .hit(point.x as f32, point.y as f32)?;
+        self.text.links().iter().position(|link| {
+            link.range.contains(&offset)
+                && self
+                    .visible_bytes
+                    .as_ref()
+                    .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
+        })
+    }
+    fn link_action(&self, index: usize) -> Option<LinkActivated> {
+        let link = self.text.links().get(index)?;
+        self.visible_bytes
+            .as_ref()
+            .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
+            .then(|| LinkActivated {
+                id: link.id.clone(),
+                text: self.text.clone(),
+            })
+    }
+}
+
 // --- MARK: IMPL WIDGET
 impl Widget for Label {
-    type Action = NoAction;
+    type Action = LinkActivated;
 
     fn accepts_pointer_interaction(&self) -> bool {
-        false
+        self.text.has_links()
+    }
+    fn accepts_focus(&self) -> bool {
+        self.text.has_links()
+    }
+
+    fn on_pointer_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &PointerEvent,
+    ) {
+        if ctx.is_disabled() || !ctx.input_configuration_is_current() {
+            self.pressed_link = None;
+            return;
+        }
+        match event {
+            PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
+                self.pressed_link = self.link_at(ctx.local_position(e.state.position));
+                if let Some(index) = self.pressed_link {
+                    self.focused_link = index;
+                    ctx.request_focus();
+                    ctx.capture_pointer_for_click();
+                    ctx.set_handled();
+                }
+            }
+            PointerEvent::Up(e) if ctx.is_active() => {
+                let pressed = self.pressed_link.take();
+                let hit = self.link_at(ctx.local_position(e.state.position));
+                if pressed.is_some()
+                    && pressed == hit
+                    && let Some(action) = self.link_action(hit.unwrap())
+                {
+                    ctx.submit_action::<LinkActivated>(action);
+                }
+                ctx.set_handled();
+            }
+            PointerEvent::Cancel(_) => self.pressed_link = None,
+            _ => {}
+        }
+    }
+    fn on_text_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &TextEvent,
+    ) {
+        use crate::core::keyboard::{Key, NamedKey};
+        if ctx.is_disabled() || !ctx.is_focus_target() || !ctx.input_configuration_is_current() {
+            return;
+        }
+        let direction = match event {
+            TextEvent::Keyboard(e) if e.state.is_down() => match &e.key {
+                Key::Named(NamedKey::ArrowRight) => 1,
+                Key::Named(NamedKey::ArrowLeft) => -1,
+                _ => 0,
+            },
+            TextEvent::Navigation(e) if e.phase == crate::input::ActionPhase::Pressed => {
+                match e.action {
+                    crate::input::NavigationAction::Right => 1,
+                    crate::input::NavigationAction::Left => -1,
+                    _ => 0,
+                }
+            }
+            _ => 0,
+        };
+        if direction != 0 && !self.text.links().is_empty() {
+            self.focused_link = (self.focused_link as isize + direction)
+                .rem_euclid(self.text.links().len() as isize)
+                as usize;
+            ctx.set_handled();
+            ctx.request_render();
+        } else if self.link_button.text(ctx, event).is_some()
+            && let Some(action) = self.link_action(self.focused_link)
+        {
+            ctx.submit_action::<LinkActivated>(action);
+        }
     }
 
     fn register_children(&mut self, _ctx: &mut RegisterCtx<'_>) {}
@@ -523,12 +659,21 @@ impl Widget for Label {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
+        self.link_button.update(event);
+        if matches!(
+            event,
+            Update::DisabledChanged(true)
+                | Update::StashedChanged(true)
+                | Update::WindowFocusChanged(false)
+        ) {
+            self.pressed_link = None;
+        }
         match event {
             Update::FontsChanged => {
                 self.clear_cache();
                 ctx.request_layout();
             }
-            Update::DisabledChanged(_) => {
+            Update::DisabledChanged(_) | Update::FocusChanged(_) => {
                 ctx.request_render();
             }
             _ => {}
@@ -652,25 +797,26 @@ impl Widget for Label {
         let cache = ctx.property_cache();
         let text_color = props.get::<ContentColor>(cache);
 
-        let layout = &self.layouts[self.active_layout];
-
-        let brushes = [text_color.color.into()];
-        if let Some(range) = &self.visible_bytes {
-            render_text_revealed(
+        let layout = &mut self.layouts[self.active_layout];
+        layout.layout.paint(
+            painter,
+            Affine::IDENTITY,
+            text_color.color.into(),
+            self.hint,
+            self.visible_bytes.clone().unwrap_or(0..self.text.len()),
+        );
+        if ctx.is_focus_target()
+            && let Some(link) = self.text.links().get(self.focused_link)
+            && self
+                .visible_bytes
+                .as_ref()
+                .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
+        {
+            layout.layout.paint_focus(
                 painter,
                 Affine::IDENTITY,
-                &layout.layout,
-                &brushes,
-                self.hint,
-                range.clone(),
-            );
-        } else {
-            render_text(
-                painter,
-                Affine::IDENTITY,
-                &layout.layout,
-                &brushes,
-                self.hint,
+                link.range.clone(),
+                text_color.color.into(),
             );
         }
     }
@@ -690,8 +836,9 @@ impl Widget for Label {
             return;
         }
 
-        if let Some(range) = &self.visible_bytes {
-            node.set_label(&self.text[range.clone()]);
+        if self.visible_bytes.is_some() || self.text.markup().is_some() {
+            let range = self.visible_bytes.clone().unwrap_or(0..self.text.len());
+            node.set_label(&self.text[range]);
             return;
         }
 
@@ -739,6 +886,101 @@ mod reveal_tests {
         peniko::Blob,
     };
     use std::sync::Arc;
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT for shaping ruby and styled paragraphs"]
+    fn styled_ruby_layout_reveal_and_link_hit_geometry_share_one_cached_paragraph() {
+        let font = Blob::from(
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+        );
+        let source = Text::parse("[link=entry][ruby=reading][b]Base[/b][/ruby][/link] [size=36]Large[/size] [em]ffi marked text[/em] across several lines").unwrap();
+        let label = crate::core::NewWidget::new(
+            Label::new("")
+                .with_rich_text(source.clone())
+                .with_style(StyleProperty::LineHeight(
+                    crate::reel_text::LineHeight::FontSizeRelative(2.),
+                ))
+                .with_visible_bytes(0..0),
+        )
+        .with_props(LineBreaking::WordWrap);
+        let id = label.id();
+        let mut root = RenderRoot::new(
+            label,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(210, 400),
+                scale_factor: 1.,
+                default_font: Some(font),
+            },
+        );
+        root.redraw();
+        let snapshot = |root: &RenderRoot| {
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            let layout = &label.layouts[label.active_layout].layout;
+            (
+                label.cache_time,
+                label.active_layout,
+                layout.width(),
+                layout.height(),
+                layout
+                    .lines()
+                    .map(|l| (l.text_range(), l.metrics().baseline))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let before = snapshot(&root);
+        assert!(before.4.len() > 1, "mixed-size paragraph should wrap");
+        let (point, baseline) = {
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            let layout = &label.layouts[label.active_layout].layout;
+            let line = layout.get(0).unwrap();
+            let p = line
+                .items()
+                .find_map(|i| match i {
+                    crate::reel_text::PositionedLayoutItem::InlineBox(p) => Some(p),
+                    _ => None,
+                })
+                .expect("ruby box");
+            assert!(p.height > 24. && p.y >= 0. && p.y + p.height <= layout.height());
+            let point = Point::new((p.x + p.width / 2.) as f64, (p.y + 2.) as f64);
+            assert_eq!(
+                label.link_at(point),
+                None,
+                "hidden text must not be clickable"
+            );
+            (point, line.metrics().baseline)
+        };
+        assert!(baseline > 24., "ruby reserves ascent");
+        for end in [1, 3, 4, 10, source.len()] {
+            root.edit_widget(id, |mut w| {
+                Label::set_visible_bytes(&mut w.downcast::<Label>(), 0..end)
+            });
+            root.redraw();
+            assert_eq!(
+                snapshot(&root),
+                before,
+                "reveal must not reshape or change line breaks"
+            );
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            assert_eq!(label.link_at(point), (end >= 4).then_some(0));
+        }
+        root.edit_widget(id, |mut w| {
+            Label::set_rich_text(
+                &mut w.downcast::<Label>(),
+                Text::parse("[ruby=only]base[/ruby]").unwrap(),
+            )
+        });
+        root.redraw();
+        let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+        let layout = &label.layouts[label.active_layout].layout;
+        assert!(
+            layout.width() > 0. && layout.height() > 0.,
+            "a ruby-only paragraph has real geometry"
+        );
+    }
 
     #[test]
     fn visible_ranges_keep_utf8_boundaries_bounds_and_empty_range_contract() {

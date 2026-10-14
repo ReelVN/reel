@@ -11,3 +11,7 @@ Unicode analysis, line breaking, text layout and editing; UI widgets remain in
 use cached ICU automatic segmenters. Bidi classification uses public ICU classes.
 Font discovery, shaping engines, Unicode data and font parsing remain ordinary
 pinned dependencies. This package has no upstream synchronization or patch workflow.
+
+Inline boxes support an explicit baseline with ascent/descent accounting for ruby;
+omitting it retains bottom-to-baseline alignment. Reel's markup and paragraph
+composition live in reel-core and reel-ui, respectively.

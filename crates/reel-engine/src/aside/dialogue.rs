@@ -1,5 +1,5 @@
 //! Character values and grouped ADV dialogue use the existing session wait.
-use super::{AdapterError, NativeDispatch, SessionVm, text};
+use super::{AdapterError, NativeDispatch, SessionVm, rich_text, text};
 use crate::{DialogueLineInput, Session};
 use aside_vm::bytecode::{FunctionId, FunctionKind};
 use aside_vm::executor::{HostResponse, HostTicket};
@@ -68,6 +68,7 @@ impl SessionVm {
         let args = self.vm.host_arguments(ticket)?;
         let [id, name] = character_values(self.vm.heap(), args[0])?;
         let text = args[1];
+        rich_text::source(self.vm.heap(), text)?;
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
         let value = heap.alloc_host(fields, &[id, name, text], Some(immutable))?;
@@ -86,7 +87,8 @@ impl SessionVm {
         let args = self.vm.host_arguments(ticket)?;
         let [id, name] = character_values(self.vm.heap(), args[0])?;
         let read = |value| text::read_string(self.vm.heap(), value, self.read_limit);
-        let (id, name, text) = (read(id)?, read(name)?, read(args[1])?);
+        let (id, name) = (read(id)?, read(name)?);
+        let text = rich_text::read(self.vm.heap(), args[1], self.read_limit)?;
         let content_id = self.dialogue_content_id(ticket);
         let interaction = self.publish_say(
             session,
@@ -95,7 +97,7 @@ impl SessionVm {
                 speaker_id: Some(&id),
                 speaker_name: &name,
                 content_id: &content_id,
-                text: &text,
+                text: (&text).into(),
             }],
             locale,
         )?;
@@ -134,9 +136,9 @@ impl SessionVm {
                     .iter()
                     .zip(&ids)
                     .map(|(row, id)| DialogueLineInput {
-                        speaker_id: Some(&row[0]),
-                        speaker_name: &row[1],
-                        text: &row[2],
+                        speaker_id: Some(&row.0),
+                        speaker_name: &row.1,
+                        text: (&row.2).into(),
                         content_id: id,
                     })
                     .collect();
@@ -162,7 +164,8 @@ pub(super) struct DialogueReader {
     field: usize,
     bytes: Vec<u8>,
     row: [String; 3],
-    rows: Vec<[String; 3]>,
+    rows: Vec<(String, String, reel_core::text::Text)>,
+    rich: bool,
 }
 impl DialogueReader {
     fn new(heap: &mut Heap, array: Value, owner: RootOwner) -> Result<Self, AdapterError> {
@@ -186,6 +189,7 @@ impl DialogueReader {
             bytes: Vec::new(),
             row: Default::default(),
             rows: Vec::new(),
+            rich: false,
         })
     }
     fn step(
@@ -209,11 +213,14 @@ impl DialogueReader {
                         "say expects character.line(text) values",
                     ));
                 }
-                let values = [
+                let mut values = [
                     heap.host_payload(line, 0)?,
                     heap.host_payload(line, 1)?,
                     heap.host_payload(line, 2)?,
                 ];
+                let (source, rich) = rich_text::source(heap, values[2])?;
+                values[2] = source;
+                self.rich = rich;
                 for value in values {
                     if heap.info(value)?.kind != ObjectKind::String {
                         return Err(AdapterError::Input("invalid dialogue line"));
@@ -247,7 +254,9 @@ impl DialogueReader {
                     self.rows
                         .try_reserve(1)
                         .map_err(|_| AdapterError::Allocation)?;
-                    self.rows.push(std::mem::take(&mut self.row));
+                    let [id, name, text] = std::mem::take(&mut self.row);
+                    self.rows
+                        .push((id, name, rich_text::decode(text, self.rich)?));
                     self.current = None;
                     self.field = 0;
                 }

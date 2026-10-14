@@ -282,6 +282,14 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 `game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll.aside)。
 换句时的上滚可封装在普通对白函数中：先等待角色对白，再 `await run(tween(...))` 移出旧文本，之后调用下一句。完整组件见 [author_dialogue_transition.aside](../../examples/author_dialogue_transition.aside)，包含裁剪、角色配色与已读配色；运行前提供 fonts/body.ttf。打字速度用 game.configure(text_speed:) 调整；逐字淡入、弹跳等字形效果尚未接通。
 
+句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。
+
+支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体仍由游戏提供，粗体、斜体的字形效果取决于字体。
+
+text 按可用宽度自然换行；width、x/y、padding、scroll 决定 NVL 页面的位置与边界，列表 gap 决定段落间距。`text_align` 支持 start/end/left/right/center/justify，默认 start；`line_height` 是字号倍率，默认 1.2。不同字号、ruby 与着重号共同决定行高，逐字显示只改变绘制范围。节点 color 是基础颜色，显式句内颜色覆盖对应片段；省略句内颜色即可沿用角色或已读配色。
+
+`text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` 把词条 ID 交给普通回调。event.target 是文字节点；链接完整显示后可以鼠标或触摸点击，焦点在文字上时左右方向选择链接，确认键激活。链接消费输入，不推进对白，不自动打开浏览器；节点移除后其回调任务按节点所有权取消。完整示例：[author_rich_text.aside](../../examples/author_rich_text.aside)，运行前提供 fonts/body.ttf。需要语言切换时使用 `derive(|| rich(tr(...)))`；传入翻译模板的玩家文字先 rich_escape。提交过的对白和历史保留原语言和样式。当前无障碍树提供正文标签，尚未提供逐链接语义子节点。
+
 需要路线图与章节重启时，用普通 API 给函数登记稳定 ID 与显示标题。函数仍按同一套调用与等待规则执行。
 ```aside
 fn opening() {
@@ -597,7 +605,7 @@ fn arrive(node, destination_x, seconds = 0.5) {
 
 Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普通参数或 `...items` 调用；每次调用有独立的外层数组，元素保留通常的共享身份。默认参数与绑定方法使用相同规则。这项能力独立于 Reel，本身不代表动作组合已经实现。
 
-当前基础 text 使用真实文字布局；外部语言包与响应式语言切换已实现。富文本类型、视频和 Aside 自定义绘制接口仍属后续能力。
+当前基础 text 使用真实文字布局；外部语言包与响应式语言切换已实现。句内富文本已接通；视频和 Aside 自定义绘制接口仍属后续能力。
 
 Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换；描边和几何裁剪均支持虚线，包括曲线、闭合路径和虚线偏移。全零虚线模式显示为实线，较小的斜接限制使用斜角连接。以上属于现有 Rust 绘制接口能力，Aside 自定义绘制入口仍待接通。
 
@@ -619,7 +627,7 @@ text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data
 button("English", on_click: |event| localization.set_locale("en"));
 ```
 
-PlainText/RichText、自动内容 ID、reel loc 提取/更新目录和翻译资源替代仍属后续能力。
+自动内容 ID、reel loc 提取/更新目录和翻译资源替代仍属后续能力。
 video 是普通节点，audio 提供音轨、队列、循环区间、滤镜与同步组。play 返回可等待活动，stop 停在当前状态，finish 用于有终点的活动。轨道与资源由稳定身份管理，设备重建和 seek 保留或重新绑定逻辑等待；错误有明确终态。
 custom_node 可以直接注册 Aside 的 state、measure、record、route 和 event。measure/record 是受预算的只读布局/绘制回调；route 同步决定消费、捕获与焦点，然后 event 作为普通可暂停任务执行。这样小游戏节点能够阻止同次输入推进剧情，也能在业务回调中等待资源。新的底层图形/平台能力通过 native 模块注册。
 Camera、Mesh、Material 和 Effect 提供透视舞台与可编程效果，状态和资源身份仍进入保存。不同后端用能力清单说明所支持的实现与后备。Live2D、系统朗读、移动/Web 打包和外部服务属于完整目标的适配能力，具体 API 文档随已验证实现提供同一风格的使用示例。

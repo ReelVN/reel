@@ -1589,6 +1589,22 @@ impl_context_method!(
             self.request_render();
         }
 
+        /// Update a widget whose content adds or removes interactive regions.
+        pub fn set_interactive(&mut self, pointer: bool, focus: bool) {
+            if self.widget_state.accepts_pointer_interaction == pointer
+                && self.widget_state.accepts_focus == focus
+            {
+                return;
+            }
+            self.widget_state.accepts_pointer_interaction = pointer;
+            self.widget_state.accepts_focus = focus;
+            self.widget_state.needs_update_focusable = true;
+            if !focus && self.global_state.next_focused_widget == Some(self.widget_state.id) {
+                self.global_state.next_focused_widget = None;
+            }
+            self.invalidate_input_configuration();
+        }
+
         /// Requests a [`paint`](crate::core::Widget::paint) and an
         /// [`accessibility`](crate::core::Widget::accessibility) pass.
         pub fn request_render(&mut self) {

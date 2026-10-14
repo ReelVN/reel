@@ -457,6 +457,9 @@ impl Widget for SessionWidget {
         if let Some(event) = action.downcast_ref::<reel_ui::stage::NodeEvent>() {
             use reel_ui::{input::ActionPhase, stage::NodeEvent};
             match event {
+                NodeEvent::Link(link) if self.binding.borrow().permits_control() => {
+                    self.events.borrow_mut().push(NodeEvent::Link(link.clone()));
+                }
                 NodeEvent::Click(click) if self.binding.borrow().permits_button() => {
                     self.events.borrow_mut().push(NodeEvent::Click(*click));
                 }
@@ -1159,7 +1162,8 @@ impl SessionHostDiagnostic {
                 speaker_id: Some("host"),
                 speaker_name: "Host",
                 content_id: "host-diagnostic/first",
-                text: "This window displays a real Rust session through the existing Reel UI.",
+                text: ("This window displays a real Rust session through the existing Reel UI.")
+                    .into(),
             }],
             "en",
         )?;
@@ -1178,7 +1182,7 @@ impl SessionHostDiagnostic {
                 (0, CompletionOutcome::Advanced) => {
                     self.ui.session.begin_say(self.ui.session.root_owner(), &[DialogueLineInput {
                         speaker_id: Some("host"), speaker_name: "Host", content_id: "host-diagnostic/second",
-                        text: "The first click reveals the full line. The next click settles this interaction once.",
+                        text: ("The first click reveals the full line. The next click settles this interaction once.").into(),
                     }], "en")?;
                     self.step = 1;
                 }
@@ -1239,7 +1243,7 @@ mod tests {
                     speaker_id: Some("host"),
                     speaker_name: "Host",
                     content_id: "test/dialogue",
-                    text,
+                    text: text.into(),
                 }],
                 "en",
             )
@@ -1817,7 +1821,7 @@ mod tests {
             speaker_id: None,
             speaker_name: "",
             content_id: "large-group",
-            text: &text,
+            text: (&text).into(),
         };
         ui.session
             .begin_say(ui.session.root_owner(), &[line; 6], "en")

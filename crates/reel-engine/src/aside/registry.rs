@@ -6,7 +6,7 @@ use aside_vm::bytecode::{self as bc, BuiltinType, Effects};
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "reel::scroll" => &["axis", "follow_end"],
-        "reel::text" => &["value"],
+        "reel::text" => &["value", "on_link"],
         "reel::text_input" => &["value", "on_change", "on_submit"],
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
@@ -19,14 +19,14 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
 
 pub(super) fn contracts() -> Vec<NativeContract> {
     let mut contracts: Vec<_> = [
-        ("narrator", "text", BuiltinType::String, BuiltinType::Null),
+        ("narrator", "text", BuiltinType::Any, BuiltinType::Null),
         ("choose", "options", BuiltinType::Array, BuiltinType::String),
     ]
     .into_iter()
     .map(|(name, parameter, input, result)| NativeContract {
         rest: None,
         symbol: format!("reel::{name}"),
-        abi_version: 1,
+        abi_version: if name == "narrator" { 2 } else { 1 },
         parameters: vec![NativeParameter {
             name: parameter.into(),
             ty: input,
@@ -50,7 +50,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "character::line",
             vec![
                 ("character", BuiltinType::Any, None),
-                ("text", BuiltinType::String, None),
+                ("text", BuiltinType::Any, None),
             ],
             Effects::ALLOCATE,
         ),
@@ -58,7 +58,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "character::speak",
             vec![
                 ("character", BuiltinType::Any, None),
-                ("text", BuiltinType::String, None),
+                ("text", BuiltinType::Any, None),
             ],
             Effects::ALL.0,
         ),
@@ -71,7 +71,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{symbol}"),
-            abi_version: 1,
+            abi_version: if symbol.starts_with("character::") {
+                2
+            } else {
+                1
+            },
             parameters: parameters
                 .into_iter()
                 .map(|(name, ty, default)| NativeParameter {
@@ -145,7 +149,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     } else {
                         BuiltinType::String
                     },
-                    default: if matches!(name, "button" | "input") {
+                    default: if matches!(name, "button" | "input") || field == "on_link" {
                         Some(bc::Const::Null)
                     } else {
                         (field == "fit").then(|| bc::Const::Utf8("contain".into()))
@@ -174,11 +178,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: if name == "input" {
-                5
+                6
             } else if matches!(name, "scroll" | "text_input") {
-                1
+                2
             } else {
-                4
+                5
             },
             parameters,
             result: BuiltinType::Any,
@@ -244,7 +248,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::list".into(),
-        abi_version: 1,
+        abi_version: 2,
         parameters: list_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -257,7 +261,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::view".into(),
-        abi_version: 1,
+        abi_version: 2,
         parameters: view_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -473,7 +477,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: 1,
+            abi_version: if name == "tween" { 2 } else { 1 },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
@@ -497,6 +501,24 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     contracts.extend(super::stage::bindings().map(|binding| binding.contract));
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::rich".into(),
+        abi_version: 1,
+        parameters: vec![parameter("markup", None)],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE),
+        required_capabilities: vec![],
+    });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::rich_escape".into(),
+        abi_version: 1,
+        parameters: vec![parameter("text", None)],
+        result: BuiltinType::String,
+        effects: Effects(Effects::ALLOCATE),
+        required_capabilities: vec![],
+    });
     for (symbol, parameters, effects, result) in [
         (
             "reel::tr",

@@ -102,13 +102,43 @@ impl ChoiceId {
     }
 }
 
-/// Borrowed plain-text input. All fields are copied before the transaction commits.
+/// Borrowed text; submission retains an immutable snapshot before committing.
 #[derive(Clone, Copy, Debug)]
 pub struct DialogueLineInput<'a> {
     pub speaker_id: Option<&'a str>,
     pub speaker_name: &'a str,
     pub content_id: &'a str,
-    pub text: &'a str,
+    pub text: TextInput<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TextInput<'a> {
+    Plain(&'a str),
+    Styled(&'a reel_core::text::Text),
+}
+impl<'a> From<&'a str> for TextInput<'a> {
+    fn from(text: &'a str) -> Self {
+        Self::Plain(text)
+    }
+}
+impl<'a> From<&'a String> for TextInput<'a> {
+    fn from(text: &'a String) -> Self {
+        Self::Plain(text)
+    }
+}
+impl<'a> From<&'a reel_core::text::Text> for TextInput<'a> {
+    fn from(text: &'a reel_core::text::Text) -> Self {
+        Self::Styled(text)
+    }
+}
+impl std::ops::Deref for TextInput<'_> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            Self::Plain(text) => text,
+            Self::Styled(text) => text,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,15 +147,17 @@ pub struct ChoiceInput<'a> {
     pub label: &'a str,
 }
 
-/// Plain text preserves its stable content identity and original fallback.
-/// Parameters, rich text and locale resolution are outside this host version.
-#[derive(Debug, PartialEq, Eq)]
-pub struct PlainTextContent {
+/// Submitted text preserves its content identity, styles and resolved locale snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextContent {
     id: String,
-    fallback: String,
+    fallback: reel_core::text::Text,
 }
 
-impl PlainTextContent {
+impl TextContent {
+    pub fn styled(&self) -> &reel_core::text::Text {
+        &self.fallback
+    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -143,13 +175,13 @@ pub struct Reveal {
     pub visible_bytes: Range<usize>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct DialogueLine {
     id: DialogueLineId,
     previously_read: bool,
     speaker_id: Option<String>,
     speaker_name: String,
-    content: PlainTextContent,
+    content: TextContent,
     /// Every grapheme endpoint, including the initial zero boundary.
     grapheme_boundaries: Vec<usize>,
     revealed_count: usize,
@@ -173,7 +205,7 @@ impl DialogueLine {
         &self.speaker_name
     }
 
-    pub fn content(&self) -> &PlainTextContent {
+    pub fn content(&self) -> &TextContent {
         &self.content
     }
 
@@ -212,7 +244,7 @@ pub enum DialogueMode {
     Adv,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct DialogueInteraction {
     previously_read: bool,
     id: InteractionId,
@@ -305,12 +337,12 @@ impl ChoiceInteraction {
 }
 
 /// History owns its submitted content independently of reveal and view lifetime.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct HistoryLine {
     id: DialogueLineId,
     speaker_id: Option<String>,
     speaker_name: String,
-    content: PlainTextContent,
+    content: TextContent,
 }
 
 impl HistoryLine {
@@ -326,7 +358,7 @@ impl HistoryLine {
         &self.speaker_name
     }
 
-    pub fn content(&self) -> &PlainTextContent {
+    pub fn content(&self) -> &TextContent {
         &self.content
     }
 
@@ -335,7 +367,7 @@ impl HistoryLine {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct HistoryGroup {
     group_id: HistoryGroupId,
     interaction_id: InteractionId,
@@ -529,10 +561,10 @@ impl std::fmt::Display for InputRejection {
 
 impl std::error::Error for InputRejection {}
 
-/// Requested storage capacities; this is not OS resident memory or allocator
-/// overhead. Includes both dialogue and its independent history copies, every
-/// string/vector backing buffer and the pending selected-key buffer. Does not
-/// include the in-struct `Session` or a completion already moved to its caller.
+/// Conservative backing-storage estimate, not OS resident memory or allocator
+/// overhead. Includes dialogue, history and the pending selected-key buffer;
+/// shared text is counted per retained reference. Excludes Arc headers, the
+/// in-struct `Session` and a completion already moved to its caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageUsage {
     pub allocated_capacity_bytes: usize,
@@ -733,7 +765,7 @@ impl Session {
                 bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
                     + line.speaker_name.capacity()
                     + line.content.id.capacity()
-                    + line.content.fallback.capacity();
+                    + line.content.fallback.storage_bytes();
                 history_text_bytes += line.speaker_id.as_ref().map_or(0, String::len)
                     + line.speaker_name.len()
                     + line.content.id.len()
@@ -750,7 +782,7 @@ impl Session {
                     bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
                         + line.speaker_name.capacity()
                         + line.content.id.capacity()
-                        + line.content.fallback.capacity()
+                        + line.content.fallback.storage_bytes()
                         + vector_capacity_bytes(&line.grapheme_boundaries);
                     active_grapheme_boundary_slots += line.grapheme_boundaries.capacity();
                 }
@@ -1043,12 +1075,13 @@ impl Session {
                     .grapheme_indices(true)
                     .map(|(offset, grapheme)| offset + grapheme.len()),
             );
+            let content = copy_content(line)?;
             owned_lines.push(DialogueLine {
                 id: line_id,
                 previously_read: self.read_progress.contains(line.content_id),
                 speaker_id: copy_optional_text(line.speaker_id)?,
                 speaker_name: copy_text(line.speaker_name)?,
-                content: copy_content(line)?,
+                content: content.clone(),
                 grapheme_boundaries: boundaries,
                 revealed_count: 0,
             });
@@ -1057,7 +1090,7 @@ impl Session {
                 id: line_id,
                 speaker_id: copy_optional_text(line.speaker_id)?,
                 speaker_name: copy_text(line.speaker_name)?,
-                content: copy_content(line)?,
+                content,
             });
         }
         self.read_progress
@@ -1402,10 +1435,13 @@ fn copy_optional_text(text: Option<&str>) -> Result<Option<String>, SessionError
     text.map(copy_text).transpose()
 }
 
-fn copy_content(line: &DialogueLineInput<'_>) -> Result<PlainTextContent, SessionError> {
-    Ok(PlainTextContent {
+fn copy_content(line: &DialogueLineInput<'_>) -> Result<TextContent, SessionError> {
+    Ok(TextContent {
         id: copy_text(line.content_id)?,
-        fallback: copy_text(line.text)?,
+        fallback: match line.text {
+            TextInput::Plain(text) => text.into(),
+            TextInput::Styled(text) => text.clone(),
+        },
     })
 }
 

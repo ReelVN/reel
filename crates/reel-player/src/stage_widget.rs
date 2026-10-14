@@ -248,10 +248,25 @@ impl SceneWidget {
             NodeKind::Text(_) | NodeKind::Button { .. } | NodeKind::Toggle { .. } => Some(
                 NewWidget::new(
                     Label::new(Self::caption(&view.node.kind).unwrap_or("").to_owned())
+                        .with_rich_text(match &view.node.kind {
+                            NodeKind::Text(text) => text.clone(),
+                            kind => Self::caption(kind).unwrap_or("").into(),
+                        })
                         .with_visible_bytes(Self::reveal_range(&view.node))
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
+                        .with_text_alignment(view.node.props.text_align)
+                        .with_style(StyleProperty::LineHeight(
+                            reel_ui::reel_text::LineHeight::FontSizeRelative(
+                                view.node.props.line_height as f32,
+                            ),
+                        ))
                         .with_style(font_style(&view.node.props.font)),
                 )
+                .with_props(if matches!(view.node.kind, NodeKind::Text(_)) {
+                    reel_ui::properties::LineBreaking::WordWrap
+                } else {
+                    reel_ui::properties::LineBreaking::Overflow
+                })
                 .with_props(ContentColor::new(color(view.node.props.color)))
                 .to_pod(),
             ),
@@ -388,8 +403,10 @@ impl SceneWidget {
             image.insert_prop(fit);
             this.widget.image_size = Size::new(data.width.into(), data.height.into());
         }
-        let caption_changed =
-            Self::caption(&this.widget.node.kind) != Self::caption(&view.node.kind);
+        let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
+            (NodeKind::Text(a), NodeKind::Text(b)) => a != b,
+            _ => Self::caption(&this.widget.node.kind) != Self::caption(&view.node.kind),
+        };
         if caption_changed {
             this.ctx.request_layout();
         }
@@ -397,9 +414,12 @@ impl SceneWidget {
             && let Some(mut label) = this.ctx.get_mut(pod)
         {
             if caption_changed {
-                Label::set_text(
+                Label::set_rich_text(
                     &mut label,
-                    Self::caption(&view.node.kind).unwrap_or("").to_owned(),
+                    match &view.node.kind {
+                        NodeKind::Text(text) => text.clone(),
+                        kind => Self::caption(kind).unwrap_or("").into(),
+                    },
                 );
             }
             if caption_changed || this.widget.node.props.reveal != view.node.props.reveal {
@@ -413,6 +433,17 @@ impl SceneWidget {
             }
             if this.widget.node.props.font != view.node.props.font {
                 Label::insert_style(&mut label, font_style(&view.node.props.font));
+            }
+            if this.widget.node.props.text_align != view.node.props.text_align {
+                Label::set_text_alignment(&mut label, view.node.props.text_align);
+            }
+            if this.widget.node.props.line_height != view.node.props.line_height {
+                Label::insert_style(
+                    &mut label,
+                    StyleProperty::LineHeight(reel_ui::reel_text::LineHeight::FontSizeRelative(
+                        view.node.props.line_height as f32,
+                    )),
+                );
             }
             if this.widget.node.props.color != view.node.props.color {
                 label.insert_prop(ContentColor::new(color(view.node.props.color)));
@@ -697,6 +728,16 @@ impl Widget for SceneWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        if self.label.as_ref().is_some_and(|pod| pod.id() == source)
+            && let Some(link) = action.downcast_ref::<reel_ui::widgets::LinkActivated>()
+        {
+            ctx.submit_action::<NodeEvent>(NodeEvent::Link(reel_ui::stage::NodeLink {
+                node: self.node.id,
+                id: link.id.clone(),
+                text: link.text.clone(),
+            }));
+            ctx.set_handled();
+        }
         if self.slider.as_ref().is_some_and(|pod| pod.id() == source)
             && let Some(change) = action.downcast_ref::<SliderMoved>()
             && let NodeKind::Slider { range, value, .. } = &mut self.node.kind
