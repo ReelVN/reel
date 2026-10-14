@@ -112,6 +112,12 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(stage);
+    let mut game = ExternalSymbol::dynamic("game");
+    game.namespace = Some(NamespaceRef {
+        module: "reel::game".into(),
+        version: "1".into(),
+    });
+    prelude.push(game);
     for path in ["reel", "reel::prelude"] {
         resolver.insert(ModuleInterface {
             canonical_path: path.into(),
@@ -127,6 +133,16 @@ fn environment() -> (
             .zip(&references)
             .filter(|(_, reference)| reference.module == "reel::stage")
             .map(|(export, _)| export.clone())
+            .collect(),
+    });
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::game".into(),
+        version: "1".into(),
+        exports: exports
+            .iter()
+            .zip(&references)
+            .filter(|(_, r)| r.module == "reel::game")
+            .map(|(e, _)| e.clone())
             .collect(),
     });
     (contracts, resolver, prelude)

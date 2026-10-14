@@ -49,7 +49,6 @@ pub struct Checked {
     pub compilation: lowering::ProjectCompilation,
     pub bytes: Vec<u8>,
     pub modules: Vec<reel_package::ModuleMetadata>,
-    pub game: Option<reel_package::GameSettings>,
 }
 
 /// Run the complete supported static pipeline, retaining entry and metadata
@@ -122,7 +121,6 @@ pub fn check_sources(
         compilation,
         bytes,
         modules: metadata,
-        game: None,
     })
 }
 

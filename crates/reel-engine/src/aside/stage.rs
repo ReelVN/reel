@@ -37,6 +37,8 @@ pub(super) enum NodeProperty {
     Padding,
     #[aside(name = "font_size", ty = Any, default = 24, validate = validate_nonnegative, animatable)]
     FontSize,
+    #[aside(name = "font", ty = String, default = "system-ui")]
+    Font,
     #[aside(name = "color", ty = String, default = "#ffffff", validate = validate_color)]
     Color,
     #[aside(name = "background", ty = Any, default = null, validate = validate_background)]
@@ -171,7 +173,7 @@ impl StageBinding {
             "reel::stack" => NodeKind::Stack,
             _ => unreachable!("registered stage constructor"),
         };
-        let props = read_props(heap, fields, prefix.len())?;
+        let props = read_props(heap, fields, prefix.len(), read_limit)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
         if matches!(
@@ -276,7 +278,7 @@ impl StageBinding {
                 ),
                 kind => (kind.clone(), 0),
             };
-            let props = read_props(heap, fields, offset)?;
+            let props = read_props(heap, fields, offset, read_limit)?;
             updates.push((id, kind, props, version));
         }
         for (id, kind, props, version) in updates {
@@ -666,7 +668,12 @@ fn validate_background(heap: &Heap, value: Value) -> Result<(), HeapError> {
         validate_color(heap, value)
     }
 }
-fn read_props(heap: &Heap, fields: Value, offset: usize) -> Result<NodeProps, AdapterError> {
+fn read_props(
+    heap: &Heap,
+    fields: Value,
+    offset: usize,
+    read_limit: usize,
+) -> Result<NodeProps, AdapterError> {
     let get = |property: NodeProperty| -> Result<Value, AdapterError> {
         Ok(heap
             .table_entry(fields, (property.index() + offset) as u32)?
@@ -685,6 +692,7 @@ fn read_props(heap: &Heap, fields: Value, offset: usize) -> Result<NodeProps, Ad
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
+        font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
         color: color(heap, get(NodeProperty::Color)?)?,
         background: if background.tag() == ValueTag::Null {
             None

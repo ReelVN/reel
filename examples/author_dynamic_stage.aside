@@ -6,6 +6,7 @@ fn card(caption, shade) {
 }
 
 fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
     let cards = row(x: 40, y: 60, gap: 20) {
         card("Original", "#20304c");
     };

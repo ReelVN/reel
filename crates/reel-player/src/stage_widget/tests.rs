@@ -208,6 +208,119 @@ fn affine(actual: Affine, expected: [f64; 6]) {
 }
 
 #[test]
+#[ignore = "requires REEL_LATIN_FONT without CJK and REEL_CJK_FONT covering Latin and CJK"]
+fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_identity() {
+    use reel_ui::{
+        frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
+        imaging::record::{Command, Draw},
+        reel_text::fontique::{Collection, CollectionOptions},
+        resources::{ResourceData, ResourceSnapshot},
+    };
+    let pool = reel_core::budget::BudgetPool::new(
+        reel_core::budget::BudgetCategory::CpuOutput,
+        reel_core::budget::QueueLimits {
+            max_requests: 64,
+            max_bytes: 64 << 20,
+        },
+    );
+    let font = |key| {
+        let path = std::env::var_os(key).expect(key);
+        let lease = crate::fonts::load(std::path::Path::new(&path), &pool).unwrap();
+        let ResourceData::Font(data) = lease.data() else {
+            unreachable!()
+        };
+        (data.clone(), lease)
+    };
+    let (latin, latin_lease) = font("REEL_LATIN_FONT");
+    let (cjk, cjk_lease) = font("REEL_CJK_FONT");
+    let mut collection = Collection::new(CollectionOptions {
+        system_fonts: false,
+        ..Default::default()
+    });
+    let families = collection.register_fonts(cjk.clone(), None);
+    let family = collection.family_name(families[0].0).unwrap().to_owned();
+    let mut f = Fixture::new(None);
+    f.stage
+        .update(
+            f.blue,
+            NodeKind::Text("ABC中文".into()),
+            NodeProps {
+                width: Some(400.),
+                height: Some(60.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(f.bridge.set_default_fonts(&[latin.clone(), cjk.clone()]));
+    let used_fonts = |source: &RecordedSource| {
+        let scene = source.scene();
+        scene
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Draw(id) => match scene.draw_op(*id) {
+                    Draw::GlyphRun(run) => {
+                        assert!(run.glyphs.iter().all(|glyph| glyph.id != 0));
+                        Some(run.font.data.id())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let mixed = f.record();
+    f.accept(&mixed);
+    assert_eq!(used_fonts(&mixed), [latin.id(), cjk.id()].into());
+    let original = f.layouts();
+    f.edit(f.blue, |props| props.font = family.clone());
+    let selected = f.record();
+    f.accept(&selected);
+    assert_eq!(used_fonts(&selected), [cjk.id()].into());
+    assert_eq!(f.layouts()[&f.blue].0, original[&f.blue].0);
+    assert!(f.layouts()[&f.blue].1 > original[&f.blue].1);
+    assert!(f.bridge.set_default_fonts(&[cjk.clone(), latin]));
+    f.edit(f.blue, |props| props.font = "system-ui".into());
+    let reordered = f.record();
+    f.accept(&reordered);
+    assert_eq!(used_fonts(&reordered), [cjk.id()].into());
+    // Old frames retain their original font data and glyph selection.
+    assert_eq!(used_fonts(&mixed).len(), 2);
+    let mut build = FrameBuild::new(
+        mixed,
+        ResourceSnapshot::capture([Ok(latin_lease), Ok(cjk_lease)].into_iter(), &pool).unwrap(),
+        FrameInfo {
+            logical_size: [640., 420.],
+            physical_size: [640, 420],
+        },
+        BuildLimits { max_bytes: 8 << 20 },
+        &pool,
+    )
+    .unwrap();
+    while !build
+        .step(StepBudget {
+            max_commands: 64,
+            max_units: 8192,
+            max_bytes: 64 << 10,
+        })
+        .unwrap()
+        .complete
+    {}
+    let frame = build.finish().unwrap();
+    let frame_fonts = frame
+        .commands()
+        .iter()
+        .filter_map(|command| match &command.op {
+            FrameOp::Draw(FrameDraw::GlyphRun(run)) => Some(run.font),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(frame_fonts.len(), 2);
+    assert!(!f.bridge.set_default_fonts(&[]));
+    eprintln!("mixed Latin/CJK fallback, live family selection and priority reorder verified");
+}
+
+#[test]
 fn structural_edits_keep_retained_widgets_and_remove_retired_geometry() {
     let font = std::env::var_os("REEL_SESSION_FONT")
         .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));

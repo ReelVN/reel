@@ -18,6 +18,26 @@ pub(crate) enum WindowSession {
 }
 
 impl WindowSession {
+    pub(crate) fn check_fonts(&self) -> Result<(), Error> {
+        if let Self::Aside(story) = self
+            && story.driver.adapter().game_settings().fonts.is_empty()
+            && (story.driver.adapter().stage().root().is_some()
+                || story.driver.ui().session().view().interaction.is_some()
+                || !story.needs_tick())
+        {
+            return Err("configure font files in main with game.configure(fonts: [\"fonts/body.ttf\"]) before presenting the story".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn game_settings(
+        &self,
+    ) -> Option<&std::sync::Arc<reel_engine::aside::GameSettings>> {
+        match self {
+            Self::Aside(story) => Some(story.driver.adapter().game_settings()),
+            Self::Diagnostic(_) => None,
+        }
+    }
     pub(crate) fn handle_pointer(
         &mut self,
         bridge: &mut PresentationBridge,
@@ -135,6 +155,51 @@ impl WindowSession {
         match self {
             Self::Diagnostic(host) => host.diagnostic_step(),
             Self::Aside(_) => unreachable!("diagnostic-only fixture"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+
+    #[test]
+    fn font_configuration_is_required_at_presentation_and_can_run_after_startup_slices() {
+        for (body, supplied) in [
+            ("stage.replace(text(\"hello\"));", false),
+            ("", false),
+            (
+                "let mut n=0; while n<100 {n+=1;} game.configure(fonts: [\"body.ttf\", \"cjk.ttf\"]); try {game.configure(fonts: []);} catch error {} stage.replace(text(\"hello\"));",
+                true,
+            ),
+        ] {
+            let driver = AsideSessionUi::from_source(
+                Session::new(SessionId(1), Epoch(1)).unwrap(),
+                &format!("fn main(){{{body}}}"),
+                "fonts",
+                1,
+                "main",
+                "en",
+                VmLimits::default(),
+            )
+            .unwrap();
+            let mut session = WindowSession::aside(driver);
+            assert!(
+                session.check_fonts().is_ok(),
+                "main must be allowed to initialize"
+            );
+            for _ in 0..10_000 {
+                if !session.needs_tick() {
+                    break;
+                }
+                session.tick(SliceBudget::default(), || 0).unwrap();
+                if supplied {
+                    session.check_fonts().unwrap();
+                }
+            }
+            assert!(!session.needs_tick());
+            assert_eq!(session.check_fonts().is_ok(), supplied);
         }
     }
 }

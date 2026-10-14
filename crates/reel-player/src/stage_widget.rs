@@ -185,6 +185,11 @@ struct SceneWidget {
 fn color(value: [u8; 4]) -> Color {
     Color::from_rgba8(value[0], value[1], value[2], value[3])
 }
+fn font_style(font: &str) -> StyleProperty {
+    StyleProperty::FontFamily(reel_ui::reel_text::FontFamily::Source(
+        std::borrow::Cow::Owned(font.to_owned()),
+    ))
+}
 impl SceneWidget {
     fn caption(kind: &NodeKind) -> Option<&str> {
         match kind {
@@ -201,7 +206,8 @@ impl SceneWidget {
             NodeKind::Text(_) | NodeKind::Button { .. } => Some(
                 NewWidget::new(
                     Label::new(Self::caption(&view.node.kind).unwrap_or("").to_owned())
-                        .with_style(StyleProperty::FontSize(view.node.props.font_size as f32)),
+                        .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
+                        .with_style(font_style(&view.node.props.font)),
                 )
                 .with_props(ContentColor::new(color(view.node.props.color)))
                 .to_pod(),
@@ -269,6 +275,9 @@ impl SceneWidget {
                     StyleProperty::FontSize(view.node.props.font_size as f32),
                 );
             }
+            if this.widget.node.props.font != view.node.props.font {
+                Label::insert_style(&mut label, font_style(&view.node.props.font));
+            }
             if this.widget.node.props.color != view.node.props.color {
                 label.insert_prop(ContentColor::new(color(view.node.props.color)));
             }
@@ -312,6 +321,7 @@ impl SceneWidget {
                 || old.gap != new.gap
                 || old.padding != new.padding
                 || old.font_size != new.font_size
+                || old.font != new.font
                 || old.clip != new.clip
             {
                 this.ctx.request_layout();

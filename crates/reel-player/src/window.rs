@@ -25,7 +25,6 @@ use reel_ui::{
     dpi::PhysicalSize,
 };
 use std::{
-    io::Read,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -41,8 +40,12 @@ pub(crate) struct State {
     pub(crate) presentation: Presentation,
     size: PhysicalSize<u32>,
     pool: BudgetPool,
-    registry: ResourceRegistry,
-    resources: Vec<reel_ui::resources::ResourceHandle>,
+    resources: Vec<reel_ui::resources::ResourceLease>,
+    fonts: std::collections::BTreeMap<std::path::PathBuf, usize>,
+    active_fonts: Vec<std::path::PathBuf>,
+    asset_root: std::path::PathBuf,
+    canvas_id: Option<WidgetId>,
+    game: Option<Arc<reel_engine::aside::GameSettings>>,
     epoch: u64,
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
@@ -159,15 +162,15 @@ impl State {
                 max_bytes: 64 << 20,
             },
         );
-        let font_path = if let Some(options) = &options {
-            Some(options.font.clone().into_os_string())
+        let font_path = if options.is_some() {
+            None
         } else if session.is_some() {
-            Some(std::env::var_os("REEL_SESSION_FONT").or_else(|| std::env::var_os("REEL_DIAGNOSTIC_FONT"))
-                .ok_or("set REEL_SESSION_FONT to a TTF/OTF file for the Rust session host diagnostic")?)
+            Some(std::path::PathBuf::from(std::env::var_os("REEL_SESSION_FONT").or_else(|| std::env::var_os("REEL_DIAGNOSTIC_FONT"))
+                .ok_or("set REEL_SESSION_FONT to a TTF/OTF file for the Rust session host diagnostic")?))
         } else {
-            std::env::var_os("REEL_DIAGNOSTIC_FONT")
+            std::env::var_os("REEL_DIAGNOSTIC_FONT").map(std::path::PathBuf::from)
         };
-        let prepared_resources = u32::from(session.is_none()) + u32::from(font_path.is_some());
+        let prepared_resources = u32::from(session.is_none());
         let mut registry = ResourceRegistry::new(prepared_resources, 64 << 10)
             .map_err(|e| format!("registry: {e:?}"))?;
         let mut resources = Vec::new();
@@ -201,36 +204,27 @@ impl State {
             let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
                 unreachable!()
             };
-            resources.push(image_handle);
+            resources.push(lease.clone());
             Some(image.clone())
         } else {
             None
         };
-        let font = if let Some(path) = font_path {
-            let mut file = std::fs::File::open(path)?;
-            let length = file.metadata()?.len();
-            let ticket = pool
-                .reserve(length)
-                .map_err(|e| format!("font quota: {e:?}"))?;
-            let mut bytes = vec![0; length as usize];
-            file.read_exact(&mut bytes)?;
-            if file.read(&mut [0])? != 0 {
-                return Err("font changed size during preparation".into());
-            }
-            let bytes = OwnedBytes::new(bytes, ticket).map_err(|e| format!("font bytes: {e:?}"))?;
-            let handle = registry
-                .register_font(version("diagnostic/font-v1", bytes.as_slice()), bytes)
-                .map_err(|e| format!("font: {e:?}"))?;
-            resources.push(handle);
-            let lease = registry
-                .acquire(handle)
-                .map_err(|e| format!("font lease: {e:?}"))?;
+        let mut fonts = std::collections::BTreeMap::new();
+        let font = if let Some(path) = &font_path {
+            let lease = crate::fonts::load(path, &pool)?;
             let reel_ui::resources::ResourceData::Font(font) = lease.data() else {
                 unreachable!()
             };
-            Some(font.clone())
+            let font = font.clone();
+            fonts.insert(path.clone(), resources.len());
+            resources.push(lease);
+            Some(font)
         } else {
-            eprintln!("Set REEL_DIAGNOSTIC_FONT to a TTF/OTF file to include real Parley text.");
+            if options.is_none() {
+                eprintln!(
+                    "Set REEL_DIAGNOSTIC_FONT to a TTF/OTF file to include real Parley text."
+                );
+            }
             None
         };
         let widget = if let Some(session) = &session {
@@ -241,12 +235,17 @@ impl State {
                 .erased()
         };
         let root_id = widget.id();
-        let widget = if let Some(size) = options.as_ref().and_then(|options| options.canvas_size) {
-            reel_ui::widgets::Canvas::new(widget, size)
-                .prepare()
-                .erased()
+        let (widget, canvas_id) = if let Some(options) = &options {
+            let canvas = if let Some(size) = options.canvas_size {
+                reel_ui::widgets::Canvas::new(widget, size)
+            } else {
+                reel_ui::widgets::Canvas::viewport(widget)
+            }
+            .prepare();
+            let id = canvas.id();
+            (canvas.erased(), Some(id))
         } else {
-            widget
+            (widget, None)
         };
         let root = RenderRoot::new(
             widget,
@@ -271,6 +270,14 @@ impl State {
             },
         )
         .map_err(|e| format!("bridge: {e:?}"))?;
+        let game = session
+            .as_ref()
+            .and_then(WindowSession::game_settings)
+            .cloned();
+        let asset_root = options
+            .as_ref()
+            .map(|options| options.images.root.clone())
+            .unwrap_or_default();
         let mut state = Self {
             backend,
             instance,
@@ -279,8 +286,12 @@ impl State {
             presentation: Presentation::new(bridge, info),
             size: PhysicalSize::new(size.width, size.height),
             pool,
-            registry,
             resources,
+            fonts,
+            active_fonts: font_path.into_iter().collect(),
+            asset_root,
+            canvas_id,
+            game,
             epoch: 1,
             pointer: Default::default(),
             modifiers: Default::default(),
@@ -350,14 +361,79 @@ impl State {
         };
         let before = session.ui().projection_stamp();
         session.tick(budget, now)?;
+        let settings_changed = self.apply_game_settings()?;
         if !self.closing {
+            let session = self.session.as_mut().unwrap();
+            session.check_fonts()?;
             session.sync(&mut self.presentation.bridge, self.root_id)?;
-            if before != session.ui().projection_stamp() {
+            if settings_changed || before != session.ui().projection_stamp() {
                 self.schedule_reveal();
                 self.invalidate();
             }
         }
         Ok(())
+    }
+    fn apply_game_settings(&mut self) -> Result<bool, Error> {
+        let Some(settings) = self
+            .session
+            .as_ref()
+            .and_then(WindowSession::game_settings)
+            .filter(|settings| {
+                self.game
+                    .as_ref()
+                    .is_none_or(|old| !Arc::ptr_eq(old, settings))
+            })
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let paths = settings
+            .fonts
+            .iter()
+            .map(|font| self.asset_root.join(font))
+            .collect::<Vec<_>>();
+        if paths != self.active_fonts {
+            let mut data = Vec::with_capacity(paths.len());
+            for path in &paths {
+                let index = if let Some(&index) = self.fonts.get(path) {
+                    index
+                } else {
+                    let lease = crate::fonts::load(path, &self.pool).map_err(|e| {
+                        format!(
+                            "{}: font {}: {e}",
+                            settings.source.as_deref().unwrap_or("game.configure"),
+                            path.display()
+                        )
+                    })?;
+                    let index = self.resources.len();
+                    self.resources.push(lease);
+                    self.fonts.insert(path.clone(), index);
+                    index
+                };
+                let reel_ui::resources::ResourceData::Font(font) = self.resources[index].data()
+                else {
+                    unreachable!()
+                };
+                data.push(font.clone());
+            }
+            if !self.presentation.bridge.set_default_fonts(&data) {
+                return Err(format!(
+                    "{}: configured font files contain no usable font",
+                    settings.source.as_deref().unwrap_or("game.configure")
+                )
+                .into());
+            }
+            self.active_fonts = paths;
+        }
+        self.window.set_title(&settings.title);
+        if let Some(id) = self.canvas_id {
+            self.presentation.bridge.edit_widget(id, |mut widget| {
+                let mut canvas = widget.downcast::<reel_ui::widgets::Canvas>();
+                reel_ui::widgets::Canvas::set_size(&mut canvas, settings.canvas_size);
+            });
+        }
+        self.game = Some(settings);
+        Ok(true)
     }
     pub(crate) fn close(&mut self) -> Result<(), Error> {
         self.closing = true;
@@ -383,13 +459,16 @@ impl State {
         Ok(())
     }
     pub(crate) fn render(&mut self) -> Result<(), Error> {
+        // Startup may span several VM slices before main supplies the font files.
+        if !self.is_diagnostic() && self.active_fonts.is_empty() {
+            return Ok(());
+        }
         self.poll_completions()?;
         let Self {
             presentation,
             backend,
             host,
             pool,
-            registry,
             resources,
             session,
             recorded_projection,
@@ -401,7 +480,6 @@ impl State {
                 id,
                 info,
                 pool,
-                registry,
                 resources,
                 session.as_ref(),
                 recorded_projection,
@@ -664,8 +742,7 @@ fn build_frame(
     id: FrameId,
     info: SurfaceInfo,
     pool: &BudgetPool,
-    registry: &ResourceRegistry,
-    resources: &[reel_ui::resources::ResourceHandle],
+    resources: &[reel_ui::resources::ResourceLease],
     session: Option<&WindowSession>,
     recorded_projection: &mut Option<ProjectionStamp>,
 ) -> Result<RenderFrame, Error> {
@@ -675,7 +752,7 @@ fn build_frame(
     let snapshot = reel_ui::resources::ResourceSnapshot::capture(
         (0..resources.len() + images.len()).map(|index| {
             if index < resources.len() {
-                registry.acquire(resources[index])
+                Ok(resources[index].clone())
             } else {
                 Ok(images[index - resources.len()].clone())
             }
@@ -722,7 +799,6 @@ impl State {
             FrameId(self.presentation.frame),
             info,
             &self.pool,
-            &self.registry,
             &self.resources,
             self.session.as_ref(),
             &mut self.recorded_projection,

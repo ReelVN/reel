@@ -12,18 +12,19 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. bind/derive, media and save/load are not connected to creator source yet. game.toml and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. bind/derive, media and save/load are not connected to creator source yet. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
 ## 1 A Minimal Project and Shared Conventions
-Start with one main.aside file, or organize multiple files with game.toml. check/build/dev accept a configuration file or project directory; run executes the built .asb. See the runnable [author_project](../../examples/author_project/game.toml). The title screen below still uses the planned game.start service.
-In the complete project design, game.toml uses entry and title in [game], and width, height and scale in [display]. The designed defaults are entry="main::main", width=1920, height=1080 and scale="contain". Contain preserves aspect ratio with borders, using the same conversion for input. game:: will resolve source relative to that configuration, with [modules] aliases for external modules. Projects use a fixed logical canvas and start with a 960×540 window. The contain transform and margins also govern presented geometry and input. Single-file mode uses the window's logical space. Optional game.font resolves relative to the configuration directory; --font can select a development font.
+Start the project from main in main.aside. check/build/dev accept a source file or project directory; run executes the built .asb. See the runnable multi-file [author_project](../../examples/author_project/main.aside). The title screen below still uses the planned game.start service.
+Call game.configure(title: "窗边", width: 960, height: 540) in main to set the title and logical canvas using ordinary expressions. Omitted fields keep their values. Without a canvas, coordinates follow the viewport; a configured canvas uses contain scaling and the same transform for drawing and input. When first setting one dimension, the other uses the corresponding value from 1920×1080. The initial window is 960×540. fonts accepts a font file string or an ordered array, such as game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"]). Paths are relative to the asset root; provide at least one font file before the first presentation. The font property on text and button selects a family or comma-separated fallback list, for example text("标题", font: "Noto Serif SC, system-ui"); font_size controls size. Font files share loaded data; system-ui denotes the configured default list. The player uses only fonts supplied by the work and reports missing font configuration.
 Reel makes all currently registered basic nodes and story services available automatically: text, image, button, row, column, stack, stage, narrator and choose. Each source file can use them without an import. Your module declarations, local bindings and explicit imports take precedence over these defaults. If you define your own text function, `use reel::prelude::text as reel_text;` gives the Reel constructor a separate name. Explicit prelude imports remain ordinary valid imports. This default environment belongs to Reel; standalone Aside has no Reel names. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following imports use the implemented module layout; the title button's game.start call describes the planned game-entry service.
 ```aside
 use game::ui::title::title;
 
 fn main() {
+    game.configure(title: "窗边", width: 1920, height: 1080, fonts: ["fonts/body.ttf"]);
     stage.replace(title());
 }
 ```
@@ -43,14 +44,17 @@ let fixes a variable's binding while leaving node properties mutable. Use let mu
 
 
 ### Available Check, Build and Run Commands
-Run these Windows commands from the repository root. The example uses Microsoft YaHei; replace --font with your own font file if needed. Close the window opened by dev or run before continuing to the next command.
+The examples configure fonts/body.ttf in main. Run these Windows commands from the repository root to copy Microsoft YaHei into a temporary asset directory for local verification. Supply fonts with distribution rights when publishing your work. Close the window opened by dev or run before continuing.
 
 ```powershell
+New-Item -ItemType Directory -Force target/reel-artifacts/author-assets/fonts | Out-Null
+Copy-Item C:/Windows/Fonts/msyh.ttc target/reel-artifacts/author-assets/fonts/body.ttf
+Copy-Item -Recurse -Force examples/assets target/reel-artifacts/author-assets/
 cargo build --locked -p reel-cli --features window
 ./target/debug/reel.exe check examples/author_stage.aside
-./target/debug/reel.exe dev examples/author_stage.aside --font C:/Windows/Fonts/msyh.ttc
+./target/debug/reel.exe dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
 ./target/debug/reel.exe build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
-./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --font C:/Windows/Fonts/msyh.ttc
+./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/author-assets
 ```
 
 Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands provide the same default Reel names, registered native functions and host default arguments as the player.
@@ -59,7 +63,7 @@ Dev and build select main::main by default; `--entry main::name` selects another
 
 With window enabled, source and built packages use the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window or press Escape to exit and finish cleanup.
 
-Projects read only the source modules actually imported by the entry. game::ui::scene resolves to ui/scene.aside. Dependencies in [modules] specify {path: directory, version: fixed version}; aliases for the same directory share one environment. Function cycles can link, while top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete module graph, entry and display settings in one .asb, which runs after moving without the original source. Image directories still use --assets; .rpk and release.json belong to the later distribution pipeline.
+Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; .rpk and release.json belong to the later distribution pipeline.
 
 Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
 
@@ -214,7 +218,7 @@ fn card(children = []) {
 ```
 Properties, layout, and rendering belong to nodes; interaction behavior belongs to controls. Authors can put a character portrait inside a button, place a button in a visual group, or rotate or fade out an entire settings page. The shared node tree determines hierarchy rules. Authors explicitly place overlays within the root node.
 
-Keeping a reference to any node also keeps its unmounted parent component alive; GC does not invalidate a node still in use. Property types, colors and numeric ranges are checked at assignment, so the same try/catch can handle errors and a rejected assignment retains the old value. The font selected by --font is used for every script it covers, including Chinese, rather than Latin only.
+Keeping a reference to any node also keeps its unmounted parent component alive; GC does not invalidate a node still in use. Property types, colors and numeric ranges are checked at assignment, so the same try/catch can handle errors and a rejected assignment retains the old value. The configured font list supplies missing-glyph fallback in order, including Chinese.
 
 ## 3 Story Code Is Ordinary Sequential Code
 
@@ -266,7 +270,7 @@ An ordinary fn is sufficient for story code. A chapter entry registered through 
 
 ## 4 Sequencing Changes and Running Them Together
 
-Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, in, out and in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --font <font.ttf>`. sequence/parallel/repeat are available; scope is not implemented yet.
+Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, in, out and in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`. sequence/parallel/repeat are available; scope is not implemented yet.
 
 The language runtime supports awaiting host-registered awaitable objects. An ordinary fn can use `await request` to suspend its call chain while the host handles other work. Even settled objects return on a later scheduling step; failures point to the await expression and retain the producer's cause. Engine activities now use this protocol; async fn and Future construction are not available yet. The runnable host integration check is [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs): `cargo test -p aside-compiler --test host_awaitables`.
 
@@ -392,7 +396,7 @@ Ordinary functions, node property updates, transforms and finite animation are a
 
 Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
 ```aside
-let default_look = {font: "assets/ui.ttf", font_size: 32,
+let default_look = {font: "system-ui", font_size: 32,
                     color: "#ffffff", background: "assets/button.png"};
 
 fn menu_button(label, clicked, style = {}) {

@@ -157,11 +157,12 @@ hardware and the complete author-facing DSL remain separate.
 ## Aside story window
 
 With the `window` feature, call
-`shell::run_story(story, shell::StoryWindowOptions::new(font_path))`, where `story`
+`shell::run_story(story, shell::StoryWindowOptions::default())`, where `story`
 is a prepared `reel_engine::aside::source::CompiledStory`. Options expose the
 window title, locale and logical window size (default 960 × 540). That size is
-not a fixed author canvas. The font is a TTF/OTF resource used by the existing
-text renderer; no system-font or diagnostic-scene fallback is substituted.
+not a fixed author canvas. The story configures its font files with
+`game.configure(fonts: ["fonts/body.ttf"])` before presentation. Fonts resolve
+relative to the asset root and share the existing text renderer and resource leases.
 
 Each window turn advances bounded VM, GC and retirement slices within one 2 ms
 deadline, then updates the projection once. Synchronous native calls continue

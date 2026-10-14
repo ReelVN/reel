@@ -1,5 +1,6 @@
 
 fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
     let picture = image("assets/panels.png", width: 320, height: 180);
     stage.replace(column(gap: 16, padding: 24) {
         picture;

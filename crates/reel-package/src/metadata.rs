@@ -13,7 +13,6 @@ pub struct Metadata {
     pub host_abi_version: u32,
     pub content_version: u64,
     pub modules: Vec<ModuleMetadata>,
-    pub game: Option<crate::GameSettings>,
     pub initialization_order: Vec<u32>,
     pub initializer: Initializer,
     #[serde(deserialize_with = "required_option")]
@@ -31,17 +30,10 @@ impl Metadata {
         use ErrorKind::Metadata as Invalid;
         let p = program.package();
         require(
-            self.schema_version == 2,
+            self.schema_version == 3,
             ErrorKind::Version,
             "unsupported metadata schema",
         )?;
-        if let Some(game) = &self.game {
-            require(
-                game.display.width > 0 && game.display.height > 0,
-                Invalid,
-                "display dimensions must be positive",
-            )?;
-        }
         budget.charge(bytes.len())?;
         require(
             self.bytecode_blake3 == digest(bytes),

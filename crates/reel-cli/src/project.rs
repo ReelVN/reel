@@ -1,45 +1,13 @@
-//! Filesystem project policy; compilation remains in the shared source pipeline.
+//! Source discovery rooted at the entry file, with optional external module roots.
 use super::{Checked, Failure, ReportedDiagnostic, check_sources, error, read_source};
 use aside_compiler::{
     DiagnosticCode, TextRange,
     semantic::{self, ImportKind, ImportRequest, SourceModule},
 };
-use reel_package::{DisplaySettings, GameSettings};
-use serde::Deserialize;
 use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
 };
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Config {
-    pub game: Game,
-    pub display: DisplaySettings,
-    pub modules: BTreeMap<String, Dependency>,
-}
-#[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Game {
-    pub entry: String,
-    pub title: String,
-    pub font: Option<String>,
-}
-impl Default for Game {
-    fn default() -> Self {
-        Self {
-            entry: "main::main".into(),
-            title: "Reel".into(),
-            font: None,
-        }
-    }
-}
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Dependency {
-    pub path: PathBuf,
-    pub version: String,
-}
 
 pub struct Loaded {
     pub root: PathBuf,
@@ -47,34 +15,11 @@ pub struct Loaded {
     pub sources: Vec<SourceModule>,
     pub files: Vec<PathBuf>,
     pub aliases: BTreeMap<String, String>,
-    pub entry: String,
-    pub game: Option<GameSettings>,
 }
 pub struct LoadError {
     pub failure: Failure,
     pub sources: Vec<SourceModule>,
     pub input_error: Option<Box<super::InputError>>,
-}
-struct Root {
-    path: PathBuf,
-    version: String,
-}
-
-fn identifier(value: &str) -> bool {
-    aside_compiler::lex(value).is_ok_and(|lexed| {
-        lexed.diagnostics.is_empty()
-            && lexed.tokens.len() == 1
-            && lexed.tokens[0].kind == aside_compiler::SyntaxKind::Ident
-            && usize::from(lexed.tokens[0].range.end()) == value.len()
-    })
-}
-fn source_record(path: &Path, source: String) -> SourceModule {
-    SourceModule {
-        canonical_path: "<configuration>".into(),
-        source_path: Some(path.to_string_lossy().into()),
-        version: "1".into(),
-        source: source.into(),
-    }
 }
 fn failure(
     stage: &'static str,
@@ -91,51 +36,65 @@ fn failure(
         input_error: None,
     }
 }
-fn module_path(root: &Path, segments: &[String]) -> PathBuf {
-    if segments.is_empty() {
-        return root.join("mod.aside");
-    }
-    let mut path = root.to_path_buf();
-    for segment in segments {
-        path.push(segment);
-    }
-    path.set_extension("aside");
-    path
+fn canonical(path: &[String], aliases: &BTreeMap<String, String>) -> Vec<String> {
+    semantic::canonical_import(
+        &ImportRequest {
+            from: String::new(),
+            path: path.to_vec(),
+            kind: ImportKind::NamespaceOrSymbol,
+        },
+        aliases,
+    )
+    .path
+    .clone()
 }
-fn canonical_path(path: &[String], aliases: &BTreeMap<String, String>) -> Vec<String> {
-    let request = ImportRequest {
-        from: String::new(),
-        path: path.to_vec(),
-        kind: ImportKind::NamespaceOrSymbol,
-    };
-    semantic::canonical_import(&request, aliases).path.clone()
+fn module_file(
+    path: &[String],
+    roots: &BTreeMap<String, PathBuf>,
+    input: &Path,
+) -> Option<PathBuf> {
+    if path == ["main"] {
+        return Some(input.to_path_buf());
+    }
+    let mut file = roots.get(path.first()?)?.clone();
+    if path.len() == 1 {
+        file.push("mod");
+    } else {
+        for part in &path[1..] {
+            file.push(part);
+        }
+    }
+    file.set_extension("aside");
+    Some(file)
 }
-
 impl Loaded {
     pub fn check(&self) -> Result<Checked, Failure> {
-        let mut checked = check_sources(&self.sources, &self.aliases)?;
-        checked.game = self.game.clone();
-        Ok(checked)
+        check_sources(&self.sources, &self.aliases)
     }
     pub fn entry(&self, requested: Option<&str>) -> String {
-        let requested = requested.unwrap_or(&self.entry);
-        if self.game.is_none() {
-            return requested.into();
-        }
-        let mut path = requested.split("::").map(str::to_owned).collect::<Vec<_>>();
-        if path
-            .first()
-            .is_some_and(|root| root != "game" && !self.aliases.contains_key(root))
-        {
+        let mut path = requested
+            .unwrap_or("main::main")
+            .split("::")
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if path.first().is_some_and(|root| {
+            root != "main" && root != "game" && !self.aliases.contains_key(root)
+        }) {
             path.insert(0, "game".into());
         }
-        canonical_path(&path, &self.aliases).join("::")
+        canonical(&path, &self.aliases).join("::")
     }
 }
-
 pub fn load(input: &Path) -> Result<Loaded, LoadError> {
+    load_with_modules(input, &BTreeMap::new())
+}
+
+pub fn load_with_modules(
+    input: &Path,
+    modules: &BTreeMap<String, PathBuf>,
+) -> Result<Loaded, LoadError> {
     let input = if input.is_dir() {
-        input.join("game.toml")
+        input.join("main.aside")
     } else {
         input.to_path_buf()
     };
@@ -145,189 +104,152 @@ pub fn load(input: &Path) -> Result<Loaded, LoadError> {
             &input.to_string_lossy(),
             TextRange::empty(0.into()),
             error.message.clone(),
-            Vec::new(),
+            vec![],
         );
         result.input_error = Some(Box::new(error));
         result
     })?;
-    if input
-        .extension()
-        .is_none_or(|extension| extension != "toml")
-    {
-        let root = input.parent().unwrap_or(Path::new(".")).to_path_buf();
-        return Ok(Loaded {
-            root,
-            input: input.clone(),
-            sources: vec![SourceModule {
-                canonical_path: "main".into(),
-                source_path: Some(input.to_string_lossy().into()),
-                version: "1".into(),
-                source: text.into(),
-            }],
-            files: vec![input],
-            aliases: BTreeMap::new(),
-            entry: "main::main".into(),
-            game: None,
-        });
-    }
-    let configuration = source_record(&input, text);
-    let config: Config = toml::from_str(&configuration.source).map_err(|error| {
-        let span = error
-            .span()
-            .map(|range| TextRange::new((range.start as u32).into(), (range.end as u32).into()))
-            .unwrap_or_else(|| TextRange::empty(0.into()));
+    let source = SourceModule {
+        canonical_path: "main".into(),
+        source_path: Some(input.to_string_lossy().into()),
+        version: "1".into(),
+        source: text.into(),
+    };
+    let setup_error = |message| {
         failure(
-            "configuration",
-            &input.to_string_lossy(),
-            span,
-            error.to_string(),
-            vec![configuration.clone()],
-        )
-    })?;
-    let config_failure = |message| {
-        failure(
-            "configuration",
+            "resolve",
             &input.to_string_lossy(),
             TextRange::empty(0.into()),
             message,
-            vec![configuration.clone()],
+            vec![source.clone()],
         )
     };
-    if config.display.width == 0 || config.display.height == 0 {
-        return Err(config_failure(
-            "display width and height must be positive".into(),
-        ));
-    }
-    let entry = config
-        .game
-        .entry
-        .split("::")
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if entry.len() < 2 || !entry.iter().all(|name| identifier(name)) {
-        return Err(config_failure(
-            "game.entry must name a module-level function, for example main::main".into(),
-        ));
-    }
     let root = input
         .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+        .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
         .canonicalize()
-        .map_err(|error| config_failure(error.to_string()))?;
-    let mut roots = BTreeMap::from([(
-        "game".to_owned(),
-        Root {
-            path: root.clone(),
-            version: "1".into(),
-        },
-    )]);
+        .map_err(|e| setup_error(e.to_string()))?;
+    let mut roots = BTreeMap::from([("game".into(), root.clone())]);
     let mut aliases = BTreeMap::new();
-    let mut directories = BTreeMap::<PathBuf, (String, String)>::new();
-    directories.insert(root.clone(), ("game".into(), "1".into()));
-    for (alias, dependency) in &config.modules {
-        if !identifier(alias) || matches!(alias.as_str(), "game" | "reel") {
-            return Err(config_failure(format!(
+    if let Some(stem) = input.file_stem().and_then(|v| v.to_str()) {
+        aliases.insert(format!("game::{stem}"), "main".into());
+    }
+    let mut directories = BTreeMap::from([(root.clone(), "game".to_owned())]);
+    for (alias, path) in modules {
+        let valid = aside_compiler::lex(alias).is_ok_and(|l| {
+            l.diagnostics.is_empty()
+                && l.tokens.len() == 1
+                && l.tokens[0].kind == aside_compiler::SyntaxKind::Ident
+                && usize::from(l.tokens[0].range.end()) == alias.len()
+        });
+        if !valid || matches!(alias.as_str(), "main" | "game" | "reel") {
+            return Err(setup_error(format!(
                 "invalid or reserved module alias {alias}"
             )));
         }
-        let directory = root
-            .join(&dependency.path)
+        let directory = path
             .canonicalize()
-            .map_err(|error| config_failure(format!("module {alias}: {error}")))?;
-        if !directory.is_dir() || dependency.version.is_empty() {
-            return Err(config_failure(format!(
-                "module {alias} needs a directory and a fixed version"
-            )));
+            .map_err(|e| setup_error(format!("module {alias}: {e}")))?;
+        if !directory.is_dir() {
+            return Err(setup_error(format!("module {alias} needs a directory")));
         }
-        if let Some((canonical, version)) = directories.get(&directory) {
-            if version != &dependency.version {
-                return Err(config_failure(format!(
-                    "the same directory was assigned different versions by {canonical} and {alias}"
-                )));
-            }
-            aliases.insert(alias.clone(), canonical.clone());
-        } else {
-            directories.insert(
-                directory.clone(),
-                (alias.clone(), dependency.version.clone()),
-            );
-            aliases.insert(alias.clone(), alias.clone());
-            roots.insert(
-                alias.clone(),
-                Root {
-                    path: directory,
-                    version: dependency.version.clone(),
-                },
-            );
+        let canonical = directories
+            .entry(directory.clone())
+            .or_insert_with(|| alias.clone())
+            .clone();
+        aliases.insert(alias.clone(), canonical.clone());
+        if canonical == "game"
+            && let Some(stem) = input.file_stem().and_then(|v| v.to_str())
+        {
+            aliases.insert(format!("{alias}::{stem}"), "main".into());
         }
+        roots.entry(canonical).or_insert(directory);
     }
-    let mut entry_module = entry[..entry.len() - 1].to_vec();
-    if entry_module[0] != "game" && !aliases.contains_key(&entry_module[0]) {
-        entry_module.insert(0, "game".into());
-    }
-    let mut pending = VecDeque::from([canonical_path(&entry_module, &aliases)]);
+    let mut first = Some(source);
+    let mut pending = VecDeque::from([(vec!["main".into()], None::<(String, TextRange)>)]);
     let mut sources = Vec::new();
     let mut files = Vec::new();
-    let mut loaded = BTreeMap::<PathBuf, (String, String)>::new();
-    let mut logical = BTreeMap::<String, ()>::new();
+    let mut loaded = BTreeMap::<PathBuf, String>::new();
+    let mut logical = std::collections::BTreeSet::new();
     let mut total_bytes = 0usize;
-    while let Some(path) = pending.pop_front() {
-        let path = canonical_path(&path, &aliases);
+    while let Some((path, origin)) = pending.pop_front() {
+        let path = canonical(&path, &aliases);
         let name = path.join("::");
-        if logical.contains_key(&name) {
+        if logical.contains(&name) {
             continue;
         }
-        let scope = roots
-            .get(&path[0])
-            .ok_or_else(|| config_failure(format!("unconfigured module root {}", path[0])))?;
-        let file = module_path(&scope.path, &path[1..]);
-        let physical = file
-            .canonicalize()
-            .map_err(|error| config_failure(format!("module {name}: {error}")))?;
-        if let Some((canonical, version)) = loaded.get(&physical) {
-            if version != &scope.version {
-                return Err(config_failure(format!(
-                    "source {name} was assigned two versions"
-                )));
-            }
-            aliases.insert(name.clone(), canonical.clone());
-            let roots_for_file = aliases
+        let file = module_file(&path, &roots, &input).expect("discovered module root");
+        let (origin_path, span) =
+            origin.unwrap_or_else(|| (input.to_string_lossy().into(), TextRange::empty(0.into())));
+        let physical = file.canonicalize().map_err(|e| {
+            failure(
+                "input",
+                &origin_path,
+                span,
+                format!("module {name}: {e}"),
+                sources.clone(),
+            )
+        })?;
+        if let Some(target) = loaded.get(&physical) {
+            aliases.insert(name.clone(), target.clone());
+            let root_aliases = aliases
                 .iter()
                 .filter(|(alias, target)| !alias.contains("::") && *target == &path[0])
                 .map(|(alias, _)| alias.clone())
                 .collect::<Vec<_>>();
-            for alias in roots_for_file {
+            for alias in root_aliases {
                 aliases.insert(
                     format!("{}::{}", alias, path[1..].join("::")),
-                    canonical.clone(),
+                    target.clone(),
                 );
             }
-            logical.insert(name, ());
+            logical.insert(name);
             continue;
         }
-        let source = read_source(&file)
-            .map_err(|error| config_failure(format!("module {name}: {}", error.message)))?;
-        total_bytes += source.len();
-        if total_bytes > semantic::AnalysisLimits::default().max_total_source_bytes {
-            return Err(config_failure("project source byte budget exceeded".into()));
-        }
-        let label = if path[0] == "game" {
-            path[1..].join("/") + ".aside"
+        let source = if name == "main" {
+            first.take().expect("entry loaded once")
         } else {
-            path.join("/") + ".aside"
+            let source = read_source(&file).map_err(|e| {
+                failure(
+                    "input",
+                    &origin_path,
+                    span,
+                    format!("module {name}: {}", e.message),
+                    sources.clone(),
+                )
+            })?;
+            let label = if path[0] == "game" {
+                path[1..].join("/") + ".aside"
+            } else {
+                path.join("/") + ".aside"
+            };
+            SourceModule {
+                canonical_path: name.clone(),
+                source_path: Some(label),
+                version: "1".into(),
+                source: source.into(),
+            }
         };
+        total_bytes += source.source.len();
+        if total_bytes > semantic::AnalysisLimits::default().max_total_source_bytes {
+            return Err(failure(
+                "input",
+                &origin_path,
+                span,
+                "project source byte budget exceeded".into(),
+                sources,
+            ));
+        }
         let discovery =
-            semantic::discover_imports(&source, &name, semantic::AnalysisLimits::default())
-                .map_err(|error| config_failure(error.to_string()))?;
-        loaded.insert(physical, (name.clone(), scope.version.clone()));
-        logical.insert(name.clone(), ());
-        sources.push(SourceModule {
-            canonical_path: name.clone(),
-            source_path: Some(label.clone()),
-            version: scope.version.clone(),
-            source: source.into(),
-        });
+            semantic::discover_imports(&source.source, &name, semantic::AnalysisLimits::default())
+                .map_err(|e| {
+                    failure("parse", &origin_path, span, e.to_string(), sources.clone())
+                })?;
+        let label = source.source_path.clone().unwrap();
+        loaded.insert(physical, name.clone());
+        logical.insert(name);
+        sources.push(source);
         files.push(file);
         if !discovery.diagnostics.is_empty() {
             return Err(LoadError {
@@ -351,16 +273,7 @@ pub fn load(input: &Path) -> Result<Loaded, LoadError> {
             if request.path.first().is_some_and(|root| root == "reel") {
                 continue;
             }
-            let requested = canonical_path(&request.path, &aliases);
-            let Some(scope) = roots.get(&requested[0]) else {
-                return Err(failure(
-                    "resolve",
-                    &label,
-                    span,
-                    format!("unconfigured module root {}", requested[0]),
-                    sources,
-                ));
-            };
+            let requested = canonical(&request.path, &aliases);
             let mut found = false;
             for candidate in [
                 (request.kind != ImportKind::Symbol).then_some(requested.as_slice()),
@@ -370,8 +283,8 @@ pub fn load(input: &Path) -> Result<Loaded, LoadError> {
             .into_iter()
             .flatten()
             {
-                if module_path(&scope.path, &candidate[1..]).is_file() {
-                    pending.push_back(candidate.to_vec());
+                if module_file(candidate, &roots, &input).is_some_and(|file| file.is_file()) {
+                    pending.push_back((candidate.to_vec(), Some((label.clone(), span))));
                     found = true;
                 }
             }
@@ -386,18 +299,11 @@ pub fn load(input: &Path) -> Result<Loaded, LoadError> {
             }
         }
     }
-    let game = GameSettings {
-        title: config.game.title,
-        display: config.display,
-        font: config.game.font,
-    };
     Ok(Loaded {
         root,
-        input: input.clone(),
+        input,
         sources,
         files,
         aliases,
-        entry: config.game.entry,
-        game: Some(game),
     })
 }
