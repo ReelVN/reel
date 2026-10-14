@@ -1,0 +1,19 @@
+// Supply fonts/body.ttf relative to the asset root.
+pub fn main() {
+    game.configure(width: 640, height: 420, fonts: ["fonts/body.ttf"],
+                   default_dialogue: false, default_choices: false);
+    let choices = game.choice();
+    stage.replace(scroll(x: 20, y: 20, width: 300, height: 180) {
+        view(|| column() {
+            for option in choices.options {
+                button(option.label, width: 280, height: 40,
+                       on_click: |event| choices.select(option.id));
+            }
+        });
+    });
+    let options = [];
+    for i in 0..20 { options.append({key: f"{i}", label: f"Choice {i}"}); }
+    let selected = choose(options);
+    stage.replace(text(f"Selected {selected}", x: 20, y: 20));
+    narrator(f"Selected {selected}");
+}

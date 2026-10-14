@@ -25,7 +25,7 @@ use reel_ui::{
     kurbo::{Axis, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
     peniko::Color,
-    widgets::{Button, ButtonPress, Label},
+    widgets::{Button, ButtonPress, Label, ScrollAxis, ScrollState},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -174,13 +174,24 @@ pub struct SessionWidget {
     background: Color,
     scroll: Rc<Cell<f64>>,
     content_height: f64,
+    scrolling: ScrollState,
     viewport: Size,
     dialogue_rect: Rect,
     stage: WidgetPod<StageWidget>,
     backdrop: WidgetPod<DialogueBackdrop>,
     authored: bool,
+    dialogue_active: bool,
+    custom_dialogue: bool,
 }
 impl SessionWidget {
+    fn scroll_changed(&mut self) {
+        self.scroll.set(self.scrolling.offset().y);
+        let mut binding = self.binding.borrow_mut();
+        *binding = InputBinding {
+            button_revision: binding.button_revision,
+            ..Default::default()
+        };
+    }
     fn new(ui: &SessionUi) -> Self {
         let mut widget = Self {
             projection: ui.projection.clone(),
@@ -196,11 +207,17 @@ impl SessionWidget {
             background: ui.background,
             scroll: ui.scroll.clone(),
             content_height: 420.,
+            scrolling: ScrollState::default(),
             viewport: Size::new(640., 420.),
             dialogue_rect: Rect::new(30., 245., 610., 380.),
             stage: WidgetPod::new(StageWidget::new(ui.stage.as_ref())),
             backdrop: WidgetPod::new(DialogueBackdrop { rect: Rect::ZERO }),
             authored: ui.stage.is_some(),
+            dialogue_active: matches!(
+                ui.session.view().interaction,
+                Some(InteractionView::Dialogue(_))
+            ),
+            custom_dialogue: !ui.default_dialogue,
         };
         widget.make_children(&ui.choice_owners);
         widget
@@ -238,6 +255,11 @@ impl SessionWidget {
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
         let authored_changed = this.widget.authored != ui.stage.is_some();
         this.widget.authored = ui.stage.is_some();
+        this.widget.dialogue_active = matches!(
+            ui.session.view().interaction,
+            Some(InteractionView::Dialogue(_))
+        );
+        this.widget.custom_dialogue = !ui.default_dialogue;
         if ui.stage_dirty
             && let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage)
         {
@@ -273,6 +295,7 @@ impl SessionWidget {
             this.widget.projection.history_count = ui.projection.history_count;
         } else {
             this.widget.scroll.set(0.);
+            this.widget.scrolling.set_offset(Vec2::ZERO);
             for line in std::mem::take(&mut this.widget.lines) {
                 this.ctx.remove_child(line.speaker);
                 this.ctx.remove_child(line.text);
@@ -294,37 +317,56 @@ impl SessionWidget {
 }
 impl Widget for SessionWidget {
     type Action = NoAction;
+    fn on_pointer_preview(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &PointerEvent,
+    ) {
+        if !self.lines.is_empty() || !self.choices.is_empty() {
+            self.scrolling.preview(ctx, event);
+        }
+    }
+    fn scroll_to_child(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        rect: Rect,
+    ) -> Rect {
+        if !self
+            .choices
+            .iter()
+            .any(|choice| Some(choice.button.id()) == ctx.focus_target_id())
+        {
+            return rect;
+        }
+        let delta = self.scrolling.reveal(rect);
+        if delta != Vec2::ZERO {
+            self.scroll_changed();
+            ctx.request_render();
+            ctx.request_compose();
+        }
+        rect + delta
+    }
+
     fn on_pointer_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        if let PointerEvent::Scroll(event) = event {
-            let delta = match event.delta {
-                ScrollDelta::LineDelta(_, y) => f64::from(y) * 40.,
-                ScrollDelta::PageDelta(_, y) => f64::from(y) * self.viewport.height,
-                ScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor(),
-            };
-            if delta.is_finite() {
-                let offset = (self.scroll.get() + delta)
-                    .clamp(0., (self.content_height - self.viewport.height).max(0.));
-                if offset != self.scroll.get() {
-                    self.scroll.set(offset);
-                    let mut binding = self.binding.borrow_mut();
-                    *binding = InputBinding {
-                        button_revision: binding.button_revision,
-                        ..Default::default()
-                    };
-                    ctx.request_layout();
-                    ctx.set_handled();
-                }
-            }
+        if self.scrolling.pointer(ctx, event) {
+            self.scroll_changed();
+            ctx.request_render();
+            ctx.request_compose();
+            return;
+        }
+        if matches!(event, PointerEvent::Scroll(_)) || ctx.is_handled() {
             return;
         }
         // Choice controls own their click. It cannot fall through into a dialogue
         // that is installed after this dispatch completes.
-        if !self.choices.is_empty() {
+        if !self.dialogue_active {
             return;
         }
         let Some(interaction) = self.projection.interaction else {
@@ -333,12 +375,11 @@ impl Widget for SessionWidget {
         match event {
             PointerEvent::Down(e)
                 if e.button.is_none_or(|b| b == PointerButton::Primary)
-                    && ctx.target() == ctx.widget_id()
                     && self.dialogue_rect.contains(
                         ctx.local_position(e.state.position) + Vec2::new(0., self.scroll.get()),
                     ) =>
             {
-                ctx.capture_pointer();
+                ctx.capture_pointer_for_click();
                 ctx.set_handled();
             }
             PointerEvent::Up(e)
@@ -369,11 +410,14 @@ impl Widget for SessionWidget {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
+        if matches!(event, TextEvent::WindowFocusChange(false)) {
+            self.scrolling.cancel();
+        }
         use reel_ui::input::{ActionPhase, NavigationAction};
         let TextEvent::Navigation(event) = event else {
             return;
         };
-        if event.action != NavigationAction::Confirm || !self.choices.is_empty() {
+        if event.action != NavigationAction::Confirm || !self.dialogue_active {
             return;
         }
         let Some(interaction) = self.projection.interaction else {
@@ -455,32 +499,12 @@ impl Widget for SessionWidget {
             ctx.register_child(&mut choice.button);
         }
     }
-    fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
-        let Update::RequestPanToChild(rect) = event else {
-            return;
-        };
-        if !self
-            .choices
-            .iter()
-            .any(|choice| Some(choice.button.id()) == ctx.focus_target_id())
-        {
-            return;
-        }
-        let delta = if rect.y0 < 0. {
-            rect.y0
-        } else {
-            (rect.y1 - self.viewport.height).max(0.)
-        };
-        let offset = (self.scroll.get() + delta)
-            .clamp(0., (self.content_height - self.viewport.height).max(0.));
-        if offset != self.scroll.get() {
-            self.scroll.set(offset);
-            let mut binding = self.binding.borrow_mut();
-            *binding = InputBinding {
-                button_revision: binding.button_revision,
-                ..Default::default()
-            };
-            ctx.request_layout();
+    fn update(&mut self, _: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
+        if matches!(
+            event,
+            Update::DisabledChanged(true) | Update::StashedChanged(true)
+        ) {
+            self.scrolling.cancel();
         }
     }
     fn measure(
@@ -542,21 +566,27 @@ impl Widget for SessionWidget {
             (size.width - 30.).max(30.),
             bottom,
         );
+        if self.custom_dialogue {
+            self.dialogue_rect = size.to_rect();
+        }
         self.content_height = bottom + 40.;
-        let offset = self
-            .scroll
-            .get()
-            .clamp(0., (self.content_height - size.height).max(0.));
-        self.scroll.set(offset);
+        self.scrolling.layout(
+            size,
+            Size::new(size.width, self.content_height),
+            ScrollAxis::Vertical,
+            false,
+        );
+        self.scroll.set(self.scrolling.offset().y);
         if !self.authored {
             ctx.run_layout(&mut self.title, Size::new((size.width - 60.).max(0.), 36.));
-            ctx.place_child(&mut self.title, Point::new(30., 20. - offset));
+            ctx.place_child(&mut self.title, Point::new(30., 20.));
             ctx.run_layout(&mut self.status, Size::new((size.width - 60.).max(0.), 30.));
-            ctx.place_child(&mut self.status, Point::new(30., bottom + 5. - offset));
+            ctx.place_child(&mut self.status, Point::new(30., bottom + 5.));
         }
         if let Some((backdrop, mut context)) = ctx.get_raw_mut(&mut self.backdrop) {
-            backdrop.rect = if self.authored && self.projection.interaction.is_some() {
-                self.dialogue_rect + Vec2::new(0., -offset)
+            backdrop.rect = if self.authored && (!self.lines.is_empty() || !self.choices.is_empty())
+            {
+                self.dialogue_rect
             } else {
                 Rect::ZERO
             };
@@ -565,14 +595,24 @@ impl Widget for SessionWidget {
         ctx.run_layout(&mut self.backdrop, size);
         ctx.place_child(&mut self.backdrop, Point::ORIGIN);
         for (line, &(y, height)) in self.lines.iter_mut().zip(&positions) {
-            ctx.place_child(&mut line.speaker, Point::new(45., origin + y - offset));
-            ctx.place_child(
-                &mut line.text,
-                Point::new(45., origin + y + height - offset),
-            );
+            ctx.place_child(&mut line.speaker, Point::new(45., origin + y));
+            ctx.place_child(&mut line.text, Point::new(45., origin + y + height));
         }
         for (choice, &(y, _)) in self.choices.iter_mut().zip(&positions[self.lines.len()..]) {
-            ctx.place_child(&mut choice.button, Point::new(70., origin + y - offset));
+            ctx.place_child(&mut choice.button, Point::new(70., origin + y));
+        }
+    }
+    fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        let offset = -self.scrolling.offset();
+        ctx.set_child_scroll_translation(&mut self.title, offset);
+        ctx.set_child_scroll_translation(&mut self.status, offset);
+        ctx.set_child_scroll_translation(&mut self.backdrop, offset);
+        for line in &mut self.lines {
+            ctx.set_child_scroll_translation(&mut line.speaker, offset);
+            ctx.set_child_scroll_translation(&mut line.text, offset);
+        }
+        for choice in &mut self.choices {
+            ctx.set_child_scroll_translation(&mut choice.button, offset);
         }
     }
     fn paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {

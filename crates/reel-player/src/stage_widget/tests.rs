@@ -760,3 +760,127 @@ fn dialogue_reveal_keeps_text_identity_and_layout() {
         assert!(Arc::ptr_eq(&text, current));
     }
 }
+
+#[test]
+fn scroll_retains_layouts_reading_position_and_end_following() {
+    use reel_ui::dpi::PhysicalPosition;
+    let mut f = Fixture::new(None);
+    f.edit(f.root, |p| {
+        *p = NodeProps {
+            width: Some(200.),
+            height: Some(120.),
+            ..Default::default()
+        }
+    });
+    f.edit(f.red, |p| {
+        *p = NodeProps {
+            width: Some(600.),
+            height: Some(200.),
+            ..Default::default()
+        }
+    });
+    f.edit(f.blue, |p| {
+        *p = NodeProps {
+            width: Some(500.),
+            height: Some(200.),
+            ..Default::default()
+        }
+    });
+    let configure = |f: &mut Fixture, axis| {
+        let props = f.stage.node(f.root).unwrap().props.clone();
+        f.stage
+            .update(
+                f.root,
+                NodeKind::Scroll {
+                    axis,
+                    follow_end: true,
+                },
+                props,
+            )
+            .unwrap();
+        let source = f.record();
+        f.accept(&source);
+        drop(source);
+    };
+    configure(&mut f, ScrollAxis::Vertical);
+    let position = |f: &Fixture| {
+        let id = f.layouts()[&f.root].0;
+        f.bridge
+            .root()
+            .get_widget(id)
+            .unwrap()
+            .downcast::<SceneWidget>()
+            .unwrap()
+            .scroll
+            .offset()
+    };
+    let wheel = |f: &mut Fixture, dy| {
+        f.ui.handle_pointer(
+            &mut f.bridge,
+            PointerEvent::Scroll(PointerScrollEvent {
+                pointer: PointerInfo {
+                    pointer_id: Some(PointerId::PRIMARY),
+                    persistent_device_id: None,
+                    pointer_type: PointerType::Mouse,
+                },
+                state: PointerState {
+                    position: PhysicalPosition::new(50., 50.),
+                    ..Default::default()
+                },
+                delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0., dy)),
+            }),
+        )
+        .unwrap();
+    };
+    assert_eq!(position(&f).y, 280.);
+    wheel(&mut f, -80.);
+    let source = f.record();
+    f.accept(&source);
+    drop(source);
+    f.edit(f.blue, |p| p.height = Some(300.));
+    let source = f.record();
+    f.accept(&source);
+    drop(source);
+    assert_eq!(
+        position(&f).y,
+        200.,
+        "appending does not steal the reading position"
+    );
+    wheel(&mut f, 10_000.);
+    let source = f.record();
+    f.accept(&source);
+    drop(source);
+    f.edit(f.blue, |p| p.height = Some(400.));
+    let source = f.record();
+    f.accept(&source);
+    drop(source);
+    assert_eq!(
+        position(&f).y,
+        480.,
+        "a reader at the end follows new content"
+    );
+    f.edit(f.blue, |p| p.height = Some(50.));
+    let source = f.record();
+    f.accept(&source);
+    drop(source);
+    assert_eq!(position(&f).y, 130.);
+    let layouts = f.layouts();
+    let started = std::time::Instant::now();
+    for i in 0..2_000 {
+        wheel(&mut f, if i % 2 == 0 { -1. } else { 1. });
+    }
+    let elapsed = started.elapsed();
+    let source = f.record();
+    f.accept(&source);
+    drop(source);
+    assert_eq!(
+        layouts,
+        f.layouts(),
+        "scrolling must preserve widgets and every layout count"
+    );
+    eprintln!("2000 scrolling input/compose updates: {elapsed:?}; no widget replacement or layout");
+    configure(&mut f, ScrollAxis::Both);
+    assert_eq!(position(&f), Vec2::new(400., 130.));
+    configure(&mut f, ScrollAxis::Horizontal);
+    assert_eq!(position(&f), Vec2::new(900., 0.));
+}

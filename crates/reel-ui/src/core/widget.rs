@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use accesskit::{Node, Role};
-use kurbo::{Axis, Point, Size};
+use kurbo::{Axis, Point, Rect, Size};
 use smallvec::SmallVec;
 use tracing::field::DisplayValue;
 use tracing::{Span, trace_span};
@@ -158,6 +158,27 @@ pub trait Widget: AsDynWidget + Any {
         props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
+    }
+
+    /// Observes touch input before bubbling, for ancestor pan recognition.
+    /// A recognized drag may capture the pointer; the previous click owner is cancelled.
+    fn on_pointer_preview(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        event: &PointerEvent,
+    ) {
+    }
+
+    /// Scrolls a descendant rectangle into view and returns its adjusted local rectangle.
+    /// The returned geometry is then passed to the next ancestor.
+    fn scroll_to_child(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        rect: Rect,
+    ) -> Rect {
+        rect
     }
 
     /// Handles a text event.

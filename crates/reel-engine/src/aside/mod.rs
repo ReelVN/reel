@@ -506,6 +506,7 @@ impl SessionVm {
             | "reel::image"
             | "reel::row"
             | "reel::column"
+            | "reel::scroll"
             | "reel::stack"
             | "reel::stage::replace" => {
                 let arguments = self.vm.host_arguments(ticket)?.to_vec();

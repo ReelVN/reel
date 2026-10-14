@@ -52,7 +52,7 @@ const CONTEXT: &[(usize, &[&str])] = &[
     (3, &["text"]),
     (9, &["column"]),
     (10, &["show_cg"]),
-    (11, &["column", "text", "bind", "derive", "view"]),
+    (11, &["column", "text", "bind", "derive", "view", "scroll"]),
     (12, &["mio", "character", "say"]),
     (13, &["story"]),
     (14, &["view", "parallel", "tween", "run"]),

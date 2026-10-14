@@ -9,7 +9,9 @@ pub(crate) struct PointerContact {
     pub(crate) hovered_path: Vec<WidgetId>,
     pub(crate) active_path: Vec<WidgetId>,
     pub(crate) pointer_capture_target: Option<WidgetId>,
+    pub(crate) pan_target: Option<WidgetId>,
     pub(crate) pointer_capture_revision: u64,
+    pub(crate) pointer_capture_allows_pan: bool,
     pub(crate) pointer_capture_terminal_delivered: Option<WidgetId>,
 }
 
@@ -22,7 +24,9 @@ impl PointerContact {
             hovered_path: Vec::with_capacity(depth),
             active_path: Vec::with_capacity(depth),
             pointer_capture_target: None,
+            pan_target: None,
             pointer_capture_revision: 0,
+            pointer_capture_allows_pan: false,
             pointer_capture_terminal_delivered: None,
         }
     }

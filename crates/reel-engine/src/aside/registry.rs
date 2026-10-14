@@ -5,6 +5,7 @@ use aside_vm::bytecode::{self as bc, BuiltinType, Effects};
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
+        "reel::scroll" => &["axis", "follow_end"],
         "reel::text" => &["value"],
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
@@ -84,10 +85,23 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     for name in [
-        "text", "image", "row", "column", "stack", "button", "input", "slider", "toggle",
+        "text", "image", "row", "column", "stack", "button", "input", "slider", "toggle", "scroll",
     ] {
         let mut parameters = Vec::new();
-        if name == "slider" {
+        if name == "scroll" {
+            parameters.extend([
+                NativeParameter {
+                    name: "axis".into(),
+                    ty: BuiltinType::String,
+                    default: Some(bc::Const::Utf8("vertical".into())),
+                },
+                NativeParameter {
+                    name: "follow_end".into(),
+                    ty: BuiltinType::Bool,
+                    default: Some(bc::Const::Bool(false)),
+                },
+            ]);
+        } else if name == "slider" {
             parameters.extend(
                 super::stage::controls::SliderField::PROPERTIES
                     .iter()
@@ -125,7 +139,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
 
         if matches!(
             name,
-            "row" | "column" | "stack" | "button" | "input" | "toggle"
+            "row" | "column" | "stack" | "button" | "input" | "toggle" | "scroll"
         ) {
             parameters.push(NativeParameter {
                 name: "children".into(),
@@ -136,7 +150,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: 4,
+            abi_version: if name == "scroll" { 1 } else { 4 },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

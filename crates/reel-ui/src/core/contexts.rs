@@ -498,8 +498,15 @@ impl EventCtx<'_> {
         }
         // TODO: plumb pointer capture through to platform (through winit)
         self.global_state.pointer.pointer_capture_target = Some(id);
+        self.global_state.pointer.pointer_capture_allows_pan = false;
         self.global_state.pointer.pointer_capture_revision = self.widget_state.input_revision;
         self.global_state.needs_pointer_pass = true;
+    }
+
+    /// Captures a click while allowing an ancestor to turn a touch drag into scrolling.
+    pub fn capture_pointer_for_click(&mut self) {
+        self.capture_pointer();
+        self.global_state.pointer.pointer_capture_allows_pan = true;
     }
 
     /// Releases the pointer previously [captured] through [`capture_pointer`].

@@ -3,7 +3,6 @@
 
 //! Events.
 
-use kurbo::Rect;
 use ui_events::keyboard::{Code, Key, KeyState, KeyboardEvent};
 
 use crate::dpi::PhysicalSize;
@@ -104,16 +103,6 @@ pub enum Update {
     /// [`is_stashed`]: crate::core::EventCtx::is_stashed
     /// [`set_stashed`]: crate::core::EventCtx::set_stashed
     StashedChanged(bool),
-
-    /// Called when a descendant widget requests to be scrolled to.
-    ///
-    /// The included [`Rect`] is in the receiving widget's content-box coordinate space.
-    ///
-    /// See also [`EventCtx::request_scroll_to_this`] and [`EventCtx::request_scroll_to`].
-    ///
-    /// [`EventCtx::request_scroll_to_this`]: crate::core::EventCtx::request_scroll_to_this
-    /// [`EventCtx::request_scroll_to`]: crate::core::EventCtx::request_scroll_to
-    RequestPanToChild(Rect),
 
     /// Called when the [hovered] status of the current widget changes.
     ///
@@ -294,7 +283,6 @@ impl Update {
             Self::ChildActiveChanged(true) => "ChildActiveChanged(true)",
             Self::FocusChanged(true) => "FocusChanged(true)",
             Self::ChildFocusChanged(true) => "ChildFocusChanged(true)",
-            Self::RequestPanToChild(_) => "RequestPanToChild(_)",
             Self::FontsChanged => "FontsChanged",
         }
     }

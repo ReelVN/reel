@@ -126,6 +126,10 @@ pub enum NodeKind {
         bindings: InputBindings,
         listening: bool,
     },
+    Scroll {
+        axis: crate::widgets::ScrollAxis,
+        follow_end: bool,
+    },
     Row,
     Column,
     Stack,
@@ -310,6 +314,7 @@ impl Stage {
             container.kind,
             NodeKind::Row
                 | NodeKind::Column
+                | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
@@ -361,6 +366,7 @@ impl Stage {
             node.kind,
             NodeKind::Row
                 | NodeKind::Column
+                | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
