@@ -98,6 +98,7 @@ pub struct ButtonPress {
 #[derive(Default)]
 pub struct ButtonBehavior {
     pressed_key: Option<ActivationKey>,
+    pressed_navigation: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActivationKey {
@@ -126,8 +127,24 @@ impl ButtonBehavior {
         None
     }
     pub fn text(&mut self, ctx: &mut EventCtx<'_>, event: &TextEvent) -> Option<ButtonPress> {
+        if let TextEvent::Navigation(event) = event
+            && event.action == crate::input::NavigationAction::Confirm
+        {
+            use crate::input::ActionPhase;
+            ctx.set_handled();
+            match event.phase {
+                ActionPhase::Pressed => self.pressed_navigation = true,
+                ActionPhase::Released => {
+                    return std::mem::take(&mut self.pressed_navigation)
+                        .then_some(ButtonPress { button: None });
+                }
+                ActionPhase::Cancelled => self.pressed_navigation = false,
+                _ => {}
+            }
+        }
         if matches!(event, TextEvent::WindowFocusChange(false)) {
             self.pressed_key = None;
+            self.pressed_navigation = false;
         }
         if let TextEvent::Keyboard(event) = event {
             let key = match &event.key {
@@ -154,6 +171,7 @@ impl ButtonBehavior {
                 | Update::StashedChanged(true)
         ) {
             self.pressed_key = None;
+            self.pressed_navigation = false;
         }
     }
     pub fn access(event: &AccessEvent) -> Option<ButtonPress> {

@@ -11,3 +11,9 @@ pub trait PlatformHost {
     fn before_present(&mut self);
     fn request_exit(&mut self);
 }
+
+#[cfg(all(
+    feature = "gamepad",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+pub mod gamepad;

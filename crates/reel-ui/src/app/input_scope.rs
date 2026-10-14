@@ -91,6 +91,7 @@ impl RenderRoot {
         let previous = self.global_state.modal_scope;
         let changed = next != previous;
         if changed {
+            crate::passes::navigation::cancel_all(self);
             let focus = self.global_state.focused_widget;
             if let Some(previous) = previous {
                 if self.has_widget(previous)

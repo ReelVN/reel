@@ -32,6 +32,7 @@ pub mod app;
 pub mod bridge;
 pub mod core;
 pub mod frame;
+pub mod input;
 pub mod layout;
 pub mod properties;
 pub mod resources;

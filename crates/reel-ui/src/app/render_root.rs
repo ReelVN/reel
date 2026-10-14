@@ -102,6 +102,9 @@ pub(crate) struct RenderRootState {
     ///
     /// This is used to pick the focused widget on Tab events.
     pub(crate) focus_anchor: Option<WidgetId>,
+    pub(crate) navigation_target: Option<WidgetId>,
+    pub(crate) navigation_walk: Vec<WidgetId>,
+    pub(crate) navigation_directions: Vec<crate::input::NavigationAction>,
 
     /// Widget which will get text events if no widget is focused.
     pub(crate) focus_fallback: Option<WidgetId>,
@@ -346,6 +349,9 @@ impl RenderRoot {
                 focused_path: Vec::new(),
                 next_focused_widget: None,
                 focus_anchor: None,
+                navigation_target: None,
+                navigation_walk: Vec::new(),
+                navigation_directions: Vec::with_capacity(4),
                 focus_fallback: None,
                 modal_scope: None,
                 modal_base_focus: None,

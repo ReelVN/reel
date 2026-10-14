@@ -69,7 +69,7 @@ fn try_event_position(event: &PointerEvent) -> Option<PhysicalPosition<f64>> {
     clippy::too_many_arguments,
     reason = "The pass binds one event to its selected geometry, route and eligibility policy"
 )]
-fn run_event_pass<E>(
+pub(super) fn run_event_pass<E>(
     root: &mut RenderRoot,
     target: Option<WidgetId>,
     event: &E,
@@ -366,7 +366,11 @@ pub(crate) fn run_on_pointer_event_with_view(
 // --- MARK: TEXT EVENT
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
 pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -> Handled {
+    if let TextEvent::Navigation(event) = event {
+        return super::navigation::run(root, *event);
+    }
     if matches!(event, TextEvent::WindowFocusChange(false)) {
+        super::navigation::cancel_all(root);
         root.cancel_pointer_inputs();
     }
 
@@ -424,6 +428,33 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
     );
 
     if let TextEvent::Keyboard(key) = event {
+        if handled == Handled::No {
+            use crate::input::{ActionPhase, NavigationAction as N, NavigationEvent};
+            let action = match key.key {
+                Key::Named(NamedKey::ArrowLeft) => Some(N::Left),
+                Key::Named(NamedKey::ArrowRight) => Some(N::Right),
+                Key::Named(NamedKey::ArrowUp) => Some(N::Up),
+                Key::Named(NamedKey::ArrowDown) => Some(N::Down),
+                Key::Named(NamedKey::Escape) => Some(N::Back),
+                _ => None,
+            };
+            if let Some(action) = action {
+                handled = super::navigation::run(
+                    root,
+                    NavigationEvent {
+                        action,
+                        value: 1.,
+                        phase: if key.state.is_up() {
+                            ActionPhase::Released
+                        } else if key.repeat {
+                            ActionPhase::Repeated
+                        } else {
+                            ActionPhase::Pressed
+                        },
+                    },
+                );
+            }
+        }
         // Handle Tab focus
         if key.key == Key::Named(NamedKey::Tab)
             && key.state == KeyState::Down

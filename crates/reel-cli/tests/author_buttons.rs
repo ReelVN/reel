@@ -103,7 +103,7 @@ fn click_with_pointer(
     }
     settle(driver);
 }
-fn run(story: CompiledStory, pointer_type: PointerType) {
+fn run(story: CompiledStory, pointer_type: Option<PointerType>) {
     let mut driver = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
         story,
@@ -127,7 +127,15 @@ fn run(story: CompiledStory, pointer_type: PointerType) {
         .unwrap()
         .id;
     let moving = driver.adapter().stage().nodes().find(|node| matches!(&node.kind, NodeKind::Button { label: Some(label), .. } if label == "Move")).unwrap().id;
-    click_with_pointer(&mut driver, &mut bridge, 50., 50., pointer_type);
+    if let Some(pointer_type) = pointer_type {
+        click_with_pointer(&mut driver, &mut bridge, 50., 50., pointer_type);
+    } else {
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::South,
+        );
+    }
     present(&mut driver, &mut bridge, root_id, 2);
     assert!(!driver.adapter().stage().node(moving).unwrap().props.enabled);
     assert!(driver.activities_need_time());
@@ -141,7 +149,25 @@ fn run(story: CompiledStory, pointer_type: PointerType) {
     assert_eq!(node.kind, NodeKind::Text("Arrived".into()));
     assert_eq!(node.props.x, 120.);
     assert!(driver.adapter().stage().node(moving).unwrap().props.enabled);
-    click_with_pointer(&mut driver, &mut bridge, 270., 50., pointer_type);
+    if let Some(pointer_type) = pointer_type {
+        click_with_pointer(&mut driver, &mut bridge, 270., 50., pointer_type);
+    } else {
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::DpadRight,
+        );
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::DpadRight,
+        );
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::South,
+        );
+    }
     assert_eq!(driver.state(), StoryState::Finished);
     present(&mut driver, &mut bridge, root_id, 5);
     while driver.cleanup_pending() {
@@ -154,7 +180,7 @@ fn run(story: CompiledStory, pointer_type: PointerType) {
 fn source_and_asb_keep_buttons_live_then_finish_after_last_handler_retires() {
     let checked = reel_cli::check(SOURCE, "author_buttons.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-    for pointer_type in [PointerType::Mouse, PointerType::Touch] {
+    for pointer_type in [Some(PointerType::Mouse), Some(PointerType::Touch), None] {
         run(
             reel_cli::decode_story(&artifact.bytes).unwrap(),
             pointer_type,
@@ -267,5 +293,84 @@ fn source_and_asb_modal_menu_isolates_dialogue_and_restores_keyboard_focus() {
                 .cleanup_step(1, SliceBudget::default(), || 0)
                 .unwrap();
         }
+    }
+}
+
+fn gamepad_press(
+    driver: &mut AsideSessionUi,
+    bridge: &mut PresentationBridge,
+    button: reel_ui::input::GamepadButton,
+) {
+    use reel_ui::input::*;
+    let mut mapping = NavigationInput::default();
+    for value in [1., 0.] {
+        let mut events = Vec::new();
+        mapping
+            .update(
+                &InputEvent::Value {
+                    device: InputDeviceId(1),
+                    control: Control::Button(button),
+                    value,
+                },
+                std::time::Duration::ZERO,
+                |event| events.push(event),
+            )
+            .unwrap();
+        for event in events {
+            driver
+                .handle_text(bridge, TextEvent::Navigation(event))
+                .unwrap();
+        }
+    }
+    settle(driver);
+}
+
+#[test]
+fn source_and_asb_dialogue_confirmation_uses_presented_pairing() {
+    const STORY: &str = r#"fn main() { narrator("First"); narrator("Second"); }"#;
+    let checked = reel_cli::check(STORY, "gamepad.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_engine::aside::source::compile_story(STORY, "main", 1, "main").unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        present(&mut driver, &mut bridge, root, 1);
+        let first = driver.ui().session().view().interaction.unwrap().id();
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::South,
+        );
+        driver.sync(&mut bridge, root).unwrap();
+        // First confirmation finishes reveal. Only an accepted new projection
+        // can admit the next confirmation which advances to another dialogue.
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::South,
+        );
+        assert_eq!(
+            driver.ui().session().view().interaction.unwrap().id(),
+            first
+        );
+        present(&mut driver, &mut bridge, root, 2);
+        gamepad_press(
+            &mut driver,
+            &mut bridge,
+            reel_ui::input::GamepadButton::South,
+        );
+        assert_ne!(
+            driver.ui().session().view().interaction.unwrap().id(),
+            first
+        );
     }
 }

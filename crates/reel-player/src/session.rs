@@ -48,6 +48,7 @@ struct InputBinding {
     down: Option<ProjectionStamp>,
     contacts: Vec<(PointerInfo, ProjectionStamp)>,
     non_pointer: bool,
+    navigation_down: Option<ProjectionStamp>,
 }
 impl InputBinding {
     fn permits(&self, current: ProjectionStamp) -> bool {
@@ -323,6 +324,39 @@ impl Widget for SessionWidget {
             _ => {}
         }
     }
+    fn on_text_event(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        event: &TextEvent,
+    ) {
+        use reel_ui::input::{ActionPhase, NavigationAction};
+        let TextEvent::Navigation(event) = event else {
+            return;
+        };
+        if event.action != NavigationAction::Confirm || !self.choices.is_empty() {
+            return;
+        }
+        let Some(interaction) = self.projection.interaction else {
+            return;
+        };
+        let current = self.current_stamp();
+        let mut binding = self.binding.borrow_mut();
+        match event.phase {
+            ActionPhase::Pressed => binding.navigation_down = binding.accepted,
+            ActionPhase::Cancelled => binding.navigation_down = None,
+            ActionPhase::Released
+                if binding.navigation_down.take() == Some(current) && binding.permits(current) =>
+            {
+                self.inputs.borrow_mut().get_or_insert(UiInput::Session {
+                    owner: self.source_owner,
+                    action: InputAction::Advance(interaction),
+                });
+            }
+            _ => {}
+        }
+        ctx.set_handled();
+    }
     fn on_action(
         &mut self,
         ctx: &mut ActionCtx<'_>,
@@ -362,6 +396,30 @@ impl Widget for SessionWidget {
         }
         for choice in &mut self.choices {
             ctx.register_child(&mut choice.button);
+        }
+    }
+    fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
+        let Update::RequestPanToChild(rect) = event else {
+            return;
+        };
+        if !self
+            .choices
+            .iter()
+            .any(|choice| Some(choice.button.id()) == ctx.focus_target_id())
+        {
+            return;
+        }
+        let delta = if rect.y0 < 0. {
+            rect.y0
+        } else {
+            (rect.y1 - self.viewport.height).max(0.)
+        };
+        let offset = (self.scroll.get() + delta)
+            .clamp(0., (self.content_height - self.viewport.height).max(0.));
+        if offset != self.scroll.get() {
+            self.scroll.set(offset);
+            *self.binding.borrow_mut() = InputBinding::default();
+            ctx.request_layout();
         }
     }
     fn measure(
@@ -677,14 +735,15 @@ impl SessionUi {
     }
     #[cfg(feature = "window")]
     pub(crate) fn gesture_active(&self) -> bool {
-        !self.binding.borrow().contacts.is_empty()
+        let binding = self.binding.borrow();
+        !binding.contacts.is_empty() || binding.navigation_down.is_some()
     }
     pub fn clear_presented(&mut self) {
         *self.binding.borrow_mut() = InputBinding::default();
     }
     fn status_text(&self) -> String {
         format!(
-            "{} | history: {} | scroll for more; click dialogue twice; Escape cancels",
+            "{} | history: {} | scroll for more; click dialogue twice; close window to exit",
             self.projection.status, self.projection.history_count
         )
     }
@@ -693,6 +752,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
     ) -> Result<(), Error> {
+        bridge.set_focus_fallback(Some(root_id));
         if self.images.poll()? {
             if let Some(mut view) = self.pending_stage.take() {
                 view.resolve_images(&self.images.loaded);
@@ -1575,6 +1635,58 @@ mod tests {
         );
         ui.sync(&mut bridge, root).unwrap();
         assert_eq!(ui.scroll.get(), 0.);
+    }
+
+    #[test]
+    fn gamepad_focus_scrolls_choices_into_view_and_selects_the_presented_last_item() {
+        use reel_ui::input::{ActionPhase as P, NavigationAction as A, NavigationEvent};
+        let nav = |action, phase| {
+            TextEvent::Navigation(NavigationEvent {
+                action,
+                phase,
+                value: if phase == P::Released { 0. } else { 1. },
+            })
+        };
+        let mut session = session();
+        let keys: Vec<_> = (0..24).map(|i| format!("choice-{i}")).collect();
+        let rows: Vec<_> = keys
+            .iter()
+            .map(|key| ChoiceInput { key, label: key })
+            .collect();
+        session.begin_choice(session.root_owner(), &rows).unwrap();
+        let mut ui = SessionUi::new(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, 1);
+        for i in 0..keys.len() {
+            ui.handle_text(&mut bridge, nav(A::Down, P::Pressed))
+                .unwrap();
+            ui.handle_text(&mut bridge, nav(A::Down, P::Released))
+                .unwrap();
+            ui.sync(&mut bridge, root).unwrap();
+            accept(&mut ui, &mut bridge, i as u64 + 2);
+            let focused = bridge.root().focused_widget().unwrap();
+            let reel_ui::app::InputGeometrySource::Presented(Some(geometry)) =
+                bridge.root().input_geometry_source()
+            else {
+                panic!("accepted choices")
+            };
+            let record = geometry.get(focused).unwrap();
+            let point = record.window_transform * record.size.to_rect().center();
+            assert_eq!(geometry.hit_test(point), Some(focused));
+            assert!(
+                (0. ..=420.).contains(&point.y),
+                "choice {i} must be visible after focus scrolling"
+            );
+        }
+        assert!(ui.scroll.get() > 0.);
+        ui.handle_text(&mut bridge, nav(A::Confirm, P::Pressed))
+            .unwrap();
+        ui.handle_text(&mut bridge, nav(A::Confirm, P::Released))
+            .unwrap();
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Selected(keys.last().unwrap().clone())
+        );
     }
 
     #[test]
