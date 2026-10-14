@@ -1,3 +1,4 @@
+mod properties;
 mod table;
 use crate::HeapBudgetUsage;
 use crate::gc::Collector;
@@ -5,6 +6,7 @@ use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, VALUE_CHUNK_BYTES, Values
 use crate::root_ranges::{BOOK_BYTES, RangeDescriptor};
 use crate::slots::{HeapKey, RangeKey, RootKey, Slots, heap_key, index};
 use crate::{GcPhase, HeapHandle, HeapId, SessionEpoch, Value, WeakHandle};
+pub use properties::PropertyId;
 use slotmap::Key;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -26,6 +28,7 @@ pub enum ObjectKind {
     Closure,
     BoundBuiltin,
     BoundNative,
+    PropertyRef,
     Generator,
     Thread,
     Future,
@@ -63,6 +66,7 @@ impl ObjectKind {
                 | Self::Closure
                 | Self::BoundBuiltin
                 | Self::BoundNative
+                | Self::PropertyRef
                 | Self::Generator
                 | Self::Thread
                 | Self::Future
@@ -142,6 +146,7 @@ pub enum HeapError {
     WrongEpoch,
     InvalidHandle,
     RetiredHost,
+    BindingCycle,
     UnconfirmedLive,
     InvalidRoot,
     WrongKind,
@@ -223,6 +228,9 @@ pub(crate) struct Object {
     pub host_validator: Option<HostPropertyValidator>,
     pub host_await: Option<crate::bytecode::NativeId>,
     pub host_call: Option<crate::bytecode::FunctionId>,
+    pub observable_fields: u32,
+    pub observable_writable: bool,
+    pub property_owner: Option<HeapKey>,
     pub payload: Payload,
     pub weak: Option<HeapHandle>,
     pub mark: u64,
@@ -256,6 +264,8 @@ pub struct Heap {
     pub(crate) gray: VecDeque<HeapKey>,
     pub(crate) release: VecDeque<HeapKey>,
     pub(crate) gc: Collector,
+    property_work: Vec<PropertyId>,
+    property_proposal: Option<Value>,
     limits: HeapLimits,
     reserved: u64,
     payload_bytes: u64,
@@ -327,6 +337,8 @@ impl Heap {
             gray: VecDeque::with_capacity(limits.max_objects as usize),
             release: VecDeque::with_capacity(limits.max_objects as usize),
             gc: Collector::default(),
+            property_work: Vec::new(),
+            property_proposal: None,
             limits,
             reserved: estimate,
             payload_bytes: 0,
@@ -494,6 +506,9 @@ impl Heap {
             host_validator: None,
             host_await: None,
             host_call: None,
+            observable_fields: 0,
+            observable_writable: false,
+            property_owner: None,
             payload,
             weak,
             mark,
@@ -592,8 +607,8 @@ impl Heap {
         validator: Option<HostPropertyValidator>,
     ) -> Result<Value, HeapError> {
         self.table_len(fields)?;
-        let mut values = Vec::with_capacity(payload.len() + 3);
-        values.extend([fields, Value::bool(composable), Value::NULL]);
+        let mut values = Vec::with_capacity(payload.len() + 4);
+        values.extend([fields, Value::bool(composable), Value::NULL, Value::NULL]);
         values.extend_from_slice(payload);
         let host = self.allocate_values(ObjectKind::Host, &values)?;
         let key = self.key(host)?;
@@ -647,13 +662,13 @@ impl Heap {
         if info.kind != ObjectKind::Host {
             return Err(HeapError::WrongKind);
         }
-        info.len.checked_sub(3).ok_or(HeapError::WrongKind)
+        info.len.checked_sub(4).ok_or(HeapError::WrongKind)
     }
     pub fn host_payload(&self, host: Value, index: u32) -> Result<Value, HeapError> {
         if index >= self.host_payload_len(host)? {
             return Err(HeapError::OutOfBounds);
         }
-        self.get_field(host, index + 3)
+        self.get_field(host, index + 4)
     }
     pub fn set_host_payload(
         &mut self,
@@ -665,7 +680,7 @@ impl Heap {
         if index >= self.host_payload_len(host)? {
             return Err(HeapError::OutOfBounds);
         }
-        self.set_field(host, index + 3, value)
+        self.set_field(host, index + 4, value)
     }
     pub(crate) fn validate_host_property(
         &self,
@@ -688,7 +703,8 @@ impl Heap {
         Ok(self.get_field(host, 1)?.as_bool() == Some(true))
     }
     pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
-        let slots = self.host_payload_len(host)? + 3;
+        self.disconnect_host_properties(host)?;
+        let slots = self.host_payload_len(host)? + 4;
         for index in 0..slots {
             self.set_field(host, index, Value::NULL)?;
         }
@@ -799,6 +815,7 @@ impl Heap {
                     | ObjectKind::Closure
                     | ObjectKind::BoundBuiltin
                     | ObjectKind::BoundNative
+                    | ObjectKind::PropertyRef
             )
         {
             return Err(HeapError::WrongKind);
@@ -1183,6 +1200,7 @@ impl Drop for Heap {
         drop(std::mem::take(&mut self.allocations));
         drop(std::mem::take(&mut self.gray));
         drop(std::mem::take(&mut self.release));
+        drop(std::mem::take(&mut self.property_work));
         // The Rc book itself remains physically live while an observer/pool owns it.
         self.usage
             .refund(self.reserved - BOOK_BYTES + self.payload_bytes);

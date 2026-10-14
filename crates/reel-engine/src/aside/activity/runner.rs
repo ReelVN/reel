@@ -1,7 +1,7 @@
 //! Iterative tree execution. A leaf owns properties only while it is active.
 use super::*;
 use action::Kind;
-use graph::{Job, Phase, Slot, get, int, kind, node, phase, set};
+use graph::{Job, Phase, Slot, Track, get, int, kind, node, phase, set, track, track_source};
 
 impl Activities {
     pub fn has_active(&self) -> bool {
@@ -130,43 +130,54 @@ impl Activities {
             3 => 1. - (-2. * t + 2.).powi(3) / 2.,
             _ => t,
         };
-        let fields = heap.host_fields(payload(heap, action, TARGET)?)?;
+        let target = payload(heap, action, TARGET)?;
+        let fields = heap.host_fields(target)?;
         let tracks = get(heap, leaf, Slot::Tracks)?;
-        for i in (0..heap.sequence_len(tracks)?).step_by(4) {
-            let field = heap.sequence_get(tracks, i)?.as_int().unwrap() as u32;
-            let start = heap.sequence_get(tracks, i + 1)?.as_float().unwrap();
-            let end = heap.sequence_get(tracks, i + 2)?.as_float().unwrap();
+        for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+            let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
+            let start = track(heap, tracks, i, Track::Start)?.as_float().unwrap();
+            let end = track(heap, tracks, i, Track::End)?.as_float().unwrap();
             let value = Value::float(if t == 1. {
                 end
             } else {
                 start * (1. - t) + end * t
             });
-            let (key, old) = heap.table_entry(fields, field)?;
+            let (_, old) = heap.table_entry(fields, field)?;
             if !value.same_bits(old) {
-                heap.table_store(fields, field, key, value)?;
+                heap.write_host_property(
+                    PropertyId {
+                        host: target,
+                        field,
+                    },
+                    value,
+                    false,
+                )?;
             }
         }
         Ok(())
     }
 
     fn release_claims(heap: &mut Heap, leaf: Value) -> Result<(), AdapterError> {
-        let target = payload(heap, get(heap, leaf, Slot::Action)?, TARGET)?;
-        if heap.host_fields(target).is_err() {
-            return Ok(());
-        }
-        let claims = payload(heap, target, NODE_CLAIMS)?;
         let tracks = get(heap, leaf, Slot::Tracks)?;
-        for i in (0..heap.sequence_len(tracks)?).step_by(4) {
-            let field = heap.sequence_get(tracks, i)?.as_int().unwrap() as u32;
-            if heap.sequence_get(claims, field)?.same_bits(leaf) {
-                heap.set_field(claims, field, Value::NULL)?;
+        for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+            if let Some(source) = track_source(heap, tracks, i)? {
+                if heap.host_fields(source.host).is_ok()
+                    && heap.property_claim(source)?.same_bits(leaf)
+                {
+                    heap.set_property_claim(source, Value::NULL)?;
+                }
+                heap.set_field(tracks, i + Track::SourceHost as u32, Value::NULL)?;
+                heap.set_field(tracks, i + Track::SourceField as u32, Value::NULL)?;
             }
         }
         Ok(())
     }
 
     fn leaf_done(&mut self, heap: &mut Heap, leaf: Value, time: f64) -> Result<(), AdapterError> {
-        Self::sample(heap, leaf, time, true)?;
+        if Self::sample(heap, leaf, time, true).is_err() {
+            let activity = get(heap, leaf, Slot::Activity)?;
+            return self.begin_cleanup(heap, activity, State::Failed, None);
+        }
         self.remove_event(heap, leaf)?;
         Self::release_claims(heap, leaf)?;
         self.node_done(heap, leaf, time)
@@ -243,34 +254,80 @@ impl Activities {
         let target = payload(heap, action, TARGET)?;
         let fields = heap.host_fields(target)?;
         let tracks = get(heap, current, Slot::Tracks)?;
-        let claims = payload(heap, target, NODE_CLAIMS)?;
         // Check this segment before stopping any other producer. Future segments
         // are intentionally read here, after prior segments and script changes.
-        for i in (0..heap.sequence_len(tracks)?).step_by(4) {
-            let field = heap.sequence_get(tracks, i)?.as_int().unwrap() as u32;
-            if stage::number(heap.table_entry(fields, field)?.1).is_err() {
+        for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+            let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
+            let end = track(heap, tracks, i, Track::End)?;
+            if stage::number(heap.table_entry(fields, field)?.1).is_err()
+                || heap
+                    .validate_property_write(
+                        PropertyId {
+                            host: target,
+                            field,
+                        },
+                        end,
+                    )
+                    .is_err()
+            {
                 return self.begin_cleanup(heap, activity, State::Failed, None);
             }
         }
-        for i in (0..heap.sequence_len(tracks)?).step_by(4) {
-            let field = heap.sequence_get(tracks, i)?.as_int().unwrap() as u32;
-            let old = heap.sequence_get(claims, field)?;
+        for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+            let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
+            let (source, writable) = heap.property_source(PropertyId {
+                host: target,
+                field,
+            })?;
+            if !writable {
+                return self.begin_cleanup(heap, activity, State::Failed, None);
+            }
+            for previous in (0..i).step_by(Track::LEN) {
+                let field = track(heap, tracks, previous, Track::Field)?
+                    .as_int()
+                    .unwrap() as u32;
+                let other = heap
+                    .property_source(PropertyId {
+                        host: target,
+                        field,
+                    })?
+                    .0;
+                if other.host.same_bits(source.host) && other.field == source.field {
+                    return self.begin_cleanup(heap, activity, State::Failed, None);
+                }
+            }
+            let old = heap.property_claim(source)?;
             if present(old) && !old.same_bits(current) {
                 let old_activity = get(heap, old, Slot::Activity)?;
+                if old_activity.same_bits(activity) {
+                    return self.begin_cleanup(heap, activity, State::Failed, None);
+                }
                 self.begin_cleanup(heap, old_activity, State::Stopped, Some(time))?;
                 return self.queue(heap, current, Job::Activate, time, true);
             }
         }
-        for i in (0..heap.sequence_len(tracks)?).step_by(4) {
-            let field = heap.sequence_get(tracks, i)?.as_int().unwrap() as u32;
+        for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+            let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
             let start = stage::number(heap.table_entry(fields, field)?.1)?;
-            heap.set_field(tracks, i + 1, Value::float(start))?;
+            heap.set_field(tracks, i + Track::Start as u32, Value::float(start))?;
             heap.set_field(
                 tracks,
-                i + 3,
+                i + Track::Version as u32,
                 Value::int(heap.host_write_version(target, field)? as i64),
             )?;
-            heap.set_field(claims, field, current)?;
+            let source = heap
+                .property_source(PropertyId {
+                    host: target,
+                    field,
+                })?
+                .0;
+            heap.set_field(tracks, i + Track::SourceHost as u32, source.host)?;
+            heap.set_field(
+                tracks,
+                i + Track::SourceField as u32,
+                Value::int(i64::from(source.field)),
+            )?;
+            heap.set_property_claim(source, current)?;
         }
         set(heap, current, Slot::StartedAt, Value::float(time))?;
         set(heap, current, Slot::Phase, Value::int(Phase::Active as i64))?;
@@ -392,8 +449,10 @@ impl Activities {
             let freeze = cleanup.freeze;
             if kind(heap, current)? == Kind::Tween {
                 if phase(heap, current)? == Phase::Active {
-                    if let Some(time) = freeze {
-                        Self::sample(heap, current, time, false)?;
+                    if let Some(time) = freeze
+                        && Self::sample(heap, current, time, false).is_err()
+                    {
+                        cleanup.result = State::Failed;
                     }
                     Self::release_claims(heap, current)?;
                 }
@@ -462,9 +521,9 @@ impl Activities {
         }
         if phase(heap, current)? == Phase::Active {
             let tracks = get(heap, current, Slot::Tracks)?;
-            for i in (0..heap.sequence_len(tracks)?).step_by(4) {
-                let field = heap.sequence_get(tracks, i)?.as_int().unwrap() as u32;
-                let version = heap.sequence_get(tracks, i + 3)?.as_int().unwrap() as u64;
+            for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+                let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
+                let version = track(heap, tracks, i, Track::Version)?.as_int().unwrap() as u64;
                 if heap.host_write_version(target, field)? != version {
                     return self.begin_cleanup(heap, activity, State::Stopped, None);
                 }
@@ -597,8 +656,9 @@ impl Activities {
                     if state(heap, scan.activity)? == State::Running
                         && kind(heap, current)? == Kind::Tween
                         && phase(heap, current)? == Phase::Active
+                        && Self::sample(heap, current, self.target_time, false).is_err()
                     {
-                        Self::sample(heap, current, self.target_time, false)?;
+                        self.begin_cleanup(heap, scan.activity, State::Failed, None)?;
                     }
                 }
                 Round::Sample(None) => {

@@ -70,7 +70,8 @@ impl Heap {
         let index = position.checked_mul(2).ok_or(HeapError::OutOfBounds)?;
         Ok((
             values.get(index).ok_or(HeapError::OutOfBounds)?,
-            values.get(index + 1).ok_or(HeapError::OutOfBounds)?,
+            self.proposed_property(table, position)
+                .unwrap_or(values.get(index + 1).ok_or(HeapError::OutOfBounds)?),
         ))
     }
     /// Store at a position already resolved by the caller. Appended keys must

@@ -39,6 +39,11 @@ impl FunctionBuilder<'_, '_> {
                     chain: false,
                     ..
                 } => {
+                    if self.l.m.facts()[base.0 as usize].intrinsic
+                        == Some(crate::semantic::Intrinsic::Bind)
+                    {
+                        break self.property_reference(base, arguments, children, depth)?;
+                    }
                     if let Some(native) = self.l.native(callee)? {
                         break self.call_with_target(
                             base,

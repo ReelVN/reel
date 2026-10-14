@@ -394,6 +394,8 @@ fn picture_button(normal, hovered, pressed, clicked) {
 bind connects an observable property while preserving that property's existing read/write permissions. text can read a read-only property; slider requires a writable property when it writes a value back. derive computes read-only presentation values. A derived function establishes dependencies on the observable properties it reads and may also read immutable captured values. Internal changes to ordinary data retain ordinary language semantics. Observable property changes update only the relevant nodes. Writing a scalar to a writable bound property writes through to its binding source while preserving the binding. Animation also reserves and writes the ultimate source property, so two nodes bound to the same source reveal the actual write conflict. Explicitly changing the source stops the relevant root activities; passive projection updates are reads. Use scope overrides for temporary animation of read-only derived properties. Rebinding or unbind first ends activities that depend on the old binding; unbind preserves the current effective base value. During the brief save-capture period, script-derived computations and author-defined presentation updates pause, then resume using the latest state when capture finishes. Ordinary {...} data records are suitable for passing parameters; use model({...}) to create an observable model for application values that change over time. Cyclic dependencies, writes inside derived computations, and waits inside derived computations produce source-level diagnostics.
 Authors can use the same approach to wrap consistent fonts, button images, spacing, and animation, then import them as ordinary modules. Visual style is reused through components and parameters; shared property objects can also be organized using ordinary language rules.
 
+Use `bind(node.x)` or `bind(node[key])` to capture a stable property location. The receiver and key are evaluated once. Passing the reference to a node constructor or assigning it to a node property establishes a connection; subsequent ordinary assignments write through while keeping it connected. `unbind(bind(node.x))` disconnects that location and preserves and returns its current value. Constraints on every connected control are checked together, and a failed write changes none of them. Explicitly destroying a source node disconnects surviving targets at their last value; existing references can no longer access the retired source. See section 12 and the verified scope for the implementation status of business `model` and `derive`.
+
 ## 8 Styling and Moving Elements Together
 
 Ordinary functions, style spreading, node property updates, transforms and finite animation are available. Temporary scope overrides remain unimplemented.
@@ -627,7 +629,7 @@ fn main() {
 
 A click passes the original button as event.target. A callback can await an animation. Synchronous code runs until it waits or ends before another script task executes, so engine budget slices do not interrupt ordinary read-modify-write operations. Multiple callbacks may await one activity; cancelling a consumer does not stop the shared producer.
 
-The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start, observable bindings and general event subscriptions remain unimplemented.
+The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start, model/derive and general event subscriptions remain unimplemented; direct node property bindings are available below.
 
 Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons.aside). Native IME and system accessibility adapters remain future work.
 
@@ -748,3 +750,24 @@ fn main() {
 ```
 
 Rust hosts submit AccessKit ActionRequest through `SessionUi::handle_access` / `AsideSessionUi::handle_access`, preserving accepted-frame and modal rules; the platform host supplies the native screen-reader connection.
+
+## Connecting stage properties
+
+`bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
+
+```aside
+fn main() {
+    let shown = toggle("Show the scene", value: true);
+    let position = slider(value: 100, min: 0, max: 400, width: 400);
+    let mirror = slider(value: bind(position.value), min: 0, max: 400, width: 400);
+    stage.replace(column(gap: 12) {
+        shown;
+        position;
+        mirror;
+        text("Move me", x: bind(position.value), visible: bind(shown.value));
+        button("Detach", on_click: |event| { unbind(bind(mirror.value)); });
+        button("Reconnect", on_click: |event| { mirror.value = bind(position.value); });
+    });
+    narrator("Both sliders share a value.");
+}
+```

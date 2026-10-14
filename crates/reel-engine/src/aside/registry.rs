@@ -117,6 +117,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             }
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
+        // Property parameters accept either a scalar or a stable reference;
+        // the shared host schema validates the resolved value at the boundary.
+        for parameter in &mut parameters {
+            parameter.ty = BuiltinType::Any;
+        }
+
         if matches!(
             name,
             "row" | "column" | "stack" | "button" | "input" | "toggle"
@@ -130,13 +136,26 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: 1,
+            abi_version: 2,
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
             required_capabilities: vec!["reel.stage".into()],
         });
     }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::unbind".into(),
+        abi_version: 1,
+        parameters: vec![NativeParameter {
+            name: "property".into(),
+            ty: BuiltinType::Any,
+            default: None,
+        }],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::WRITE),
+        required_capabilities: vec![],
+    });
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::stage::replace".into(),

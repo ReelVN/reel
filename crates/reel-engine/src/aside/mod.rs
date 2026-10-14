@@ -107,7 +107,10 @@ impl AdapterError {
                 Some(FaultKind::ConcurrentModification)
             }
             Self::Heap(HeapError::WrongKind | HeapError::TypeMismatch) => Some(FaultKind::Type),
-            Self::Heap(HeapError::RetiredHost) => Some(FaultKind::InvalidState),
+            Self::Heap(HeapError::RetiredHost | HeapError::BindingCycle) => {
+                Some(FaultKind::InvalidState)
+            }
+            Self::Heap(HeapError::ReadOnly) => Some(FaultKind::ReadOnly),
             Self::Heap(HeapError::OutOfBounds) => Some(FaultKind::OutOfBounds),
             Self::Heap(
                 HeapError::ObjectCapacity
@@ -413,6 +416,13 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::character::speak" => self.character_speak(session, ticket, locale),
+            "reel::unbind" => {
+                let reference = self.vm.host_arguments(ticket)?[0];
+                let value = self.vm.heap_mut().unbind_property(reference)?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::say" => self.dispatch_say(session, ticket, locale, work),
             "reel::narrator" => {
                 self.dispatch_narrator(session, ticket, locale)

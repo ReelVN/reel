@@ -992,7 +992,9 @@ impl Lowerer<'_> {
                     })?;
                 // A namespace is compile-time name resolution, not a runtime value.
                 // Its used members retain their own trusted native links.
-                if external.descriptor.namespace.is_some() {
+                if external.descriptor.namespace.is_some()
+                    || external.descriptor.intrinsic.is_some()
+                {
                     continue;
                 }
                 self.b.work(self.links.natives.len() as u64)?;

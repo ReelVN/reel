@@ -1,7 +1,7 @@
 //! One mutable execution node per description occurrence, never per repeat.
 //! Admission is iterative and checks parallel ownership before any takeover.
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -23,6 +23,45 @@ pub(super) enum Slot {
     Index,
     Depth,
     ChildCount,
+}
+
+/// One record per animated property, including the actual reserved source.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(super) enum Track {
+    Field,
+    Start,
+    End,
+    Version,
+    SourceHost,
+    SourceField,
+}
+impl Track {
+    pub const LEN: usize = 6;
+}
+pub(super) fn track(
+    heap: &Heap,
+    tracks: Value,
+    index: u32,
+    slot: Track,
+) -> Result<Value, AdapterError> {
+    Ok(heap.sequence_get(tracks, index + slot as u32)?)
+}
+pub(super) fn track_source(
+    heap: &Heap,
+    tracks: Value,
+    index: u32,
+) -> Result<Option<PropertyId>, AdapterError> {
+    let host = track(heap, tracks, index, Track::SourceHost)?;
+    if host.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    Ok(Some(PropertyId {
+        host,
+        field: track(heap, tracks, index, Track::SourceField)?
+            .as_int()
+            .unwrap() as u32,
+    }))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,7 +117,6 @@ struct Branch {
 }
 struct Conflict {
     leaf: u32,
-    target: u64,
     field: u32,
     left: Option<u32>,
     right: u32,
@@ -87,7 +125,7 @@ struct Conflict {
 pub(super) struct Build {
     pub activity: Value,
     branches: Vec<Branch>,
-    writers: BTreeMap<(u64, u32), u32>,
+    writers: HashMap<(aside_vm::HeapHandle, u32), u32>,
     conflict: Option<Conflict>,
     started: bool,
 }
@@ -97,7 +135,7 @@ impl Build {
         Self {
             activity,
             branches: Vec::new(),
-            writers: BTreeMap::new(),
+            writers: HashMap::new(),
             conflict: None,
             started: false,
         }
@@ -134,26 +172,25 @@ impl Build {
         heap.array_push(graph, current)?;
         if kind(heap, current)? == action::Kind::Tween {
             let target = payload(heap, action, TARGET)?;
-            let id = stage.id(heap, target)?.0;
+            stage.id(heap, target)?;
             heap.track_host_writes(target)?;
-            if payload(heap, target, NODE_CLAIMS)?.tag() == ValueTag::Null {
-                let claims = heap.alloc_array(&[])?;
-                for _ in 0..heap.table_len(heap.host_fields(target)?)? {
-                    heap.array_push(claims, Value::NULL)?;
-                }
-                heap.set_host_payload(target, NODE_CLAIMS, claims)?;
-            }
             let goals = payload(heap, action, GOALS)?;
             for i in (0..heap.sequence_len(goals)?).step_by(2) {
                 let field = heap.sequence_get(goals, i)?;
                 let end = Value::float(stage::number(heap.sequence_get(goals, i + 1)?)?);
-                for value in [field, Value::NULL, end, Value::int(0)] {
+                for value in [
+                    field,
+                    Value::NULL,
+                    end,
+                    Value::int(0),
+                    Value::NULL,
+                    Value::NULL,
+                ] {
                     heap.array_push(tracks, value)?;
                 }
             }
             self.conflict = Some(Conflict {
                 leaf: index,
-                target: id,
                 field: 0,
                 left: None,
                 right: index,
@@ -185,13 +222,13 @@ impl Build {
             let a = node(heap, self.activity, i64::from(left))?;
             let b = node(heap, self.activity, i64::from(conflict.right))?;
             if left == conflict.right {
-                if kind(heap, a)? == action::Kind::Parallel {
+                if matches!(kind(heap, a)?, action::Kind::Parallel | action::Kind::Tween) {
                     return Err(AdapterError::Input(
                         "parallel branches write the same property",
                     ));
                 }
                 conflict.left = None;
-                conflict.field += 4;
+                conflict.field += Track::LEN as u32;
             } else if int(heap, a, Slot::Depth)? >= int(heap, b, Slot::Depth)? {
                 conflict.left = Some(int(heap, a, Slot::Parent)? as u32);
             } else {
@@ -199,10 +236,20 @@ impl Build {
             }
         } else {
             let field = heap.sequence_get(tracks, conflict.field)?.as_int().unwrap() as u32;
-            conflict.left = self.writers.insert((conflict.target, field), conflict.leaf);
+            let target = payload(heap, get(heap, leaf, Slot::Action)?, TARGET)?;
+            let (source, writable) = heap.property_source(PropertyId {
+                host: target,
+                field,
+            })?;
+            if !writable {
+                return Err(HeapError::ReadOnly.into());
+            }
+            conflict.left = self
+                .writers
+                .insert((heap.handle(source.host)?, source.field), conflict.leaf);
             conflict.right = conflict.leaf;
             if conflict.left.is_none() {
-                conflict.field += 4;
+                conflict.field += Track::LEN as u32;
             }
         }
         Ok(())

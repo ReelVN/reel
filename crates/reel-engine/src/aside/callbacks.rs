@@ -71,6 +71,7 @@ impl SessionVm {
         let Some((target, closure, value)) = self.stage.change(self.vm.heap_mut(), change)? else {
             return Ok(false);
         };
+        self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
         if closure.tag() != ValueTag::Null {
             let heap = self.vm.heap_mut();
             let event = heap.alloc_table()?;

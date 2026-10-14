@@ -451,3 +451,59 @@ fn deep_graph_admission_and_execution_survive_gc_between_every_work_slice() {
     ));
     assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
 }
+
+#[test]
+fn bound_animation_sources_share_claims_and_release_old_connections() {
+    let code = r#"fn opening() {
+        let source = text("source", x: 10);
+        let a = text("a", x: bind(source.x));
+        let b = text("b", x: bind(a.x));
+        let replacement = text("replacement", x: 30);
+        let view = column() { source; a; b; replacement; };
+        stage.replace(view);
+        let first = run(tween(a, x: 100, duration: 10));
+        let second = run(tween(b, x: 200, duration: 10));
+        if await first != "Stopped" { throw "shared animation claim"; }
+        pause(second);
+        source.x = 20;
+        if await second != "Stopped" { throw "write through source"; }
+        let third = run(tween(b, x: 300, duration: 10));
+        a.x = bind(replacement.x);
+        if await third != "Stopped" { throw "rebinding stops old chain"; }
+        let old = run(tween(source, x: 40, duration: 10));
+        let fresh = run(tween(b, x: 50, duration: 10));
+        finish(old);
+        finish(fresh);
+        if await old != "Completed" || await fresh != "Completed" { throw "stale claim"; }
+        if source.x != 40 || replacement.x != 50 || a.x != 50 || b.x != 50 { throw "animated propagation"; }
+        let mut conflict = false;
+        try { run(parallel(tween(a, x: 60), tween(b, x: 70))); } catch e { conflict = true; }
+        if !conflict { throw "parallel alias conflict"; }
+        let fourth = run(tween(b, x: 80));
+        unbind(bind(a.x));
+        if await fourth != "Stopped" { throw "unbind stops dependent animation"; }
+        let limit = slider(value: 10, max: 100);
+        let panel = stack(width: bind(limit.value));
+        view.add(limit);
+        view.add(panel);
+        let ongoing = run(tween(panel, width: 80, duration: 1));
+        limit.max = 20;
+        let mut failed = false;
+        try { await ongoing; } catch e { failed = true; }
+        if !failed || limit.value != 10 || panel.width != 10 { throw "failed animation transaction"; }
+        true
+    }"#;
+    let (mut session, mut vm) = setup(code, Context::Ordinary);
+    assert!(matches!(
+        drive(&mut vm, &mut session),
+        RunOutcome::Waiting(_)
+    ));
+    collect(&mut vm);
+    advance_clock(&mut vm, &session, 0.5, 7);
+    assert!(matches!(
+        drive(&mut vm, &mut session),
+        RunOutcome::Returned(_)
+    ));
+    assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
+    assert!(!vm.activities_need_time());
+}

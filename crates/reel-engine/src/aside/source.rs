@@ -112,6 +112,10 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(stage);
+    prelude.push(ExternalSymbol::intrinsic(
+        "bind",
+        aside_compiler::semantic::Intrinsic::Bind,
+    ));
     let mut game = ExternalSymbol::dynamic("game");
     game.namespace = Some(NamespaceRef {
         module: "reel::game".into(),
