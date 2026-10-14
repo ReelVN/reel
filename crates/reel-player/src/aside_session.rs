@@ -225,6 +225,9 @@ impl AsideSessionUi {
         }
         if !matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             self.vm.sync_stage(self.ui.session())?;
+            if !self.vm.stage_ready() {
+                return Ok(());
+            }
             if self.vm.stage_is_input_feedback() {
                 self.ui.set_feedback_stage(self.vm.stage());
             } else {
@@ -279,6 +282,7 @@ impl AsideSessionUi {
         use reel_ui::stage::NodeEvent;
         let result = (|| {
             if self.state == StoryState::Running {
+                self.vm.sync_reading(self.ui.session())?;
                 if self.vm.interactions(self.ui.session(), &events)? {
                     self.ui.set_feedback_stage(self.vm.stage());
                 }

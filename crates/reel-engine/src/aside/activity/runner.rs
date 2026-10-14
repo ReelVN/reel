@@ -4,6 +4,9 @@ use action::Kind;
 use graph::{Job, Phase, Slot, Track, get, int, kind, node, phase, set, track, track_source};
 
 impl Activities {
+    pub fn set_skipping(&mut self, skipping: bool) {
+        self.skipping = skipping;
+    }
     pub fn has_active(&self) -> bool {
         self.head.is_some()
     }
@@ -618,6 +621,24 @@ impl Activities {
                     let current = node(heap, scan.activity, i64::from(scan.index))?;
                     self.round = Some(Round::Reconcile(Self::scan_next(heap, scan)?));
                     self.reconcile(heap, scan.activity, current)?;
+                    // Reuse the budgeted reconciliation cursor and finish semantics.
+                    // UI-owned, paused and infinite producers retain their own controls.
+                    if self.skipping
+                        && state(heap, scan.activity)? == State::Running
+                        && !present(root_get(heap, scan.activity, RootSlot::Owner)?)
+                        && action::duration(
+                            heap,
+                            root_get(heap, scan.activity, RootSlot::Description)?,
+                        )?
+                        .is_finite()
+                    {
+                        root_set(heap, scan.activity, RootSlot::Forcing, Value::bool(true))?;
+                        if kind(heap, current)? == Kind::Tween
+                            && phase(heap, current)? == Phase::Active
+                        {
+                            self.leaf_done(heap, current, self.time)?;
+                        }
+                    }
                 }
                 Round::Reconcile(None) => self.round = Some(Round::Events),
                 Round::Events => {

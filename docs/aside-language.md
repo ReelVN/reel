@@ -237,6 +237,10 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。`game.configure(default_dialogue: false, default_choices: false)` 关闭对应默认视图，输入与剧情交互保持不变。
 
+`game.history()` 返回会话稳定的只读可观察历史数组；历史组的 `lines` 和行字段同样只读。`game.reading()` 提供只读可观察 `auto/paused/delay`，可以 bind/derive 到任意作者控件。`game.set_auto(enabled, delay: null)` 接受 bool，省略 delay 保留当前值，显式 delay 为有限非负秒数；`game.pause_reading(paused)` 接受 bool。这些变更通过既有宿主属性通知发布，不引入语言特殊语法；赋值只读服务字段或修改历史集合会报错。
+
+`game.set_skip(enabled, unread: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。
+
 ## 十二 Task Future 与取消
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。

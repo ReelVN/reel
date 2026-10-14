@@ -10,6 +10,8 @@ use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
 pub mod audio;
+mod reading;
+pub use reading::{ReadProgress, ReadingState};
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
 use unicode_segmentation::UnicodeSegmentation;
@@ -205,6 +207,7 @@ pub enum DialogueMode {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DialogueInteraction {
+    previously_read: bool,
     id: InteractionId,
     mode: DialogueMode,
     current_line_ids: Vec<DialogueLineId>,
@@ -213,6 +216,11 @@ pub struct DialogueInteraction {
 }
 
 impl DialogueInteraction {
+    /// All content IDs were completed before this group was submitted.
+    pub fn previously_read(&self) -> bool {
+        self.previously_read
+    }
+
     pub fn id(&self) -> InteractionId {
         self.id
     }
@@ -408,6 +416,7 @@ pub enum InputOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputRejection {
+    ReadingPaused,
     SessionNotRunning,
     ForeignOwner,
     OwnerNotLive,
@@ -624,6 +633,8 @@ pub struct Session {
     active: Option<Interaction>,
     completion: Option<Completion>,
     history: Vec<HistoryGroup>,
+    reading: ReadingState,
+    read_progress: ReadProgress,
 }
 
 impl Session {
@@ -631,6 +642,14 @@ impl Session {
     /// `(SessionId, Epoch)` pair when replacing or restarting a session; reusing
     /// that pair would deliberately make the old scoped identities equivalent.
     pub fn new(session_id: SessionId, epoch: Epoch) -> Result<Self, SessionError> {
+        Self::new_with_read_progress(session_id, epoch, ReadProgress::default())
+    }
+
+    pub fn new_with_read_progress(
+        session_id: SessionId,
+        epoch: Epoch,
+        read_progress: ReadProgress,
+    ) -> Result<Self, SessionError> {
         let identity = SessionIdentity { session_id, epoch };
         let root_owner = OwnerHandle {
             identity,
@@ -652,6 +671,8 @@ impl Session {
             active: None,
             completion: None,
             history: Vec::new(),
+            reading: ReadingState::default(),
+            read_progress,
         })
     }
 
@@ -663,9 +684,40 @@ impl Session {
         self.status
     }
 
+    pub fn read_progress(&self) -> &ReadProgress {
+        &self.read_progress
+    }
+
+    pub fn set_skip_reading(&mut self, enabled: bool, unread: bool) {
+        self.reading.set_skip(enabled, unread);
+        self.check_skip_boundary();
+    }
+
+    fn check_skip_boundary(&mut self) {
+        if matches!(&self.active, Some(Interaction::Choice(_)))
+            || matches!(&self.active, Some(Interaction::Dialogue(d)) if !d.previously_read && !self.reading.skip_unread())
+        {
+            self.reading.set_skip(false, false);
+        }
+    }
+
+    pub fn reading(&self) -> ReadingState {
+        self.reading
+    }
+
+    pub fn set_auto_reading(&mut self, enabled: bool, delay: Option<std::time::Duration>) {
+        self.reading.set_auto(enabled, delay);
+    }
+
+    pub fn pause_reading(&mut self, paused: bool) {
+        self.reading.pause(paused);
+    }
+
     /// Inspect allocated backing capacity outside the input/render hot path.
     pub fn storage_usage(&self) -> StorageUsage {
-        let mut bytes = vector_capacity_bytes(&self.owners) + vector_capacity_bytes(&self.history);
+        let mut bytes = vector_capacity_bytes(&self.owners)
+            + vector_capacity_bytes(&self.history)
+            + self.read_progress.storage_bytes();
         let mut history_text_bytes = 0;
         for history in &self.history {
             bytes += vector_capacity_bytes(&history.lines) + history.page_locale.capacity();
@@ -1000,7 +1052,15 @@ impl Session {
                 content: copy_content(line)?,
             });
         }
+        self.read_progress
+            .ids
+            .try_reserve(lines.len())
+            .map_err(|_| SessionError::AllocationFailed)?;
+        let previously_read = lines
+            .iter()
+            .all(|line| self.read_progress.contains(line.content_id));
         let dialogue = DialogueInteraction {
+            previously_read,
             id,
             mode: DialogueMode::Adv,
             current_line_ids,
@@ -1018,6 +1078,7 @@ impl Session {
             .map_err(|_| SessionError::AllocationFailed)?;
         // Everything fallible is complete. Both publications use reserved storage.
         self.active = Some(Interaction::Dialogue(dialogue));
+        self.check_skip_boundary();
         self.history.push(history);
         self.next_interaction = id.generation.checked_add(1);
         Ok(id)
@@ -1058,6 +1119,7 @@ impl Session {
             id,
             options: copied,
         }));
+        self.check_skip_boundary();
         self.next_interaction = id.generation.checked_add(1);
         Ok(id)
     }
@@ -1091,6 +1153,9 @@ impl Session {
         let Interaction::Dialogue(dialogue) = active else {
             return Err(SessionError::WrongInteractionKind);
         };
+        if self.reading.paused() {
+            return Ok(false);
+        }
         let mut changed = false;
         for line in &mut dialogue.lines {
             let total_count = line.grapheme_boundaries.len() - 1;
@@ -1160,6 +1225,9 @@ impl Session {
             return Err(InputRejection::DuplicateOrOutOfOrder);
         }
         self.last_input_sequence = Some(event.sequence);
+        if self.reading.paused() {
+            return Err(InputRejection::ReadingPaused);
+        }
         let active = self
             .active
             .as_mut()
@@ -1274,9 +1342,18 @@ impl Session {
             .active
             .take()
             .expect("active interaction reserves completion");
+        let interaction_id = interaction.id();
+        if matches!(outcome, CompletionOutcome::Advanced)
+            && let Interaction::Dialogue(dialogue) = interaction
+        {
+            // Admission reserved the hash table; move owned IDs without allocating on input.
+            for line in dialogue.lines {
+                self.read_progress.ids.insert(line.content.id);
+            }
+        }
         debug_assert!(self.completion.is_none());
         self.completion = Some(Completion {
-            interaction_id: interaction.id(),
+            interaction_id,
             owner: self.root_owner(),
             outcome,
             delivery: CompletionDelivery::Resume,

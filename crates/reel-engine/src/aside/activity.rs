@@ -145,6 +145,7 @@ struct NativeWork {
 type EventKey = (u64, u64, u32);
 #[derive(Default)]
 pub(super) struct Activities {
+    skipping: bool,
     head: Option<RootToken>,
     jobs: Option<RootToken>,
     job_tail: Option<Value>,

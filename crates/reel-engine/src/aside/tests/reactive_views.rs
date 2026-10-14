@@ -227,3 +227,200 @@ fn cancellation_during_initial_computation_releases_capture_and_frames() {
     }
     assert!(!vm.vm.heap().reactive_evaluating());
 }
+
+#[test]
+fn history_is_stable_readonly_incremental_and_survives_page_and_stage_replacement() {
+    let code = r#"
+    let d = game.dialogue();
+    fn opening() {
+        let mio = character("Mio", id: "mio");
+        say([mio.line("first"), character("Eri", id: "eri").line("second")]);
+        // First history access is deliberately late, after the interaction ended.
+        let history = game.history();
+        if history != game.history() || history.len() != 1 { throw "history identity"; }
+        let first = history[0];
+        if first.locale != "en" || first.speaker_name != "Mio" || first.text != "first"
+           || first.lines.len() != 2 || first.lines[0].id != d.lines[0].id
+           || first.lines[1].id != d.lines[1].id || first.lines[0].speaker_id != "mio"
+           || first.lines[0].content_id == "" { throw "history group content"; }
+        let mut errors = 0;
+        try { history.append(first); } catch e { errors += 1; }
+        try { first.text = "lost"; } catch e { errors += 1; }
+        try { first.lines.clear(); } catch e { errors += 1; }
+        try { first.lines[0].text = "lost"; } catch e { errors += 1; }
+        if errors != 4 { throw "history was mutable"; }
+        d.clear();
+        stage.replace(text(value: derive(|| f"groups {history.len()}")));
+        narrator("third");
+        if history.len() != 2 || history[0] != first || first.lines[0].text != "first"
+           || history[1].lines[0].speaker_id != null || history[1].lines[0].id != d.lines[0].id
+           || history[1].group_id == first.group_id { throw "history changed or duplicated"; }
+        narrator("end");
+        narrator("");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        for expected in ["first", "third", "end"] {
+            let Some(crate::InteractionView::Dialogue(d)) = session.view().interaction else {
+                panic!("dialogue")
+            };
+            assert_eq!(d.text(), expected);
+            let id = d.id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                    .unwrap();
+                models::drive(&mut vm, &mut session, true);
+            }
+            collect(&mut vm);
+        }
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("groups 4".into()))
+        );
+        let id = session.view().interaction.unwrap().id();
+        session
+            .handle_local_input(session.root_owner(), InputAction::Advance(id))
+            .unwrap();
+        models::drive(&mut vm, &mut session, true);
+        // Rust hosts can submit an empty group; its history has empty shortcuts.
+        session.begin_say(session.root_owner(), &[], "en").unwrap();
+        vm.sync_narrative(&session).unwrap();
+        let before = vm.vm.heap().stats();
+        for _ in 0..1000 {
+            vm.sync_narrative(&session).unwrap();
+        }
+        let after = vm.vm.heap().stats();
+        assert_eq!(
+            (
+                before.live_objects,
+                before.charged_bytes,
+                before.chunk_allocations
+            ),
+            (
+                after.live_objects,
+                after.charged_bytes,
+                after.chunk_allocations
+            )
+        );
+    }
+}
+
+#[test]
+fn reading_controls_are_observable_transactional_and_gate_narrative_input() {
+    let code = r#"
+    let r = game.reading();
+    fn opening() {
+        if r != game.reading() || r.auto || r.paused || r.delay != 2.0 { throw "reading defaults"; }
+        game.set_auto(true, delay: 0.5);
+        let mut errors = 0;
+        try { game.set_auto(false, delay: -1); } catch e { errors += 1; }
+        try { game.set_auto(2); } catch e { errors += 1; }
+        try { r.auto = false; } catch e { errors += 1; }
+        if errors != 3 || !r.auto || r.delay != 0.5 { throw "invalid settings changed state"; }
+        stage.replace(column() {
+            text(value: derive(|| if r.paused { "paused" } else { "reading" }));
+            button("resume", on_click: |e| { game.pause_reading(false); game.set_auto(false); });
+        });
+        game.pause_reading(true);
+        narrator("waiting");
+        if r.paused || r.auto || r.delay != 0.5 { throw "resume settings"; }
+        let choices = game.choice();
+        game.pause_reading(true);
+        choose([{key: "ok", label: "OK"}]);
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let id = session.view().interaction.unwrap().id();
+        assert_eq!(
+            session.handle_local_input(session.root_owner(), InputAction::Advance(id)),
+            Err(crate::InputRejection::ReadingPaused)
+        );
+        assert!(
+            !session
+                .reveal_more(session.root_owner(), id, usize::MAX)
+                .unwrap()
+        );
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("paused".into()))
+        );
+        let button = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Button { .. }))
+            .unwrap()
+            .id;
+        vm.click(&mut session, button).unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(!session.reading().paused());
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+            models::drive(&mut vm, &mut session, true);
+        }
+        let Some(crate::InteractionView::Choice(choice)) = session.view().interaction else {
+            panic!("choice")
+        };
+        let option = choice.options()[0].id().clone();
+        assert_eq!(
+            session.handle_local_input(session.root_owner(), InputAction::Select(option)),
+            Err(crate::InputRejection::ReadingPaused)
+        );
+    }
+}
+
+#[test]
+fn retiring_the_input_scope_clears_skipping_even_when_its_cancel_callback_cannot_run() {
+    use reel_ui::{
+        input::ActionPhase,
+        stage::{NodeAction, NodeKind},
+    };
+    let code = r#"fn opening() {
+        stage.replace(input(bindings: {skip: [binding("ControlLeft")]},
+            on_action: |e| game.set_skip(e.phase == "pressed", unread: true)));
+        narrator("before");
+        stage.replace(text("new scene"));
+        narrator("after");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Input { .. }))
+            .unwrap();
+        let NodeKind::Input { bindings, .. } = &node.kind else {
+            unreachable!()
+        };
+        let action = NodeAction {
+            node: node.id,
+            action: "skip".into(),
+            value: 1.,
+            phase: ActionPhase::Pressed,
+            bindings: bindings.clone(),
+        };
+        vm.input_action(&mut session, &action).unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(session.reading().skipping());
+        let id = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        models::drive(&mut vm, &mut session, true);
+        assert!(!session.reading().skipping());
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("new scene".into()))
+        );
+    }
+}

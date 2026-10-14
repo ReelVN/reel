@@ -46,6 +46,11 @@ impl StoryRuntime {
     /// Suspend story time. Execution deadlines always remain on the unadjusted host clock.
     pub fn suspend(&mut self, now_ns: u64) {
         self.suspended_at.get_or_insert(now_ns);
+        self.runnable |= self.driver.ui().session().reading().skipping();
+        self.driver
+            .ui_mut()
+            .session_mut()
+            .set_skip_reading(false, false);
         self.driver.ui_mut().pause_dialogue();
         self.driver.suspend_audio();
     }
@@ -124,9 +129,13 @@ impl StoryRuntime {
         if !self.closing && self.needs_tick() {
             self.logical_ns = self.logical_ns.max(now().saturating_sub(self.suspended_ns));
             let speed = self.driver.adapter().game_settings().text_speed;
-            self.driver
+            let reading_changed = self
+                .driver
                 .ui_mut()
                 .advance_dialogue(self.logical_ns, speed)?;
+            if reading_changed && self.driver.ui().session().view().interaction.is_none() {
+                self.runnable = true;
+            }
             let progress = self
                 .driver
                 .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;

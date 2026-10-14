@@ -804,3 +804,42 @@ fn zero_line_dialogue_has_one_history_group_and_one_advance_completion() {
     assert!(session.take_completion().is_none());
     assert_eq!(session.view().history.len(), 1);
 }
+
+#[test]
+fn read_progress_is_committed_on_advance_and_reusable_without_display_history() {
+    let mut first = session();
+    let owner = first.root_owner();
+    let id = first.begin_say(owner, &[line("first")], "en").unwrap();
+    assert!(!dialogue(&first).previously_read());
+    first.set_skip_reading(true, false);
+    assert!(
+        !first.reading().skipping(),
+        "unread boundary must stop default skip"
+    );
+    first.reveal_more(owner, id, usize::MAX).unwrap();
+    assert!(!first.read_progress().contains("opening.1"));
+    first
+        .handle_local_input(owner, InputAction::Advance(id))
+        .unwrap();
+    assert!(first.read_progress().contains("opening.1"));
+    let saved: Vec<_> = first.read_progress().ids().map(str::to_owned).collect();
+    let progress = ReadProgress::from_ids(saved).unwrap();
+    let mut next = Session::new_with_read_progress(SessionId(8), Epoch(1), progress).unwrap();
+    let owner = next.root_owner();
+    next.begin_say(owner, &[line("same statement")], "en")
+        .unwrap();
+    assert!(dialogue(&next).previously_read());
+    next.set_skip_reading(true, false);
+    assert!(next.reading().skipping());
+    next.pause_reading(true);
+    assert!(!next.reading().skipping());
+    next.pause_reading(false);
+    next.cancel();
+    assert_eq!(next.read_progress().ids().count(), 1);
+    let mut cancelled = session();
+    cancelled
+        .begin_say(cancelled.root_owner(), &[line("never advanced")], "en")
+        .unwrap();
+    cancelled.cancel();
+    assert_eq!(cancelled.read_progress().ids().count(), 0);
+}

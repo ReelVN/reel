@@ -4,6 +4,7 @@
 //! explicit host requests and must not be described as a source story runner.
 mod playback;
 use crate::stage_widget::{StageView, StageWidget};
+use playback::dialogue_complete;
 #[cfg(test)]
 mod button_tests;
 #[cfg(test)]
@@ -39,6 +40,7 @@ type Error = Box<dyn std::error::Error>;
 /// paints preserve this revision; changing interaction or reveal increments it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProjectionStamp {
+    dialogue_complete: bool,
     revision: u64,
     button_revision: u64,
     interaction: Option<InteractionId>,
@@ -729,6 +731,9 @@ pub struct SessionUi {
     default_dialogue: bool,
     default_choices: bool,
     narrative_dirty: bool,
+    reading_modal: bool,
+    input_fallback: Option<WidgetId>,
+    reading_focused: bool,
 }
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
@@ -736,6 +741,7 @@ impl SessionUi {
         let projection = Projection::from_session(&session, true, true)?;
         let choice_owners = allocate_choice_owners(&mut session, projection.choices.len())?;
         let stamp = ProjectionStamp {
+            dialogue_complete: dialogue_complete(&session),
             revision: 1,
             button_revision: 0,
             interaction: projection.interaction,
@@ -759,6 +765,9 @@ impl SessionUi {
             default_dialogue: true,
             default_choices: true,
             narrative_dirty: false,
+            reading_modal: false,
+            input_fallback: None,
+            reading_focused: true,
             images: crate::images::Images::new(
                 crate::assets::Assets::directory(Default::default()),
             ),
@@ -798,6 +807,14 @@ impl SessionUi {
             .is_none_or(|view| view.revision != stage.revision())
         {
             let view = StageView::capture(stage);
+            let modal = view.has_modal();
+            if modal {
+                self.session.set_skip_reading(false, false);
+            }
+            if modal != self.reading_modal {
+                self.pause_dialogue();
+                self.reading_modal = modal;
+            }
             self.images.request(view.image_requests());
             self.pending_stage = Some(view);
             let mut binding = self.binding.borrow_mut();
@@ -894,7 +911,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
     ) -> Result<(), Error> {
-        bridge.set_focus_fallback(Some(root_id));
+        bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
         if self.images.poll()? {
             if let Some(mut view) = self.pending_stage.take() {
                 view.resolve_images(&self.images.loaded);
@@ -903,6 +920,7 @@ impl SessionUi {
                 self.images.commit();
             }
         } else if self.images_pending() {
+            self.pause_dialogue();
             return Ok(());
         }
         let view = self.session.view();
@@ -940,7 +958,10 @@ impl SessionUi {
                 }
             }
         }
+        let complete = dialogue_complete(&self.session);
+        changed |= complete != self.stamp.dialogue_complete;
         if changed || self.stage_dirty {
+            self.stamp.dialogue_complete = complete;
             self.stamp.revision = self
                 .stamp
                 .revision
@@ -948,9 +969,15 @@ impl SessionUi {
                 .ok_or("UI projection revision exhausted")?;
             self.stamp.interaction = self.projection.interaction;
             self.stamp.button_revision = self.binding.borrow().button_revision;
-            bridge.edit_widget(root_id, |mut widget| {
-                SessionWidget::sync(&mut widget.downcast::<SessionWidget>(), self)
+            self.input_fallback = bridge.edit_widget(root_id, |mut widget| {
+                let mut widget = widget.downcast::<SessionWidget>();
+                SessionWidget::sync(&mut widget, self);
+                let this = &mut widget;
+                this.ctx
+                    .get_mut(&mut this.widget.stage)
+                    .and_then(|stage| stage.widget.input_fallback())
             });
+            bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
             self.stage_dirty = false;
         }
         Ok(())
@@ -1015,6 +1042,13 @@ impl SessionUi {
     ) -> Result<UiDispatch, Error> {
         let was_held = self.gesture_active();
         self.binding.borrow_mut().non_pointer = true;
+        if let TextEvent::WindowFocusChange(focused) = &event {
+            self.reading_focused = *focused;
+            if !focused {
+                self.session.set_skip_reading(false, false);
+            }
+            self.pause_dialogue();
+        }
         let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
         let handled = bridge.handle_text_event(event);
         self.binding.borrow_mut().non_pointer = false;

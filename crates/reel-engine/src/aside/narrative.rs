@@ -1,4 +1,5 @@
 //! Session-owned observable narrative data, independent of its presentation.
+mod history;
 use super::*;
 use crate::{ChoiceId, InputAction, InteractionView};
 use aside_vm::{Heap, HeapHandle, PropertyId, ValueTag, bytecode::FunctionKind};
@@ -12,6 +13,7 @@ enum DialogueField {
     Text,
     Reveal,
     Active,
+    Read,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -28,12 +30,24 @@ enum ChoiceField {
     Active,
 }
 
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum ReadingField {
+    Auto,
+    Paused,
+    Delay,
+    Skipping,
+    SkipUnread,
+}
+
 pub(super) struct Narrative {
     dialogue: Value,
     choice: Value,
     interaction: Option<InteractionId>,
     option_ids: Vec<(HeapHandle, ChoiceId)>,
-    next_line: i64,
+    roots: Value,
+    reading: Value,
+    history: Option<history::History>,
 }
 
 fn record(
@@ -109,6 +123,7 @@ impl Narrative {
                 ("text", empty),
                 ("reveal", Value::int(0)),
                 ("active", Value::bool(false)),
+                ("read", Value::bool(false)),
             ],
             &[active],
         )?;
@@ -117,7 +132,18 @@ impl Narrative {
             &[("options", options), ("active", Value::bool(false))],
             &[],
         )?;
-        let roots = heap.alloc_array(&[dialogue, choice])?;
+        let reading = record(
+            heap,
+            &[
+                ("auto", Value::bool(false)),
+                ("paused", Value::bool(false)),
+                ("delay", Value::float(2.)),
+                ("skipping", Value::bool(false)),
+                ("skip_unread", Value::bool(false)),
+            ],
+            &[],
+        )?;
+        let roots = heap.alloc_array(&[dialogue, choice, reading])?;
         for (object, name, function) in [(dialogue, "clear", clear), (choice, "select", select)] {
             let method = vm.bind_native(object, function)?;
             let heap = vm.heap_mut();
@@ -131,8 +157,27 @@ impl Narrative {
             choice,
             interaction: None,
             option_ids: Vec::new(),
-            next_line: 1,
+            roots,
+            reading,
+            history: None,
         })
+    }
+
+    fn sync_reading(&self, heap: &mut Heap, session: &Session) -> Result<(), AdapterError> {
+        let reading = session.reading();
+        for (field, value) in [
+            (ReadingField::Auto, Value::bool(reading.automatic())),
+            (ReadingField::Paused, Value::bool(reading.paused())),
+            (ReadingField::Skipping, Value::bool(reading.skipping())),
+            (ReadingField::SkipUnread, Value::bool(reading.skip_unread())),
+            (
+                ReadingField::Delay,
+                Value::float(reading.delay().as_secs_f64()),
+            ),
+        ] {
+            publish(heap, self.reading, field as u32, value)?;
+        }
+        Ok(())
     }
 
     pub(super) fn sync(
@@ -182,11 +227,7 @@ impl Narrative {
                     let rows = heap.alloc_array(&[])?;
                     let ids = array(heap)?;
                     for line in dialogue.lines() {
-                        let id = Value::int(self.next_line);
-                        self.next_line = self
-                            .next_line
-                            .checked_add(1)
-                            .ok_or(AdapterError::Allocation)?;
+                        let id = history::line_id(heap, line.id())?;
                         let name = text::alloc_string(heap, line.speaker_name(), chunk)?;
                         let text = text::alloc_string(heap, line.resolved_text(), chunk)?;
                         let row = record(
@@ -288,11 +329,35 @@ impl Narrative {
                 Value::int(dialogue.reveal().visible_bytes.end as i64),
             )?;
         }
+        publish(
+            heap,
+            self.dialogue,
+            DialogueField::Read as u32,
+            Value::bool(
+                matches!(active, Some(InteractionView::Dialogue(d)) if d.previously_read()),
+            ),
+        )?;
+        self.sync_reading(heap, session)?;
+        if let Some(history) = &mut self.history {
+            history.sync(heap, session, self.interaction, self.dialogue, chunk)?;
+        }
         Ok(())
     }
 }
 
 impl SessionVm {
+    /// Publish host reading controls at the same safe boundary as other input state.
+    pub fn sync_reading(&mut self, session: &Session) -> Result<(), AdapterError> {
+        self.same_session(session)?;
+        if self.reactive_ready
+            && self.derived_task.is_none()
+            && let Some(model) = &self.narrative
+        {
+            model.sync_reading(self.vm.heap_mut(), session)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn sync_narrative(&mut self, session: &Session) -> Result<(), AdapterError> {
         if let Some(model) = &mut self.narrative {
             model.sync(self.vm.heap_mut(), session, self.read_limit)?;
@@ -313,6 +378,67 @@ impl SessionVm {
         let value = match symbol {
             "reel::game::dialogue" => model.dialogue,
             "reel::game::choice" => model.choice,
+            "reel::game::reading" => model.reading,
+            "reel::game::history" => {
+                if model.history.is_none() {
+                    let history = history::History::new(self.vm.heap_mut())?;
+                    self.vm.heap_mut().array_push(model.roots, history.value)?;
+                    model.history = Some(history);
+                }
+                model.history.as_ref().unwrap().value
+            }
+            "reel::game::set_auto" => {
+                let args = self.vm.host_arguments(ticket)?;
+                let enabled = args[0]
+                    .as_bool()
+                    .ok_or(AdapterError::Input("auto requires bool"))?;
+                let delay = if args[1].tag() == ValueTag::Null {
+                    None
+                } else {
+                    let seconds = args[1]
+                        .as_float()
+                        .or_else(|| args[1].as_int().map(|n| n as f64))
+                        .ok_or(AdapterError::Input("auto delay requires seconds"))?;
+                    Some(
+                        std::time::Duration::try_from_secs_f64(seconds).map_err(|_| {
+                            AdapterError::Input(
+                                "auto delay must be finite, nonnegative and representable",
+                            )
+                        })?,
+                    )
+                };
+                session.set_auto_reading(enabled, delay);
+                Value::NULL
+            }
+            "reel::game::set_skip" => {
+                let args = self.vm.host_arguments(ticket)?;
+                let enabled = args[0]
+                    .as_bool()
+                    .ok_or(AdapterError::Input("skip requires bool"))?;
+                let unread = args[1]
+                    .as_bool()
+                    .ok_or(AdapterError::Input("skip unread requires bool"))?;
+                session.set_skip_reading(enabled, unread);
+                self.skip_input = self
+                    .callbacks
+                    .iter()
+                    .find(|callback| callback.task == ticket.task)
+                    .map(|callback| callback.node)
+                    .filter(|node| {
+                        session.reading().skipping()
+                            && self.stage.scene.node(*node).is_some_and(|node| {
+                                matches!(node.kind, reel_ui::stage::NodeKind::Input { .. })
+                            })
+                    });
+                Value::NULL
+            }
+            "reel::game::pause_reading" => {
+                let paused = self.vm.host_arguments(ticket)?[0]
+                    .as_bool()
+                    .ok_or(AdapterError::Input("reading pause requires bool"))?;
+                session.pause_reading(paused);
+                Value::NULL
+            }
             "reel::dialogue::clear" => {
                 let rows = array(self.vm.heap_mut())?;
                 publish(
