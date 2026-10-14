@@ -88,7 +88,11 @@ struct Projection {
     status: reel_engine::SessionStatus,
 }
 impl Projection {
-    fn from_session(session: &Session) -> Result<Self, Error> {
+    fn from_session(
+        session: &Session,
+        default_dialogue: bool,
+        default_choices: bool,
+    ) -> Result<Self, Error> {
         let view = session.view();
         let mut projection = Self {
             interaction: None,
@@ -100,6 +104,9 @@ impl Projection {
         match view.interaction {
             Some(InteractionView::Dialogue(dialogue)) => {
                 projection.interaction = Some(dialogue.id());
+                if !default_dialogue {
+                    return Ok(projection);
+                }
                 projection.lines = dialogue
                     .lines()
                     .iter()
@@ -112,6 +119,9 @@ impl Projection {
             }
             Some(InteractionView::Choice(choice)) => {
                 projection.interaction = Some(choice.id());
+                if !default_choices {
+                    return Ok(projection);
+                }
                 projection.choices = choice
                     .options()
                     .iter()
@@ -676,11 +686,14 @@ pub struct SessionUi {
     pending_stage: Option<StageView>,
     images: crate::images::Images,
     playback: playback::Playback,
+    default_dialogue: bool,
+    default_choices: bool,
+    narrative_dirty: bool,
 }
 impl SessionUi {
     pub fn new(mut session: Session) -> Result<Self, Error> {
         let source_owner = session.create_owner()?;
-        let projection = Projection::from_session(&session)?;
+        let projection = Projection::from_session(&session, true, true)?;
         let choice_owners = allocate_choice_owners(&mut session, projection.choices.len())?;
         let stamp = ProjectionStamp {
             revision: 1,
@@ -703,10 +716,20 @@ impl SessionUi {
             stage_dirty: false,
             pending_stage: None,
             playback: Default::default(),
+            default_dialogue: true,
+            default_choices: true,
+            narrative_dirty: false,
             images: crate::images::Images::new(
                 crate::assets::Assets::directory(Default::default()),
             ),
         })
+    }
+    pub fn set_default_views(&mut self, dialogue: bool, choices: bool) {
+        if self.default_dialogue != dialogue || self.default_choices != choices {
+            self.default_dialogue = dialogue;
+            self.default_choices = choices;
+            self.narrative_dirty = true;
+        }
     }
     pub fn session(&self) -> &Session {
         &self.session
@@ -846,8 +869,12 @@ impl SessionUi {
         let interaction = view.interaction.map(|i| i.id());
         let mut changed = view.status != self.projection.status
             || view.history.len() != self.projection.history_count;
-        if interaction != self.projection.interaction {
-            let projection = Projection::from_session(&self.session)?;
+        if interaction != self.projection.interaction || self.narrative_dirty {
+            let projection = Projection::from_session(
+                &self.session,
+                self.default_dialogue,
+                self.default_choices,
+            )?;
             let replacement =
                 match allocate_choice_owners(&mut self.session, projection.choices.len()) {
                     Ok(owners) => owners,
@@ -860,6 +887,7 @@ impl SessionUi {
                 self.session.revoke_owner(owner)?;
             }
             self.projection = projection;
+            self.narrative_dirty = false;
             changed = true;
         } else {
             self.projection.status = view.status;

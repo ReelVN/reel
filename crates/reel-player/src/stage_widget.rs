@@ -213,11 +213,20 @@ impl SceneWidget {
             NodeKind::Button { .. } | NodeKind::Toggle { .. }
         )
     }
+    fn reveal_range(node: &StageNode) -> std::ops::Range<usize> {
+        let text = Self::caption(&node.kind).unwrap_or("");
+        let mut end = node.props.reveal.unwrap_or(text.len()).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        0..end
+    }
     fn new(view: &SceneNode) -> Self {
         let label = match &view.node.kind {
             NodeKind::Text(_) | NodeKind::Button { .. } | NodeKind::Toggle { .. } => Some(
                 NewWidget::new(
                     Label::new(Self::caption(&view.node.kind).unwrap_or("").to_owned())
+                        .with_visible_bytes(Self::reveal_range(&view.node))
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
                         .with_style(font_style(&view.node.props.font)),
                 )
@@ -332,6 +341,9 @@ impl SceneWidget {
                     &mut label,
                     Self::caption(&view.node.kind).unwrap_or("").to_owned(),
                 );
+            }
+            if caption_changed || this.widget.node.props.reveal != view.node.props.reveal {
+                Label::set_visible_bytes(&mut label, Self::reveal_range(&view.node));
             }
             if this.widget.node.props.font_size != view.node.props.font_size {
                 Label::insert_style(

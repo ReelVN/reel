@@ -287,7 +287,7 @@ fn suspended_button_animation_advances_without_polling_vm_and_closes_its_wait() 
         .adapter()
         .stage()
         .nodes()
-        .find(|node| matches!(&node.kind, NodeKind::Text(value) if value == "moving"))
+        .find(|node| matches!(&node.kind, NodeKind::Text(value) if value.as_ref() == "moving"))
         .unwrap();
     assert_eq!(target.props.x, 30.);
     runtime.close().unwrap();

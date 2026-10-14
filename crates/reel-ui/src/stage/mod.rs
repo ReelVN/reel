@@ -101,7 +101,7 @@ pub struct NodeClick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
-    Text(String),
+    Text(Arc<str>),
     Button {
         label: Option<String>,
         listening: bool,
@@ -145,6 +145,8 @@ pub struct NodeProps {
     pub clip: bool,
     /// Draw built-in button/toggle decorations; authored children are unaffected.
     pub decorated: bool,
+    /// Visible UTF-8 byte prefix; full text is always used for layout.
+    pub reveal: Option<usize>,
     pub gap: f64,
     pub padding: f64,
     pub font_size: f64,
@@ -170,6 +172,7 @@ impl Default for NodeProps {
             modal: false,
             clip: false,
             decorated: true,
+            reveal: None,
             gap: 0.,
             padding: 0.,
             font_size: 24.,

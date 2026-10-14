@@ -52,6 +52,7 @@ impl Vm {
             Builtin::Clear => work.len = 0,
             Builtin::Extend => {
                 let source = argument(0)?;
+                self.heap.observe_read(source, None).map_err(heap_fault)?;
                 let len = self.heap.sequence_len(source).map_err(heap_fault)?;
                 work.len = info.len.checked_add(len).ok_or(FaultKind::OutOfBounds)?;
                 work.source_version =

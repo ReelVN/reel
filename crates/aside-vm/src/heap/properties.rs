@@ -183,7 +183,7 @@ impl Heap {
         }
     }
 
-    fn work_push(&mut self, property: PropertyId) -> Result<(), HeapError> {
+    pub(super) fn work_push(&mut self, property: PropertyId) -> Result<(), HeapError> {
         if self.property_work.len() == self.property_work.capacity() {
             let old = self.property_work.capacity();
             let new = (old * 2).max(8);
@@ -205,7 +205,7 @@ impl Heap {
     // during every marking cycle would keep abandoned views alive indefinitely.
     // No collection step runs inside a property transaction and these values
     // never escape it; live unmarked targets still receive their cached update.
-    fn subscriber_target(&self, reference: Value) -> Result<Option<Value>, HeapError> {
+    pub(super) fn subscriber_target(&self, reference: Value) -> Result<Option<Value>, HeapError> {
         let handle = self.object(self.key(reference)?)?.weak;
         let Some(handle) = handle else {
             return Ok(None);
@@ -410,6 +410,7 @@ impl Heap {
             }
             cursor = self.property_ref(binding)?.0;
         }
+        self.check_derived_cycle(target, source)?;
         let value = self.host_property(source)?;
         self.collect_properties(target)?;
         if !writable {

@@ -12,7 +12,7 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。model 与节点 bind/unbind 已可用；derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -224,7 +224,7 @@ narrator、character、say 和 choose 支持顺序等待并继续。`let mio = c
 
 `game.configure(text_speed: 30)` 设置每秒显示的 Unicode 字素数，默认 30；0 立即显示全文，省略保留原值。普通推进先补全文字，再结束本句；角色、旁白和行组使用相同规则。挂起、资源等待和输入配对期间暂停揭示，不在恢复时突发补字。Rust 宿主与窗口共用播放逻辑。
 
-下方可绑定对白模型、自定义对白视图、气泡/NVL、语音及章节启动仍是设计目标；当前 say 使用 ADV 行组，不接受 mode 参数。
+可绑定对白、作者 ADV/NVL 视图和自定义选择已接通，见 [author_narrative.aside](../../examples/author_narrative.aside)。语音与章节启动仍待实现；say 提交共享推进的行组，布局由作者视图决定。
 
 对白行数、选项数量、单次交互文字和会话历史按内容增长。历史保留整个会话的记录；它不会因达到展示缓存容量而中断剧情或丢弃旧记录。实际内存不足会报告错误。
 
@@ -235,7 +235,7 @@ use game::ui::room::room_view;
 let mio = character("Mio");
 
 pub fn opening() {
-    let view = room_view(game.dialogue);
+    let view = room_view(game.dialogue());
     stage.replace(view.root);
     mio("先别开灯。看玻璃上那条光。");
     narrator("雨水往下落，光却停在原处。");
@@ -247,20 +247,24 @@ pub fn opening() {
 角色描述身份与发言参数，对话框由作者的组件绘制。最简单的文字布局如下；背景图片、姓名框与快捷按钮可以照常加入节点树。
 ```aside
 pub fn dialogue_view(model) {
-    column(x: 160, y: 780, width: 1600, gap: 12) {
+    column(gap: 12) {
         text(value: bind(model.speaker_name),
              visible: derive(|| model.speaker_name != ""));
         text(value: bind(model.text), reveal: bind(model.reveal));
     }
 }
+pub fn nvl_view(model) {
+    view(|| column(gap: 24) {
+        for line in model.lines { dialogue_view(line); }
+    })
+}
 ```
-game.dialogue.lines 是统一的可观察对白行列表。speaker_name/text/reveal 是当前活动行组第一行的只读快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留会话历史。角色调用可接收 voice 等资源参数；语音播放与当前句关联。多个角色同时发言也使用同一个推进交互：
+game.dialogue().lines 是统一的可观察对白行列表。speaker_name/text/reveal 是当前活动行组第一行的只读快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留会话历史。语音参数尚未接入。多个角色同时发言也使用同一个推进交互：
 ```aside
 let eri = character("Eri");
-say([mio.line("你听见了吗？"), eri.line("在窗外。")],
-    mode: "bubbles");
+say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-气泡与 NVL 视图通过 list 绑定 game.dialogue.lines，并用 current_line_ids 区分当前组与已累积行。当前组的快捷字段始终指当前第一行。选择也提供数据模型，作者通过按钮调用 game.choice.select(option_id)，choose 返回相同 key。
+`game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。
 需要路线图与章节重启时，用普通 API 给函数登记稳定 ID 与显示标题。函数仍按同一套调用与等待规则执行。
 ```aside
 fn opening() {
@@ -349,7 +353,7 @@ photo_panel 是作者定义的组件控制对象，上例只演示与剧情交�
 
 ## 七 设置页与图片风格控件
 
-button、slider、toggle 与节点 bind/unbind 已实现；页签、settings、滑条外观槽位和 derive 接口仍属于设计目标。
+button、slider、toggle 与节点 bind/unbind 已实现；页签、settings 与滑条外观槽位仍属于设计目标。
 
 下面将页签、页面和滑条组合成设置页。switcher 保留各页节点和局部值，select 只改变选中页。隐藏页离开输入与焦点导航。
 ```aside
@@ -389,7 +393,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
     return control;
 }
 ```
-bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对读取的可观察属性建立依赖，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。标量写入可写绑定属性会写回绑定源并保留绑定；动画也保留和写入最终源属性，因此两个节点绑定同一源会发现真实写入冲突。源的显式改写停止相关根活动；被动投影更新属于读取。只读派生属性用 scope 覆盖做临时演出；重新绑定或 unbind 会先结束依赖旧绑定的活动，unbind 保留当前有效基础值。捕获存档的短暂期间，脚本派生与作者外观更新暂停，捕获完成后按最新状态恢复。普通 {...} 数据记录适合传参，持续变化的业务值用 model({...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
+bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对实际读取的可观察属性建立依赖，条件变化后替换依赖；结果也可通过 `binding.value` 读取并继续派生。派生更新在同步脚本段结束后、舞台发布前集中完成，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。标量写入可写绑定属性会写回绑定源并保留绑定；动画也保留和写入最终源属性，因此两个节点绑定同一源会发现真实写入冲突。源的显式改写停止相关根活动；被动投影更新属于读取。只读派生属性用 scope 覆盖做临时演出；重新绑定或 unbind 会先结束依赖旧绑定的活动，unbind 保留当前有效基础值。捕获存档的短暂期间，脚本派生与作者外观更新暂停，捕获完成后按最新状态恢复。普通 {...} 数据记录适合传参，持续变化的业务值用 model({...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
 作者可用同样方式封装统一字体、按钮图片、留白和动效，再作为普通模块导入。风格复用来自组件和参数，共用的属性对象也可按普通语言规则组织。
 
 稳定位置引用使用 `bind(node.x)` 或 `bind(node[key])`。接收者和键只在创建引用时求值一次。将引用传给节点构造参数或赋给节点属性即可连接；之后赋入普通值会写回来源，连接仍保留。`unbind(bind(node.x))` 断开连接并保留、返回当前值。多个控件共享来源时，范围等约束会一并校验，失败不修改任何控件。来源节点被显式销毁时，仍存活的目标冻结最后值并断开；已有引用不能再用于已销毁的来源。业务 `model` 和 `derive` 的实现状态见第十二节及已验证范围。
@@ -419,7 +423,7 @@ UI 与立绘共同运动时，把它们放进同一个组，再对组执行动�
 ```aside
 let cast = group() {
     image("assets/mio.png");
-    dialogue_view(game.dialogue);
+    dialogue_view(game.dialogue());
 };
 stage.replace(cast);
 await run(tween(cast, x: 80, duration: 0.5));
@@ -461,18 +465,18 @@ await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
 
 ## 十 选择与会变化的内容
 
-choose 已支持选项数组、真实窗口选择和返回原 key。以下自定义 choice_view、game.choice 绑定与 list 接口仍是设计目标；当前使用播放器的默认选择视图。
+choose、自定义 choice_view 和只读选择模型已实现。通过 `game.configure(default_dialogue: false, default_choices: false)` 关闭对应默认界面，再把作者组件挂到自己的舞台。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative.aside)。
 
 choose(options) 接收具有稳定 key 和 label 的选项数组，更新 game.choice 并等待 select(option_id)。当前句与选择共用主剧情交互权限。作者把选择视图放在自己的画面里，位置和背景均可自定。
 ```aside
 fn choice_view(model) {
-    list(items: bind(model.options),
-         key: |option| option.id,
-         build: |option| {
-             button(on_click: |event| model.select(option.id)) {
-                 text(value: bind(option.label));
-             }
-         })
+    view(|| column(gap: 12) {
+        for option in model.options {
+            button(on_click: |event| model.select(option.id)) {
+                text(value: bind(option.label));
+            }
+        }
+    })
 }
 let answer = choose([
     {key: "window", label: "走到窗边"},
@@ -481,8 +485,8 @@ let answer = choose([
 if answer == "window" { by_window(); }
 else { by_door(); }
 ```
-choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作者的剧情函数。choose 把传入的普通记录复制成引擎拥有的只读可观察行，id、key 和 label 都可读取并绑定，输入记录保持原值。id 是本次 InteractionId 与 key 形成的不透明稳定标识，列表用 option.id 保持这一身份；下一次选择使用新的 id。game.choice.options 是这些行构成的只读可观察列表，默认为空；等待选择时填入选项，选择完成后清空。select 接收包含交互身份的 option.id，返回剧情的仍是业务 key；过期或重复选择按这个身份过滤。
-普通 children 中的 for 适合构造当下画面。list 用于持续变化的列表：items 连接可观察集合，key 确定元素身份，build 为新 key 创建节点；同 key 的可观察 item 保持身份并更新字段，移除 key 才销毁对应子树。默认竖排，虚拟显示由 viewport 范围和可复用测量结果控制。重复 key 在对应列表位置报错。普通数组作为 items 时按固定内容构造。
+choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作者的剧情函数。choose 把传入的普通记录复制成引擎拥有的只读可观察行，id、key 和 label 都可读取并绑定，输入记录保持原值。id 是本次 InteractionId 与 key 形成的不透明稳定标识，按钮捕获 option.id 保持这一交互身份；下一次选择使用新的 id。game.choice().options 是这些行构成的只读可观察列表，默认为空；等待选择时填入选项，选择完成后清空。select 接收包含交互身份的 option.id，返回剧情的仍是业务 key；过期或重复 select 返回 false，成功返回 true；choose 始终返回原 key。
+普通 children 中的 for 构造当下内容；`view(|| ...)` 在实际读取的可观察数据变化后重新构造子树，外层容器身份保持。计算成功后才替换旧内容；旧节点拥有的回调和活动随之取消。用 bind/derive 更新单个属性时保留节点身份。按 key 复用节点和列表虚拟化属于后续 list 能力。
 
 ## 十一 存档 历史 路线与跳过
 
@@ -724,7 +728,7 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 滑条要求有限且递增的 min/max、区间内的有限 value；step 为 null 或有限正数，以 min 为步进起点，两端均可选。脚本可赋任意区间内 value，不受输入步长限制。写 min/max 时当前 value 也须满足新范围，错误保留原值。鼠标或触摸拖动、方向键、Home/End、Shift 加速、手柄左右导航与可访问性操作共用同一控件。
 
-接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；derive 仍待实现。
+接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；derive 生成只读值，可用于文字和外观，不能作为 slider/toggle 的写回源。
 
 ```aside
 fn main() {

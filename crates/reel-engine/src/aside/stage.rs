@@ -61,6 +61,8 @@ pub(super) enum NodeProperty {
     AnchorY,
     #[aside(name = "decorated", ty = Bool, default = true)]
     Decorated,
+    #[aside(name = "reveal", ty = Any, default = null, validate = validate_reveal)]
+    Reveal,
 }
 
 pub(super) struct StageBinding {
@@ -74,6 +76,7 @@ struct NodeBinding {
     interaction_offset: u32,
     fields_version: u64,
     input_source: Option<HeapHandle>,
+    text_source: Option<HeapHandle>,
     input_values: BTreeMap<std::sync::Arc<str>, f32>,
 }
 
@@ -108,6 +111,35 @@ impl StageBinding {
             methods,
         })
     }
+    pub(super) fn replace_view(
+        &mut self,
+        heap: &mut Heap,
+        container: Value,
+        child: Value,
+        read_limit: usize,
+    ) -> Result<(), AdapterError> {
+        let id = self.id(heap, container)?;
+        let old = self.scene.node(id).unwrap().children.clone();
+        let references = heap.alloc_array(&[])?;
+        if child.tag() != ValueTag::Null {
+            let child_id = self.id(heap, child)?;
+            if old.as_slice() == [child_id] {
+                return Ok(());
+            }
+            self.sync_tree(heap, child_id, read_limit)?;
+            heap.array_push(references, child)?;
+            // Admission precedes retirement: a failed mount keeps the old tree.
+            self.scene.add(id, child_id, old.len())?;
+            heap.set_host_payload(child, 2, container)?;
+        }
+        for child in old {
+            let retired = self.scene.remove(child)?;
+            self.retire(heap, retired)?;
+        }
+        heap.set_host_payload(container, 1, references)?;
+        Ok(())
+    }
+
     pub(super) fn id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
         heap.host_fields(value)?;
         let id = NodeId(
@@ -182,7 +214,7 @@ impl StageBinding {
             heap.table_store(fields, index as u32, key, *argument)?;
         }
         let kind = match symbol {
-            "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?),
+            "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?.into()),
             "reel::slider" => controls::slider_kind(heap, fields)?,
             "reel::toggle" => controls::toggle_kind(heap, fields, read_limit)?,
             "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
@@ -227,7 +259,12 @@ impl StageBinding {
         let id = self.scene.next_identity()?;
         let value = heap.alloc_composable_host(
             fields,
-            &[Value::int(id.0 as i64), references, Value::NULL],
+            &[
+                Value::int(id.0 as i64),
+                references,
+                Value::NULL,
+                Value::NULL,
+            ],
             Some(match symbol {
                 "reel::slider" => controls::validate_slider,
                 "reel::toggle" => {
@@ -321,6 +358,11 @@ impl StageBinding {
                 } else {
                     None
                 },
+                text_source: if symbol == "reel::text" {
+                    Some(heap.handle(args[0])?)
+                } else {
+                    None
+                },
                 input_values,
             },
         );
@@ -383,10 +425,17 @@ impl StageBinding {
                     )?,
                     2,
                 ),
-                NodeKind::Text(_) => (
-                    NodeKind::Text(read_text(heap, heap.table_entry(fields, 0)?.1, read_limit)?),
-                    1,
-                ),
+                NodeKind::Text(text) => {
+                    let source = heap.table_entry(fields, 0)?.1;
+                    (
+                        NodeKind::Text(if binding.text_source == Some(heap.handle(source)?) {
+                            text.clone()
+                        } else {
+                            read_text(heap, source, read_limit)?.into()
+                        }),
+                        1,
+                    )
+                }
                 NodeKind::Image { origin, .. } => (
                     NodeKind::Image {
                         source: read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?,
@@ -401,6 +450,11 @@ impl StageBinding {
             updates.push((id, kind, props, version));
         }
         for (id, kind, props, version) in updates {
+            if matches!(kind, NodeKind::Text(_)) {
+                let value = heap.import_handle(self.handles[&id].handle)?;
+                let source = heap.table_entry(heap.host_fields(value)?, 0)?.1;
+                self.handles.get_mut(&id).unwrap().text_source = Some(heap.handle(source)?);
+            }
             if let NodeKind::Input { bindings, .. } = &kind {
                 let binding = self.handles.get_mut(&id).unwrap();
                 let source = heap
@@ -443,6 +497,10 @@ impl StageBinding {
                 && let Ok(value) = heap.import_handle(binding.handle)
             {
                 interaction::publish(heap, value, binding.interaction_offset, Default::default())?;
+                let view = heap.host_payload(value, 3)?;
+                if view.tag() != ValueTag::Null {
+                    heap.disconnect_derived(view)?;
+                }
                 heap.retire_host(value)?;
             }
         }
@@ -865,6 +923,13 @@ fn validate_background(heap: &Heap, value: Value) -> Result<(), HeapError> {
         validate_color(heap, value)
     }
 }
+fn validate_reveal(_: &Heap, value: Value) -> Result<(), HeapError> {
+    if value.tag() == ValueTag::Null || value.as_int().is_some_and(|n| usize::try_from(n).is_ok()) {
+        Ok(())
+    } else {
+        Err(HeapError::TypeMismatch)
+    }
+}
 fn read_props(
     heap: &Heap,
     fields: Value,
@@ -888,6 +953,7 @@ fn read_props(
         modal: boolean(get(NodeProperty::Modal)?)?,
         clip: boolean(get(NodeProperty::Clip)?)?,
         decorated: boolean(get(NodeProperty::Decorated)?)?,
+        reveal: get(NodeProperty::Reveal)?.as_int().map(|v| v as usize),
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,

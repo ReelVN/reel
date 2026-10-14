@@ -136,13 +136,75 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: 3,
+            abi_version: 4,
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
             required_capabilities: vec!["reel.stage".into()],
         });
     }
+    for (symbol, parameters, effects) in [
+        ("reel::game::dialogue", vec![], Effects::ALLOCATE),
+        ("reel::game::choice", vec![], Effects::ALLOCATE),
+        (
+            "reel::dialogue::clear",
+            vec!["dialogue"],
+            Effects::ALLOCATE | Effects::WRITE | Effects::HOST,
+        ),
+        (
+            "reel::choice::select",
+            vec!["choice", "id"],
+            Effects::WRITE | Effects::HOST,
+        ),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: symbol.into(),
+            abi_version: 1,
+            parameters: parameters
+                .into_iter()
+                .map(|name| NativeParameter {
+                    name: name.into(),
+                    ty: BuiltinType::Any,
+                    default: None,
+                })
+                .collect(),
+            result: BuiltinType::Any,
+            effects: Effects(effects),
+            required_capabilities: vec![],
+        });
+    }
+    let mut view_parameters = vec![NativeParameter {
+        name: "build".into(),
+        ty: BuiltinType::Any,
+        default: None,
+    }];
+    view_parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
+    for parameter in &mut view_parameters {
+        parameter.ty = BuiltinType::Any;
+    }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::view".into(),
+        abi_version: 1,
+        parameters: view_parameters,
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::derive".into(),
+        abi_version: 1,
+        parameters: vec![NativeParameter {
+            name: "compute".into(),
+            ty: BuiltinType::Any,
+            default: None,
+        }],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE),
+        required_capabilities: vec![],
+    });
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::model".into(),
@@ -185,15 +247,23 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::configure".into(),
-        abi_version: 1,
-        parameters: ["title", "width", "height", "fonts", "text_speed"]
-            .into_iter()
-            .map(|name| NativeParameter {
-                name: name.into(),
-                ty: BuiltinType::Any,
-                default: Some(bc::Const::Null),
-            })
-            .collect(),
+        abi_version: 2,
+        parameters: [
+            "title",
+            "width",
+            "height",
+            "fonts",
+            "text_speed",
+            "default_dialogue",
+            "default_choices",
+        ]
+        .into_iter()
+        .map(|name| NativeParameter {
+            name: name.into(),
+            ty: BuiltinType::Any,
+            default: Some(bc::Const::Null),
+        })
+        .collect(),
         result: BuiltinType::Null,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],

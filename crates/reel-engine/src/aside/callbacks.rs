@@ -19,6 +19,7 @@ impl SessionVm {
         events: &[reel_ui::stage::NodeEvent],
     ) -> Result<bool, AdapterError> {
         self.live(session)?;
+        let pending = self.vm.heap().derived_pending();
         let mut changed = false;
         for event in events {
             if let reel_ui::stage::NodeEvent::Interaction(event) = event {
@@ -26,6 +27,7 @@ impl SessionVm {
             }
         }
         if changed {
+            self.feedback_only = self.reactive_ready && !pending && self.derived_task.is_none();
             self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
         }
         Ok(changed)
@@ -143,6 +145,9 @@ impl SessionVm {
         if self.revoked || self.delivery.is_some() {
             return false;
         }
+        if self.derived_task.is_some() || self.vm.heap().derived_pending() {
+            return true;
+        }
         self.issued.is_some()
             || self.task.is_some()
                 && self
@@ -158,6 +163,9 @@ impl SessionVm {
     }
 
     pub fn has_live_work(&self) -> bool {
+        if self.derived_task.is_some() || self.vm.heap().derived_pending() {
+            return true;
+        }
         !self.callbacks.is_empty() || self.activities.has_active() || self.stage.has_handlers()
     }
 
@@ -231,6 +239,9 @@ impl SessionVm {
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
         self.live(session)?;
+        if self.reactive_ready && self.derived_task.is_none() {
+            self.sync_narrative(session)?;
+        }
         self.deliver_completion(session)?;
         for index in 0..self.callbacks.len() {
             let callback = &self.callbacks[index];
@@ -250,6 +261,30 @@ impl SessionVm {
         }
         if self.delivery.is_some() {
             return Err(AdapterError::Input("delivery not retired"));
+        }
+        if self.reactive_ready
+            && self.derived_task.is_none()
+            && let Some(output) = self.vm.heap_mut().next_derived()?
+        {
+            self.derived_task = Some(self.vm.start_derived(output, self.root_owner)?);
+        }
+        if let Some(task) = self.derived_task {
+            let outcome = self.vm.run_slice(task, budget, now)?;
+            match outcome {
+                RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
+                RunOutcome::Returned(id) => {
+                    self.vm.discard_delivery(id)?;
+                    self.derived_task = None;
+                    self.sync_stage(session)?;
+                    return Ok(SessionStep::Progress);
+                }
+                RunOutcome::Fault(id) => {
+                    self.delivery = Some(id);
+                    self.delivery_task = Some(task);
+                }
+                _ => {}
+            }
+            return Ok(SessionStep::Vm(outcome));
         }
         let count = self.callbacks.len() + 1;
         let selected = (0..count)
@@ -283,6 +318,8 @@ impl SessionVm {
         } else {
             self.callbacks[index - 1].task
         };
+        self.feedback_only = false;
+        self.reactive_ready = false;
         let outcome = match self.vm.run_slice(task, budget, now) {
             Ok(outcome) => outcome,
             Err(VmError::Idle) if index > 0 && self.callbacks[index - 1].cancelling => {
@@ -296,6 +333,8 @@ impl SessionVm {
             outcome,
             RunOutcome::Returned(_) | RunOutcome::Fault(_) | RunOutcome::Waiting(_)
         ) {
+            self.reactive_ready = true;
+            self.sync_narrative(session)?;
             self.activities.after_script(self.vm.heap())?;
         }
         match outcome {

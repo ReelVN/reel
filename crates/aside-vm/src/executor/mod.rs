@@ -21,6 +21,7 @@ mod collection_tests;
 mod collections;
 mod iterators;
 mod models;
+mod reactive;
 mod text;
 mod types;
 use builtins::Builtin;
@@ -271,6 +272,7 @@ struct NativeFrame {
     location: Location,
     ret: ReturnTo,
     callback_fault: Option<FaultId>,
+    derived_output: Option<Value>,
     fault_count: u32,
     pending_fault: Option<FaultSeed>,
     phase: NativePhase,
@@ -1290,7 +1292,14 @@ impl Vm {
         site: NativeSite,
         receiver: Option<Value>,
     ) -> Result<(), VmError> {
-        if site.effects.0 & Effects::HOST == 0 {
+        let signature = self.program.package().natives[native.index()].signature;
+        let declared = self.program.package().signatures[signature.index()].effects;
+        let pure = declared.0 & (Effects::HOST | Effects::WRITE | Effects::WAIT) == 0;
+        // Calling a pure native is not itself an external side effect. Derived
+        // callbacks retain their allocation mask and cannot admit an impure native.
+        if (site.context.derived && !pure)
+            || (site.effects.0 & Effects::HOST == 0 && (!pure || declared.0 & !site.effects.0 != 0))
+        {
             return Err(VmError::Effect);
         }
         if self.active.frames.data.len() == self.limits.max_frames as usize
@@ -1298,7 +1307,6 @@ impl Vm {
         {
             return Err(VmError::Limit);
         }
-        let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
@@ -1376,6 +1384,7 @@ impl Vm {
             location: site.location,
             ret: site.ret,
             callback_fault: None,
+            derived_output: None,
             fault_count: 0,
             pending_fault: None,
             phase: NativePhase::Copy { source, index: 0 },
@@ -1985,6 +1994,9 @@ impl Vm {
                 }
             }
             Frame::Native(n) => {
+                if let Some(output) = n.derived_output {
+                    self.heap.end_derived(output)?;
+                }
                 if self
                     .active
                     .model_copy
@@ -2691,9 +2703,26 @@ impl Vm {
                 | Opcode::GlobalInit
                 | Opcode::IndexSet
                 | Opcode::MemberSet
-        ) && (s.context.derived || s.effects.0 & Effects::WRITE == 0)
-        {
-            return Err(FaultKind::Effect);
+        ) {
+            let allowed = if s.context.derived {
+                match op {
+                    Opcode::BindWrite => match f.bindings[a as usize].storage {
+                        BindingStorage::Value(_) => true,
+                        BindingStorage::Cell(reg) => {
+                            self.heap.derived_write_allowed(self.read(*s, reg)?)
+                        }
+                    },
+                    Opcode::CellWrite | Opcode::IndexSet | Opcode::MemberSet => {
+                        self.heap.derived_write_allowed(self.read(*s, r(a))?)
+                    }
+                    _ => false,
+                }
+            } else {
+                s.effects.0 & Effects::WRITE != 0
+            };
+            if !allowed {
+                return Err(FaultKind::Effect);
+            }
         }
         if matches!(
             op,
@@ -2859,6 +2888,19 @@ impl Vm {
             }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
+                if op == Opcode::MemberGet && self.heap.is_property_ref(object) {
+                    if self.program.package().symbols[c as usize] != "value" {
+                        return Err(FaultKind::MissingKey);
+                    }
+                    let (property, _) = self.heap.property_ref(object).map_err(heap_fault)?;
+                    self.heap
+                        .observe_read(property.host, Some(property.field))
+                        .map_err(heap_fault)?;
+                    let value = self.heap.host_property(property).map_err(heap_fault)?;
+                    self.write(*s, r(a), value)?;
+                    s.pc.0 += 1;
+                    return Ok(true);
+                }
                 if op == Opcode::MemberGet {
                     let kind = self.heap.info(object).map_err(heap_fault)?.kind;
                     if matches!(

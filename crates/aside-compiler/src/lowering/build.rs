@@ -844,7 +844,7 @@ impl Lowerer<'_> {
                     "native registration identity/version differs from analysis",
                 ));
             }
-            if external.descriptor.intrinsic.is_some() {
+            if external.descriptor.intrinsic == Some(crate::semantic::Intrinsic::Bind) {
                 return Err(self.b.error(
                     ErrorKind::LinkContract,
                     "compiler intrinsic cannot be replaced with a native registration",

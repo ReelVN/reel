@@ -171,8 +171,30 @@ impl Vm {
                 .as_int()
                 .ok_or(FaultKind::Type)?,
         )?;
-        if method.mutates() && (s.context.derived || s.effects.0 & Effects::WRITE == 0) {
+        if method.mutates()
+            && self
+                .heap
+                .collection_is_readonly(receiver)
+                .map_err(heap_fault)?
+        {
+            return Err(FaultKind::ReadOnly);
+        }
+        if method.mutates()
+            && (if s.context.derived {
+                !self.heap.derived_write_allowed(receiver)
+            } else {
+                s.effects.0 & Effects::WRITE == 0
+            })
+        {
             return Err(FaultKind::Effect);
+        }
+        if method.mutates() {
+            self.heap
+                .observe_write(receiver, None)
+                .map_err(heap_fault)?;
+        }
+        if !method.mutates() {
+            self.heap.observe_read(receiver, None).map_err(heap_fault)?;
         }
         self.put(s.env, 1, receiver).map_err(vm_fault)?;
         s.phase = ScriptPhase::Builtin(BuiltinCall {

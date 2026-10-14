@@ -72,7 +72,7 @@ fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
         while let Some(id) = pending.pop() {
             let node = vm.stage().node(id).unwrap();
             if let reel_ui::stage::NodeKind::Text(text) = &node.kind {
-                texts.push(text.as_str());
+                texts.push(text.as_ref());
             }
             pending.extend(node.children.iter().rev().copied());
             visited += 1;

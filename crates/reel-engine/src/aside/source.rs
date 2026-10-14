@@ -97,7 +97,13 @@ fn environment() -> (
         .collect::<Vec<_>>();
     let exports = contracts
         .iter()
-        .map(registry::NativeContract::external)
+        .map(|contract| {
+            let mut external = contract.external();
+            if contract.symbol == "reel::derive" {
+                external.intrinsic = Some(aside_compiler::semantic::Intrinsic::Derive);
+            }
+            external
+        })
         .collect::<Vec<_>>();
     let mut resolver = MemoryResolver::default();
     let mut prelude = exports

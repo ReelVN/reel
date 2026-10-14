@@ -348,10 +348,18 @@ fn choice_decode_yields_with_roots_and_returns_original_key_once() {
 fn effective_no_wait_has_no_history_or_interaction_publication() {
     for context in [Context::NoWait, Context::Init, Context::Derived] {
         let (mut s, mut vm) = setup(STORY, context);
-        let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
-            panic!("native ticket")
-        };
-        assert!(vm.dispatch_narrator(&mut s, ticket, "en").is_err());
+        match next(&mut vm, &mut s) {
+            RunOutcome::HostCall(ticket) if matches!(context, Context::NoWait | Context::Init) => {
+                assert!(vm.dispatch_narrator(&mut s, ticket, "en").is_err());
+            }
+            RunOutcome::Fault(id) if context == Context::Derived => {
+                assert_eq!(
+                    vm.vm.delivery_fault(id).unwrap().unwrap().kind,
+                    FaultKind::Effect
+                );
+            }
+            other => panic!("unexpected restricted native outcome: {other:?}"),
+        }
         assert!(s.view().interaction.is_none());
         assert!(s.view().history.is_empty());
         assert_eq!(s.next_interaction, Some(1));
@@ -841,3 +849,5 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
         }
     }
 }
+
+mod reactive_views;

@@ -738,3 +738,25 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
         started.elapsed()
     );
 }
+
+#[test]
+fn dialogue_reveal_keeps_text_identity_and_layout() {
+    let mut f = Fixture::new(None);
+    let first = f.record();
+    f.accept(&first);
+    let original = f.layouts();
+    let NodeKind::Text(text) = &f.stage.node(f.blue).unwrap().kind else {
+        unreachable!()
+    };
+    let text = text.clone();
+    for end in 0..=text.len() {
+        f.edit(f.blue, |props| props.reveal = Some(end));
+        let frame = f.record();
+        f.accept(&frame);
+        assert_eq!(f.layouts(), original, "reveal must not cause layout");
+        let NodeKind::Text(current) = &f.stage.node(f.blue).unwrap().kind else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(&text, current));
+    }
+}
