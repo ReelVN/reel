@@ -64,9 +64,7 @@ impl Heap {
     }
     pub fn alloc_table(&mut self) -> Result<Value, HeapError> {
         self.input_values(&[])?;
-        if self.objects.full() {
-            return Err(HeapError::ObjectCapacity);
-        }
+        self.ensure_object_slot()?;
         Ok(self.allocate(
             ObjectKind::Table,
             Payload::Table(Values::default()),

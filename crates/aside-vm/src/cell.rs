@@ -79,9 +79,7 @@ impl Heap {
         Ok(())
     }
     pub fn alloc_language_cell(&mut self, contract: CellContract) -> Result<Value, HeapError> {
-        if self.objects.full() {
-            return Err(HeapError::ObjectCapacity);
-        }
+        self.ensure_object_slot()?;
         Ok(self.allocate(
             ObjectKind::Cell,
             Payload::Cell(CellState {

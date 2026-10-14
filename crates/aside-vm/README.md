@@ -78,8 +78,8 @@ this milestone allocates and accounts for window/provider metadata only.
   `RootKind`. `set_root` publishes through the insertion barrier; `release_root`
   relinquishes ownership. Tokens have no script finalizer. Rust locals containing
   Values or handles alone do not retain objects.
-- `HeapLimits`: fixed object/root capacities and a total charged-byte ceiling.
-  Preallocated slots, allocation/gray/release queues, root scan index, retired
+- `HeapLimits`: optional object/root quotas and a total charged-byte ceiling.
+  Reserved slots, allocation/gray/release queues, root scan index, retired
   slots, chunk metadata and pending payload all count against that ceiling.
 - `GcBudget` / `GcProgress`: independent root slots, mark edges, weak decisions,
   sweep objects, released edges and bytes, with a total work-unit cap.
@@ -118,13 +118,17 @@ permanently before wrap. Heap, Value and scoped tokens cannot cross threads.
 
 ## Storage and work accounting
 
-Defaults are configurable: 16,384 object slots, 1,024 root slots and a 32 MiB
-charged-byte ceiling. Value constructors and individual mutations accept at most
+Object, root and root-range storage grows geometrically from small initial
+buffers. Default count quotas use the generational handle's representation ceiling;
+the default byte quota is unlimited. Hosts can explicitly set either quota.
+Growth accounts for overlapping old/new storage and preserves live handles and
+GC cursors. Queue capacity is prepared before publishing an object; barriers
+and collection steps do not allocate. Value constructors and individual mutations accept at most
 256 Values by default. Individual byte reads/appends use a 4,096-byte default
 copy budget; it does not limit a string's total length. String/byte constants are
 stored in charged chunks, and string concatenation copies through resumable
-rooted construction before publishing its immutable result. Allocation returns explicit capacity/resource
-errors rather than extending queues; the host can drive maintenance and retry.
+rooted construction before publishing its immutable result. Explicit host quotas
+and allocation failures return errors without publishing a partial object or root.
 No method silently executes a whole collection to obtain space.
 
 Cells store their one Value inside the reserved object slot. Other value fields
@@ -139,7 +143,7 @@ were also checked. The accounting adapter must be rechecked with further
 toolchain/dependency changes.
 
 `HeapStats` includes actual queue lengths, reserved capacity, payload/pending
-bytes, peaks and cumulative chunk allocations. Fixed slots stay charged when
+bytes, peaks and cumulative chunk allocations. Reserved slots stay charged when
 vacant, pending or retired. Retired object/root slots reduce reusable capacity.
 Root scan indices and object edge cursors use this preallocated storage. Weak
 work counts allocation-record inspections, including records with no weak field.

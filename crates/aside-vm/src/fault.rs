@@ -170,9 +170,7 @@ impl Heap {
         edges: [Value; 3],
         code: Rc<CodeLease>,
     ) -> Result<Value, HeapError> {
-        if self.objects.full() {
-            return Err(HeapError::ObjectCapacity);
-        }
+        self.ensure_object_slot()?;
         for edge in edges {
             self.root_insertion_barrier(edge)?;
         }
