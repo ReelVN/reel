@@ -155,4 +155,33 @@ fn real_uncaptured_pointer_dispatch_allocations() {
             stats.allocations, stats.reallocations
         );
     }
+    use reel_ui::input::*;
+    let mut input = NavigationInput::default();
+    let event = |value| InputEvent::Value {
+        device: InputDeviceId(1),
+        control: Control::Axis(GamepadAxis::LeftX),
+        value,
+    };
+    input
+        .update(&event(0.8), std::time::Duration::ZERO, |_| {})
+        .unwrap();
+    let region = Region::new(ALLOCATOR);
+    let start = Instant::now();
+    for i in 0..10000 {
+        input
+            .update(
+                &event(if i % 2 == 0 { 0.8 } else { 0.9 }),
+                std::time::Duration::from_millis(i),
+                |_| {},
+            )
+            .unwrap();
+        input.tick(std::time::Duration::from_millis(i), |_| {});
+    }
+    let elapsed = start.elapsed();
+    let stats = region.change();
+    assert_eq!((stats.allocations, stats.reallocations), (0, 0));
+    println!(
+        "held analog action updates=10000 allocations={} reallocations={} elapsed={elapsed:?}",
+        stats.allocations, stats.reallocations
+    );
 }

@@ -61,7 +61,7 @@ check 编译并报告源码错误，不运行剧情；加 `--format json` 可取
 
 dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。源码路径与位置保存在包内，运行错误仍指向原来的 .aside 文件。已有输出只在指定 --overwrite 时替换。
 
-启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口或按 Escape 退出并完成清理。
+启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
 工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；.rpk 与 release.json 属于后续发布链路。
 
@@ -617,11 +617,11 @@ fn main() {
 
 回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start、可观察绑定和通用事件订阅仍待实现。
 
-主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认宿主支持鼠标和触摸点击、Tab 焦点导航与 Enter/空格激活。多个触点可同时操作不同控件；拖出按钮后松开不触发点击，系统取消或窗口挂起会释放交互。已有按钮无需为触屏重写，可运行 [author_buttons.aside](../../examples/author_buttons.aside)。原生 IME 和系统可访问性尚待适配。
+主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认宿主支持鼠标和触摸点击、Tab 焦点导航与 Enter/空格激活。手柄十字键/左摇杆按当前画面位置导航，长选项列表会随焦点滚动，南侧按钮确认，东侧按钮与 Escape 向当前 UI 发送返回。确认在配对松开时生效；切换弹窗、失焦或断连会取消旧输入，返回不直接退出应用。多个触点可同时操作不同控件；拖出按钮后松开不触发点击，系统取消或窗口挂起会释放交互。已有按钮无需为触屏重写，可运行 [author_buttons.aside](../../examples/author_buttons.aside)。原生 IME 和系统可访问性尚待适配。
 
 用第一节的 dev/build/run 命令运行此文件。引擎的节点、输入和调度不依赖 Winit/WGPU；window feature 选择当前内置桌面组合，其他宿主可以复用同一会话和呈现接口。
 
-移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。触摸使用公共 PointerEvent；启用 winit 时可复用 TouchInput 转换原生触摸。原生 IME 和系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
+移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。触摸使用公共 PointerEvent；启用 winit 时可复用 TouchInput 转换原生触摸。Rust 游戏与宿主可使用 reel_ui::input::ActionMap 绑定键盘、指针和手柄，读取持续动作值并接收按下、变化、松开和取消；NavigationInput 提供可配置阈值、重复时钟和重映射。独立 gamepad feature 使用 Gilrs 接入桌面设备，不要求 Winit/WGPU。原生 IME 和系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
 
 ## 模态菜单与焦点
 

@@ -141,6 +141,9 @@ impl PresentedGeometryView {
         self.scale_factor
     }
     /// Root identity.
+    pub(crate) fn navigation_ids(&self) -> impl Iterator<Item = WidgetId> + '_ {
+        self.records.iter().map(|record| record.id)
+    }
     pub fn root_id(&self) -> WidgetId {
         self.records[self.root].id
     }
@@ -502,6 +505,9 @@ impl RenderRoot {
     }
     /// Switch views with old-view exits and then new-view entries. Host controls acceptance.
     pub fn set_input_geometry_source(&mut self, source: InputGeometrySource) {
+        if matches!(source, InputGeometrySource::Presented(None)) {
+            crate::passes::navigation::cancel_all(self);
+        }
         let old = self.global_state.input_geometry_source.clone();
         crate::passes::update::transition_pointer_geometry(self, old.borrow(), source.borrow());
         self.global_state.input_geometry_source = source;
@@ -513,6 +519,7 @@ impl RenderRoot {
         self.widget_arena.nodes.configure_lookup_path_storage(limit);
         self.global_state.max_input_path = limit;
         self.global_state.pointer_route = Vec::with_capacity(limit);
+        self.global_state.navigation_walk = Vec::with_capacity(limit);
         self.global_state.pointer_hover_spare = Vec::with_capacity(limit);
         self.global_state.pointer_active_spare = Vec::with_capacity(limit);
         for pointer in std::iter::once(&mut self.global_state.pointer)
@@ -534,11 +541,12 @@ impl RenderRoot {
             .map(|p| p.active_path.capacity() + p.hovered_path.capacity())
             .sum();
         (s.pointer_route.capacity()
+            + s.navigation_walk.capacity()
             + s.pointer_active_spare.capacity()
             + s.pointer_hover_spare.capacity()
             + contact_paths)
             * size_of::<WidgetId>()
-            + 5 * size_of::<Vec<WidgetId>>()
+            + 6 * size_of::<Vec<WidgetId>>()
             + s.other_pointers.capacity() * size_of::<super::pointer::PointerContact>()
             + self.widget_arena.nodes.lookup_path_storage_bytes()
     }
@@ -565,11 +573,11 @@ impl RenderRoot {
     }
 
     fn planned_pointer_storage(depth: usize, others: usize, capacity: usize) -> Option<usize> {
-        let arrays = others.checked_mul(2)?.checked_add(5)?;
+        let arrays = others.checked_mul(2)?.checked_add(6)?;
         depth
             .checked_mul(arrays)?
             .checked_mul(size_of::<WidgetId>())?
-            .checked_add(5 * size_of::<Vec<WidgetId>>())?
+            .checked_add(6 * size_of::<Vec<WidgetId>>())?
             .checked_add(capacity.checked_mul(size_of::<super::pointer::PointerContact>())?)?
             .checked_add(
                 crate::tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(

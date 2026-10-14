@@ -50,6 +50,13 @@ pub(crate) struct State {
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
     touch: crate::platform::winit::TouchInput,
+    input: reel_ui::input::NavigationInput,
+    input_origin: Instant,
+    input_focused: bool,
+    input_events: Vec<reel_ui::input::NavigationEvent>,
+    input_pending: bool,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    gamepads: Option<crate::platform::gamepad::GamepadSource>,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
     pub(crate) session: Option<WindowSession>,
@@ -296,6 +303,13 @@ impl State {
             pointer: Default::default(),
             modifiers: Default::default(),
             touch: Default::default(),
+            input: Default::default(),
+            input_origin: Instant::now(),
+            input_focused: true,
+            input_events: Vec::with_capacity(6),
+            input_pending: false,
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            gamepads: None,
             root_id,
             zoom: 1.,
             session,
@@ -304,6 +318,8 @@ impl State {
             closing: false,
             completions: Vec::new(),
         };
+        state.start_gamepads();
+
         state.schedule_reveal();
         Ok(state)
     }
@@ -472,6 +488,11 @@ impl State {
         Ok(true)
     }
     pub(crate) fn close(&mut self) -> Result<(), Error> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            self.gamepads = None;
+        }
+        self.input.cancel(|_| {});
         self.closing = true;
         self.next_reveal = None;
         self.presentation.suspend();
@@ -596,7 +617,12 @@ impl State {
         Ok(())
     }
     pub(crate) fn suspend(&mut self) {
+        self.stop_gamepads();
         self.touch.clear();
+        self.input.cancel(|_| {});
+        self.presentation
+            .bridge
+            .handle_text_event(TextEvent::WindowFocusChange(false));
         self.presentation.bridge.cancel_pointer_inputs();
         let _ = self.pointer_event(PointerKind::Cancel);
         self.presentation.suspend();
@@ -621,11 +647,24 @@ impl State {
         if let Some(session) = &mut self.session {
             session.resume(self.host.monotonic_now().0);
         }
+        self.text_event(TextEvent::WindowFocusChange(self.input_focused))?;
         Ok(())
     }
     pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<(), Error> {
-        let cancelling = matches!(event, TextEvent::WindowFocusChange(false));
-        if cancelling {
+        if let TextEvent::WindowFocusChange(focus) = &event {
+            self.input_focused = *focus;
+            if *focus && !self.is_suspended() {
+                self.start_gamepads();
+            }
+            if !focus {
+                self.stop_gamepads();
+                self.input.cancel(|_| {});
+            }
+        }
+        let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
+        let cancelling = lost_focus
+            || matches!(&event, TextEvent::Navigation(e) if e.phase == reel_ui::input::ActionPhase::Cancelled);
+        if lost_focus {
             self.touch.clear();
         }
         if self.settings_pending() && !cancelling {
@@ -707,6 +746,81 @@ impl State {
             self.schedule_reveal();
         }
         self.invalidate();
+        Ok(())
+    }
+    fn start_gamepads(&mut self) {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        if self.gamepads.is_none() {
+            let window = Arc::downgrade(&self.window);
+            match crate::platform::gamepad::GamepadSource::new(
+                std::num::NonZeroUsize::new(256).unwrap(),
+                move || {
+                    if let Some(window) = window.upgrade() {
+                        window.request_redraw();
+                    }
+                },
+            ) {
+                Ok(source) => self.gamepads = Some(source),
+                Err(error) => eprintln!("gamepad backend unavailable: {error}"),
+            }
+        }
+    }
+    fn stop_gamepads(&mut self) {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            self.gamepads = None;
+        }
+        self.input_pending = false;
+    }
+    pub(crate) fn input_deadline(&self) -> Option<Instant> {
+        if self.input_pending {
+            Some(Instant::now())
+        } else {
+            self.input
+                .next_deadline()
+                .and_then(|when| self.input_origin.checked_add(when))
+        }
+    }
+    pub(crate) fn tick_gamepads(&mut self) -> Result<(), Error> {
+        let now = self.input_origin.elapsed();
+        self.input_pending = false;
+        // A bounded drain prevents a noisy device from monopolizing a frame.
+        // Remaining events keep the window awake via the backend's notifications.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        for index in 0..256 {
+            let Some(source) = &self.gamepads else {
+                break;
+            };
+            let event = match source.try_event() {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!("gamepad backend stopped: {error}");
+                    self.gamepads = None;
+                    self.input.cancel(|_| {});
+                    self.text_event(TextEvent::Navigation(reel_ui::input::NavigationEvent {
+                        action: reel_ui::input::NavigationAction::Confirm,
+                        phase: reel_ui::input::ActionPhase::Cancelled,
+                        value: 0.,
+                    }))?;
+                    break;
+                }
+            };
+            if self.input_focused {
+                self.input_events.clear();
+                self.input
+                    .update(&event, now, |event| self.input_events.push(event))?;
+                for i in 0..self.input_events.len() {
+                    self.text_event(TextEvent::Navigation(self.input_events[i]))?;
+                }
+            }
+            self.input_pending = index == 255;
+        }
+        self.input_events.clear();
+        self.input.tick(now, |event| self.input_events.push(event));
+        for i in 0..self.input_events.len() {
+            self.text_event(TextEvent::Navigation(self.input_events[i]))?;
+        }
         Ok(())
     }
     fn schedule_reveal(&mut self) {

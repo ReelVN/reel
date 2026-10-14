@@ -680,6 +680,9 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
     }
 
     let prev_focused = root.global_state.focused_widget;
+    if prev_focused != root.global_state.next_focused_widget {
+        super::navigation::cancel(root);
+    }
     let was_ime_active = root.global_state.is_ime_active;
 
     if was_ime_active && prev_focused != root.global_state.next_focused_widget {
@@ -823,6 +826,9 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
         if let Some(next_focused) = next_focused {
             let widget_state = root.widget_arena.get_state(next_focused);
 
+            root.global_state
+                .scroll_request_targets
+                .push((next_focused, widget_state.border_box()));
             root.global_state.is_ime_active = widget_state.accepts_text_input;
             if widget_state.accepts_text_input {
                 root.global_state.emit_signal(RenderRootSignal::StartIme);

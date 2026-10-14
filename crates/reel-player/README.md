@@ -30,7 +30,7 @@ Drag the shapes/white indicator; scroll to change the root transform. The checke
 image, overlapping transparent group, clip and optional Parley label use the same
 render path as readback tests. F5 destroys the actual device and exercises device
 recreation; F6 exercises the same surface suspend/resume handlers as the lifecycle
-callbacks; Escape closes cleanly. Set `REEL_DIAGNOSTIC_TRACE=1` to log accepted
+callbacks; closing the window completes cleanup. Set `REEL_DIAGNOSTIC_TRACE=1` to log accepted
 frame/epoch identities alongside routed physical pointer coordinates.
 
 `window.rs` assembles the window, backend, prepared resources and frames.
@@ -114,7 +114,7 @@ Dialogue rows, choices and their text have no additional fixed count or length
 ceiling. All choices share one projection owner, while ChoiceId
 preserves each business key. Scrolling invalidates the old input stamp and any
 held gesture; a new accepted frame must establish the new hit geometry.
-Input supports mouse clicks, scrolling, keyboard activation and independent touch contacts. `platform::winit::TouchInput` converts native contacts to portable `PointerEvent` values, retaining identity and pressure; buttons share capture, cancellation and presented geometry across devices. Native IME and system accessibility adapters remain future work.
+Input supports mouse clicks, scrolling, keyboard activation and independent touch contacts. Gamepad navigation uses the D-pad/left stick, south-button confirmation and east-button Back. Escape also routes Back through the focused UI. The independent `gamepad` feature supplies `platform::gamepad::GamepadSource` on Windows/Linux/macOS through pinned Gilrs; other platforms can inject `reel_ui::input::InputEvent` directly. `NavigationInput` exposes its next repeat deadline so idle hosts can sleep. Backend queues are bounded, device disconnect cancels held contributions, and focus loss/suspension retires the native receiver before rebuilding it on resume. Linux builds of Gilrs require the system libudev development package. Native backend initialization can be checked with `cargo test -p reel-player --features gamepad native_gamepad_backend_initializes_and_drops_without_waiting -- --ignored --nocapture`; this does not verify physical button input. `platform::winit::TouchInput` converts native contacts to portable `PointerEvent` values, retaining identity and pressure; buttons share capture, cancellation and presented geometry across devices. Native IME and system accessibility adapters remain future work.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
@@ -187,7 +187,7 @@ budget yields schedule another turn without forcing a redraw. Surface resize,
 suspend/resume and device recovery preserve the same VM. The existing reveal
 timer advances at most one grapheme per wake and freezes while a click is held.
 Natural completion leaves the window open after owner retirement. Close or
-Escape cancels and continues task/root cleanup before exiting, including while
+Closing the window cancels and continues task/root cleanup before exiting, including while
 the surface is suspended. VM faults report their source path, line, column and
 author-thrown value after
 the same cleanup. F5/F6 device diagnostics apply only to diagnostic windows.

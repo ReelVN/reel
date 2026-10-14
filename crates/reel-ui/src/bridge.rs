@@ -333,6 +333,10 @@ impl PresentationBridge {
         self.root.cancel_pointer_inputs();
         self.release_pointer_storage();
     }
+    /// Target for unclaimed focused input, such as a story's dialogue surface.
+    pub fn set_focus_fallback(&mut self, target: Option<WidgetId>) -> bool {
+        self.root.set_focus_fallback(target)
+    }
     /// Text input follows accepted geometry; loss of focus also cancels pointer capture.
     pub fn handle_text_event(&mut self, event: TextEvent) -> Handled {
         let handled = self.root.handle_text_event(event);

@@ -8,7 +8,8 @@ publish = false
 [features]
 default = []
 winit = ["dep:winit", "dep:ui-events-winit"]
-window = ["winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
+gamepad = ["dep:gilrs"]
+window = ["gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
 reel-ui.workspace = true
@@ -21,6 +22,9 @@ winit = { version = "=0.30.12", optional = true }
 ui-events-winit = { version = "=0.3.0", optional = true }
 wgpu = { version = "=26.0.1", optional = true }
 pollster = { version = "=0.4.0", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+gilrs = { version = "=0.11.2", optional = true }
 
 [dev-dependencies]
 aside-vm = { path = "../aside-vm" }

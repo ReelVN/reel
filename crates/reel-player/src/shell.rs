@@ -148,14 +148,6 @@ impl ApplicationHandler for App {
         let result = match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
-                    && event.physical_key
-                        == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape) =>
-            {
-                self.close(event_loop);
-                return;
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
                     && state.is_diagnostic()
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F5) =>
@@ -254,6 +246,10 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(state) = &mut self.state {
             if self.closing {
+                if let Err(error) = state.tick_gamepads() {
+                    self.fail(event_loop, error);
+                    return;
+                }
                 if let Err(error) = state.tick_story() {
                     self.error.get_or_insert_with(|| error.to_string());
                     self.state = None;
@@ -273,6 +269,10 @@ impl ApplicationHandler for App {
             if state.is_suspended() {
                 state.host.set_wake_deadline(None);
                 state.host.apply(event_loop);
+                return;
+            }
+            if let Err(error) = state.tick_gamepads() {
+                self.fail(event_loop, error);
                 return;
             }
             if let Err(error) = state.tick_story() {
@@ -305,6 +305,10 @@ impl ApplicationHandler for App {
                 (a, b) => a.or(b),
             };
             let deadline = match (deadline, state.story_deadline()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let deadline = match (deadline, state.input_deadline()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };

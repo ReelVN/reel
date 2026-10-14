@@ -29,6 +29,8 @@ pub enum WindowEvent {
 /// A text-related event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextEvent {
+    /// Semantic navigation from a controller or another host input source.
+    Navigation(crate::input::NavigationEvent),
     /// A keyboard event.
     Keyboard(KeyboardEvent),
     /// An IME event.
@@ -222,6 +224,7 @@ impl TextEvent {
             Self::Ime(Ime::Preedit(_, _)) => "Ime::Preedit(\"...\")",
             Self::WindowFocusChange(_) => "WindowFocusChange",
             Self::ClipboardPaste(_) => "ClipboardPaste",
+            Self::Navigation(_) => "Navigation",
         }
     }
 }

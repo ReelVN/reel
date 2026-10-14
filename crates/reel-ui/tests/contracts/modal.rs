@@ -52,6 +52,96 @@ fn tab(backward: bool) -> TextEvent {
 }
 
 #[test]
+fn navigation_uses_presented_space_and_cancels_confirmation_and_repeat_at_scope_changes() {
+    use reel_ui::input::{ActionPhase as P, NavigationAction as A, NavigationEvent};
+    let nav = |action, phase| {
+        TextEvent::Navigation(NavigationEvent {
+            action,
+            phase,
+            value: if phase == P::Released { 0. } else { 1. },
+        })
+    };
+    for presented in [false, true] {
+        let mut f = fixture();
+        f.root.redraw();
+        accept_view(&mut f.root, presented);
+        f.root.handle_text_event(nav(A::Confirm, P::Pressed));
+        assert_eq!(f.root.focused_widget(), Some(f.outside));
+        f.root.handle_text_event(nav(A::Confirm, P::Released));
+        assert_eq!(
+            f.signals
+                .borrow()
+                .iter()
+                .filter(|s| matches!(s, RenderRootSignal::Action(_, id) if *id == f.outside))
+                .count(),
+            1
+        );
+        f.root.handle_text_event(nav(A::Down, P::Pressed));
+        assert_eq!(f.root.focused_widget(), Some(f.first));
+        f.root.handle_text_event(nav(A::Right, P::Pressed));
+        assert_eq!(f.root.focused_widget(), Some(f.second));
+        // A focus round-trip cannot revive an old confirmation.
+        f.root.handle_text_event(nav(A::Confirm, P::Pressed));
+        f.root.focus_on(Some(f.first));
+        f.root.focus_on(Some(f.second));
+        f.signals.borrow_mut().clear();
+        f.root.handle_text_event(nav(A::Confirm, P::Released));
+        assert!(
+            !f.signals
+                .borrow()
+                .iter()
+                .any(|s| matches!(s, RenderRootSignal::Action(..)))
+        );
+        f.root.focus_on(Some(f.outside));
+        f.root.handle_text_event(nav(A::Confirm, P::Pressed));
+        f.root.edit_widget(f.panel, |mut w| w.ctx.set_modal(true));
+        accept_view(&mut f.root, presented);
+        f.root.handle_text_event(nav(A::Confirm, P::Released));
+        f.root.handle_text_event(nav(A::Down, P::Repeated));
+        assert_eq!(
+            f.root.focused_widget(),
+            Some(f.first),
+            "held direction from the old scope is cancelled"
+        );
+        assert!(
+            !f.signals
+                .borrow()
+                .iter()
+                .any(|s| matches!(s, RenderRootSignal::Action(..)))
+        );
+        f.root.handle_text_event(nav(A::Right, P::Released));
+        f.root.handle_text_event(nav(A::Right, P::Pressed));
+        assert_eq!(f.root.focused_widget(), Some(f.second));
+        f.root.handle_text_event(nav(A::Confirm, P::Pressed));
+        f.root
+            .set_input_geometry_source(InputGeometrySource::Presented(None));
+        accept_view(&mut f.root, true);
+        f.root.handle_text_event(nav(A::Confirm, P::Released));
+        assert!(
+            !f.signals
+                .borrow()
+                .iter()
+                .any(|s| matches!(s, RenderRootSignal::Action(..)))
+        );
+        f.root.handle_text_event(nav(A::Confirm, P::Pressed));
+        f.root
+            .handle_text_event(TextEvent::WindowFocusChange(false));
+        f.root.handle_text_event(TextEvent::WindowFocusChange(true));
+        f.root.handle_text_event(nav(A::Confirm, P::Released));
+        assert!(
+            !f.signals
+                .borrow()
+                .iter()
+                .any(|s| matches!(s, RenderRootSignal::Action(..)))
+        );
+        assert_eq!(
+            f.root.handle_text_event(nav(A::Back, P::Pressed)),
+            Handled::Yes
+        );
+    }
+}
+
+#[test]
 fn modal_traps_input_restores_nested_focus_and_releases_capture_in_both_geometry_modes() {
     for presented in [false, true] {
         let mut f = fixture();

@@ -19,6 +19,7 @@ pub(crate) mod compose;
 pub(crate) mod event;
 pub(crate) mod layout;
 pub(crate) mod mutate;
+pub(crate) mod navigation;
 pub(crate) mod paint;
 pub(crate) mod update;
 

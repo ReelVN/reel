@@ -174,13 +174,26 @@ impl Widget for Slider {
     fn on_text_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
-        _props: &mut PropertiesMut<'_>,
+        props: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
         if ctx.is_disabled() || !ctx.is_focus_target() {
             return;
         }
 
+        if let TextEvent::Navigation(event) = event {
+            use crate::input::{ActionPhase, NavigationAction};
+            let action = match event.action {
+                NavigationAction::Left => accesskit::Action::Decrement,
+                NavigationAction::Right => accesskit::Action::Increment,
+                _ => return,
+            };
+            if matches!(event.phase, ActionPhase::Pressed | ActionPhase::Repeated) {
+                self.on_access_event(ctx, props, &AccessEvent { action, data: None });
+            }
+            ctx.set_handled();
+            return;
+        }
         if let TextEvent::Keyboard(key_event) = event {
             if key_event.state.is_up() {
                 return;
@@ -213,6 +226,7 @@ impl Widget for Slider {
                 _ => return,
             }
 
+            ctx.set_handled();
             if new_value != self.value {
                 let clamped_value = new_value.clamp(self.min, self.max);
                 let final_value = if let Some(s) = self.step {
