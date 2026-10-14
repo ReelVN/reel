@@ -179,11 +179,8 @@ fn cancelling_a_large_model_copy_releases_its_work_graph() {
     }"#,
         Context::Ordinary,
     );
-    let ticket = loop {
-        match next(&mut vm, &mut session) {
-            RunOutcome::HostCall(ticket) => break ticket,
-            other => panic!("unexpected before model: {other:?}"),
-        }
+    let RunOutcome::HostCall(ticket) = next(&mut vm, &mut session) else {
+        panic!("expected the model native call");
     };
     vm.dispatch(&mut session, ticket, "en", 16).unwrap();
     collect(&mut vm);

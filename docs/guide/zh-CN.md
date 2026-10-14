@@ -12,7 +12,7 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。节点 bind/unbind 已可用；derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。model 与节点 bind/unbind 已可用；derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
