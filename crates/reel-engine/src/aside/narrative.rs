@@ -183,7 +183,7 @@ impl Narrative {
                         heap,
                         row,
                         LineField::Reveal as u32,
-                        Value::int(heap.info(text)?.len as i64),
+                        Value::int(super::rich_text::len(heap, text)? as i64),
                     )?;
                 }
             }
@@ -214,7 +214,7 @@ impl Narrative {
                             .map_or(Ok(Value::NULL), |id| text::alloc_string(heap, id, chunk))?;
                         let content = text::alloc_string(heap, line.content_id(), chunk)?;
                         let name = text::alloc_string(heap, line.speaker_name(), chunk)?;
-                        let text = text::alloc_string(heap, line.resolved_text(), chunk)?;
+                        let text = super::rich_text::alloc(heap, line.content().styled(), chunk)?;
                         let row = record(
                             heap,
                             &[
@@ -311,7 +311,7 @@ impl Narrative {
                         heap,
                         self.dialogue,
                         DialogueField::Reveal as u32,
-                        Value::int(heap.info(text)?.len as i64),
+                        Value::int(super::rich_text::len(heap, text)? as i64),
                     )?;
                 }
             }

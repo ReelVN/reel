@@ -229,7 +229,7 @@ bind(model.volume) 是编译器识别的可观察属性位置表达式，生成 
 
 节点公开只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。构造参数 decorated 默认 true，当前节点 native ABI 为 3，B01 不变。
 
-`model(defaults)` 由 Reel 提供，复制当前支持的纯数据图，保留内部共享引用和环。返回的 table 仍支持普通索引、追加字段和集合方法，其字段可以 bind；嵌套 table 及后来赋入的数据对象保持同一观察身份。clear 删除字段时，旧连接冻结最后值，旧引用失效；重新增加同名字段需重新 bind。默认图不接受闭包、任务、节点等宿主资源。复制按 VM 原生 continuation 预算推进，失败或取消不发布半成品。
+`model(defaults)` 由 Reel 提供，复制当前支持的纯数据图，保留内部共享引用和环。返回的 table 仍支持普通索引、追加字段和集合方法，其字段可以 bind；嵌套 table 及后来赋入的数据对象保持同一观察身份。clear 删除字段时，旧连接冻结最后值，旧引用失效；重新增加同名字段需重新 bind。默认图不接受闭包、任务、节点等宿主资源；宿主通过 alloc_immutable_host 声明的不可变数据值（如 rich）按身份共享，其内部图的不可变性由宿主保证。复制按 VM 原生 continuation 预算推进，失败或取消不发布半成品。
 
 derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取，版本变化后重算并替换条件依赖集合。禁止修改外部对象、可观察状态、启动活动或等待；native 必须 DerivedSafe，传递调用中继续检查。内部临时分配/写入允许，不能把临时引用逃逸成外部可变影响。普通捕获值保持通常共享语义，不因读取自动响应。环报错，替换/销毁解除订阅。可写控件不可接受只读派生，通知/事务提交由宿主负责。
 派生结果沿用只读属性引用，可通过 `binding.value` 读取并继续派生。依赖变化合并到同步脚本段结束后的提交点，在下一次舞台发布或业务任务运行前稳定；不在每帧扫描所有绑定。首次计算沿原调用栈执行，后续计算保留闭包的源码位置。失败保留上次有效投影并报告脚本故障。
@@ -246,6 +246,8 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 `game.history()` 返回会话稳定的只读可观察历史数组；历史组的 `lines` 和行字段同样只读。`game.reading()` 提供只读可观察 `auto/paused/delay`，可以 bind/derive 到任意作者控件。`game.set_auto(enabled, delay: null)` 接受 bool，省略 delay 保留当前值，显式 delay 为有限非负秒数；`game.pause_reading(paused)` 接受 bool。这些变更通过既有宿主属性通知发布，不引入语言特殊语法；赋值只读服务字段或修改历史集合会报错。
 
 `game.set_skip(enabled, unread: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。
+
+Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去掉标记后的正文；rich_escape(text) 为显式富文本插值转义左方括号。它们不改变 Aside 字符串、插值或类型系统。text.value、narrator、角色调用与 character.line 接受 string 或此宿主值，bind/derive 保留通常语义；game.dialogue 和 game.history 的 text 字段保留提交值的样式。`text(..., on_link: callback)` 交付只读 `{target, id}` 事件，回调归文字节点所有。标记、排版和输入语义见架构规范与创作者指南。rich/rich_escape ABI 1，narrator/character.speak/character.line ABI 2；增加 text_align/line_height 后节点构造 ABI 为 input 6、scroll/text_input/list/view 2、其余 5，tween ABI 2。B01 编码不变。
 
 ## 十二 Task Future 与取消
 

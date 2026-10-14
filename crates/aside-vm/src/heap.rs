@@ -233,6 +233,7 @@ pub type HostPropertyValidator = fn(&Heap, Value, u32, Value) -> Result<(), Heap
 pub(crate) struct Object {
     pub kind: ObjectKind,
     pub host_validator: Option<HostPropertyValidator>,
+    pub host_model_value: bool,
     pub host_await: Option<crate::bytecode::NativeId>,
     pub host_call: Option<crate::bytecode::FunctionId>,
     pub observable_fields: u32,
@@ -540,6 +541,7 @@ impl Heap {
         let key = self.objects.insert(Object {
             kind,
             host_validator: None,
+            host_model_value: false,
             host_await: None,
             host_call: None,
             observable_fields: 0,
@@ -641,6 +643,28 @@ impl Heap {
         validator: Option<HostPropertyValidator>,
     ) -> Result<Value, HeapError> {
         self.host_record(fields, payload, false, validator)
+    }
+    /// An immutable host data value, shared by identity when copying model defaults.
+    /// The host must supply immutable field/payload graphs and retain that contract;
+    /// scripts cannot write its properties. Resources and ordinary hosts use alloc_host.
+    pub fn alloc_immutable_host(
+        &mut self,
+        fields: Value,
+        payload: &[Value],
+    ) -> Result<Value, HeapError> {
+        let host = self.host_record(
+            fields,
+            payload,
+            false,
+            Some(|_, _, _, _| Err(HeapError::ReadOnly)),
+        )?;
+        let key = self.key(host)?;
+        self.objects.get_mut(key).unwrap().host_model_value = true;
+        Ok(host)
+    }
+    pub(crate) fn is_immutable_host(&self, host: Value) -> Result<bool, HeapError> {
+        self.host_fields(host)?;
+        Ok(self.object(self.key(host)?)?.host_model_value)
     }
     /// Declare that this host value participates in trailing children composition.
     pub fn alloc_composable_host(

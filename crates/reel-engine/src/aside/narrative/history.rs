@@ -62,7 +62,7 @@ impl History {
                     (
                         line_id(heap, line.id())?,
                         text::alloc_string(heap, line.speaker_name(), chunk)?,
-                        text::alloc_string(heap, line.resolved_text(), chunk)?,
+                        super::super::rich_text::alloc(heap, line.content().styled(), chunk)?,
                         line.speaker_id().map_or(Ok(Value::NULL), |name| {
                             text::alloc_string(heap, name, chunk)
                         })?,

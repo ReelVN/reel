@@ -79,6 +79,9 @@ impl ModelCopy {
         if matches!(info.kind, ObjectKind::String | ObjectKind::Bytes) {
             return Ok(value);
         }
+        if info.kind == ObjectKind::Host && heap.is_immutable_host(value)? {
+            return Ok(value);
+        }
         let identity = heap.handle(value)?;
         if let Some(&index) = self.identities.get(&identity) {
             return Ok(self.objects[index].target);

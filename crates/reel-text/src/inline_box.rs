@@ -14,4 +14,6 @@ pub struct InlineBox {
     pub width: f32,
     /// The height of the box in pixels
     pub height: f32,
+    /// Baseline measured from the top; None aligns the bottom to the text baseline.
+    pub baseline: Option<f32>,
 }

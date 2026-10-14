@@ -87,6 +87,21 @@ impl SessionVm {
         self.start_callback(session, node, closure, event)
     }
 
+    pub fn text_link(
+        &mut self,
+        session: &mut Session,
+        link: &reel_ui::stage::NodeLink,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, callback)) = self.stage.text_link(self.vm.heap(), link)? else {
+            return Ok(false);
+        };
+        let heap = self.vm.heap_mut();
+        let id = super::text::alloc_string(heap, &link.id, self.read_limit)?;
+        let event = super::observable::record(heap, &[("target", target), ("id", id)], &[])?;
+        self.start_callback(session, link.node, callback, event)
+    }
+
     pub fn input_action(
         &mut self,
         session: &mut Session,

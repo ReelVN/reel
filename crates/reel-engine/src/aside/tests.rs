@@ -7,6 +7,7 @@ mod buttons;
 mod dynamic_stage;
 mod localization;
 mod models;
+mod rich_text;
 
 const STORY: &str =
     "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
@@ -411,7 +412,7 @@ fn staged_history_can_be_discarded_without_spending_identity() {
         speaker_id: None,
         speaker_name: "",
         content_id: "source:1",
-        text: "hello",
+        text: ("hello").into(),
     };
     let staged =
         publication::Publication::stage(&mut s, |s| s.begin_say(owner, &[line], "en")).unwrap();
@@ -437,7 +438,7 @@ fn failed_pending_response_rolls_back_history_and_releases_new_key_roots() {
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "source",
-                text: "text",
+                text: ("text").into(),
             }],
             "en",
         )

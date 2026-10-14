@@ -708,7 +708,9 @@ impl<'a, B: Brush> BreakLines<'a, B> {
 
                     // Default vertical alignment is to align the bottom of boxes with the text baseline.
                     // This is equivalent to the entire height of the box being "ascent"
-                    line.metrics.ascent = line.metrics.ascent.max(item.height);
+                    let ascent = item.baseline.unwrap_or(item.height);
+                    line.metrics.ascent = line.metrics.ascent.max(ascent);
+                    line.metrics.descent = line.metrics.descent.max(item.height - ascent);
 
                     // Mark us as having seen non-whitespace content on this line
                     have_metrics = true;

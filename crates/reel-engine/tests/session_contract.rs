@@ -9,7 +9,7 @@ fn line(text: &str) -> DialogueLineInput<'_> {
         speaker_id: Some("mio"),
         speaker_name: "Mio",
         content_id: "opening.1",
-        text,
+        text: text.into(),
     }
 }
 
@@ -73,13 +73,13 @@ fn dialogue_owns_full_content_and_history_as_one_group() {
                         speaker_id: Some("mio"),
                         speaker_name: &speaker,
                         content_id: &content_id,
-                        text: &text,
+                        text: (&text).into(),
                     },
                     DialogueLineInput {
                         speaker_id: Some("eri"),
                         speaker_name: "Eri",
                         content_id: "chapter01.opening.reply",
-                        text: "在窗外。",
+                        text: ("在窗外。").into(),
                     },
                 ],
                 "zh-CN",

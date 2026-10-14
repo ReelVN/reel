@@ -24,7 +24,7 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
                 speaker_id: Some("mio"),
                 speaker_name: "Mio",
                 content_id: "cost",
-                text: &text,
+                text: (&text).into(),
             }],
             "zh-CN",
         )

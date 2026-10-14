@@ -101,6 +101,13 @@ pub fn click_with_pointer(
 }
 
 pub fn bridge(driver: &AsideSessionUi) -> (PresentationBridge, WidgetId) {
+    bridge_with_font(driver, None)
+}
+
+pub fn bridge_with_font(
+    driver: &AsideSessionUi,
+    font: Option<reel_ui::peniko::Blob<u8>>,
+) -> (PresentationBridge, WidgetId) {
     let widget = driver.widget().prepare();
     let root_id = widget.id();
     let root = RenderRoot::new(
@@ -112,7 +119,7 @@ pub fn bridge(driver: &AsideSessionUi) -> (PresentationBridge, WidgetId) {
             size_policy: WindowSizePolicy::User,
             size: PhysicalSize::new(640, 420),
             scale_factor: 1.,
-            default_font: None,
+            default_font: font,
         },
     );
     let bridge = PresentationBridge::new(

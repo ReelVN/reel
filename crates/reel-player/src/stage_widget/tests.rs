@@ -757,7 +757,7 @@ fn dialogue_reveal_keeps_text_identity_and_layout() {
         let NodeKind::Text(current) = &f.stage.node(f.blue).unwrap().kind else {
             unreachable!()
         };
-        assert!(Arc::ptr_eq(&text, current));
+        assert!(Arc::ptr_eq(text.plain(), current.plain()));
     }
 }
 

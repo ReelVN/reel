@@ -307,6 +307,9 @@ impl AsideSessionUi {
                 let mut changed = false;
                 for event in &events {
                     match event {
+                        NodeEvent::Link(link) => {
+                            self.vm.text_link(self.ui.session_mut(), link)?;
+                        }
                         NodeEvent::Click(click) => {
                             self.vm.click(self.ui.session_mut(), click.node)?;
                         }

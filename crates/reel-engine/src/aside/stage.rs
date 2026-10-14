@@ -64,6 +64,10 @@ pub(super) enum NodeProperty {
     Decorated,
     #[aside(name = "reveal", ty = Any, default = null, validate = validate_reveal)]
     Reveal,
+    #[aside(name = "text_align", ty = String, default = "start", validate = validate_text_align)]
+    TextAlign,
+    #[aside(name = "line_height", ty = Any, default = 1.2, validate = validate_nonnegative, animatable)]
+    LineHeight,
 }
 
 pub(super) struct StageBinding {
@@ -78,6 +82,7 @@ struct NodeBinding {
     fields_version: u64,
     input_source: Option<HeapHandle>,
     text_source: Option<HeapHandle>,
+    text_listening: bool,
     input_values: BTreeMap<std::sync::Arc<str>, f32>,
 }
 
@@ -188,7 +193,7 @@ impl StageBinding {
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
-            NodeKind::Text(_) => 1,
+            NodeKind::Text(_) => 2,
             NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
             NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
@@ -246,7 +251,7 @@ impl StageBinding {
             heap.table_store(fields, index as u32, key, *argument)?;
         }
         let kind = match symbol {
-            "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?.into()),
+            "reel::text" => NodeKind::Text(super::rich_text::read(heap, args[0], read_limit)?),
             "reel::text_input" => text_input::kind(heap, fields, read_limit)?,
             "reel::slider" => controls::slider_kind(heap, fields)?,
             "reel::toggle" => controls::toggle_kind(heap, fields, read_limit)?,
@@ -407,6 +412,7 @@ impl StageBinding {
                 } else {
                     None
                 },
+                text_listening: symbol == "reel::text" && args[1].tag() != ValueTag::Null,
                 input_values,
             },
         );
@@ -479,9 +485,9 @@ impl StageBinding {
                         NodeKind::Text(if binding.text_source == Some(heap.handle(source)?) {
                             text.clone()
                         } else {
-                            read_text(heap, source, read_limit)?.into()
+                            super::rich_text::read(heap, source, read_limit)?
                         }),
-                        1,
+                        2,
                     )
                 }
                 NodeKind::TextInput { value } => {
@@ -515,6 +521,10 @@ impl StageBinding {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 let source = heap.table_entry(heap.host_fields(value)?, 0)?.1;
                 self.handles.get_mut(&id).unwrap().text_source = Some(heap.handle(source)?);
+                if matches!(kind, NodeKind::Text(_)) {
+                    self.handles.get_mut(&id).unwrap().text_listening =
+                        heap.table_entry(heap.host_fields(value)?, 1)?.1.tag() != ValueTag::Null;
+                }
             }
             if let NodeKind::Input { bindings, .. } = &kind {
                 let binding = self.handles.get_mut(&id).unwrap();
@@ -604,6 +614,39 @@ impl StageBinding {
             .mounted_in_scope(heap, id, self.modal_scope(heap)?)?
             .then_some((target, callback)))
     }
+    pub fn text_link(
+        &self,
+        heap: &Heap,
+        link: &reel_ui::stage::NodeLink,
+    ) -> Result<Option<(Value, Value)>, AdapterError> {
+        let Some(node) = self.scene.node(link.node) else {
+            return Ok(None);
+        };
+        let NodeKind::Text(text) = &node.kind else {
+            return Ok(None);
+        };
+        if text != &link.text
+            || !text
+                .links()
+                .iter()
+                .any(|l| l.id == link.id && node.props.reveal.is_none_or(|end| l.range.end <= end))
+        {
+            return Ok(None);
+        }
+        let target = self.value(heap, link.node)?;
+        let fields = heap.host_fields(target)?;
+        let current = heap.table_entry(fields, 0)?.1;
+        if self.handles[&link.node].text_source != Some(heap.handle(current)?) {
+            return Ok(None);
+        }
+        let callback = heap.table_entry(fields, 1)?.1;
+        if callback.tag() == ValueTag::Null {
+            return Ok(None);
+        }
+        Ok(self
+            .mounted_in_scope(heap, link.node, self.modal_scope(heap)?)?
+            .then_some((target, callback)))
+    }
 
     fn mounted_in_scope(
         &self,
@@ -683,6 +726,7 @@ impl StageBinding {
         while let Some(id) = pending.pop() {
             let node = self.scene.node(id).unwrap();
             if match &node.kind {
+                NodeKind::Text(_) => self.handles[&id].text_listening,
                 NodeKind::Slider { .. } | NodeKind::Toggle { .. } | NodeKind::TextInput { .. } => {
                     true
                 }
@@ -936,13 +980,14 @@ fn color(heap: &Heap, value: Value) -> Result<[u8; 4], AdapterError> {
 }
 fn validate_text_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
     if index == 0 {
-        return if heap.info(value)?.kind == ObjectKind::String {
-            Ok(())
-        } else {
-            Err(HeapError::TypeMismatch)
-        };
+        return super::rich_text::source(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch);
     }
-    validate_layout_property(heap, index - 1, value)
+    if index == 1 {
+        return validate_button_property(heap, 1, value);
+    }
+    validate_layout_property(heap, index - 2, value)
 }
 pub(super) fn validate_layout_property(
     heap: &Heap,
@@ -995,6 +1040,29 @@ fn validate_reveal(_: &Heap, value: Value) -> Result<(), HeapError> {
         Err(HeapError::TypeMismatch)
     }
 }
+
+fn text_align(heap: &Heap, value: Value) -> Result<reel_ui::TextAlign, HeapError> {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 7 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 7];
+    for i in 0..info.len {
+        heap.read_bytes(value, i, &mut bytes[i as usize..i as usize + 1])?;
+    }
+    Ok(match &bytes[..info.len as usize] {
+        b"start" => reel_ui::TextAlign::Start,
+        b"end" => reel_ui::TextAlign::End,
+        b"left" => reel_ui::TextAlign::Left,
+        b"right" => reel_ui::TextAlign::Right,
+        b"center" => reel_ui::TextAlign::Center,
+        b"justify" => reel_ui::TextAlign::Justify,
+        _ => return Err(HeapError::TypeMismatch),
+    })
+}
+fn validate_text_align(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    text_align(heap, value).map(|_| ())
+}
 fn read_props(
     heap: &Heap,
     fields: Value,
@@ -1023,6 +1091,8 @@ fn read_props(
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
         font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
+        text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
+        line_height: nonnegative(get(NodeProperty::LineHeight)?)?,
         color: color(heap, get(NodeProperty::Color)?)?,
         background: if background.tag() == ValueTag::Null {
             None

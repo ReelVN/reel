@@ -593,11 +593,19 @@ The same arrive function can be used for characters, title-screen buttons, or en
 
 ## 14 Text, Media, and Extension Entry Points
 
+Use explicit `rich(markup)` for inline styles: `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`. text, character calls, character.line and narrator accept plain strings or rich text; dialogue models and history retain all styles. Plain strings remain literal. A rich value's read-only `.plain` property returns its body without tags. `model({text: rich("[b]初始内容[/b]")})` works directly as observable state; copying model defaults shares immutable rich values.
+
+Paired, nested tags include `[b]`, `[i]`, `[u]`, `[s]` (bold, italic, underline, strike), `[size=36]`, `[color=#RRGGBB]` / `[color=#RRGGBBAA]`, `[em]` (emphasis dots), `[ruby=注音]基文[/ruby]`, and `[link=词条ID]正文[/link]`. `[[` represents a literal opening bracket; use rich_escape before inserting arbitrary player text. Invalid markup reports the rich call's source location and includes the tag's UTF-8 byte offset in the error value. Ruby cannot nest. Its base and half-size annotation wrap as one unit; the base reveals progressively and the annotation appears when the complete base is visible. Games supply fonts; bold and italic appearance depends on those fonts.
+
+text wraps to its available width. width, x/y, padding and scroll determine NVL page placement and bounds; list gap controls paragraph spacing. `text_align` accepts start/end/left/right/center/justify and defaults to start. `line_height` is a font-size multiplier, defaulting to 1.2. Mixed sizes, ruby and emphasis dots participate in line height; reveal changes painting without reshaping. Node color supplies the base color, while explicit inline colors override their spans. Omit inline color to inherit speaker or read-state coloring.
+
+`text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` passes the link ID to an ordinary callback; event.target is the text node. Fully revealed links accept mouse and touch clicks. With text focused, left/right selects a link and confirm activates it. Link input is consumed without advancing dialogue or opening a browser. Removing the node cancels callbacks under its ownership. Runnable example: [author_rich_text.aside](../../examples/author_rich_text.aside); supply fonts/body.ttf first. Use `derive(|| rich(tr(...)))` for reactive language switching and rich_escape for player text passed into translated markup. Submitted dialogue and history preserve their original language and styles. Accessibility currently exposes the body label, without separate semantic link children.
+
 Developers extending script interfaces from Rust can refer to the [Aside host SDK](../aside-host.md). Registered host functions use the same named arguments, defaults and source-location rules as ordinary Aside functions.
 
 Rust extensions can also declare variadic positional arguments with `#[aside(rest)]`. Authors call them with ordinary arguments or `...items`; each call receives a fresh outer array while its elements retain their normal shared identity. Defaults and bound methods use the same rules. This facility is independent of Reel and does not by itself enable action combinators.
 
-Basic text uses real text layout; external catalogs and reactive language switching are implemented. Rich-text types, video and Aside custom drawing remain future capabilities.
+Basic text uses real text layout; external catalogs and reactive language switching are implemented. Inline rich text is implemented; video and Aside custom drawing remain future capabilities.
 
 Rust custom drawing shares linear-premultiplied color conversion for solid colors, text and images. Both strokes and geometric clips support dashes, including curves, closed paths and dash offsets. An all-zero dash pattern draws a solid line; small miter limits use bevel joins. These capabilities belong to the existing Rust drawing interface; the Aside custom drawing entry point is still pending.
 
@@ -619,7 +627,7 @@ text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data
 button("English", on_click: |event| localization.set_locale("en"));
 ```
 
-PlainText/RichText, automatic content IDs, reel loc extraction/catalog updates and localized asset substitution remain future capabilities.
+Automatic content IDs, reel loc extraction/catalog updates and localized asset substitution remain future capabilities.
 video is an ordinary node; audio provides tracks, queues, loop regions, filters, and synchronization groups. play returns an awaitable activity, stop leaves it at its current state, and finish is for activities with an endpoint. Tracks and resources are managed by stable identity. Device reconstruction and seek preserve or rebind logical waits; errors have explicit terminal states.
 custom_node can directly register state, measure, record, route, and event implemented in Aside. measure/record are read-only layout/rendering callbacks with execution budgets. route synchronously decides event consumption, capture, and focus, then event runs as an ordinary suspendable task. A minigame node can therefore prevent the same input from advancing the story while still being able to wait for resources in its application callback. New low-level graphics and platform capabilities are registered through native modules.
 Camera, Mesh, Material, and Effect provide perspective stages and programmable effects, with state and resource identities still included in saves. Each backend declares its supported implementations and fallbacks in a capability list. Live2D, system text-to-speech, mobile/Web packaging, and external services are adapter capabilities within the full target scope. Their specific API documentation will provide examples in the same style alongside verified implementations.

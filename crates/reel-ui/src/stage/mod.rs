@@ -57,12 +57,19 @@ pub struct NodeAction {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeEvent {
+    Link(NodeLink),
     Click(NodeClick),
     Action(NodeAction),
     Change(NodeChange),
     Interaction(NodeInteraction),
     Text(NodeText),
     Key(NodeKey),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeLink {
+    pub node: NodeId,
+    pub id: Arc<str>,
+    pub text: reel_core::text::Text,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,7 +123,7 @@ pub struct NodeClick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
-    Text(Arc<str>),
+    Text(reel_core::text::Text),
     TextInput {
         value: Arc<str>,
     },
@@ -174,6 +181,8 @@ pub struct NodeProps {
     pub padding: f64,
     pub font_size: f64,
     pub font: String,
+    pub text_align: crate::TextAlign,
+    pub line_height: f64,
     pub color: [u8; 4],
     pub background: Option<[u8; 4]>,
     pub rotation: f64,
@@ -200,6 +209,8 @@ impl Default for NodeProps {
             padding: 0.,
             font_size: 24.,
             font: "system-ui".into(),
+            text_align: crate::TextAlign::Start,
+            line_height: 1.2,
             color: [255; 4],
             background: None,
             rotation: 0.,

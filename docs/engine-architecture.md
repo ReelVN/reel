@@ -40,11 +40,13 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
-`list(items, key:, build:, ...NodeProps)` 是 Reel native ABI 1，B01/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
+`list(items, key:, build:, ...NodeProps)` 是 Reel native ABI 2，B01/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
 
 结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。当前列表保留全部行实例，滚动使用既有 scroll；可见范围虚拟化不属于这个接口的已实现能力。示例见 [author_list.aside](../examples/author_list.aside)。
 
 ### 角色对白与公共播放时钟
+
+富文本采用显式 `rich(markup)` 作者入口，普通字符串保持字面含义。句内 `[b]`、`[i]`、`[u]`、`[s]`、`[size=32]`、`[color=#ffd580]`、`[ruby=ほし]星[/ruby]`、`[em]` 和 `[link=entry]` 使用成对嵌套标记，`[[` 表示字面左方括号。解析产生平台无关的不可变全文、UTF-8 样式范围、注音与链接身份，共用于 UI、对白和历史；Aside 不依赖这些类型。字体布局复用 reel-text 的范围样式和 inline box，注音与着重号参与行高，ruby 基文与注音作为一个换行单位。揭示仍按基文的字素推进，标记和注音不消耗剧情字符数；链接只在已显示的命中区域交付 `on_link`，不自动打开 URL。段落通过 text_align 与 line_height 设置对齐和行高，舞台位置、尺寸和裁剪控制 ADV/NVL 布局。源码与 ASB 共用此接口；段落按可用宽度换行，逐字显现保留布局缓存，链接使用已呈现的输入几何和节点所有权。错误标记保留 rich 调用位置与标记字节偏移；rich_escape 为显式标记插值转义左方括号。
 
 对白呈现模型逐行公开只读 `id/speaker_id/speaker_name/content_id/text/reveal/read`。旁白 speaker_id 为 null；read 保存该行提交前的已读状态，NVL 累积行不随之后的推进改色。顶层 speaker_id/content_id 与姓名、文本一样投影第一行，read 仍表示整组提交前均已读。交互结束或进入选择时保留所显示对白的身份与 read，直到下一组对白替换；active 单独表示是否等待对白推进。作者用 derive 选择颜色，用普通节点与 tween 组织退出动画，动画不会修改阅读进度。身份字符串在行发布时分配，与同批历史共享，不参与逐字显现更新。
 
@@ -410,7 +412,7 @@ Aside 可直接注册 custom_node 的 state、measure、record、route 与 event
 普通组依树与显式层序绘制并反序命中。depth group 以自身深度缓冲组织不透明深度写入；透明项默认保留声明顺序并只测试已有深度，作者显式选择写深度时相应进入深度策略。PresentedGeometryView 保存相同 Camera、投影、网格、裁剪与材质深度策略：普通组按画序，深度写入几何按最近有效射线交点，透明候选再按其画序与不透明遮挡筛选。默认命中使用逻辑几何；透明像素穿透需要声明静态 alpha-mask 或自定义映射。奇异/非有限变换不进入命中；会改变顶点形状的自定义着色器必须给出对应逻辑映射。渲染与命中共享版本快照，后端自行换算不会改变逻辑选择。
 
 文本与语言切换
-普通 string 按纯文本处理，tr 的翻译结果也遵守这一规则；未来 RichText 使用显式富文本模板或结构 span。翻译参数不作为新模板或富文本标记再次解析。显式结构 span 参数才携带样式/链接语义；标记转义、插值错误与处理器输出应带源码范围。
+普通 string 和 tr 的翻译结果保持字面含义。rich(tr(...)) 显式解析最终翻译中的标记，玩家输入等字面参数须先 rich_escape；模板参数不会自动取得样式权限。rich 返回不可变宿主值，UI、对白与历史共享 reel-core::text::Text；普通字符串仍可直接使用。
 文本服务先形成逻辑字素序列，再完成 shaping/cluster 映射；revealed_count 指逻辑字素边界，完整 cluster 按该映射显示，ruby/内嵌对象的揭示作为声明的原子单位。当前活动对白组保持提交时的文本、语言和语音，下一次 tr 使用新语言；累积显示的旧行保持原文。UI 用 derive 重新解析作者保留的翻译描述，普通历史字符串保持原值。显式刷新对白与语音重播仍是后续能力。
 
 朗读服务

@@ -18,6 +18,7 @@ mod narrative;
 mod observable;
 mod publication;
 mod registry;
+mod rich_text;
 pub mod source;
 mod stage;
 #[cfg(test)]
@@ -47,6 +48,7 @@ pub enum AdapterError {
     Heap(HeapError),
     Session(SessionError),
     Input(&'static str),
+    Markup(reel_core::text::MarkupError),
     Allocation,
     Stage(reel_ui::stage::StageError),
 }
@@ -99,7 +101,7 @@ impl AdapterError {
     pub fn native_fault_kind(&self) -> Option<FaultKind> {
         match self {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
-            Self::Input(_) => Some(FaultKind::Type),
+            Self::Input(_) | Self::Markup(_) => Some(FaultKind::Type),
             Self::Stage(_) => Some(FaultKind::Type),
             Self::Allocation | Self::Session(SessionError::AllocationFailed) => {
                 Some(FaultKind::Resource)
@@ -371,6 +373,41 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::rich" => {
+                let source = self.vm.host_arguments(ticket)?[0];
+                let response = match rich_text::create(self.vm.heap_mut(), source, self.read_limit)
+                {
+                    Ok(value) => HostResponse::Ready(value),
+                    Err(AdapterError::Markup(error)) => {
+                        let value = text::alloc_string(
+                            self.vm.heap_mut(),
+                            &error.to_string(),
+                            self.read_limit,
+                        )?;
+                        HostResponse::Error(aside_vm::NewFault {
+                            value,
+                            code: aside_vm::FaultCode::core(FaultKind::Type),
+                            cause: None,
+                        })
+                    }
+                    Err(error) => return Err(error),
+                };
+                self.vm.respond(ticket, response)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::rich_escape" => {
+                let input = self.vm.host_arguments(ticket)?[0];
+                let source = text::read_string(self.vm.heap(), input, self.read_limit)?;
+                let value = text::alloc_string(
+                    self.vm.heap_mut(),
+                    &source.replace('[', "[["),
+                    self.read_limit,
+                )?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::tr"
             | "reel::localization::load"
             | "reel::localization::locale"
@@ -743,7 +780,7 @@ impl SessionVm {
         let [text] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
         };
-        let text = text::read_string(self.vm.heap(), *text, self.read_limit)?;
+        let text = rich_text::read(self.vm.heap(), *text, self.read_limit)?;
         let content_id = self.dialogue_content_id(ticket);
         self.publish_say(
             session,
@@ -752,7 +789,7 @@ impl SessionVm {
                 speaker_id: None,
                 speaker_name: "",
                 content_id: &content_id,
-                text: &text,
+                text: (&text).into(),
             }],
             locale,
         )
