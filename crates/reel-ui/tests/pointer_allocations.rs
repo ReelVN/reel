@@ -74,7 +74,7 @@ fn real_uncaptured_pointer_dispatch_allocations() {
             ("wide-miss", Point::new(1900., 1070.)),
         ] {
             for _ in 0..20 {
-                bridge.handle_pointer_event(mouse("move", point));
+                bridge.handle_pointer_event(mouse("move", point)).unwrap();
             }
             trace.borrow_mut().clear();
             signals.borrow_mut().clear();
@@ -85,7 +85,7 @@ fn real_uncaptured_pointer_dispatch_allocations() {
                 trace.borrow_mut().clear();
                 signals.borrow_mut().clear();
                 let start = Instant::now();
-                bridge.handle_pointer_event(mouse("move", point));
+                bridge.handle_pointer_event(mouse("move", point)).unwrap();
                 elapsed.push(start.elapsed().as_nanos());
             }
             let stats = region.change();
@@ -107,5 +107,52 @@ fn real_uncaptured_pointer_dispatch_allocations() {
                 elapsed[99]
             );
         }
+
+        for id in 2..=3 {
+            bridge
+                .handle_pointer_event(touch(
+                    "down",
+                    id,
+                    Point::new(15. + (id - 2) as f64 * 60., 10.),
+                ))
+                .unwrap();
+        }
+        for _ in 0..20 {
+            for id in 2..=3 {
+                bridge
+                    .handle_pointer_event(touch(
+                        "move",
+                        id,
+                        Point::new(20. + (id - 2) as f64 * 60., 10.),
+                    ))
+                    .unwrap();
+            }
+        }
+        trace.borrow_mut().clear();
+        signals.borrow_mut().clear();
+        let region = Region::new(ALLOCATOR);
+        for _ in 0..100 {
+            for id in 2..=3 {
+                trace.borrow_mut().clear();
+                signals.borrow_mut().clear();
+                bridge
+                    .handle_pointer_event(touch(
+                        "move",
+                        id,
+                        Point::new(20. + (id - 2) as f64 * 60., 10.),
+                    ))
+                    .unwrap();
+            }
+        }
+        let stats = region.change();
+        assert_eq!(
+            (stats.allocations, stats.reallocations),
+            (0, 0),
+            "stable simultaneous touch drags"
+        );
+        println!(
+            "touch dispatch modal={modal} controls={count} contacts=2 events=200 allocations={} reallocations={}",
+            stats.allocations, stats.reallocations
+        );
     }
 }

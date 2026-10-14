@@ -515,40 +515,65 @@ impl RenderRoot {
         self.global_state.pointer_route = Vec::with_capacity(limit);
         self.global_state.pointer_hover_spare = Vec::with_capacity(limit);
         self.global_state.pointer_active_spare = Vec::with_capacity(limit);
-        // Growing routes between presentations must preserve hover and active capture.
-        // A standalone caller may also request less storage than an existing path needs.
-        for path in [
-            &mut self.global_state.hovered_path,
-            &mut self.global_state.active_path,
-        ] {
-            let mut replacement = Vec::with_capacity(limit.max(path.len()));
-            replacement.extend_from_slice(path);
-            *path = replacement;
+        for pointer in std::iter::once(&mut self.global_state.pointer)
+            .chain(&mut self.global_state.other_pointers)
+        {
+            for path in [&mut pointer.hovered_path, &mut pointer.active_path] {
+                let mut replacement = Vec::with_capacity(limit.max(path.len()));
+                replacement.extend_from_slice(path);
+                *path = replacement;
+            }
         }
         self.input_path_storage_bytes()
     }
-    /// Actual retained capacities of the five reusable pointer route arrays.
+    /// Retained route arrays and device/contact records.
     pub fn input_path_storage_bytes(&self) -> usize {
         let s = &self.global_state;
+        let contact_paths: usize = std::iter::once(&s.pointer)
+            .chain(&s.other_pointers)
+            .map(|p| p.active_path.capacity() + p.hovered_path.capacity())
+            .sum();
         (s.pointer_route.capacity()
             + s.pointer_active_spare.capacity()
             + s.pointer_hover_spare.capacity()
-            + s.active_path.capacity()
-            + s.hovered_path.capacity())
+            + contact_paths)
             * size_of::<WidgetId>()
             + 5 * size_of::<Vec<WidgetId>>()
+            + s.other_pointers.capacity() * size_of::<super::pointer::PointerContact>()
             + self.widget_arena.nodes.lookup_path_storage_bytes()
     }
 
-    /// Planned five route arrays plus the independent arena lookup workspace.
-    /// The host reserves this storage before configuring it.
+    /// Planned storage for a root with only its primary pointer.
     pub fn input_path_storage_bytes_for(limit: usize) -> Option<usize> {
-        limit
-            .checked_mul(5 * size_of::<WidgetId>())?
+        Self::planned_pointer_storage(limit, 0, 0)
+    }
+
+    pub(crate) fn planned_input_storage(
+        &self,
+        depth: usize,
+        event: Option<&crate::core::PointerEvent>,
+    ) -> Option<usize> {
+        let s = &self.global_state;
+        let additional = event.is_some_and(|event| {
+            let info = crate::core::pointer_info(event);
+            let born = matches!(event, crate::core::PointerEvent::Down(_))
+                || info.pointer_type != crate::core::PointerType::Touch;
+            born && s.pointer.info != info && !s.other_pointers.iter().any(|p| p.info == info)
+        }) as usize;
+        let count = s.other_pointers.len().checked_add(additional)?;
+        Self::planned_pointer_storage(depth, count, s.other_pointers.capacity().max(count))
+    }
+
+    fn planned_pointer_storage(depth: usize, others: usize, capacity: usize) -> Option<usize> {
+        let arrays = others.checked_mul(2)?.checked_add(5)?;
+        depth
+            .checked_mul(arrays)?
+            .checked_mul(size_of::<WidgetId>())?
             .checked_add(5 * size_of::<Vec<WidgetId>>())?
+            .checked_add(capacity.checked_mul(size_of::<super::pointer::PointerContact>())?)?
             .checked_add(
                 crate::tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(
-                    limit,
+                    depth,
                 )?,
             )
     }

@@ -49,6 +49,7 @@ pub(crate) struct State {
     epoch: u64,
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
+    touch: crate::platform::winit::TouchInput,
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
     pub(crate) session: Option<WindowSession>,
@@ -294,6 +295,7 @@ impl State {
             epoch: 1,
             pointer: Default::default(),
             modifiers: Default::default(),
+            touch: Default::default(),
             root_id,
             zoom: 1.,
             session,
@@ -594,6 +596,8 @@ impl State {
         Ok(())
     }
     pub(crate) fn suspend(&mut self) {
+        self.touch.clear();
+        self.presentation.bridge.cancel_pointer_inputs();
         let _ = self.pointer_event(PointerKind::Cancel);
         self.presentation.suspend();
         self.backend.suspend();
@@ -620,7 +624,11 @@ impl State {
         Ok(())
     }
     pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<(), Error> {
-        if self.settings_pending() {
+        let cancelling = matches!(event, TextEvent::WindowFocusChange(false));
+        if cancelling {
+            self.touch.clear();
+        }
+        if self.settings_pending() && !cancelling {
             return Ok(());
         }
         if let Some(session) = &mut self.session {
@@ -670,25 +678,32 @@ impl State {
                 delta,
             }),
         };
-        if std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
-            eprintln!(
-                "pointer accepted={:?} position={:?}",
-                self.presentation
-                    .bridge
-                    .accepted_key()
-                    .map(|key| (key.frame_id(), key.surface_epoch())),
-                self.pointer
-            );
+        self.dispatch_pointer(event)
+    }
+    pub(crate) fn touch_event(&mut self, touch: winit::event::Touch) -> Result<(), Error> {
+        if self.is_suspended() || self.settings_pending() {
+            return Ok(());
         }
+        let modifiers = ui_events_winit::keyboard::from_winit_modifier_state(self.modifiers);
+        if let Some(event) = self
+            .touch
+            .event(touch, self.window.scale_factor(), modifiers)
+        {
+            self.dispatch_pointer(event)?;
+        }
+        Ok(())
+    }
+    fn dispatch_pointer(&mut self, event: PointerEvent) -> Result<(), Error> {
+        let released = matches!(event, PointerEvent::Up(_));
         if let Some(session) = &mut self.session {
             session.handle_pointer(&mut self.presentation.bridge, event)?;
-            if matches!(kind, PointerKind::Up) {
+            if released {
                 session.after_input(&mut self.presentation.bridge, self.root_id)?;
             }
         } else {
-            self.presentation.bridge.handle_pointer_event(event);
+            self.presentation.bridge.handle_pointer_event(event)?;
         }
-        if matches!(kind, PointerKind::Up) {
+        if released {
             self.schedule_reveal();
         }
         self.invalidate();

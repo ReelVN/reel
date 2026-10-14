@@ -294,3 +294,66 @@ fn suspended_button_animation_advances_without_polling_vm_and_closes_its_wait() 
     drain(&mut runtime);
     assert!(runtime.close_complete());
 }
+
+#[test]
+fn concurrent_touch_callbacks_keep_their_own_presented_down_stamp() {
+    let mut runtime = runtime(
+        r#"fn main() {
+        let caption = text("none");
+        let left = button("Left", width: 80, height: 50, on_click: |event| { caption.value = "left"; event.target.label = "Pressed"; });
+        let right = button("Right", width: 80, height: 50, on_click: |event| { caption.value = "right"; event.target.label = "Pressed"; });
+        stage.replace(column() { row() { left; right; }; caption; });
+    }"#,
+    );
+    drain(&mut runtime);
+    let (mut bridge, root) = mount(runtime.driver.ui());
+    present(&mut runtime, &mut bridge, root, 1);
+    let touch = |kind, id, x| {
+        let mut e = mouse(kind, (x, 25.));
+        let info = PointerInfo {
+            pointer_id: PointerId::new(id),
+            persistent_device_id: None,
+            pointer_type: PointerType::Touch,
+        };
+        match &mut e {
+            PointerEvent::Down(e) | PointerEvent::Up(e) => {
+                e.pointer = info;
+                e.button = None;
+            }
+            PointerEvent::Cancel(p) => *p = info,
+            _ => unreachable!(),
+        }
+        e
+    };
+    // Cancelling the second touch must leave the first touch's stamp intact.
+    for e in [
+        touch("down", 2, 25.),
+        touch("down", 3, 125.),
+        touch("cancel", 3, 125.),
+        touch("up", 2, 25.),
+    ] {
+        runtime.driver.handle_pointer(&mut bridge, e).unwrap();
+    }
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert!(
+        runtime
+            .driver
+            .adapter()
+            .stage()
+            .nodes()
+            .any(|n| n.kind == NodeKind::Text("left".into()))
+    );
+    present(&mut runtime, &mut bridge, root, 2);
+    for e in [
+        touch("down", 2, 25.),
+        touch("down", 3, 125.),
+        touch("up", 2, 25.),
+        touch("up", 3, 125.),
+    ] {
+        runtime.driver.handle_pointer(&mut bridge, e).unwrap();
+    }
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(runtime.driver.adapter().stage().nodes().filter(|n| matches!(&n.kind, NodeKind::Button { label: Some(label), .. } if label == "Pressed")).count(), 2);
+}

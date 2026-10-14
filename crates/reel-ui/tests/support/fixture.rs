@@ -34,6 +34,7 @@ pub struct Observation {
     pub widget: WidgetId,
     pub target: WidgetId,
     pub kind: &'static str,
+    pub pointer: PointerInfo,
     pub local: Option<Point>,
     pub size: Size,
     pub hovered: bool,
@@ -58,6 +59,7 @@ fn observe(trace: &Trace, ctx: &EventCtx<'_>, event: &PointerEvent) {
         widget: ctx.widget_id(),
         target: ctx.target(),
         kind,
+        pointer: pointer_info(event),
         local: position(event).map(|p| ctx.local_position(p)),
         size: ctx.content_box().size(),
         hovered: ctx.is_hovered(),
@@ -550,4 +552,36 @@ pub fn transform() -> Affine {
     Affine::translate((140., 30.))
         * Affine::rotate(std::f64::consts::FRAC_PI_2)
         * Affine::scale_non_uniform(1.5, 1.)
+}
+
+pub fn touch(kind: &str, id: u64, point: Point) -> PointerEvent {
+    let pointer = PointerInfo {
+        pointer_id: PointerId::new(id),
+        persistent_device_id: None,
+        pointer_type: PointerType::Touch,
+    };
+    let state = PointerState {
+        position: reel_ui::dpi::PhysicalPosition::new(point.x, point.y),
+        ..Default::default()
+    };
+    match kind {
+        "down" => PointerEvent::Down(PointerButtonEvent {
+            pointer,
+            state,
+            button: None,
+        }),
+        "up" => PointerEvent::Up(PointerButtonEvent {
+            pointer,
+            state,
+            button: None,
+        }),
+        "move" => PointerEvent::Move(PointerUpdate {
+            pointer,
+            current: state,
+            coalesced: vec![],
+            predicted: vec![],
+        }),
+        "cancel" => PointerEvent::Cancel(pointer),
+        _ => unreachable!(),
+    }
 }

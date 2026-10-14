@@ -46,6 +46,7 @@ pub struct ProjectionStamp {
 struct InputBinding {
     accepted: Option<ProjectionStamp>,
     down: Option<ProjectionStamp>,
+    contacts: Vec<(PointerInfo, ProjectionStamp)>,
     non_pointer: bool,
 }
 impl InputBinding {
@@ -676,7 +677,7 @@ impl SessionUi {
     }
     #[cfg(feature = "window")]
     pub(crate) fn gesture_active(&self) -> bool {
-        self.binding.borrow().down.is_some()
+        !self.binding.borrow().contacts.is_empty()
     }
     pub fn clear_presented(&mut self) {
         *self.binding.borrow_mut() = InputBinding::default();
@@ -742,18 +743,38 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         event: PointerEvent,
     ) -> Result<UiDispatch, Error> {
-        match &event {
-            PointerEvent::Down(_) => {
-                let accepted = self.binding.borrow().accepted;
-                self.binding.borrow_mut().down = accepted;
+        let pointer = pointer_info(&event);
+        let terminal = matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_));
+        {
+            let mut binding = self.binding.borrow_mut();
+            if matches!(event, PointerEvent::Down(_))
+                && let Some(stamp) = binding.accepted
+            {
+                if let Some((_, down)) = binding
+                    .contacts
+                    .iter_mut()
+                    .find(|(info, _)| *info == pointer)
+                {
+                    *down = stamp;
+                } else {
+                    binding.contacts.push((pointer, stamp));
+                }
             }
-            PointerEvent::Cancel(_) => self.binding.borrow_mut().down = None,
-            _ => {}
+            binding.down = binding
+                .contacts
+                .iter()
+                .find(|(info, _)| *info == pointer)
+                .map(|(_, stamp)| *stamp);
         }
-        let handled = bridge.handle_pointer_event(event.clone());
-        if matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_)) {
-            self.binding.borrow_mut().down = None;
+        let result = bridge.handle_pointer_event(event);
+        {
+            let mut binding = self.binding.borrow_mut();
+            binding.down = None;
+            if terminal || result.is_err() {
+                binding.contacts.retain(|(info, _)| *info != pointer);
+            }
         }
+        let handled = result?;
         self.finish_input(handled)
     }
     pub fn handle_text(
@@ -766,7 +787,9 @@ impl SessionUi {
         let handled = bridge.handle_text_event(event);
         self.binding.borrow_mut().non_pointer = false;
         if lost_focus {
-            self.binding.borrow_mut().down = None;
+            let mut binding = self.binding.borrow_mut();
+            binding.down = None;
+            binding.contacts.clear();
         }
         self.finish_input(handled)
     }

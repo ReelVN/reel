@@ -5,6 +5,7 @@
 
 mod input_scope;
 mod layer_stack;
+mod pointer;
 mod presented_geometry;
 pub(crate) use presented_geometry::{ContextGeometry, GeometryRef, GeometryView};
 pub use presented_geometry::{

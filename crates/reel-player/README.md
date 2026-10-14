@@ -60,7 +60,7 @@ On suspend, cancel active input, suspend presentation/backend and call
 the surface with a strictly newer epoch, configure its backend, then call
 `StoryRuntime::resume`. Activity time excludes the suspended interval, while VM
 deadlines keep using the real host clock. Closing still drains task retirement
-while suspended. Native IME, clipboard, touch and accessibility services are not
+while suspended. Native IME, clipboard and accessibility services are not
 implemented by the current host.
 
 ```sh
@@ -79,7 +79,7 @@ not allocate the renderer diagnostic's checker image. CPU resource residency is
 limited by bytes rather than a separate ticket-count quota.
 
 The shell accepts opaque sRGB surfaces with FIFO presentation. Other surface
-profiles, IME/accessibility platform integration and touch/pen input remain future
+profiles, IME/accessibility platform integration and pen-specific input remain future
 adapter work. Unsupported drawing records and quota refusals are logged with their
 record location where applicable and retain the last accepted view.
 
@@ -114,7 +114,7 @@ Dialogue rows, choices and their text have no additional fixed count or length
 ceiling. All choices share one projection owner, while ChoiceId
 preserves each business key. Scrolling invalidates the old input stamp and any
 held gesture; a new accepted frame must establish the new hit geometry.
-Input supports mouse clicks, scrolling and keyboard button activation. Native IME, touch and system accessibility adapters remain future work.
+Input supports mouse clicks, scrolling, keyboard activation and independent touch contacts. `platform::winit::TouchInput` converts native contacts to portable `PointerEvent` values, retaining identity and pressure; buttons share capture, cancellation and presented geometry across devices. Native IME and system accessibility adapters remain future work.
 
 Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
 Independent checks and remaining limitations are tracked in PR #50. VM wait/root
@@ -242,5 +242,5 @@ cargo run --locked -p reel-dev -- deps
 ```
 
 These CPU checks prove portable contracts on the host where they run, not
-device support on every target. Native IME, touch and system accessibility
+device support on every target. Native IME and system accessibility
 integration remain platform-adapter work.
