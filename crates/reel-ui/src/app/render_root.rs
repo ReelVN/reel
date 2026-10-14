@@ -594,26 +594,27 @@ impl RenderRoot {
     }
 
     /// Handles an accesskit event.
-    pub fn handle_access_event(&mut self, event: ActionRequest) {
+    pub fn handle_access_event(&mut self, event: ActionRequest) -> Handled {
         let _span = info_span!("access_event");
         if event.target_tree != TreeId::ROOT {
             warn!(
                 "Received ActionRequest for an unknown tree. {:?}",
                 event.target_tree
             );
-            return;
+            return Handled::No;
         }
         let Ok(id) = event.target_node.0.try_into() else {
             warn!("Received ActionRequest with id 0. This shouldn't be possible.");
-            return;
+            return Handled::No;
         };
         let event = AccessEvent {
             action: event.action,
             data: event.data,
         };
 
-        run_on_access_event_pass(self, &event, WidgetId(id));
+        let handled = run_on_access_event_pass(self, &event, WidgetId(id));
         self.run_rewrite_passes();
+        handled
     }
 
     /// Registers all fonts that exist in the given data.

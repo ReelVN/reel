@@ -62,7 +62,7 @@ fn gauge(#[aside(context)] context: &mut CallContext<'_, Host>) -> Result<Value,
         };
         heap.table_store(fields, index as u32, key, value)?;
     }
-    Ok(heap.alloc_host(fields, &[], Some(Field::validate))?)
+    Ok(heap.alloc_host(fields, &[], Some(Field::validate_host))?)
 }
 
 #[native(symbol = "sample::collect")]

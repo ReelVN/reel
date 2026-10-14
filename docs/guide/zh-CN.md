@@ -701,3 +701,42 @@ fn main() {
 输入节点自身拥有焦点时接收键盘和手柄动作。子控件取得焦点会取消父输入节点的保持，并独立处理输入，避免手柄确认被父动作抢走；使用 modal: true 可让独立交互场景直接接管焦点。非模态节点可通过 Tab 聚焦，绑定了指针按钮时点击也会聚焦并捕获该触点。隐藏、禁用、失焦、切换模态和清除已呈现画面会取消保持；移除节点会结束其任务和活动。动作消费的同一次输入不会继续导航或推进对白。普通按钮与对白由主指针按钮或触摸激活，其他鼠标按钮可用于作者动作。
 
 Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings`、`NodeKind::Input` 和 `NodeAction`。原生控制先通过 `TextEvent::Input` 路由；此事件的 Handled 表示作用域内是否有动作声明消费，未绑定的控制可继续进入同一 UI 的 NavigationInput。原始事件不会越过模态边界。画面接受和撤销分别调用可失败的 `AsideSessionUi::presented` / `clear_presented`，把路由阶段产生的取消交给 VM；有新任务时唤醒 StoryRuntime。
+
+## 数值控件与设置页
+
+`slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` 提供水平滑条；`toggle(label: null, value: false, on_change: null, children: [], ...)` 提供开关。二者共享舞台位置、大小、颜色、可见性、禁用和模态属性，开关还可组合子节点。下面是可运行的 [author_settings.aside](../../examples/author_settings.aside)，提供 fonts/body.ttf 后可直接运行。
+
+滑条要求有限且递增的 min/max、区间内的有限 value；step 为 null 或有限正数，以 min 为步进起点，两端均可选。脚本可赋任意区间内 value，不受输入步长限制。写 min/max 时当前 value 也须满足新范围，错误保留原值。鼠标或触摸拖动、方向键、Home/End、Shift 加速、手柄左右导航与可访问性操作共用同一控件。
+
+接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。自动 bind/derive 仍属于后续数据绑定能力。
+
+```aside
+fn main() {
+    game.configure(title: "Reading settings", width: 640, height: 420,
+                   fonts: ["fonts/body.ttf"], text_speed: 30);
+    let speed = slider(value: 30, min: 0, max: 120, step: 1,
+        width: 300, height: 40,
+        on_change: |event| { game.configure(text_speed: event.value); });
+    let instant = toggle("Instant text", width: 300, height: 40,
+        on_change: |event| {
+            speed.enabled = !event.value;
+            if event.value { game.configure(text_speed: 0); }
+            else { game.configure(text_speed: speed.value); }
+        });
+    stage.replace(column(gap: 12, padding: 20) {
+        text("Text speed");
+        speed;
+        instant;
+        button("Reset", width: 300, height: 40, on_click: |event| {
+            speed.value = 30;
+            speed.enabled = true;
+            instant.value = false;
+            game.configure(text_speed: 30);
+        });
+    });
+    narrator("Adjust the controls while this text appears. The next line uses the same settings.");
+    narrator("Settings remain interactive after the story function returns.");
+}
+```
+
+Rust 宿主可通过 `SessionUi::handle_access` / `AsideSessionUi::handle_access` 投递 AccessKit ActionRequest，沿用接受帧和模态规则；原生屏幕阅读器接入由平台宿主提供。

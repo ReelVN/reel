@@ -21,6 +21,7 @@ const PRELUDE: &[&str] = &[
     "image",
     "video",
     "slider",
+    "toggle",
     "switcher",
     "page",
     "list",
@@ -118,7 +119,7 @@ fn snippets(doc: &str) -> Vec<String> {
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 33);
+    assert_eq!(zh.len(), 34);
     assert_eq!(zh, en);
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {

@@ -1,6 +1,8 @@
 // Copyright 2025 the Xilem Authors
 // SPDX-License-Identifier: Apache-2.0
 
+mod range;
+pub use range::{InvalidSliderRange, SliderRange};
 use std::any::TypeId;
 
 use accesskit::{ActionData, Node, Orientation, Role};
@@ -25,93 +27,62 @@ use crate::theme;
 ///
 #[doc = include_str!("../doc/widgets/slider.md")]
 pub struct Slider {
-    // --- Logic ---
-    min: f64,
-    max: f64,
+    range: SliderRange,
     value: f64,
-    step: Option<f64>,
 }
-
-// --- MARK: BUILDERS
 impl Slider {
-    /// Creates a new `Slider`.
+    /// Creates a slider with a finite, increasing range.
     pub fn new(min: f64, max: f64, value: f64) -> Self {
+        let range = SliderRange::new(min, max, None).expect("invalid slider range");
+        assert!(value.is_finite(), "slider value must be finite");
         Self {
-            min,
-            max,
+            range,
             value: value.clamp(min, max),
-            step: None,
         }
     }
-
-    /// Configures the stepping interval of the slider.
     pub fn with_step(mut self, step: f64) -> Self {
-        self.set_step_internal(Some(step));
+        self.range = SliderRange::new(self.range.min(), self.range.max(), Some(step))
+            .expect("invalid slider step");
         self
     }
-}
-
-// --- MARK: METHODS
-impl Slider {
-    fn set_step_internal(&mut self, step: Option<f64>) {
-        self.step = step.filter(|s| *s > 0.0);
-        let clamped_value = self.value.clamp(self.min, self.max);
-        self.value = if let Some(s) = self.step {
-            ((clamped_value / s).round() * s).clamp(self.min, self.max)
-        } else {
-            clamped_value
-        };
+    pub fn value(&self) -> f64 {
+        self.value
     }
-
-    fn update_value_from_position(&mut self, x: f64, width: f64) -> bool {
-        let progress = (x / width).clamp(0.0, 1.0);
-        let new_value = self.min + progress * (self.max - self.min);
-        let old_value = self.value;
-        let final_value = if let Some(step) = self.step {
-            ((new_value / step).round() * step).clamp(self.min, self.max)
-        } else {
-            new_value.clamp(self.min, self.max)
-        };
-        if (final_value - old_value).abs() > f64::EPSILON {
-            self.value = final_value;
-            true
-        } else {
-            false
+    pub fn range(&self) -> SliderRange {
+        self.range
+    }
+    /// Apply authoritative state without emitting a user action.
+    pub fn configure(this: &mut WidgetMut<'_, Self>, range: SliderRange, value: f64) {
+        assert!(range.contains(value), "slider value outside range");
+        if this.widget.range != range {
+            this.widget.range = range;
+            this.ctx.invalidate_input_configuration();
+        }
+        if this.widget.value != value {
+            this.widget.value = value;
+            this.ctx.request_render();
         }
     }
-}
-
-// --- MARK: WIDGETMUT
-impl Slider {
-    /// Sets the current value of the slider.
     pub fn set_value(this: &mut WidgetMut<'_, Self>, value: f64) {
-        let clamped_value = value.clamp(this.widget.min, this.widget.max);
-        let new_value = if let Some(step) = this.widget.step {
-            ((clamped_value / step).round() * step).clamp(this.widget.min, this.widget.max)
-        } else {
-            clamped_value
-        };
-        if (new_value - this.widget.value).abs() > f64::EPSILON {
-            this.widget.value = new_value;
-            this.ctx.request_render();
-        }
+        assert!(value.is_finite(), "slider value must be finite");
+        let range = this.widget.range;
+        Self::configure(this, range, value.clamp(range.min(), range.max()));
     }
-
-    /// Sets or removes the stepping interval of the slider.
     pub fn set_step(this: &mut WidgetMut<'_, Self>, step: Option<f64>) {
-        let filtered_step = step.filter(|s| *s > 0.0);
-        if this.widget.step != filtered_step {
-            this.widget.set_step_internal(filtered_step);
-            this.ctx.request_render();
-        }
+        let range = SliderRange::new(this.widget.range.min(), this.widget.range.max(), step)
+            .expect("invalid slider step");
+        Self::configure(this, range, this.widget.value);
     }
-
-    /// Sets the range (min and max) of the slider.
     pub fn set_range(this: &mut WidgetMut<'_, Self>, min: f64, max: f64) {
-        if this.widget.min != min || this.widget.max != max {
-            this.widget.min = min;
-            this.widget.max = max;
-            Self::set_value(this, this.widget.value);
+        let range =
+            SliderRange::new(min, max, this.widget.range.step()).expect("invalid slider range");
+        Self::configure(this, range, this.widget.value.clamp(min, max));
+    }
+    fn change(&mut self, ctx: &mut EventCtx<'_>, value: f64) {
+        if value.is_finite() && value != self.value {
+            self.value = value;
+            ctx.request_render();
+            ctx.submit_action::<SliderMoved>(SliderMoved { value });
         }
     }
 }
@@ -139,38 +110,42 @@ impl Widget for Slider {
     fn on_pointer_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
-        _props: &mut PropertiesMut<'_>,
+        props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
         if ctx.is_disabled() {
             return;
         }
-        match event {
+        let position = match event {
             PointerEvent::Down(PointerButtonEvent {
                 button: Some(PointerButton::Primary) | None,
                 state,
                 ..
             }) => {
+                if !ctx.input_configuration_is_current() {
+                    return;
+                }
                 ctx.request_focus();
                 ctx.capture_pointer();
-                let local_pos = ctx.local_position(state.position);
-                let width = ctx.content_box().size().width;
-                if self.update_value_from_position(local_pos.x, width) {
-                    ctx.submit_action::<Self::Action>(SliderMoved { value: self.value });
-                }
+                Some(state.position)
             }
             PointerEvent::Move(PointerUpdate { current, .. }) if ctx.is_active() => {
-                let local_pos = ctx.local_position(current.position);
-                let width = ctx.content_box().size().width;
-                if self.update_value_from_position(local_pos.x, width) {
-                    ctx.submit_action::<Self::Action>(SliderMoved { value: self.value });
-                }
-                ctx.request_render();
+                Some(current.position)
             }
-            _ => {}
+            PointerEvent::Up(_) if ctx.is_active() => None,
+            _ => None,
+        };
+        if let Some(position) = position
+            && ctx.input_configuration_is_current()
+        {
+            let x = ctx.local_position(position).x;
+            let radius = props.get::<ThumbRadius>(ctx.property_cache()).0.get();
+            let (a, b) = range::endpoints(ctx.content_box().width(), radius);
+            if b > a {
+                self.change(ctx, self.range.at_progress((x - a) / (b - a)));
+            }
         }
     }
-
     fn on_text_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
@@ -180,7 +155,6 @@ impl Widget for Slider {
         if ctx.is_disabled() || !ctx.is_focus_target() {
             return;
         }
-
         if let TextEvent::Navigation(event) = event {
             use crate::input::{ActionPhase, NavigationAction};
             let action = match event.action {
@@ -192,58 +166,29 @@ impl Widget for Slider {
                 self.on_access_event(ctx, props, &AccessEvent { action, data: None });
             }
             ctx.set_handled();
-            return;
         }
-        if let TextEvent::Keyboard(key_event) = event {
-            if key_event.state.is_up() {
+        if let TextEvent::Keyboard(event) = event {
+            if event.state.is_up() {
                 return;
             }
-
-            let mut new_value = self.value;
-            let step = self
-                .step
-                .unwrap_or((self.max - self.min) / 100.0)
-                .max(f64::EPSILON);
-            let big_step = step * 10.0;
-
-            match &key_event.key {
-                Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowDown) => {
-                    new_value -= if key_event.modifiers.shift() {
-                        big_step
-                    } else {
-                        step
-                    }
+            let step = if event.modifiers.shift() { 10. } else { 1. };
+            let value = match &event.key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
+                    self.range.increment(self.value, -step)
                 }
-                Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowUp) => {
-                    new_value += if key_event.modifiers.shift() {
-                        big_step
-                    } else {
-                        step
-                    }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
+                    self.range.increment(self.value, step)
                 }
-                Key::Named(NamedKey::Home) => new_value = self.min,
-                Key::Named(NamedKey::End) => new_value = self.max,
+                Key::Named(NamedKey::Home) => self.range.min(),
+                Key::Named(NamedKey::End) => self.range.max(),
                 _ => return,
-            }
-
+            };
             ctx.set_handled();
-            if new_value != self.value {
-                let clamped_value = new_value.clamp(self.min, self.max);
-                let final_value = if let Some(s) = self.step {
-                    ((clamped_value / s).round() * s).clamp(self.min, self.max)
-                } else {
-                    clamped_value
-                };
-
-                if (final_value - self.value).abs() > f64::EPSILON {
-                    self.value = final_value;
-                    ctx.request_render();
-                    ctx.submit_action::<Self::Action>(SliderMoved { value: self.value });
-                }
+            if ctx.input_configuration_is_current() {
+                self.change(ctx, value);
             }
         }
     }
-
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
         match event {
             Update::FocusChanged(_) | Update::HoveredChanged(_) | Update::ActiveChanged(_) => {
@@ -262,41 +207,22 @@ impl Widget for Slider {
         if ctx.is_disabled() {
             return;
         }
-
-        let step = self
-            .step
-            .unwrap_or((self.max - self.min) / 100.0)
-            .max(f64::EPSILON);
-        let mut new_value = self.value;
-
-        match event.action {
-            accesskit::Action::Increment => {
-                new_value += step;
-            }
-            accesskit::Action::Decrement => {
-                new_value -= step;
-            }
+        let value = match event.action {
+            accesskit::Action::Increment => self.range.increment(self.value, 1.),
+            accesskit::Action::Decrement => self.range.increment(self.value, -1.),
             accesskit::Action::SetValue => match &event.data {
-                Some(ActionData::NumericValue(value)) => new_value = *value,
-                Some(ActionData::Value(value)) => {
-                    if let Ok(value) = value.parse() {
-                        new_value = value;
-                    }
-                }
-                _ => {}
+                Some(ActionData::NumericValue(value)) => *value,
+                Some(ActionData::Value(value)) => match value.parse::<f64>() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                },
+                _ => return,
             },
             _ => return,
-        }
-
-        if (new_value - self.value).abs() > f64::EPSILON {
-            let clamped_value = new_value.clamp(self.min, self.max);
-            self.value = if let Some(s) = self.step {
-                ((clamped_value / s).round() * s).clamp(self.min, self.max)
-            } else {
-                clamped_value
-            };
-            ctx.request_render();
-            ctx.submit_action::<Self::Action>(SliderMoved { value: self.value });
+        };
+        ctx.set_handled();
+        if value.is_finite() && ctx.input_configuration_is_current() {
+            self.change(ctx, self.range.snap(value));
         }
     }
 
@@ -306,6 +232,9 @@ impl Widget for Slider {
         TrackThickness::prop_changed(ctx, property_type);
         ThumbColor::prop_changed(ctx, property_type);
         ThumbRadius::prop_changed(ctx, property_type);
+        if ThumbRadius::matches(property_type) {
+            ctx.invalidate_input_configuration();
+        }
         if TrackColor::matches(property_type) {
             ctx.request_paint_only();
         }
@@ -412,28 +341,23 @@ impl Widget for Slider {
             );
         }
 
-        let progress = (self.value - self.min) / (self.max - self.min).max(0.);
+        let progress = self.range.progress(self.value);
+        let (a, b) = range::endpoints(size.width, thumb_radius);
+        let thumb_x = a + progress * (b - a);
         let track_rect = Rect::new(0., track_y, size.width, track_y + track_thickness)
             .to_rounded_rect(track_thickness / 2.);
-        let track_active_frac =
-            progress * (1. - thumb_radius * 2. / size.width) + thumb_radius / size.width;
-
-        // Paint with a gradient so we get a straight line slice of the rounded rect.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Peniko gradient offsets use f32 while Masonry geometry uses f64"
-        )]
-        let gradient_offset = track_active_frac as f32;
-        let gradient = peniko::Gradient::new_linear((0., 0.), (size.width, 0.)).with_stops([
-            (0., track_color.active),
-            (gradient_offset, track_color.active),
-            (gradient_offset, track_color.inactive),
-            (1., track_color.inactive),
-        ]);
-        painter.fill(track_rect, &gradient).draw();
+        // Two clipped solids express the hard color boundary directly, including
+        // translucent colors, without requiring a gradient-capable renderer.
+        for (left, right, color) in [
+            (0., thumb_x, track_color.active),
+            (thumb_x, size.width, track_color.inactive),
+        ] {
+            painter.push_fill_clip(Rect::new(left, 0., right, size.height));
+            painter.fill(track_rect, color).draw();
+            painter.pop_clip();
+        }
 
         // Paint thumb
-        let thumb_x = thumb_radius + progress * (size.width - thumb_radius * 2.).max(0.);
         let thumb_y = size.height / 2.;
         let thumb_circle = Circle::new((thumb_x, thumb_y), thumb_radius - thumb_border_width / 2.);
 
@@ -466,9 +390,9 @@ impl Widget for Slider {
         node.set_orientation(Orientation::Horizontal);
         node.set_value(self.value.to_string());
         node.set_numeric_value(self.value);
-        node.set_min_numeric_value(self.min);
-        node.set_max_numeric_value(self.max);
-        if let Some(step) = self.step {
+        node.set_min_numeric_value(self.range.min());
+        node.set_max_numeric_value(self.range.max());
+        if let Some(step) = self.range.step() {
             node.set_numeric_value_step(step);
         }
         node.add_action(accesskit::Action::SetValue);

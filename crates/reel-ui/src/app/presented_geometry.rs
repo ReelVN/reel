@@ -72,6 +72,8 @@ pub struct GeometryRecord {
     pub is_stashed: bool,
     /// Visible modal subtrees isolate input in painter order.
     pub is_modal: bool,
+    /// Interaction configuration; ordinary value and geometry changes preserve it.
+    pub input_revision: u64,
 }
 impl GeometryRecord {
     fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
@@ -92,6 +94,7 @@ impl GeometryRecord {
             propagates_pointer_interaction: s.propagates_pointer_interaction,
             is_stashed: s.is_stashed,
             is_modal: s.is_modal,
+            input_revision: s.input_revision,
         }
     }
 }
@@ -349,6 +352,7 @@ macro_rules! field {
 impl GeometryRef<'_> {
     field!(accepts_pointer_interaction, bool);
     field!(propagates_pointer_interaction, bool);
+    field!(input_revision, u64);
     field!(transform, Affine);
     field!(window_transform, Affine);
     field!(bounding_box, Rect);

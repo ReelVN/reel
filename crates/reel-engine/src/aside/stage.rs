@@ -1,5 +1,6 @@
 //! Stable Aside host nodes projected into Reel's one shared stage model.
 use std::collections::BTreeMap;
+pub(super) mod controls;
 pub(super) mod input;
 
 use aside_vm::{
@@ -121,6 +122,8 @@ impl StageBinding {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
             NodeKind::Text(_) => 1,
+            NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
+            NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
             NodeKind::Image { .. } | NodeKind::Button { .. } | NodeKind::Input { .. } => 2,
             _ => 0,
         })
@@ -169,6 +172,8 @@ impl StageBinding {
         }
         let kind = match symbol {
             "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?),
+            "reel::slider" => controls::slider_kind(heap, fields)?,
+            "reel::toggle" => controls::toggle_kind(heap, fields, read_limit)?,
             "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
             "reel::input" => {
                 input::validate(heap, 1, args[1])?;
@@ -196,6 +201,7 @@ impl StageBinding {
                 | NodeKind::Column
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Toggle { .. }
                 | NodeKind::Input { .. }
         ) {
             let input = args[args.len() - 1];
@@ -217,11 +223,19 @@ impl StageBinding {
                 Value::NULL,
             ],
             Some(match symbol {
-                "reel::text" => validate_text_property,
-                "reel::image" => validate_image_property,
-                "reel::button" => validate_button_property,
-                "reel::input" => input::validate,
-                _ => validate_layout_property,
+                "reel::slider" => controls::validate_slider,
+                "reel::toggle" => {
+                    |heap, _, index, value| controls::validate_toggle(heap, index, value)
+                }
+                "reel::text" => |heap, _, index, value| validate_text_property(heap, index, value),
+                "reel::image" => {
+                    |heap, _, index, value| validate_image_property(heap, index, value)
+                }
+                "reel::button" => {
+                    |heap, _, index, value| validate_button_property(heap, index, value)
+                }
+                "reel::input" => |heap, _, index, value| input::validate(heap, index, value),
+                _ => |heap, _, index, value| validate_layout_property(heap, index, value),
             }),
         )?;
         for (i, (name, function)) in ["add", "remove", "clear", "value"]
@@ -306,6 +320,14 @@ impl StageBinding {
                         2,
                     )
                 }
+                NodeKind::Slider { .. } => (
+                    controls::slider_kind(heap, fields)?,
+                    controls::SliderField::PROPERTIES.len(),
+                ),
+                NodeKind::Toggle { .. } => (
+                    controls::toggle_kind(heap, fields, read_limit)?,
+                    controls::ToggleField::PROPERTIES.len(),
+                ),
                 NodeKind::Button { .. } => (
                     button_kind(
                         heap,
@@ -495,6 +517,7 @@ impl StageBinding {
         while let Some(id) = pending.pop() {
             let node = self.scene.node(id).unwrap();
             if match &node.kind {
+                NodeKind::Slider { .. } | NodeKind::Toggle { .. } => true,
                 NodeKind::Button { listening, .. } => *listening,
                 NodeKind::Input { bindings, .. } => !bindings.is_empty(),
                 _ => false,

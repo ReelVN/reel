@@ -454,6 +454,11 @@ impl_context_method!(
 
 // --- MARK: EVENT HANDLING
 impl EventCtx<'_> {
+    /// Whether this event uses the current interaction configuration.
+    pub fn input_configuration_is_current(&self) -> bool {
+        self.geometry_state().input_revision() == self.widget_state.input_revision
+    }
+
     /// Captures the pointer in the current widget.
     ///
     /// [Pointer capture] is only allowed during a [`Down`] event. It is a logic error to
@@ -493,6 +498,7 @@ impl EventCtx<'_> {
         }
         // TODO: plumb pointer capture through to platform (through winit)
         self.global_state.pointer.pointer_capture_target = Some(id);
+        self.global_state.pointer.pointer_capture_revision = self.widget_state.input_revision;
         self.global_state.needs_pointer_pass = true;
     }
 
@@ -1563,6 +1569,14 @@ impl_context_method!(
     UpdateCtx<'_>,
     RawCtx<'_>,
     {
+        /// Invalidate interactions recorded with an earlier control configuration.
+        /// Value and layout updates must not call this.
+        pub fn invalidate_input_configuration(&mut self) {
+            self.widget_state.input_revision = self.widget_state.input_revision.wrapping_add(1);
+            self.global_state.needs_pointer_pass = true;
+            self.request_render();
+        }
+
         /// Requests a [`paint`](crate::core::Widget::paint) and an
         /// [`accessibility`](crate::core::Widget::accessibility) pass.
         pub fn request_render(&mut self) {

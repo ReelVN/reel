@@ -409,10 +409,11 @@ reel-ui::app/core 导出几何、选择输入源并分发事件；bridge 管理 
 独立片段是画序分段，消费时按原顺序组成完整流。使用稳定层边界时，paint_layer_mode 为 retained 声明：初始 Inline，缓存回调未执行时保留，显式设置 Inline 才恢复普通模式；其他 pre/paint/post 回调执行时，保留未重声明的层模式。
 外部视频、材质或三维内容通过同一流的 ExternalDraw 接入。最小记录含宿主内容/资源 token、拥有 WidgetId、local bounds、content 到 layer 变换和确定画序位置；继承当前位置打开的 Group/Clip。其位置替换自身 paint 内容，保留 pre → own clip → external paint → children → pop clip → post。R01 实现已替换原先缺少作用域的 post-children placeholder；Reel 始终只有这一条画序来源，具体外部设备实现另行验收。
 
-作者滑条
-复用 Slider 的指针、键盘与 AccessKit 行为。slider.rs 提供只读规范化值/范围/步长、静默投影更新及变化标记，并让原 Widget 回调与作者包装器共用同一行为入口。Reel 包装器拥有轨道/滑块节点，替换全部默认绘制阶段，明确登记自身属性与默认值；装饰节点由控件统一处理命中和焦点。
-SliderInputProjection 保存所选帧的 a/b、axis/direction、min/max/step、步进锚点及配置版本。中心与指针逆映射共用同一几何 helper；范围与步长配置通过统一规范化，范围改变而值未变也更新外观和可访问性。退化几何产生空的指针映射，避免除零；无效配置在提交前报告。
-业务 value 由 Reel 当前模型管理，外部更新即时生效，旧帧显示值只用于绘制。指针按冻结投影产生绝对值，键盘/AccessKit 增减从当前业务值开始。配置版本仅随 range/step、axis/direction、端点策略等显式交互配置改变；普通布局尺寸、父级变换、动画与 value 更新保持版本。配置已变而对应帧尚未接受时，控件保留祖先消费，暂不执行旧投影行为；已有捕获沿失效路径交付一次 Cancel。新配置帧接受后恢复。
+作者数值控件
+`slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` 与 `toggle(label: null, value: false, on_change: null, children: [], ...)` 使用同一 Stage 和共同外观属性。slider 复用 reel-ui Slider，toggle 复用 ButtonBehavior；开关可带标签和自定义子树。slider 的 min/max/value 必须有限，min < max 且跨度有限，value 在闭区间内；step 为 null 或有限正数。步进以 min 为锚点，两端始终可达。脚本可以设置任意区间内值；step 只约束用户输入。范围属性写入先检查完整当前状态，失败不修改原属性。
+控件动作先更新唯一权威 `node.value`，再调度 `on_change` 的节点任务，事件包含 target 和此次 value。直接脚本赋值静默投影，不触发回调。闭包可等待并沿用节点退休取消；省略回调仍保存控件值。slider 默认水平轨道，color 控制活动轨道/滑块，background 仍是共同节点背景；toggle 以状态指示和可选标签呈现，children 按 stack 叠放。
+Slider 统一绘制与指针逆映射的滑块中心端点，退化几何没有指针值。呈现几何记录控件交互配置版本；range/step 变化取消旧捕获，在对应帧被接受前阻止输入，value、尺寸和变换变化保留配置版本。指针使用接受帧的几何，键盘/AccessKit 从当前值增减。连续控件事件不以每次 value 更新的整个会话投影版本重置手势；已退休身份、当前可交互状态与范围仍在提交时检查。没有输入时不启动 VM 轮询任务。宿主可用 `SessionUi::handle_access` / `AsideSessionUi::handle_access` 投递 AccessKit ActionRequest，通过共同呈现几何、模态路由和回调入口；原生屏幕阅读器适配不由此 API 自动提供。
+
 源码按职责组织为 reel-ui 内部模块，控件基础、树、呈现桥接不再拆成独立包。保留原始许可和必要版权/来源说明，普通外部依赖继续锁定引用；验证以当前行为、单一类型来源和依赖边界为依据，不做上游目录或补丁重放门槛。生产验收覆盖首帧/清空、缺失子查询、路径变更、单次终止、绘制组跨片段、外部内容作用域，以及图片滑条与业务绑定的同一数值/几何。
 
 ## 十六 可移植绘制帧与默认光栅后端

@@ -37,6 +37,10 @@ impl Property {
 }
 pub trait PropertySchema {
     const PROPERTIES: &'static [Property];
+    /// Host write entry point. Override to validate relationships between fields.
+    fn validate_host(heap: &Heap, _host: Value, index: u32, value: Value) -> Result<(), HeapError> {
+        Self::validate(heap, index, value)
+    }
     fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
         Self::PROPERTIES
             .get(index as usize)

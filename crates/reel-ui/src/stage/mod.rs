@@ -59,6 +59,20 @@ pub struct NodeAction {
 pub enum NodeEvent {
     Click(NodeClick),
     Action(NodeAction),
+    Change(NodeChange),
+}
+
+/// A user change to one stateful control. Range identifies the input configuration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeChange {
+    pub node: NodeId,
+    pub value: ControlValue,
+    pub range: Option<crate::widgets::SliderRange>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ControlValue {
+    Number(f64),
+    Bool(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -75,6 +89,16 @@ pub enum NodeKind {
     Text(String),
     Button {
         label: Option<String>,
+        listening: bool,
+    },
+    Slider {
+        value: f64,
+        range: crate::widgets::SliderRange,
+        listening: bool,
+    },
+    Toggle {
+        label: Option<String>,
+        value: bool,
         listening: bool,
     },
     Image {
@@ -267,6 +291,7 @@ impl Stage {
                 | NodeKind::Column
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Toggle { .. }
                 | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);
@@ -317,6 +342,7 @@ impl Stage {
                 | NodeKind::Column
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Toggle { .. }
                 | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);
