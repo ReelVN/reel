@@ -20,6 +20,7 @@ use calls::NativeSite;
 mod collection_tests;
 mod collections;
 mod iterators;
+mod models;
 mod text;
 mod types;
 use builtins::Builtin;
@@ -332,6 +333,7 @@ struct TaskState {
     blocked: Option<ResourceBlocked>,
     cooperative_cancel: bool,
     abort_equality: bool,
+    model_copy: Option<models::ModelCopy>,
 }
 impl TaskState {
     fn new(
@@ -386,6 +388,7 @@ impl TaskState {
             blocked: None,
             cooperative_cancel: false,
             abort_equality: false,
+            model_copy: None,
         })
     }
 }
@@ -1982,6 +1985,14 @@ impl Vm {
                 }
             }
             Frame::Native(n) => {
+                if self
+                    .active
+                    .model_copy
+                    .as_ref()
+                    .is_some_and(|copy| copy.frame == n.id)
+                {
+                    self.active.model_copy = None;
+                }
                 if let Some(r) = n.bindings {
                     self.slots.release(&mut self.heap, r)?;
                 }
@@ -2833,7 +2844,7 @@ impl Vm {
                     unreachable!()
                 };
                 let key = self.read(*s, key)?;
-                let fields = self.heap.host_fields(host).map_err(heap_fault)?;
+                let fields = self.heap.property_fields(host).map_err(heap_fault)?;
                 self.start_table(
                     s,
                     fields,

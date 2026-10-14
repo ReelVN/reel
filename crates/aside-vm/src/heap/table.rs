@@ -9,6 +9,8 @@ impl Heap {
         target: Value,
         prepared: Value,
     ) -> Result<(), HeapError> {
+        let target_value = target;
+        let prepared_value = prepared;
         let target = self.key(target)?;
         let prepared = self.key(prepared)?;
         let kind = self.object(target)?.kind;
@@ -19,6 +21,12 @@ impl Heap {
         }
         if target == prepared {
             return Ok(());
+        }
+        self.adopt_model_contents(target_value, prepared_value)?;
+        if self.is_model_table(target_value)? {
+            // The only table bulk mutation is clear; freeze the old subscribers.
+            self.disconnect_host_properties(target_value)?;
+            self.reset_model_properties(target_value)?;
         }
         let empty = || Payload::Values(crate::payload::Values::default());
         let a = self.objects.get_mut(target).unwrap();
@@ -36,6 +44,7 @@ impl Heap {
             object.structure_version = object.structure_version.wrapping_add(1);
             if self.gc.phase == crate::GcPhase::Mark {
                 object.scan = 0;
+                object.metadata_scanned = false;
                 object.mark = self.gc.cycle;
                 if !object.queued {
                     object.queued = true;
@@ -85,6 +94,48 @@ impl Heap {
         key_value: Value,
         value: Value,
     ) -> Result<(), HeapError> {
+        if self.is_model_table(table)? {
+            let property = PropertyId {
+                host: table,
+                field: position,
+            };
+            if position < self.table_len(table)? {
+                return self.write_host_property(property, value, true);
+            }
+            if self.is_property_ref(value) {
+                let resolved = self.property_argument(value)?;
+                let before = self.info(table)?;
+                self.store_table_entry(table, position, key_value, resolved)?;
+                if let Err(error) = self.bind_host_property(property, value) {
+                    // No VM/GC step can observe the provisional field. Failed binding
+                    // admission preserves the original entries and iterator versions.
+                    let key = self.key(table)?;
+                    let object = self.objects.get_mut(key).unwrap();
+                    let Payload::Table(entries) = &mut object.payload else {
+                        unreachable!()
+                    };
+                    let freed = entries.pop().unwrap().1 + entries.pop().unwrap().1;
+                    object.charged -= freed;
+                    object.observable_fields -= 1;
+                    object.observable_writable -= 1;
+                    object.content_version = before.content_version;
+                    object.structure_version = before.structure_version;
+                    self.freed(freed);
+                    return Err(error);
+                }
+                return Ok(());
+            }
+        }
+        self.store_table_entry(table, position, key_value, value)
+    }
+
+    pub(super) fn store_table_entry(
+        &mut self,
+        table: Value,
+        position: u32,
+        key_value: Value,
+        value: Value,
+    ) -> Result<(), HeapError> {
         let key = self.key(table)?;
         let Payload::Table(values) = &self.object(key)?.payload else {
             return Err(HeapError::WrongKind);
@@ -104,6 +155,7 @@ impl Heap {
         }
         self.ensure_bytes(extra)?;
         // Both barriers and the complete allocation preflight precede publication.
+        self.adopt_model_value_reserving(table, value, extra)?;
         self.barrier(key_value)?;
         self.barrier(value)?;
         self.charge(extra, u64::from(extra != 0));
@@ -115,6 +167,10 @@ impl Heap {
             values.push(key_value);
             values.push(value);
             object.structure_version = object.structure_version.wrapping_add(1);
+            if object.model {
+                object.observable_fields += 1;
+                object.observable_writable += 1;
+            }
         } else {
             values.set(index + 1, value);
         }

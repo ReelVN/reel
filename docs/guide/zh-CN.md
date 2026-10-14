@@ -12,7 +12,7 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。节点 bind/unbind 已可用；model/derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。model 与节点 bind/unbind 已可用；derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -506,7 +506,19 @@ game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命
 
 ## 十二 游戏变量与组件状态
 
-普通局部变量、对象和闭包已可用；本节 model、state、persistent 及存档恢复接口仍是设计目标。
+`model` 和字段双向绑定已实现；state、persistent、node.state 及存档恢复仍是设计目标。
+
+用 model 保存独立于画面节点的业务数据。多个控件可以共享同一字段，输入直接写回数据，连接的文字、可见性和样式随之更新。运行 [author_models.aside](../../examples/author_models.aside)：`cargo run -p reel-cli --features window -- dev examples/author_models.aside`。
+
+```aside
+let settings = model({volume: 0.8, music: true, palette: {accent: "#70d890"}});
+let volume = slider(value: bind(settings.volume), min: 0, max: 1);
+let music = toggle(value: bind(settings.music));
+let indicator = text("Music", visible: bind(settings.music), color: bind(settings.palette.accent));
+settings.palette.accent = "#ffd580";
+```
+
+默认数据图会被复制，保留内部别名与环，不修改传入的默认对象。table、array、tuple、字符串、字节串及可变缓冲可作为数据；闭包和节点等宿主资源不能用作默认数据。后续赋入的对象保持共享身份，取得嵌套 table 或数组元素的别名后仍可绑定其字段。普通 table 方法继续可用；clear 冻结已有连接的最后值并使旧引用失效，新增同名字段需重新 bind。复制按预算分片，取消不留下部分模型。
 
 语言中的 let/let mut 决定绑定能否改写，model 决定属性是否可观察，状态的所属范围决定保存和释放。三者各司其职。
 ```aside
@@ -712,7 +724,7 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 滑条要求有限且递增的 min/max、区间内的有限 value；step 为 null 或有限正数，以 min 为步进起点，两端均可选。脚本可赋任意区间内 value，不受输入步长限制。写 min/max 时当前 value 也须满足新范围，错误保留原值。鼠标或触摸拖动、方向键、Home/End、Shift 加速、手柄左右导航与可访问性操作共用同一控件。
 
-接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；model/derive 仍待实现。
+接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；derive 仍待实现。
 
 ```aside
 fn main() {

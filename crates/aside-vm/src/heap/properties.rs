@@ -51,7 +51,7 @@ impl Heap {
     }
 
     fn property_access(&self, property: PropertyId) -> Result<bool, HeapError> {
-        self.host_fields(property.host)?;
+        self.property_fields(property.host)?;
         let object = self.object(self.key(property.host)?)?;
         if property.field >= object.observable_fields {
             return Err(HeapError::WrongKind);
@@ -78,6 +78,7 @@ impl Heap {
                 property.host,
                 Value::int(i64::from(property.field)),
                 Value::bool(writable),
+                Value::int(self.object(self.key(property.host)?)?.property_generation as i64),
             ],
         )
     }
@@ -91,6 +92,11 @@ impl Heap {
             field: self.get_field(reference, 1)?.as_int().unwrap() as u32,
         };
         self.property_access(property)?;
+        if self.get_field(reference, 3)?.as_int()
+            != Some(self.object(self.key(property.host)?)?.property_generation as i64)
+        {
+            return Err(HeapError::RetiredHost);
+        }
         Ok((property, self.get_field(reference, 2)?.as_bool().unwrap()))
     }
 
@@ -106,14 +112,17 @@ impl Heap {
 
     pub fn host_property(&self, property: PropertyId) -> Result<Value, HeapError> {
         Ok(self
-            .table_entry(self.host_fields(property.host)?, property.field)?
+            .table_entry(self.property_fields(property.host)?, property.field)?
             .1)
     }
 
     fn property_metadata(&self, property: PropertyId) -> Result<Value, HeapError> {
-        self.host_fields(property.host)?;
-        let metadata = self.get_field(property.host, 3)?;
+        self.property_fields(property.host)?;
+        let metadata = self.property_metadata_array(property.host)?;
         if metadata.same_bits(Value::NULL) {
+            return Ok(Value::NULL);
+        }
+        if property.field >= self.sequence_len(metadata)? {
             return Ok(Value::NULL);
         }
         self.sequence_get(metadata, property.field)
@@ -121,13 +130,16 @@ impl Heap {
 
     fn ensure_property_metadata(&mut self, property: PropertyId) -> Result<Value, HeapError> {
         self.property_access(property)?;
-        let mut metadata = self.get_field(property.host, 3)?;
+        let mut metadata = self.property_metadata_array(property.host)?;
         if metadata.same_bits(Value::NULL) {
             metadata = self.alloc_array(&[])?;
             for _ in 0..self.object(self.key(property.host)?)?.observable_fields {
                 self.array_push(metadata, Value::NULL)?;
             }
-            self.set_field(property.host, 3, metadata)?;
+            self.set_property_metadata_array(property.host, metadata)?;
+        }
+        while self.sequence_len(metadata)? <= property.field {
+            self.array_push(metadata, Value::NULL)?;
         }
         let mut entry = self.sequence_get(metadata, property.field)?;
         if entry.same_bits(Value::NULL) {
@@ -223,7 +235,7 @@ impl Heap {
                 let weak = self.sequence_get(subscribers, index)?;
                 let field = self.sequence_get(subscribers, index + 1)?.as_int().unwrap() as u32;
                 if let Some(host) = self.subscriber_target(weak)?
-                    && self.host_fields(host).is_ok()
+                    && self.property_fields(host).is_ok()
                 {
                     self.work_push(PropertyId { host, field })?;
                     index += 2;
@@ -294,13 +306,25 @@ impl Heap {
         result
     }
 
+    fn prepare_properties(&mut self, value: Value, script: bool) -> Result<(), HeapError> {
+        for i in 0..self.property_work.len() {
+            let host = self.property_work[i].host;
+            if script && !self.property_versions(host)?.same_bits(Value::NULL) {
+                self.track_host_writes(host)?;
+            }
+            self.adopt_model_value(host, value)?;
+        }
+        Ok(())
+    }
+
     fn commit_properties(&mut self, value: Value, script: bool) -> Result<(), HeapError> {
+        self.prepare_properties(value, script)?;
         for i in 0..self.property_work.len() {
             let property = self.property_work[i];
-            let fields = self.host_fields(property.host)?;
+            let fields = self.property_fields(property.host)?;
             let (key, old) = self.table_entry(fields, property.field)?;
             if !old.same_bits(value) {
-                self.table_store(fields, property.field, key, value)?;
+                self.store_table_entry(fields, property.field, key, value)?;
             }
             if script {
                 self.record_host_write(property.host, property.field)?;
@@ -351,9 +375,9 @@ impl Heap {
         // Non-observable host fields still use their original validation contract.
         if property.field >= self.object(self.key(property.host)?)?.observable_fields {
             self.validate_host_property(property.host, property.field, value)?;
-            let fields = self.host_fields(property.host)?;
+            let fields = self.property_fields(property.host)?;
             let key = self.table_entry(fields, property.field)?.0;
-            self.table_store(fields, property.field, key, value)?;
+            self.store_table_entry(fields, property.field, key, value)?;
             return self.record_host_write(property.host, property.field);
         }
         let (source, writable) = self.property_source(property)?;
@@ -402,6 +426,7 @@ impl Heap {
             }
         }
         self.validate_properties(value)?;
+        self.prepare_properties(value, true)?;
         let target_meta = self.ensure_property_metadata(target)?;
         let source_meta = self.ensure_property_metadata(source)?;
         let mut list = self.sequence_get(source_meta, Slot::Subscribers as u32)?;
@@ -496,7 +521,7 @@ impl Heap {
                 let weak = self.sequence_get(list, 0)?;
                 let field = self.sequence_get(list, 1)?.as_int().unwrap() as u32;
                 if let Some(host) = self.subscriber_target(weak)?
-                    && self.host_fields(host).is_ok()
+                    && self.property_fields(host).is_ok()
                 {
                     let target = PropertyId { host, field };
                     let value = self.host_property(target)?;
