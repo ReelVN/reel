@@ -1,4 +1,4 @@
-//! Call spread accepts only built-in array/tuple, never an implicit iterator.
+//! Calls expand sequences positionally and own table entries by name.
 use super::*;
 
 impl Binder<'_> {
@@ -7,7 +7,7 @@ impl Binder<'_> {
             return true;
         }
         match &self.out.types[ty.0 as usize] {
-            Type::Any | Type::Named(_) | Type::Array | Type::Tuple(_) => true,
+            Type::Any | Type::Named(_) | Type::Array | Type::Tuple(_) | Type::Table => true,
             Type::Union(types) => {
                 let count = types.len();
                 if !self.charge_work(node, count) {
@@ -41,7 +41,7 @@ impl Binder<'_> {
             self.error(
                 D::TypeMismatch,
                 self.span(node),
-                "call spread requires array or tuple",
+                "call spread requires array, tuple or table",
             );
         } else if !matches!(self.out.types[ty.0 as usize], Type::Array | Type::Tuple(_)) {
             self.check(node, RuntimeChecks::TYPE);

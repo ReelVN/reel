@@ -10,6 +10,8 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 mod api;
+mod arguments;
+use arguments::{ArgumentBinding, ArgumentStep, ParameterNames};
 mod awaitables;
 mod builtins;
 mod calls;
@@ -104,10 +106,7 @@ enum ScriptPhase {
         index: u32,
     },
     Rest,
-    Bind {
-        index: u32,
-        positional: u32,
-    },
+    Bind(ArgumentBinding),
     Defaults {
         parameter: u32,
     },
@@ -123,7 +122,7 @@ enum ScriptPhase {
         binding: u32,
     },
     Body,
-    Spread(collections::SequenceSpread),
+    Spread(collections::SpreadCapture),
     TableSpread(collections::TableSpread),
     KeyPath {
         index: u32,
@@ -216,10 +215,7 @@ enum NativePhase {
         index: u32,
     },
     Rest,
-    Bind {
-        index: u32,
-        positional: u32,
-    },
+    Bind(ArgumentBinding),
     Defaults {
         parameter: u32,
     },
@@ -1097,20 +1093,14 @@ impl Vm {
                 s.phase = if rest {
                     ScriptPhase::Rest
                 } else {
-                    ScriptPhase::Bind {
-                        index: 0,
-                        positional: 0,
-                    }
+                    ScriptPhase::Bind(ArgumentBinding::new(0))
                 }
             }
             Frame::Native(n) => {
                 n.phase = if rest {
                     NativePhase::Rest
                 } else {
-                    NativePhase::Bind {
-                        index: 0,
-                        positional: u32::from(n.receiver),
-                    }
+                    NativePhase::Bind(ArgumentBinding::new(u32::from(n.receiver)))
                 }
             }
         };
@@ -1188,14 +1178,14 @@ impl Vm {
         }
         Ok(FunctionId(fi))
     }
-    fn argument(&self, source: ArgSource, index: u32) -> Result<(i64, Value), VmError> {
+    fn argument(&self, source: ArgSource, index: u32) -> Result<(Value, Value), VmError> {
         match source {
             ArgSource::None => Err(VmError::Contract("external arguments already copied")),
             ArgSource::Await { frame, value } => {
                 let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
                     return Err(VmError::Contract("await argument source"));
                 };
-                Ok((-1, self.slots.read(at(s.regs, value.0))?))
+                Ok((Value::int(-1), self.slots.read(at(s.regs, value.0))?))
             }
             ArgSource::Caller { frame, descriptor } => {
                 let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
@@ -1208,20 +1198,21 @@ impl Vm {
                 };
                 match desc.arguments {
                     Arguments::Window(w) => {
-                        let name = desc
-                            .names
-                            .iter()
-                            .find(|a| a.offset == index)
-                            .map_or(-1, |a| a.name.0 as i64);
-                        Ok((name, self.slots.read(at(s.regs, w.start.0 + index))?))
+                        // B01 verifies that names occupy the ordered window
+                        // tail; copying each argument needs no name-list scan.
+                        let positional = w.len as usize - desc.names.len();
+                        let name = (index as usize)
+                            .checked_sub(positional)
+                            .map_or(-1, |i| i64::from(desc.names[i].name.0));
+                        Ok((
+                            Value::int(name),
+                            self.slots.read(at(s.regs, w.start.0 + index))?,
+                        ))
                     }
                     Arguments::Packed(r) => {
                         let packed = self.slots.read(at(s.regs, r.0))?;
                         Ok((
-                            self.heap
-                                .get_field(packed, index * 2)?
-                                .as_int()
-                                .ok_or(VmError::Contract("invalid argument name"))?,
+                            self.heap.get_field(packed, index * 2)?,
                             self.heap.get_field(packed, index * 2 + 1)?,
                         ))
                     }
@@ -1232,7 +1223,7 @@ impl Vm {
                     unreachable!()
                 };
                 Ok((
-                    -1,
+                    Value::int(-1),
                     self.value(n.roots, 2 + self.limits.max_continuation_values + index)?,
                 ))
             }
@@ -1241,52 +1232,9 @@ impl Vm {
                     Frame::Script(s) => s.bound,
                     Frame::Native(n) => n.bindings.unwrap_or(n.bound),
                 };
-                Ok((-1, self.value(range, index)?))
+                Ok((Value::int(-1), self.value(range, index)?))
             }
         }
-    }
-    fn bound_argument(
-        &mut self,
-        signature: SignatureId,
-        bound: RootRangeToken,
-        args: RootRangeToken,
-        index: u32,
-        positional: &mut u32,
-    ) -> Result<(), FaultKind> {
-        let name = self
-            .slots
-            .read(at(args, index * 2))
-            .map_err(heap_fault)?
-            .as_int()
-            .ok_or(FaultKind::InvalidState)?;
-        let value = self
-            .slots
-            .read(at(args, index * 2 + 1))
-            .map_err(heap_fault)?;
-        let sig = &self.program.package().signatures[signature.index()];
-        let parameter = if name == -1 {
-            let p = *positional;
-            *positional += 1;
-            p as usize
-        } else {
-            sig.parameters
-                .iter()
-                .position(|p| p.name.0 as i64 == name)
-                .ok_or(FaultKind::UnknownArgument)?
-        };
-        let p = sig
-            .parameters
-            .get(parameter)
-            .ok_or(FaultKind::UnknownArgument)?;
-        match self.slots.read(at(bound, parameter as u32)) {
-            Ok(_) => return Err(FaultKind::DuplicateArgument),
-            Err(HeapError::UninitializedSlot) => {}
-            Err(e) => return Err(heap_fault(e)),
-        }
-        self.check_type(p.ty, value)?;
-        self.slots
-            .write(&mut self.heap, at(bound, parameter as u32), value)
-            .map_err(heap_fault)
     }
     fn push_native(
         &mut self,
@@ -2050,7 +1998,7 @@ impl Vm {
                 if index < s.argument_count {
                     match self.argument(source, index) {
                         Ok((name, v)) => {
-                            self.put(s.args, index * 2, Value::int(name))?;
+                            self.put(s.args, index * 2, name)?;
                             self.put(s.args, index * 2 + 1, v)?;
                             s.phase = ScriptPhase::Copy {
                                 source,
@@ -2069,10 +2017,7 @@ impl Vm {
                     {
                         ScriptPhase::Rest
                     } else {
-                        ScriptPhase::Bind {
-                            index: 0,
-                            positional: 0,
-                        }
+                        ScriptPhase::Bind(ArgumentBinding::new(0))
                     };
                 }
             }
@@ -2086,70 +2031,39 @@ impl Vm {
                 match self.heap.alloc_array(&[]) {
                     Ok(rest) => {
                         self.put(s.bound, count, rest)?;
-                        s.phase = ScriptPhase::Bind {
-                            index: 0,
-                            positional: 0,
-                        };
+                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(0));
                     }
                     Err(error) => self.preparation_fault(&mut s, heap_fault(error))?,
                 }
             }
-            ScriptPhase::Bind {
-                index,
-                mut positional,
-            } => {
-                let n = self.program.package().signatures[signature.index()]
-                    .parameters
-                    .len() as u64;
-                let tail = index < s.argument_count
-                    && !s.shared_parameters
-                    && self.program.package().signatures[signature.index()]
-                        .rest
-                        .is_some()
-                    && positional as u64 >= n
-                    && self.value(s.args, index * 2)?.as_int() == Some(-1);
-                let bytes = if tail
-                    && (self.heap.info(self.value(s.bound, n as u32)?)?.len as usize)
-                        .is_multiple_of(VALUE_CHUNK_LEN)
-                {
-                    VALUE_CHUNK_BYTES
-                } else {
-                    0
-                };
-                let extra = if index < s.argument_count && !s.shared_parameters && !tail {
-                    self.type_checks.argument_extra(signature)
-                } else {
-                    0
-                };
-                if !m.take(0, n + 3 + extra, bytes) {
-                    return Ok(false);
-                }
-                if index < s.argument_count {
-                    let binding = if s.shared_parameters {
-                        self.value(s.args, index * 2 + 1)
-                            .and_then(|value| self.put(s.bound, index, value))
-                            .map_err(vm_fault)
-                    } else if tail {
-                        let rest = self.value(s.bound, n as u32)?;
-                        let value = self.value(s.args, index * 2 + 1)?;
-                        positional += 1;
-                        self.heap.array_push(rest, value).map_err(heap_fault)
-                    } else {
-                        self.bound_argument(signature, s.bound, s.args, index, &mut positional)
-                    };
-                    match binding {
-                        Ok(()) => {
-                            s.phase = ScriptPhase::Bind {
-                                index: index + 1,
-                                positional,
-                            }
-                        }
-                        Err(kind) => {
-                            self.preparation_fault(&mut s, kind)?;
-                        }
+            ScriptPhase::Bind(mut binding) => {
+                let result = if binding.index == s.argument_count {
+                    if !m.take(0, 1, 0) {
+                        return Ok(false);
                     }
-                } else {
                     s.phase = ScriptPhase::Defaults { parameter: 0 };
+                    None
+                } else if s.shared_parameters {
+                    if !m.take(0, 1, 0) {
+                        return Ok(false);
+                    }
+                    let value = self.value(s.args, binding.index * 2 + 1)?;
+                    self.put(s.bound, binding.index, value)?;
+                    binding.advance(Value::int(-1));
+                    Some(ArgumentStep::Ready(Ok(())))
+                } else {
+                    Some(self.bind_argument_step(signature, s.bound, s.args, &mut binding, m)?)
+                };
+                if let Some(result) = result {
+                    s.phase = ScriptPhase::Bind(binding);
+                    match result {
+                        ArgumentStep::Blocked => {
+                            self.active.frames.data[top] = Frame::Script(s);
+                            return Ok(false);
+                        }
+                        ArgumentStep::Ready(Err(kind)) => self.preparation_fault(&mut s, kind)?,
+                        _ => {}
+                    }
                 }
             }
             ScriptPhase::Defaults { parameter } => {
@@ -3227,7 +3141,10 @@ impl Vm {
             Opcode::ArgsSpread | Opcode::ArraySpread => {
                 let packed = self.read(*s, r(a))?;
                 let source = self.read(*s, r(b))?;
-                if !self.is_text(source, ObjectKind::Array)
+                let arguments = op == Opcode::ArgsSpread;
+                let named = arguments && self.is_text(source, ObjectKind::Table);
+                if !named
+                    && !self.is_text(source, ObjectKind::Array)
                     && !self.is_text(source, ObjectKind::Tuple)
                 {
                     return Err(FaultKind::Type);
@@ -3238,7 +3155,6 @@ impl Vm {
                 }
                 let destination_version =
                     self.heap.info(packed).map_err(heap_fault)?.content_version;
-                let arguments = op == Opcode::ArgsSpread;
                 if arguments {
                     let count = self.heap.packed_array_len(packed).map_err(heap_fault)? / 2;
                     if info.len > self.limits.max_arguments.saturating_sub(count) {
@@ -3247,8 +3163,14 @@ impl Vm {
                 }
                 self.put(s.env, 1, packed).map_err(vm_fault)?;
                 self.put(s.env, 2, source).map_err(vm_fault)?;
-                s.phase = ScriptPhase::Spread(collections::SequenceSpread {
-                    arguments,
+                s.phase = ScriptPhase::Spread(collections::SpreadCapture {
+                    kind: if named {
+                        collections::CaptureKind::NamedArguments
+                    } else if arguments {
+                        collections::CaptureKind::PositionalArguments
+                    } else {
+                        collections::CaptureKind::Elements
+                    },
                     index: 0,
                     len: info.len,
                     version: info.content_version,
@@ -3935,7 +3857,7 @@ impl Vm {
                 if index < n.argument_count {
                     match self.argument(source, index) {
                         Ok((name, value)) => {
-                            self.put(n.args, index * 2, Value::int(name))?;
+                            self.put(n.args, index * 2, name)?;
                             self.put(n.args, index * 2 + 1, value)?;
                             n.phase = NativePhase::Copy {
                                 source,
@@ -3957,67 +3879,36 @@ impl Vm {
                     {
                         NativePhase::Rest
                     } else {
-                        NativePhase::Bind {
-                            index: 0,
-                            positional: u32::from(n.receiver),
-                        }
+                        NativePhase::Bind(ArgumentBinding::new(u32::from(n.receiver)))
                     };
                 }
             }
-            NativePhase::Bind {
-                index,
-                mut positional,
-            } => {
-                let sig = &self.program.package().signatures[n.signature.index()];
-                let tail = index < n.argument_count
-                    && sig.rest.is_some()
-                    && positional as usize >= sig.parameters.len()
-                    && self.value(n.args, index * 2)?.as_int() == Some(-1);
-                let bytes = if tail
-                    && (self
-                        .heap
-                        .info(self.value(n.bound, sig.parameters.len() as u32)?)?
-                        .len as usize)
-                        .is_multiple_of(VALUE_CHUNK_LEN)
-                {
-                    VALUE_CHUNK_BYTES
-                } else {
-                    0
-                };
-                let extra = if index < n.argument_count && !tail {
-                    self.type_checks.argument_extra(n.signature)
-                } else {
-                    0
-                };
-                if !m.take(0, sig.parameters.len() as u64 + 3 + extra, bytes) {
-                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
-                }
-                if index < n.argument_count {
-                    let prepared = if tail {
-                        let rest = self.value(n.bound, sig.parameters.len() as u32)?;
-                        let value = self.value(n.args, index * 2 + 1)?;
-                        positional += 1;
-                        self.heap.array_push(rest, value).map_err(heap_fault)
-                    } else {
-                        self.bound_argument(n.signature, n.bound, n.args, index, &mut positional)
-                    };
-                    match prepared {
-                        Ok(()) => {
-                            n.phase = NativePhase::Bind {
-                                index: index + 1,
-                                positional,
-                            }
+            NativePhase::Bind(mut binding) => {
+                if binding.index < n.argument_count {
+                    let result =
+                        self.bind_argument_step(n.signature, n.bound, n.args, &mut binding, m)?;
+                    n.phase = NativePhase::Bind(binding);
+                    match result {
+                        ArgumentStep::Blocked => {
+                            self.active.frames.data[top] = Frame::Native(n);
+                            return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                         }
-                        Err(kind) => {
-                            self.native_fault(&mut n, kind)?;
-                        }
+                        ArgumentStep::Ready(Err(kind)) => self.native_fault(&mut n, kind)?,
+                        _ => {}
                     }
-                } else if n.has_defaults || sig.rest.is_some() {
-                    n.phase = NativePhase::Defaults { parameter: 0 };
-                } else if self.slots.borrow_initialized(n.bound).is_err() {
-                    self.native_fault(&mut n, FaultKind::MissingArgument)?;
                 } else {
-                    n.phase = NativePhase::Resume(NativeInput::Entry);
+                    let sig = &self.program.package().signatures[n.signature.index()];
+                    // The no-default path checks the whole initialized window.
+                    if !m.take(0, sig.parameters.len() as u64 + 3, 0) {
+                        return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                    }
+                    if n.has_defaults || sig.rest.is_some() {
+                        n.phase = NativePhase::Defaults { parameter: 0 };
+                    } else if self.slots.borrow_initialized(n.bound).is_err() {
+                        self.native_fault(&mut n, FaultKind::MissingArgument)?;
+                    } else {
+                        n.phase = NativePhase::Resume(NativeInput::Entry);
+                    }
                 }
             }
             NativePhase::Rest

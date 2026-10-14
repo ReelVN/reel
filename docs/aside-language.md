@@ -20,7 +20,7 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、tuple/array/table 与集合展开、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
-class/super、完整统一 callable、具名展开、模式、完整模块与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
+class/super、类/元方法 callable、完整模式与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
@@ -157,7 +157,10 @@ match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，�
 
 块内 fn 声明先建立只读函数绑定，允许自递归和互相递归；捕获普通 let 的初始化状态仍受检查，不得把未初始化值视为 null。命名参数适用于脚本闭包和 native，使用同一签名描述与绑定器。位置参数在命名参数前；fn f(a,b=1,...rest) 支持每次调用新建外层 array 接收尾部位置参数，没有剩余项时也新建空 array。rest 注解约束整个 array 绑定，不隐含逐元素约束；确定与 array 不相容的注解给出诊断。rest 名称不能以具名实参供给，也不能被 PropertyBagTail 静默接收为同名属性；其他普通尾袋属性保持原合同。
 
-callee、所有实参、展开和 children 按源码顺序各求值一次，然后绑定签名；重复名、未知名、多余或缺失参数报错。缺省在每次调用中按参数顺序求值，可引用前面参数，不可引用后面参数；不允许外部等待/yield。缺省的块表达式以块尾值产生参数结果；显式 return 的词法范围从普通函数体开始，缺省边界内的 return 给出 InvalidDefault 诊断，即使位于条件或短路分支也一样。缺省内定义的嵌套函数按自己的函数边界正常 return。break/continue 仅作用于缺省内部建立的循环，throw 沿参数准备规则传播。实际参数全部先求值，再运行缺省，children=[] 每次独立。f(...sequence) 只展开 array/tuple 为位置参数；确定非法的源类型给出语义诊断，未知类型在展开时检查。浅捕获固定外层元素序列，内部对象引用仍共享。非法源、复制和额度错误发生在展开阶段；动态重复名、参数槽冲突、缺参和缺省处理发生在全部实际参数完成后的绑定阶段，不提前跳过后续实参求值。call(f, positional: [], named: {}) 提供动态完整转发，具名表键须 string，重复与冲突仍报错，不按对象合并覆盖。
+callee、所有实参、展开和 children 按源码顺序各求值一次，然后绑定签名；重复名、未知名、多余或缺失参数报错。缺省在每次调用中按参数顺序求值，可引用前面参数，不可引用后面参数；不允许外部等待/yield。缺省的块表达式以块尾值产生参数结果；显式 return 的词法范围从普通函数体开始，缺省边界内的 return 给出 InvalidDefault 诊断，即使位于条件或短路分支也一样。缺省内定义的嵌套函数按自己的函数边界正常 return。break/continue 仅作用于缺省内部建立的循环，throw 沿参数准备规则传播。实际参数全部先求值，再运行缺省，children=[] 每次独立。
+
+`f(...sequence)` 展开 array/tuple 为位置参数；`f(...options)` 展开 table 的自有条目为具名参数，键必须是 string，不读取 delegate 或调用用户代码。`f(...positional, ...named)` 直接支持函数值、脚本函数、宿主函数与绑定方法的完整转发，不另设 call 包装接口。浅捕获在展开处固定外层条目，内部对象引用仍共享；分片期间源被修改时报 ConcurrentModification。非法源、非字符串键、复制和额度错误发生在展开阶段；动态顺序错误、重复名、参数槽冲突、缺参和缺省处理发生在全部实际参数完成后的绑定阶段。具名参数之后不能出现位置参数，空展开不改变顺序；具名展开可以接在显式具名参数之后。覆盖样式先写 `{...defaults, ...style}`，同一次调用重复供给参数始终报错，不隐式覆盖。尾随 children 仍是最后一个具名参数。
+
 
 class 使用单继承，命名声明写 class Child: Parent { ... }；匿名类表达式写 class { ... } 或 class: Parent { ... }。命名声明建立词法绑定，该绑定可直接作为类值使用；匿名类表达式创建并返回新的类对象。实例有声明字段，let/let mut 表示只读/可写；字段初始化每实例按基类到子类执行。未给初值的只读字段必须由构造过程赋值一次；结束时验证完整，实例状态为 Constructing、Ready 或 Failed，并记录已初始化字段。成功返回 Ready；异常结束标记 Failed。显式发布过的引用仍保持身份，但对 Failed 实例的普通操作报告 ConstructionFailed，诊断/status 查询保留可用；Constructing 中读取未初始化字段报告 UninitializedField。普通已经发生的副作用沿用语言规则，构造失败不伪装成外部事务回滚；快照保存构造状态、字段位图与执行帧。owner/Region 硬撤销或 invoke_sync 预算终止同样由 VM 清理把未完成实例标记 Failed；GC/快照只追踪已初始化槽。全部别名与既有绑定方法读取同一实例状态，方法调用也执行 Failed 检查。构造方法 fn init(self, ...) 显式首参 self；类调用创建实例并调用最近的有效 init，派生类未声明 init 时继承基类构造。声明派生 init 时只调用它，super.init(...) 显式初始化基类，禁止同一基类 init 重复执行。字段初始化不会因 super.init 重跑。
 

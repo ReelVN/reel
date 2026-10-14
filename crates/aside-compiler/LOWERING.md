@@ -303,14 +303,16 @@ ordinary, named or spread argument via ArgsPush/ArgsNamed/ArgsSpread. The final
 single Call uses Packed; CallDesc.names is empty. Dynamic spread length does
 not reserve an imaginary positional slot or become a compile-time flattening.
 
-ArgsSpread occurs at its source position before later expressions. Only
-array/tuple sources are allowed; known invalid types diagnose, unknown types
+ArgsSpread occurs at its source position before later expressions. Arrays and
+tuples supply positional values; own table entries supply named values with
+string keys. Known invalid types diagnose; unknown types
 retain runtime checks. Source/clone/quota failures belong to capture, while
 dynamic name/slot conflicts, missing arguments and defaults belong to final
 binding after actual arguments. The language contract requires shallow outer
-capture and full array content-version checks across budget slices; it is not
-an execution claim. Partial builder state needs roots, capacity and failure
-cleanup in its eventual executor.
+capture and full array/table content-version checks across budget slices. The
+executor roots partial builders and dynamic names, and shares resumable name
+lookup and parameter binding across script/native calls. Named arguments must
+follow positional values; duplicate names fail after all actual arguments.
 
 Rest is separate from ordinary Signature.parameters and occupies the following
 Parameter slot. The binder creates a new outer array including the empty case;
@@ -327,7 +329,8 @@ skip builder/arguments/Call; terminated argument paths emit no pending append
 or Call and preserve existing cleanup routing. Trusted native direct calls
 retain exact symbol/node identity, version, ABI, capabilities and actual default
 implementation. Native values also support these argument and optional-call
-paths. Collection/tuple-literal spread and new named-spread syntax remain deferred.
+paths. Ordinary call syntax also forwards dynamic names: f(...positional,
+...named). No separate forwarding builtin or new opcode is needed.
 
 The source matrix in tests/lowering/call_arguments.rs verifies instruction
 order, Packed descriptors, parameter/capture identity, optional and cleanup CFG,

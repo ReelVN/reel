@@ -153,7 +153,7 @@ impl Vm {
                     s.phase,
                     ScriptPhase::Copy { .. }
                         | ScriptPhase::Rest
-                        | ScriptPhase::Bind { .. }
+                        | ScriptPhase::Bind(_)
                         | ScriptPhase::Defaults { .. }
                         | ScriptPhase::DefaultCall { .. }
                         | ScriptPhase::Parameter { .. }

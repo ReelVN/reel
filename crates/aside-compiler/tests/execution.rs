@@ -76,6 +76,69 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
     let mut cases = vec![
         (
             r#"fn main() {
+                fn render(a, b=20, children=[]) { a+b+children.len() }
+                fn forward(callback, values, options) { callback(...values,...options) }
+                if forward(render,[19],{b:22,children:[0]})!=42 {throw "forward";}
+                let with_children=render(...{b:40,a:2}) {null;};
+                if with_children!=42 {throw "children";}
+                if render(a:20,...{b:22})!=42 {throw "named then table";}
+                fn defaults(a, b=a+1) {a+b}
+                if defaults(...{a:20})!=41 {throw "default prefix";}
+                fn values(a=7,...rest) {rest}
+                if values(...{a:1}).len()!=0 {throw "empty rest";}
+                42
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let shared={n:1}; let options={a:shared,b:2};
+                fn change(){options.a=null;options.b=9;shared.n=40;2}
+                fn f(a,b,c){a.n+b+c}
+                if f(...options,c:change())!=44 {throw "shallow capture";}
+                fn style(a,b,c){if a==false && b==0 && c==null {42}else{0}}
+                style(...{...{a:true,b:8,c:9},...{a:false,b:0,c:null}})
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let mut evaluated=0; let mut entered=0; let mut caught=0;
+                fn effect(){evaluated+=1;9}
+                fn f(a,b=0,...rest){entered+=1;0}
+                try {f(...{a:1},a:effect());} catch e {caught+=1;}
+                try {f(...{unknown:1},b:effect());} catch e {caught+=1;}
+                try {f(...{b:1},effect());} catch e {caught+=1;}
+                try {f(...{a:1},...{a:effect()});} catch e {caught+=1;}
+                try {f(...{rest:[]},b:effect());} catch e {caught+=1;}
+                try {f(...{[3]:1},b:effect());} catch e {caught+=1;}
+                if evaluated!=5 || entered!=0 || caught!=6 {throw "evaluation/binding boundary";}
+                fn with_children(children=[]){entered+=1;}
+                fn child(){evaluated+=1;null}
+                try {with_children(...{children:[]}) {child();};} catch e {caught+=1;}
+                if evaluated==6 && entered==0 && caught==7 {42} else {0}
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let a=[1,2]; let resize=a.resize;
+                resize(...{value:8,length:4});
+                if a.len()!=4 || a[3]!=8 {throw "bound builtin";}
+                a.insert(index:1,...{value:3});
+                if a.remove(...{index:1})!=3 {throw "builtin names";}
+                if !"中文🙂".starts_with(...{prefix:"中文"}) {throw "string builtin";}
+                if !({key:1}).has_own(...{key:"key"}) {throw "table builtin";}
+                let mut caught=0;
+                try {a.resize(...{length:6},...{length:8});} catch e {caught+=1;}
+                try {a.insert(...{value:1},0);} catch e {caught+=1;}
+                try {a.append(...{value:1});} catch e {caught+=1;}
+                if caught==3 && a.len()==4 {42} else {0}
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
             let s="A中🙂é\0";
             if s.byte_len()!=12 || s.scalar_count()!=6 {throw "text units";}
             if s.slice_bytes(range:1..8)!="中🙂" || s.slice_scalars(1..=2)!="中🙂" {throw "slice";}

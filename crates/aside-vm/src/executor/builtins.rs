@@ -94,7 +94,7 @@ impl Builtin {
             .copied()
             .ok_or(FaultKind::Type)
     }
-    fn parameters(self) -> (&'static [&'static str], usize) {
+    pub(super) fn parameters(self) -> (&'static [&'static str], usize) {
         match self {
             Self::HasOwn => (&["key"], 1),
             Self::Slice | Self::SliceBytes | Self::SliceScalars => (&["range"], 1),
@@ -131,7 +131,7 @@ pub(super) struct BuiltinCall {
     method: Builtin,
     count: u32,
     index: u32,
-    positional: usize,
+    binding: ArgumentBinding,
     // Fixed by these declarations, not a limit on script function arity.
     arguments: [Option<u32>; 2],
     prepared: bool,
@@ -181,7 +181,7 @@ impl Vm {
             method,
             count,
             index: 0,
-            positional: 0,
+            binding: ArgumentBinding::new(0),
             arguments: [None; 2],
             prepared: false,
         });
@@ -240,46 +240,51 @@ impl Vm {
             descriptor: call.descriptor,
         };
         if !call.prepared {
-            if !meter.take(0, 3, 0) {
-                return Ok(false);
-            }
             let (parameters, required) = call.method.parameters();
-            if call.index < call.count {
-                let (name, _) = self.argument(source, call.index)?;
-                let binding = if matches!(call.method, Builtin::Append) {
-                    if name == -1 {
-                        Ok(())
-                    } else {
-                        Err(FaultKind::UnknownArgument)
+            if call.binding.index < call.count {
+                let index = call.binding.index;
+                let (name, _) = self.argument(source, index)?;
+                let result = self.argument_position(
+                    name,
+                    ParameterNames::Builtin(call.method),
+                    &mut call.binding,
+                    meter,
+                )?;
+                let binding = match result {
+                    ArgumentStep::More => {
+                        s.phase = ScriptPhase::Builtin(call);
+                        return Ok(true);
                     }
-                } else {
-                    let position = if name == -1 {
-                        let position = call.positional;
-                        call.positional += 1;
-                        Some(position)
-                    } else {
-                        self.program
-                            .package()
-                            .symbols
-                            .get(name as usize)
-                            .and_then(|name| parameters.iter().position(|p| *p == name))
-                    };
-                    match position.filter(|p| *p < parameters.len()) {
-                        None => Err(FaultKind::UnknownArgument),
-                        Some(p) if call.arguments[p].is_some() => Err(FaultKind::DuplicateArgument),
-                        Some(p) => {
-                            call.arguments[p] = Some(call.index);
-                            Ok(())
+                    ArgumentStep::Blocked => {
+                        s.phase = ScriptPhase::Builtin(call);
+                        return Ok(false);
+                    }
+                    ArgumentStep::Ready(result) => result.and_then(|position| {
+                        if matches!(call.method, Builtin::Append) && name.as_int() == Some(-1) {
+                            return Ok(());
                         }
-                    }
+                        match Some(position as usize).filter(|p| *p < parameters.len()) {
+                            None => Err(FaultKind::UnknownArgument),
+                            Some(p) if call.arguments[p].is_some() => {
+                                Err(FaultKind::DuplicateArgument)
+                            }
+                            Some(p) => {
+                                call.arguments[p] = Some(index);
+                                Ok(())
+                            }
+                        }
+                    }),
                 };
                 if let Err(kind) = binding {
                     self.collection_fault(s, kind)?;
                 } else {
-                    call.index += 1;
+                    call.binding.advance(name);
                     s.phase = ScriptPhase::Builtin(call);
                 }
                 return Ok(true);
+            }
+            if !meter.take(0, 3, 0) {
+                return Ok(false);
             }
             if call.arguments[..required].iter().any(Option::is_none) {
                 self.collection_fault(s, FaultKind::MissingArgument)?;

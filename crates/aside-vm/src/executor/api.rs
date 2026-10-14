@@ -200,6 +200,7 @@ pub enum FaultKind {
     UnhashableKey = 16,
     ConcurrentModification = 17,
     ModuleInitializationCycle = 18,
+    ArgumentOrder = 19,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -364,6 +365,7 @@ impl FaultKind {
             Self::DuplicateArgument => "duplicate argument",
             Self::MissingArgument => "missing argument",
             Self::UnknownArgument => "unknown argument",
+            Self::ArgumentOrder => "positional argument after named argument",
             Self::Overflow => "integer overflow",
             Self::DivisionByZero => "division by zero",
             Self::Effect => "effect constraint",

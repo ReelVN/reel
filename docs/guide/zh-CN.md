@@ -390,25 +390,22 @@ bind 连接可观察属性，属性同时保留原来的读写权限；text 可�
 
 ## 八 风格与共同运动
 
-普通函数、节点属性修改、变换和有限动画已可用；本节样式展开与临时覆盖接口仍待实现。
+普通函数、样式展开、节点属性修改、变换和有限动画已可用；临时 scope 覆盖仍待实现。
 
 常用风格就是普通数据，组件函数决定如何把它应用到自己的节点。先写默认值，再用变体与显式参数覆盖；字段缺失才采用默认值，false、0 和 null 都保留作者的明确含义。临时 scope 覆盖优先于节点底层属性。
 ```aside
-let default_look = {font: "system-ui", font_size: 32,
-                    color: "#ffffff", background: "assets/button.png"};
+let default_look = {width: 180, height: 64, background: "#284860"};
 
 fn menu_button(label, clicked, style = {}) {
-    let look = {...default_look, ...style};
-    button(on_click: clicked) {
-        image(look.background);
-        text(label, font: look.font, font_size: look.font_size,
-             color: look.color);
-    }
+    button(label, on_click: clicked, ...{...default_look, ...style})
 }
 
-menu_button("开始", |event| game.start(opening),
-            style: {color: "#ffd98a", font_size: 36});
+let status = text("Ready");
+let start = menu_button("Start", |event| { status.value = "Started"; },
+                        style: {background: "#603840"});
+stage.replace(column(gap: 16) { start; status; });
 ```
+`...style` 将对象自有字段作为具名参数传入，普通函数、节点构造器和提取的方法使用相同规则。覆盖值先合并为一个对象；重复传同一参数会报错。位置参数放在具名参数之前，尾随 children 也是具名参数。完整初始化和按钮交互见 [author_buttons.aside](../../examples/author_buttons.aside)。
 节点属性可以直接修改；持续跟随业务或偏好变化的外观使用 bind/derive。普通风格记录用于构造，运行期共享配色可以用 model 保存，再把其属性绑定到文字与图片。作者自己的组件既可完全手绘，也可沿用熟悉的布局与控件行为。
 UI 与立绘共同运动时，把它们放进同一个组，再对组执行动作。
 ```aside

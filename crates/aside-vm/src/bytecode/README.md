@@ -112,12 +112,16 @@ the type constrains that array, not its elements. A rest name cannot be supplied
 as a named argument or silently redirected into PropertyBagTail. Other tail-bag
 names keep the existing contract.
 
-ArgsSpread shallowly captures only array/tuple at its source point. Invalid
+ArgsSpread shallowly captures array/tuple as positional values or own table
+entries as named values at its source point. Table keys must be strings. Packed
+name slots hold -1, a static SymbolId integer, or a GC-traced immutable string.
+Dynamic names use resumable byte comparisons without copying or interning.
+Positional values after named values fail at binding, including rest values. Invalid
 source/copy/quota failures occur during capture; dynamic binding conflicts and
-defaults occur after all actual arguments. Across budget slices, mutable array
+defaults occur after all actual arguments. Across budget slices, mutable array/table
 capture requires an unchanged full content version, including element writes;
 change fails with ConcurrentModification before target invocation. Captured
 outer values are independent of later source edits while object references remain
 shared. Partial builder/cursor/version state needs roots, capacity accounting and
-failure cleanup. These are consumer requirements, not a claim that V03 implements
-or has independently executed them. No wire-format change is made.
+failure cleanup. Script and native calls use the same resumable binder. No
+wire-format change is made.

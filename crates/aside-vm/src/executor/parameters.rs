@@ -82,10 +82,7 @@ impl Vm {
                 match self.heap.alloc_array(&[]) {
                     Ok(rest) => {
                         self.put(n.bound, count, rest)?;
-                        n.phase = NativePhase::Bind {
-                            index: 0,
-                            positional: u32::from(n.receiver),
-                        };
+                        n.phase = NativePhase::Bind(ArgumentBinding::new(u32::from(n.receiver)));
                     }
                     Err(e) => self.native_fault(n, heap_fault(e))?,
                 }

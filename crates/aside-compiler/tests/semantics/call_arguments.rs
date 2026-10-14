@@ -32,8 +32,8 @@ fn rest_annotation_describes_array_binding_and_names_cannot_supply_rest() {
 }
 
 #[test]
-fn only_array_tuple_or_uncertain_types_can_spread_into_calls() {
-    for value in ["1", "true", "null", "\"text\"", "{x:1}", "||1"] {
+fn sequences_tables_or_uncertain_types_can_spread_into_calls() {
+    for value in ["1", "true", "null", "\"text\"", "||1"] {
         let source = format!("fn f(g){{g(...{value})}}");
         let a = analyze_code(&source);
         let d = a
@@ -41,7 +41,7 @@ fn only_array_tuple_or_uncertain_types_can_spread_into_calls() {
             .iter()
             .find(|d| d.code == DiagnosticCode::TypeMismatch)
             .unwrap();
-        assert!(d.message.contains("array or tuple"));
+        assert!(d.message.contains("array, tuple or table"));
         assert_eq!(&source[byte_range(d.range)], format!("...{value}"));
     }
     rejects(
@@ -51,6 +51,8 @@ fn only_array_tuple_or_uncertain_types_can_spread_into_calls() {
     for source in [
         "fn f(g){g(...[],...(),...(1,2));}",
         "fn f(g,x){g(...x);}",
+        "fn f(g){g(...{x:1});g(x:1,...{y:2});}",
+        "fn f(g,x:table|null){g(...x);}",
         "fn f(g,x:array|null){g(...x);}",
         "fn f(g,x:any){g?(...x);}",
     ] {
@@ -87,7 +89,6 @@ fn spread_checks_apply_only_when_its_source_can_continue_with_a_value() {
         "1",
         "true",
         "\"bad\"",
-        "{x:1}",
         "if flag{null}else{null}",
         "if flag{1}else{2}",
         "if flag{return [];}else{null}",
@@ -102,7 +103,7 @@ fn spread_checks_apply_only_when_its_source_can_continue_with_a_value() {
             .iter()
             .find(|d| d.code == DiagnosticCode::TypeMismatch)
             .unwrap();
-        assert!(d.message.contains("array or tuple"));
+        assert!(d.message.contains("array, tuple or table"));
         assert_eq!(&source[byte_range(d.range)], format!("...{expression}"));
         assert!(a.module().is_none());
     }
