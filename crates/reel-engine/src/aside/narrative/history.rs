@@ -43,7 +43,7 @@ impl History {
                 None
             };
             for (i, line) in group.lines().iter().enumerate() {
-                let (id, name, text) = if let Some(active) = active {
+                let (id, name, text, speaker, content) = if let Some(active) = active {
                     let row = heap.sequence_get(active, i as u32)?;
                     let get = |field: LineField| {
                         heap.host_property(PropertyId {
@@ -55,18 +55,20 @@ impl History {
                         get(LineField::Id)?,
                         get(LineField::SpeakerName)?,
                         get(LineField::Text)?,
+                        get(LineField::SpeakerId)?,
+                        get(LineField::ContentId)?,
                     )
                 } else {
                     (
                         line_id(heap, line.id())?,
                         text::alloc_string(heap, line.speaker_name(), chunk)?,
                         text::alloc_string(heap, line.resolved_text(), chunk)?,
+                        line.speaker_id().map_or(Ok(Value::NULL), |name| {
+                            text::alloc_string(heap, name, chunk)
+                        })?,
+                        text::alloc_string(heap, line.content().id(), chunk)?,
                     )
                 };
-                let speaker = line.speaker_id().map_or(Ok(Value::NULL), |name| {
-                    text::alloc_string(heap, name, chunk)
-                })?;
-                let content = text::alloc_string(heap, line.content().id(), chunk)?;
                 let row = record(
                     heap,
                     &[

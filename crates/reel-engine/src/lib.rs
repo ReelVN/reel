@@ -146,6 +146,7 @@ pub struct Reveal {
 #[derive(Debug, PartialEq, Eq)]
 pub struct DialogueLine {
     id: DialogueLineId,
+    previously_read: bool,
     speaker_id: Option<String>,
     speaker_name: String,
     content: PlainTextContent,
@@ -155,6 +156,11 @@ pub struct DialogueLine {
 }
 
 impl DialogueLine {
+    /// Whether this content was completed before this group was submitted.
+    pub fn previously_read(&self) -> bool {
+        self.previously_read
+    }
+
     pub fn id(&self) -> DialogueLineId {
         self.id
     }
@@ -1039,6 +1045,7 @@ impl Session {
             );
             owned_lines.push(DialogueLine {
                 id: line_id,
+                previously_read: self.read_progress.contains(line.content_id),
                 speaker_id: copy_optional_text(line.speaker_id)?,
                 speaker_name: copy_text(line.speaker_name)?,
                 content: copy_content(line)?,
@@ -1057,9 +1064,7 @@ impl Session {
             .ids
             .try_reserve(lines.len())
             .map_err(|_| SessionError::AllocationFailed)?;
-        let previously_read = lines
-            .iter()
-            .all(|line| self.read_progress.contains(line.content_id));
+        let previously_read = owned_lines.iter().all(DialogueLine::previously_read);
         let dialogue = DialogueInteraction {
             previously_read,
             id,
