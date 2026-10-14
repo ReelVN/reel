@@ -2,9 +2,64 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Author-owned scene composition, shared by the script host and presentation.
+use crate::input::{ActionPhase, Binding};
 use crate::kurbo::{Affine, Size};
 use crate::properties::ObjectFit;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionDefinition {
+    pub name: Arc<str>,
+    pub bindings: Vec<Binding>,
+}
+
+/// A validated immutable binding set. Replacing it starts a fresh input lifetime.
+#[derive(Clone, Debug)]
+pub struct InputBindings(Arc<[ActionDefinition]>);
+impl PartialEq for InputBindings {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl std::ops::Deref for InputBindings {
+    type Target = [ActionDefinition];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl InputBindings {
+    pub fn new(actions: Vec<ActionDefinition>) -> Result<Self, crate::input::InvalidInput> {
+        for (i, a) in actions.iter().enumerate() {
+            if a.name.is_empty() || actions[..i].iter().any(|b| a.name == b.name) {
+                return Err(crate::input::InvalidInput);
+            }
+        }
+        crate::input::ActionMap::new(
+            actions
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (i, a.bindings.clone())),
+        )?;
+        Ok(Self(actions.into()))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeAction {
+    pub node: NodeId,
+    pub action: Arc<str>,
+    pub value: f32,
+    pub phase: ActionPhase,
+    /// Shared immutable mapping identifies events from a retired binding set.
+    pub bindings: InputBindings,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeEvent {
+    Click(NodeClick),
+    Action(NodeAction),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u64);
@@ -27,6 +82,10 @@ pub enum NodeKind {
         fit: ObjectFit,
         /// Author constructor location, retained through later source changes.
         origin: Option<String>,
+    },
+    Input {
+        bindings: InputBindings,
+        listening: bool,
     },
     Row,
     Column,
@@ -204,7 +263,11 @@ impl Stage {
         let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             container.kind,
-            NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::Button { .. }
+            NodeKind::Row
+                | NodeKind::Column
+                | NodeKind::Stack
+                | NodeKind::Button { .. }
+                | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);
         }
@@ -250,7 +313,11 @@ impl Stage {
         let node = self.nodes.get_mut(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             node.kind,
-            NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::Button { .. }
+            NodeKind::Row
+                | NodeKind::Column
+                | NodeKind::Stack
+                | NodeKind::Button { .. }
+                | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);
         }

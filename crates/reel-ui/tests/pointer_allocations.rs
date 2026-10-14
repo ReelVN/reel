@@ -158,7 +158,7 @@ fn real_uncaptured_pointer_dispatch_allocations() {
     use reel_ui::input::*;
     let mut input = NavigationInput::default();
     let event = |value| InputEvent::Value {
-        device: InputDeviceId(1),
+        device: InputDeviceId::Gamepad(1),
         control: Control::Axis(GamepadAxis::LeftX),
         value,
     };

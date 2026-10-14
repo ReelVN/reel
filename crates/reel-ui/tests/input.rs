@@ -4,7 +4,7 @@ use std::time::Duration;
 
 fn value(device: u64, control: Control, value: f32) -> InputEvent {
     InputEvent::Value {
-        device: InputDeviceId(device),
+        device: InputDeviceId::Gamepad(device),
         control,
         value,
     }
@@ -26,7 +26,7 @@ fn actions_aggregate_devices_bindings_analog_values_and_terminal_causes() {
         value(1, button, 1.),
         value(2, button, 1.),
         value(0, key, 0.),
-        InputEvent::Disconnected(InputDeviceId(1)),
+        InputEvent::Disconnected(InputDeviceId::Gamepad(1)),
     ] {
         map.update(&event, |e| events.push(e)).unwrap();
     }
@@ -47,7 +47,7 @@ fn actions_aggregate_devices_bindings_analog_values_and_terminal_causes() {
     map.update(&value(1, axis, 0.5), |e| events.push(e))
         .unwrap();
     assert_eq!(events.last().unwrap().phase, ActionPhase::Changed);
-    map.update(&InputEvent::Disconnected(InputDeviceId(1)), |e| {
+    map.update(&InputEvent::Disconnected(InputDeviceId::Gamepad(1)), |e| {
         events.push(e)
     })
     .unwrap();
@@ -85,7 +85,7 @@ fn navigation_hysteresis_repeat_disconnect_and_remapping_share_one_clock() {
     assert_eq!(events[1].phase, ActionPhase::Repeated);
     input
         .update(
-            &InputEvent::Disconnected(InputDeviceId(1)),
+            &InputEvent::Disconnected(InputDeviceId::Gamepad(1)),
             Duration::from_secs(1),
             |e| events.push(e),
         )
@@ -130,7 +130,7 @@ fn navigation_hysteresis_repeat_disconnect_and_remapping_share_one_clock() {
     for event in [
         value(1, Control::Button(GamepadButton::South), 0.9),
         value(2, Control::Button(GamepadButton::South), 0.2),
-        InputEvent::Disconnected(InputDeviceId(1)),
+        InputEvent::Disconnected(InputDeviceId::Gamepad(1)),
     ] {
         confirm
             .update(&event, Duration::ZERO, |e| events.push(e))

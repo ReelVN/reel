@@ -59,7 +59,7 @@ fn present(
         )),
         NoticeResult::Accepted
     );
-    runtime.driver.presented(stamp);
+    runtime.driver.presented(stamp).unwrap();
 }
 fn click(runtime: &mut StoryRuntime, bridge: &mut PresentationBridge) {
     for kind in ["move", "down", "up"] {

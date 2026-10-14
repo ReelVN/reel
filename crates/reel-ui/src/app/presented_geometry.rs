@@ -507,6 +507,10 @@ impl RenderRoot {
     pub fn set_input_geometry_source(&mut self, source: InputGeometrySource) {
         if matches!(source, InputGeometrySource::Presented(None)) {
             crate::passes::navigation::cancel_all(self);
+            crate::passes::event::run_on_text_event_pass(
+                self,
+                &crate::core::TextEvent::Input(crate::input::InputEvent::Cancel),
+            );
         }
         let old = self.global_state.input_geometry_source.clone();
         crate::passes::update::transition_pointer_geometry(self, old.borrow(), source.borrow());

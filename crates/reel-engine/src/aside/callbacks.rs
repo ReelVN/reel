@@ -18,12 +18,58 @@ impl SessionVm {
         let Some((target, closure)) = self.stage.click(self.vm.heap(), node)? else {
             return Ok(false);
         };
-        self.callbacks
-            .try_reserve(1)
-            .map_err(|_| AdapterError::Allocation)?;
         let event = self.vm.heap_mut().alloc_table()?;
         let key = self.vm.heap_mut().alloc_string("target")?;
         self.vm.heap_mut().table_store(event, 0, key, target)?;
+        self.start_callback(session, node, closure, event)
+    }
+
+    pub fn input_action(
+        &mut self,
+        session: &mut Session,
+        action: &reel_ui::stage::NodeAction,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, closure)) = self.stage.input_action(self.vm.heap(), action)? else {
+            return Ok(false);
+        };
+        use reel_ui::input::ActionPhase;
+        let phase = match action.phase {
+            ActionPhase::Pressed => "pressed",
+            ActionPhase::Changed => "changed",
+            ActionPhase::Repeated => "repeated",
+            ActionPhase::Released => "released",
+            ActionPhase::Cancelled => "cancelled",
+        };
+        let heap = self.vm.heap_mut();
+        let event = heap.alloc_table()?;
+        let name = heap.alloc_string(&action.action)?;
+        let phase = heap.alloc_string(phase)?;
+        for (i, (name, value)) in [
+            ("target", target),
+            ("action", name),
+            ("value", Value::float(action.value.into())),
+            ("phase", phase),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = heap.alloc_string(name)?;
+            heap.table_store(event, i as u32, key, value)?;
+        }
+        self.start_callback(session, action.node, closure, event)
+    }
+
+    fn start_callback(
+        &mut self,
+        session: &mut Session,
+        node: NodeId,
+        closure: Value,
+        event: Value,
+    ) -> Result<bool, AdapterError> {
+        self.callbacks
+            .try_reserve(1)
+            .map_err(|_| AdapterError::Allocation)?;
         let owner = session.create_owner()?;
         let task = match self.vm.start_closure(
             closure,

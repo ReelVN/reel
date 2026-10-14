@@ -108,13 +108,15 @@ enum ActivationKey {
 impl ButtonBehavior {
     pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
         match event {
-            PointerEvent::Down(_) => {
+            PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
                 ctx.request_focus();
                 ctx.capture_pointer();
                 ctx.request_paint_only();
                 trace!("Button {:?} pressed", ctx.widget_id());
             }
-            PointerEvent::Up(PointerButtonEvent { button, .. }) => {
+            PointerEvent::Up(PointerButtonEvent { button, .. })
+                if button.is_none_or(|b| b == PointerButton::Primary) =>
+            {
                 let press = (ctx.is_active() && ctx.is_hovered())
                     .then_some(ButtonPress { button: *button });
                 ctx.request_paint_only();

@@ -660,3 +660,48 @@ fn main() {
     narrator("Closing the menu returns input to the story.");
 }
 ```
+
+## Named actions and input nodes
+
+`input` is a shared stage node with stack layout. It binds keyboard, gamepad and pointer controls to named actions. This example matches [author_input.aside](../../examples/author_input.aside); run it with the dev/build/run commands in the first section. Supply `fonts/body.ttf`, or change the path in main.
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let marker = text("Move with A / D or the left stick", x: 160, y: 64,
+        width: 340, height: 48, background: "#284860");
+    let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
+    let controls = input(modal: true, width: 640, height: 280,
+        bindings: {
+            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
+                binding("LeftX", dead_zone: 0.2)],
+            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
+            finish: [binding("Escape"), binding("East")],
+        },
+        on_action: |event| {
+            if event.action == "move_x" {
+                marker.x = 160 + 120 * event.target.value("move_x");
+                status.value = event.phase;
+            }
+            if event.action == "jump" && event.phase == "pressed" {
+                await run(sequence(
+                    tween(marker, y: 16, duration: 0.15),
+                    tween(marker, y: 64, duration: 0.15)
+                ));
+            }
+            if event.action == "finish" && event.phase == "released" {
+                stage.replace(text("Finished", x: 24, y: 24));
+            }
+        }
+    ) { marker; status; };
+    stage.replace(controls);
+}
+```
+
+Each key in bindings names an action; its value is an array of binding descriptions. Controls use physical key names (KeyA, KeyD, Space, Escape), standard gamepad buttons (South, East, DpadLeft), axes (LeftX, LeftY, RightX, RightY, LeftZ, RightZ), or pointer buttons (PointerPrimary, PointerSecondary, PointerAuxiliary, PointerX1, PointerX2). Axes range from -1 to 1, with positive Y pointing down; trigger buttons range from 0 to 1. scale defaults to 1 and dead_zone to 0. Values outside the dead zone are normalized again before scaling; contributions are added and clamped to -1 through 1. Releasing one device or touch contact does not release an action still held by another.
+
+Events carry target, action, value and phase. Phases are pressed, changed, released and cancelled; keyboard repeat does not produce another pressed event. `node.value("move_x")` reads the latest held value and rejects unknown actions; event.value retains the value of that particular event. Callbacks may await and belong to their node. Assigning `node.bindings = new_table` cancels the old state and installs the new map; edits inside the original table do not implicitly update it. Assign a closure or null to node.on_action.
+
+The input node receives keyboard and gamepad actions while it has focus. When a child control gains focus, it takes ownership and cancels the parent input node's held actions, so the parent cannot steal controller confirmation. Use modal: true to give an independent interaction scope focus immediately. Nonmodal nodes can receive focus through Tab; bound pointer presses also focus the node and capture that contact. Hiding, disabling, losing focus, changing modal scope or clearing the presented frame cancels held actions. Removing a node ends its tasks and activities. A consumed action does not also navigate or advance dialogue. Ordinary buttons and dialogue activate with the primary pointer button or touch; other mouse buttons remain available to author actions.
+
+Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `NodeKind::Input` and `NodeAction`. Route native controls through TextEvent::Input first; its Handled result reports whether an action in the current scope claimed the control. Unbound controls can feed NavigationInput within that same UI; raw events cannot cross modal boundaries. The fallible AsideSessionUi::presented and clear_presented calls deliver routing cancellations to the VM after presentation acceptance or revocation. Wake StoryRuntime when those calls create tasks.

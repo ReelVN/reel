@@ -652,3 +652,48 @@ fn main() {
     narrator("Closing the menu returns input to the story.");
 }
 ```
+
+## 命名动作与输入节点
+
+`input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let marker = text("Move with A / D or the left stick", x: 160, y: 64,
+        width: 340, height: 48, background: "#284860");
+    let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
+    let controls = input(modal: true, width: 640, height: 280,
+        bindings: {
+            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
+                binding("LeftX", dead_zone: 0.2)],
+            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
+            finish: [binding("Escape"), binding("East")],
+        },
+        on_action: |event| {
+            if event.action == "move_x" {
+                marker.x = 160 + 120 * event.target.value("move_x");
+                status.value = event.phase;
+            }
+            if event.action == "jump" && event.phase == "pressed" {
+                await run(sequence(
+                    tween(marker, y: 16, duration: 0.15),
+                    tween(marker, y: 64, duration: 0.15)
+                ));
+            }
+            if event.action == "finish" && event.phase == "released" {
+                stage.replace(text("Finished", x: 24, y: 24));
+            }
+        }
+    ) { marker; status; };
+    stage.replace(controls);
+}
+```
+
+`bindings` 的键是动作名，值是 binding 数组。control 使用物理键名（KeyA、KeyD、Space、Escape 等）、标准手柄按钮（South、East、DpadLeft 等）、轴（LeftX、LeftY、RightX、RightY、LeftZ、RightZ）或指针按钮（PointerPrimary、PointerSecondary、PointerAuxiliary、PointerX1、PointerX2）。轴范围为 -1 到 1，Y 轴向下为正；扳机按钮范围为 0 到 1。scale 默认 1，dead_zone 默认 0；死区外的值重新归一化后应用 scale，同一动作的绑定相加并限制在 -1 到 1。两个设备或触点同时保持动作时，松开其中一个不会提前结束动作。
+
+事件有 target、action、value、phase；phase 为 pressed、changed、released 或 cancelled，键盘系统重复不会再次产生 pressed。`node.value("move_x")` 读取最新保持值，未知动作报错；回调里的 event.value 保留该次事件值。回调可以 await，生命周期与节点一致。`node.bindings = 新表` 撤销旧状态并启用新映射；对原表内部的编辑不会自动更新映射。`node.on_action` 可赋闭包或 null。
+
+输入节点自身拥有焦点时接收键盘和手柄动作。子控件取得焦点会取消父输入节点的保持，并独立处理输入，避免手柄确认被父动作抢走；使用 modal: true 可让独立交互场景直接接管焦点。非模态节点可通过 Tab 聚焦，绑定了指针按钮时点击也会聚焦并捕获该触点。隐藏、禁用、失焦、切换模态和清除已呈现画面会取消保持；移除节点会结束其任务和活动。动作消费的同一次输入不会继续导航或推进对白。普通按钮与对白由主指针按钮或触摸激活，其他鼠标按钮可用于作者动作。
+
+Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings`、`NodeKind::Input` 和 `NodeAction`。原生控制先通过 `TextEvent::Input` 路由；此事件的 Handled 表示作用域内是否有动作声明消费，未绑定的控制可继续进入同一 UI 的 NavigationInput。原始事件不会越过模态边界。画面接受和撤销分别调用可失败的 `AsideSessionUi::presented` / `clear_presented`，把路由阶段产生的取消交给 VM；有新任务时唤醒 StoryRuntime。

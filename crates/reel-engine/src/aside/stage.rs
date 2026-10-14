@@ -1,5 +1,6 @@
 //! Stable Aside host nodes projected into Reel's one shared stage model.
 use std::collections::BTreeMap;
+pub(super) mod input;
 
 use aside_vm::{
     Heap, HeapError, HeapHandle, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag,
@@ -61,21 +62,25 @@ pub(super) struct StageBinding {
     pub scene: Stage,
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
-    methods: [FunctionId; 3],
+    methods: [FunctionId; 4],
 }
 struct NodeBinding {
     handle: HeapHandle,
     fields_version: u64,
+    input_source: Option<HeapHandle>,
+    input_values: BTreeMap<std::sync::Arc<str>, f32>,
 }
 
 impl StageBinding {
     pub fn new(program: &VerifiedProgram) -> Result<Self, AdapterError> {
         let p = program.package();
-        let mut methods = [FunctionId(0); 3];
-        for (slot, symbol) in methods
-            .iter_mut()
-            .zip([add::SYMBOL, remove::SYMBOL, clear::SYMBOL])
-        {
+        let mut methods = [FunctionId(0); 4];
+        for (slot, symbol) in methods.iter_mut().zip([
+            add::SYMBOL,
+            remove::SYMBOL,
+            clear::SYMBOL,
+            input::value::SYMBOL,
+        ]) {
             *slot = p
                 .functions
                 .iter()
@@ -116,7 +121,7 @@ impl StageBinding {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
             NodeKind::Text(_) => 1,
-            NodeKind::Image { .. } | NodeKind::Button { .. } => 2,
+            NodeKind::Image { .. } | NodeKind::Button { .. } | NodeKind::Input { .. } => 2,
             _ => 0,
         })
     }
@@ -165,6 +170,13 @@ impl StageBinding {
         let kind = match symbol {
             "reel::text" => NodeKind::Text(read_text(heap, args[0], read_limit)?),
             "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
+            "reel::input" => {
+                input::validate(heap, 1, args[1])?;
+                NodeKind::Input {
+                    bindings: input::read_bindings(heap, args[0])?,
+                    listening: args[1].tag() != ValueTag::Null,
+                }
+            }
             "reel::image" => NodeKind::Image {
                 source: read_source(heap, args[0], read_limit)?,
                 fit: read_fit(heap, args[1])?,
@@ -180,7 +192,11 @@ impl StageBinding {
         let references = heap.alloc_array(&[])?;
         if matches!(
             kind,
-            NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::Button { .. }
+            NodeKind::Row
+                | NodeKind::Column
+                | NodeKind::Stack
+                | NodeKind::Button { .. }
+                | NodeKind::Input { .. }
         ) {
             let input = args[args.len() - 1];
             if input.tag() != ValueTag::Null {
@@ -204,20 +220,30 @@ impl StageBinding {
                 "reel::text" => validate_text_property,
                 "reel::image" => validate_image_property,
                 "reel::button" => validate_button_property,
+                "reel::input" => input::validate,
                 _ => validate_layout_property,
             }),
         )?;
-        for (i, (name, function)) in ["add", "remove", "clear"]
+        for (i, (name, function)) in ["add", "remove", "clear", "value"]
             .into_iter()
             .zip(self.methods)
             .enumerate()
         {
+            if name == "value" && symbol != "reel::input" {
+                continue;
+            }
             let method = vm.bind_native(value, function)?;
             let heap = vm.heap_mut();
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, (field_count + i) as u32, key, method)?;
         }
         let heap = vm.heap_mut();
+        let input_values = match &kind {
+            NodeKind::Input { bindings, .. } => {
+                bindings.iter().map(|a| (a.name.clone(), 0.)).collect()
+            }
+            _ => BTreeMap::new(),
+        };
         self.scene.create(kind, props, children)?;
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
@@ -230,6 +256,12 @@ impl StageBinding {
             NodeBinding {
                 handle: heap.handle(value)?,
                 fields_version: heap.info(fields)?.content_version,
+                input_source: if symbol == "reel::input" {
+                    Some(heap.handle(args[0])?)
+                } else {
+                    None
+                },
+                input_values,
             },
         );
         Ok(value)
@@ -257,6 +289,23 @@ impl StageBinding {
                 continue;
             }
             let (kind, offset) = match &node.kind {
+                NodeKind::Input { bindings, .. } => {
+                    let source = heap.table_entry(fields, 0)?.1;
+                    let bindings = if binding.input_source == Some(heap.handle(source)?) {
+                        bindings.clone()
+                    } else {
+                        input::read_bindings(heap, source)?
+                    };
+                    let callback = heap.table_entry(fields, 1)?.1;
+                    input::validate(heap, 1, callback)?;
+                    (
+                        NodeKind::Input {
+                            bindings,
+                            listening: callback.tag() != ValueTag::Null,
+                        },
+                        2,
+                    )
+                }
                 NodeKind::Button { .. } => (
                     button_kind(
                         heap,
@@ -284,6 +333,16 @@ impl StageBinding {
             updates.push((id, kind, props, version));
         }
         for (id, kind, props, version) in updates {
+            if let NodeKind::Input { bindings, .. } = &kind {
+                let binding = self.handles.get_mut(&id).unwrap();
+                let source = heap
+                    .table_entry(heap.host_fields(heap.import_handle(binding.handle)?)?, 0)?
+                    .1;
+                if binding.input_source != Some(heap.handle(source)?) {
+                    binding.input_values = bindings.iter().map(|a| (a.name.clone(), 0.)).collect();
+                    binding.input_source = Some(heap.handle(source)?);
+                }
+            }
             self.scene.update(id, kind, props)?;
             self.handles.get_mut(&id).unwrap().fields_version = version;
         }
@@ -353,7 +412,17 @@ impl StageBinding {
         if callback.tag() == ValueTag::Null {
             return Ok(None);
         }
-        let modal = self.modal_scope(heap)?;
+        Ok(self
+            .mounted_in_scope(heap, id, self.modal_scope(heap)?)?
+            .then_some((target, callback)))
+    }
+
+    fn mounted_in_scope(
+        &self,
+        heap: &Heap,
+        id: NodeId,
+        modal: Option<NodeId>,
+    ) -> Result<bool, AdapterError> {
         let mut in_scope = modal.is_none();
         let mut current = Some(id);
         let mut root = id;
@@ -369,13 +438,13 @@ impl StageBinding {
                     .as_bool()
                     != Some(true)
                 {
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
             root = id;
             current = self.scene.node(id).unwrap().parent;
         }
-        Ok((in_scope && self.scene.root() == Some(root)).then_some((target, callback)))
+        Ok(in_scope && self.scene.root() == Some(root))
     }
 
     /// Inspect current script flags, including writes not yet projected to the UI.
@@ -425,13 +494,11 @@ impl StageBinding {
         let mut pending: Vec<_> = self.scene.root().into_iter().collect();
         while let Some(id) = pending.pop() {
             let node = self.scene.node(id).unwrap();
-            if matches!(
-                node.kind,
-                NodeKind::Button {
-                    listening: true,
-                    ..
-                }
-            ) {
+            if match &node.kind {
+                NodeKind::Button { listening, .. } => *listening,
+                NodeKind::Input { bindings, .. } => !bindings.is_empty(),
+                _ => false,
+            } {
                 return true;
             }
             pending.extend(node.children.iter().copied());
@@ -440,8 +507,14 @@ impl StageBinding {
     }
 }
 
-pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 3] {
-    [add::binding(), remove::binding(), clear::binding()]
+pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 5] {
+    [
+        add::binding(),
+        remove::binding(),
+        clear::binding(),
+        input::binding::binding(),
+        input::value::binding(),
+    ]
 }
 
 #[aside_host::native(symbol = "reel::node::add", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]

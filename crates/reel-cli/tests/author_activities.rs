@@ -147,7 +147,7 @@ fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
             )),
             NoticeResult::Accepted
         );
-        driver.presented(driver.projection_stamp());
+        driver.presented(driver.projection_stamp()).unwrap();
     }
     for _ in 0..10000 {
         if matches!(

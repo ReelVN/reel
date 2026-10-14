@@ -152,7 +152,7 @@ fn frames(story: CompiledStory) -> Vec<Vec<Fill>> {
             )),
             NoticeResult::Accepted
         );
-        driver.presented(driver.projection_stamp());
+        driver.presented(driver.projection_stamp()).unwrap();
         assert!(driver.advance_time((second + 1) as f64, 64).unwrap().woke);
     }
     for _ in 0..10000 {

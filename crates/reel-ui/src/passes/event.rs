@@ -309,6 +309,7 @@ pub(crate) fn run_on_pointer_event_with_view(
             // Ordinary controls have one gesture owner. A second contact can
             // operate another control but cannot steal an in-progress drag.
             if matches!(event, PointerEvent::Down(_))
+                && !widget.accepts_multiple_pointers()
                 && ctx
                     .global_state
                     .other_pointers
@@ -335,7 +336,21 @@ pub(crate) fn run_on_pointer_event_with_view(
     route.clear();
     root.global_state.pointer_route = route;
 
-    if matches!(event, PointerEvent::Up { .. } | PointerEvent::Cancel(..)) {
+    let retaining_buttons = matches!(event, PointerEvent::Up(e) if !e.state.buttons.is_empty())
+        && root
+            .global_state
+            .pointer
+            .pointer_capture_target
+            .is_some_and(|id| {
+                root.widget_arena
+                    .nodes
+                    .find(id)
+                    .is_some_and(|n| n.item.widget.accepts_multiple_pointers())
+            });
+    if retaining_buttons {
+        root.global_state.pointer.pointer_capture_terminal_delivered = None;
+    }
+    if matches!(event, PointerEvent::Up { .. } | PointerEvent::Cancel(..)) && !retaining_buttons {
         // Automatically release the pointer on pointer up or leave. If a widget holds the capture,
         // it is notified of the pointer event before the capture is released, so it knows it is
         // about to lose the pointer.
@@ -384,7 +399,10 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
 
     let cleanup = matches!(
         event,
-        TextEvent::Ime(Ime::Disabled) | TextEvent::WindowFocusChange(false)
+        TextEvent::Ime(Ime::Disabled)
+            | TextEvent::WindowFocusChange(false)
+            | TextEvent::Input(crate::input::InputEvent::Cancel)
+            | TextEvent::Input(crate::input::InputEvent::Disconnected(_))
     );
     let source = root.global_state.input_geometry_source.clone();
     let view = if cleanup {
@@ -493,7 +511,9 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
         "ON_TEXT_EVENT finished",
     );
 
-    if root.input_scope(view).is_some() {
+    // Physical controls report whether an action claimed them. The host may
+    // route unbound controls into semantic navigation within this same scope.
+    if root.input_scope(view).is_some() && !matches!(event, TextEvent::Input(_)) {
         Handled::Yes
     } else {
         handled

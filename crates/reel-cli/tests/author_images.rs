@@ -138,7 +138,7 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
         )),
         NoticeResult::Accepted
     );
-    driver.presented(driver.projection_stamp());
+    driver.presented(driver.projection_stamp()).unwrap();
     frame
 }
 
