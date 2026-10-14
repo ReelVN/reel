@@ -159,6 +159,11 @@ pub fn load_with_modules(
             .or_insert_with(|| alias.clone())
             .clone();
         aliases.insert(alias.clone(), canonical.clone());
+        if canonical == "game"
+            && let Some(stem) = input.file_stem().and_then(|v| v.to_str())
+        {
+            aliases.insert(format!("{alias}::{stem}"), "main".into());
+        }
         roots.entry(canonical).or_insert(directory);
     }
     let mut first = Some(source);

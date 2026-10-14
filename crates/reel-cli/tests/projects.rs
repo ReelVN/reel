@@ -79,10 +79,11 @@ fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() 
         "library/data.aside",
         "pub use reel::prelude::text as label; pub let model={value:0}; pub fn bump(){model.value+=1;}",
     );
-    case.write("main.aside", "use first::data as a; use second::data as b; fn main(){game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
+    case.write("main.aside", "use first::data as a; use second::data as b; use home::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
     let modules = std::collections::BTreeMap::from([
         ("first".into(), case.dir.join("library")),
         ("second".into(), case.dir.join("library")),
+        ("home".into(), case.dir.clone()),
     ]);
     let loaded = reel_cli::project::load_with_modules(&case.dir, &modules)
         .unwrap_or_else(|error| panic!("{:?}", error.failure));
@@ -100,6 +101,8 @@ fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() 
         "first=library",
         "--module",
         "second=library",
+        "--module",
+        "home=.",
         "--output",
         "project.asb",
         "--format",
