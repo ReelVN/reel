@@ -122,7 +122,7 @@ fn list_admission_is_readonly_unique_and_keeps_the_old_tree_on_factory_failure()
         let original = text("kept"); stage.replace(original);
         let mut errors = 0;
         try { stage.replace(list(|| [1, 1], key: |x| x, build: |row| text("bad"))); } catch e { errors += 1; }
-        try { list(|| [1], key: |x| true, build: |row| null); } catch e { errors += 1; }
+        try { list(|| [1, 2], key: |x| true, build: |row| null); } catch e { errors += 1; }
         try { list(|| 1, key: |x| x, build: |row| null); } catch e { errors += 1; }
         try { stage.replace(list(|| [1, 2], key: |x| x, build: |row| {
             if row.index == 1 { throw "factory failed"; } text("detached")
@@ -130,7 +130,7 @@ fn list_admission_is_readonly_unique_and_keeps_the_old_tree_on_factory_failure()
         try { list(|| [1], key: |x| x, build: |row| { row.value = 2; null }); } catch e { errors += 1; }
         try { stage.replace(list(|| [1], key: |x| x, build: |row| original)); } catch e { errors += 1; }
         if errors != 6 { throw "list accepted invalid input"; }
-        let nothing = list(|| [1, "1", "长鍵", "长鍵前缀"], key: |x| x, build: |row| null);
+        let nothing = list(|| [1, "1", "长鍵", "长鍵前缀", true, false, null, 1.0, {}, []], key: |x| x, build: |row| null);
         narrator("ready");
     }"#;
     for encoded in [false, true] {

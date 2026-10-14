@@ -76,6 +76,81 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
     let mut cases = vec![
         (
             r#"fn main() {
+                let mut calls=0; let mut guards=0;
+                fn source(){calls+=1; "hello"}
+                fn guard(){guards+=1; false}
+                let result=match source() {
+                    "other" if guard() => 0,
+                    ("hello" | "hi") if guard() => 0,
+                    name is string if name=="hello" => 40,
+                    _ => 0,
+                };
+                if calls!=1 || guards!=1 {throw "evaluation order";}
+                fn scalar(value) {match value {
+                    -9223372036854775808 => 1,
+                    -2.5 => 2,
+                    true => 3,
+                    false => 4,
+                    null => 5,
+                    x is int | x is string => if x==7 {6} else {7},
+                    _ => 8,
+                }}
+                if scalar(-9223372036854775808)!=1 || scalar(-2.5)!=2 {throw "negative";}
+                if scalar(true)!=3 || scalar(false)!=4 || scalar(null)!=5 {throw "literal";}
+                if scalar(7)!=6 || scalar("中")!=7 || scalar([])!=8 {throw "typed OR";}
+                result+calls+guards
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let callbacks=[]; let rejected=[];
+                fn reject(callback){rejected.append(callback); false}
+                for seed in [10,20] {
+                    match seed {
+                        item if reject(||item) => {throw "guard";},
+                        item => {callbacks.append(||item);},
+                    };
+                }
+                if rejected[0]()!=10 || rejected[1]()!=20 {throw "rejected captures";}
+                if callbacks[0]()!=10 || callbacks[1]()!=20 {throw "accepted captures";}
+                let mut sum=0;
+                for seed in 0..5 {
+                    try {match seed {0=>{continue;}, 4=>{break;}, n=>{sum+=n;}};}
+                    finally {sum+=1;}
+                }
+                fn classify(value) {match value {1=>{return 20;}, _=>{return 22;}}}
+                if sum!=11 {throw "match cleanup";}
+                classify(1)+classify(null)
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let mut caught=0; let mut cleaned=0;
+                fn classify(value){match value {1=>10, "name"=>20}}
+                fn reject(){throw "guard";}
+                try {classify(2);} catch e {caught+=1;} finally {cleaned+=1;}
+                try {match 7 {n if reject() =>n, _=>0};}
+                catch e {if e=="guard" {caught+=1;}} finally {cleaned+=1;}
+                if caught==2 && cleaned==2 {42} else {0}
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main(node) {
+                fn children(children=[]){children}
+                let nodes=children() {
+                    match "a" {"a"=>node, _=>null};
+                    match 2 {1=>null, 2=>{node; node;}, _=>null};
+                    match true {true=>match null {null=>node, _=>null}, _=>null};
+                };
+                if nodes.len()==4 && nodes[0]==node && nodes[3]==node {42} else {0}
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
                 fn render(a, b=20, children=[]) { a+b+children.len() }
                 fn forward(callback, values, options) { callback(...values,...options) }
                 if forward(render,[19],{b:22,children:[0]})!=42 {throw "forward";}
@@ -349,6 +424,7 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         let slice: String = text.chars().skip(padding).take(8).collect();
         format!(r#"fn main() {{
             let s="{text}";
+            if match s {{"{text}x"=>0, "{text}"=>42, _=>0}} !=42 {{throw "long match";}}
             if s.byte_len()!={} || s.scalar_count()!={} {{throw "long count";}}
             if s.slice_scalars({padding}..{})!="{slice}" {{throw "long scalar slice";}}
             if s.slice_bytes({padding}..{})!="{slice}" {{throw "long byte slice";}}

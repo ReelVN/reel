@@ -1,0 +1,17 @@
+fn caption(mode) {
+    match mode {
+        "online" | "typing" => "在线",
+        name is string if name != "" => name,
+        _ => "离线",
+    }
+}
+
+fn main() {
+    game.configure(default_dialogue: false);
+    stage.replace(column(gap: 12) {
+        text(caption("typing"));
+        text(caption("稍后回来"));
+        text(caption(null));
+    });
+    narrator("按值组合画面");
+}

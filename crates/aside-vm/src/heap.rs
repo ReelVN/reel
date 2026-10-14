@@ -121,6 +121,8 @@ pub struct HeapLimits {
     pub max_objects: u32,
     pub max_roots: u32,
     pub max_root_ranges: u32,
+    /// Optional host byte quota; u64::MAX leaves allocation to available memory.
+    /// Usage and peaks are tracked independently of this admission limit.
     pub max_bytes: u64,
     pub max_mutation_values: u32,
     pub max_mutation_bytes: u32,
@@ -131,7 +133,7 @@ impl Default for HeapLimits {
             max_objects: 16_384,
             max_roots: 1024,
             max_root_ranges: 1024,
-            max_bytes: 32 * 1024 * 1024,
+            max_bytes: u64::MAX,
             max_mutation_values: 256,
             max_mutation_bytes: 4096,
         }

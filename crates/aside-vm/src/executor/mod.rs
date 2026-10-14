@@ -492,7 +492,44 @@ impl Vm {
                 + (std::mem::size_of::<CodeLease>() - std::mem::size_of::<BytecodePackage>()
                     + 2 * std::mem::size_of::<usize>()) as u64,
         )?;
-        let mut slots = FrameSlots::new(&mut heap, limits.slots)?;
+        let native_count = p
+            .functions
+            .iter()
+            .filter(|f| matches!(f.kind, FunctionKind::Native(_)))
+            .count();
+        let module_slots = p.modules.iter().fold(
+            p.constants
+                .len()
+                .checked_add(p.symbols.len())
+                .and_then(|n| n.checked_add(native_count)),
+            |total, module| total.and_then(|n| n.checked_add(module.globals.len())),
+        );
+        let module_slots =
+            u32::try_from(module_slots.ok_or(VmError::Limit)?).map_err(|_| VmError::Limit)?;
+        let execution = limits.slots;
+        if execution.initial_capacity == 0
+            || execution.initial_capacity > execution.max_capacity
+            || execution.max_window_len == 0
+            || execution.max_window_len > execution.max_capacity
+        {
+            return Err(VmError::Limit);
+        }
+        // Module roots are permanent for this package. Reserving their actual
+        // size keeps story length from consuming the execution working set.
+        let mut slots = FrameSlots::new(
+            &mut heap,
+            FrameSlotsLimits {
+                initial_capacity: execution
+                    .initial_capacity
+                    .checked_add(module_slots)
+                    .ok_or(VmError::Limit)?,
+                max_capacity: execution
+                    .max_capacity
+                    .checked_add(module_slots)
+                    .ok_or(VmError::Limit)?,
+                max_window_len: execution.max_window_len,
+            },
+        )?;
         let control_bytes = std::mem::size_of::<Self>()
             - std::mem::size_of::<Heap>()
             - std::mem::size_of::<FrameSlots>();
@@ -505,11 +542,6 @@ impl Vm {
                 .data
                 .push(program.native_parameters_need_cells(NativeId(index as u32))?);
         }
-        let native_count = p
-            .functions
-            .iter()
-            .filter(|f| matches!(f.kind, FunctionKind::Native(_)))
-            .count();
         let mut native_values = ChargedVec::new(&usage, native_count)?;
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
         let mut tasks = ChargedVec::new(&usage, limits.max_tasks as usize)?;
@@ -532,10 +564,9 @@ impl Vm {
             &usage,
             (limits.heap.max_mutation_bytes as usize).min(BYTE_CHUNK_LEN),
         )?;
-        let constants = slots.open(
+        let constants = slots.open_module_set(
             &mut heap,
             RootOwner(u64::MAX),
-            RootKind::ModuleSet,
             u32::try_from(
                 p.constants
                     .len()
@@ -613,10 +644,9 @@ impl Vm {
                     .push((FunctionId(index as u32), position));
             }
         }
-        let globals = slots.open(
+        let globals = slots.open_module_set(
             &mut heap,
             RootOwner(u64::MAX),
-            RootKind::ModuleSet,
             p.modules.iter().map(|m| m.globals.len() as u32).sum(),
         )?;
         let mut offset = 0;
@@ -3408,6 +3438,7 @@ impl Vm {
                 };
                 return Ok(false);
             }
+            Opcode::MatchFail => return Err(FaultKind::MatchError),
             Opcode::Throw => {
                 let v = self.read(*s, r(a))?;
                 self.put(s.env, 1, v).map_err(vm_fault)?;

@@ -86,6 +86,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 005f | ArrayPush | x,y | append one value to array | yes | - |
 | 0060 | Match | d,x,q:Pattern(nodes,outputs) | next (bool; outputs committed on success) | yes | - |
 | 0061 | PatternRequire | x | next (PatternMismatch on false) | yes | - |
+| 0069 | MatchFail | - | throw MatchError | yes | - |
 | 0062 | IterInit | d,x | next | yes | - |
 | 0063 | IterNext | d,x | next (internal tuple: done, value) | yes | - |
 | 0064 | IterClose | x | next | yes | - |

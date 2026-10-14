@@ -11,13 +11,14 @@ fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
     let source = r#"
     fn main() {
         game.configure(default_dialogue: false);
-        let data = model({items: [{id: "a", name: "A"}, {id: "b", name: "B"}], clicked: 0, latest: ""});
+        let data = model({items: [{id: {}, name: "A"}, {id: [], name: "B"}], clicked: 0, latest: ""});
+        let a = data.items[0].id; let b = data.items[1].id;
         stage.replace(column(width: 600, height: 400) {
             list(|| data.items, key: |item| item.id, build: |row| {
                 button(label: derive(|| row.value.name), width: 180, height: 50, on_click: |e| {
                     data.latest = row.value.name;
                     data.clicked += 1;
-                    if data.clicked == 1 { data.items = [{id: "b", name: "Bee"}, {id: "a", name: "Ay"}, {id: "c", name: "C"}]; }
+                    if data.clicked == 1 { data.items = [{id: b, name: "Bee"}, {id: a, name: "Ay"}, {id: null, name: "C"}]; }
                     else if data.clicked == 2 { data.items.remove(row.index); }
                 })
             });
@@ -72,6 +73,44 @@ fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
 }
 
 #[test]
+fn opaque_choice_ids_work_as_list_keys_through_source_and_asb() {
+    let source = r#"fn main() {
+        game.configure(default_dialogue: false, default_choices: false);
+        let choices = game.choice();
+        stage.replace(list(|| choices.options, key: |option| option.id, build: |row|
+            button(row.value.label, width: 200, height: 50,
+                on_click: |event| choices.select(row.value.id))));
+        let selected = choose([{key: "a", label: "A"}, {key: "b", label: "B"}]);
+        stage.replace(text(selected));
+        narrator("selected");
+    }"#;
+    let checked = reel_cli::check(source, "choices.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        present(&mut driver, &mut bridge, root, 1);
+        click_at(&mut driver, &mut bridge, 20., 75.);
+        let stage = driver.adapter().stage();
+        assert_eq!(
+            stage.node(stage.root().unwrap()).unwrap().kind,
+            NodeKind::Text("b".into())
+        );
+        driver.cancel().unwrap();
+    }
+}
+
+#[test]
 fn creator_ui_examples_initialize_from_source_and_asb() {
     for (name, source) in [
         (
@@ -97,6 +136,10 @@ fn creator_ui_examples_initialize_from_source_and_asb() {
         (
             "author_keyboard.aside",
             include_str!("../../../examples/author_keyboard.aside"),
+        ),
+        (
+            "match_values.aside",
+            include_str!("../../../examples/match_values.aside"),
         ),
     ] {
         let checked = reel_cli::check(source, name).unwrap();

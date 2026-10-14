@@ -71,6 +71,7 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
                     bc::Instruction::new(bc::Opcode::Return, value.0, 0, 0)
                 }
                 Terminator::Throw(value) => bc::Instruction::new(bc::Opcode::Throw, value.0, 0, 0),
+                Terminator::MatchFail => bc::Instruction::new(bc::Opcode::MatchFail, 0, 0, 0),
                 Terminator::Rethrow => bc::Instruction::new(bc::Opcode::Rethrow, 0, 0, 0),
                 Terminator::EndFinally(region) => {
                     bc::Instruction::new(bc::Opcode::EndFinally, region.0, 0, 0)

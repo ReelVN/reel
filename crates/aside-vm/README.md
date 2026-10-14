@@ -34,7 +34,10 @@ commands, allocator-boundary evidence and measured costs; the L01 measurements
 below remain historical evidence for the original heap.
 
 `FrameSlots::new` binds one pool to a Heap with explicit initial/max capacity and
-max window length. `open` publishes all-null storage and its mapping together;
+max window length. `open` publishes all-null storage and its mapping together.
+VM loading adds the exact module-root count to `VmLimits.slots` execution
+capacity. Constants, symbols, native values and globals use module admission,
+not the per-operation window limit; their complete storage remains heap-charged.
 `write`, `copy_value`, `move_value`, `swap` and host-root transfer preserve the
 insertion barrier. `read` checks one initialized bit; null is an ordinary
 initialized value. Values use a contiguous Vec, not per-register objects,
@@ -230,7 +233,11 @@ the loaded package; snapshot/rebinding support, async functions and Future
 adoption are not yet implemented. Run the source/codec/GC/cancellation contract:
 `cargo test -p aside-compiler --test host_awaitables -- --nocapture`.
 
-Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, patterns, full
+Value match branches compile to existing comparisons/type tests/control flow;
+MatchFail raises a catchable MatchError through normal cleanup. Structural
+pattern execution remains pending.
+
+Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, structural patterns, full
 module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
 
 Collection methods include array insert/remove/resize/reverse/extend/clear/top/swap,

@@ -78,6 +78,50 @@ fn finish(vm: &mut Vm) -> DeliveryId {
     panic!("did not finish")
 }
 #[test]
+fn unmatched_branch_reports_a_typed_fault() {
+    let mut p = fixtures::helper_native();
+    p.functions[0].code[0] = Instruction::new(Opcode::MatchFail, 0, 0, 0);
+    let mut v = vm(p);
+    v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    loop {
+        match slice(&mut v) {
+            RunOutcome::BudgetYield(_) => gc(&mut v),
+            RunOutcome::Fault(id) => {
+                let fault = v.delivery_fault(id).unwrap().unwrap();
+                assert_eq!(fault.kind, FaultKind::MatchError);
+                assert_eq!(fault.location.code.function, fixtures::ENTRY);
+                assert_eq!(fault.location.pc, Pc(0));
+                v.discard_delivery(id).unwrap();
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn module_roots_do_not_consume_the_execution_window_allowance() {
+    let mut p = fixtures::helper_native();
+    p.constants.extend((0..9_000).map(Const::Int));
+    let last = p.constants.len() as u32 - 1;
+    p.functions[0].code[0] = Instruction::new(Opcode::LoadConst, 0, last, 0);
+    p.functions[0].code[1] = Instruction::new(Opcode::Move, 1, 0, 0);
+    let static_roots = p.constants.len() + p.symbols.len();
+    let mut v = vm(p);
+    assert_eq!(
+        v.stats().slots.capacity as usize,
+        VmLimits::default().slots.initial_capacity as usize + static_roots
+    );
+    v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let result = finish(&mut v);
+    assert_eq!(v.delivery_value(result).unwrap().as_int(), Some(8_999));
+    v.discard_delivery(result).unwrap();
+    assert!(v.stats().heap.charged_bytes > 0);
+}
+
+#[test]
 fn same_shared_helper_fixture_ready_pending_with_budget_one_and_gc() {
     for completion in fixtures::ECHO_COMPLETIONS {
         let mut v = vm(fixtures::helper_native());

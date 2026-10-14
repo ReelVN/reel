@@ -201,6 +201,7 @@ pub enum FaultKind {
     ConcurrentModification = 17,
     ModuleInitializationCycle = 18,
     ArgumentOrder = 19,
+    MatchError = 20,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -238,6 +239,8 @@ impl std::error::Error for VmError {}
 pub struct VmLimits {
     pub max_tasks: u32,
     pub heap: HeapLimits,
+    /// Execution storage. Loaded constants, symbols, native values and globals
+    /// add their exact root count; all capacity still charges the heap budget.
     pub slots: FrameSlotsLimits,
     pub max_frames: u32,
     pub max_unwinds: u32,
@@ -350,6 +353,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::ArgsSpread,
     Opcode::ArgsNamed,
     Opcode::Throw,
+    Opcode::MatchFail,
     Opcode::Rethrow,
     Opcode::Leave,
     Opcode::EndFinally,
@@ -367,6 +371,7 @@ impl FaultKind {
             Self::MissingArgument => "missing argument",
             Self::UnknownArgument => "unknown argument",
             Self::ArgumentOrder => "positional argument after named argument",
+            Self::MatchError => "no match arm accepted the value",
             Self::Overflow => "integer overflow",
             Self::DivisionByZero => "division by zero",
             Self::Effect => "effect constraint",
