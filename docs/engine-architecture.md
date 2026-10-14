@@ -38,6 +38,10 @@ UI 的语义 Navigation 事件沿焦点、已呈现几何和 modal 作用域分�
 
 Windows/Linux/macOS 手柄后端复用锁定 Gilrs 0.11.2，独立 gamepad feature 不拉入 Winit/WGPU；内置 window 组合启用它。桌面后台阻塞等待事件，经有界队列和唤醒通知交付，关闭取消接收端且不等待设备线程。平台不支持该后端时仍可注入公共输入，不能把桌面编译或注入事件当成各平台实体设备验证。
 
+作者输入使用共同 `input(bindings: {...}, on_action: callback) { children }` 节点，按 stack 布局。bindings 的键是动作名，值为 binding 描述的数组；`binding(control, scale: 1, dead_zone: 0)` 使用物理键名（KeyA、Space 等）、标准手柄按钮（South、DpadLeft 等）、轴（LeftX 等）或指针按钮（PointerPrimary 等）。同一节点复用 ActionMap 聚合多个绑定和设备。`node.value(action)` 返回当前保持值；回调事件为 target/action/value/phase，phase 为 pressed/changed/released/cancelled。节点获得焦点（或焦点在其子树内）后接收未被子控件消费的输入；声明为 modal 的输入子树自动接管焦点。消费发生于同步路由，业务回调仍是可暂停的节点任务。
+输入节点的 bindings 替换时原子撤销旧保持值，后续事件使用新描述；绑定对象按赋值更新，不隐式观察嵌套表修改。失焦、清除已呈现画面、模态切换、隐藏或禁用撤销动作并发出 cancelled；退休则撤销节点任务并释放状态。取消只清理旧所有权，不产生点击或剧情推进。原生控制事件先路由作者输入；已消费的控制不再变为默认菜单导航，设备断连仍清理双方状态。Rust 宿主通过相同 NodeKind、NodeAction 和公共输入事件使用这一能力。设备身份以 Keyboard、Pointer(PointerInfo)、Gamepad(id) 枚举区分，数字不会跨来源碰撞。原始 Input 事件返回作用域内实际动作消费结果，未绑定控制再经过同一模态内的语义导航。AsideSessionUi 的 presented/clear_presented 返回 Result，交付呈现切换引发的取消；宿主据此唤醒新任务。
+
+
 指针输入按 `PointerInfo` 的设备、类型与触点身份保持独立捕获及命中路径；不同触点可以同时操作不同控件，终止事件只释放对应触点。事件上下文中的 active/hovered 指当前触点，绘制和普通查询汇总仍在交互的指针。同一个普通控件的拖动由先捕获的触点拥有，额外触点不能接管；窗口失焦、挂起、呈现撤销、禁用、退休和模态切换逐一取消受影响捕获，取消保留原触点身份且只交付一次。触摸结束清除悬停与触点记录，不积累历史触点。路由沿现有已呈现几何，无稳定移动期间分配，也不按触点扫描控件树。PresentationBridge::handle_pointer_event 返回 Result；新触点的路由和记录在分配、分发前计入已有 max_bridge_bytes，预算不足返回 InputBudgetExceeded 并保持既有捕获。终止释放触点路径，容量按实际占用计量，不另设触点数量上限。
 
 Winit 适配器把原生触摸位置、压力和设备/触点身份转为公共 PointerEvent；库宿主可以直接提交该公共事件，不依赖窗口或 GPU。触摸点击沿现有按钮与剧情输入配对，拖动沿原控件行为。此合同不把平台未提供的手势推测为点击。

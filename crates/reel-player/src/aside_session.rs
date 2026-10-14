@@ -193,11 +193,15 @@ impl AsideSessionUi {
     pub fn projection_stamp(&self) -> ProjectionStamp {
         self.ui.projection_stamp()
     }
-    pub fn presented(&mut self, stamp: ProjectionStamp) {
+    pub fn presented(&mut self, stamp: ProjectionStamp) -> Result<(), Error> {
         self.ui.presented(stamp);
+        let actions = self.ui.take_actions();
+        self.accept_actions(actions)
     }
-    pub fn clear_presented(&mut self) {
+    pub fn clear_presented(&mut self) -> Result<(), Error> {
         self.ui.clear_presented();
+        let actions = self.ui.take_actions();
+        self.accept_actions(actions)
     }
 
     pub fn sync(&mut self, bridge: &mut PresentationBridge, root: WidgetId) -> Result<(), Error> {
@@ -208,7 +212,18 @@ impl AsideSessionUi {
             self.vm.sync_stage(self.ui.session())?;
             self.ui.set_stage(self.vm.stage());
         }
-        self.ui.sync(bridge, root)
+        self.sync_input(bridge, root)
+    }
+    /// Physical input updates session/focus state and schedules callbacks. No
+    /// script has executed yet, so do not scan or reproject the script stage.
+    pub(crate) fn sync_input(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+    ) -> Result<(), Error> {
+        self.ui.sync(bridge, root)?;
+        let actions = self.ui.take_actions();
+        self.accept_actions(actions)
     }
     pub fn handle_pointer(
         &mut self,
@@ -232,7 +247,17 @@ impl AsideSessionUi {
         {
             self.vm.click(self.ui.session_mut(), click.node)?;
         }
+        self.accept_actions(result.actions)?;
         Ok(result.handled)
+    }
+    fn accept_actions(&mut self, actions: Vec<reel_ui::stage::NodeAction>) -> Result<(), Error> {
+        if self.state == StoryState::Running {
+            for action in &actions {
+                self.vm.input_action(self.ui.session_mut(), action)?;
+            }
+        }
+        self.ui.recycle_actions(actions);
+        Ok(())
     }
     pub fn has_runnable_tasks(&self) -> bool {
         self.state == StoryState::Running && self.vm.has_runnable_tasks()

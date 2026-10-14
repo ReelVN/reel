@@ -4,9 +4,10 @@ mod navigation;
 pub use navigation::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct InputDeviceId(pub u64);
-impl InputDeviceId {
-    pub const KEYBOARD: Self = Self(0);
+pub enum InputDeviceId {
+    Keyboard,
+    Pointer(crate::core::PointerInfo),
+    Gamepad(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,6 +55,8 @@ pub enum InputEvent {
         name: String,
     },
     Disconnected(InputDeviceId),
+    /// Revoke all held controls at an input ownership boundary.
+    Cancel,
     Value {
         device: InputDeviceId,
         control: Control,
@@ -76,7 +79,7 @@ pub struct ActionEvent<A> {
 }
 
 /// Scale is applied before clipping to the positive half, for directional bindings.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Binding {
     pub control: Control,
     pub scale: f32,
@@ -149,6 +152,11 @@ impl<A: Copy + Eq> ActionMap<A> {
         }
         Ok(result)
     }
+    pub fn binds(&self, control: Control) -> bool {
+        self.actions
+            .iter()
+            .any(|a| a.bindings.iter().any(|b| b.control == control))
+    }
     pub fn value(&self, action: A) -> f32 {
         self.actions
             .iter()
@@ -161,6 +169,10 @@ impl<A: Copy + Eq> ActionMap<A> {
         mut emit: impl FnMut(ActionEvent<A>),
     ) -> Result<(), InvalidInput> {
         let cancelled = match event {
+            InputEvent::Cancel => {
+                self.cancel(emit);
+                return Ok(());
+            }
             InputEvent::Connected { .. } => return Ok(()),
             InputEvent::Disconnected(device) => {
                 self.held.retain(|(id, _, _)| id != device);
@@ -243,5 +255,46 @@ impl<A: Copy + Eq> ActionMap<A> {
                 });
             }
         }
+    }
+}
+
+impl std::str::FromStr for Control {
+    type Err = InvalidInput;
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        use GamepadAxis as A;
+        use GamepadButton as B;
+        Ok(match name {
+            "South" => Self::Button(B::South),
+            "East" => Self::Button(B::East),
+            "North" => Self::Button(B::North),
+            "West" => Self::Button(B::West),
+            "C" => Self::Button(B::C),
+            "Z" => Self::Button(B::Z),
+            "LeftShoulder" => Self::Button(B::LeftShoulder),
+            "RightShoulder" => Self::Button(B::RightShoulder),
+            "LeftTrigger" => Self::Button(B::LeftTrigger),
+            "RightTrigger" => Self::Button(B::RightTrigger),
+            "Select" => Self::Button(B::Select),
+            "Start" => Self::Button(B::Start),
+            "Mode" => Self::Button(B::Mode),
+            "LeftThumb" => Self::Button(B::LeftThumb),
+            "RightThumb" => Self::Button(B::RightThumb),
+            "DpadUp" => Self::Button(B::DpadUp),
+            "DpadDown" => Self::Button(B::DpadDown),
+            "DpadLeft" => Self::Button(B::DpadLeft),
+            "DpadRight" => Self::Button(B::DpadRight),
+            "LeftX" => Self::Axis(A::LeftX),
+            "LeftY" => Self::Axis(A::LeftY),
+            "RightX" => Self::Axis(A::RightX),
+            "RightY" => Self::Axis(A::RightY),
+            "LeftZ" => Self::Axis(A::LeftZ),
+            "RightZ" => Self::Axis(A::RightZ),
+            "PointerPrimary" => Self::Pointer(PointerButton::Primary),
+            "PointerSecondary" => Self::Pointer(PointerButton::Secondary),
+            "PointerAuxiliary" => Self::Pointer(PointerButton::Auxiliary),
+            "PointerX1" => Self::Pointer(PointerButton::X1),
+            "PointerX2" => Self::Pointer(PointerButton::X2),
+            _ => Self::Key(name.parse().map_err(|_| InvalidInput)?),
+        })
     }
 }

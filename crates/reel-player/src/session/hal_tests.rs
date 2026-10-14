@@ -181,7 +181,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
             })
             .unwrap();
         if result.accepted {
-            story.driver.presented(stamp.unwrap());
+            story.driver.presented(stamp.unwrap()).unwrap();
         }
         result
     };
@@ -291,7 +291,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     story.suspend(250_000_000);
     view.suspend();
     backend.suspend();
-    story.driver.clear_presented();
+    story.driver.clear_presented().unwrap();
     assert!(!story.needs_tick());
     story
         .tick(SliceBudget::default(), || panic!("suspended host sleeps"))

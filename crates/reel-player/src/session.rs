@@ -126,6 +126,7 @@ enum UiInput {
 pub struct UiDispatch {
     pub handled: Handled,
     pub click: Option<reel_ui::stage::NodeClick>,
+    pub actions: Vec<reel_ui::stage::NodeAction>,
 }
 struct LineWidgets {
     speaker: WidgetPod<Label>,
@@ -144,6 +145,7 @@ pub struct SessionWidget {
     source_owner: OwnerHandle,
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
+    actions: Rc<RefCell<Vec<reel_ui::stage::NodeAction>>>,
     title: WidgetPod<Label>,
     status: WidgetPod<Label>,
     lines: Vec<LineWidgets>,
@@ -165,6 +167,7 @@ impl SessionWidget {
             source_owner: ui.source_owner,
             binding: ui.binding.clone(),
             inputs: ui.inputs.clone(),
+            actions: ui.actions.clone(),
             title: WidgetPod::new(Label::new("Reel")),
             status: WidgetPod::new(Label::new(ui.status_text())),
             lines: vec![],
@@ -296,7 +299,8 @@ impl Widget for SessionWidget {
         };
         match event {
             PointerEvent::Down(e)
-                if ctx.target() == ctx.widget_id()
+                if e.button.is_none_or(|b| b == PointerButton::Primary)
+                    && ctx.target() == ctx.widget_id()
                     && self.dialogue_rect.contains(
                         ctx.local_position(e.state.position) + Vec2::new(0., self.scroll.get()),
                     ) =>
@@ -304,7 +308,9 @@ impl Widget for SessionWidget {
                 ctx.capture_pointer();
                 ctx.set_handled();
             }
-            PointerEvent::Up(e) if ctx.is_active() => {
+            PointerEvent::Up(e)
+                if ctx.is_active() && e.button.is_none_or(|b| b == PointerButton::Primary) =>
+            {
                 if self.binding.borrow().permits(self.current_stamp())
                     && self.dialogue_rect.contains(
                         ctx.local_position(e.state.position) + Vec2::new(0., self.scroll.get()),
@@ -364,11 +370,21 @@ impl Widget for SessionWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
-        if let Some(click) = action.downcast_ref::<reel_ui::stage::NodeClick>() {
-            if self.binding.borrow().permits(self.current_stamp()) {
-                self.inputs
-                    .borrow_mut()
-                    .get_or_insert(UiInput::Node(*click));
+        if let Some(event) = action.downcast_ref::<reel_ui::stage::NodeEvent>() {
+            use reel_ui::{input::ActionPhase, stage::NodeEvent};
+            match event {
+                NodeEvent::Click(click) if self.binding.borrow().permits(self.current_stamp()) => {
+                    self.inputs
+                        .borrow_mut()
+                        .get_or_insert(UiInput::Node(*click));
+                }
+                NodeEvent::Action(action)
+                    if matches!(action.phase, ActionPhase::Released | ActionPhase::Cancelled)
+                        || self.binding.borrow().permits(self.current_stamp()) =>
+                {
+                    self.actions.borrow_mut().push(action.clone());
+                }
+                _ => {}
             }
             ctx.set_handled();
             return;
@@ -617,6 +633,7 @@ pub struct SessionUi {
     choice_owners: Vec<OwnerHandle>,
     binding: Rc<RefCell<InputBinding>>,
     inputs: Rc<RefCell<Option<UiInput>>>,
+    actions: Rc<RefCell<Vec<reel_ui::stage::NodeAction>>>,
     background: Color,
     scroll: Rc<Cell<f64>>,
     stage: Option<StageView>,
@@ -642,6 +659,7 @@ impl SessionUi {
             choice_owners,
             binding: Rc::new(RefCell::new(InputBinding::default())),
             inputs: Rc::new(RefCell::new(None)),
+            actions: Rc::new(RefCell::new(Vec::new())),
             background: Color::from_rgb8(35, 54, 74),
             scroll: Rc::new(Cell::new(0.)),
             stage: None,
@@ -870,7 +888,20 @@ impl SessionUi {
             }
             None => None,
         };
-        Ok(UiDispatch { handled, click })
+        Ok(UiDispatch {
+            handled,
+            click,
+            actions: self.take_actions(),
+        })
+    }
+    pub fn take_actions(&mut self) -> Vec<reel_ui::stage::NodeAction> {
+        std::mem::take(&mut *self.actions.borrow_mut())
+    }
+    pub(crate) fn recycle_actions(&mut self, mut actions: Vec<reel_ui::stage::NodeAction>) {
+        actions.clear();
+        if self.actions.borrow().is_empty() {
+            *self.actions.borrow_mut() = actions;
+        }
     }
     pub fn cancel(&mut self) -> bool {
         self.close_resources();
@@ -1143,7 +1174,7 @@ mod tests {
                 )),
                 NoticeResult::Accepted
             );
-            driver.presented(driver.projection_stamp());
+            driver.presented(driver.projection_stamp()).unwrap();
             let root_widget = bridge
                 .root()
                 .get_widget(root)

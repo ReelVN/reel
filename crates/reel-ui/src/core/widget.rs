@@ -461,6 +461,11 @@ pub trait Widget: AsDynWidget + Any {
         true
     }
 
+    /// Whether independent contacts may capture this widget simultaneously.
+    fn accepts_multiple_pointers(&self) -> bool {
+        false
+    }
+
     /// Whether this widget lets pointer events and [hovered] status reach its children. True by default.
     ///
     /// If false, the widget's children will not get pointer events, affect the cursor icon,

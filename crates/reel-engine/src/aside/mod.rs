@@ -418,9 +418,20 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            stage::input::binding::SYMBOL | stage::input::value::SYMBOL => {
+                let invoke = if symbol == stage::input::binding::SYMBOL {
+                    stage::input::binding::invoke
+                } else {
+                    stage::input::value::invoke
+                };
+                invoke(&mut self.stage, &mut self.vm, ticket)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
             | "reel::button"
+            | "reel::input"
             | "reel::image"
             | "reel::row"
             | "reel::column"

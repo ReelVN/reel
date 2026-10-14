@@ -84,8 +84,9 @@ impl WindowSession {
         match self {
             Self::Diagnostic(host) => host.after_input(bridge, root),
             Self::Aside(story) => {
+                story.driver.sync_input(bridge, root)?;
                 story.wake_input();
-                story.driver.sync(bridge, root)
+                Ok(())
             }
         }
     }
@@ -101,6 +102,19 @@ impl WindowSession {
         }
     }
 
+    pub(crate) fn presented(
+        &mut self,
+        stamp: crate::session::ProjectionStamp,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Diagnostic(host) => host.ui.presented(stamp),
+            Self::Aside(story) => {
+                story.driver.presented(stamp)?;
+                story.wake_input();
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn needs_tick(&self) -> bool {
         matches!(self, Self::Aside(story) if story.needs_tick())
     }

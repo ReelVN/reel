@@ -40,7 +40,7 @@ impl GamepadSource {
                     }
                 };
                 for (native, gamepad) in gilrs.gamepads() {
-                    let device = InputDeviceId(next_id);
+                    let device = InputDeviceId::Gamepad(next_id);
                     next_id += 1;
                     devices.insert(native, device);
                     if !send(InputEvent::Connected {
@@ -61,7 +61,7 @@ impl GamepadSource {
                             if devices.contains_key(&event.id) {
                                 continue;
                             }
-                            let device = InputDeviceId(next_id);
+                            let device = InputDeviceId::Gamepad(next_id);
                             next_id += 1;
                             devices.insert(event.id, device);
                             Some(InputEvent::Connected {
@@ -165,7 +165,7 @@ mod tests {
     use super::*;
     #[test]
     fn gilrs_standard_controls_preserve_analog_values_and_screen_axis_direction() {
-        let device = InputDeviceId(7);
+        let device = InputDeviceId::Gamepad(7);
         let code = gilrs::Button::South.to_nec().unwrap();
         assert_eq!(
             convert(

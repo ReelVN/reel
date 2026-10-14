@@ -244,3 +244,5 @@ cargo run --locked -p reel-dev -- deps
 These CPU checks prove portable contracts on the host where they run, not
 device support on every target. Native IME and system accessibility
 integration remain platform-adapter work.
+
+Author action scopes use `input(bindings:, on_action:)` in Aside or `NodeKind::Input` in Rust, with shared `InputBindings` and `NodeAction` events. See [author_input.aside](../../examples/author_input.aside). Raw controls route through `TextEvent::Input` before default navigation; its result identifies action consumption within the current modal scope. Input device IDs distinguish keyboard, pointer contact and gamepad. Held state resets on focus/scope loss, presentation revocation and remapping. After `PresentationBridge::resolve` or `clear`, call the fallible `AsideSessionUi::presented` or `clear_presented` to deliver cancellation callbacks, then wake the story runtime if work became runnable.

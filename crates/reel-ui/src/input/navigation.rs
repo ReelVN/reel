@@ -120,6 +120,10 @@ impl NavigationInput {
         mut emit: impl FnMut(NavigationEvent),
     ) -> Result<(), InvalidInput> {
         let disconnecting = matches!(event, InputEvent::Disconnected(_));
+        if matches!(event, InputEvent::Cancel) {
+            self.cancel(emit);
+            return Ok(());
+        }
         let Self {
             map,
             states,

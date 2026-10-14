@@ -147,7 +147,7 @@ fn frame_with_info(
         )),
         NoticeResult::Accepted
     );
-    driver.presented(driver.projection_stamp());
+    driver.presented(driver.projection_stamp()).unwrap();
     frame
 }
 fn image_ids(bridge: &PresentationBridge, root: WidgetId) -> Vec<WidgetId> {

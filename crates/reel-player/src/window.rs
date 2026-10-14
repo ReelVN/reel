@@ -17,6 +17,7 @@ use reel_render::{
     gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, WgpuBackend},
 };
 use reel_ui::bridge::{BridgeLimits, PresentationBridge};
+use reel_ui::core::pointer::PointerButtons;
 use reel_ui::frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget};
 use reel_ui::resources::ResourceRegistry;
 use reel_ui::{
@@ -49,6 +50,7 @@ pub(crate) struct State {
     epoch: u64,
     pub(crate) pointer: reel_ui::dpi::PhysicalPosition<f64>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
+    pointer_buttons: PointerButtons,
     touch: crate::platform::winit::TouchInput,
     input: reel_ui::input::NavigationInput,
     input_origin: Instant,
@@ -302,6 +304,7 @@ impl State {
             epoch: 1,
             pointer: Default::default(),
             modifiers: Default::default(),
+            pointer_buttons: Default::default(),
             touch: Default::default(),
             input: Default::default(),
             input_origin: Instant::now(),
@@ -560,7 +563,7 @@ impl State {
             && !self.settings_pending()
             && let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
         {
-            session.ui_mut().presented(stamp);
+            session.presented(stamp)?;
         }
         if result.accepted && std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
             let key = self
@@ -650,7 +653,7 @@ impl State {
         self.text_event(TextEvent::WindowFocusChange(self.input_focused))?;
         Ok(())
     }
-    pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<(), Error> {
+    pub(crate) fn text_event(&mut self, event: TextEvent) -> Result<Handled, Error> {
         if let TextEvent::WindowFocusChange(focus) = &event {
             self.input_focused = *focus;
             if *focus && !self.is_suspended() {
@@ -663,26 +666,40 @@ impl State {
         }
         let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
         let cancelling = lost_focus
-            || matches!(&event, TextEvent::Navigation(e) if e.phase == reel_ui::input::ActionPhase::Cancelled);
+            || matches!(&event, TextEvent::Navigation(e) if e.phase == reel_ui::input::ActionPhase::Cancelled)
+            || matches!(
+                &event,
+                TextEvent::Input(
+                    reel_ui::input::InputEvent::Cancel
+                        | reel_ui::input::InputEvent::Disconnected(_)
+                )
+            );
         if lost_focus {
             self.touch.clear();
         }
         if self.settings_pending() && !cancelling {
-            return Ok(());
+            return Ok(Handled::Yes);
         }
-        if let Some(session) = &mut self.session {
-            session.handle_text(&mut self.presentation.bridge, event)?;
+        let handled = if let Some(session) = &mut self.session {
+            let handled = session.handle_text(&mut self.presentation.bridge, event)?;
             session.after_input(&mut self.presentation.bridge, self.root_id)?;
+            handled
         } else {
-            self.presentation.bridge.handle_text_event(event);
-        }
+            self.presentation.bridge.handle_text_event(event)
+        };
         self.schedule_reveal();
         self.invalidate();
-        Ok(())
+        Ok(handled)
     }
     pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {
         if self.settings_pending() && !matches!(kind, PointerKind::Cancel) {
             return Ok(());
+        }
+        match kind {
+            PointerKind::Down(button) => self.pointer_buttons.insert(button),
+            PointerKind::Up(button) => self.pointer_buttons.remove(button),
+            PointerKind::Cancel => self.pointer_buttons = Default::default(),
+            _ => {}
         }
         let pointer = PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),
@@ -691,6 +708,7 @@ impl State {
         };
         let state = PointerState {
             position: self.pointer,
+            buttons: self.pointer_buttons,
             ..Default::default()
         };
         let event = match kind {
@@ -700,15 +718,15 @@ impl State {
                 coalesced: vec![],
                 predicted: vec![],
             }),
-            PointerKind::Down => PointerEvent::Down(PointerButtonEvent {
+            PointerKind::Down(button) => PointerEvent::Down(PointerButtonEvent {
                 pointer,
                 state,
-                button: Some(PointerButton::Primary),
+                button: Some(button),
             }),
-            PointerKind::Up => PointerEvent::Up(PointerButtonEvent {
+            PointerKind::Up(button) => PointerEvent::Up(PointerButtonEvent {
                 pointer,
                 state,
-                button: Some(PointerButton::Primary),
+                button: Some(button),
             }),
             PointerKind::Cancel => PointerEvent::Cancel(pointer),
             PointerKind::Scroll(delta) => PointerEvent::Scroll(PointerScrollEvent {
@@ -798,6 +816,7 @@ impl State {
                     eprintln!("gamepad backend stopped: {error}");
                     self.gamepads = None;
                     self.input.cancel(|_| {});
+                    self.text_event(TextEvent::Input(reel_ui::input::InputEvent::Cancel))?;
                     self.text_event(TextEvent::Navigation(reel_ui::input::NavigationEvent {
                         action: reel_ui::input::NavigationAction::Confirm,
                         phase: reel_ui::input::ActionPhase::Cancelled,
@@ -807,9 +826,16 @@ impl State {
                 }
             };
             if self.input_focused {
+                let claimed = self
+                    .text_event(TextEvent::Input(event.clone()))?
+                    .is_handled();
                 self.input_events.clear();
-                self.input
-                    .update(&event, now, |event| self.input_events.push(event))?;
+                if claimed && matches!(event, reel_ui::input::InputEvent::Value { .. }) {
+                    self.input.cancel(|e| self.input_events.push(e));
+                } else {
+                    self.input
+                        .update(&event, now, |e| self.input_events.push(e))?;
+                }
                 for i in 0..self.input_events.len() {
                     self.text_event(TextEvent::Navigation(self.input_events[i]))?;
                 }
@@ -895,8 +921,8 @@ impl State {
 #[derive(Clone, Copy)]
 pub(crate) enum PointerKind {
     Move,
-    Down,
-    Up,
+    Down(PointerButton),
+    Up(PointerButton),
     Cancel,
     Scroll(ScrollDelta),
 }
@@ -1325,7 +1351,11 @@ mod tests {
     fn session_click(state: &mut State, x: f64, y: f64) {
         let scale = state.window.scale_factor();
         state.pointer = reel_ui::dpi::PhysicalPosition::new(x * scale, y * scale);
-        for kind in [PointerKind::Move, PointerKind::Down, PointerKind::Up] {
+        for kind in [
+            PointerKind::Move,
+            PointerKind::Down(PointerButton::Primary),
+            PointerKind::Up(PointerButton::Primary),
+        ] {
             state.pointer_event(kind).unwrap();
         }
     }
@@ -1437,11 +1467,15 @@ mod tests {
         let scale = state.window.scale_factor();
         state.pointer = reel_ui::dpi::PhysicalPosition::new(100. * scale, 300. * scale);
         state.pointer_event(PointerKind::Move).unwrap();
-        state.pointer_event(PointerKind::Down).unwrap();
+        state
+            .pointer_event(PointerKind::Down(PointerButton::Primary))
+            .unwrap();
         state.next_reveal = Some(Instant::now());
         state.tick_reveal().unwrap();
         assert_eq!(session_reveal(&state), 1);
-        state.pointer_event(PointerKind::Up).unwrap();
+        state
+            .pointer_event(PointerKind::Up(PointerButton::Primary))
+            .unwrap();
         assert!(session_reveal(&state) > 1);
         assert!(state.reveal_deadline().is_none());
         present_session(&mut state);

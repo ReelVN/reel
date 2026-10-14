@@ -175,11 +175,15 @@ impl ApplicationHandler for App {
                 state.modifiers = modifiers.state();
                 Ok(())
             }
-            WindowEvent::KeyboardInput { event, .. } => state.text_event(TextEvent::Keyboard(
-                ui_events_winit::keyboard::from_winit_keyboard_event(event, state.modifiers),
-            )),
+            WindowEvent::KeyboardInput { event, .. } => state
+                .text_event(TextEvent::Keyboard(
+                    ui_events_winit::keyboard::from_winit_keyboard_event(event, state.modifiers),
+                ))
+                .map(|_| ()),
             WindowEvent::Focused(focus) => {
-                let result = state.text_event(TextEvent::WindowFocusChange(focus));
+                let result = state
+                    .text_event(TextEvent::WindowFocusChange(focus))
+                    .map(|_| ());
                 if !focus {
                     state.modifiers = Default::default();
                     result.and_then(|()| state.pointer_event(PointerKind::Cancel))
@@ -193,14 +197,25 @@ impl ApplicationHandler for App {
                 state.pointer_event(PointerKind::Move)
             }
             WindowEvent::MouseInput {
-                state: button,
-                button: MouseButton::Left,
+                state: pressed,
+                button,
                 ..
-            } => state.pointer_event(if button == ElementState::Pressed {
-                PointerKind::Down
-            } else {
-                PointerKind::Up
-            }),
+            } => {
+                use reel_ui::core::PointerButton;
+                let button = match button {
+                    MouseButton::Left => PointerButton::Primary,
+                    MouseButton::Right => PointerButton::Secondary,
+                    MouseButton::Middle => PointerButton::Auxiliary,
+                    MouseButton::Back => PointerButton::X1,
+                    MouseButton::Forward => PointerButton::X2,
+                    MouseButton::Other(_) => return,
+                };
+                state.pointer_event(if pressed == ElementState::Pressed {
+                    PointerKind::Down(button)
+                } else {
+                    PointerKind::Up(button)
+                })
+            }
             WindowEvent::MouseWheel { delta, .. } if state.session.is_some() => {
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {

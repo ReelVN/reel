@@ -92,6 +92,10 @@ impl RenderRoot {
         let changed = next != previous;
         if changed {
             crate::passes::navigation::cancel_all(self);
+            crate::passes::event::run_on_text_event_pass(
+                self,
+                &crate::core::TextEvent::Input(crate::input::InputEvent::Cancel),
+            );
             let focus = self.global_state.focused_widget;
             if let Some(previous) = previous {
                 if self.has_widget(previous)

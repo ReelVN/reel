@@ -8,12 +8,14 @@ use reel_ui::{
     peniko::{Color, ImageData},
     properties::ContentColor,
     resources::{ResourceData, ResourceLease},
-    stage::{NodeClick, NodeId, NodeKind, Stage, StageNode},
+    stage::{NodeClick, NodeEvent, NodeId, NodeKind, Stage, StageNode},
     widgets::{ButtonBehavior, Image, Label},
 };
 use std::collections::BTreeMap;
+mod input;
 #[cfg(test)]
 mod tests;
+use input::NodeInput;
 
 #[derive(Clone, Default)]
 pub(crate) struct StageView {
@@ -175,6 +177,7 @@ impl Widget for StageWidget {
 struct SceneWidget {
     node: StageNode,
     button: ButtonBehavior,
+    input: Option<NodeInput>,
     label: Option<WidgetPod<Label>>,
     image: Option<WidgetPod<Image>>,
     image_size: Size,
@@ -218,6 +221,10 @@ impl SceneWidget {
         Self {
             node: view.node.clone(),
             button: ButtonBehavior::default(),
+            input: match &view.node.kind {
+                NodeKind::Input { bindings, .. } => Some(NodeInput::new(bindings.clone())),
+                _ => None,
+            },
             label,
             image: view.image.as_ref().map(|image| {
                 let NodeKind::Image { fit, .. } = view.node.kind else {
@@ -243,6 +250,15 @@ impl SceneWidget {
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
+        if let (Some(input), NodeKind::Input { bindings, .. }) =
+            (&mut this.widget.input, &view.node.kind)
+            && input.bindings != *bindings
+        {
+            input.cancel(this.widget.node.id, |event| {
+                this.ctx.submit_action::<NodeEvent>(event)
+            });
+            *input = NodeInput::new(bindings.clone());
+        }
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
         }
@@ -343,18 +359,29 @@ impl SceneWidget {
     }
 }
 impl Widget for SceneWidget {
-    type Action = NodeClick;
+    type Action = NodeEvent;
     fn on_pointer_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
+        if let Some(input) = &mut self.input
+            && input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e))
+        {
+            if matches!(event, PointerEvent::Down(_)) {
+                ctx.request_focus();
+                ctx.capture_pointer();
+            }
+            ctx.set_handled();
+        }
         if self.is_button() {
-            let consumes = matches!(event, PointerEvent::Down(_))
+            let consumes = matches!(event, PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary))
                 || matches!(event, PointerEvent::Up(_)) && ctx.is_active();
             if ButtonBehavior::pointer(ctx, event).is_some() {
-                ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+                ctx.submit_action::<Self::Action>(NodeEvent::Click(NodeClick {
+                    node: self.node.id,
+                }));
             }
             if consumes {
                 ctx.set_handled();
@@ -367,9 +394,37 @@ impl Widget for SceneWidget {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
+        if let Some(input) = &mut self.input {
+            use reel_ui::input::{Control, InputDeviceId, InputEvent};
+            let raw = match event {
+                TextEvent::Input(e) => Some(e.clone()),
+                TextEvent::Keyboard(e) if e.repeat => {
+                    if input.binds(Control::Key(e.code)) {
+                        ctx.set_handled();
+                    }
+                    None
+                }
+                TextEvent::Keyboard(e) => Some(InputEvent::Value {
+                    device: InputDeviceId::Keyboard,
+                    control: Control::Key(e.code),
+                    value: if e.state == keyboard::KeyState::Down {
+                        1.
+                    } else {
+                        0.
+                    },
+                }),
+                TextEvent::WindowFocusChange(false) => Some(InputEvent::Cancel),
+                _ => None,
+            };
+            if let Some(raw) = raw
+                && input.update(self.node.id, &raw, |e| ctx.submit_action::<NodeEvent>(e))
+            {
+                ctx.set_handled();
+            }
+        }
         if self.is_button() && self.button.text(ctx, event).is_some() {
             ctx.set_handled();
-            ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+            ctx.submit_action::<Self::Action>(NodeEvent::Click(NodeClick { node: self.node.id }));
         }
     }
     fn on_access_event(
@@ -379,11 +434,20 @@ impl Widget for SceneWidget {
         event: &AccessEvent,
     ) {
         if self.is_button() && ButtonBehavior::access(event).is_some() {
-            ctx.submit_action::<Self::Action>(NodeClick { node: self.node.id });
+            ctx.submit_action::<Self::Action>(NodeEvent::Click(NodeClick { node: self.node.id }));
         }
     }
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
         self.button.update(event);
+        if matches!(
+            event,
+            Update::ChildFocusChanged(false)
+                | Update::DisabledChanged(true)
+                | Update::StashedChanged(true)
+        ) && let Some(input) = &mut self.input
+        {
+            input.cancel(self.node.id, |e| ctx.submit_action::<NodeEvent>(e));
+        }
         if matches!(event, Update::WidgetAdded) {
             ctx.set_disabled(!self.node.props.enabled);
             ctx.set_modal(self.node.props.modal);
@@ -582,10 +646,13 @@ impl Widget for SceneWidget {
             .collect()
     }
     fn accepts_pointer_interaction(&self) -> bool {
-        self.is_button()
+        self.is_button() || self.input.is_some()
     }
     fn accepts_focus(&self) -> bool {
-        self.is_button()
+        self.is_button() || self.input.is_some()
+    }
+    fn accepts_multiple_pointers(&self) -> bool {
+        self.input.is_some()
     }
     fn propagates_pointer_interaction(&self) -> bool {
         !self.is_button()
