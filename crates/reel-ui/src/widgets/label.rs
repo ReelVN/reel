@@ -557,13 +557,17 @@ impl Label {
     }
     fn link_action(&self, index: usize) -> Option<LinkActivated> {
         let link = self.text.links().get(index)?;
-        self.visible_bytes
-            .as_ref()
-            .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
-            .then(|| LinkActivated {
-                id: link.id.clone(),
-                text: self.text.clone(),
-            })
+        self.link_visible(index).then(|| LinkActivated {
+            id: link.id.clone(),
+            text: self.text.clone(),
+        })
+    }
+    fn link_visible(&self, index: usize) -> bool {
+        self.text.links().get(index).is_some_and(|link| {
+            self.visible_bytes
+                .as_ref()
+                .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
+        })
     }
 }
 
@@ -623,6 +627,12 @@ impl Widget for Label {
         if ctx.is_disabled() || !ctx.is_focus_target() || !ctx.input_configuration_is_current() {
             return;
         }
+        if !self.link_visible(self.focused_link) {
+            let Some(index) = (0..self.text.links().len()).find(|&i| self.link_visible(i)) else {
+                return; // Unrevealed links leave confirmation to the dialogue's reveal/advance path.
+            };
+            self.focused_link = index;
+        }
         let direction = match event {
             TextEvent::Keyboard(e) if e.state.is_down() => match &e.key {
                 Key::Named(NamedKey::ArrowRight) => 1,
@@ -639,9 +649,13 @@ impl Widget for Label {
             _ => 0,
         };
         if direction != 0 && !self.text.links().is_empty() {
-            self.focused_link = (self.focused_link as isize + direction)
-                .rem_euclid(self.text.links().len() as isize)
-                as usize;
+            let len = self.text.links().len() as isize;
+            self.focused_link = (1..=len)
+                .map(|step| {
+                    (self.focused_link as isize + direction * step).rem_euclid(len) as usize
+                })
+                .find(|&i| self.link_visible(i))
+                .unwrap();
             ctx.set_handled();
             ctx.request_render();
         } else if self.link_button.text(ctx, event).is_some()

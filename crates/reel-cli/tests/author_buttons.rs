@@ -48,7 +48,15 @@ fn rich_links_consume_presented_mouse_touch_and_gamepad_input_without_advancing_
             settle(&mut driver);
             let (mut bridge, root) = bridge_with_font(&driver, Some(font.clone()));
             present(&mut driver, &mut bridge, root, 1);
-            click_at(&mut driver, &mut bridge, 500., 300.);
+            if pointer.is_none() {
+                gamepad_press(
+                    &mut driver,
+                    &mut bridge,
+                    reel_ui::input::GamepadButton::South,
+                );
+            } else {
+                click_at(&mut driver, &mut bridge, 500., 300.);
+            }
             present(&mut driver, &mut bridge, root, 2);
             let interaction = driver.ui().session().view().interaction.unwrap().id();
             if let Some(pointer) = pointer {
