@@ -396,6 +396,16 @@ impl Widget for SceneWidget {
     ) {
         if let Some(input) = &mut self.input {
             use reel_ui::input::{Control, InputDeviceId, InputEvent};
+            // Focused child controls own both keyboard and controller input.
+            // Cleanup still reaches the previous input owner after focus changed.
+            let cleanup = matches!(
+                event,
+                TextEvent::WindowFocusChange(false)
+                    | TextEvent::Input(InputEvent::Cancel | InputEvent::Disconnected(_))
+            );
+            if !ctx.is_focus_target() && !cleanup {
+                return;
+            }
             let raw = match event {
                 TextEvent::Input(e) => Some(e.clone()),
                 TextEvent::Keyboard(e) if e.repeat => {
@@ -441,7 +451,8 @@ impl Widget for SceneWidget {
         self.button.update(event);
         if matches!(
             event,
-            Update::ChildFocusChanged(false)
+            Update::FocusChanged(false)
+                | Update::ChildFocusChanged(false)
                 | Update::DisabledChanged(true)
                 | Update::StashedChanged(true)
         ) && let Some(input) = &mut self.input

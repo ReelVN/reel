@@ -694,6 +694,6 @@ fn main() {
 
 事件有 target、action、value、phase；phase 为 pressed、changed、released 或 cancelled，键盘系统重复不会再次产生 pressed。`node.value("move_x")` 读取最新保持值，未知动作报错；回调里的 event.value 保留该次事件值。回调可以 await，生命周期与节点一致。`node.bindings = 新表` 撤销旧状态并启用新映射；对原表内部的编辑不会自动更新映射。`node.on_action` 可赋闭包或 null。
 
-节点在自身或子节点拥有焦点时，接收子控件尚未消费的输入；使用 modal: true 可让独立交互场景直接接管焦点。非模态节点可通过 Tab 聚焦，绑定了指针按钮时点击也会聚焦并捕获该触点。隐藏、禁用、失焦、切换模态和清除已呈现画面会取消保持；移除节点会结束其任务和活动。动作消费的同一次输入不会继续导航或推进对白。普通按钮与对白由主指针按钮或触摸激活，其他鼠标按钮可用于作者动作。
+输入节点自身拥有焦点时接收键盘和手柄动作。子控件取得焦点会取消父输入节点的保持，并独立处理输入，避免手柄确认被父动作抢走；使用 modal: true 可让独立交互场景直接接管焦点。非模态节点可通过 Tab 聚焦，绑定了指针按钮时点击也会聚焦并捕获该触点。隐藏、禁用、失焦、切换模态和清除已呈现画面会取消保持；移除节点会结束其任务和活动。动作消费的同一次输入不会继续导航或推进对白。普通按钮与对白由主指针按钮或触摸激活，其他鼠标按钮可用于作者动作。
 
 Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings`、`NodeKind::Input` 和 `NodeAction`。原生控制先通过 `TextEvent::Input` 路由；此事件的 Handled 表示作用域内是否有动作声明消费，未绑定的控制可继续进入同一 UI 的 NavigationInput。原始事件不会越过模态边界。画面接受和撤销分别调用可失败的 `AsideSessionUi::presented` / `clear_presented`，把路由阶段产生的取消交给 VM；有新任务时唤醒 StoryRuntime。

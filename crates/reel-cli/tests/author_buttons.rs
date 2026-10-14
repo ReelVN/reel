@@ -613,11 +613,15 @@ fn main() {
             if e.action == "fire" { status.value = e.phase; }
             if e.action == "menu" && e.phase == "pressed" { popup.visible = true; }
             if e.action == "remap" && e.phase == "pressed" {
-                e.target.bindings = {move_x: [binding("KeyJ")], fire: [binding("PointerPrimary"), binding("PointerSecondary")]};
+                e.target.bindings = {move_x: [binding("KeyJ")], fire: [binding("PointerPrimary"), binding("PointerSecondary"), binding("South"), binding("Space")]};
                 marker.x = e.target.value("move_x") * 100;
             }
         }
-    ) { marker; status; popup; };
+    ) {
+        marker; status; popup;
+        button("UI", x: 420, width: 100, height: 80,
+            on_click: |e| { marker.y += 1; });
+    };
     let mut rejected = false;
     try { pad.bindings = {bad: [["no-such-control", 1, 0]]}; }
     catch error { rejected = true; }
@@ -740,6 +744,65 @@ fn main() {
             ),
             Handled::No
         );
+        send(
+            &mut driver,
+            &mut bridge,
+            Control::Key(keyboard::Code::KeyJ),
+            1.,
+        );
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(driver.adapter().stage().node(marker).unwrap().props.x, 100.);
+        driver
+            .handle_text(
+                &mut bridge,
+                TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Tab)),
+            )
+            .unwrap();
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(marker).unwrap().props.x,
+            0.,
+            "child focus cancels the parent game action"
+        );
+        assert_eq!(
+            send(
+                &mut driver,
+                &mut bridge,
+                Control::Button(GamepadButton::South),
+                1.
+            ),
+            Handled::No,
+            "parent mapping must not steal a focused child button's confirmation"
+        );
+        gamepad_press(&mut driver, &mut bridge, GamepadButton::South);
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(driver.adapter().stage().node(marker).unwrap().props.y, 221.);
+        for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+            driver
+                .handle_text(
+                    &mut bridge,
+                    TextEvent::Keyboard(keyboard::KeyboardEvent {
+                        code: keyboard::Code::Space,
+                        key: keyboard::Key::Character(" ".into()),
+                        state,
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+        }
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(marker).unwrap().props.y,
+            222.,
+            "keyboard and controller activate the same child control"
+        );
+        driver
+            .handle_text(
+                &mut bridge,
+                TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Tab)),
+            )
+            .unwrap();
+        flush(&mut driver, &mut bridge, &mut frame);
         send(
             &mut driver,
             &mut bridge,
