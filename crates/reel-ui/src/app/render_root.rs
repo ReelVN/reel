@@ -622,6 +622,31 @@ impl RenderRoot {
         run_update_fonts_pass(self);
         ret
     }
+    /// Install supplied fonts in priority order for existing and future text.
+    pub fn set_default_fonts(&mut self, data: &[Blob<u8>]) -> bool {
+        if data.is_empty() {
+            return false;
+        }
+        let mut ordered = Vec::new();
+        for font in data {
+            let mut families = self
+                .global_state
+                .font_context
+                .collection
+                .register_fonts(font.clone(), None);
+            if families.is_empty() {
+                return false;
+            }
+            families.sort_by_key(|(_, fonts)| fonts.iter().map(FontInfo::index).min());
+            ordered.extend(families.into_iter().map(|(family, _)| family));
+        }
+        self.global_state
+            .font_context
+            .collection
+            .set_generic_families(reel_text::GenericFamily::SystemUi, ordered.into_iter());
+        run_update_fonts_pass(self);
+        true
+    }
 
     /// Redraws the window.
     ///

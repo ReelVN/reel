@@ -11,6 +11,7 @@ fn card(title, accent, children = []) {
 }
 
 pub fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
     let title = text("画面，由你定义", font_size: 40);
     let subtitle = text("空间 · 文字 · 节奏", font_size: 18, color: "#aab8cb");
     let glow = stack(x: 620, y: 0, width: 340, height: 160,

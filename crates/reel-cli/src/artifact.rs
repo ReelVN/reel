@@ -204,14 +204,13 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
     };
     let game_entry = select_entry(checked, entry)?;
     let metadata = rp::Metadata {
-        schema_version: 2,
+        schema_version: 3,
         bytecode_blake3: rp::digest(&checked.bytes),
         language_version: p.language_version,
         bytecode_version: p.format_version,
         host_abi_version: p.host_abi_version,
         content_version: p.content_version,
         modules: checked.modules.clone(),
-        game: checked.game.clone(),
         initialization_order: compiled.initialization_order.iter().map(|m| m.0).collect(),
         initializer: rp::Initializer {
             module_id: p.functions[compiled.initializer.index()].module.0,

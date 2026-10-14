@@ -1,4 +1,5 @@
 fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
     let caption = text("Ready", width: 320, height: 48);
     let controls = row(gap: 16) {
         button("Move", width: 180, height: 64, background: "#284860",

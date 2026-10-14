@@ -20,7 +20,7 @@
 | 舞台 / UI | text/image/row/column/stack/button、PNG/JPEG、布局/变换/裁剪、原节点属性更新、局部 add/remove/clear；按钮回调可以等待活动。[动态组件](../examples/author_dynamic_stage.aside) · [按钮](../examples/author_buttons.aside) | bind/derive/model、作者滑条/输入框、通用事件和 scope。[#90](https://github.com/jhq223/reel/issues/90) · [#63](https://github.com/jhq223/reel/issues/63) |
 | 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、属性接管和 owner 退休；纯变换不重新布局。[可运行例](../examples/author_activities.aside) | 通用 scope、快进和活动快照尚未接通。组合动作合同：[#88](https://github.com/jhq223/reel/issues/88) |
 | 渲染 / 效果 | 共同帧描述、可选 WGPU 实际绘制、已呈现几何输入；作者可用图片、文字、透明度和基础裁剪。[渲染器](../crates/reel-render/README.md) | 内部遮罩/滤镜记录尚未接成作者接口；通用转场和自定义效果。[#92](https://github.com/jhq223/reel/issues/92) |
-| 工程 / 资源 | check/build/dev/run；game.toml、多源码导入、循环链接与独立环境、固定画布；完整代码 ASB；目录中的图片按需加载、共享像素与租约。[命令](guide/zh-CN.md#当前可用的检查构建与运行) | 资源包/发布；图片生产路径仍直接使用文件与工作线程，AssetIo/WorkExecutor 尚未贯通。[#66](https://github.com/jhq223/reel/issues/66) · [#89](https://github.com/jhq223/reel/issues/89) |
+| 工程 / 资源 | check/build/dev/run；脚本初始化、多字体与节点字体选择、多源码导入、循环链接与独立环境、固定画布；完整代码 ASB；目录中的图片按需加载、共享像素与租约。[命令](guide/zh-CN.md#当前可用的检查构建与运行) | 资源包/发布；图片生产路径仍直接使用文件与工作线程，AssetIo/WorkExecutor 尚未贯通。[#66](https://github.com/jhq223/reel/issues/66) · [#89](https://github.com/jhq223/reel/issues/89) |
 | 音频 / 视频 | Rust 层有 Kira mixer、可选 CPAL 输出、活动账本与 PCM 退休。[接口及边界](../crates/reel-media/README.md) | **作者音频接口尚未接通**；视频也未实现。不能把 Rust 音频检查算作剧本能播放媒体。[#67](https://github.com/jhq223/reel/issues/67) |
 | 保存 / 恢复 | 有存储服务合同；ASB 是代码产物 | **VM、剧情及活动快照尚未实现**；没有可用的游戏存读档。[#91](https://github.com/jhq223/reel/issues/91) |
 | 平台 | PlatformHost/Presentation/StoryRuntime/RenderBackend 已贯通，Winit 与 WGPU 可独立启用；内置窗口复用相同接口。[宿主接入](../crates/reel-player/README.md) | HAL 不等于全部目标适配完成；资源/媒体、原生 IME/触摸/可访问性及各设备运行仍需交付。[#89](https://github.com/jhq223/reel/issues/89) · [#93](https://github.com/jhq223/reel/issues/93) |
@@ -40,7 +40,7 @@ Quirrel 原始输入、预期输出及来源保留在 [compiler fixtures](../cra
 ```sh
 cargo run --locked -p reel-engine --example story_contract
 cargo run --locked -p reel-cli -- check examples/author_stage.aside
-cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --font path/to/font.ttf
+cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside
 cargo test --locked --workspace
 cargo run --locked -p reel-dev -- check
 ```

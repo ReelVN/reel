@@ -8,7 +8,6 @@ use reel_engine::{
 use reel_render::RenderBackend;
 use reel_render::gpu::GpuError;
 use reel_ui::core::TextEvent;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
@@ -29,17 +28,15 @@ pub fn run_session_host() -> Result<(), Error> {
 pub struct StoryWindowOptions {
     pub images: crate::images::ImageOptions,
     pub title: String,
-    pub font: PathBuf,
     pub locale: String,
     pub logical_size: [u32; 2],
     pub canvas_size: Option<[u32; 2]>,
 }
-impl StoryWindowOptions {
-    pub fn new(font: impl Into<PathBuf>) -> Self {
+impl Default for StoryWindowOptions {
+    fn default() -> Self {
         Self {
             images: Default::default(),
             title: "Reel".into(),
-            font: font.into(),
             locale: "en".into(),
             logical_size: [960, 540],
             canvas_size: None,

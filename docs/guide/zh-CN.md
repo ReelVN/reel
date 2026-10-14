@@ -12,18 +12,19 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。bind/derive、媒体与存读档尚未接入作者源码；game.toml 与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。bind/derive、媒体与存读档尚未接入作者源码；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
 ## 一 最小项目与共同写法
-可从一个 main.aside 开始，也可使用 game.toml 组织多文件工程。check/build/dev 接受配置文件或工程目录，run 执行已经构建的 .asb。可运行工程见 [author_project](../../examples/author_project/game.toml)。下面标题页中的 game.start 仍属于后续游戏入口服务。
-game.toml 使用 [game] 表的 entry 与 title，以及 [display] 表的 width、height、scale。entry 写 "main::main"；width=1920、height=1080、scale="contain" 是设计默认值。contain 等比例缩放并留出边缘，输入坐标采用同一换算。game:: 将从配置所在目录解析源码，外部模块使用 [modules] 别名。工程采用固定逻辑画布，窗口初始大小为 960×540；contain 的缩放与留边也用于已呈现几何和输入。单文件模式使用窗口的逻辑空间。可选 game.font 相对配置目录解析，也可用 --font 指定开发字体。
+从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。下面标题页中的 game.start 仍属于后续游戏入口服务。
+在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。窗口初始大小为 960×540。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
 Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 属于后续游戏入口服务。
 ```aside
 use game::ui::title::title;
 
 fn main() {
+    game.configure(title: "窗边", width: 1920, height: 1080, fonts: ["fonts/body.ttf"]);
     stage.replace(title());
 }
 ```
@@ -43,14 +44,17 @@ let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另�
 
 
 ### 当前可用的检查、构建与运行
-从仓库根目录运行下列 Windows 命令。示例字体为微软雅黑；也可把 --font 改为自己的字体文件。运行 dev 或 run 后关闭窗口，再继续下一条命令。
+示例在 main 中配置 fonts/body.ttf。从仓库根目录运行下列 Windows 命令，将微软雅黑复制到临时资源目录供本机验证；发布作品时应提供有分发授权的字体。运行 dev 或 run 后关闭窗口，再继续下一条命令。
 
 ```powershell
+New-Item -ItemType Directory -Force target/reel-artifacts/author-assets/fonts | Out-Null
+Copy-Item C:/Windows/Fonts/msyh.ttc target/reel-artifacts/author-assets/fonts/body.ttf
+Copy-Item -Recurse -Force examples/assets target/reel-artifacts/author-assets/
 cargo build --locked -p reel-cli --features window
 ./target/debug/reel.exe check examples/author_stage.aside
-./target/debug/reel.exe dev examples/author_stage.aside --font C:/Windows/Fonts/msyh.ttc
+./target/debug/reel.exe dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
 ./target/debug/reel.exe build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
-./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --font C:/Windows/Fonts/msyh.ttc
+./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/author-assets
 ```
 
 check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者提供与播放器相同的默认 Reel 名称、已注册 native 与宿主默认参数。
@@ -59,7 +63,7 @@ dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他
 
 启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口或按 Escape 退出并完成清理。
 
-工程只读取入口实际导入的源码。game::ui::scene 对应 ui/scene.aside；[modules] 的依赖使用 {path: 目录, version: 固定版本}，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图、入口和显示设置放入同一 .asb，移动后无需原源码。图片目录仍通过 --assets 指定，.rpk 与 release.json 属于后续发布链路。
+工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；.rpk 与 release.json 属于后续发布链路。
 
 源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
 
@@ -212,7 +216,7 @@ fn card(children = []) {
 ```
 props、布局与绘制方式属于节点，交互行为属于控件。作者可以把立绘放进按钮、把按钮放进画面组、让整个设置页一起旋转或淡出。层级规则由共同节点树决定。覆盖层由作者在根节点中明确安排。
 
-保留组件内任一节点引用，也会保留其未挂载父级组件；GC 不会让仍在使用的节点突然失效。属性类型、颜色和数值范围在赋值时检查，错误可在同一段 try/catch 捕获，失败保留旧值。--font 指定的字体用于它所覆盖的全部文字，包括中文，而非只用于拉丁文字。
+保留组件内任一节点引用，也会保留其未挂载父级组件；GC 不会让仍在使用的节点突然失效。属性类型、颜色和数值范围在赋值时检查，错误可在同一段 try/catch 捕获，失败保留旧值。配置的字体列表按顺序参与缺字回退，包括中文。
 
 ## 三 剧情是普通的顺序代码
 
@@ -264,7 +268,7 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 ## 四 时间顺序与同时发生的变化
 
-动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、in、out、in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --font <font.ttf>`。sequence/parallel/repeat 已接通；scope 尚未实现。
+动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、in、out、in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 已接通；scope 尚未实现。
 
 语言底层现已支持等待宿主注册的可等待对象，普通 fn 可以直接写 `await request`；它会暂停当前调用链，让宿主继续处理其他工作。已完成对象也在下一调度步骤返回，错误在 await 位置报告并保留生产者原因。引擎活动现已接入这一协议；async fn 与 Future 构造尚未实现。可运行的宿主接入检查见 [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs)，命令为 `cargo test -p aside-compiler --test host_awaitables`。
 
@@ -390,7 +394,7 @@ bind 连接可观察属性，属性同时保留原来的读写权限；text 可�
 
 常用风格就是普通数据，组件函数决定如何把它应用到自己的节点。先写默认值，再用变体与显式参数覆盖；字段缺失才采用默认值，false、0 和 null 都保留作者的明确含义。临时 scope 覆盖优先于节点底层属性。
 ```aside
-let default_look = {font: "assets/ui.ttf", font_size: 32,
+let default_look = {font: "system-ui", font_size: 32,
                     color: "#ffffff", background: "assets/button.png"};
 
 fn menu_button(label, clicked, style = {}) {

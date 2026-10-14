@@ -12,11 +12,11 @@ It is currently a development prototype that runs simple interactive scenes. The
 
 Design baseline 1.1 has passed architecture, language, and creator-interface review. Implementation is organized around shared contracts, the VM, the stage, and media. See [documentation](docs/README.md) for the architecture, language specification, and bilingual creator guide.
 
-当前已接通 Aside 组件组合、文字、PNG/JPEG 图片与行列/层叠布局、节点与整组组件的旋转/缩放/锚点、属性更新、对白和选择，以及源码/ASB 窗口运行。基础节点与剧情服务默认可用，无需逐文件导入。可从 [作者舞台示例](examples/author_stage.aside) 开始，字体路径替换为本机字体；完整命令与能力边界见[中文指南](docs/guide/zh-CN.md)或 [English guide](docs/guide/en.md)。
+当前已接通 Aside 组件组合、文字、PNG/JPEG 图片与行列/层叠布局、节点与整组组件的旋转/缩放/锚点、属性更新、对白和选择，以及源码/ASB 窗口运行。基础节点与剧情服务默认可用，无需逐文件导入。可从 [作者舞台示例](examples/author_stage.aside) 开始，在 main 中配置作品的字体文件；下列命令使用的临时资源目录按[中文指南](docs/guide/zh-CN.md)或 [English guide](docs/guide/en.md)准备。
 
 ```sh
 cargo run --locked -p reel-cli -- check examples/author_stage.aside
-cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --font path/to/font.ttf
+cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
 ```
 
 开发检查与第一方脚本覆盖迁移见 [reel-dev](crates/reel-dev/README.md)。UI 借用源码由 Reel 自主维护在单一 [reel-ui](crates/reel-ui/README.md) 中，按职责使用内部模块，共用根 workspace 和 lockfile；保留原始许可和必要版权；可再生成输出统一放入忽略的 `target/reel-artifacts/`。

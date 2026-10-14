@@ -320,7 +320,7 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
     let original = artifact("let x = 1; fn main(a = 2) { a }", Some("main::main")).bytes;
     let initial: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
     for (pointer, value) in [
-        ("/schema_version", serde_json::json!(3)),
+        ("/schema_version", serde_json::json!(4)),
         ("/bytecode_blake3", serde_json::json!("wrong")),
         ("/modules/0/module_id", serde_json::json!(u32::MAX)),
         ("/modules/0/canonical_path", serde_json::json!("foreign")),

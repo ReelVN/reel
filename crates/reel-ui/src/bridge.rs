@@ -292,6 +292,9 @@ impl PresentationBridge {
     pub fn root(&self) -> &RenderRoot {
         &self.root
     }
+    pub fn set_default_fonts(&mut self, data: &[crate::peniko::Blob<u8>]) -> bool {
+        self.root.set_default_fonts(data)
+    }
     /// Ordinary widget mutations receive explicit Live contexts.
     pub fn edit_widget<R>(
         &mut self,

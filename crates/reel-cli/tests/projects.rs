@@ -40,7 +40,9 @@ impl Case {
             .unwrap()
     }
 }
-fn execute(story: reel_engine::aside::source::CompiledStory) -> bool {
+fn execute(
+    story: reel_engine::aside::source::CompiledStory,
+) -> (bool, reel_engine::aside::GameSettings) {
     let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
     for function in [story.initializer, story.entry] {
@@ -52,7 +54,10 @@ fn execute(story: reel_engine::aside::source::CompiledStory) -> bool {
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     if function == story.entry {
-                        return vm.retain_return(&session).unwrap().as_bool() == Some(true);
+                        return (
+                            vm.retain_return(&session).unwrap().as_bool() == Some(true),
+                            (**vm.game_settings()).clone(),
+                        );
                     }
                     vm.discard_delivery(&mut session).unwrap();
                     break;
@@ -70,22 +75,31 @@ fn execute(story: reel_engine::aside::source::CompiledStory) -> bool {
 #[test]
 fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() {
     let case = Case::new();
-    case.write("game.toml", "[game]\nentry='main::main'\ntitle='窗边'\n[display]\nwidth=800\nheight=600\nscale='contain'\n[modules]\nfirst={path='library',version='1'}\nsecond={path='library',version='1'}\n");
     case.write(
         "library/data.aside",
         "pub use reel::prelude::text as label; pub let model={value:0}; pub fn bump(){model.value+=1;}",
     );
-    case.write("main.aside", "use first::data as a; use second::data as b; fn main(){a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
-    let loaded =
-        reel_cli::project::load(&case.dir).unwrap_or_else(|error| panic!("{:?}", error.failure));
+    case.write("main.aside", "use first::data as a; use second::data as b; fn main(){game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
+    let modules = std::collections::BTreeMap::from([
+        ("first".into(), case.dir.join("library")),
+        ("second".into(), case.dir.join("library")),
+    ]);
+    let loaded = reel_cli::project::load_with_modules(&case.dir, &modules)
+        .unwrap_or_else(|error| panic!("{:?}", error.failure));
     assert_eq!(loaded.sources.len(), 2);
     let checked = loaded.check().unwrap();
-    assert!(execute(
-        reel_cli::into_story(checked, &loaded.entry(None)).unwrap()
-    ));
+    let (result, settings) = execute(reel_cli::into_story(checked, &loaded.entry(None)).unwrap());
+    assert!(result);
+    assert_eq!(settings.title, "窗边");
+    assert_eq!(settings.canvas_size, Some([800, 600]));
+    assert_eq!(settings.fonts, ["body.ttf", "cjk.ttf"]);
     let output = case.command(&[
         "build",
-        "game.toml",
+        ".",
+        "--module",
+        "first=library",
+        "--module",
+        "second=library",
         "--output",
         "project.asb",
         "--format",
@@ -103,20 +117,21 @@ fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() 
     let bytes = fs::read(destination.join("story.asb")).unwrap();
     let package = reel_package::decode(&bytes, Default::default()).unwrap();
     assert_eq!(package.metadata().modules.len(), 2);
-    assert_eq!(package.metadata().game.as_ref().unwrap().title, "窗边");
-    assert!(execute(reel_cli::story_from_package(package).unwrap()));
+    let (result, settings) = execute(reel_cli::story_from_package(package).unwrap());
+    assert!(result);
+    assert_eq!(settings.title, "窗边");
+    assert_eq!(settings.fonts, ["body.ttf", "cjk.ttf"]);
 }
 
 #[test]
 fn project_diagnostics_locate_imported_source_and_missing_import_without_executing() {
     let case = Case::new();
-    case.write("game.toml", "[game]\nentry='main::main'\n");
     case.write("main.aside", "use game::ui::{panel}; fn main(){panel();}");
     case.write(
         "ui.aside",
         "pub fn panel(){\n let text=\"字\";\n missing;\n}",
     );
-    let output = case.command(&["check", "game.toml", "--format", "json"]);
+    let output = case.command(&["check", "main.aside", "--format", "json"]);
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["executed"], false);
@@ -127,7 +142,7 @@ fn project_diagnostics_locate_imported_source_and_missing_import_without_executi
         .unwrap_or_else(|| panic!("imported source diagnostic: {report}"));
     assert_eq!(diagnostic["range"]["start"]["line"], 2);
     fs::remove_file(case.dir.join("ui.aside")).unwrap();
-    let output = case.command(&["check", "game.toml", "--format", "json"]);
+    let output = case.command(&["check", "main.aside", "--format", "json"]);
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["stage"], "resolve");
     assert_eq!(report["diagnostics"][0]["source"], "main.aside");
@@ -136,7 +151,7 @@ fn project_diagnostics_locate_imported_source_and_missing_import_without_executi
     case.write("ui.aside", "pub fn panel(required){required}");
     let output = case.command(&[
         "build",
-        "game.toml",
+        "main.aside",
         "--entry",
         "game::ui::panel",
         "--output",

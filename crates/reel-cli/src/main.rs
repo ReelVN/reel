@@ -10,7 +10,7 @@ use std::{
     process::ExitCode,
 };
 
-const HELP: &str = "reel check <source.aside> [--format human|json]\nreel build <source.aside> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside> --font <font.ttf> [--entry main::main] [--assets <directory>]\nreel run <file.asb> --font <font.ttf> [--assets <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
+const HELP: &str = "reel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>]\nreel run <file.asb> [--assets <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
 
 struct Args {
     command: String,
@@ -19,8 +19,8 @@ struct Args {
     output: Option<PathBuf>,
     entry: Option<String>,
     overwrite: bool,
-    font: Option<PathBuf>,
     assets: Option<PathBuf>,
+    modules: std::collections::BTreeMap<String, PathBuf>,
 }
 fn args(raw: &[OsString]) -> Result<Args, String> {
     if raw.first().is_none_or(|v| {
@@ -32,8 +32,8 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     }
     let (mut source, mut format, mut output, mut entry) = (None, None, None, None);
     let (mut options, mut overwrite) = (true, false);
-    let mut font = None;
     let mut assets = None;
+    let mut modules = std::collections::BTreeMap::new();
     let mut iter = raw[1..].iter();
     while let Some(arg) = iter.next() {
         if options && arg == "--" {
@@ -64,10 +64,18 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
                     .ok_or("--entry requires a UTF-8 main::name")?
                     .to_owned(),
             );
-        } else if options && arg == "--font" {
-            font = Some(PathBuf::from(
-                iter.next().ok_or("--font requires a font file")?,
-            ));
+        } else if options && arg == "--module" {
+            let (alias, path) = iter
+                .next()
+                .and_then(|v| v.to_str())
+                .and_then(|v| v.split_once('='))
+                .ok_or("--module requires alias=directory")?;
+            if modules
+                .insert(alias.to_owned(), PathBuf::from(path))
+                .is_some()
+            {
+                return Err(format!("module alias {alias} was specified twice"));
+            }
         } else if options && arg == "--assets" {
             assets = Some(PathBuf::from(
                 iter.next().ok_or("--assets requires a directory")?,
@@ -91,13 +99,13 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     }
     let playing = raw[0] == "dev" || raw[0] == "run";
     if playing && (output.is_some() || overwrite || format.is_some()) {
-        return Err("dev/run accept --font/--assets and dev also accepts --entry".into());
+        return Err("dev/run accept --assets and dev also accepts --entry/--module".into());
     }
     if raw[0] == "run" && entry.is_some() {
         return Err("run uses the entry selected when the package was built".into());
     }
-    if !playing && font.is_some() {
-        return Err("--font is used by dev/run".into());
+    if raw[0] == "run" && !modules.is_empty() {
+        return Err("run uses the modules linked into the package".into());
     }
     if !playing && assets.is_some() {
         return Err("--assets is used by dev/run".into());
@@ -114,8 +122,8 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
         output,
         entry,
         overwrite,
-        font,
         assets,
+        modules,
     })
 }
 fn requested_json(raw: &[OsString]) -> bool {
@@ -187,38 +195,20 @@ fn run() -> io::Result<u8> {
             }
         };
         return match reel_package::decode(&bytes, reel_package::Limits::default()) {
-            Ok(package) => {
-                let game = package.metadata().game.clone();
-                let root = parsed.source.parent().unwrap_or(std::path::Path::new("."));
-                let font = parsed.font.or_else(|| {
-                    game.as_ref()
-                        .and_then(|game| game.font.as_ref())
-                        .map(|font| root.join(font))
-                });
-                let Some(font) = font else {
-                    failure(
-                        false,
-                        "input",
-                        Some(path),
-                        "set game.font or provide --font <font.ttf>",
-                    )?;
-                    return Ok(2);
-                };
-                match reel_cli::story_from_package(package) {
-                    Ok(story) => launch(story, font, parsed.assets, path, game),
-                    Err(error) => {
-                        failure(false, "package", Some(path), &error.to_string())?;
-                        Ok(1)
-                    }
+            Ok(package) => match reel_cli::story_from_package(package) {
+                Ok(story) => launch(story, parsed.assets, path),
+                Err(error) => {
+                    failure(false, "package", Some(path), &error.to_string())?;
+                    Ok(1)
                 }
-            }
+            },
             Err(error) => {
                 failure(false, "package", Some(path), &error.to_string())?;
                 Ok(1)
             }
         };
     }
-    let loaded = match reel_cli::project::load(&parsed.source) {
+    let loaded = match reel_cli::project::load_with_modules(&parsed.source, &parsed.modules) {
         Ok(project) => project,
         Err(error) if error.sources.is_empty() => {
             if let Some(input) = error.input_error {
@@ -250,29 +240,11 @@ fn run() -> io::Result<u8> {
         Err(failed) => return source_error(parsed.json, path, inputs, failed),
     };
     if parsed.command == "dev" {
-        let font = parsed.font.or_else(|| {
-            loaded
-                .game
-                .as_ref()
-                .and_then(|game| game.font.as_ref())
-                .map(|font| loaded.root.join(font))
-        });
-        let Some(font) = font else {
-            failure(
-                false,
-                "input",
-                Some(path),
-                "set game.font or provide --font <font.ttf>",
-            )?;
-            return Ok(2);
-        };
         return match reel_cli::into_story(checked, &selected_entry) {
             Ok(story) => launch(
                 story,
-                font,
                 parsed.assets.or_else(|| Some(loaded.root.clone())),
                 path,
-                loaded.game.clone(),
             ),
             Err(failed) => source_error(false, path, inputs, failed),
         };
@@ -383,25 +355,19 @@ fn source_error(
 
 fn launch(
     story: reel_engine::aside::source::CompiledStory,
-    font: PathBuf,
     assets: Option<PathBuf>,
     path: &str,
-    game: Option<reel_package::GameSettings>,
 ) -> io::Result<u8> {
     #[cfg(feature = "window")]
     let result = {
-        let mut options = reel_player::shell::StoryWindowOptions::new(font);
-        if let Some(game) = game {
-            options.title = game.title;
-            options.canvas_size = Some([game.display.width, game.display.height]);
-        }
+        let mut options = reel_player::shell::StoryWindowOptions::default();
         options.images.root =
             assets.unwrap_or_else(|| std::path::Path::new(path).parent().unwrap().to_path_buf());
         reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
     };
     #[cfg(not(feature = "window"))]
     let result: Result<(), String> = {
-        let _ = (story, font, assets, game);
+        let _ = (story, assets);
         Err("build the window player with: cargo build -p reel-cli --features window".into())
     };
     match result {

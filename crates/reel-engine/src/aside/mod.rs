@@ -7,6 +7,8 @@
 mod activity;
 pub use activity::ActivityProgress;
 mod callbacks;
+mod game;
+pub use game::GameSettings;
 mod choice;
 mod publication;
 mod registry;
@@ -178,6 +180,7 @@ pub struct SessionVm {
     root_end: u32,
     stage: stage::StageBinding,
     activities: activity::Activities,
+    game: std::sync::Arc<GameSettings>,
 }
 
 impl SessionVm {
@@ -220,6 +223,7 @@ impl SessionVm {
             root_end: 0,
             stage,
             activities: activity::Activities::default(),
+            game: std::sync::Arc::new(GameSettings::default()),
         })
     }
 
@@ -312,6 +316,10 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::game::configure" => {
+                self.configure_game(ticket)?;
+                Ok(NativeDispatch::Ready { work: 4 })
+            }
             "reel::sequence" | "reel::parallel" => {
                 let kind = if symbol == "reel::sequence" {
                     activity::action::Kind::Sequence

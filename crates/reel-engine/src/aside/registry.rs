@@ -80,6 +80,22 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         effects: Effects(Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],
     });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::game::configure".into(),
+        abi_version: 1,
+        parameters: ["title", "width", "height", "fonts"]
+            .into_iter()
+            .map(|name| NativeParameter {
+                name: name.into(),
+                ty: BuiltinType::Any,
+                default: Some(bc::Const::Null),
+            })
+            .collect(),
+        result: BuiltinType::Null,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
     let parameter = |name: &str, default| NativeParameter {
         name: name.into(),
         ty: BuiltinType::Any,
