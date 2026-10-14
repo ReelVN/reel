@@ -1292,7 +1292,14 @@ impl Vm {
         site: NativeSite,
         receiver: Option<Value>,
     ) -> Result<(), VmError> {
-        if site.effects.0 & Effects::HOST == 0 {
+        let signature = self.program.package().natives[native.index()].signature;
+        let declared = self.program.package().signatures[signature.index()].effects;
+        let pure = declared.0 & (Effects::HOST | Effects::WRITE | Effects::WAIT) == 0;
+        // Calling a pure native is not itself an external side effect. Derived
+        // callbacks retain their allocation mask and cannot admit an impure native.
+        if (site.context.derived && !pure)
+            || (site.effects.0 & Effects::HOST == 0 && (!pure || declared.0 & !site.effects.0 != 0))
+        {
             return Err(VmError::Effect);
         }
         if self.active.frames.data.len() == self.limits.max_frames as usize
@@ -1300,7 +1307,6 @@ impl Vm {
         {
             return Err(VmError::Limit);
         }
-        let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());

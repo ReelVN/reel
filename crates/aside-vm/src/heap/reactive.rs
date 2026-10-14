@@ -117,19 +117,24 @@ impl Heap {
             return Ok(());
         }
         let object = self.object(self.key(value)?)?;
+        let mut source = value;
+        if let Some(owner) = object.property_owner {
+            source = Value::object(self.id, owner.data().as_ffi());
+        } else if !object.model && object.observable_fields == 0 {
+            return Ok(());
+        }
+        let object = self.object(self.key(source)?)?;
+        // Private construction reads do not subscribe a component to its own
+        // newborn nodes. Read-only host services may be initialized lazily here;
+        // their observable identity is shared and must still be tracked.
         if !object.derived
+            && (object.observable_writable != 0 || object.model && !object.readonly_collection)
             && object.evaluation as i64
                 == self
                     .host_payload(output, DerivedSlot::Evaluation as u32)?
                     .as_int()
                     .unwrap()
         {
-            return Ok(());
-        }
-        let mut source = value;
-        if let Some(owner) = object.property_owner {
-            source = Value::object(self.id, owner.data().as_ffi());
-        } else if !object.model && object.observable_fields == 0 {
             return Ok(());
         }
         if let Some(index) = field

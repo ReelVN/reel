@@ -135,7 +135,7 @@ fn reactive_computation_allows_private_work_and_rejects_effects_and_cycles() {
         try { node.x = cyclic; } catch e { rejected += 1; }
         try { view(|| { let n = data.n; data.n = n + 1; text("cycle"); }); } catch e { rejected += 1; }
         if rejected != 5 || data.n != 2 || node.x != 3 { throw "effect boundary"; }
-        stage.replace(text("pure"));
+        stage.replace(column() { text("pure"); text(value: derive(|| game.dialogue().text)); });
         narrator("ready");
     }"##;
     for encoded in [false, true] {
@@ -145,6 +145,11 @@ fn reactive_computation_allows_private_work_and_rejects_effects_and_cycles() {
             vm.stage()
                 .nodes()
                 .any(|node| node.kind == NodeKind::Text("pure".into()))
+        );
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("ready".into()))
         );
     }
 }

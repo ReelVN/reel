@@ -2232,6 +2232,9 @@ fn continuation_dispatch_uses_returned_stage_without_host_round_counter() {
 fn inherited_context_flags_accumulate_and_derived_write_fails_under_nowait_or_init() {
     for parent in [Context::NoWait, Context::Init] {
         let mut p = fixtures::helper_native();
+        // A pure native may inspect inherited context; the subsequent write
+        // must still fail under the helper's Derived context.
+        p.signatures[0].effects = Effects(0);
         p.signatures.push(Signature {
             parameters: vec![Parameter {
                 name: SymbolId(4),
@@ -2268,7 +2271,15 @@ fn inherited_context_flags_accumulate_and_derived_write_fails_under_nowait_or_in
             i(Opcode::CellWrite, 0, 1, 0),
             i(Opcode::Return, 1, 0, 0),
         ];
-        let mut v = vm(p);
+        let mut registry = support(&p);
+        registry.natives[0].signature.effects = Effects(0);
+        let mut v = Vm::load(
+            verify(p, Limits::default()).unwrap(),
+            registry,
+            VmLimits::default(),
+            SessionEpoch(4),
+        )
+        .unwrap();
         let cell = v.heap_mut().alloc_cell(Value::int(41)).unwrap();
         let task = v.start(fixtures::ENTRY, &[cell], OWNER, parent).unwrap();
         let ticket = task_ticket(&mut v, task);
