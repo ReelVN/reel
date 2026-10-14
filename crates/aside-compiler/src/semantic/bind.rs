@@ -2191,16 +2191,10 @@ impl Binder<'_> {
                     .and_then(|args| self.children(args).first().copied())
                     .and_then(|a| self.children(a).first().copied());
                 if let Some(value) = value {
-                    if let Form::Member { object, .. } | Form::Index { object, .. } =
-                        self.out.hir.node(value).form
+                    if let Form::Member { .. } | Form::Index { .. } = self.out.hir.node(value).form
                     {
-                        if self.ty(object) == TABLE {
-                            self.error(
-                                D::TypeMismatch,
-                                self.span(value),
-                                "ordinary table slots are not observable properties",
-                            );
-                        }
+                        // An ordinary table alias can be adopted by a model later.
+                        // Observable identity is therefore checked at execution time.
                         self.check(value, RuntimeChecks::PROPERTY);
                     } else {
                         self.error(

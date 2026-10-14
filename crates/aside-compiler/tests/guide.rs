@@ -30,6 +30,7 @@ const SCENES: &[(&str, E)] = &[
     ("mask in story", E::Block),
     ("choice component and branch in story", E::Block),
     ("save button construction", E::Module),
+    ("shared model controls", E::Block),
     ("game variables in story", E::Block),
     ("settings component", E::Module),
     ("arrive helper", E::Module),

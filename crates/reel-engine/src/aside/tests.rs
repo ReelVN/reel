@@ -5,6 +5,7 @@ use aside_vm::bytecode as bc;
 mod activities;
 mod buttons;
 mod dynamic_stage;
+mod models;
 
 const STORY: &str =
     "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";

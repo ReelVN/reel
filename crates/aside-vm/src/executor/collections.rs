@@ -550,10 +550,14 @@ impl Vm {
                     Ok(value) => value,
                     Err(kind) => return self.collection_fault(s, kind),
                 };
+                if self.heap.is_property_ref(value)
+                    && s.effects.0 & Effects::ALLOCATE == 0
+                    && (matches!(work.action, TableAction::SetHost { .. })
+                        || self.heap.is_model_table(table)?)
+                {
+                    return self.collection_fault(s, FaultKind::Effect);
+                }
                 let result = if let TableAction::SetHost { object, .. } = work.action {
-                    if self.heap.is_property_ref(value) && s.effects.0 & Effects::ALLOCATE == 0 {
-                        return self.collection_fault(s, FaultKind::Effect);
-                    }
                     let host = self.value(s.regs, object.0)?;
                     self.heap.write_host_property(
                         crate::PropertyId {

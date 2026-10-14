@@ -145,6 +145,19 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     contracts.push(NativeContract {
         rest: None,
+        symbol: "reel::model".into(),
+        abi_version: 1,
+        parameters: vec![NativeParameter {
+            name: "defaults".into(),
+            ty: BuiltinType::Any,
+            default: None,
+        }],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE),
+        required_capabilities: vec![],
+    });
+    contracts.push(NativeContract {
+        rest: None,
         symbol: "reel::unbind".into(),
         abi_version: 1,
         parameters: vec![NativeParameter {

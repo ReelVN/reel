@@ -641,11 +641,14 @@ fn registered_intrinsics_observable_locations_and_derived_write_effects() {
     };
     let run = |source: &str| analyze_module(source, &options, &mut NoModules).unwrap();
     let result = run("let t={x:1}; bind(t.x);");
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
     assert!(
         result
-            .diagnostics
+            .module()
+            .unwrap()
+            .facts()
             .iter()
-            .any(|d| d.code == DiagnosticCode::TypeMismatch)
+            .any(|f| f.checks.0 & RuntimeChecks::PROPERTY != 0)
     );
     let result = run("bind(1+2);");
     assert!(

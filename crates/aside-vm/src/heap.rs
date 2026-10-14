@@ -1,3 +1,4 @@
+mod model;
 mod properties;
 mod table;
 use crate::HeapBudgetUsage;
@@ -231,10 +232,15 @@ pub(crate) struct Object {
     pub observable_fields: u32,
     pub observable_writable: u32,
     pub property_owner: Option<HeapKey>,
+    pub model: bool,
+    pub model_visit: u64,
+    pub model_metadata: Value,
+    pub property_generation: u64,
     pub payload: Payload,
     pub weak: Option<HeapHandle>,
     pub mark: u64,
     pub scan: u32,
+    pub metadata_scanned: bool,
     pub queued: bool,
     pub dying: bool,
     pub content_version: u64,
@@ -265,6 +271,8 @@ pub struct Heap {
     pub(crate) release: VecDeque<HeapKey>,
     pub(crate) gc: Collector,
     property_work: Vec<PropertyId>,
+    model_work: Vec<Value>,
+    model_walk: u64,
     property_proposal: Option<Value>,
     limits: HeapLimits,
     reserved: u64,
@@ -338,6 +346,8 @@ impl Heap {
             release: VecDeque::with_capacity(limits.max_objects as usize),
             gc: Collector::default(),
             property_work: Vec::new(),
+            model_work: Vec::new(),
+            model_walk: 0,
             property_proposal: None,
             limits,
             reserved: estimate,
@@ -446,6 +456,7 @@ impl Heap {
         {
             obj.mark = self.gc.cycle;
             obj.scan = 0;
+            obj.metadata_scanned = false;
             obj.queued = true;
             assert!(self.gray.len() < self.limits.max_objects as usize);
             self.gray.push_back(key);
@@ -509,10 +520,15 @@ impl Heap {
             observable_fields: 0,
             observable_writable: 0,
             property_owner: None,
+            model: false,
+            model_visit: 0,
+            model_metadata: Value::NULL,
+            property_generation: 0,
             payload,
             weak,
             mark,
             scan: 0,
+            metadata_scanned: false,
             queued: self.gc.phase == GcPhase::Mark,
             dying: false,
             content_version: 0,
@@ -688,7 +704,7 @@ impl Heap {
         index: u32,
         value: Value,
     ) -> Result<(), HeapError> {
-        self.host_fields(host)?;
+        self.property_fields(host)?;
         if let Some(validate) = self.object(self.key(host)?)?.host_validator {
             validate(self, host, index, value)?;
         }
@@ -714,35 +730,30 @@ impl Heap {
     /// Opt into per-field script write tracking. Storage is a traced, budgeted
     /// array; a host's own table_store updates do not count as script writes.
     pub fn track_host_writes(&mut self, host: Value) -> Result<(), HeapError> {
-        let fields = self.host_fields(host)?;
-        if self.get_field(host, 2)?.same_bits(Value::NULL) {
-            let count = self.table_len(fields)?;
-            if count > self.limits.max_mutation_values {
-                return Err(HeapError::OperationLimit {
-                    requested: u64::from(count),
-                    limit: u64::from(self.limits.max_mutation_values),
-                });
-            }
-            let versions = self.alloc_array(&[])?;
-            for _ in 0..count {
-                self.array_push(versions, Value::int(0))?;
-            }
-            self.set_field(host, 2, versions)?;
+        let fields = self.property_fields(host)?;
+        let mut versions = self.property_versions(host)?;
+        if versions.same_bits(Value::NULL) {
+            versions = self.alloc_array(&[])?;
+            self.set_property_versions(host, versions)?;
+        }
+        while self.sequence_len(versions)? < self.table_len(fields)? {
+            self.array_push(versions, Value::int(0))?;
         }
         Ok(())
     }
-
     pub fn host_write_version(&self, host: Value, field: u32) -> Result<u64, HeapError> {
-        self.host_fields(host)?;
+        self.property_fields(host)?;
         Ok(self
-            .sequence_get(self.get_field(host, 2)?, field)?
+            .sequence_get(self.property_versions(host)?, field)?
             .as_int()
             .ok_or(HeapError::WrongKind)? as u64)
     }
-
     pub(crate) fn record_host_write(&mut self, host: Value, field: u32) -> Result<(), HeapError> {
-        let versions = self.get_field(host, 2)?;
+        let versions = self.property_versions(host)?;
         if !versions.same_bits(Value::NULL) {
+            while self.sequence_len(versions)? <= field {
+                self.array_push(versions, Value::int(0))?;
+            }
             let version = self.sequence_get(versions, field)?.as_int().unwrap();
             self.set_field(versions, field, Value::int(version.wrapping_add(1)))?;
         }
@@ -840,6 +851,7 @@ impl Heap {
         if position >= obj.payload.len() {
             return Err(HeapError::OutOfBounds);
         }
+        self.adopt_model_value(target, value)?;
         self.barrier(value)?;
         let obj = self.objects.get_mut(key).unwrap();
         match &mut obj.payload {
@@ -866,6 +878,7 @@ impl Heap {
             0
         };
         self.ensure_bytes(extra)?;
+        self.adopt_model_value_reserving(target, value, extra)?;
         self.barrier(value)?;
         self.charge(extra, u64::from(extra != 0));
         let obj = self.objects.get_mut(key).unwrap();
@@ -970,7 +983,7 @@ impl Heap {
         obj.structure_version = obj.structure_version.wrapping_add(1);
         Ok(())
     }
-    fn append_buffer(
+    pub(crate) fn append_buffer(
         &mut self,
         target: Value,
         input: &[u8],

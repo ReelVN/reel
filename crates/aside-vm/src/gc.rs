@@ -151,7 +151,15 @@ impl Heap {
                             .objects
                             .get_mut(key)
                             .expect("gray entry owns a live slot");
-                        if let Some(value) = obj.payload.edge(obj.scan) {
+                        if !obj.metadata_scanned
+                            && !obj.model_metadata.same_bits(crate::Value::NULL)
+                        {
+                            obj.metadata_scanned = true;
+                            let metadata = obj.model_metadata;
+                            self.shade(metadata);
+                            p.edges += 1;
+                        } else if let Some(value) = obj.payload.edge(obj.scan) {
+                            obj.metadata_scanned = true;
                             obj.scan += 1;
                             self.shade(value);
                             p.edges += 1;

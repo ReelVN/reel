@@ -264,3 +264,37 @@ fn author_control_states_example_initializes_from_source_and_asb() {
         );
     }
 }
+
+#[test]
+fn author_models_example_initializes_from_source_and_asb() {
+    let source = include_str!("../../../examples/author_models.aside");
+    let checked = reel_cli::check(source, "author_models.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        compile_story(source, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|node| matches!(node.kind, NodeKind::Slider { value: 160., .. }))
+        );
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|node| node.props.width == Some(160.) && node.props.height == Some(12.))
+        );
+    }
+}

@@ -322,6 +322,11 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::model" => {
+                let work = self.vm.respond_model(ticket, work)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work })
+            }
             "reel::game::configure" => {
                 self.configure_game(ticket)?;
                 Ok(NativeDispatch::Ready { work: 4 })
@@ -558,7 +563,10 @@ impl SessionVm {
             } else {
                 self.callback_owner(session, ticket.task) != Some(ticket.owner)
             }
-            || ticket.input != NativeInput::Entry
+            || !matches!(
+                ticket.input,
+                NativeInput::Entry | NativeInput::Continue { .. }
+            )
         {
             return Err(AdapterError::Input("foreign or consumed native ticket"));
         }

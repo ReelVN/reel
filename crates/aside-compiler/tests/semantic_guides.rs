@@ -1,7 +1,7 @@
 use aside_compiler::{semantic::*, *};
 const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
 const EN: &str = include_str!("../../../docs/guide/en.md");
-const BLOCKS: &[usize] = &[2, 3, 4, 12, 14, 15, 18, 22, 23, 24, 25, 27];
+const BLOCKS: &[usize] = &[2, 3, 4, 12, 14, 15, 18, 22, 23, 24, 25, 27, 28];
 // These names are the documented reel::prelude symbols, not names harvested
 // from unresolved diagnostics. Their dynamic members remain runtime contracts.
 const PRELUDE: &[&str] = &[
@@ -95,9 +95,10 @@ const CONTEXT: &[(usize, &[&str])] = &[
         ],
     ),
     (26, &["saves", "button"]),
-    (27, &["state", "persistent", "set"]),
-    (28, &["column", "button"]),
-    (29, &["parallel", "tween"]),
+    (27, &["model", "slider", "toggle", "text", "bind"]),
+    (28, &["state", "persistent", "set"]),
+    (29, &["column", "button"]),
+    (30, &["parallel", "tween"]),
 ];
 fn snippets(doc: &str) -> Vec<String> {
     let mut result = Vec::new();
@@ -120,7 +121,7 @@ fn snippets(doc: &str) -> Vec<String> {
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 35);
+    assert_eq!(zh.len(), 36);
     assert_eq!(zh, en);
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {
