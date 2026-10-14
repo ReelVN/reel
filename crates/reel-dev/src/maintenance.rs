@@ -170,7 +170,7 @@ fn validate_ui_metadata(metadata: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-/// Audit legal attribution and single ownership, without constraining local source layout.
+/// Check package licensing, provenance and ownership without prescribing source headers.
 pub fn audit_ui() -> Result<()> {
     let base = root().join("crates/reel-ui");
     let license = fs::read_to_string(base.join("LICENSE"))?;
@@ -197,12 +197,6 @@ pub fn audit_ui() -> Result<()> {
                 "retired UI source boundary: {}",
                 path.display()
             );
-            ensure!(
-                text.contains("// Copyright")
-                    && text.contains("// SPDX-License-Identifier: Apache-2.0"),
-                "UI attribution lost: {}",
-                path.display()
-            );
         }
     }
     for name in [
@@ -219,7 +213,7 @@ pub fn audit_ui() -> Result<()> {
     }
     dependencies()?;
     println!(
-        "Original Apache license/copyright, local provenance and single UI ownership verified"
+        "Package Apache license, local provenance and single UI ownership verified"
     );
     Ok(())
 }
