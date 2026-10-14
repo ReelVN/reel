@@ -46,6 +46,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 当前作者舞台实现合同
 
+`input(bindings: null, on_action: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null bindings 表示没有动作映射。聚焦的编辑控件先拥有键盘与 IME，原始回调不截获预编辑；输入节点仅在自己拥有焦点或根输入兜底时消费事件。失焦、隐藏、禁用、模态替换与节点退休撤销旧按键；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。此变更覆盖 reel-ui/stage、reel-player 输入路由与 reel-engine 属性/回调，不增加依赖；input native ABI 5，B01/ASB 不变。验证多键交错、重复、焦点取消和编辑控件隔离。
+
 `text_input(value: "", on_change: null, on_submit: null, ...NodeProps)` 是共同舞台的单行文本编辑节点，value 支持可写 bind。编辑复用 reel-text 的 PlainEditor；提交文本与 IME 预编辑分别管理，预编辑只存在于控件，提交才写回模型。on_change/on_submit 收到 target/value，Enter 提交而不推进剧情；失焦、隐藏和禁用撤销预编辑。外部值替换结束当前预编辑，普通值回显保留光标和选区。输入事件携带编辑前值，避免用旧呈现覆盖脚本已修改的文本。控件按需布局，空闲不定时轮询。字体、颜色、背景、尺寸、变换和输入范围沿共同节点；不规定字符数量上限。作者赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。平台适配器转发公共 IME 事件和候选框区域，系统负责转换与候选词；原生窗口类型不进入 UI 或 Aside。桌面复制、剪切和粘贴由可选适配器复用固定版本 arboard 3.6.1。新增节点 ABI 1，B01/ASB 不变。
 
 手柄输入通过公共设备标识、标准按钮/轴和动作映射接入；宿主可直接注入规范化输入，Gilrs 只属于可选平台适配器。ActionMap 汇总同一动作的多个设备/绑定，公开当前值与 Pressed/Changed/Released/Cancelled；松开一个绑定不会清除仍被另一个绑定保持的动作。断连或重置撤销该来源，重映射用新映射替换并显式取消旧状态。导航另将模拟量转换为带迟滞的方向/确认/返回，重复只由单调时钟与下次截止时间驱动，空闲没有逐帧输入轮询。

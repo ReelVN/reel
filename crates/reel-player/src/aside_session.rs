@@ -303,6 +303,9 @@ impl AsideSessionUi {
                         NodeEvent::Text(input) => {
                             changed |= self.vm.text_input(self.ui.session_mut(), input)?;
                         }
+                        NodeEvent::Key(input) => {
+                            changed |= self.vm.input_key(self.ui.session_mut(), input)?;
+                        }
                         NodeEvent::Action(action) => {
                             self.vm.input_action(self.ui.session_mut(), action)?;
                         }

@@ -46,6 +46,10 @@ impl Vm {
         let len = self.heap.info(receiver).map_err(heap_fault)?.len;
         let argument = || self.builtin_argument(s, call, 0).map_err(vm_fault);
         let mode = match call.method {
+            Builtin::AsciiLowercase | Builtin::AsciiUppercase => TextMode::Copy {
+                offset: 0,
+                end: len,
+            },
             Builtin::ScalarCount | Builtin::SliceScalars => TextMode::Scan {
                 offset: 0,
                 utf8: Utf8::default(),
@@ -105,7 +109,11 @@ impl Vm {
         };
         if matches!(
             call.method,
-            Builtin::SliceBytes | Builtin::SliceScalars | Builtin::Join
+            Builtin::SliceBytes
+                | Builtin::SliceScalars
+                | Builtin::Join
+                | Builtin::AsciiLowercase
+                | Builtin::AsciiUppercase
         ) {
             if s.effects.0 & Effects::ALLOCATE == 0 {
                 return Err(FaultKind::Effect);
@@ -219,7 +227,9 @@ impl Vm {
             }
             TextMode::Copy { offset, end } => {
                 let buffer = self.value(s.env, 2).map_err(vm_fault)?;
-                let Some(count) = self.copy_text_part(buffer, receiver, offset, end, meter)? else {
+                let Some(count) =
+                    self.copy_text_part(buffer, receiver, offset..end, work.call.method, meter)?
+                else {
                     return Ok(false);
                 };
                 if count == 0 {
@@ -288,7 +298,9 @@ impl Vm {
                 }
                 let end = self.heap.info(source).map_err(heap_fault)?.len;
                 let buffer = self.value(s.env, 2).map_err(vm_fault)?;
-                let Some(count) = self.copy_text_part(buffer, source, offset, end, meter)? else {
+                let Some(count) =
+                    self.copy_text_part(buffer, source, offset..end, work.call.method, meter)?
+                else {
                     return Ok(false);
                 };
                 if count == 0 {
@@ -321,22 +333,29 @@ impl Vm {
         &mut self,
         buffer: Value,
         source: Value,
-        offset: u32,
-        end: u32,
+        range: std::ops::Range<u32>,
+        method: Builtin,
         meter: &mut Meter,
     ) -> Result<Option<u32>, FaultKind> {
-        let count = (end - offset).min(self.text_scratch.data.capacity() as u32);
+        let count = (range.end - range.start).min(self.text_scratch.data.capacity() as u32);
         let old_len = u64::from(self.heap.info(buffer).map_err(heap_fault)?.len);
         let chunks = (old_len + u64::from(count)).div_ceil(BYTE_CHUNK_LEN as u64)
             - old_len.div_ceil(BYTE_CHUNK_LEN as u64);
-        if !meter.take(0, u64::from(count) * 2 + 1, chunks * BYTE_CHUNK_BYTES) {
+        if !meter.take(0, u64::from(count) * 3 + 1, chunks * BYTE_CHUNK_BYTES) {
             return Ok(None);
         }
         self.text_scratch.data.resize(count as usize, 0);
         let result = self
             .heap
-            .read_bytes(source, offset, &mut self.text_scratch.data)
-            .and_then(|_| self.heap.bytes_append(buffer, &self.text_scratch.data));
+            .read_bytes(source, range.start, &mut self.text_scratch.data)
+            .and_then(|_| {
+                match method {
+                    Builtin::AsciiLowercase => self.text_scratch.data.make_ascii_lowercase(),
+                    Builtin::AsciiUppercase => self.text_scratch.data.make_ascii_uppercase(),
+                    _ => {}
+                }
+                self.heap.bytes_append(buffer, &self.text_scratch.data)
+            });
         self.text_scratch.data.clear();
         result.map_err(heap_fault)?;
         Ok(Some(count))

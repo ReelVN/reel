@@ -109,6 +109,8 @@ let has_opening = caption.starts_with(prefix: "第二章");
 
 文本可用 byte_len 取得 UTF-8 字节数、scalar_count 取得 Unicode 标量数。slice_bytes 和 slice_scalars 使用显式范围，越界或截断 UTF-8 标量会报错；组合字符和 emoji 可能包含多个标量，标量切片不代表字素切片。starts_with/ends_with 精确匹配前后缀，空字符串总是匹配。`separator.join(items)` 连接字符串数组或 tuple，空集合得到空字符串，其他类型不会自动转成文字。长文本按执行预算推进，连接过程中修改来源数组会报错。完整示例见 [text_operations.aside](../../examples/text_operations.aside)。
 
+to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文等其他文字。例如 "Emily你好".to_ascii_lowercase() 得到 "emily你好"，可用于 ASCII 标识或账号的比较。
+
 已注册的函数也可以保存和传递，例如 `let say = narrator; say("你好");`，等待行为与直接调用一致；函数缺省参数也可以是 `text` 等构造函数。可以用 `(int,int)` 约束坐标，用 `(int,int)|null` 表达可省略的坐标；`is`、参数、返回值和变量赋值都会检查相应类型，失败赋值保留旧值。完整可运行示例见 [function_values.aside](../../examples/function_values.aside)，使用前面的 `dev` 或 `build` 命令替换输入路径即可。
 
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
@@ -777,6 +779,8 @@ text_input(value: bind(profile.name), width: 280, height: 40,
 ```
 
 可运行示例：[author_text_input.aside](../../examples/author_text_input.aside)。
+
+按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。on_key 在输入节点拥有键盘时消费事件，聚焦的文本编辑控件优先，系统输入法仍用于 text_input。bindings 可省略，on_action 可同时用于手柄或鼠标映射。示例：[author_keyboard.aside](../../examples/author_keyboard.aside)。
 
 `bind` 和 `unbind` 已支持现有节点属性。下面两个滑条共用一个位置值，文字位置和显隐也直接连接控件；不需要回调复制状态。可运行窗口示例见 [author_bindings.aside](../../examples/author_bindings.aside)，字体资源准备方式与第一节相同。
 

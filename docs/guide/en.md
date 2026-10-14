@@ -109,6 +109,8 @@ let has_opening = caption.starts_with(prefix: "第二章");
 
 Use byte_len for the UTF-8 byte length and scalar_count for the Unicode scalar count. slice_bytes and slice_scalars take explicit ranges and reject out-of-bounds endpoints or cuts inside a UTF-8 scalar. Combining sequences and emoji may contain multiple scalars; scalar slices are not grapheme slices. starts_with/ends_with compare exact prefixes/suffixes and always match an empty string. `separator.join(items)` joins an array or tuple of strings; an empty collection produces an empty string and other types are not converted automatically. Long text advances within execution budgets; changing the source array during a join is an error. See [text_operations.aside](../../examples/text_operations.aside) for a complete example.
 
+to_ascii_lowercase()/to_ascii_uppercase() convert ASCII letters and preserve all other text. For example, "Emily你好".to_ascii_lowercase() returns "emily你好"; use these methods for ASCII identifiers or account-name comparisons.
+
 Registered functions can be stored and passed as values, for example `let say = narrator; say("你好");`; waiting behaves exactly as in a direct call. A function default can also be a constructor such as `text`. Use `(int,int)` for a coordinate pair and `(int,int)|null` for an optional pair. `is`, parameters, returns and variable assignments check these contracts; a failed assignment preserves the previous value. See the runnable [function_values.aside](../../examples/function_values.aside) example and use its path with the earlier `dev` or `build` commands.
 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
@@ -777,6 +779,8 @@ text_input(value: bind(profile.name), width: 280, height: 40,
 ```
 
 Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).
+
+For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. The callback consumes keyboard input owned by the input node; a focused text editor takes priority, and text_input continues to use the system IME. Omit bindings when no action mapping is needed, or combine on_action for gamepad and pointer controls. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
 
 `bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
 

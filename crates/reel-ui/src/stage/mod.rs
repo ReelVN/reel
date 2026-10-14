@@ -62,6 +62,14 @@ pub enum NodeEvent {
     Change(NodeChange),
     Interaction(NodeInteraction),
     Text(NodeText),
+    Key(NodeKey),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeKey {
+    pub node: NodeId,
+    pub event: crate::core::keyboard::KeyboardEvent,
+    pub phase: ActionPhase,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,6 +143,7 @@ pub enum NodeKind {
     Input {
         bindings: InputBindings,
         listening: bool,
+        keyboard: bool,
     },
     Scroll {
         axis: crate::widgets::ScrollAxis,

@@ -151,6 +151,10 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if "".join(("e","́","\0"))!="é\0" || "x".join([])!="" || "x".join(())!="" {throw "join tuple";}
             if "x".join([""])!="" || "x".join(["",""])!="x" {throw "empty elements";}
             if "é"=="é" {throw "implicit normalization";}
+            if "EMily中Éß🙂".to_ascii_lowercase()!="emily中Éß🙂" {throw "ASCII lower";}
+            if "emILY中éß🙂".to_ascii_uppercase()!="EMILY中éß🙂" {throw "ASCII upper";}
+            let lower="".to_ascii_lowercase;
+            if lower()!="" || "".to_ascii_uppercase()!="" {throw "empty case";}
             42
         }"#,
             42,

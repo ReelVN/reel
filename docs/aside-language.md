@@ -127,6 +127,8 @@ string 为不可变、有效 UTF-8 文本；相等按精确文本序列，不隐
 
 文本基础方法：`byte_len()` 返回 UTF-8 字节数；`scalar_count()` 返回 Unicode 标量数，组合字符与 ZWJ 序列按各自标量计数。`slice_bytes(range)` 和 `slice_scalars(range)` 返回不可变 string，使用非负、从零开始的范围，不截断越界输入；倒置范围或非法 UTF-8 字节边界报 OutOfBounds。`starts_with(prefix)`、`ends_with(suffix)` 精确比较文本，空前后缀总是匹配，不做规范化。`separator.join(items)` 接受 string 的 array/tuple，只在相邻项之间插入 separator；空输入返回空 string，非 string 项报 Type，不隐式格式化。这些方法支持声明的具名参数。字素方法仍是后续能力，不能将标量数冒充显示字符数。
 
+to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII 字母，保留其他 UTF-8 字节。实现复用 Rust 标准库字节切片转换与现有分片文本缓冲，按字节线性推进并计入工作/分配预算；空字符串也返回字符串。它们不执行 Unicode 或语言环境相关大小写折叠。B01/ASB 不变。
+
 计数、切片和前后缀比较按字节分片；byte_len 为常数成本，scalar 切片单次前向扫描定位后复制。join 只向一个私有缓冲顺序追加，每个输出字节复制一次；空项也按元素计费。来源数组在执行片之间变化报告 ConcurrentModification；失败、取消不发布部分结果。UTF-8 解码与标量迭代复用 Rust 标准库，VM 仅管理分块游标、预算与根，不维护另一套 Unicode 解码规则。
 
 所有范围从零开始，端点规则与 Range 一致；字节切片端点必须在 UTF-8 边界，否则报错。UTF-8 解码默认严格，替换非法输入需显式模式。Unicode 库版本属于包兼容元数据。normalize、大小写转换、trim、find/replace、split/join、parse/format 均定义输入单位、边界和错误；默认大小写转换不依赖进程 locale，本地化规则通过显式 locale 参数选择。字素不是字体布局 cluster，Reel reveal 由文本服务将规定揭示单位映射到稳定排版。
