@@ -1,19 +1,25 @@
 //! Author-facing static compilation. No runtime admission or execution occurs.
 use aside_compiler::{Diagnostic, SourceMap, TextRange, lowering};
 use aside_vm::bytecode as bc;
-use reel_engine::aside::source::{self, CompiledStory, SourceCompilation, SourceError};
+use reel_engine::aside::source::{self, CompiledStory, ProjectSourceCompilation, SourceError};
 use serde_json::{Value, json};
 mod input;
 pub use input::{InputError, read_source};
 mod artifact;
 pub mod output;
 pub use artifact::{Artifact, build, package_limits_json};
+pub mod project;
 
 #[derive(Debug)]
 pub struct Failure {
     pub stage: &'static str,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<ReportedDiagnostic>,
     pub code: Option<String>,
+}
+#[derive(Debug)]
+pub struct ReportedDiagnostic {
+    pub source: Option<String>,
+    pub diagnostic: Diagnostic,
 }
 
 fn error(
@@ -25,36 +31,65 @@ fn error(
     Failure {
         stage,
         code: Some(format!("REEL-{}", stage.to_ascii_uppercase())),
-        diagnostics: vec![Diagnostic {
-            code,
-            severity: aside_compiler::Severity::Error,
-            range: span,
-            message,
-            related: Vec::new(),
-            fix: None,
+        diagnostics: vec![ReportedDiagnostic {
+            source: None,
+            diagnostic: Diagnostic {
+                code,
+                severity: aside_compiler::Severity::Error,
+                range: span,
+                message,
+                related: Vec::new(),
+                fix: None,
+            },
         }],
     }
 }
 
 pub struct Checked {
-    pub compilation: lowering::Compilation,
+    pub compilation: lowering::ProjectCompilation,
     pub bytes: Vec<u8>,
-    pub declarations: Vec<reel_package::Declaration>,
+    pub modules: Vec<reel_package::ModuleMetadata>,
+    pub game: Option<reel_package::GameSettings>,
 }
 
 /// Run the complete supported static pipeline, retaining entry and metadata
 /// beside the raw B01 bytes. No on-disk release format is implied.
 pub fn check(source: &str, source_path: &str) -> Result<Checked, Failure> {
-    let SourceCompilation {
-        module,
+    check_sources(
+        &[aside_compiler::semantic::SourceModule {
+            canonical_path: "main".into(),
+            source_path: Some(source_path.into()),
+            version: "1".into(),
+            source: source.into(),
+        }],
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+pub fn check_sources(
+    inputs: &[aside_compiler::semantic::SourceModule],
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> Result<Checked, Failure> {
+    let ProjectSourceCompilation {
+        modules,
         compilation,
-    } = source::compile_module(source, "main", source_path, 1).map_err(source_failure)?;
+    } = source::compile_project(inputs, aliases, 1).map_err(|failure| {
+        let mut failure = source_failure(failure);
+        for diagnostic in &mut failure.diagnostics {
+            if let Some(module) = diagnostic.source.as_deref()
+                && let Some(input) = inputs.iter().find(|input| input.canonical_path == module)
+            {
+                diagnostic.source = input.source_path.clone().or_else(|| Some(module.into()));
+            }
+        }
+        failure
+    })?;
     let limits = bc::Limits::default();
     let convert = |e: bc::Error| {
         let span = e
             .source
             .map(|s| TextRange::new(s.start.into(), s.end.into()))
-            .unwrap_or(compilation.metadata.source_span);
+            .unwrap_or_else(|| TextRange::empty(0.into()));
         error(
             "bytecode",
             aside_compiler::DiagnosticCode::InvalidHir,
@@ -68,15 +103,26 @@ pub fn check(source: &str, source_path: &str) -> Result<Checked, Failure> {
         return Err(error(
             "bytecode",
             aside_compiler::DiagnosticCode::InvalidHir,
-            compilation.metadata.source_span,
+            TextRange::empty(0.into()),
             "B01 round trip changed program data".into(),
         ));
     }
-    let declarations = artifact::declarations(&module, &compilation)?;
+    let metadata = modules
+        .iter()
+        .map(|module| {
+            let compiled = compilation
+                .modules
+                .iter()
+                .find(|m| m.metadata.canonical_path == module.canonical_path())
+                .expect("compiled source module");
+            artifact::module_metadata(module, compiled, compilation.program.package())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Checked {
         compilation,
         bytes,
-        declarations,
+        modules: metadata,
+        game: None,
     })
 }
 
@@ -92,7 +138,14 @@ pub fn source_failure(failure: SourceError) -> Failure {
                 } else {
                     "analyze"
                 },
-                diagnostics: failure.diagnostics,
+                diagnostics: failure
+                    .diagnostics
+                    .into_iter()
+                    .map(|diagnostic| ReportedDiagnostic {
+                        source: None,
+                        diagnostic,
+                    })
+                    .collect(),
                 code: None,
             }
         }
@@ -123,6 +176,35 @@ pub fn source_failure(failure: SourceError) -> Failure {
             TextRange::empty(0.into()),
             "entry must be an ordinary module function with no required arguments".into(),
         ),
+        SourceError::ProjectAnalysis(failure) => Failure {
+            stage: if failure.diagnostics.iter().any(|d| {
+                d.diagnostic.code.as_str().starts_with("ASP")
+                    || d.diagnostic.code.as_str().starts_with("ASL")
+            }) {
+                "parse"
+            } else {
+                "analyze"
+            },
+            code: None,
+            diagnostics: failure
+                .diagnostics
+                .into_iter()
+                .map(|d| ReportedDiagnostic {
+                    source: Some(d.module),
+                    diagnostic: d.diagnostic,
+                })
+                .collect(),
+        },
+        SourceError::ProjectLowering(failure) => {
+            let mut result = error(
+                "lower",
+                DiagnosticCode::InvalidHir,
+                failure.error.span,
+                failure.error.detail,
+            );
+            result.diagnostics[0].source = Some(failure.module);
+            result
+        }
     }
 }
 
@@ -130,14 +212,21 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
     let entry = artifact::select_entry(&checked, Some(entry))?.expect("requested entry");
     Ok(CompiledStory {
         program: checked.compilation.program,
-        initializer: checked.compilation.entry,
+        initializer: checked.compilation.initializer,
         entry: bc::FunctionId(entry.function_id),
     })
 }
 
 pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> {
-    let (program, metadata) =
-        reel_package::decode(bytes, reel_package::Limits::default())?.into_parts();
+    story_from_package(reel_package::decode(
+        bytes,
+        reel_package::Limits::default(),
+    )?)
+}
+pub fn story_from_package(
+    package: reel_package::CodePackage,
+) -> Result<CompiledStory, reel_package::Error> {
+    let (program, metadata) = package.into_parts();
     let entry = metadata.game_entry.ok_or_else(|| reel_package::Error {
         kind: reel_package::ErrorKind::Metadata,
         detail: "this package contains only a module; use reel build <source.aside> --output <story.asb> to build a runnable story".into(),
@@ -177,13 +266,16 @@ mod tests {
     #[test]
     fn complete_pipeline_is_static() {
         let checked = check("fn main() { loop {} }", "story.aside").unwrap();
-        assert_eq!(checked.compilation.metadata.canonical_path, "main");
+        assert_eq!(
+            checked.compilation.modules[0].metadata.canonical_path,
+            "main"
+        );
         let module = checked.compilation.program.package().functions
-            [checked.compilation.entry.index()]
+            [checked.compilation.initializer.index()]
         .module;
         assert_eq!(
             checked.compilation.program.package().modules[module.index()].initializer,
-            Some(checked.compilation.entry)
+            Some(checked.compilation.initializer)
         );
         assert!(!checked.bytes.is_empty());
     }
@@ -204,7 +296,8 @@ mod tests {
     fn unicode_coordinates_are_preserved() {
         let source = "let 中文 = 1;\r\nmissing();";
         let failure = check(source, "story.aside").err().unwrap();
-        let diagnostic = diagnostic_json(&failure.diagnostics[0], &SourceMap::new(source));
+        let diagnostic =
+            diagnostic_json(&failure.diagnostics[0].diagnostic, &SourceMap::new(source));
         assert_eq!(diagnostic["range"]["start"]["line"], 1);
         assert_eq!(diagnostic["range"]["start"]["utf16_column"], 0);
         assert_eq!(diagnostic["range"]["byte_start"], 17);

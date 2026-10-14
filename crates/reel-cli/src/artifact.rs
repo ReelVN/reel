@@ -1,19 +1,27 @@
 use super::{Checked, Failure, error};
-use aside_compiler::{DiagnosticCode, TextRange, hir as h, lowering::Compilation};
+use aside_compiler::{DiagnosticCode, TextRange, hir as h, lowering::ProjectModule};
+use aside_vm::bytecode as bc;
 use reel_package as rp;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub(crate) fn declarations(
+fn span(range: TextRange) -> rp::Span {
+    rp::Span {
+        start: range.start().into(),
+        end: range.end().into(),
+    }
+}
+fn text_range(span: rp::Span) -> TextRange {
+    TextRange::new(span.start.into(), span.end.into())
+}
+
+pub(crate) fn module_metadata(
     module: &h::AnalyzedModule,
-    compilation: &Compilation,
-) -> Result<Vec<rp::Declaration>, Failure> {
-    let globals: BTreeMap<_, _> = compilation
-        .metadata
-        .globals
-        .iter()
-        .map(|g| (g.source, g.global))
-        .collect();
+    compiled: &ProjectModule,
+    program: &bc::BytecodePackage,
+) -> Result<rp::ModuleMetadata, Failure> {
+    let m = &compiled.metadata;
+    let globals: BTreeMap<_, _> = m.globals.iter().map(|g| (g.source, g.global)).collect();
     let mut declarations = Vec::new();
     for (source_function, function) in module.functions().iter().enumerate() {
         let Some(symbol_id) = module.facts()[function.node.0 as usize].symbol else {
@@ -32,18 +40,7 @@ pub(crate) fn declarations(
                 "module function lacks compiler global mapping".into(),
             )
         })?;
-        let output = compilation
-            .metadata
-            .functions
-            .get(source_function)
-            .ok_or_else(|| {
-                error(
-                    "metadata",
-                    DiagnosticCode::InvalidHir,
-                    symbol.declaration,
-                    "module function lacks compiler function mapping".into(),
-                )
-            })?;
+        let output = &m.functions[source_function];
         declarations.push(rp::Declaration {
             name: module.hir().name(symbol.name).into(),
             source_symbol_id: symbol_id.0,
@@ -53,103 +50,18 @@ pub(crate) fn declarations(
             declaration_span: span(symbol.declaration),
         });
     }
-    Ok(declarations)
-}
-fn span(range: TextRange) -> rp::Span {
-    rp::Span {
-        start: range.start().into(),
-        end: range.end().into(),
-    }
-}
-fn text_range(span: rp::Span) -> TextRange {
-    TextRange::new(span.start.into(), span.end.into())
-}
-
-pub struct Artifact {
-    pub bytes: Vec<u8>,
-    /// Full container digest is the artifact identity, not content_version=1.
-    pub blake3: String,
-    pub game_entry: Option<rp::GameEntry>,
-}
-
-pub(crate) fn select_entry(
-    checked: &Checked,
-    entry: Option<&str>,
-) -> Result<Option<rp::GameEntry>, Failure> {
-    let compiled = &checked.compilation;
-    let m = &compiled.metadata;
-    let p = compiled.program.package();
-    let fail = |stage, range, detail| error(stage, DiagnosticCode::InvalidHir, range, detail);
-    let game_entry = if let Some(name) = entry {
-        let prefix = format!("{}::", m.canonical_path);
-        let short = name
-            .strip_prefix(&prefix)
-            .filter(|s| !s.is_empty() && !s.contains("::"))
-            .ok_or_else(|| {
-                fail(
-                    "entry",
-                    m.source_span,
-                    format!("entry must name a module-level function as {prefix}name"),
-                )
-            })?;
-        let (index, declaration) = checked
-            .declarations
-            .iter()
-            .enumerate()
-            .find(|(_, d)| d.name == short)
-            .ok_or_else(|| {
-                fail(
-                    "entry",
-                    m.source_span,
-                    format!("story entry {name} was not found; define fn {short}() or select another function with --entry main::name"),
-                )
-            })?;
-        let function = &p.functions[declaration.function_id as usize];
-        let signature = &p.signatures[function.signature.index()];
-        if function.kind != aside_vm::bytecode::FunctionKind::Plain
-            || function.context != aside_vm::bytecode::Context::Ordinary
-            || !function.captures.is_empty()
-            || signature.parameters.iter().any(|p| p.default.is_none())
-        {
-            return Err(fail("entry", text_range(declaration.declaration_span), "story entry must be an Ordinary module-level function with no required parameters or captured variables".into()));
-        }
-        Some(rp::GameEntry {
-            module_id: function.module.0,
-            declaration_index: index as u32,
-            function_id: declaration.function_id,
-        })
-    } else {
-        None
-    };
-    Ok(game_entry)
-}
-
-pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure> {
-    let compiled = &checked.compilation;
-    let m = &compiled.metadata;
-    let p = compiled.program.package();
-    let fail = |stage, range, detail| error(stage, DiagnosticCode::InvalidHir, range, detail);
-    let game_entry = select_entry(checked, entry)?;
-    let module_id = p.functions[compiled.entry.index()].module.0;
-    let metadata = rp::Metadata {
-        schema_version: 1,
-        bytecode_blake3: rp::digest(&checked.bytes),
-        language_version: p.language_version,
-        bytecode_version: p.format_version,
-        host_abi_version: p.host_abi_version,
-        content_version: p.content_version,
-        module_id,
+    Ok(rp::ModuleMetadata {
+        module_id: compiled.module.0,
         canonical_path: m.canonical_path.clone(),
         source_version: m.source_version.clone(),
-        source_blake3: rp::digest(p.sources[0].text.as_bytes()),
-        source_id: 0,
+        source_blake3: rp::digest(program.sources[compiled.source.index()].text.as_bytes()),
+        source_id: compiled.source.0,
         source_span: span(m.source_span),
         symbol_count: m.symbol_count,
         initializer: rp::Initializer {
-            module_id,
-            function_id: compiled.entry.0,
+            module_id: compiled.module.0,
+            function_id: compiled.initializer.0,
         },
-        game_entry: game_entry.clone(),
         functions: m
             .functions
             .iter()
@@ -181,19 +93,137 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
                 source: g.source.0,
             })
             .collect(),
-        declarations: checked.declarations.clone(),
+        declarations,
+    })
+}
+
+pub struct Artifact {
+    pub bytes: Vec<u8>,
+    pub blake3: String,
+    pub game_entry: Option<rp::GameEntry>,
+}
+
+pub(crate) fn select_entry(
+    checked: &Checked,
+    entry: Option<&str>,
+) -> Result<Option<rp::GameEntry>, Failure> {
+    let Some(name) = entry else { return Ok(None) };
+    let p = checked.compilation.program.package();
+    let fail = |range, message| error("entry", DiagnosticCode::InvalidHir, range, message);
+    let (path, short) = name
+        .rsplit_once("::")
+        .filter(|(_, name)| !name.is_empty())
+        .ok_or_else(|| {
+            fail(
+                TextRange::empty(0.into()),
+                "entry must name a module-level function as main::name".into(),
+            )
+        })?;
+    let module = checked
+        .modules
+        .iter()
+        .find(|m| m.canonical_path == path)
+        .or_else(|| {
+            checked
+                .modules
+                .iter()
+                .find(|m| m.canonical_path == format!("game::{path}"))
+        })
+        .ok_or_else(|| {
+            fail(
+                TextRange::empty(0.into()),
+                format!("entry module {path} was not found"),
+            )
+        })?;
+    let at = |module: &rp::ModuleMetadata, range, message| {
+        let mut failed = fail(range, message);
+        let source = &p.sources[module.source_id as usize];
+        failed.diagnostics[0].source = Some(p.symbols[source.path.index()].clone());
+        failed
+    };
+    let own = module
+        .declarations
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.name == short)
+        .map(|(index, d)| (module, index, d));
+    let found = if let Some(own) = own {
+        Some(own)
+    } else {
+        p.modules[module.module_id as usize]
+            .exports
+            .iter()
+            .find(|e| p.symbols[e.name.index()] == short)
+            .and_then(|export| {
+                let target = checked
+                    .compilation
+                    .program
+                    .global_binding(bc::ModuleId(module.module_id), export.global)
+                    .ok()?;
+                checked.modules.iter().find_map(|m| {
+                    m.declarations.iter().enumerate().find_map(|(index, d)| {
+                        let binding = checked
+                            .compilation
+                            .program
+                            .global_binding(bc::ModuleId(m.module_id), bc::GlobalId(d.global_id))
+                            .ok()?;
+                        (binding.offset == target.offset).then_some((m, index, d))
+                    })
+                })
+            })
+    };
+    let (owner, index, declaration) = found.ok_or_else(|| at(module, text_range(module.source_span),
+        format!("story entry {name} was not found; define fn {short}() or select another function with --entry")))?;
+    let function = &p.functions[declaration.function_id as usize];
+    let signature = &p.signatures[function.signature.index()];
+    if function.kind != bc::FunctionKind::Plain
+        || function.context != bc::Context::Ordinary
+        || !function.captures.is_empty()
+        || signature.parameters.iter().any(|p| p.default.is_none())
+    {
+        return Err(at(owner, text_range(declaration.declaration_span),
+            "story entry must be an Ordinary module-level function with no required parameters or captured variables".into()));
+    }
+    Ok(Some(rp::GameEntry {
+        module_id: owner.module_id,
+        declaration_index: index as u32,
+        function_id: declaration.function_id,
+    }))
+}
+
+pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure> {
+    let compiled = &checked.compilation;
+    let p = compiled.program.package();
+    let fail = |detail| {
+        error(
+            "package",
+            DiagnosticCode::InvalidHir,
+            TextRange::empty(0.into()),
+            detail,
+        )
+    };
+    let game_entry = select_entry(checked, entry)?;
+    let metadata = rp::Metadata {
+        schema_version: 2,
+        bytecode_blake3: rp::digest(&checked.bytes),
+        language_version: p.language_version,
+        bytecode_version: p.format_version,
+        host_abi_version: p.host_abi_version,
+        content_version: p.content_version,
+        modules: checked.modules.clone(),
+        game: checked.game.clone(),
+        initialization_order: compiled.initialization_order.iter().map(|m| m.0).collect(),
+        initializer: rp::Initializer {
+            module_id: p.functions[compiled.initializer.index()].module.0,
+            function_id: compiled.initializer.0,
+        },
+        game_entry: game_entry.clone(),
     };
     let limits = rp::Limits::default();
-    let bytes = rp::encode(&checked.bytes, &metadata, limits)
-        .map_err(|e| fail("package", m.source_span, e.to_string()))?;
-    let verified =
-        rp::decode(&bytes, limits).map_err(|e| fail("package", m.source_span, e.to_string()))?;
+    let bytes = rp::encode(&checked.bytes, &metadata, limits).map_err(|e| fail(e.to_string()))?;
+    let verified = rp::decode(&bytes, limits).map_err(|e| fail(e.to_string()))?;
     if verified.metadata() != &metadata || verified.program().package() != p {
-        return Err(fail(
-            "package",
-            m.source_span,
-            "ASB round trip changed program/metadata".into(),
-        ));
+        return Err(fail("ASB round trip changed program/metadata".into()));
     }
     Ok(Artifact {
         blake3: rp::digest(&bytes),

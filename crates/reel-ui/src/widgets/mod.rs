@@ -10,3 +10,5 @@ mod label;
 pub use label::*;
 mod slider;
 pub use slider::*;
+mod canvas;
+pub use canvas::*;

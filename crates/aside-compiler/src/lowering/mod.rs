@@ -3,7 +3,9 @@ mod budget;
 mod build;
 mod emit;
 pub mod ir;
+mod project;
 mod registers;
+pub use project::{ProjectCompilation, ProjectError, ProjectModule, compile_project};
 
 use crate::{TextRange, hir};
 use aside_vm::bytecode as bc;

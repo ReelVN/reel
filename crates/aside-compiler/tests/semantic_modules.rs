@@ -1,6 +1,7 @@
 use aside_compiler::{hir::*, semantic::*, *};
 fn input(path: &str, source: &str) -> SourceModule {
     SourceModule {
+        source_path: None,
         canonical_path: path.into(),
         version: "test-v1".into(),
         source: source.into(),

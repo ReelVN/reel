@@ -138,6 +138,55 @@ pub fn lower(
     .map_err(BuildError::Lowering)
 }
 
+/// Lower a source graph using one trusted seed and one final B01 verification.
+pub fn lower_project(
+    modules: &[aside_compiler::hir::AnalyzedModule],
+    plan: &aside_compiler::semantic::ModulePlan,
+    contracts: &[NativeContract],
+    capabilities: &[String],
+    options: aside_compiler::lowering::Options,
+) -> Result<aside_compiler::lowering::ProjectCompilation, aside_compiler::lowering::ProjectError> {
+    use aside_compiler::lowering::{self, ExternalTarget, NativeLink};
+    let seed = seed(contracts, capabilities, options.content_version).map_err(|error| {
+        lowering::ProjectError {
+            module: "<host>".into(),
+            error: Box::new(lowering::Error {
+                kind: lowering::ErrorKind::Bytecode,
+                span: aside_compiler::TextRange::empty(0.into()),
+                detail: error.to_string(),
+                stats: Default::default(),
+            }),
+        }
+    })?;
+    let references = contracts
+        .iter()
+        .map(NativeContract::reference)
+        .collect::<Vec<_>>();
+    let links = modules
+        .iter()
+        .map(|module| {
+            module
+                .external_bindings()
+                .iter()
+                .filter_map(|binding| {
+                    let reference = binding.descriptor.reference.as_deref()?;
+                    let index = references.iter().position(|r| r == reference)?;
+                    let target = binding
+                        .symbol
+                        .map(ExternalTarget::Symbol)
+                        .or_else(|| binding.node.map(ExternalTarget::Node))?;
+                    Some(NativeLink {
+                        target,
+                        native: bc::NativeId(index as u32),
+                        reference: &references[index],
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    lowering::compile_project(modules, plan, &seed, &links, options)
+}
+
 /// Resolve independently declared names/types into this package's indices.
 /// The VM subsequently checks exact metadata, including mutability/defaults,
 /// effects and required capabilities, against every NativeDef.

@@ -54,7 +54,7 @@ fn check_never_executes_an_infinite_loop_and_writes_no_artifacts() {
     assert_eq!(report["executed"], false);
     assert_eq!(report["runtime_admitted"], false);
     assert_eq!(report["release_package"], false);
-    assert_eq!(report["entry"]["kind"], "module-initializer");
+    assert_eq!(report["entry"]["kind"], "project-initializer");
     assert_eq!(fs::read_dir(&case.dir).unwrap().count(), 1);
 }
 

@@ -6,6 +6,7 @@ mod expressions;
 mod locations;
 mod native_values;
 
+use super::project::{PackageState, ProjectLinks};
 use super::{
     Error, ErrorKind, ExternalTarget, Linkage, Metadata, Options, budget::Budget, ir::*,
     registers::Registers,
@@ -15,6 +16,7 @@ use crate::{
     hir::{self as h, Form, HirKind as H},
 };
 use aside_vm::bytecode as bc;
+use std::borrow::Cow;
 
 pub(super) fn lower<'a>(
     m: &'a h::AnalyzedModule,
@@ -23,7 +25,7 @@ pub(super) fn lower<'a>(
 ) -> Result<IrModule, Box<Error>> {
     let mut b = Budget::new(options.limits);
     b.span = m.hir().node(h::NodeId(0)).span;
-    preflight(m, links, &mut b)?;
+    preflight(m, links, None, &mut b)?;
     b.span = m.hir().node(h::NodeId(0)).span;
     let mut package = if let Some(seed) = links.package {
         let stats = seed.stats();
@@ -97,6 +99,32 @@ pub(super) fn lower<'a>(
         b.push(&mut index, (name, id))?;
     }
     b.release_bytes(names_capacity);
+    lower_prepared(
+        m,
+        links,
+        options,
+        PackageState { package, budget: b },
+        Cow::Owned(index),
+        None,
+    )
+}
+
+pub(super) fn lower_prepared<'a>(
+    m: &'a h::AnalyzedModule,
+    links: &'a Linkage<'a>,
+    options: Options,
+    state: PackageState,
+    names: Cow<'a, [(&'a str, bc::SymbolId)]>,
+    project: Option<&'a ProjectLinks>,
+) -> Result<IrModule, Box<Error>> {
+    let PackageState {
+        package,
+        mut budget,
+    } = state;
+    if project.is_some() {
+        preflight(m, links, project, &mut budget)?;
+    }
+    let b = budget;
     let symbol_count = m.symbols().len();
     let mut lower = Lowerer {
         m,
@@ -104,7 +132,8 @@ pub(super) fn lower<'a>(
         options,
         b,
         package,
-        names: index,
+        names,
+        project,
         type_cache: Vec::new(),
         contracts: Vec::new(),
         globals: Vec::new(),
@@ -178,10 +207,17 @@ pub(super) fn lower<'a>(
             text: source,
         },
     )?;
-    lower.module = bc::ModuleId(lower.package.modules.len() as u32);
+    lower.module = project.map_or(bc::ModuleId(lower.package.modules.len() as u32), |p| {
+        p.module
+    });
+    let mut imports = Vec::new();
+    if let Some(project) = project {
+        lower.b.reserve(&mut imports, project.imports.len())?;
+        imports.extend_from_slice(&project.imports);
+    }
     let mut module = bc::ModuleDef {
         path,
-        imports: Vec::new(),
+        imports,
         exports: Vec::new(),
         globals: Vec::new(),
         initializer: None,
@@ -208,19 +244,42 @@ pub(super) fn lower<'a>(
     }
     lower.b.work(m.exports().len() as u64)?;
     for &sym in m.exports() {
-        let global = lower.globals[sym.0 as usize].ok_or_else(|| {
-            lower.b.error(
-                ErrorKind::Unsupported,
-                "reexports require full module linkage",
-            )
-        })?;
+        if project.is_some_and(|p| p.namespaces[sym.0 as usize]) {
+            continue;
+        }
+        let global = lower.globals[sym.0 as usize]
+            .or_else(|| project.and_then(|p| p.export_global(sym)))
+            .ok_or_else(|| {
+                lower.b.error(
+                    ErrorKind::Unsupported,
+                    "reexports require full module linkage",
+                )
+            })?;
         let name = lower.name(m.hir().name(m.symbols()[sym.0 as usize].name))?;
         lower
             .b
             .push(&mut module.exports, bc::Export { name, global })?;
     }
-    lower.b.push(&mut lower.package.modules, module)?;
+    if let Some(project) = project {
+        let old = std::mem::replace(&mut lower.package.modules[project.module.index()], module);
+        lower.b.release(old.globals);
+        lower.b.release(old.imports);
+        lower.b.release(old.exports);
+    } else {
+        lower.b.push(&mut lower.package.modules, module)?;
+    }
     lower.prepare_functions()?;
+    if project.is_some() {
+        for (i, function) in m.functions().iter().enumerate() {
+            if let Some(symbol) = m.facts()[function.node.0 as usize].symbol
+                && m.symbols()[symbol.0 as usize].origin == h::BindingOrigin::ModuleGlobal
+                && let Some(global) = lower.globals[symbol.0 as usize]
+            {
+                lower.package.modules[lower.module.index()].globals[global.index()]
+                    .linked_function = Some(lower.outputs[i]);
+            }
+        }
+    }
     lower.check_links()?;
     lower.check_imports()?;
     let entry = if m.entry_context() == crate::semantic::AnalysisContext::Function {
@@ -285,7 +344,9 @@ pub(super) fn lower<'a>(
         lower.b.release(values);
     }
     lower.b.release(lower.owned);
-    lower.b.release(lower.names);
+    if let Cow::Owned(names) = lower.names {
+        lower.b.release(names);
+    }
     let metadata_before = lower.b.stats.capacity_bytes;
     let canonical_path = lower.b.string(m.canonical_path())?;
     let source_version = lower.b.string(m.version())?;
@@ -364,7 +425,7 @@ pub(super) fn lower<'a>(
 
 /// Fallible heapsort: comparisons charge work before examining text. A trusted
 /// seed id wins ties, so duplicate source names retain the seed ABI identity.
-fn sort_names(
+pub(super) fn sort_names(
     values: &mut [(&str, Option<bc::SymbolId>)],
     b: &mut Budget,
 ) -> Result<(), Box<Error>> {
@@ -412,7 +473,8 @@ struct Lowerer<'a> {
     options: Options,
     b: Budget,
     package: bc::BytecodePackage,
-    names: Vec<(&'a str, bc::SymbolId)>,
+    names: Cow<'a, [(&'a str, bc::SymbolId)]>,
+    project: Option<&'a ProjectLinks>,
     type_cache: Vec<Option<bc::TypeId>>,
     contracts: Vec<bc::TypeId>,
     globals: Vec<Option<bc::GlobalId>>,
@@ -889,6 +951,28 @@ impl Lowerer<'_> {
         }
         Ok(node_link.or(symbol_link))
     }
+
+    fn global(
+        &mut self,
+        mut node: h::NodeId,
+    ) -> Result<Option<super::project::GlobalTarget>, Box<Error>> {
+        let Some(project) = self.project else {
+            return Ok(None);
+        };
+        self.b.work(1)?;
+        while let Form::Single { child } = self.m.hir().node(node).form {
+            if self.m.hir().node(node).kind != H::Group {
+                break;
+            }
+            self.b.work(1)?;
+            node = child;
+        }
+        Ok(project.node(node).or_else(|| {
+            self.m.facts()[node.0 as usize]
+                .symbol
+                .and_then(|s| project.symbol(s))
+        }))
+    }
     fn check_imports(&mut self) -> Result<(), Box<Error>> {
         for import in self.m.imports() {
             self.b.span = self.m.hir().node(import.node).span;
@@ -916,9 +1000,13 @@ impl Lowerer<'_> {
                     .links
                     .natives
                     .iter()
-                    .any(|link| link.target == ExternalTarget::Symbol(symbol));
+                    .any(|link| link.target == ExternalTarget::Symbol(symbol))
+                    || self.project.is_some_and(|p| p.symbol(symbol).is_some());
                 if !linked {
-                    return Err(self.b.error(ErrorKind::MissingLink,"import requires trusted native linkage; full script module initialization is deferred"));
+                    return Err(self.b.error(
+                        ErrorKind::MissingLink,
+                        "import has no linked native or source binding",
+                    ));
                 }
             }
         }
@@ -1257,6 +1345,12 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             if self.def.captures[capture.index()] == bc::CaptureKind::Cell {
                 self.op(bc::Opcode::CellRead, out.0, out.0, 0, n)?;
             }
+        } else if let Some(target) = self.l.project.and_then(|p| p.symbol(symbol)) {
+            let desc = self.descriptor(bc::Descriptor::Global {
+                module: target.module,
+                global: target.global,
+            })?;
+            self.op(bc::Opcode::GlobalRead, out.0, desc.0, 0, n)?;
         } else {
             return Err(self.l.b.error(
                 ErrorKind::MissingLink,
@@ -1384,6 +1478,12 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
                         .b
                         .error(ErrorKind::InvalidIr, "function declaration lacks binding")
                 })?;
+                if self.l.project.is_some()
+                    && self.l.m.symbols()[symbol.0 as usize].origin
+                        == h::BindingOrigin::ModuleGlobal
+                {
+                    continue;
+                }
                 let value = self.closure(function, child)?;
                 self.write(symbol, value, true, child)?;
                 self.release(value)?;
@@ -1504,7 +1604,12 @@ fn hint_matches(
     }
 }
 
-fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Result<(), Box<Error>> {
+fn preflight(
+    m: &h::AnalyzedModule,
+    links: &Linkage<'_>,
+    project: Option<&ProjectLinks>,
+    b: &mut Budget,
+) -> Result<(), Box<Error>> {
     let root_scope = m.facts()[0].scope.ok_or_else(|| {
         b.error(
             ErrorKind::InvalidIr,
@@ -1638,14 +1743,15 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                 .any(|e| e.node == Some(h::NodeId(i as u32)) && e.descriptor.reference.is_some())
             {
                 b.work(links.natives.len() as u64)?;
-                if !links
-                    .natives
-                    .iter()
-                    .any(|link| link.target == ExternalTarget::Node(h::NodeId(i as u32)))
+                if project.is_none_or(|p| p.node(h::NodeId(i as u32)).is_none())
+                    && !links
+                        .natives
+                        .iter()
+                        .any(|link| link.target == ExternalTarget::Node(h::NodeId(i as u32)))
                 {
                     return Err(b.error(
                         ErrorKind::MissingLink,
-                        "qualified native value has no trusted linkage",
+                        "qualified value has no source or native linkage",
                     ));
                 }
                 let mut target = h::NodeId(i as u32);
@@ -1667,10 +1773,9 @@ fn preflight(m: &h::AnalyzedModule, links: &Linkage<'_>, b: &mut Budget) -> Resu
                         Form::Binary { left, .. }
                             if m.hir().node(parent).kind == H::Assignment && left == target =>
                         {
-                            return Err(b.error(
-                                ErrorKind::Unsupported,
-                                "imported native bindings are read-only",
-                            ));
+                            return Err(
+                                b.error(ErrorKind::Unsupported, "imported bindings are read-only")
+                            );
                         }
                         _ => break,
                     }

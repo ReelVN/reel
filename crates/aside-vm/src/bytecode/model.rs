@@ -166,6 +166,7 @@ pub struct Import {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Export {
     pub name: SymbolId,
+    /// Module binding index: owned globals followed by imported bindings.
     pub global: GlobalId,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

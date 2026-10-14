@@ -42,8 +42,38 @@ pub struct VerifiedProgram {
     limits: Limits,
     /// Sorted (signature, parameter) pairs; only Cell parameters are retained.
     native_parameter_cells: Vec<(u32, u32)>,
+    module_bindings: ModuleBindings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlobalBinding {
+    pub offset: u32,
+    pub ty: TypeId,
+    pub mutable: bool,
+    pub imported: bool,
+}
+#[derive(Debug)]
+struct ModuleBindings {
+    offsets: Vec<u32>,
+    values: Vec<GlobalBinding>,
+}
+struct DerivedLayouts {
+    native_parameters: Vec<(u32, u32)>,
+    modules: ModuleBindings,
 }
 impl VerifiedProgram {
+    /// Imports resolve to their original cell; access costs are independent of
+    /// the number of source modules or the length of a reexport chain.
+    pub fn global_binding(
+        &self,
+        module: ModuleId,
+        global: GlobalId,
+    ) -> Result<GlobalBinding, Error> {
+        let start = *get(&self.module_bindings.offsets, module.0, "global module")?;
+        let end = *get(&self.module_bindings.offsets, module.0 + 1, "global module")?;
+        check(global.0 < end - start, ErrorKind::Index, "global binding")?;
+        Ok(self.module_bindings.values[(start + global.0) as usize])
+    }
     pub fn package(&self) -> &BytecodePackage {
         &self.package
     }
@@ -248,12 +278,13 @@ impl VerifiedProgram {
     }
 }
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
-    let (stats, native_parameter_cells) = validate_program(&package, limits)?;
+    let (stats, layouts) = validate_program(&package, limits)?;
     Ok(VerifiedProgram {
         package,
         stats,
         limits,
-        native_parameter_cells,
+        native_parameter_cells: layouts.native_parameters,
+        module_bindings: layouts.modules,
     })
 }
 struct Budget {
@@ -498,7 +529,7 @@ pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageSta
 fn validate_program(
     p: &BytecodePackage,
     limits: Limits,
-) -> Result<(PackageStats, Vec<(u32, u32)>), Error> {
+) -> Result<(PackageStats, DerivedLayouts), Error> {
     version(p)?;
     let (encoded, owned, records) = super::codec::measure(p, limits)?;
     check(
@@ -706,7 +737,11 @@ fn validate_program(
         }
         for export in &m.exports {
             symbol(p, export.name)?;
-            get(&m.globals, export.global.0, "export global")?;
+            check(
+                export.global.index() < m.globals.len() + m.imports.len(),
+                ErrorKind::Index,
+                "export binding",
+            )?;
         }
         for import in &m.imports {
             symbol(p, import.name)?;
@@ -762,9 +797,12 @@ fn validate_program(
         registers += f.register_count as u64;
     }
     let native_parameter_cells = native_parameter_cells(p, &parameter_layouts, &mut b)?;
+    let module_bindings = module_bindings(p, &mut b)?;
     parameter_layouts.release(&mut b);
-    let derived_capacity_bytes =
-        native_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>();
+    let derived_capacity_bytes = native_parameter_cells.capacity()
+        * std::mem::size_of::<(u32, u32)>()
+        + module_bindings.offsets.capacity() * std::mem::size_of::<u32>()
+        + module_bindings.values.capacity() * std::mem::size_of::<GlobalBinding>();
     Ok((
         PackageStats {
             encoded_bytes: encoded,
@@ -776,8 +814,94 @@ fn validate_program(
             validation_work: b.work,
             validation_scratch_peak: b.peak,
         },
-        native_parameter_cells,
+        DerivedLayouts {
+            native_parameters: native_parameter_cells,
+            modules: module_bindings,
+        },
     ))
+}
+
+/// Resolve binding aliases iteratively before execution. No runtime object is
+/// copied for an import, and malformed alias cycles cannot hang module loading.
+fn module_bindings(p: &BytecodePackage, b: &mut Budget) -> Result<ModuleBindings, Error> {
+    let mut offsets = b.vec::<u32>(p.modules.len() + 1)?;
+    let mut count = 0u32;
+    for module in &p.modules {
+        offsets.push(count);
+        count = count
+            .checked_add(
+                u32::try_from(module.globals.len() + module.imports.len())
+                    .map_err(|_| Error::new(ErrorKind::Limit, "module binding count"))?,
+            )
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "module binding count"))?;
+    }
+    offsets.push(count);
+    let mut values = b.vec::<Option<GlobalBinding>>(count as usize)?;
+    values.resize(count as usize, None);
+    let mut edges = b.vec::<Option<u32>>(count as usize)?;
+    edges.resize(count as usize, None);
+    let mut root_offset = 0u32;
+    for (index, module) in p.modules.iter().enumerate() {
+        for (global, definition) in module.globals.iter().enumerate() {
+            b.work(1)?;
+            values[offsets[index] as usize + global] = Some(GlobalBinding {
+                offset: root_offset,
+                ty: definition.ty,
+                mutable: definition.mutable,
+                imported: false,
+            });
+            root_offset = root_offset
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "module global count"))?;
+        }
+        for (import, definition) in module.imports.iter().enumerate() {
+            let target = &p.modules[definition.module.index()];
+            b.work(target.exports.len() as u64 + 1)?;
+            let export = target
+                .exports
+                .iter()
+                .find(|e| e.name == definition.export)
+                .expect("validated import export");
+            let source = offsets[index] as usize + module.globals.len() + import;
+            edges[source] = Some(offsets[definition.module.index()] + export.global.0);
+        }
+    }
+    let mut visiting = b.vec::<bool>(count as usize)?;
+    visiting.resize(count as usize, false);
+    let mut path = b.vec::<u32>(count as usize)?;
+    for source in 0..count {
+        let mut at = source;
+        while values[at as usize].is_none() {
+            b.work(1)?;
+            check(
+                !visiting[at as usize],
+                ErrorKind::Index,
+                "import binding cycle has no declaration",
+            )?;
+            visiting[at as usize] = true;
+            path.push(at);
+            at = edges[at as usize].expect("unresolved binding is an import");
+        }
+        let target = values[at as usize].unwrap();
+        while let Some(at) = path.pop() {
+            b.work(1)?;
+            visiting[at as usize] = false;
+            values[at as usize] = Some(GlobalBinding {
+                imported: true,
+                ..target
+            });
+        }
+    }
+    let mut resolved = b.vec(count as usize)?;
+    resolved.extend(values.iter().map(|value| value.unwrap()));
+    b.release(values);
+    b.release(edges);
+    b.release(visiting);
+    b.release(path);
+    Ok(ModuleBindings {
+        offsets,
+        values: resolved,
+    })
 }
 
 /// Derive once per native signature, retaining only canonical Cell slots.
@@ -1251,7 +1375,11 @@ fn validate_descriptor(
     match d {
         Descriptor::Global { module, global } => {
             let m = get(&p.modules, module.0, "global module")?;
-            get(&m.globals, global.0, "global binding")?;
+            check(
+                global.index() < m.globals.len() + m.imports.len(),
+                ErrorKind::Index,
+                "global binding",
+            )?;
         }
         Descriptor::Closure { function, captures } => {
             validate_captures(p, f, *function, captures, b)?

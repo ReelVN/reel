@@ -12,8 +12,57 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct SourceModule {
     pub canonical_path: String,
+    pub source_path: Option<String>,
     pub version: String,
     pub source: Arc<str>,
+}
+
+#[derive(Debug)]
+pub struct ImportDiscovery {
+    pub requests: Vec<(ImportRequest, TextRange)>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+/// File providers discover dependencies through the same parsed import forms
+/// as analysis. This performs no IO and does not manufacture module interfaces.
+pub fn discover_imports(
+    source: &str,
+    module: &str,
+    limits: AnalysisLimits,
+) -> Result<ImportDiscovery, SourceTooLarge> {
+    let parsed = crate::parse(source)?;
+    if !parsed.is_ok() {
+        return Ok(ImportDiscovery {
+            requests: Vec::new(),
+            diagnostics: parsed.diagnostics().to_vec(),
+        });
+    }
+    let hir = match super::project::project(&parsed, limits) {
+        Ok(hir) => hir,
+        Err(diagnostic) => {
+            return Ok(ImportDiscovery {
+                requests: Vec::new(),
+                diagnostics: vec![diagnostic],
+            });
+        }
+    };
+    let mut requests = Vec::new();
+    for (index, node) in hir
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.kind == H::Import)
+    {
+        let Some(path) = hir.children(NodeId(index as u32)).next() else {
+            continue;
+        };
+        let mut imports = Vec::new();
+        import_requests(&hir, path, &[], false, module, &mut imports);
+        requests.extend(imports.into_iter().map(|(request, _)| (request, node.span)));
+    }
+    Ok(ImportDiscovery {
+        requests,
+        diagnostics: Vec::new(),
+    })
 }
 #[derive(Debug, Clone)]
 pub struct ModuleDiagnostic {
@@ -34,6 +83,13 @@ pub struct ProjectAnalysis {
     pub exhausted: bool,
 }
 impl ProjectAnalysis {
+    pub fn into_modules(self) -> Result<Vec<crate::hir::AnalyzedModule>, Self> {
+        if self.is_ok() {
+            Ok(self.modules.unwrap())
+        } else {
+            Err(self)
+        }
+    }
     pub fn is_ok(&self) -> bool {
         self.modules.is_some() && self.diagnostics.is_empty() && !self.exhausted
     }
@@ -47,6 +103,7 @@ struct Overlay<'a> {
 }
 impl ModuleResolver for Overlay<'_> {
     fn resolve(&mut self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
+        let r = self.fallback.canonical_request(r);
         // A private/missing export in a known source module cannot be bypassed
         // by accidentally asking the filesystem/host resolver a second time.
         let full = r.path.join("::");
@@ -56,9 +113,9 @@ impl ModuleResolver for Overlay<'_> {
                 .as_ref()
                 .is_some_and(|p| self.memory.modules.contains_key(p))
         {
-            self.memory.resolve(r)
+            self.memory.resolve(&r)
         } else {
-            self.fallback.resolve(r)
+            self.fallback.resolve(&r)
         }
     }
 }
@@ -94,6 +151,10 @@ pub fn analyze_project(
         });
     }
     let mut total_nodes = 0usize;
+    let source_paths = inputs
+        .iter()
+        .map(|m| (m.canonical_path.as_str(), m.source_path.as_ref()))
+        .collect::<BTreeMap<_, _>>();
     for input in inputs {
         if projected.contains_key(&input.canonical_path) {
             diagnostics.push(ModuleDiagnostic {
@@ -167,6 +228,9 @@ pub fn analyze_project(
             if let Some(use_path) = hir.children(import).next() {
                 import_requests(hir, use_path, &[], false, path, &mut module_requests);
             }
+        }
+        for (request, _) in &mut module_requests {
+            *request = resolver.canonical_request(request).into_owned();
         }
         for (request, _) in &module_requests {
             for target in memory.dependency_modules(request) {
@@ -250,7 +314,9 @@ pub fn analyze_project(
         for (path, hir) in projected {
             let local = AnalysisOptions {
                 module: path.clone(),
-                source_path: None,
+                source_path: source_paths
+                    .get(path.as_str())
+                    .and_then(|path| path.cloned()),
                 context: AnalysisContext::Module,
                 version: memory.modules[&path].version.clone(),
                 limits: AnalysisLimits {

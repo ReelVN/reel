@@ -1,0 +1,8 @@
+[game]
+entry = "main::main"
+title = "Reel · 窗边"
+
+[display]
+width = 960
+height = 540
+scale = "contain"

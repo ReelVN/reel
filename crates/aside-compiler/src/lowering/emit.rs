@@ -2,7 +2,7 @@ use super::{Compilation, Error, ErrorKind, ir::*};
 use aside_vm::bytecode as bc;
 use std::mem::size_of;
 
-pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
+pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
     let b = &mut ir.budget;
     for f in ir.functions.drain(..) {
         b.span = f.span;
@@ -109,7 +109,13 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
         b.release(f.layout);
         b.release_bytes(regions_capacity);
     }
-    b.release(ir.functions);
+    b.release(std::mem::take(&mut ir.functions));
+    Ok(())
+}
+
+pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
+    write(&mut ir)?;
+    let b = &mut ir.budget;
     b.span = ir.metadata.source_span;
     let mut validation_limits = ir.options.bytecode_limits;
     validation_limits.max_allocation_bytes = validation_limits.max_allocation_bytes.min(

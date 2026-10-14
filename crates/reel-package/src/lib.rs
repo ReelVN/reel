@@ -1,10 +1,12 @@
-//! ASB 1.0 single-module containers. No compiler, runtime admission or IO.
+//! ASB 1.0 containers for linked source graphs. No compiler, runtime admission or IO.
 //! Integrity hashes are not signatures or host authorization.
 mod codec;
 mod declarations;
+mod game;
 mod metadata;
 use aside_vm::bytecode as bc;
 pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, decode, encode};
+pub use game::*;
 pub use metadata::*;
 
 #[derive(Clone, Copy, Debug)]

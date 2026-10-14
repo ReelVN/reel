@@ -635,14 +635,23 @@ impl Vm {
                 })?;
                 slots.write(&mut heap, at(globals, offset), cell)?;
                 if let Some(f) = global.linked_function {
-                    let closure = heap.alloc_record(
-                        ObjectKind::Closure,
-                        &[
-                            Value::int(f.0 as i64),
-                            Value::int(p.content_version as i64),
-                            Value::int(mi as i64),
-                        ],
-                    )?;
+                    let closure = if matches!(p.functions[f.index()].kind, FunctionKind::Native(_))
+                    {
+                        let index = native_values
+                            .data
+                            .binary_search_by_key(&f.0, |(function, _)| function.0)
+                            .expect("prepared native callable");
+                        slots.read(at(constants, native_values.data[index].1))?
+                    } else {
+                        heap.alloc_record(
+                            ObjectKind::Closure,
+                            &[
+                                Value::int(f.0 as i64),
+                                Value::int(p.content_version as i64),
+                                Value::int(mi as i64),
+                            ],
+                        )?
+                    };
                     if !type_checks.accepts(p, &heap, global.ty, closure)? {
                         return Err(HeapError::TypeMismatch.into());
                     }
@@ -2626,14 +2635,13 @@ impl Vm {
                 let Descriptor::Global { module, global } = f.descriptors[b as usize] else {
                     unreachable!()
                 };
-                let extra = if op == Opcode::GlobalRead {
+                let binding = self.program.global_binding(module, global)?;
+                let extra = if op == Opcode::GlobalRead || binding.imported {
                     0
                 } else {
-                    self.type_checks.extra(
-                        self.program.package().modules[module.index()].globals[global.index()].ty,
-                    )
+                    self.type_checks.extra(binding.ty)
                 };
-                (self.program.package().modules.len() as u64 + 1 + extra, 0)
+                (1 + extra, 0)
             }
             Opcode::MemberGet => {
                 let object = self.slots.read(at(s.regs, b))?;
@@ -3041,24 +3049,29 @@ impl Vm {
                 let Descriptor::Global { module, global } = f.descriptors[b as usize] else {
                     unreachable!()
                 };
-                let offset = self.program.package().modules[..module.index()]
-                    .iter()
-                    .map(|m| m.globals.len() as u32)
-                    .sum::<u32>()
-                    + global.0;
+                let binding = self
+                    .program
+                    .global_binding(module, global)
+                    .expect("verified module binding");
                 let cell = self
                     .slots
-                    .read(at(self.globals, offset))
+                    .read(at(self.globals, binding.offset))
                     .map_err(heap_fault)?;
                 if op == Opcode::GlobalRead {
-                    let v = self.heap.cell_read(cell).map_err(heap_fault)?;
+                    let v = self.heap.cell_read(cell).map_err(|error| {
+                        if s.context.init && matches!(error, HeapError::UninitializedCell) {
+                            FaultKind::ModuleInitializationCycle
+                        } else {
+                            heap_fault(error)
+                        }
+                    })?;
                     self.write(*s, r(a), v)?;
                 } else {
                     let v = self.read(*s, r(a))?;
-                    self.check_type(
-                        self.program.package().modules[module.index()].globals[global.index()].ty,
-                        v,
-                    )?;
+                    if binding.imported {
+                        return Err(FaultKind::ReadOnly);
+                    }
+                    self.check_type(binding.ty, v)?;
                     if op == Opcode::GlobalInit {
                         self.heap.cell_initialize(cell, v)
                     } else {

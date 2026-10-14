@@ -42,6 +42,19 @@ impl Lowerer<'_> {
 }
 
 impl FunctionBuilder<'_, '_> {
+    pub(super) fn global_reference(
+        &mut self,
+        target: super::super::project::GlobalTarget,
+        node: h::NodeId,
+    ) -> Result<bc::Reg, Box<Error>> {
+        let descriptor = self.descriptor(bc::Descriptor::Global {
+            module: target.module,
+            global: target.global,
+        })?;
+        let output = self.temp()?;
+        self.op(bc::Opcode::GlobalRead, output.0, descriptor.0, 0, node)?;
+        Ok(output)
+    }
     pub(super) fn native_reference(
         &mut self,
         native: bc::NativeId,
