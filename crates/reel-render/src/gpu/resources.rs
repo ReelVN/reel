@@ -25,6 +25,8 @@ impl UploadCreations {
 pub struct Image {
     pub view: wgpu::TextureView,
     pub size: [u32; 2],
+    pub(super) residency: Option<reel_core::budget::BudgetTicket>,
+    pub(super) source: Option<reel_ui::resources::ResourceLease>,
 }
 pub fn image(
     gpu: &Gpu,
@@ -181,6 +183,8 @@ pub fn upload(
         Image {
             view: texture.create_view(&Default::default()),
             size,
+            residency: None,
+            source: None,
         },
         cost,
     ))

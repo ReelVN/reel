@@ -779,6 +779,7 @@ impl Heap {
         Ok(self.get_field(host, 1)?.as_bool() == Some(true))
     }
     pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
+        self.disconnect_reactive_source(host)?;
         self.disconnect_host_properties(host)?;
         let slots = self.host_payload_len(host)? + 4;
         for index in 0..slots {

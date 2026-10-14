@@ -174,7 +174,7 @@ impl Heap {
         }
     }
 
-    fn subscribers(&self, property: PropertyId) -> Result<Value, HeapError> {
+    pub(super) fn subscribers(&self, property: PropertyId) -> Result<Value, HeapError> {
         let entry = self.property_metadata(property)?;
         if entry.same_bits(Value::NULL) {
             Ok(Value::NULL)
@@ -445,6 +445,7 @@ impl Heap {
         }
         self.detach_property(target)?;
         self.set_field(target_meta, Slot::Binding as u32, reference)?;
+        self.reconnect_derived(source.host)?;
         self.commit_properties(value, true)
     }
 
@@ -467,7 +468,8 @@ impl Heap {
             }
         }
         let entry = self.property_metadata(target)?;
-        self.set_field(entry, Slot::Binding as u32, Value::NULL)
+        self.set_field(entry, Slot::Binding as u32, Value::NULL)?;
+        self.disconnect_unobserved_derived(source.host)
     }
 
     pub fn unbind_property(&mut self, reference: Value) -> Result<Value, HeapError> {

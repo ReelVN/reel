@@ -431,6 +431,9 @@ impl SessionVm {
             Err(VmError::Idle) if index > 0 && self.callbacks[index - 1].cancelling => {
                 self.schedule_cursor = index + 1;
                 self.retire_callback(session, index - 1)?;
+                self.reactive_ready = true;
+                self.sync_narrative(session)?;
+                self.activities.after_script(self.vm.heap())?;
                 return Ok(SessionStep::Progress);
             }
             Err(error) => return Err(error.into()),

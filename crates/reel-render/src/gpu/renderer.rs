@@ -22,6 +22,7 @@ pub struct Prepared {
     pub(super) size: [u32; 2],
     frames: Vec<RenderFrame>,
     tickets: Vec<Reservation>,
+    images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
     budget_scope: Budgets,
     admission: BudgetTicket,
     generation: super::DeviceGeneration,
@@ -40,6 +41,7 @@ struct Inflight {
     done: Arc<AtomicBool>,
     _frames: Vec<RenderFrame>,
     _tickets: Vec<Reservation>,
+    _images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
     _admission: BudgetTicket,
 }
 pub struct Renderer {
@@ -50,6 +52,7 @@ pub struct Renderer {
     admission: BudgetPool,
     owner: Arc<()>,
     pipelines: PipelineSlots,
+    images: super::image_cache::ImageCache,
 }
 pub(super) struct Budgets {
     pub(super) targets: BudgetPool,
@@ -57,8 +60,8 @@ pub(super) struct Budgets {
     pub(super) transient: BudgetPool,
 }
 pub(super) struct Reservation {
-    _shared: BudgetTicket,
-    _local: BudgetTicket,
+    pub(super) _shared: Option<BudgetTicket>,
+    pub(super) _local: BudgetTicket,
 }
 impl Budgets {
     pub(super) fn new(limits: super::GpuLimits) -> Self {
@@ -98,7 +101,7 @@ pub(super) fn reserve(
         available: limit.saturating_sub(pool.usage().bytes),
     })?;
     Ok(Reservation {
-        _shared: shared,
+        _shared: Some(shared),
         _local: local,
     })
 }
@@ -123,6 +126,7 @@ impl Renderer {
             admission,
             owner: Arc::new(()),
             pipelines: PipelineSlots::default(),
+            images: Default::default(),
         }
     }
     pub(super) fn reserve_readback(
@@ -159,6 +163,7 @@ impl Renderer {
         mut completed: impl FnMut(u64, &RenderFrame),
     ) -> Result<(), GpuError> {
         self.gpu.check()?;
+        self.images.retire(&[]);
         let result = self.gpu.device.poll(wgpu::PollType::Poll);
         self.gpu.check()?;
         result.map_err(|e| GpuError::Device(e.to_string()))?;
@@ -177,6 +182,7 @@ impl Renderer {
         Ok(())
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
+        self.images.retire(resources);
         for submission in &self.inflight {
             for frame in &submission._frames {
                 for lease in frame.resources().leases() {
@@ -212,6 +218,7 @@ impl Renderer {
         second: Option<(&RenderFrame, f32)>,
     ) -> Result<Prepared, GpuError> {
         self.gpu.check()?;
+        self.images.retire(&[]);
         let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
         let size = frame.info().physical_size;
         let budget_scope = Budgets::new(self.gpu.limits);
@@ -243,6 +250,7 @@ impl Renderer {
             budget_scope,
             tickets,
             images: HashMap::new(),
+            image_cache: &self.images,
             white: None,
             available_targets: Vec::new(),
         };
@@ -268,6 +276,7 @@ impl Renderer {
             size,
             frames,
             tickets: ctx.tickets,
+            images: ctx.images,
             budget_scope: ctx.budget_scope,
             admission,
             generation: self.gpu.generation,
@@ -295,6 +304,7 @@ impl Renderer {
         self.next = id.checked_add(1).ok_or(GpuError::IdentityExhausted)?;
         let done = Arc::new(AtomicBool::new(false));
         self.gpu.queue.submit([prepared.encoder.finish()]);
+        self.images.publish(&prepared.images);
         let signal = done.clone();
         self.gpu
             .queue
@@ -304,6 +314,7 @@ impl Renderer {
             done,
             _frames: prepared.frames,
             _tickets: prepared.tickets,
+            _images: prepared.images,
             _admission: prepared.admission,
         });
         self.gpu.check()?;
