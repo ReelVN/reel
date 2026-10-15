@@ -27,6 +27,14 @@ struct Touch {
     dragging: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollAlign {
+    #[default]
+    Start,
+    Center,
+    End,
+}
+
 #[derive(Default)]
 pub struct ScrollState {
     offset: Vec2,
@@ -36,6 +44,31 @@ pub struct ScrollState {
     touch: Option<Touch>,
 }
 impl ScrollState {
+    pub fn viewport(&self) -> Size {
+        self.viewport
+    }
+    pub fn content(&self) -> Size {
+        self.content
+    }
+    pub fn translation(&self, align: ScrollAlign) -> Vec2 {
+        let factor = match align {
+            ScrollAlign::Start => 0.,
+            ScrollAlign::Center => 0.5,
+            ScrollAlign::End => 1.,
+        };
+        Vec2::new(
+            if self.axis.horizontal() {
+                (self.viewport.width - self.content.width).max(0.) * factor
+            } else {
+                0.
+            },
+            if self.axis.vertical() {
+                (self.viewport.height - self.content.height).max(0.) * factor
+            } else {
+                0.
+            },
+        ) - self.offset
+    }
     pub fn offset(&self) -> Vec2 {
         self.offset
     }

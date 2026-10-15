@@ -490,6 +490,18 @@ impl Widget for SessionWidget {
                         .borrow_mut()
                         .push(NodeEvent::Interaction(*state));
                 }
+                NodeEvent::Scroll(state) => {
+                    self.events.borrow_mut().push(NodeEvent::Scroll(*state))
+                }
+                NodeEvent::Pointer(input)
+                    if matches!(
+                        input.phase,
+                        reel_ui::stage::PointerPhase::Released
+                            | reel_ui::stage::PointerPhase::Cancelled
+                    ) || self.binding.borrow().permits_control() =>
+                {
+                    self.events.borrow_mut().push(NodeEvent::Pointer(*input))
+                }
                 _ => {}
             }
             ctx.set_handled();
@@ -1022,7 +1034,8 @@ impl SessionUi {
             self.pause_dialogue();
         }
         let pointer = pointer_info(&event);
-        let terminal = matches!(event, PointerEvent::Up(_) | PointerEvent::Cancel(_));
+        let terminal = matches!(&event, PointerEvent::Cancel(_))
+            || matches!(&event, PointerEvent::Up(e) if e.state.buttons.is_empty());
         {
             let mut binding = self.binding.borrow_mut();
             if matches!(event, PointerEvent::Down(_))

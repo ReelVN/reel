@@ -137,6 +137,8 @@ stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。
 
 ### 在运行中修改组件
 
+滚动区域的 `scroll_x/scroll_y` 可读写或 bind；布局会把位置限制在实际内容范围。`viewport_width/viewport_height/content_width/content_height` 是只读可观察尺寸，可在 derive 中计算自定义滑块的位置与长度。`content_align: "end"` 让不足一屏的聊天记录从底部排列，`"center"` 居中，默认 `"start"`。`input(on_pointer: ...)` 提供 `{target,x,y,phase}`，x/y 是呈现节点的局部坐标，phase 为 pressed/moved/released/cancelled；鼠标主键或触摸按下后捕获拖动，失焦、隐藏和禁用会取消。回调可等待并归输入节点所有。参见 [自定义滚动条](../../examples/author_scrollbar.aside)。
+
 `container.add(child)` 将子树追加到 row、column 或 stack，返回原 child；`index:` 可指定从零开始的插入位置，允许等于当前子节点数，省略或传 null 表示末尾。子树必须尚未挂到舞台且没有父级。重复挂载、成环、向 text/image 添加或位置越界都会报错，原树保持不变。添加和删除保留其他节点及其控件身份，未改变的文字不重新整形。
 
 `node.remove()` 移除并退休该节点及其全部后代，也可用于舞台根；`container.clear()` 只退休子节点，保留容器自身的属性和身份。两者返回 null。退休使相关动画取消并释放舞台对图片的请求；旧节点不能重新挂载或继续读写。需要再次展示的组件应由函数重新构造。方法可以保存和传递，始终保留原接收者；已保存的 remove 可重复调用。

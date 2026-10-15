@@ -1,21 +1,24 @@
 use reel_ui::{
     core::{
-        PointerButton, PointerEvent,
+        EventCtx, PointerButton, PointerEvent, PointerInfo,
         keyboard::{KeyState, KeyboardEvent},
         pointer_info,
     },
     input::{ActionMap, ActionPhase, Control, InputDeviceId, InputEvent},
-    stage::{InputBindings, NodeAction, NodeEvent, NodeId, NodeKey},
+    kurbo::Point,
+    stage::{InputBindings, NodeAction, NodeEvent, NodeId, NodeKey, NodePointer, PointerPhase},
 };
 
 pub(super) struct NodeInput {
     pub bindings: InputBindings,
     map: ActionMap<usize>,
     pub keyboard: bool,
+    pub pointer_enabled: bool,
+    drag: Option<(PointerInfo, Point)>,
     held_keys: Vec<KeyboardEvent>,
 }
 impl NodeInput {
-    pub fn new(bindings: InputBindings, keyboard: bool) -> Self {
+    pub fn new(bindings: InputBindings, keyboard: bool, pointer_enabled: bool) -> Self {
         let map = ActionMap::new(
             bindings
                 .iter()
@@ -27,6 +30,8 @@ impl NodeInput {
             bindings,
             map,
             keyboard,
+            pointer_enabled,
+            drag: None,
             held_keys: Vec::new(),
         }
     }
@@ -91,7 +96,14 @@ impl NodeInput {
         });
         result.is_ok() && matches!(event, InputEvent::Value { .. })
     }
-    pub fn cancel(&mut self, node: NodeId, emit: impl FnMut(NodeEvent)) {
+    pub fn cancel(&mut self, node: NodeId, mut emit: impl FnMut(NodeEvent)) {
+        if let Some((_, position)) = self.drag.take() {
+            emit(NodeEvent::Pointer(NodePointer {
+                node,
+                position,
+                phase: PointerPhase::Cancelled,
+            }));
+        }
         self.update(node, &InputEvent::Cancel, emit);
     }
     pub fn cancel_keys(&mut self, node: NodeId, mut emit: impl FnMut(NodeEvent)) {
@@ -126,5 +138,44 @@ impl NodeInput {
             _ => return false,
         };
         self.update(node, &input, emit)
+    }
+    pub fn drag(&mut self, node: NodeId, event: &PointerEvent, ctx: &mut EventCtx<'_>) -> bool {
+        if !self.pointer_enabled {
+            return false;
+        }
+        let info = pointer_info(event);
+        let next = match event {
+            PointerEvent::Down(e)
+                if self.drag.is_none()
+                    && matches!(e.button, None | Some(PointerButton::Primary)) =>
+            {
+                ctx.request_focus();
+                ctx.capture_pointer();
+                (ctx.local_position(e.state.position), PointerPhase::Pressed)
+            }
+            PointerEvent::Move(e) if self.drag.is_some_and(|(owner, _)| owner == info) => {
+                (ctx.local_position(e.current.position), PointerPhase::Moved)
+            }
+            PointerEvent::Up(e)
+                if self.drag.is_some_and(|(owner, _)| owner == info)
+                    && matches!(e.button, None | Some(PointerButton::Primary)) =>
+            {
+                ctx.release_pointer();
+                (ctx.local_position(e.state.position), PointerPhase::Released)
+            }
+            PointerEvent::Cancel(_) if self.drag.is_some_and(|(owner, _)| owner == info) => {
+                (self.drag.unwrap().1, PointerPhase::Cancelled)
+            }
+            _ => return false,
+        };
+        self.drag =
+            matches!(next.1, PointerPhase::Pressed | PointerPhase::Moved).then_some((info, next.0));
+        ctx.submit_action::<NodeEvent>(NodeEvent::Pointer(NodePointer {
+            node,
+            position: next.0,
+            phase: next.1,
+        }));
+        ctx.set_handled();
+        true
     }
 }

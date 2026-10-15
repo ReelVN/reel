@@ -210,6 +210,9 @@ struct SceneWidget {
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
+    scroll_request: Option<Vec2>,
+    scroll_feedback: Option<(Vec2, Size, Size)>,
+    scroll_baseline: Vec2,
     #[cfg(test)]
     layouts: usize,
 }
@@ -278,8 +281,11 @@ impl SceneWidget {
             interaction: InteractionState::default(),
             input: match &view.node.kind {
                 NodeKind::Input {
-                    bindings, keyboard, ..
-                } => Some(NodeInput::new(bindings.clone(), *keyboard)),
+                    bindings,
+                    keyboard,
+                    pointer,
+                    ..
+                } => Some(NodeInput::new(bindings.clone(), *keyboard, *pointer)),
                 _ => None,
             },
             label,
@@ -336,6 +342,15 @@ impl SceneWidget {
                 .collect(),
             size: Size::ZERO,
             scroll: ScrollState::default(),
+            scroll_request: match view.node.kind {
+                NodeKind::Scroll { offset, .. } if offset != Vec2::ZERO => Some(offset),
+                _ => None,
+            },
+            scroll_feedback: None,
+            scroll_baseline: match view.node.kind {
+                NodeKind::Scroll { offset, .. } => offset,
+                _ => Vec2::ZERO,
+            },
             #[cfg(test)]
             layouts: 0,
         }
@@ -376,15 +391,20 @@ impl SceneWidget {
         if let (
             Some(input),
             NodeKind::Input {
-                bindings, keyboard, ..
+                bindings,
+                keyboard,
+                pointer,
+                ..
             },
         ) = (&mut this.widget.input, &view.node.kind)
-            && (input.bindings != *bindings || input.keyboard != *keyboard)
+            && (input.bindings != *bindings
+                || input.keyboard != *keyboard
+                || input.pointer_enabled != *pointer)
         {
             input.cancel(this.widget.node.id, |event| {
                 this.ctx.submit_action::<NodeEvent>(event)
             });
-            *input = NodeInput::new(bindings.clone(), *keyboard);
+            *input = NodeInput::new(bindings.clone(), *keyboard, *pointer);
         }
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
@@ -480,6 +500,19 @@ impl SceneWidget {
                 Self::sync(&mut child, next);
             }
         }
+        if let (
+            NodeKind::Scroll {
+                offset: previous, ..
+            },
+            NodeKind::Scroll { offset, .. },
+        ) = (&this.widget.node.kind, &view.node.kind)
+            && previous != offset
+        {
+            this.widget.scroll_baseline = *offset;
+            this.widget.scroll_request =
+                (*offset != this.widget.scroll.offset()).then_some(*offset);
+            this.ctx.request_compose();
+        }
         if this.widget.node != view.node {
             let old = &this.widget.node.props;
             let new = &view.node.props;
@@ -491,8 +524,23 @@ impl SceneWidget {
                 || old.font != new.font
                 || old.clip != new.clip
                 || old.decorated != new.decorated
-                || matches!(view.node.kind, NodeKind::Scroll { .. })
-                    && this.widget.node.kind != view.node.kind
+                || match (&this.widget.node.kind, &view.node.kind) {
+                    (
+                        NodeKind::Scroll {
+                            axis: a,
+                            follow_end: b,
+                            align: c,
+                            ..
+                        },
+                        NodeKind::Scroll {
+                            axis: d,
+                            follow_end: e,
+                            align: f,
+                            ..
+                        },
+                    ) => (a, b, c) != (d, e, f),
+                    _ => false,
+                }
             {
                 this.ctx.request_layout();
             }
@@ -615,14 +663,16 @@ impl Widget for SceneWidget {
             }
             return;
         }
-        if let Some(input) = &mut self.input
-            && input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e))
-        {
-            if matches!(event, PointerEvent::Down(_)) {
-                ctx.request_focus();
-                ctx.capture_pointer();
+        if let Some(input) = &mut self.input {
+            input.drag(self.node.id, event, ctx);
+            if input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e)) {
+                if matches!(event, PointerEvent::Down(_)) {
+                    ctx.request_focus();
+                    ctx.capture_pointer();
+                }
+                ctx.set_handled();
             }
-            ctx.set_handled();
+            return;
         }
         if self
             .slider
@@ -1025,15 +1075,42 @@ impl Widget for SceneWidget {
             ctx.run_layout(child, chosen);
             ctx.place_child(child, Point::new(padding + offset.x, padding + offset.y));
         }
-        if let NodeKind::Scroll { axis, follow_end } = self.node.kind {
+        if let NodeKind::Scroll {
+            axis, follow_end, ..
+        } = self.node.kind
+        {
             self.scroll.layout(inner, extent, axis, follow_end);
         }
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        if let Some(offset) = self.scroll_request.take() {
+            self.scroll.set_offset(offset);
+        }
+        let translation = if let NodeKind::Scroll { align, .. } = self.node.kind {
+            let metrics = (
+                self.scroll.offset(),
+                self.scroll.viewport(),
+                self.scroll.content(),
+            );
+            if self.scroll_feedback != Some(metrics) || self.scroll_baseline != metrics.0 {
+                ctx.submit_action::<NodeEvent>(NodeEvent::Scroll(reel_ui::stage::NodeScroll {
+                    node: self.node.id,
+                    requested: self.scroll_baseline,
+                    offset: metrics.0,
+                    viewport: metrics.1,
+                    content: metrics.2,
+                }));
+                self.scroll_feedback = Some(metrics);
+                self.scroll_baseline = metrics.0;
+            }
+            self.scroll.translation(align)
+        } else {
+            Vec2::ZERO
+        };
         for (node, child) in &mut self.children {
             let transform = node.props.transform(ctx.child_size(child));
             ctx.set_child_transform(child, transform);
-            ctx.set_child_scroll_translation(child, -self.scroll.offset());
+            ctx.set_child_scroll_translation(child, translation);
         }
     }
     fn pre_paint(

@@ -12,6 +12,36 @@ pub(super) struct Callback {
 }
 
 impl SessionVm {
+    pub fn input_pointer(
+        &mut self,
+        session: &mut Session,
+        input: &reel_ui::stage::NodePointer,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, callback)) = self.stage.input_pointer(self.vm.heap(), input)? else {
+            return Ok(false);
+        };
+        use reel_ui::stage::PointerPhase;
+        let phase = match input.phase {
+            PointerPhase::Pressed => "pressed",
+            PointerPhase::Moved => "moved",
+            PointerPhase::Released => "released",
+            PointerPhase::Cancelled => "cancelled",
+        };
+        let heap = self.vm.heap_mut();
+        let phase = heap.alloc_string(phase)?;
+        let event = super::observable::record(
+            heap,
+            &[
+                ("target", target),
+                ("x", Value::float(input.position.x)),
+                ("y", Value::float(input.position.y)),
+                ("phase", phase),
+            ],
+            &[],
+        )?;
+        self.start_callback(session, input.node, callback, event)
+    }
     pub fn input_key(
         &mut self,
         session: &mut Session,
@@ -63,8 +93,14 @@ impl SessionVm {
         let pending = self.vm.heap().derived_pending();
         let mut changed = false;
         for event in events {
-            if let reel_ui::stage::NodeEvent::Interaction(event) = event {
-                changed |= self.stage.interaction(self.vm.heap_mut(), event)?;
+            match event {
+                reel_ui::stage::NodeEvent::Interaction(event) => {
+                    changed |= self.stage.interaction(self.vm.heap_mut(), event)?
+                }
+                reel_ui::stage::NodeEvent::Scroll(event) => {
+                    changed |= self.stage.scroll(self.vm.heap_mut(), event)?
+                }
+                _ => {}
             }
         }
         if changed {
