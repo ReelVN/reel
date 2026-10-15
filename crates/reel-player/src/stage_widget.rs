@@ -3,7 +3,7 @@ use reel_ui::{
     accesskit::{Node, Role},
     core::*,
     imaging::{Composite, GroupRef, Painter},
-    kurbo::{Axis, Point, Rect, Size, Vec2},
+    kurbo::{Axis, Insets, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
     peniko::{Color, ImageData},
     properties::{ContentColor, ThumbColor, ThumbRadius, TrackColor, TrackThickness},
@@ -536,6 +536,15 @@ impl SceneWidget {
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode, feedback: bool) -> bool {
         if matches!(view.node.kind, NodeKind::Particles(_)) {
+            if this
+                .widget
+                .particle_image
+                .as_ref()
+                .map(|i| (i.width, i.height))
+                != view.image.as_ref().map(|i| (i.width, i.height))
+            {
+                this.ctx.request_layout();
+            }
             this.widget.particle_image = view.image.clone();
         }
         let mut content_changed = this.widget.node.kind != view.node.kind
@@ -725,6 +734,10 @@ impl SceneWidget {
                 || old.clip != new.clip
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {
+                    (NodeKind::Particles(a), NodeKind::Particles(b)) => {
+                        a.config != b.config
+                            || a.frame.map(|f| f.extent) != b.frame.map(|f| f.extent)
+                    }
                     (
                         NodeKind::Scroll {
                             axis: a,
@@ -1247,17 +1260,26 @@ impl Widget for SceneWidget {
             }
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
-            let config = &batch.config;
-            let radius = (config.size + config.size_spread)
-                * (1. + f64::from(image.height) / f64::from(image.width))
-                * 0.5;
-            let reach = (0..2)
-                .map(|axis| {
-                    (config.velocity[axis].abs() + config.spread[axis]) * config.lifetime
+            let insets = batch.frame.map_or(Insets::ZERO, |frame| {
+                let config = &batch.config;
+                let radius = (config.size + config.size_spread)
+                    * (1. + f64::from(image.height) / f64::from(image.width))
+                    * 0.5;
+                let reach: [f64; 2] = std::array::from_fn(|axis| {
+                    radius
+                        + (config.velocity[axis].abs() + config.spread[axis]) * config.lifetime
                         + 0.5 * config.acceleration[axis].abs() * config.lifetime * config.lifetime
-                })
-                .fold(0., f64::max);
-            ctx.set_paint_insets(radius + reach);
+                });
+                // Birth dimensions belong to emit's snapshot, not the current
+                // layout. Resizing must keep older sprites inside paint bounds.
+                Insets::new(
+                    reach[0],
+                    reach[1],
+                    (frame.extent[0] + reach[0] - size.width).max(0.),
+                    (frame.extent[1] + reach[1] - size.height).max(0.),
+                )
+            });
+            ctx.set_paint_insets(insets);
         }
         if let Some(image) = &mut self.image {
             ctx.run_layout(image, inner);

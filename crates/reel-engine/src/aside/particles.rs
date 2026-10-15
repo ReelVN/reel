@@ -344,6 +344,11 @@ impl SessionVm {
             results::TaskResult::Returned(value),
         )?;
         let live = self.particles.live.remove(index).unwrap();
+        // A sliced clock pass keeps unprocessed producers at the front and
+        // rotates survivors behind them. Controls may arrive between slices.
+        if index < self.particles.remaining {
+            self.particles.remaining -= 1;
+        }
         self.vm.heap_mut().release_root(live.root)?;
         if self.stage.scene.node(live.target).is_some() {
             self.stage.scene.set_particle_frame(live.target, None)?;

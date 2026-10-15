@@ -169,3 +169,56 @@ fn particles_trace_detached_owner_and_release_terminal_producer_roots() {
     let roots = vm.vm.heap().stats().roots;
     assert_eq!(roots, 1, "only mounted stage root remains");
 }
+
+#[test]
+fn particles_stop_during_a_partial_clock_pass_keeps_the_pending_prefix_exact() {
+    let code = r#"fn opening() {
+        let root = stack(); stage.replace(root);
+        let first = emit(root.add(particles("snow.png", rate: 4, lifetime: 0.5)), duration: 0.25);
+        let second = emit(root.add(particles("snow.png", rate: 4, lifetime: 0.5)), duration: 0.25);
+        let third = emit(root.add(particles("snow.png", rate: 4, lifetime: 0.5)), duration: 0.25);
+        stop(second);
+        if await second != "Stopped" { throw "stop result"; }
+        if await first != "Completed" || await third != "Completed" { throw "completion"; }
+        stage.replace(text("done"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        let stop = loop {
+            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    let package = vm.vm.program().package();
+                    if package.symbols[package.natives[ticket.native.index()].symbol.index()]
+                        == "reel::stop"
+                    {
+                        break ticket;
+                    }
+                    vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Fault(id)) => {
+                    panic!("{:?}", vm.vm.delivery_fault(id).unwrap());
+                }
+                SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_)) => {
+                    panic!("story must reach stop");
+                }
+                _ => {}
+            }
+        };
+        let first = vm.advance_time(&session, 1., 1).unwrap();
+        assert!(first.pending);
+        assert_eq!(first.work, 1);
+        // The first producer has completed; stop the unprocessed second one
+        // before resuming the public, budgeted clock operation.
+        vm.dispatch(&mut session, stop, "en", 32).unwrap();
+        let last = vm.advance_time(&session, 1., 32).unwrap();
+        assert_eq!(last.work, 1, "only the third producer remains unprocessed");
+        assert!(!last.pending);
+        assert!(!vm.particles.has_active());
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("done".into()))
+        );
+    }
+}

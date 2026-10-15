@@ -564,6 +564,183 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
     assert!(hidden.geometry().get(ids[&left].0).unwrap().is_stashed);
 }
 
+#[test]
+fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
+    use reel_ui::{
+        app::GeometryRecord,
+        peniko::{Blob, ImageAlphaType, ImageFormat},
+        stage::particles::{ParticleBatch, ParticleConfig, ParticleFrame},
+    };
+    let config = Arc::new(ParticleConfig {
+        source: "sprite.png".into(),
+        origin: None,
+        rate: 100.,
+        lifetime: 5.,
+        seed: 42,
+        velocity: [-20., 60.],
+        spread: [30., 20.],
+        acceleration: [10., -12.],
+        size: 24.,
+        size_spread: 8.,
+        opacity: [1., 1.],
+        spin: 90.,
+        spin_spread: 40.,
+    });
+    let mut frame = ParticleFrame {
+        elapsed: 1.,
+        duration: None,
+        extent: [1000., 700.],
+    };
+    let mut stage = Stage::default();
+    let id = stage
+        .create(
+            NodeKind::Particles(ParticleBatch {
+                config: config.clone(),
+                frame: Some(frame),
+            }),
+            NodeProps {
+                width: Some(1000.),
+                height: Some(700.),
+                x: -600.,
+                y: -400.,
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    stage.replace(id).unwrap();
+    let mut view = StageView::capture(&stage);
+    view.root.as_mut().unwrap().image = Some(ImageData {
+        data: Blob::new(Arc::new(vec![255_u8; 2 * 4 * 4])),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: 2,
+        height: 4,
+    });
+    let widget = NewWidget::new(StageWidget::new(Some(&view)));
+    let widget_id = widget.id();
+    let root = RenderRoot::new(
+        widget,
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(DefaultProperties::new()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(640, 420),
+            scale_factor: 1.,
+            default_font: None,
+        },
+    );
+    let mut bridge = PresentationBridge::new(
+        root,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 8 << 20,
+        },
+    )
+    .unwrap();
+    fn record(
+        bridge: &mut PresentationBridge,
+        widget: WidgetId,
+        view: &StageView,
+        frame: u64,
+    ) -> (GeometryRecord, usize) {
+        bridge.edit_widget(widget, |mut w| StageWidget::sync(&mut w.downcast(), view));
+        let source = bridge.record(FrameId(frame)).unwrap();
+        let root = bridge.root().get_widget(widget).unwrap();
+        let children = root.children();
+        let particles = children[0].downcast::<SceneWidget>().unwrap();
+        (
+            source.geometry().get(particles.id()).unwrap().clone(),
+            particles.layouts,
+        )
+    }
+    fn assert_covers_sprites(geometry: &GeometryRecord, batch: &ParticleBatch) {
+        let viewport = Rect::new(0., 0., 640., 420.);
+        let mut visible = 0;
+        for sprite in batch.samples() {
+            let transform = geometry.window_transform
+                * Affine::translate((sprite.position[0], sprite.position[1]))
+                * Affine::rotate(sprite.rotation.to_radians());
+            // The fixture image is twice as high as it is wide.
+            let bounds = transform.transform_rect_bbox(Rect::new(
+                -sprite.size * 0.5,
+                -sprite.size,
+                sprite.size * 0.5,
+                sprite.size,
+            ));
+            assert_eq!(geometry.bounding_box.union(bounds), geometry.bounding_box);
+            visible += usize::from(bounds.intersect(viewport).area() > 0.);
+        }
+        assert!(
+            visible > 0,
+            "sprites beyond the shrunken layout remain in the viewport"
+        );
+    }
+    let (_, original_layouts) = record(&mut bridge, widget_id, &view, 1);
+    let node = &mut view.root.as_mut().unwrap().node;
+    node.props.width = Some(10.);
+    node.props.height = Some(5.);
+    let (small, resized_layouts) = record(&mut bridge, widget_id, &view, 2);
+    assert!(resized_layouts > original_layouts);
+    assert_eq!(small.size, Size::new(10., 5.));
+    assert_eq!(
+        small
+            .window_transform
+            .transform_rect_bbox(small.size.to_rect())
+            .intersect(Rect::new(0., 0., 640., 420.))
+            .area(),
+        0.
+    );
+    assert_covers_sprites(
+        &small,
+        &ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        },
+    );
+
+    // A restarted emission can capture a different extent even if its final
+    // authored dimensions equal the last presentation's dimensions.
+    frame.extent = [1400., 1000.];
+    view.root.as_mut().unwrap().node.kind = NodeKind::Particles(ParticleBatch {
+        config: config.clone(),
+        frame: Some(frame),
+    });
+    let (restarted, restarted_layouts) = record(&mut bridge, widget_id, &view, 3);
+    assert!(restarted_layouts > resized_layouts);
+    assert!(restarted.bounding_box.x1 > small.bounding_box.x1);
+    assert!(restarted.bounding_box.y1 > small.bounding_box.y1);
+    assert_covers_sprites(
+        &restarted,
+        &ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        },
+    );
+
+    for step in 4..20 {
+        frame.elapsed += 0.1;
+        let node = &mut view.root.as_mut().unwrap().node;
+        node.props.rotation = -17.;
+        node.props.scale_x = 1.5;
+        let batch = ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        };
+        node.kind = NodeKind::Particles(batch.clone());
+        let (geometry, layouts) = record(&mut bridge, widget_id, &view, step);
+        assert_eq!(
+            layouts, restarted_layouts,
+            "time and affine motion remain render/compose only"
+        );
+        assert_covers_sprites(&geometry, &batch);
+    }
+}
+
 #[cfg(feature = "window")]
 #[test]
 #[ignore = "requires actual graphics adapter"]
