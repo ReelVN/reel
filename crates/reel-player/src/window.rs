@@ -62,6 +62,7 @@ pub(crate) struct State {
     pub(crate) session: Option<WindowSession>,
     recorded_projection: Option<ProjectionStamp>,
     closing: bool,
+    first_frame_pending: bool,
     completions: Vec<RenderEvent<GpuError>>,
 }
 impl State {
@@ -110,9 +111,11 @@ impl State {
         mut session: Option<WindowSession>,
         options: Option<StoryWindowOptions>,
     ) -> Result<Self, Error> {
+        let first_frame_pending = matches!(session, Some(WindowSession::Aside(_)));
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
+                    .with_visible(!first_frame_pending)
                     .with_title(options.as_ref().map_or_else(
                         || {
                             if session.is_some() {
@@ -322,6 +325,7 @@ impl State {
             session,
             recorded_projection: None,
             closing: false,
+            first_frame_pending,
             completions: Vec::new(),
         };
         state.start_gamepads();
@@ -539,6 +543,15 @@ impl State {
         if !self.is_diagnostic() && self.active_fonts.is_empty() {
             return Ok(());
         }
+        if self.first_frame_pending
+            && (self.settings_pending()
+                || !self
+                    .session
+                    .as_ref()
+                    .is_some_and(WindowSession::initial_frame_ready))
+        {
+            return Ok(());
+        }
         self.poll_completions()?;
         let Self {
             presentation,
@@ -589,6 +602,10 @@ impl State {
         {
             session.presented(stamp)?;
         }
+        if result.accepted && self.first_frame_pending {
+            self.first_frame_pending = false;
+            self.window.set_visible(true);
+        }
         if result.accepted && std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some() {
             let key = self
                 .presentation
@@ -602,6 +619,11 @@ impl State {
             );
         }
         if let Some(error) = result.refused {
+            if self.first_frame_pending
+                && self.presentation.demand.model == crate::demand::Model::Blocked
+            {
+                return Err(error);
+            }
             eprintln!("frame refused; keeping last accepted view: {error}");
         }
         Ok(())
@@ -613,6 +635,14 @@ impl State {
         }
         self.presentation.exposed();
         self.render()
+    }
+    /// Hidden native windows need not receive redraw events. The event loop
+    /// still advances startup using VM deadlines and resource completion wakes.
+    pub(crate) fn prepare_initial_frame(&mut self) -> Result<(), Error> {
+        if self.first_frame_pending && !self.closing {
+            self.render()?;
+        }
+        Ok(())
     }
     pub(crate) fn recover_device(&mut self) -> Result<(), Error> {
         if let Err(error) = self.backend.renderer().gpu().check() {
@@ -1603,6 +1633,15 @@ fn main() {{
         .unwrap()
         .with_asset_options(options.assets.clone());
         let mut state = State::new_story(event_loop, 1, driver, options).unwrap();
+        assert!(state.first_frame_pending);
+        #[cfg(target_os = "windows")]
+        assert_eq!(state.window.is_visible(), Some(false));
+        state.prepare_initial_frame().unwrap();
+        assert!(state.presentation.bridge.accepted_key().is_none());
+        assert!(
+            state.first_frame_pending,
+            "startup without scene/fonts is not a frame"
+        );
         let assets = state.session.as_ref().unwrap().ui().assets();
         let (send, receive) = std::sync::mpsc::channel();
         assets.set_waker(Arc::new(move || {
@@ -1650,6 +1689,17 @@ fn main() {{
             state.resize(requested).unwrap();
         }
         let player_size = state.window.inner_size();
+        assert!(state.first_frame_pending);
+        #[cfg(target_os = "windows")]
+        assert_eq!(state.window.is_visible(), Some(false));
+        state.prepare_initial_frame().unwrap();
+        assert!(
+            !state.first_frame_pending,
+            "startup presents without a native redraw event"
+        );
+        assert!(state.presentation.bridge.accepted_key().is_some());
+        #[cfg(target_os = "windows")]
+        assert_eq!(state.window.is_visible(), Some(true));
         present_session(&mut state);
         let old_frame = state.build_frame().unwrap();
         let old_pixels = state.session.as_ref().unwrap().ui().image_resources()[0].clone();
