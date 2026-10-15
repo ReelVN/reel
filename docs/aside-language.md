@@ -192,7 +192,7 @@ set_delegate/get_delegate 管理 table 的显式后备链，拒绝环，改变�
 
 use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view; 为单项导入，use reel::prelude::*; 为公开名字通配导入。别名用 as，pub 控制导出，pub use 重导出；命名空间导入使用 use game::ui::dialogue as dialogue;，解析器依据模块/符号声明区分，若两者同名则要求显式分组选择符号。通配不能静默覆盖已有名字。
 
-入口源码所在目录是源码根；工程目录默认启动 main.aside 的 main。game:: 后的模块段对应目录和 .aside 文件，名称须合法标识符。外部源码根可由工具的 --module 别名=目录 参数提供，同一实际文件只建立一个模块环境。game/reel 保留，reel 由宿主注册。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
+入口源码所在目录是源码根；工程目录默认启动 main.aside 的 main。game:: 后的模块段对应目录和 .aside 文件，名称须合法标识符。外部源码根可由工具的 --module 别名=目录 参数提供，同一实际文件只建立一个模块环境。main/game/reel/std 保留；reel 与 std 由宿主注册，不搜索同名源码目录。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
 
 当前普通函数与值模块已贯通多源码分析、B01 和 VM。文件提供方按真实导入发现源码，模块别名归一到固定声明身份；同一文件只产生一份环境。导入读取与重导出共享原 cell，B01 的模块绑定编号依次包含自有全局和导入，验证时解析并缓存实际 cell 索引。物理来源独立保存在 SourceFile.path，运行故障保留对应文件与表达式范围。
 
@@ -265,6 +265,8 @@ text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直�
 Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 B01/ASB 编码。
 
 Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 B01/ASB 变化。
+
+独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。首批 `random(seed: null)` 及其 int/float/pick 绑定方法使用普通 native 调用和共享身份，随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式；在主函数或事件中创建并保存随机流。没有新增语言语法、VM 指令或 B01/ASB 编码，Aside 不依赖 Reel。
 
 Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，B01/ASB 不变。
 

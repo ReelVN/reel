@@ -608,6 +608,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec![],
         });
     }
+    contracts.extend(aside_std::contracts());
     contracts
 }
 

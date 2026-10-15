@@ -77,7 +77,7 @@ fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() 
     let case = Case::new();
     case.write(
         "library/data.aside",
-        "pub use reel::prelude::text as label; pub let model={value:0}; pub fn bump(){model.value+=1;}",
+        "pub use reel::prelude::text as label; use std::random; pub let model={value:0}; pub fn bump(){model.value+=random(seed: 42).int(1,2);}",
     );
     case.write("main.aside", "use first::data as a; use second::data as b; use home::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
     let modules = std::collections::BTreeMap::from([

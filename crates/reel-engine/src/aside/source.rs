@@ -106,6 +106,9 @@ fn environment() -> (
         })
         .collect::<Vec<_>>();
     let mut resolver = MemoryResolver::default();
+    for module in aside_std::modules() {
+        resolver.insert(module);
+    }
     let mut prelude = exports
         .iter()
         .zip(&references)
@@ -113,6 +116,7 @@ fn environment() -> (
         .map(|(export, _)| export.clone())
         .collect::<Vec<_>>();
     let mut stage = ExternalSymbol::dynamic("stage");
+    prelude.extend(aside_std::prelude());
     stage.namespace = Some(NamespaceRef {
         module: "reel::stage".into(),
         version: "1".into(),
