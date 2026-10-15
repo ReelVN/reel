@@ -36,6 +36,8 @@ pub enum StoryProgress {
     Faulted(DeliveryId),
     Finished,
     Cancelled,
+    /// The author requested shutdown; cancellation has begun and cleanup remains host-driven.
+    ExitRequested,
 }
 
 /// Fault delivery remains rooted until explicit cancellation and cleanup.
@@ -425,6 +427,10 @@ impl AsideSessionUi {
                         Ok(StoryProgress::Interaction(interaction))
                     }
                     Ok(NativeDispatch::Decoding { work }) => Ok(StoryProgress::Decoding { work }),
+                    Ok(NativeDispatch::Ready { .. }) if self.vm.exit_requested() => {
+                        self.cancel()?;
+                        Ok(StoryProgress::ExitRequested)
+                    }
                     Ok(NativeDispatch::Ready { work }) => Ok(StoryProgress::Updated { work }),
                     Err(error) => {
                         let Some(kind) = error.native_fault_kind() else {

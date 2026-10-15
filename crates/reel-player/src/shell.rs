@@ -317,6 +317,10 @@ impl ApplicationHandler for App {
                 self.fail(event_loop, error);
                 return;
             }
+            if state.exit_requested() {
+                self.close(event_loop);
+                return;
+            }
             if let Err(e) = state.poll_completions() {
                 if matches!(e, GpuError::DeviceLost(_)) {
                     if let Err(e) = state.recover_device() {

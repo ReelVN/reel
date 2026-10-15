@@ -171,6 +171,10 @@ impl WindowSession {
         }
     }
 
+    pub(crate) fn exit_requested(&self) -> bool {
+        matches!(self, Self::Aside(story) if story.driver.adapter().exit_requested())
+    }
+
     #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
     pub(crate) fn diagnostic_step(&self) -> u8 {
         match self {

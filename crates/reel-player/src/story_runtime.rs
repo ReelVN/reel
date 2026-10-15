@@ -202,6 +202,10 @@ impl StoryRuntime {
         }
         let progress = self.driver.tick(budget, 256, now)?;
         match progress {
+            StoryProgress::ExitRequested => {
+                self.close()?;
+                return Ok(());
+            }
             StoryProgress::Interaction(_)
             | StoryProgress::Vm(RunOutcome::Waiting(_))
             | StoryProgress::Finished

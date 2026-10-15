@@ -381,6 +381,9 @@ impl State {
         };
         let before = session.ui().projection_stamp();
         session.tick(budget, now)?;
+        if !self.closing && session.exit_requested() {
+            return self.close();
+        }
         let settings_changed = if self.closing {
             false
         } else {
@@ -520,6 +523,11 @@ impl State {
                 .as_ref()
                 .is_none_or(WindowSession::close_complete)
     }
+    pub(crate) fn exit_requested(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(WindowSession::exit_requested)
+    }
     pub(crate) fn poll_completions(&mut self) -> Result<(), GpuError> {
         self.completions.clear();
         self.presentation
@@ -600,6 +608,9 @@ impl State {
     }
     pub(crate) fn redraw_requested(&mut self) -> Result<(), Error> {
         self.tick_story()?;
+        if self.closing {
+            return Ok(());
+        }
         self.presentation.exposed();
         self.render()
     }
@@ -1567,6 +1578,8 @@ fn main() {{
     game.configure(width: 800, height: 600, fonts: [{alternate:?}]);
     picture.source = "assets/sun.jpg";
     narrator("B");
+    game.exit();
+    throw "continued after shutdown";
 }}
 "#
         );
@@ -1702,10 +1715,18 @@ fn main() {{
             state.size.width as usize * state.size.height as usize
         );
         assert!(!old_frame.resources().leases().is_empty());
-        state.close().unwrap();
+        advance_session_text(&mut state);
+        present_session(&mut state);
+        session_click(&mut state, 100., 300.);
+        let shutdown_deadline = Instant::now() + std::time::Duration::from_secs(10);
         while !state.close_complete() {
             state.tick_story().unwrap();
+            assert!(
+                Instant::now() < shutdown_deadline,
+                "author shutdown did not finish"
+            );
         }
+        assert!(state.exit_requested());
         eprintln!(
             "author font/image IO, atomic replacement, input pause, GPU readback and close passed"
         );

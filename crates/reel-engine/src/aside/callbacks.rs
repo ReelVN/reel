@@ -225,7 +225,7 @@ impl SessionVm {
     }
 
     pub fn has_runnable_tasks(&self) -> bool {
-        if self.revoked || self.delivery.is_some() {
+        if self.revoked || self.exit_requested || self.delivery.is_some() {
             return false;
         }
         if self.derived_task.is_some() || self.vm.heap().derived_pending() {
