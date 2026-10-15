@@ -17,6 +17,7 @@ mod lists;
 mod localization;
 mod narrative;
 mod observable;
+mod particles;
 mod publication;
 mod registry;
 mod results;
@@ -199,6 +200,7 @@ pub struct SessionVm {
     stage: stage::StageBinding,
     activities: activity::Activities,
     results: results::Results,
+    particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     audio: audio::Audio,
     translations: localization::Translations,
@@ -254,6 +256,7 @@ impl SessionVm {
             stage,
             activities: activity::Activities::default(),
             results: results::Results::default(),
+            particles: particles::Particles::default(),
             standard,
             audio: audio::Audio::default(),
             translations: localization::Translations::default(),
@@ -331,6 +334,7 @@ impl SessionVm {
     /// Reactive factories must settle before a host acknowledges their narrative frame.
     pub fn stage_ready(&self) -> bool {
         !self.activities.pending()
+            && !self.particles.needs_work(self.stage.scene.revision())
             && self.derived_task.is_none()
             && !self.vm.heap().derived_pending()
     }
@@ -354,7 +358,14 @@ impl SessionVm {
     ) -> Result<ActivityProgress, AdapterError> {
         self.live(session)?;
         self.activities.set_skipping(session.reading().skipping());
-        let mut progress = self.activities.advance(&mut self.vm, seconds, work)?;
+        self.particles.begin(seconds)?;
+        let particle_work = self.maintain_particles(work)?;
+        let mut progress = self
+            .activities
+            .advance(&mut self.vm, seconds, work - particle_work)?;
+        progress.work += particle_work;
+        progress.woke |= self.particles.take_wake();
+        progress.pending |= self.particles.needs_work(self.stage.scene.revision());
         if self.reactive_ready && self.derived_task.is_none() {
             self.sync_narrative(session)?;
         }
@@ -363,17 +374,26 @@ impl SessionVm {
     }
 
     pub fn activities_pending(&self) -> bool {
-        !self.revoked && self.activities.pending()
+        !self.revoked
+            && (self.activities.pending() || self.particles.needs_work(self.stage.scene.revision()))
     }
 
     pub fn activities_need_time(&self) -> bool {
-        !self.revoked && self.activities.needs_time()
+        !self.revoked && (self.activities.needs_time() || self.particles.needs_time())
     }
 
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
-        (!self.revoked)
-            .then(|| self.activities.poll_after())
-            .flatten()
+        if self.revoked {
+            return None;
+        }
+        let particles = self
+            .particles
+            .needs_time()
+            .then_some(std::time::Duration::from_secs_f64(1. / 60.));
+        match (self.activities.poll_after(), particles) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     pub fn dispatch(
@@ -560,11 +580,21 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::emit" => {
+                self.dispatch_emit(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::pause"
             | "reel::resume"
             | "reel::stop"
             | "reel::finish"
             | "reel::activity::await" => {
+                if results::kind(self.vm.heap(), self.vm.host_arguments(ticket)?[0]).ok()
+                    == Some(results::Kind::Particle)
+                {
+                    self.control_particles(ticket, &symbol)?;
+                    return Ok(NativeDispatch::Ready { work: 1 });
+                }
                 if audio::is_audio(self.vm.heap(), self.vm.host_arguments(ticket)?[0]) {
                     self.dispatch_audio(ticket, &symbol)?;
                     return Ok(NativeDispatch::Ready { work: 1 });
@@ -648,13 +678,14 @@ impl SessionVm {
             | "reel::button"
             | "reel::input"
             | "reel::image"
+            | "reel::particles"
             | "reel::row"
             | "reel::column"
             | "reel::scroll"
             | "reel::stack"
             | "reel::stage::replace" => {
                 let arguments = self.vm.host_arguments(ticket)?.to_vec();
-                let origin = if symbol == "reel::image" {
+                let origin = if matches!(symbol.as_str(), "reel::image" | "reel::particles") {
                     ticket.location.source.map(|span| {
                         let source = &p.sources[span.file.index()];
                         let before = &source.text[..span.start as usize];
@@ -1113,6 +1144,7 @@ impl SessionVm {
         self.audio.close();
         self.translations.close();
         self.results.clear();
+        self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;
         session.revoke_owner_with_retirement(

@@ -204,6 +204,7 @@ impl StageBinding {
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
+            NodeKind::Particles(_) => super::particles::PREFIX.len() as u32,
             NodeKind::Text(_) => 2,
             NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
@@ -290,6 +291,7 @@ impl StageBinding {
                     pointer: args[3].tag() != ValueTag::Null,
                 }
             }
+            "reel::particles" => super::particles::kind(heap, args, origin, read_limit)?,
             "reel::image" => NodeKind::Image {
                 source: read_source(heap, args[0], read_limit)?,
                 fit: read_fit(heap, args[1])?,
@@ -349,6 +351,7 @@ impl StageBinding {
                 "reel::text_input" => {
                     |heap, _, index, value| text_input::validate(heap, index, value)
                 }
+                "reel::particles" => super::particles::validate,
                 "reel::image" => {
                     |heap, _, index, value| validate_image_property(heap, index, value)
                 }
@@ -577,6 +580,10 @@ impl StageBinding {
                         text_input::TextInputField::PROPERTIES.len(),
                     )
                 }
+                NodeKind::Particles(batch) => (
+                    NodeKind::Particles(batch.clone()),
+                    super::particles::PREFIX.len(),
+                ),
                 NodeKind::Image { origin, .. } => (
                     NodeKind::Image {
                         source: read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?,

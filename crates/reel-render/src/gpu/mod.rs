@@ -13,6 +13,7 @@ mod present;
 mod readback;
 pub use present::SurfacePass;
 mod draw;
+mod image_batch;
 mod image_cache;
 mod replay;
 mod scopes;

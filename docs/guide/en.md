@@ -990,3 +990,21 @@ Runnable example: [author_audio.aside](../../examples/author_audio.aside), using
 ./target/debug/reel.exe check examples/author_audio.aside
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
+
+### Sprite particles
+
+`particles` creates one stage node for snow, petals or other sprite effects. `emit` starts it and returns an activity; configure the birth rectangle with width/height. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
+
+```aside
+let petals = particles("assets/petal.png", width: 1280, height: 20,
+    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
+    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
+    spin_spread: 60);
+stage.replace(petals);
+let falling = emit(petals, duration: 10);
+await falling;
+```
+
+Defaults: rate 60 particles/second, lifetime 5 seconds, seed 0, velocity_x/y 0/80, spread_x/y 20/20, acceleration_x/y 0/0, size 12, size_spread 4, opacity_start/end 1/0, spin 0 and spin_spread 30 degrees/second. Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size. Birth positions are uniform within the width/height captured by emit (omitted dimensions are zero); first birth occurs after 1/rate seconds. Configurations are read-only; ordinary position, rotation, scale, visibility, opacity and clipping remain editable and animatable.
+
+Omit duration to emit continuously. A finite duration includes births exactly at its endpoint and completes after surviving particles die. `pause(falling)` freezes the whole effect, `resume(falling)` continues it, and `stop(falling)` clears particles and returns Stopped from await. `finish(falling)` clears a finite effect and returns Completed; it rejects continuous emission. Calling emit again on the same node stops the previous activity and restarts its seeded sequence. The same seed and elapsed time reproduce the same particles regardless of frame timing. Retiring the node or activity owner cancels emission; hiding it does not pause it. Owner defaults follow other activities; cancelling a waiter leaves emission running. Completed activities retain their result for repeated waits. Particles share the stage image resource and renderer; no script runs for each particle. Save/restore of running effects is not available yet.

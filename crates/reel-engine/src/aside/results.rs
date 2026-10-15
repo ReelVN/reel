@@ -13,6 +13,7 @@ pub(super) enum Kind {
     Completion = -1101,
     Task = -1102,
     Presentation = -1103,
+    Particle = -1104,
 }
 #[repr(u32)]
 enum Slot {
@@ -20,6 +21,7 @@ enum Slot {
     State,
     Owner,
     Value,
+    Target,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -36,7 +38,7 @@ struct Methods {
     wait: NativeId,
 }
 
-fn reserve_queue<T>(
+pub(super) fn reserve_queue<T>(
     heap: &Heap,
     queue: &mut VecDeque<T>,
     charge: &mut Option<HeapReservation>,
@@ -87,13 +89,17 @@ fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<
     heap.set_host_payload(object, Slot::Value as u32, value)?;
     heap.set_host_payload(object, Slot::State as u32, Value::int(state as i64))?;
     heap.set_host_payload(object, Slot::Owner as u32, Value::NULL)?;
+    if kind(heap, object)? == Kind::Particle {
+        heap.set_host_payload(object, Slot::Target as u32, Value::NULL)?;
+    }
     Ok(())
 }
-fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
+pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
     match heap.host_payload(object, Slot::Tag as u32)?.as_int() {
         Some(-1101) => Ok(Kind::Completion),
         Some(-1102) => Ok(Kind::Task),
         Some(-1103) => Ok(Kind::Presentation),
+        Some(-1104) => Ok(Kind::Particle),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -183,14 +189,16 @@ impl Results {
         let methods = self.methods.as_ref().unwrap();
         let heap = vm.heap_mut();
         let fields = heap.alloc_table()?;
+        let slots = [
+            Value::int(kind as i64),
+            Value::int(State::Pending as i64),
+            owner,
+            Value::NULL,
+            Value::NULL,
+        ];
         let object = heap.alloc_host(
             fields,
-            &[
-                Value::int(kind as i64),
-                Value::int(State::Pending as i64),
-                owner,
-                Value::NULL,
-            ],
+            &slots[..if kind == Kind::Particle { 5 } else { 4 }],
             Some(readonly),
         )?;
         for (index, (name, function)) in ["resolve", "reject", "cancel"]
@@ -198,7 +206,7 @@ impl Results {
             .zip(methods.settle)
             .enumerate()
         {
-            if kind != Kind::Completion && name != "cancel" {
+            if kind == Kind::Particle || (kind != Kind::Completion && name != "cancel") {
                 continue;
             }
             let function = if kind == Kind::Task {
@@ -222,6 +230,17 @@ impl Results {
         }
         vm.bind_awaitable(object, methods.wait)?;
         Ok(object)
+    }
+    pub(super) fn create_particle(
+        &mut self,
+        vm: &mut Vm,
+        owner: Value,
+        target: Value,
+    ) -> Result<Value, AdapterError> {
+        let result = self.create(vm, owner, Kind::Particle)?;
+        vm.heap_mut()
+            .set_host_payload(result, Slot::Target as u32, target)?;
+        Ok(result)
     }
     fn subscribe(
         &mut self,
@@ -341,6 +360,7 @@ pub(super) fn cancelling(heap: &mut Heap, object: Value) -> Result<(), AdapterEr
 pub(super) enum TaskResult {
     Returned(Value),
     Faulted(Value),
+    Rejected(Value),
     Cancelled,
 }
 pub(super) fn finish_task(
@@ -351,6 +371,7 @@ pub(super) fn finish_task(
     let (state, value) = match result {
         TaskResult::Returned(value) => (State::Resolved, value),
         TaskResult::Faulted(fault) => (State::Faulted, fault),
+        TaskResult::Rejected(value) => (State::Rejected, value),
         TaskResult::Cancelled => (State::Cancelled, Value::NULL),
     };
     settle(heap, object, state, value)

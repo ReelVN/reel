@@ -25,6 +25,14 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 作者播放器只呈现显式挂载的舞台，不自动创建对白/选择控件或复制内置视图投影。game.configure 移除默认界面开关，native ABI 为 3；game.dialogue()/game.choice() 保持数据与交互服务。Rust 会话诊断的预览由诊断入口显式创建，不参与 Aside 作品设置。
 
+### 批量舞台粒子
+
+`particles(source, rate:60, lifetime:5, seed:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, ...节点属性)` 创建静止的单个舞台节点。配置只读；emit 启动时的 width/height 为发射矩形（缺省为零），共同变换、可见性、透明度与裁剪仍可更新。速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size。rate/lifetime 为正有限数，size 与各 spread 为非负有限数，透明度在 [0,1]。图片沿共同资源加载与源码诊断路径。
+
+`emit(node, duration:null, owner:null)` 启动并返回独立活动；duration 为非负有限的发射秒数，null 连续发射。首粒在 1/rate 秒出生，有限发射在 duration 截止（含该时刻），最后一粒寿命结束后返回 Completed。新 emit 停止该节点的旧活动并从同一种子重新开始。pause/resume 冻结/继续发射与运动；stop 清空画面并返回 Stopped；finish 只接受有限活动，清空并返回 Completed。目标或 owner 退休产生 Cancelled；等待者取消不取消生产者。owner 缺省沿用任务/回调节点，主剧情归会话。终态独立于节点保存，可重复 await，结束后释放目标/owner 根。隐藏不暂停。
+
+配置和累计逻辑时间形成不可变投影，按出生序号解析位置、匀加速运动、旋转及寿命内线性透明度。固定种子和同一时间得到同一批次，与分帧无关；无需逐粒子节点、任务、回调或每帧数组复制。SplitMix64 的固定混合步骤仅用于按序号取样，算法及顺序由本接口版本固定。模拟/投影存储为每发射器常数空间，按发射器分片推进；绘制为存活粒子线性工作，使用同一图片与既有绘制/资源预算，无作者数量硬上限。大时间跳跃直接跳过已死亡序号。使用现有会话活动时钟，资源等待/宿主暂停沿播放器现有冻结规则。快照恢复仍未实现。GPU 在既有绘制流中把相邻同图片矩形合并为有序 quad 批次，共用顶点/索引上传与纹理绑定；clip/group、非图片绘制和资源变化结束批次，逐图片变换、裁剪来源及 alpha 保留，不新增特效渲染器或帧 ABI。范围为 reel-ui 舞台、reel-engine、reel-player、reel-render、示例及双语指南；新增 native ABI 1，B01/ASB 不变，无新增依赖。
+
 ### 作者活动与窗口时钟
 
 `stage.presented(owner: null)` 返回可等待的呈现请求；`await` 在请求之后的舞台投影实际接受呈现后返回 null。派生状态先稳定，字体与图片先完成准备；录制、拒帧和重绘旧帧均不结算请求。多个请求可随同一帧完成，重复等待同一对象共享终态。请求不暂停其他任务、音频或动画，转场组件可先挂载透明的新内容、等待呈现，再开始动画。owner 沿现有活动规则，退休取消未决请求；`.cancel()` 只取消这个请求，等待者取消不取消请求。请求不允许脚本 resolve/reject。无挂载根但显式请求呈现时允许提交空舞台。复用 completion 的 VM 根、订阅及错误路径，帧携带单调请求序号，不为等待保留场景或纹理副本；没有忙等和新线程。Rust 宿主把 `presentation_request()` 固定到稳定投影，在该投影实际接受后调用 `accept_presentation(session, request)`；旧序号不会完成新请求。范围为 reel-engine、reel-player、公开示例和双语指南；新增 native ABI 1，B01/ASB 与其他 native ABI 不变，无新依赖。
