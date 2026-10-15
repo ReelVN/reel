@@ -1,4 +1,77 @@
 use super::*;
+
+#[test]
+fn dialogue_ready_tracks_group_timing_and_interaction_boundaries_from_source_and_asb() {
+    use reel_ui::stage::NodeKind;
+    use std::time::Duration;
+
+    let code = r#"
+        fn opening() {
+            let d = game.dialogue();
+            stage.replace(text(value: derive(|| f"{d.ready}")));
+            say([character("A").line("A"), character("B").line(rich("B[pause=0.5]"))]);
+            if !d.lines[0].ready || !d.lines[1].ready { throw "completed rows"; }
+            choose([{key: "next", label: "Next"}]);
+            d.clear();
+            if d.ready || d.lines.len() != 0 { throw "cleared page"; }
+            narrator(rich("C[pause=10]"));
+        }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        let project = |vm: &mut SessionVm, session: &mut Session, expected: bool| {
+            vm.sync_narrative(session).unwrap();
+            models::drive(vm, session, true);
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| { n.kind == NodeKind::Text(expected.to_string().into()) })
+            );
+        };
+        project(&mut vm, &mut session, false);
+        let owner = session.root_owner();
+        let id = session.view().interaction.unwrap().id();
+        session
+            .advance_reveal(owner, id, Duration::from_millis(100), 10.)
+            .unwrap();
+        project(&mut vm, &mut session, false);
+        let Some(crate::InteractionView::Dialogue(d)) = session.view().interaction else {
+            panic!()
+        };
+        assert!(d.lines()[0].playback_complete());
+        assert_eq!(d.lines()[1].visible_text(), "B");
+        assert!(
+            !d.lines()[1].playback_complete(),
+            "tail pause outlives visible text"
+        );
+        session
+            .advance_reveal(owner, id, Duration::from_millis(500), 10.)
+            .unwrap();
+        project(&mut vm, &mut session, true);
+        session
+            .handle_local_input(owner, InputAction::Advance(id))
+            .unwrap();
+        project(&mut vm, &mut session, false);
+        let Some(crate::InteractionView::Choice(c)) = session.view().interaction else {
+            panic!()
+        };
+        let choice = c.options()[0].id().clone();
+        session
+            .handle_local_input(owner, InputAction::Select(choice))
+            .unwrap();
+        project(&mut vm, &mut session, false);
+        let id = session.view().interaction.unwrap().id();
+        session
+            .handle_local_input(owner, InputAction::Advance(id))
+            .unwrap();
+        project(&mut vm, &mut session, true);
+        collect(&mut vm);
+        session
+            .handle_local_input(owner, InputAction::Advance(id))
+            .unwrap();
+        project(&mut vm, &mut session, false);
+    }
+}
 use reel_ui::stage::{NodeKind, NodeLink};
 
 #[test]

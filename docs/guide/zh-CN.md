@@ -386,6 +386,8 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。
 
+`game.dialogue().ready` 表示当前整组对白的正文和全部时序（包括尾部 pause）已完成；没有当前对白时为 false。`lines` 中每行也有独立的 `ready`，已完成的旧行保留 true。它不受自动、快进或暂停策略改变；例如提示光标使用 `visible: derive(|| dialogue.ready && !reading.auto && !reading.skipping && !reading.paused)`，其中 reading 是 `game.reading()`。光标可用普通 text/image、布局和动画定制，不需要比较正文长度。见 [句内时序示例](../../examples/author_dialogue_timing.aside)。
+
 句内节奏也写在 rich 中：`[speed=15]慢慢说[/speed]` 按每秒 15 个字素显示，`[speed=2x]快一些[/speed]` 使用玩家速度的两倍，`[speed=0]立即出现[/speed]` 显示即时段，`[pause=0.5]` 在当前位置停半秒。speed 可以嵌套，关闭时恢复外层速度。`[next]` 使本句播完并呈现后自动续句，不改变全局自动阅读；同时对白要求每行都有该标记。末尾停顿会先执行。手动补全、快进或全局 text_speed: 0 越过剩余节奏；打开菜单或挂起保留剩余停顿。标记不进入正文、历史或字数，普通 text 显示完整内容。完整示例见 [author_dialogue_timing.aside](../../examples/author_dialogue_timing.aside)。
 
 支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体仍由游戏提供，粗体、斜体的字形效果取决于字体。

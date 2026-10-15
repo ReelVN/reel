@@ -16,6 +16,7 @@ enum DialogueField {
     Read,
     SpeakerId,
     ContentId,
+    Ready,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -26,6 +27,7 @@ enum LineField {
     Reveal,
     SpeakerId,
     ContentId,
+    Ready,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -105,6 +107,7 @@ impl Narrative {
                 ("read", Value::bool(false)),
                 ("speaker_id", Value::NULL),
                 ("content_id", Value::NULL),
+                ("ready", Value::bool(false)),
             ],
             &[active],
         )?;
@@ -185,6 +188,7 @@ impl Narrative {
                         LineField::Reveal as u32,
                         Value::int(super::rich_text::len(heap, text)? as i64),
                     )?;
+                    publish(heap, row, LineField::Ready as u32, Value::bool(true))?;
                 }
             }
             publish(
@@ -224,6 +228,7 @@ impl Narrative {
                                 ("reveal", Value::int(line.reveal().visible_bytes.end as i64)),
                                 ("speaker_id", speaker),
                                 ("content_id", content),
+                                ("ready", Value::bool(line.playback_complete())),
                                 ("read", Value::bool(line.previously_read())),
                             ],
                             &[],
@@ -317,10 +322,15 @@ impl Narrative {
             }
             self.interaction = interaction;
         }
+        let mut ready = false;
         if let Some(InteractionView::Dialogue(dialogue)) = active {
+            ready = true;
             let rows = heap.host_payload(self.dialogue, 0)?;
             for (i, line) in dialogue.lines().iter().enumerate() {
+                let complete = line.playback_complete();
+                ready &= complete;
                 let row = heap.sequence_get(rows, i as u32)?;
+                publish(heap, row, LineField::Ready as u32, Value::bool(complete))?;
                 publish(
                     heap,
                     row,
@@ -335,6 +345,12 @@ impl Narrative {
                 Value::int(dialogue.reveal().visible_bytes.end as i64),
             )?;
         }
+        publish(
+            heap,
+            self.dialogue,
+            DialogueField::Ready as u32,
+            Value::bool(ready),
+        )?;
         self.sync_reading(heap, session)?;
         if let Some(history) = &mut self.history {
             history.sync(heap, session, self.interaction, self.dialogue, chunk)?;
