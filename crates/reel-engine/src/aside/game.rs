@@ -3,7 +3,7 @@ use super::{AdapterError, HostTicket, SessionVm, text};
 use aside_vm::{Value, ValueTag, executor::HostResponse};
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GameSettings {
     pub title: String,
     pub canvas_size: Option<[u32; 2]>,

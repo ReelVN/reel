@@ -25,13 +25,100 @@ pub(super) struct Audio {
     waits: Vec<(WaitId, Value)>,
     cursor: usize,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct SavedAudio {
+    live: Vec<(RootToken, Option<NodeId>, crate::audio::AudioPlayback)>,
+    waits: Vec<(WaitId, Value)>,
+}
+impl Audio {
+    pub(super) fn snapshot(&self) -> Result<SavedAudio, AdapterError> {
+        let mut live = Vec::new();
+        for entry in &self.live {
+            let mut playback = self
+                .backend
+                .as_ref()
+                .ok_or(AdapterError::Input("audio backend missing"))?
+                .snapshot(entry.id)
+                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+            if entry.result.is_some() {
+                playback.result = entry.result.clone();
+            }
+            live.push((entry.root, entry.owner, playback));
+        }
+        Ok(SavedAudio {
+            live,
+            waits: self.waits.clone(),
+        })
+    }
+    pub(super) fn restore(
+        saved: SavedAudio,
+        mut backend: Option<Box<dyn AudioBackend>>,
+        map: &aside_vm::snapshot::SnapshotMap,
+        heap: &mut Heap,
+    ) -> Result<Self, AdapterError> {
+        if let Some(b) = &mut backend {
+            b.suspend();
+        }
+        let mut audio = Self {
+            backend,
+            ..Default::default()
+        };
+        for (root, owner, mut playback) in saved.live {
+            let root = map.root(root)?;
+            // Music resumes its transport; voices restart the current line.
+            // Transient effects keep their producer result, without replaying sound.
+            if playback.result.is_none()
+                && matches!(playback.request.group, AudioGroup::Effects | AudioGroup::Ui)
+            {
+                playback.result = Some(AudioResult::Completed);
+            }
+            let id = if playback.result.is_none() {
+                if playback.request.group == AudioGroup::Voice {
+                    playback.request.start_position = std::time::Duration::ZERO;
+                }
+                playback.request.fade_in = std::time::Duration::ZERO;
+                let backend = audio
+                    .backend
+                    .as_mut()
+                    .ok_or(AdapterError::Input("restoring audio requires a backend"))?;
+                let id = backend
+                    .play(playback.request)
+                    .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+                if playback.paused {
+                    backend
+                        .command(id, AudioCommand::Pause)
+                        .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+                }
+                id
+            } else {
+                AudioId(0)
+            };
+            heap.set_host_payload(
+                heap.root_value(root)?,
+                Slot::Id as u32,
+                Value::int(id.0 as i64),
+            )?;
+            audio.live.push(Live {
+                id,
+                root,
+                owner,
+                result: playback.result,
+            });
+        }
+        for (wait, value) in saved.waits {
+            audio.waits.push((map.wait(wait)?, map.value(value)?));
+        }
+        Ok(audio)
+    }
+}
 pub(super) fn is_audio(heap: &Heap, value: Value) -> bool {
     heap.host_payload(value, Slot::Tag as u32)
         .ok()
         .and_then(Value::as_int)
         == Some(TAG)
 }
-fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 fn response(heap: &Heap, value: Value) -> Result<Option<Completion>, AdapterError> {
@@ -111,16 +198,20 @@ impl SessionVm {
         }
     }
     pub fn maintain_audio(&mut self) -> Result<bool, AdapterError> {
-        let Some(backend) = &mut self.audio.backend else {
-            return Ok(false);
-        };
-        backend.maintain();
+        if let Some(backend) = &mut self.audio.backend {
+            backend.maintain();
+        }
         for _ in 0..self.audio.live.len().min(64) {
             if self.audio.cursor >= self.audio.live.len() {
                 self.audio.cursor = 0;
             }
             let live = &mut self.audio.live[self.audio.cursor];
             if live.result.is_none() {
+                let backend = self
+                    .audio
+                    .backend
+                    .as_mut()
+                    .ok_or(AdapterError::Input("live audio backend missing"))?;
                 if live
                     .owner
                     .is_some_and(|id| self.stage.scene.node(id).is_none())
@@ -255,6 +346,7 @@ impl SessionVm {
                         group,
                         pan,
                         fade_in,
+                        start_position: std::time::Duration::ZERO,
                     })
                 });
             match admitted {

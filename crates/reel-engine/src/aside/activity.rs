@@ -90,7 +90,7 @@ fn tagged(heap: &Heap, value: Value, tag: i64) -> Result<(), AdapterError> {
     }
     Ok(())
 }
-fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::TypeMismatch)
 }
 fn present(value: Value) -> bool {
@@ -144,7 +144,7 @@ struct NativeWork {
 }
 
 type EventKey = (u64, u64, u32);
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Activities {
     skipping: bool,
     head: Option<RootToken>,
@@ -153,9 +153,13 @@ pub(super) struct Activities {
     // Every indexed leaf is also traced through the active root's graph.
     events: BTreeMap<EventKey, Value>,
     sampling: usize,
+    #[serde(skip)]
     native: Option<NativeWork>,
+    #[serde(skip)]
     cleanup: Option<Cleanup>,
+    #[serde(skip)]
     control: Option<Control>,
+    #[serde(skip)]
     round: Option<Round>,
     clock_round: bool,
     time: f64,
@@ -163,4 +167,30 @@ pub(super) struct Activities {
     target_time: f64,
     serial: u64,
     waits: Vec<(WaitId, Value)>,
+}
+
+impl Activities {
+    pub(super) fn snapshot_ready(&self) -> bool {
+        self.native.is_none()
+            && self.cleanup.is_none()
+            && self.control.is_none()
+            && self.round.is_none()
+    }
+    pub(super) fn restore(
+        &mut self,
+        map: &aside_vm::snapshot::SnapshotMap,
+    ) -> Result<(), aside_vm::snapshot::SnapshotError> {
+        self.head = self.head.map(|r| map.root(r)).transpose()?;
+        self.jobs = self.jobs.map(|r| map.root(r)).transpose()?;
+        self.job_tail = self.job_tail.map(|v| map.value(v)).transpose()?;
+        for value in self.events.values_mut() {
+            *value = map.value(*value)?;
+        }
+        for (wait, value) in &mut self.waits {
+            *wait = map.wait(*wait)?;
+            *value = map.value(*value)?;
+        }
+        self.skipping = false;
+        Ok(())
+    }
 }

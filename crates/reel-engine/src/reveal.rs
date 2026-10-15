@@ -3,7 +3,7 @@ use crate::DialogueLine;
 use reel_core::text::{TextCueKind, TextSpeed};
 use std::time::Duration;
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub(crate) struct RevealTiming {
     cue: usize,
     speed: TextSpeed,

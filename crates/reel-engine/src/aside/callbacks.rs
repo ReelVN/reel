@@ -3,6 +3,7 @@ use super::*;
 use aside_vm::ValueTag;
 use reel_ui::stage::NodeId;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct ScriptTask {
     pub task: TaskId,
     pub owner: OwnerHandle,

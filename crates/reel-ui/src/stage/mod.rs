@@ -148,7 +148,9 @@ pub enum ToggleAppearance {
     Checkbox,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NodeId(pub u64);
 
 /// One activation routed by the UI through accepted presentation geometry.
@@ -355,6 +357,31 @@ impl Stage {
             .checked_add(1)
             .map(NodeId)
             .ok_or(StageError::IdentityExhausted)
+    }
+
+    /// Reconstruct detached nodes in increasing identity order. Attach children
+    /// with `add` and publish the root only after the candidate is complete.
+    pub fn restore_node(
+        &mut self,
+        id: NodeId,
+        kind: NodeKind,
+        props: NodeProps,
+    ) -> Result<(), StageError> {
+        if id.0 <= self.next_id {
+            return Err(StageError::DuplicateChild);
+        }
+        self.next_id = id.0;
+        self.nodes.insert(
+            id,
+            StageNode {
+                id,
+                kind,
+                props,
+                children: Vec::new(),
+                parent: None,
+            },
+        );
+        Ok(())
     }
 
     /// Keep explicitly supplied component roots in authored order. An expression

@@ -13,19 +13,20 @@ pub mod audio;
 pub mod localization;
 mod reading;
 mod reveal;
+mod snapshot;
 pub use reading::{ReadProgress, ReadingState};
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SessionIdentity {
     pub session_id: SessionId,
     pub epoch: Epoch,
 }
 
 /// A scoped owner allocated by this host. IDs are never reused in an epoch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OwnerHandle {
     identity: SessionIdentity,
     id: OwnerId,
@@ -46,7 +47,7 @@ impl OwnerHandle {
 }
 
 /// Opaque identity: a new generation for each successfully submitted interaction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct InteractionId {
     identity: SessionIdentity,
     generation: u64,
@@ -66,7 +67,7 @@ impl InteractionId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DialogueLineId {
     interaction_id: InteractionId,
     index: usize,
@@ -82,12 +83,12 @@ impl DialogueLineId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HistoryGroupId(InteractionId);
 
 /// A choice row's stable identity combines its interaction with its business key.
 /// Only submitted rows create these IDs; they cannot be forged from an index.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ChoiceId {
     interaction_id: InteractionId,
     key: String,
@@ -149,7 +150,7 @@ pub struct ChoiceInput<'a> {
 }
 
 /// Submitted text preserves its content identity, styles and resolved locale snapshot.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TextContent {
     id: String,
     fallback: reel_core::text::Text,
@@ -176,7 +177,7 @@ pub struct Reveal {
     pub visible_bytes: Range<usize>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct DialogueLine {
     id: DialogueLineId,
     previously_read: bool,
@@ -184,7 +185,7 @@ pub struct DialogueLine {
     speaker_name: String,
     content: TextContent,
     /// Every grapheme endpoint, including the initial zero boundary.
-    grapheme_boundaries: Vec<usize>,
+    grapheme_boundaries: std::sync::Arc<[usize]>,
     revealed_count: usize,
     timing: reveal::RevealTiming,
 }
@@ -241,12 +242,12 @@ impl DialogueLine {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DialogueMode {
     Adv,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct DialogueInteraction {
     previously_read: bool,
     id: InteractionId,
@@ -302,7 +303,7 @@ impl DialogueInteraction {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct ChoiceOption {
     id: ChoiceId,
     label: String,
@@ -322,7 +323,7 @@ impl ChoiceOption {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct ChoiceInteraction {
     id: InteractionId,
     options: Vec<ChoiceOption>,
@@ -339,7 +340,7 @@ impl ChoiceInteraction {
 }
 
 /// History owns its submitted content independently of reveal and view lifetime.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct HistoryLine {
     id: DialogueLineId,
     speaker_id: Option<String>,
@@ -369,7 +370,7 @@ impl HistoryLine {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct HistoryGroup {
     group_id: HistoryGroupId,
     interaction_id: InteractionId,
@@ -403,7 +404,7 @@ impl HistoryGroup {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionStatus {
     Running,
     Ended,
@@ -433,7 +434,9 @@ pub struct SessionView<'a> {
     pub history: &'a [HistoryGroup],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct InputSequence(pub u64);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -469,20 +472,20 @@ pub enum InputRejection {
     UnknownChoice,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CancellationReason {
     OwnerRevoked,
     SessionCancelled,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Clone)]
 pub enum CompletionOutcome {
     Advanced,
     Selected(String),
     Cancelled(CancellationReason),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CompletionDelivery {
     /// The root owner was live at claim. Revalidate it and the real wait at delivery.
     Resume,
@@ -490,7 +493,7 @@ pub enum CompletionDelivery {
     CleanupOnly,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Completion {
     interaction_id: InteractionId,
     owner: OwnerHandle,
@@ -580,7 +583,7 @@ pub struct StorageUsage {
     pub pending_owner_retirements: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OwnerLifecycle {
     Live,
     Revoked,
@@ -603,7 +606,7 @@ pub struct OwnerRetirementRequirements {
 
 /// Rust lifecycle bookkeeping only. These fields do not prove VM task stopping,
 /// GC, root release or device/resource cleanup; the real adapter reports them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OwnerRetirementView {
     pub root_cursor: usize,
     pub root_slots_end: usize,
@@ -611,7 +614,7 @@ pub struct OwnerRetirementView {
     pub external_resources_pending: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct OwnerEntry {
     handle: OwnerHandle,
     lifecycle: OwnerLifecycle,
@@ -643,7 +646,7 @@ impl OwnerEntry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 enum Interaction {
     Dialogue(DialogueInteraction),
     Choice(ChoiceInteraction),
@@ -664,7 +667,7 @@ impl Interaction {
 /// prepares all copied data and grapheme boundaries before publication. Its
 /// completion is moved into a single in-struct slot without allocation; the
 /// next interaction cannot start until that slot is claimed.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Session {
     identity: SessionIdentity,
     status: SessionStatus,
@@ -676,6 +679,7 @@ pub struct Session {
     completion: Option<Completion>,
     history: Vec<HistoryGroup>,
     reading: ReadingState,
+    #[serde(skip)]
     read_progress: ReadProgress,
 }
 
@@ -786,8 +790,8 @@ impl Session {
                         + line.speaker_name.capacity()
                         + line.content.id.capacity()
                         + line.content.fallback.storage_bytes()
-                        + vector_capacity_bytes(&line.grapheme_boundaries);
-                    active_grapheme_boundary_slots += line.grapheme_boundaries.capacity();
+                        + line.grapheme_boundaries.len() * size_of::<usize>();
+                    active_grapheme_boundary_slots += line.grapheme_boundaries.len();
                 }
             }
             Some(Interaction::Choice(choice)) => {
@@ -1085,7 +1089,7 @@ impl Session {
                 speaker_id: copy_optional_text(line.speaker_id)?,
                 speaker_name: copy_text(line.speaker_name)?,
                 content: content.clone(),
-                grapheme_boundaries: boundaries,
+                grapheme_boundaries: boundaries.into(),
                 revealed_count: 0,
                 timing: Default::default(),
             });

@@ -1,5 +1,5 @@
 //! Platform-independent audio routing shared by hosts and the media adapter.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(usize)]
 pub enum AudioGroup {
     Music,

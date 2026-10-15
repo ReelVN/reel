@@ -10,6 +10,7 @@ mod models;
 mod particles;
 mod results;
 mod rich_text;
+mod snapshots;
 mod tasks;
 
 const STORY: &str =

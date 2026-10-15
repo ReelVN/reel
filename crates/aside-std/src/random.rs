@@ -8,6 +8,10 @@ enum Slot {
     State,
 }
 
+pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+    Err(HeapError::ReadOnly)
+}
+
 #[native(symbol = "std::random", effects = Effects(Effects::ALLOCATE | Effects::HOST))]
 pub(super) fn random(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
@@ -22,7 +26,7 @@ pub(super) fn random(
     let object = vm.heap_mut().alloc_host(
         fields,
         &[Value::int(TAG), Value::int(state)],
-        Some(|_, _, _, _| Err(HeapError::ReadOnly)),
+        Some(readonly),
     )?;
     for (index, (name, function)) in [("int", int), ("float", float), ("pick", pick)]
         .into_iter()

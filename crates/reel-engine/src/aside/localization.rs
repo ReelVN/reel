@@ -7,8 +7,10 @@ use aside_vm::{
 use fluent_bundle::{FluentArgs, FluentValue};
 
 struct Pending {
-    wait: WaitId,
+    wait: Option<WaitId>,
     id: u64,
+    locale: String,
+    source: String,
     result: Option<Result<crate::localization::Catalog, String>>,
 }
 #[derive(Default)]
@@ -20,6 +22,57 @@ pub(super) struct Translations {
     selected: bool,
 }
 impl Translations {
+    pub(super) fn snapshot(&self) -> SavedTranslations {
+        SavedTranslations {
+            locale: self.service.locale().to_string(),
+            catalogs: self.service.sources().collect(),
+            pending: self
+                .pending
+                .iter()
+                .map(|p| (p.wait, p.locale.clone(), p.source.clone()))
+                .collect(),
+            revision: self.revision,
+            selected: self.selected,
+        }
+    }
+    pub(super) fn restore(
+        saved: SavedTranslations,
+        loader: Option<Box<dyn CatalogLoader>>,
+        map: &aside_vm::snapshot::SnapshotMap,
+    ) -> Result<Self, AdapterError> {
+        let mut result = Self {
+            loader,
+            revision: saved.revision.map(|r| map.root(r)).transpose()?,
+            selected: saved.selected,
+            service: Localization::default(),
+            pending: Vec::new(),
+        };
+        result.service.set_locale(
+            language_id(&saved.locale).map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
+        );
+        for (wait, locale, source) in saved
+            .catalogs
+            .into_iter()
+            .map(|(l, s)| (None, l, s))
+            .chain(saved.pending)
+        {
+            let wait = wait.map(|w| map.wait(w)).transpose()?;
+            let id = result
+                .loader
+                .as_mut()
+                .ok_or(AdapterError::Input("restoring catalogs requires a loader"))?
+                .load(&locale, &source)
+                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+            result.pending.push(Pending {
+                wait,
+                id,
+                locale,
+                source,
+                result: None,
+            });
+        }
+        Ok(result)
+    }
     pub(super) fn close(&mut self) {
         if let Some(loader) = &mut self.loader {
             for pending in self.pending.drain(..) {
@@ -27,6 +80,15 @@ impl Translations {
             }
         }
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct SavedTranslations {
+    locale: String,
+    catalogs: Vec<(String, String)>,
+    pending: Vec<(Option<WaitId>, String, String)>,
+    revision: Option<RootToken>,
+    selected: bool,
 }
 impl Drop for Translations {
     fn drop(&mut self) {
@@ -94,7 +156,7 @@ impl SessionVm {
         while index < self.translations.pending.len() {
             let Pending { wait, id, .. } = self.translations.pending[index];
             let loader = self.translations.loader.as_mut().unwrap();
-            if !self.vm.wait_is_pending(wait) {
+            if wait.is_some_and(|wait| !self.vm.wait_is_pending(wait)) {
                 loader.cancel(id);
                 self.translations.pending.swap_remove(index);
                 continue;
@@ -106,6 +168,14 @@ impl SessionVm {
                 index += 1;
                 continue;
             };
+            if wait.is_none()
+                && let Err(error) = result
+            {
+                return Err(aside_vm::snapshot::SnapshotError::Invalid(format!(
+                    "restoring translation catalog: {error}"
+                ))
+                .into());
+            }
             let result = match result {
                 Ok(_) => {
                     self.translation_changed()?;
@@ -113,7 +183,9 @@ impl SessionVm {
                 }
                 Err(message) => Completion::Error(self.translation_fault(message.clone())?),
             };
-            self.vm.complete(wait, result)?;
+            if let Some(wait) = wait {
+                self.vm.complete(wait, result)?;
+            }
             let pending = self.translations.pending.swap_remove(index);
             if let Some(Ok(catalog)) = pending.result {
                 self.translations.service.install(catalog);
@@ -147,8 +219,10 @@ impl SessionVm {
                             return Err(error.into());
                         }
                         self.translations.pending.push(Pending {
-                            wait,
+                            wait: Some(wait),
                             id,
+                            locale,
+                            source,
                             result: None,
                         });
                         self.issued = None;

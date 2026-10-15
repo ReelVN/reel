@@ -102,6 +102,7 @@ pub(super) fn validate(heap: &Heap, _: Value, index: u32, value: Value) -> Resul
     stage::validate_layout_property(heap, index - PREFIX.len() as u32, value)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Live {
     root: RootToken,
     target: NodeId,
@@ -110,9 +111,10 @@ struct Live {
     last_time: f64,
     paused: bool,
 }
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Particles {
     live: VecDeque<Live>,
+    #[serde(skip)]
     charge: Option<HeapReservation>,
     time: f64,
     remaining: usize,
@@ -120,6 +122,23 @@ pub(super) struct Particles {
     woke: bool,
 }
 impl Particles {
+    pub(super) fn restore(
+        &mut self,
+        heap: &Heap,
+        map: &aside_vm::snapshot::SnapshotMap,
+        stage: &mut reel_ui::stage::Stage,
+    ) -> Result<(), AdapterError> {
+        for live in &mut self.live {
+            live.root = map.root(live.root)?;
+            stage.set_particle_frame(live.target, Some(live.frame))?;
+        }
+        self.charge = Some(
+            heap.budget_usage()
+                .reserve((self.live.capacity() * size_of::<Live>()) as u64)?,
+        );
+        self.revision = stage.revision();
+        Ok(())
+    }
     pub fn has_active(&self) -> bool {
         !self.live.is_empty()
     }

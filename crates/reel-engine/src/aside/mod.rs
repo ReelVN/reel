@@ -22,6 +22,7 @@ mod publication;
 mod registry;
 mod results;
 mod rich_text;
+pub mod snapshot;
 pub mod source;
 mod stage;
 #[cfg(test)]
@@ -54,6 +55,12 @@ pub enum AdapterError {
     Markup(reel_core::text::MarkupError),
     Allocation,
     Stage(reel_ui::stage::StageError),
+    Snapshot(aside_vm::snapshot::SnapshotError),
+}
+impl From<aside_vm::snapshot::SnapshotError> for AdapterError {
+    fn from(error: aside_vm::snapshot::SnapshotError) -> Self {
+        Self::Snapshot(error)
+    }
 }
 impl From<reel_ui::stage::StageError> for AdapterError {
     fn from(error: reel_ui::stage::StageError) -> Self {
@@ -134,14 +141,17 @@ impl AdapterError {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct RetainedKey {
     key: String,
     value: Value,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 struct RetainedKeys {
     root: RootToken,
     entries: Vec<RetainedKey>,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PendingInteraction {
     interaction: InteractionId,
     task: TaskId,
@@ -227,6 +237,11 @@ impl SessionVm {
             return Err(AdapterError::Input("owner revoked"));
         }
         let vm = Vm::load(program, support, limits, SessionEpoch(identity.epoch.0))?;
+        Self::from_vm(session, vm, limits)
+    }
+    fn from_vm(session: &Session, vm: Vm, limits: VmLimits) -> Result<Self, AdapterError> {
+        let identity = session.identity();
+        let owner = session.root_owner();
         let stage = stage::StageBinding::new(vm.program())?;
         let standard = aside_std::StandardLibrary::new(vm.program());
         Ok(Self {

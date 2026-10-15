@@ -32,6 +32,7 @@ enum State {
     Cancelling,
     Faulted,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Methods {
     settle: [FunctionId; 3],
     cancel_task: FunctionId,
@@ -68,10 +69,11 @@ pub(super) fn reserve_queue<T>(
     *charge = Some(next_charge);
     Ok(())
 }
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Results {
     methods: Option<Methods>,
     waits: VecDeque<(WaitId, Value)>,
+    #[serde(skip)]
     charge: Option<HeapReservation>,
     remaining: usize,
     dirty: bool,
@@ -79,10 +81,36 @@ pub(super) struct Results {
     requested: u64,
     presented: u64,
     presentations: VecDeque<RootToken>,
+    #[serde(skip)]
     presentation_charge: Option<HeapReservation>,
     presentation_remaining: usize,
 }
-fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+impl Results {
+    pub(super) fn restore(
+        &mut self,
+        heap: &Heap,
+        map: &aside_vm::snapshot::SnapshotMap,
+    ) -> Result<(), aside_vm::snapshot::SnapshotError> {
+        for (wait, value) in &mut self.waits {
+            *wait = map.wait(*wait)?;
+            *value = map.value(*value)?;
+        }
+        for root in &mut self.presentations {
+            *root = map.root(*root)?;
+        }
+        self.charge = Some(
+            heap.budget_usage()
+                .reserve((self.waits.capacity() * size_of::<(WaitId, Value)>()) as u64)?,
+        );
+        self.presentation_charge = Some(
+            heap.budget_usage()
+                .reserve((self.presentations.capacity() * size_of::<RootToken>()) as u64)?,
+        );
+        self.dirty = true;
+        Ok(())
+    }
+}
+pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<(), AdapterError> {

@@ -6,6 +6,7 @@ enum HistoryLineField {
     Text = 4,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct History {
     pub value: Value,
     groups: usize,

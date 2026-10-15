@@ -2877,6 +2877,9 @@ dependencies = [
 [[package]]
 name = "reel-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "reel-dev"
@@ -2896,8 +2899,10 @@ dependencies = [
  "aside-std",
  "aside-vm",
  "fluent-bundle",
+ "postcard",
  "reel-core",
  "reel-ui",
+ "serde",
  "stats_alloc",
  "unic-langid",
  "unicode-segmentation",
@@ -2997,6 +3002,7 @@ dependencies = [
  "peniko",
  "reel-core",
  "reel-text",
+ "serde",
  "smallvec",
  "stats_alloc",
  "time",

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use unic_langid::LanguageIdentifier;
 
 pub struct Catalog {
+    source: String,
     locale: LanguageIdentifier,
     bundle: FluentBundle<FluentResource>,
 }
@@ -34,7 +35,11 @@ impl Catalog {
         bundle
             .add_resource(resource)
             .map_err(|errors| format!("{source}: {errors:?}"))?;
-        Ok(Self { locale, bundle })
+        Ok(Self {
+            locale,
+            bundle,
+            source: source.into(),
+        })
     }
 
     fn format(&self, id: &str, args: &FluentArgs<'_>) -> Option<Result<String, String>> {
@@ -71,6 +76,11 @@ impl Default for Localization {
     }
 }
 impl Localization {
+    pub(crate) fn sources(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.catalogs
+            .values()
+            .map(|c| (c.locale.to_string(), c.source.clone()))
+    }
     pub fn locale(&self) -> &LanguageIdentifier {
         &self.locale
     }
