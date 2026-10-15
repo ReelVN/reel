@@ -169,11 +169,166 @@ fn model_graphs_bind_controls_and_views_from_source_and_asb() {
 }
 
 #[test]
+fn class_models_preserve_types_methods_aliases_and_control_transactions() {
+    let code = r#"
+    let constructed = {count: 0};
+    class Base {
+        let title: string = "title";
+        let mut name: string = "initial";
+        let mut score: float = 2.0;
+        let items = [];
+        fn init(self) { constructed.count += 1; }
+        fn caption(self) -> string { f"{self.name}:{self.items.len()}" }
+    }
+    class Child: Base {
+        let mut friend: Base|null = null;
+        let mut pair: (int,string) = (1,"a");
+        fn change(self, event) {
+            self.name = "updated";
+            self.score = 4.0;
+            self.items.append(1);
+        }
+    }
+    let escaped = {value: null};
+    class Broken {
+        let value: int;
+        fn init(self) { escaped.value = self; throw "construction failed"; }
+    }
+    class Constructing {
+        let mut value: int = 1;
+        fn init(self) {
+            let mut refused = false;
+            try { model(self); } catch error { refused = true; }
+            if !refused { throw "unfinished instance was copied"; }
+        }
+    }
+    fn opening() {
+        Constructing();
+        try { Broken(); } catch error {}
+        let mut refused = false;
+        try { model(escaped.value); } catch error { refused = true; }
+        if !refused { throw "failed instance was copied"; }
+        let original = Child();
+        original.friend = original;
+        let data = model({first: original, second: original, items: [original]});
+        if !(data.first is Child) || !(data.first is Base) || constructed.count != 1
+            || data.first != data.second || data.items[0] != data.first
+            || data.first.friend != data.first || data.first == original { throw "class copy"; }
+        data.first.name = "copy";
+        if data.second.name != "copy" || original.name != "initial" { throw "copy alias"; }
+        let mut rejected = 0;
+        try { bind(original.score); } catch error { rejected += 1; }
+        try { data.first.title = "changed"; } catch error { rejected += 1; }
+        try { text_input(bind(data.first.title)); } catch error { rejected += 1; }
+        try { model({method: data.first.caption}); } catch error { rejected += 1; }
+        try { bind(data.first[42]); } catch error { rejected += 1; }
+        try { bind(data.first.caption); } catch error { rejected += 1; }
+        try { bind(data.first["missing"]); } catch error { rejected += 1; }
+        if rejected != 7 { throw "class model boundaries"; }
+        let field_name = "na" + "me";
+        let view = text(bind(data.first[field_name]), x: bind(data.first.score));
+        let control = slider(value: bind(data.first.score), min: 0, max: 10);
+        control.value = 8.0;
+        if data.first.score != 8.0 || view.x != 8.0 { throw "typed writeback"; }
+        rejected = 0;
+        try { data.first.score = 11.0; } catch error { rejected += 1; }
+        try { data.first.score = "invalid"; } catch error { rejected += 1; }
+        if rejected != 2 || data.first.score != 8.0 || view.x != 8.0 || control.value != 8.0 { throw "field transaction"; }
+        let loose = model({friend: null, pair: (1,"a")});
+        data.first.friend = bind(loose.friend);
+        data.first.pair = bind(loose.pair);
+        rejected = 0;
+        try { loose.friend = 42; } catch error { rejected += 1; }
+        try { loose.pair = (1,2); } catch error { rejected += 1; }
+        if rejected != 2 || loose.friend != null || data.first.friend != null
+            || loose.pair[1] != "a" || data.first.pair[1] != "a" { throw "full field type contracts"; }
+        let external = Child();
+        loose.friend = external;
+        let nested = text(bind(external.name));
+        external.name = "adopted";
+        if nested.value != "adopted" || data.first.friend != external { throw "adopted instance"; }
+        data.first.name = "initial";
+        stage.replace(column {
+            text(bind(data.first.title));
+            control; view; nested;
+            text(derive(|| data.first.caption()));
+            button("change", on_click: data.first.change);
+        });
+        narrator("class model ready");
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        assert!(drive(&mut vm, &mut session, true) > 1);
+        collect(&mut vm);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("initial:0".into()))
+        );
+        let slider = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(node.kind, NodeKind::Slider { .. }))
+            .unwrap()
+            .id;
+        assert!(
+            vm.change(
+                &mut session,
+                &NodeChange {
+                    node: slider,
+                    value: ControlValue::Number(6.),
+                    range: Some(reel_ui::widgets::SliderRange::new(0., 10., None).unwrap()),
+                }
+            )
+            .unwrap()
+        );
+        drive(&mut vm, &mut session, false);
+        assert_eq!(
+            vm.stage()
+                .nodes()
+                .find(|node| node.kind == NodeKind::Text("initial".into()))
+                .unwrap()
+                .props
+                .x,
+            6.
+        );
+        let button = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(node.kind, NodeKind::Button { .. }))
+            .unwrap()
+            .id;
+        assert!(vm.click(&mut session, button).unwrap());
+        drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("updated:1".into()))
+        );
+        assert_eq!(
+            vm.stage()
+                .nodes()
+                .find(|node| node.kind == NodeKind::Text("updated".into()))
+                .unwrap()
+                .props
+                .x,
+            4.
+        );
+        vm.revoke(&mut session).unwrap();
+    }
+}
+
+#[test]
 fn cancelling_a_large_model_copy_releases_its_work_graph() {
     let (mut session, mut vm) = setup(
-        r#"fn opening() {
+        r#"class Entry {
+            let index: int;
+            fn init(self, index: int) { self.index = index; }
+        }
+        fn opening() {
         let values = [];
-        for i in 0..256 { values.append({index: i}); }
+        for i in 0..256 { values.append(Entry(i)); }
         let data = model({values: values});
         throw "cancelled model returned";
     }"#,

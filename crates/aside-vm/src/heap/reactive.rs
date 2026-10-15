@@ -331,7 +331,7 @@ impl Heap {
         self.end_derived(output)
     }
 
-    pub(super) fn invalidate_reactive(
+    pub(crate) fn invalidate_reactive(
         &mut self,
         value: Value,
         field: Option<u32>,

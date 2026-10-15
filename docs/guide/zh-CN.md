@@ -168,7 +168,9 @@ let word = PoemWord("星光", score: 3);
 let caption = word.caption;
 ```
 
-`caption()` 保留 `word` 接收者，适合传给回调。继承写 `class Child: Parent`，覆盖方法用 `super.method()` 调用词法基类；派生类未声明 `init` 时继承基类构造，声明后可显式调用一次 `super.init(...)`。`static let` 和 `static fn` 属于类。构造结束必须完成所有字段初始化，失败或取消后，已发布的实例引用与方法均报告 ConstructionFailed。类的字段布局固定，派生类通过方法扩展行为。可运行示例见 [author_classes.aside](../../examples/author_classes.aside)。当前可观察 UI 数据使用后文的 `model({...})`；类实例接入模型复制和属性绑定仍在 [#149](https://github.com/jhq223/reel/issues/149) 跟踪。
+`caption()` 保留 `word` 接收者，适合传给回调。继承写 `class Child: Parent`，覆盖方法用 `super.method()` 调用词法基类；派生类未声明 `init` 时继承基类构造，声明后可显式调用一次 `super.init(...)`。`static let` 和 `static fn` 属于类。构造结束必须完成所有字段初始化，失败或取消后，已发布的实例引用与方法均报告 ConstructionFailed。类的字段布局固定，派生类通过方法扩展行为。可运行示例见 [author_classes.aside](../../examples/author_classes.aside)。
+
+`let state = model(MyState());` 复制已经构造好的实例数据，保留其类型、方法以及内部共享引用，不重新执行构造。使用 `bind(state.field)` 连接控件，使用 `derive(|| state.caption())` 组合显示内容；方法修改字段会更新对应视图。只读字段只能单向读取，可写字段的控件回写仍须符合类型。后续赋入的实例保留共享身份。默认数据中的闭包和资源仍不能复制，静态字段也不属于实例状态。示例见 [author_class_models.aside](../../examples/author_class_models.aside)。
 
 ### 在运行中修改组件
 
@@ -635,7 +637,7 @@ let indicator = text("Music", visible: bind(settings.music), color: bind(setting
 settings.palette.accent = "#ffd580";
 ```
 
-默认数据图会被复制，保留内部别名与环，不修改传入的默认对象。table、array、tuple、字符串、字节串及可变缓冲可作为数据；闭包和节点等宿主资源不能用作默认数据。后续赋入的对象保持共享身份，取得嵌套 table 或数组元素的别名后仍可绑定其字段。普通 table 方法继续可用；clear 冻结已有连接的最后值并使旧引用失效，新增同名字段需重新 bind。复制按预算分片，取消不留下部分模型。
+默认数据图会被复制，保留内部别名与环，不修改传入的默认对象。已完成构造的类实例、table、array、tuple、字符串、字节串及可变缓冲可作为数据；闭包和节点等宿主资源不能用作默认数据。后续赋入的对象保持共享身份，取得嵌套实例、table 或数组元素的别名后仍可绑定其字段。普通 table 方法继续可用；clear 冻结已有连接的最后值并使旧引用失效，新增同名字段需重新 bind。复制按预算分片，取消不留下部分模型。
 
 语言中的 let/let mut 决定绑定能否改写，model 决定属性是否可观察，状态的所属范围决定保存和释放。三者各司其职。
 ```aside

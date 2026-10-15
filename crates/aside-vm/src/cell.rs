@@ -102,7 +102,9 @@ impl Heap {
     }
     pub fn cell_read(&self, cell: Value) -> Result<Value, HeapError> {
         self.cell_info(cell)?;
-        self.get_field(cell, 0)
+        Ok(self
+            .proposed_property(cell, 0)
+            .unwrap_or(self.get_field(cell, 0)?))
     }
     fn cell_publish(
         &mut self,
@@ -124,10 +126,26 @@ impl Heap {
             if !state.contract.mutable {
                 return Err(HeapError::ReadOnly);
             }
+            if self.is_model_cell(cell)? {
+                return self.write_host_property(
+                    crate::PropertyId {
+                        host: cell,
+                        field: 0,
+                    },
+                    value,
+                    true,
+                );
+            }
         }
         if !self.accepts_builtin(state.contract.ty, value)? {
             return Err(HeapError::TypeMismatch);
         }
+        self.store_cell_value(cell, value)
+    }
+
+    /// Commit only after language-cell or complete property-graph validation.
+    pub(crate) fn store_cell_value(&mut self, cell: Value, value: Value) -> Result<(), HeapError> {
+        let key = self.key(cell)?;
         self.root_insertion_barrier(value)?;
         let obj = self.objects.get_mut(key).unwrap();
         let Payload::Cell(state) = &mut obj.payload else {
@@ -135,6 +153,9 @@ impl Heap {
         };
         state.value = Some(value);
         obj.content_version = obj.content_version.wrapping_add(1);
+        if obj.model {
+            self.invalidate_reactive(cell, Some(0))?;
+        }
         Ok(())
     }
     pub fn cell_initialize(&mut self, cell: Value, value: Value) -> Result<(), HeapError> {

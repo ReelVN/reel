@@ -112,6 +112,10 @@ fn opaque_choice_ids_work_as_list_keys_through_source_and_asb() {
 fn creator_ui_examples_initialize_from_source_and_asb() {
     for (name, source) in [
         (
+            "author_class_models.aside",
+            include_str!("../../../examples/author_class_models.aside"),
+        ),
+        (
             "author_random.aside",
             include_str!("../../../examples/author_random.aside"),
         ),

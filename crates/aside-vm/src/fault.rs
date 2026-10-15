@@ -128,6 +128,7 @@ impl FaultRoot {
 pub(crate) struct CodeLease {
     pub program: VerifiedProgram,
     pub charge: Reservation,
+    pub checks: Rc<crate::type_checks::TypeChecks>,
 }
 impl std::ops::Deref for CodeLease {
     type Target = VerifiedProgram;
@@ -533,6 +534,10 @@ mod tests {
         let program = verify(fixtures::exception_regions(), Limits::default()).unwrap();
         let mut heap = Heap::new(SessionEpoch(7), HeapLimits::default()).unwrap();
         let lease = Rc::new(CodeLease {
+            checks: Rc::new(
+                crate::type_checks::TypeChecks::new(program.package(), &heap.budget_usage())
+                    .unwrap(),
+            ),
             charge: Reservation::new(
                 &heap.budget_usage(),
                 program.stats().owned_capacity_bytes as u64,
