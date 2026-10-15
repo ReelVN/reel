@@ -1,5 +1,7 @@
 # Reel 游戏开发指南
 
+超出设备纹理尺寸的大图可先执行 `reel prepare-image panorama.png --output panorama.reel-image`，再使用 `image("panorama.reel-image")`。发布时同时携带清单与相邻的 `.tiles` 目录。播放器按可见范围和预算内的邻接区域加载瓦片，移动和缩放复用已驻留像素。参见[格式与预处理合同](../prepared-images.md)。 使用宽幅原图和下文的字体配置运行[大图示例](../../examples/author_large_image.aside)。目前预处理需显式执行，build 不复制或准备图片。
+
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
 [English](en.md) · [文档目录 / Documentation index](../README.md)

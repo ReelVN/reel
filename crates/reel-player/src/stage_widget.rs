@@ -38,6 +38,8 @@ struct SceneNode {
     node: StageNode,
     children: Vec<SceneNode>,
     image: Option<ImageData>,
+    tiled_size: Option<Size>,
+    tiles: Vec<reel_ui::widgets::ImageTile>,
 }
 impl StageView {
     pub fn capture(stage: &Stage) -> Self {
@@ -52,6 +54,8 @@ impl StageView {
                 node,
                 children,
                 image: None,
+                tiled_size: None,
+                tiles: Vec::new(),
             }
         }
         Self {
@@ -143,6 +147,55 @@ impl StageView {
             pending.extend(node.children.iter_mut());
         }
     }
+    pub fn resolve_metadata(&mut self, images: &crate::images::Images) {
+        self.resources.clear();
+        let mut resources = std::collections::BTreeSet::new();
+        let mut pending: Vec<_> = self.root.iter_mut().collect();
+        while let Some(node) = pending.pop() {
+            if let NodeKind::Image { source, .. } = &node.node.kind {
+                if let Some(manifest) = images.manifests.get(source) {
+                    node.image = None;
+                    node.tiled_size =
+                        Some(Size::new(manifest.width.into(), manifest.height.into()));
+                    node.tiles.clear();
+                } else if let Some(lease) = images.loaded.get(source) {
+                    let ResourceData::Image { image, .. } = lease.data() else {
+                        unreachable!()
+                    };
+                    node.image = Some(image.clone());
+                    node.tiled_size = None;
+                    if resources.insert(source.clone()) {
+                        self.resources.push(lease.clone());
+                    }
+                }
+            }
+            pending.extend(node.children.iter_mut());
+        }
+    }
+    pub fn resolve_tiles(
+        &mut self,
+        images: &crate::images::Images,
+        regions: &BTreeMap<NodeId, crate::images::ImageRegion>,
+    ) {
+        let mut pending: Vec<_> = self.root.iter_mut().collect();
+        let mut resources = std::collections::BTreeSet::new();
+        while let Some(node) = pending.pop() {
+            if let Some(region) = regions.get(&node.node.id) {
+                node.tiles = images.tile_paint(region);
+                resources.extend(region.tiles.iter().cloned());
+            }
+            pending.extend(node.children.iter_mut());
+        }
+        let mut handles: std::collections::BTreeSet<_> =
+            self.resources.iter().map(ResourceLease::handle).collect();
+        self.resources.extend(
+            resources
+                .iter()
+                .filter_map(|key| images.loaded.get(key))
+                .filter(|lease| handles.insert(lease.handle()))
+                .cloned(),
+        );
+    }
 }
 
 pub(crate) struct StageWidget {
@@ -152,6 +205,39 @@ pub(crate) struct StageWidget {
     root_props: reel_ui::stage::NodeProps,
 }
 impl StageWidget {
+    pub(crate) fn image_widgets(
+        this: &mut WidgetMut<'_, Self>,
+    ) -> Vec<(NodeId, crate::images::tiles::ImageGeometry)> {
+        fn visit(
+            this: &mut WidgetMut<'_, SceneWidget>,
+            out: &mut Vec<(NodeId, crate::images::tiles::ImageGeometry)>,
+        ) {
+            if let (Some(image), NodeKind::Image { source, fit, .. }) =
+                (&this.widget.image, &this.widget.node.kind)
+            {
+                out.push((
+                    this.widget.node.id,
+                    crate::images::tiles::ImageGeometry {
+                        source: source.clone(),
+                        widget: image.id(),
+                        fit: *fit,
+                    },
+                ));
+            }
+            for (_, pod) in &mut this.widget.children {
+                if let Some(mut child) = this.ctx.get_mut(pod) {
+                    visit(&mut child, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = &mut this.widget.root
+            && let Some(mut root) = this.ctx.get_mut(root)
+        {
+            visit(&mut root, &mut out);
+        }
+        out
+    }
     pub fn new(view: Option<&StageView>) -> Self {
         let root = view.and_then(|view| view.root.as_ref());
         Self {
@@ -386,18 +472,25 @@ impl SceneWidget {
             } else {
                 None
             },
-            image: view.image.as_ref().map(|image| {
-                let NodeKind::Image { fit, .. } = view.node.kind else {
-                    unreachable!()
-                };
-                NewWidget::new(Image::new(image.clone()))
-                    .with_props(fit)
-                    .to_pod()
-            }),
+            image: view
+                .image
+                .as_ref()
+                .map(|image| Image::new(image.clone()))
+                .or_else(|| {
+                    view.tiled_size
+                        .map(|size| Image::tiled(size, view.tiles.clone()))
+                })
+                .map(|image| {
+                    let NodeKind::Image { fit, .. } = view.node.kind else {
+                        unreachable!()
+                    };
+                    NewWidget::new(image).with_props(fit).to_pod()
+                }),
             image_size: view
                 .image
                 .as_ref()
                 .map(|image| Size::new(image.width.into(), image.height.into()))
+                .or(view.tiled_size)
                 .unwrap_or(Size::ZERO),
             children: view
                 .children
@@ -481,7 +574,8 @@ impl SceneWidget {
             this.ctx.set_modal(view.node.props.modal);
         }
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
-            && this.widget.node.kind != view.node.kind
+            && (this.widget.node.kind != view.node.kind
+                || this.widget.image_size != Size::new(data.width.into(), data.height.into()))
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
             Image::set_image_data(&mut image, data.clone());
@@ -490,6 +584,16 @@ impl SceneWidget {
             };
             image.insert_prop(fit);
             this.widget.image_size = Size::new(data.width.into(), data.height.into());
+        }
+        if let (Some(pod), Some(size)) = (&mut this.widget.image, view.tiled_size)
+            && let Some(mut image) = this.ctx.get_mut(pod)
+        {
+            Image::set_tiles(&mut image, size, view.tiles.clone());
+            let NodeKind::Image { fit, .. } = view.node.kind else {
+                unreachable!()
+            };
+            image.insert_prop(fit);
+            this.widget.image_size = size;
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,

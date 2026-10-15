@@ -738,11 +738,14 @@ fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
 
 #[test]
 fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frames() {
-    let mut runtime = runtime(
-        r#"fn main() {
+    for prepared in [false, true] {
+        let generated = prepared.then(|| super::prepared_image_tests::fixture().6);
+        let story = r#"fn main() {
         let data = model({message: "waiting"});
         stage.replace(stack {
             image("assets/panels.png");
+            image("ordinary-source.png", x: 600, y: 400, width: 1, height: 1);
+            image("ordinary-source.png", x: 602, y: 400, width: 1, height: 1);
             text(bind(data.message));
             button("keep scene interactive", on_click: |event| {});
         });
@@ -750,89 +753,116 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         data.message = "first";
         await stage.presented();
         data.message = "done";
-    }"#,
-    );
-    runtime.driver = runtime
-        .driver
-        .with_asset_options(crate::assets::AssetOptions {
-            root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
-            ..Default::default()
-        });
-    let (send, receive) = std::sync::mpsc::channel();
-    runtime
-        .driver
-        .set_resource_waker(std::sync::Arc::new(move || {
-            let _ = send.send(());
-        }));
-    drain(&mut runtime);
-    let state = |runtime: &StoryRuntime| {
+    }"#;
+        let story = story.replace(
+            "assets/panels.png",
+            if prepared {
+                "long.reel-image"
+            } else {
+                "assets/panels.png"
+            },
+        );
+        let story = story.replace(
+            "ordinary-source.png",
+            if prepared {
+                "long.reel-image.tiles/0/0-0.png"
+            } else {
+                "assets/panels.png"
+            },
+        );
+        let mut runtime = runtime(&story);
+        runtime.driver = runtime
+            .driver
+            .with_asset_options(crate::assets::AssetOptions {
+                root: generated.unwrap_or_else(|| {
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+                }),
+                ..Default::default()
+            });
+        let (send, receive) = std::sync::mpsc::channel();
         runtime
             .driver
-            .adapter()
-            .stage()
-            .nodes()
-            .find_map(|node| {
-                if let NodeKind::Text(text) = &node.kind {
-                    Some(text.to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap()
-    };
-    let (mut bridge, root) = mount(runtime.driver.ui());
-    runtime.driver.sync(&mut bridge, root).unwrap();
-    assert!(runtime.driver.ui().images_pending());
-    let old = runtime.driver.projection_stamp();
-    super::tests::accept(runtime.driver.ui_mut(), &mut bridge, 1);
-    runtime.driver.presented(old).unwrap();
-    runtime.wake_input();
-    drain(&mut runtime);
-    assert_eq!(
-        state(&runtime),
-        "waiting",
-        "the retained frame has no loaded image"
-    );
-    while runtime.driver.ui().images_pending() {
-        receive
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("image completion wakes the host");
+            .set_resource_waker(std::sync::Arc::new(move || {
+                let _ = send.send(());
+            }));
+        drain(&mut runtime);
+        let state = |runtime: &StoryRuntime| {
+            runtime
+                .driver
+                .adapter()
+                .stage()
+                .nodes()
+                .find_map(|node| {
+                    if let NodeKind::Text(text) = &node.kind {
+                        Some(text.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap()
+        };
+        let (mut bridge, root) = mount(runtime.driver.ui());
         runtime.driver.sync(&mut bridge, root).unwrap();
+        assert!(runtime.driver.ui().images_pending());
+        let old = runtime.driver.projection_stamp();
+        super::tests::accept(runtime.driver.ui_mut(), &mut bridge, 1);
+        runtime.driver.presented(old).unwrap();
+        runtime.wake_input();
+        drain(&mut runtime);
+        assert_eq!(
+            state(&runtime),
+            "waiting",
+            "the retained frame has no loaded image"
+        );
+        while runtime.driver.ui().images_pending() {
+            receive
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("image completion wakes the host");
+            runtime.driver.sync(&mut bridge, root).unwrap();
+        }
+        let resources = runtime.driver.ui().image_resources();
+        let handles: std::collections::BTreeSet<_> =
+            resources.iter().map(|lease| lease.handle()).collect();
+        assert_eq!(
+            handles.len(),
+            resources.len(),
+            "mixed ordinary/prepared images freeze shared resources once"
+        );
+        let rejected = bridge.record(FrameId(2)).unwrap();
+        bridge.resolve(PresentationNotice::new(
+            rejected.key(),
+            SurfaceEpoch(1),
+            PresentationOutcome::Error,
+        ));
+        runtime.wake_input();
+        drain(&mut runtime);
+        assert_eq!(
+            state(&runtime),
+            "waiting",
+            "recording and rejecting do not acknowledge presentation"
+        );
+        present(&mut runtime, &mut bridge, root, 3);
+        let first = runtime.driver.projection_stamp();
+        assert_eq!(first.presentation_request, 1);
+        runtime.wake_input();
+        drain(&mut runtime);
+        runtime.driver.sync(&mut bridge, root).unwrap();
+        assert_eq!(state(&runtime), "first");
+        runtime.driver.presented(first).unwrap();
+        runtime.wake_input();
+        drain(&mut runtime);
+        assert_eq!(
+            state(&runtime),
+            "first",
+            "repainting the accepted old frame cannot settle the next wait"
+        );
+        present(&mut runtime, &mut bridge, root, 4);
+        runtime.wake_input();
+        drain(&mut runtime);
+        runtime.driver.sync(&mut bridge, root).unwrap();
+        assert_eq!(state(&runtime), "done");
+        runtime.close().unwrap();
+        drain(&mut runtime);
+        assert!(runtime.close_complete());
     }
-    let rejected = bridge.record(FrameId(2)).unwrap();
-    bridge.resolve(PresentationNotice::new(
-        rejected.key(),
-        SurfaceEpoch(1),
-        PresentationOutcome::Error,
-    ));
-    runtime.wake_input();
-    drain(&mut runtime);
-    assert_eq!(
-        state(&runtime),
-        "waiting",
-        "recording and rejecting do not acknowledge presentation"
-    );
-    present(&mut runtime, &mut bridge, root, 3);
-    let first = runtime.driver.projection_stamp();
-    assert_eq!(first.presentation_request, 1);
-    runtime.wake_input();
-    drain(&mut runtime);
-    runtime.driver.sync(&mut bridge, root).unwrap();
-    assert_eq!(state(&runtime), "first");
-    runtime.driver.presented(first).unwrap();
-    runtime.wake_input();
-    drain(&mut runtime);
-    assert_eq!(
-        state(&runtime),
-        "first",
-        "repainting the accepted old frame cannot settle the next wait"
-    );
-    present(&mut runtime, &mut bridge, root, 4);
-    runtime.wake_input();
-    drain(&mut runtime);
-    runtime.driver.sync(&mut bridge, root).unwrap();
-    assert_eq!(state(&runtime), "done");
-    runtime.close().unwrap();
-    drain(&mut runtime);
-    assert!(runtime.close_complete());
 }

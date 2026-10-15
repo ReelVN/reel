@@ -1,5 +1,7 @@
 # Reel Game Creator Guide
 
+For images exceeding a device texture dimension, prepare the original with `reel prepare-image panorama.png --output panorama.reel-image`, then use `image("panorama.reel-image")`. Distribute the manifest and its adjacent `.tiles` directory together. The player loads visible tiles and a budget-limited neighbor ring; panning and zooming reuse resident pixels. See the [format and preparation contract](../prepared-images.md). Run the [large-image example](../../examples/author_large_image.aside) with a wide original and the font setup below. Preparation is explicit; build does not copy or prepare images.
+
 Design version 1.1 · Development baseline. Implementation status is stated in the guide.
 
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)

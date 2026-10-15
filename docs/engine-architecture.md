@@ -1,4 +1,5 @@
 # Reel 引擎架构设计
+大图按可见区域加载的实施合同见 [prepared images v1](prepared-images.md)：作者提供原始 PNG/JPEG，通过 `reel prepare-image` 生成 `.reel-image` 与相邻瓦片目录，仍由普通 image 节点使用。格式、元数据布局、共享几何、租约、预算、取消与呈现等待由该合同定义；不改变 Aside/B01/native ABI。
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)

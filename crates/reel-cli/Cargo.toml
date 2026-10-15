@@ -21,6 +21,8 @@ codespan-reporting = "=0.13.1"
 serde_json = "=1.0.154"
 reel-package = { path = "../reel-package" }
 reel-engine = { path = "../reel-engine" }
+reel-core = { path = "../reel-core" }
+image = { workspace = true, features = ["png", "jpeg"] }
 reel-player = { path = "../reel-player", optional = true }
 atomic-write-file = "=0.3.1"
 
