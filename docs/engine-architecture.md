@@ -19,6 +19,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 作者活动与窗口时钟
 
+`game.exit()` 请求结束当前作品，不调用进程退出或持有平台句柄。请求一经接收便不再执行脚本；宿主沿既有关闭路径取消任务、活动和资源，增量完成清理后关闭作品窗口。嵌入宿主可读取 SessionVm::exit_requested，并决定其外层应用如何处理。新增 native ABI 1，B01/ASB 不变；范围为 reel-engine、reel-player 与双语指南，无新增依赖，退出标记为常数空间。验证主剧情和 UI 回调退出、未决等待清理及实际窗口关闭。
+
 普通 UI 流程使用 `completion(owner: null)` 创建一次性结果，`await result` 等待，回调用 `result.resolve(value: null)`、`result.reject(error)` 或 `result.cancel()` 结算。owner 省略时沿用活动规则：主剧情归会话，回调归事件节点；显式节点退休使未结算结果取消。第一次结算返回 true，之后返回 false；null 也是合法结果。重复等待读取同一终态，resolve 原样返回值，不采用另一个可等待对象。结果不占用对白/选择权限，不记录剧情历史；组件可以返回 `{root, result}` 供主剧情或其他回调组合。
 
 此接口属于 Reel 的宿主 Awaitable，复用 Aside NativeFrame、WaitId、错误传播与任务取消；新增 native ABI 1，B01/ASB 不变，不增加依赖。结果、owner 和任意返回值在 VM 堆中追踪，终态释放 owner；服务只保存尚未交付的等待订阅，取消等待者不取消结果。订阅按登记顺序分批维护，每步最多检查 64 项，一轮完成后才调度脚本，避免结算顺序随切片变化。空闲不启动计时轮询，未被引用且未被等待的结果可直接 GC。验证范围为 reel-engine、公开组件示例、双语指南与本地移植烟测，覆盖源码/ASB、表单及子游戏返回值、失败、节点退休、多个消费者和 GC。

@@ -123,6 +123,8 @@ array/tuple 的 `slice(range)` 使用非负索引，保留原容器种类和元�
 
 ## 六 Unicode 文本和可变缓冲
 
+Reel 的 `game.exit()` 是 native ABI 1 的宿主退出请求：接收后不再运行脚本，任务与资源按宿主关闭协议清理。Aside VM 不引入平台退出操作，B01/ASB 编码不变。
+
 string 为不可变、有效 UTF-8 文本；相等按精确文本序列，不隐式规范化。API 明确区分 byte_len、scalar_count、grapheme_count、bytes()、scalars()、codepoints() 与 graphemes()：bytes 为字节，scalars 为单 Unicode 标量 string，codepoints 为整数，graphemes 为字素 string。普通 string 不提供含糊的 s[i]；使用显式视图或 slice_bytes/slice_scalars/slice_graphemes。
 
 文本基础方法：`byte_len()` 返回 UTF-8 字节数；`scalar_count()` 返回 Unicode 标量数，组合字符与 ZWJ 序列按各自标量计数。`slice_bytes(range)` 和 `slice_scalars(range)` 返回不可变 string，使用非负、从零开始的范围，不截断越界输入；倒置范围或非法 UTF-8 字节边界报 OutOfBounds。`starts_with(prefix)`、`ends_with(suffix)` 精确比较文本，空前后缀总是匹配，不做规范化。`separator.join(items)` 接受 string 的 array/tuple，只在相邻项之间插入 separator；空输入返回空 string，非 string 项报 Type，不隐式格式化。这些方法支持声明的具名参数。字素方法仍是后续能力，不能将标量数冒充显示字符数。

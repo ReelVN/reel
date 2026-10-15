@@ -203,6 +203,7 @@ pub struct SessionVm {
     game: std::sync::Arc<GameSettings>,
     narrative: Option<narrative::Narrative>,
     skip_input: Option<reel_ui::stage::NodeId>,
+    exit_requested: bool,
 }
 
 impl SessionVm {
@@ -255,6 +256,7 @@ impl SessionVm {
             game: std::sync::Arc::new(GameSettings::default()),
             narrative: None,
             skip_input: None,
+            exit_requested: false,
         })
     }
 
@@ -273,6 +275,11 @@ impl SessionVm {
     }
     pub fn vm(&self) -> &Vm {
         &self.vm
+    }
+
+    /// The work requested shutdown; the embedding host owns cleanup and its window.
+    pub fn exit_requested(&self) -> bool {
+        self.exit_requested
     }
 
     /// Format a still-rooted fault's author value without traversing object graphs.
@@ -376,6 +383,12 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::game::exit" => {
+                self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+                self.issued = None;
+                self.exit_requested = true;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::rich" => {
                 let source = self.vm.host_arguments(ticket)?[0];
                 let response = match rich_text::create(self.vm.heap_mut(), source, self.read_limit)
@@ -706,6 +719,10 @@ impl SessionVm {
         budget: SliceBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
+        if self.exit_requested {
+            self.live(session)?;
+            return Ok(SessionStep::Idle);
+        }
         self.step_tasks(session, budget, now)
     }
 
