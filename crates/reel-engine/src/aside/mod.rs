@@ -471,6 +471,7 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::completion"
+            | "reel::stage::presented"
             | "reel::spawn"
             | "reel::task::cancel"
             | "reel::completion::resolve"

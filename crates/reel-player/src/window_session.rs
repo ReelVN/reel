@@ -24,6 +24,7 @@ impl WindowSession {
             Self::Aside(story) => {
                 !story.driver.ui().images_pending()
                     && (story.driver.ui().has_stage_root()
+                        || story.driver.projection_stamp().presentation_request != 0
                         || story.driver.state() == crate::aside_session::StoryState::Finished)
             }
         }

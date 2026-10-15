@@ -1604,6 +1604,7 @@ fn main() {{
     game.configure(width: 640, height: 400, fonts: [{font:?}]);
     let picture = image("assets/panels.png");
     stage.replace(picture);
+    await stage.presented(owner: picture);
     narrator("A");
     game.configure(width: 800, height: 600, fonts: [{alternate:?}]);
     picture.source = "assets/sun.jpg";
@@ -1689,6 +1690,17 @@ fn main() {{
             state.resize(requested).unwrap();
         }
         let player_size = state.window.inner_size();
+        assert!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .ui()
+                .session()
+                .view()
+                .interaction
+                .is_none()
+        );
         assert!(state.first_frame_pending);
         #[cfg(target_os = "windows")]
         assert_eq!(state.window.is_visible(), Some(false));
@@ -1700,6 +1712,7 @@ fn main() {{
         assert!(state.presentation.bridge.accepted_key().is_some());
         #[cfg(target_os = "windows")]
         assert_eq!(state.window.is_visible(), Some(true));
+        settle(&mut state);
         present_session(&mut state);
         let old_frame = state.build_frame().unwrap();
         let old_pixels = state.session.as_ref().unwrap().ui().image_resources()[0].clone();

@@ -491,6 +491,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         ("activity::await", vec![parameter("activity", None)], true),
         (
+            "stage::presented",
+            vec![parameter("owner", Some(bc::Const::Null))],
+            false,
+        ),
+        (
             "completion",
             vec![parameter("owner", Some(bc::Const::Null))],
             false,
