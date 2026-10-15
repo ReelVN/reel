@@ -173,6 +173,12 @@ fn huge_image_cold_warm_pan_zoom_and_retirement_use_visible_residency() {
             .complete
         {}
         let frame = build.finish().unwrap();
+        let clips = frame
+            .commands()
+            .iter()
+            .filter(|command| matches!(command.op, reel_ui::frame::FrameOp::PushClip(_)))
+            .count();
+        assert_eq!(clips, 3, "session, stage and image clips, never per tile");
         assert_eq!(
             frame.resources().leases().len(),
             ui.image_resources().len(),

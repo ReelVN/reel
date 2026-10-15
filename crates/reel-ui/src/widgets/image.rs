@@ -221,9 +221,14 @@ impl Widget for Image {
                 painter.draw_image(image, transform);
             } else {
                 for tile in &self.tiles {
-                    painter.with_fill_clip(transform.transform_rect_bbox(tile.clip), |painter| {
-                        painter.draw_image(&tile.image, transform * tile.transform);
-                    });
+                    // Adjacent interiors share rasterization edges on the same
+                    // target. Separate antialiased clip layers would blend their
+                    // complementary coverage twice and leave seams under rotation.
+                    painter
+                        .fill(tile.clip, &tile.image)
+                        .transform(transform)
+                        .brush_transform(Some(tile.transform))
+                        .draw();
                 }
             }
         });
