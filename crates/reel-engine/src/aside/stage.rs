@@ -281,6 +281,7 @@ impl StageBinding {
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }

@@ -197,6 +197,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 | "column"
                 | "stack"
                 | "button"
+                | "slider"
                 | "input"
                 | "toggle"
                 | "checkbox"
@@ -213,7 +214,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if matches!(name, "camera" | "particles") {
+            abi_version: if name == "slider" {
+                8
+            } else if matches!(name, "camera" | "particles") {
                 1
             } else if matches!(name, "checkbox" | "radio") {
                 3

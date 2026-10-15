@@ -223,7 +223,7 @@ pub struct NodeProps {
     /// A visible subtree owns input until hidden, removed, or superseded in paint order.
     pub modal: bool,
     pub clip: bool,
-    /// Draw built-in button/toggle decorations; authored children are unaffected.
+    /// Draw built-in control decorations; authored children are unaffected.
     pub decorated: bool,
     /// Visible UTF-8 byte prefix; full text is always used for layout.
     pub reveal: Option<usize>,
@@ -491,6 +491,7 @@ impl Stage {
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -532,6 +533,7 @@ impl Stage {
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -609,6 +611,7 @@ impl Stage {
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }

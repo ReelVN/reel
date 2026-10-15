@@ -946,6 +946,8 @@ column(gap: 12) {
 
 接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；derive 生成只读值，可用于文字和外观，不能作为 slider/toggle 的写回源。
 
+滑条也能组合子节点。设 `decorated: false` 后，用图片或普通舞台节点绘制轨道、滑块及悬停/焦点状态，输入和无障碍仍由 slider 处理。此时轨道从内容区左端延伸到右端，没有内置滑块半径带来的缩进；padding 可用于给外观留边。见 [author_slider_skin.aside](../../examples/author_slider_skin.aside)，运行 `reel dev examples/author_slider_skin.aside`（准备 `fonts/body.ttf`）。
+
 ```aside
 fn main() {
     game.configure(title: "Reading settings", width: 640, height: 420,

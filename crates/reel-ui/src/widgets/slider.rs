@@ -29,6 +29,7 @@ use crate::theme;
 pub struct Slider {
     range: SliderRange,
     value: f64,
+    decorated: bool,
 }
 impl Slider {
     /// Creates a slider with a finite, increasing range.
@@ -38,12 +39,24 @@ impl Slider {
         Self {
             range,
             value: value.clamp(min, max),
+            decorated: true,
         }
     }
     pub fn with_step(mut self, step: f64) -> Self {
         self.range = SliderRange::new(self.range.min(), self.range.max(), Some(step))
             .expect("invalid slider step");
         self
+    }
+    /// Keep the control's input and accessibility while its parent paints a skin.
+    pub fn with_decorated(mut self, decorated: bool) -> Self {
+        self.decorated = decorated;
+        self
+    }
+    pub fn set_decorated(this: &mut WidgetMut<'_, Self>, decorated: bool) {
+        if this.widget.decorated != decorated {
+            this.widget.decorated = decorated;
+            this.ctx.request_render();
+        }
     }
     pub fn value(&self) -> f64 {
         self.value
@@ -278,6 +291,9 @@ impl Widget for Slider {
         props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
+        if !self.decorated {
+            return;
+        }
         let bbox = ctx.border_box();
         let cache = ctx.property_cache();
         let p = PrePaintProps::fetch(props, cache);
@@ -309,6 +325,9 @@ impl Widget for Slider {
         props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
+        if !self.decorated {
+            return;
+        }
         // Get parameters and resolve colors
 
         let cache = ctx.property_cache();

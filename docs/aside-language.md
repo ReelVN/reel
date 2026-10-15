@@ -248,6 +248,8 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `view(build, ...布局属性)` 返回稳定的普通容器。build 是不可等待的组件工厂，首次调用及其实际读取的可观察数据变化后生成一个 Node 或 null；成功时替换容器的旧内容并取消旧节点拥有的任务。构造失败保留旧内容并报告源码错误。该接口适合条件面板、选项与对白页；只需要更新属性时使用 bind/derive，避免重建节点。build 可以调用普通组件函数，计算依赖在每次成功构造后替换；构造期间再次修改自己读取的来源报循环错误。
 
+`slider` 接受可选 children（默认空），沿普通节点子树和方法组合。`decorated: false` 只关闭原生绘制，数值轨道覆盖完整内容宽度；拖动、键盘、手柄、绑定回写和无障碍行为保持有效。作者可将子图片的 x 绑定到 `(slider.value-slider.min)/(slider.max-slider.min)*内容宽度`，以锚点居中放置滑块。slider native ABI 为 8。
+
 `list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的值：标量保留类型，字符串按内容比较，其余对象按身份比较；对象键须复用原对象引用，null 也可作键。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，当前实例化全部条目；虚拟化另行实现。
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。game.configure 只配置呈现参数，不含默认界面开关，其 native ABI 为 3。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。

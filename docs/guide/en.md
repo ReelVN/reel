@@ -947,6 +947,8 @@ Sliders require finite increasing min/max and a finite value inside that range. 
 
 Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Node values support bind/unbind; derive supplies read-only values for presentation and cannot be a slider/toggle writeback source.
 
+Sliders also accept child nodes. With `decorated: false`, paint the track, thumb and hover/focus feedback using images or ordinary stage nodes; slider retains input and accessibility. The track spans the full content width with no built-in thumb inset; use padding when the skin needs margins. See [author_slider_skin.aside](../../examples/author_slider_skin.aside): `reel dev examples/author_slider_skin.aside` (provide `fonts/body.ttf`).
+
 ```aside
 fn main() {
     game.configure(title: "Reading settings", width: 640, height: 420,

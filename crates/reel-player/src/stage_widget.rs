@@ -471,14 +471,19 @@ impl SceneWidget {
                 None
             },
             slider: if let NodeKind::Slider { range, value, .. } = view.node.kind {
-                let mut slider = Slider::new(range.min(), range.max(), value);
+                let mut slider = Slider::new(range.min(), range.max(), value)
+                    .with_decorated(view.node.props.decorated);
                 if let Some(step) = range.step() {
                     slider = slider.with_step(step);
                 }
                 let tint = color(view.node.props.color);
                 Some(
                     NewWidget::new(slider)
-                        .with_props(ThumbRadius(Length::px(10.)))
+                        .with_props(ThumbRadius(Length::px(if view.node.props.decorated {
+                            10.
+                        } else {
+                            0.
+                        })))
                         .with_props(TrackThickness(Length::px(4.)))
                         .with_props(ThumbColor(tint))
                         .with_props(TrackColor {
@@ -574,6 +579,14 @@ impl SceneWidget {
             && let Some(mut slider) = this.ctx.get_mut(pod)
         {
             Slider::configure(&mut slider, *range, *value);
+            if this.widget.node.props.decorated != view.node.props.decorated {
+                Slider::set_decorated(&mut slider, view.node.props.decorated);
+                slider.insert_prop(ThumbRadius(Length::px(if view.node.props.decorated {
+                    10.
+                } else {
+                    0.
+                })));
+            }
             if this.widget.node.props.color != view.node.props.color {
                 let tint = color(view.node.props.color);
                 slider.insert_prop(ThumbColor(tint));
