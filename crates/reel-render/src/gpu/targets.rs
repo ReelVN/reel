@@ -1,5 +1,79 @@
 use super::{GpuError, Quality};
 use reel_ui::frame::{FrameCommand, FrameOp, RenderFrame};
+use reel_ui::{
+    imaging::record::{Clip, Geometry},
+    kurbo::{Affine, Rect},
+};
+
+#[derive(Clone, Copy)]
+pub(super) struct Scissor {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+impl Scissor {
+    pub fn full(size: [u32; 2]) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: size[0],
+            height: size[1],
+        }
+    }
+    pub fn empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+    pub fn intersect(self, other: Self) -> Self {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        Self {
+            x,
+            y,
+            width: (self.x + self.width)
+                .min(other.x + other.width)
+                .saturating_sub(x),
+            height: (self.y + self.height)
+                .min(other.y + other.height)
+                .saturating_sub(y),
+        }
+    }
+    pub fn from_clip(clip: &Clip, outer: Affine, size: [u32; 2]) -> Option<Self> {
+        let Clip::Fill {
+            transform,
+            shape: Geometry::Rect(rect),
+            ..
+        } = clip
+        else {
+            return None;
+        };
+        let transform = outer * *transform;
+        let [_, b, c, _, _, _] = transform.as_coeffs();
+        if b != 0. || c != 0. {
+            return None;
+        }
+        let Rect { x0, y0, x1, y1 } = transform.transform_rect_bbox(*rect);
+        if [x0, y0, x1, y1]
+            .iter()
+            .any(|n| !n.is_finite() || n.fract() != 0.)
+        {
+            return None;
+        }
+        let x0 = x0.clamp(0., size[0] as f64) as u32;
+        let x1 = x1.clamp(0., size[0] as f64) as u32;
+        let y0 = y0.clamp(0., size[1] as f64) as u32;
+        let y1 = y1.clamp(0., size[1] as f64) as u32;
+        Some(Self {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        })
+    }
+    pub fn apply(self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_scissor_rect(self.x, self.y, self.width, self.height);
+    }
+}
 
 /// Count simultaneously live targets using the same lifetime boundaries as replay.
 /// Masks use an explicit stack; nesting does not consume the Rust call stack.
@@ -12,15 +86,28 @@ pub(super) fn peak_targets(
         next: usize,
         live: u64,
         peak: u64,
+        transform: Affine,
+        isolated: Vec<bool>,
     }
-    let stream = |commands| Stream {
+    let stream = |commands, transform| Stream {
         commands,
         next: 0,
         live: 1,
         peak: 1,
+        transform,
+        isolated: Vec::new(),
     };
     let mut stack = Vec::new();
-    super::scopes::push_stack(&mut stack, stream(frame.commands()), &mut reserve)?;
+    let size = frame.info().physical_size;
+    let transform = Affine::scale_non_uniform(
+        size[0] as f64 / frame.info().logical_size[0],
+        size[1] as f64 / frame.info().logical_size[1],
+    );
+    super::scopes::push_stack(
+        &mut stack,
+        stream(frame.commands(), transform),
+        &mut reserve,
+    )?;
     loop {
         let current = stack.last_mut().unwrap();
         let Some(command) = current.commands.get(current.next) else {
@@ -33,11 +120,16 @@ pub(super) fn peak_targets(
         };
         current.next += 1;
         match &command.op {
-            FrameOp::PushClip(_) => {
-                current.live += 1;
-                current.peak = current.peak.max(current.live + 1);
+            FrameOp::PushClip(clip) => {
+                let isolated = Scissor::from_clip(clip, current.transform, size).is_none();
+                super::scopes::push_stack(&mut current.isolated, isolated, &mut reserve)?;
+                if isolated {
+                    current.live += 1;
+                    current.peak = current.peak.max(current.live + 1);
+                }
             }
             FrameOp::PushGroup(group) => {
+                super::scopes::push_stack(&mut current.isolated, true, &mut reserve)?;
                 current.live += 1;
                 let clip_targets = if group.clip.is_none() {
                     0
@@ -56,15 +148,16 @@ pub(super) fn peak_targets(
                                 at: command.origin.at,
                                 record: "missing mask",
                             })?;
+                    let transform = current.transform * mask.transform;
                     super::scopes::push_stack(
                         &mut stack,
-                        stream(&definition.commands),
+                        stream(&definition.commands, transform),
                         &mut reserve,
                     )?;
                 }
             }
             FrameOp::PopClip | FrameOp::PopGroup => {
-                current.live -= 1;
+                current.live -= u64::from(current.isolated.pop().expect("validated scope"));
             }
             _ => {}
         }
@@ -89,6 +182,7 @@ pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
         .ok_or(GpuError::InvalidSize)
 }
 
+#[derive(Clone)]
 pub struct Target {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,

@@ -5,7 +5,15 @@ use reel_ui::peniko::{
     color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
 };
 use reel_ui::resources::{ColorEncoding, ResourceData, ResourceHandle};
-use wgpu::util::DeviceExt;
+use std::sync::LazyLock;
+
+static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    std::array::from_fn(|i| {
+        AlphaColor::<Srgb>::new([i as f32 / 255., 0., 0., 1.])
+            .convert::<LinearSrgb>()
+            .components[0]
+    })
+});
 
 #[cfg(test)]
 #[derive(Default)]
@@ -61,47 +69,45 @@ pub fn image(
         });
     }
     let size = [image.width, image.height];
-    let cost = upload_cost(size)?;
-    if cost > available {
-        return Err(GpuError::Budget {
-            domain: "image upload",
-            requested: cost,
-            available,
-        });
-    }
-    let mut pixels = Vec::with_capacity((u64::from(size[0]) * u64::from(size[1]) * 4) as usize);
-    for rgba in image.data.data().chunks_exact(4) {
+    upload_with(gpu, encoder, size, available, |index| {
+        let rgba = &image.data.data()[index * 4..index * 4 + 4];
         let components = std::array::from_fn(|i| f32::from(rgba[i]) / 255.);
-        let pixel = if rgba[3] == 0 {
+        if rgba[3] == 0 {
             // Hidden RGB must not become visible in interpolation or masks.
-            PremulColor::<LinearSrgb>::TRANSPARENT
+            [0.; 4]
         } else {
             match (encoding, image.alpha_type) {
-                (ColorEncoding::Srgb, ImageAlphaType::Alpha) => AlphaColor::<Srgb>::new(components)
-                    .convert::<LinearSrgb>()
-                    .premultiply(),
+                (ColorEncoding::Srgb, ImageAlphaType::Alpha) => {
+                    let alpha = components[3];
+                    [
+                        SRGB_TO_LINEAR[rgba[0] as usize] * alpha,
+                        SRGB_TO_LINEAR[rgba[1] as usize] * alpha,
+                        SRGB_TO_LINEAR[rgba[2] as usize] * alpha,
+                        alpha,
+                    ]
+                }
                 (ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied) => {
-                    PremulColor::<Srgb>::new(components).convert::<LinearSrgb>()
+                    PremulColor::<Srgb>::new(components)
+                        .convert::<LinearSrgb>()
+                        .components
                 }
                 (ColorEncoding::Linear, ImageAlphaType::Alpha) => {
-                    AlphaColor::<LinearSrgb>::new(components).premultiply()
+                    AlphaColor::<LinearSrgb>::new(components)
+                        .premultiply()
+                        .components
                 }
-                (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => {
-                    PremulColor::<LinearSrgb>::new(components)
-                }
+                (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => components,
             }
-        };
-        pixels.extend(pixel.components);
-    }
-    upload(gpu, encoder, size, &pixels, available)
+        }
+    })
 }
 pub fn upload_cost(size: [u32; 2]) -> Result<u64, GpuError> {
-    // CPU f32 conversion, padded staging and RGBA16 GPU residency coexist.
+    // Convert directly into mapped staging. Only staging and GPU residency coexist.
     let row = u64::from(size[0])
         .checked_mul(8)
         .ok_or(GpuError::InvalidSize)?;
     let aligned = row.div_ceil(256) * 256;
-    (aligned * 2 + row * 3)
+    (aligned + row)
         .checked_mul(u64::from(size[1]))
         .ok_or(GpuError::InvalidSize)
 }
@@ -111,6 +117,18 @@ pub fn upload(
     size: [u32; 2],
     pixels: &[f32],
     available: u64,
+) -> Result<(Image, u64), GpuError> {
+    upload_with(gpu, encoder, size, available, |index| {
+        pixels[index * 4..index * 4 + 4].try_into().unwrap()
+    })
+}
+
+fn upload_with(
+    gpu: &Gpu,
+    encoder: &mut wgpu::CommandEncoder,
+    size: [u32; 2],
+    available: u64,
+    mut pixel: impl FnMut(usize) -> [f32; 4],
 ) -> Result<(Image, u64), GpuError> {
     let max = gpu.device.limits().max_texture_dimension_2d;
     if size.contains(&0) || size.iter().any(|&n| n > max) {
@@ -125,13 +143,6 @@ pub fn upload(
         });
     }
     let row = (size[0] * 8).div_ceil(256) * 256;
-    let mut bytes = vec![0u8; row as usize * size[1] as usize];
-    for y in 0..size[1] as usize {
-        for x in 0..size[0] as usize * 4 {
-            let value = half::f16::from_f32(pixels[y * size[0] as usize * 4 + x]).to_le_bytes();
-            bytes[y * row as usize + x * 2..y * row as usize + x * 2 + 2].copy_from_slice(&value);
-        }
-    }
     #[cfg(test)]
     gpu.upload_creations
         .textures
@@ -154,13 +165,29 @@ pub fn upload(
     gpu.upload_creations
         .staging
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let staging = gpu
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("bounded image upload"),
-            contents: &bytes,
-            usage: wgpu::BufferUsages::COPY_SRC,
-        });
+    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bounded image upload"),
+        size: u64::from(row) * u64::from(size[1]),
+        usage: wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    });
+    {
+        let mut mapped = staging
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("new upload buffer is mapped");
+        for y in 0..size[1] as usize {
+            for x in 0..size[0] as usize {
+                let components = pixel(y * size[0] as usize + x)
+                    .map(|value| half::f16::from_f32(value).to_le_bytes());
+                let start = y * row as usize + x * 8;
+                mapped
+                    .slice(start..start + 8)
+                    .copy_from_slice(components.as_flattened());
+            }
+        }
+    }
+    staging.unmap();
     #[cfg(test)]
     gpu.upload_creations
         .copies

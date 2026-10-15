@@ -663,9 +663,13 @@ History, auto-reading and save/load interfaces are implemented; route switching 
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter promises atomic visibility after syncing the file; thumbnails and cross-version migration are not connected yet. Run the save, close, player reconstruction, load and callback check with `cargo test -p reel-player --lib save_slot_survives`.
+Capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot; thumbnails and cross-version migration are not connected yet. Run the save, close, player reconstruction, load and callback check with `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
+
+For a portable desktop game, launch with `reel run game.asb --save-directory saves` from its directory. `dev` accepts the same option; relative paths use the launch working directory. A launcher can pass an absolute path next to the game. On platforms with read-only installation directories, keep saves in the platform's writable user-data directory. Scripts use the same slot API in either case.
+
+Moving the mouse without holding a button during capture does not cancel the save. The window retains only the latest hover position and applies it after capture; clicks, dragging, keyboard input and focus changes still interrupt capture when they require session access.
 
 ```aside
 let menu = model({slots: [], busy: false, error: ""});
@@ -684,11 +688,11 @@ game.restart(story_id) uses the current session's fixed main-story module set to
 `game.set_skip(enabled, unread: false)` is implemented. Observe `game.reading().skipping/skip_unread` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue; choices still require player input. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. Rust hosts reuse `ReadProgress` through `Session::new_with_read_progress` and connect `ids/from_ids` to their own persistent storage; new sessions default to empty progress. A changed source module version is conservatively unread.
 Chapter skipping via `game.skip_to(story_id)` still depends on the future chapter registry.
 
-These services provide data and operations; authors compose their pages. Save/load, route switching and chapter skipping above remain specifications. History, fast-forward and auto-reading are available through the APIs and runnable example linked above.
+These services provide data and operations; authors compose their pages. Manual dialogue confirmation reveals or advances once and disables auto-reading and fast-forward; rejected input does not change either mode. Saving, loading, history and reading controls are implemented; route and chapter registration remain pending.
 
 ## 12 Game Variables and Component State
 
-`model` and two-way field bindings are implemented. state, persistent, node.state and save restoration remain design targets.
+`model`, two-way field bindings and save restoration are implemented. state, persistent and node.state remain design targets.
 
 Use model for application data independent of view nodes. Controls can share a field: input writes back to the data, and connected text, visibility and styling follow it. Run [author_models.aside](../../examples/author_models.aside): `cargo run -p reel-cli --features window -- dev examples/author_models.aside`.
 

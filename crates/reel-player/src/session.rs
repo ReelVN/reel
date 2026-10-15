@@ -1259,10 +1259,16 @@ impl SessionUi {
             // rejections filter that event; they are not window failures.
             // Assign the new event at final dispatch, after any external input
             // through session_mut. Already-sequenced replays use handle_input.
-            if self.session.handle_local_input(owner, action)
-                == Err(InputRejection::SequenceExhausted)
-            {
-                return Err("input sequence exhausted".into());
+            let advance = matches!(&action, InputAction::Advance(_));
+            match self.session.handle_local_input(owner, action) {
+                Err(InputRejection::SequenceExhausted) => {
+                    return Err("input sequence exhausted".into());
+                }
+                Ok(_) if advance => {
+                    self.session.set_skip_reading(false, false);
+                    self.session.set_auto_reading(false, None);
+                }
+                _ => {}
             }
         }
         let events = self.take_events();
@@ -1714,6 +1720,36 @@ mod tests {
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, id).unwrap();
         assert_eq!(visible(&ui), "The unseen successor".len());
+    }
+    #[test]
+    fn manual_dialogue_input_stops_reading_modes_after_admission() {
+        for skip in [false, true] {
+            let mut session = session();
+            say(&mut session, "Manual interruption");
+            if skip {
+                session.set_skip_reading(true, true);
+            } else {
+                session.set_auto_reading(true, Some(std::time::Duration::ZERO));
+            }
+            let mut ui = SessionUi::preview(session).unwrap();
+            let (mut bridge, root) = mount(&ui);
+            // No accepted frame: a stale/unseen click must not change policy.
+            click(&mut ui, &mut bridge, (100., 300.));
+            assert_eq!(ui.session.reading().skipping(), skip);
+            assert_eq!(ui.session.reading().automatic(), !skip);
+            accept(&mut ui, &mut bridge, 1);
+            click(&mut ui, &mut bridge, (100., 300.));
+            assert!(!ui.session.reading().skipping());
+            assert!(!ui.session.reading().automatic());
+            ui.sync(&mut bridge, root).unwrap();
+            assert_eq!(visible(&ui), "Manual interruption".len());
+            accept(&mut ui, &mut bridge, 2);
+            ui.advance_dialogue(10_000_000_000, 30.).unwrap();
+            assert!(
+                ui.session.view().interaction.is_some(),
+                "manual takeover must stay on this line"
+            );
+        }
     }
     #[test]
     fn down_cannot_be_reinterpreted_by_a_new_accepted_interaction() {

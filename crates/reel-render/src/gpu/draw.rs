@@ -346,7 +346,7 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        if mesh.indices.is_empty() {
+        if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
         }
         #[cfg(test)]
@@ -402,6 +402,7 @@ impl Context<'_> {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.pipelines.paint);
+        self.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);

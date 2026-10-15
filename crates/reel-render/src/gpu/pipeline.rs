@@ -106,6 +106,7 @@ impl Creations {
     }
 }
 pub struct CompositeParams {
+    pub scissor: super::targets::Scissor,
     pub opacity: f32,
     pub mode: u32,
     pub progress: f32,
@@ -256,6 +257,7 @@ impl Pipelines {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.composite);
+        params.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
     }

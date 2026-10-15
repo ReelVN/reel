@@ -674,9 +674,13 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-捕获按工作量分片，后台编码、压缩和写盘；捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器保证同步文件后的原子可见性；缩略图与跨版本迁移尚未接入。可运行的保存、关闭、重建播放器、读档与控件回调检查：`cargo test -p reel-player --lib save_slot_survives`。
+捕获按工作量分片，后台编码、压缩和写盘；捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档；缩略图与跨版本迁移尚未接入。可运行的保存、关闭、重建播放器、读档与控件回调检查：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
+
+便携桌面游戏可以在游戏目录执行 `reel run game.asb --save-directory saves`；`dev` 同样接受此选项，相对路径以启动时工作目录解析。启动器也可以传入游戏旁边的绝对路径。安装目录只读的平台应选择系统提供的可写用户数据目录；两种部署使用同一套脚本槽位 API。
+
+捕获期间未按键的鼠标移动不会取消保存。窗口只保留最新悬停位置，捕获结束后应用；点击、拖动、键盘输入和焦点变化需要访问会话时仍会中断捕获。
 
 ```aside
 let menu = model({slots: [], busy: false, error: ""});
@@ -695,11 +699,11 @@ game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命
 `game.set_skip(enabled, unread: false)` 已实现。`game.reading().skipping/skip_unread` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白，选择仍等待玩家。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。Rust 宿主用 `Session::new_with_read_progress` 复用 `ReadProgress`，通过 `ids/from_ids` 接自己的持久存储；新建会话默认空记录。源码模块版本变化保守视为未读。
 按章节跳过 `game.skip_to(story_id)` 仍依赖后续章节注册服务。
 
-这些服务提供数据与操作，页面外观由作者组合。上述存读档、路线切换和章节跳转仍是设计；历史、快进与自动阅读已可通过对应 API 和示例使用。
+这些服务提供数据与操作，页面外观由作者组合。手动点击或确认对白会执行一次正常显现/推进，并关闭自动阅读和快进；无效输入不改变模式。存读档、历史与阅读控制已实现；路线和章节注册仍待补齐。
 
 ## 十二 游戏变量与组件状态
 
-`model` 和字段双向绑定已实现；state、persistent、node.state 及存档恢复仍是设计目标。
+`model`、字段双向绑定和存档恢复已实现；state、persistent、node.state 仍是设计目标。
 
 用 model 保存独立于画面节点的业务数据。多个控件可以共享同一字段，输入直接写回数据，连接的文字、可见性和样式随之更新。运行 [author_models.aside](../../examples/author_models.aside)：`cargo run -p reel-cli --features window -- dev examples/author_models.aside`。
 

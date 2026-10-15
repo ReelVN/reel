@@ -135,7 +135,7 @@ impl State {
             },
             wake.clone(),
         );
-        if let Some(WindowSession::Aside(runtime)) = &mut state.session {
+        if let Some(WindowSession::Aside { story: runtime, .. }) = &mut state.session {
             runtime.set_saves(crate::saves::RuntimeSaves::new(
                 service,
                 save_bytes,
@@ -165,7 +165,7 @@ impl State {
         mut session: Option<WindowSession>,
         options: Option<StoryWindowOptions>,
     ) -> Result<Self, Error> {
-        let first_frame_pending = matches!(session, Some(WindowSession::Aside(_)));
+        let first_frame_pending = matches!(session, Some(WindowSession::Aside { .. }));
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
@@ -417,7 +417,7 @@ impl State {
         }
     }
     pub(crate) fn is_diagnostic(&self) -> bool {
-        !matches!(self.session, Some(WindowSession::Aside(_)))
+        !matches!(self.session, Some(WindowSession::Aside { .. }))
     }
     pub(crate) fn story_deadline(&self) -> Option<Instant> {
         self.session

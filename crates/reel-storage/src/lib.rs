@@ -17,7 +17,15 @@ pub fn publish(
     overwrite: bool,
     fill: impl FnOnce(&mut AtomicWriteFile) -> io::Result<()>,
 ) -> io::Result<Published> {
-    let mut staging = Staging::new(target.parent().expect("normalized target parent"))?;
+    // Resolve the existing directory before constructing either rename path.
+    // Windows app-data virtualization may redirect file creation to another
+    // volume while resolving a not-yet-existing rename destination literally.
+    let parent = target
+        .parent()
+        .expect("normalized target parent")
+        .canonicalize()?;
+    let target = parent.join(target.file_name().expect("normalized target filename"));
+    let mut staging = Staging::new(&parent)?;
     let candidate = staging.path.join("candidate");
     let mut file = AtomicWriteFile::open(&candidate)?;
     fill(&mut file)?;
@@ -26,11 +34,11 @@ pub fn publish(
     // leaves the author's target untouched and our guard can remove leftovers.
     file.commit()?;
     if overwrite {
-        fs::rename(&candidate, target)?;
+        fs::rename(&candidate, &target)?;
     } else {
         // Atomic no-replace even when another writer creates target concurrently.
         // Unsupported hard links fail safely; never fall back to clobbering rename.
-        fs::hard_link(&candidate, target)?;
+        fs::hard_link(&candidate, &target)?;
     }
     // No fallible step after publication is reported as an unpublished failure.
     let cleanup_warning = staging.cleanup().err().map(|e| {
@@ -125,17 +133,18 @@ mod tests {
     }
     #[test]
     fn overwrite_replaces_only_after_complete_write() {
-        let dir = directory();
-        let target = dir.path.join("replace.asb");
-        fs::write(&target, b"old").unwrap();
-        let result = publish(&target, true, |file| {
-            file.write_all(b"new")?;
-            assert_eq!(fs::read(&target)?, b"old");
-            Ok(())
-        })
-        .unwrap();
-        assert!(result.cleanup_warning.is_none());
-        assert_eq!(fs::read(&target).unwrap(), b"new");
-        assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
+        for dir in [directory(), Staging::new(&std::env::temp_dir()).unwrap()] {
+            let target = dir.path.join("replace.asb");
+            fs::write(&target, b"old").unwrap();
+            let result = publish(&target, true, |file| {
+                file.write_all(b"new")?;
+                assert_eq!(fs::read(&target)?, b"old");
+                Ok(())
+            })
+            .unwrap();
+            assert!(result.cleanup_warning.is_none());
+            assert_eq!(fs::read(&target).unwrap(), b"new");
+            assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
+        }
     }
 }

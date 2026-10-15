@@ -4,7 +4,7 @@ use super::{
     renderer::{Budgets, Reservation, reserve},
     resources,
     scopes::{Kind, Scopes, push_stack},
-    targets::{Target, target_bytes},
+    targets::{Scissor, Target, target_bytes},
 };
 use reel_ui::frame::{FrameCommand, FrameOp, RecordLocation, RenderFrame};
 use reel_ui::{
@@ -27,12 +27,15 @@ pub(super) struct Context<'a> {
     pub(super) glyphs: super::glyph_cache::FrameGlyphs,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) available_targets: Vec<Target>,
+    pub(super) scissor: Scissor,
 }
 struct Scope<'a> {
     target: Target,
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
     opacity: f32,
+    scissor: Scissor,
+    isolated: bool,
 }
 struct MaskComposition {
     source: Target,
@@ -100,6 +103,7 @@ impl Context<'_> {
                     return Ok(finished);
                 };
                 let mask = parent.mask.take().expect("suspended mask composition");
+                self.scissor = parent.scopes.last().scissor;
                 self.combine(
                     &parent.scopes.last().target,
                     &mask.source.view,
@@ -115,17 +119,25 @@ impl Context<'_> {
             current.next += 1;
             let at = command.origin.at;
             let transform = current.transform;
+            self.scissor = current.scopes.last().scissor;
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
+                    let scissor = Scissor::from_clip(clip, transform, self.size);
                     current.scopes.push(
                         Kind::Clip,
                         at,
                         Scope {
-                            target: self.target()?,
-                            clip: Some(clip),
+                            target: if scissor.is_some() {
+                                current.scopes.last().target.clone()
+                            } else {
+                                self.target()?
+                            },
+                            clip: if scissor.is_some() { None } else { Some(clip) },
                             mask: None,
                             opacity: 1.,
+                            scissor: scissor.map_or(self.scissor, |s| self.scissor.intersect(s)),
+                            isolated: scissor.is_none(),
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -146,6 +158,8 @@ impl Context<'_> {
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             opacity: group.composite.alpha,
+                            scissor: self.scissor,
+                            isolated: true,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -158,6 +172,10 @@ impl Context<'_> {
                     };
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
+                    self.scissor = current.scopes.last().scissor;
+                    if !group.isolated {
+                        continue;
+                    }
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
@@ -251,6 +269,8 @@ impl Context<'_> {
                 clip: None,
                 mask: None,
                 opacity: 1.,
+                scissor: Scissor::full(self.size),
+                isolated: true,
             }),
             mask: None,
         })
@@ -264,6 +284,9 @@ impl Context<'_> {
         mode: u32,
         progress: f32,
     ) -> Result<(), GpuError> {
+        if self.scissor.empty() {
+            return Ok(());
+        }
         self.transient(16)?;
         self.pipelines.composite(
             &self.gpu.device,
@@ -272,6 +295,7 @@ impl Context<'_> {
             source,
             mask,
             super::pipeline::CompositeParams {
+                scissor: self.scissor,
                 opacity: alpha,
                 mode,
                 progress,
