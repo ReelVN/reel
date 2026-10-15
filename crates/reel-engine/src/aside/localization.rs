@@ -22,48 +22,51 @@ pub(super) struct Translations {
     selected: bool,
 }
 impl Translations {
-    pub(super) fn snapshot(&self) -> SavedTranslations {
-        SavedTranslations {
-            locale: self.service.locale().to_string(),
-            catalogs: self.service.sources().collect(),
-            pending: self
-                .pending
-                .iter()
-                .map(|p| (p.wait, p.locale.clone(), p.source.clone()))
-                .collect(),
-            revision: self.revision,
-            selected: self.selected,
-        }
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            std::iter::once_with(|| {
+                Record::new(
+                    Part::Translations,
+                    &SavedTranslations {
+                        locale: self.service.locale().to_string(),
+                        revision: self.revision,
+                        selected: self.selected,
+                    },
+                )
+            })
+            .chain(self.service.sources().map(|(locale, source)| {
+                Record::new(Part::Catalog, &(None::<WaitId>, locale, source))
+            }))
+            .chain(
+                self.pending
+                    .iter()
+                    .map(|p| Record::new(Part::Catalog, &(p.wait, &p.locale, &p.source))),
+            ),
+        )
     }
-    pub(super) fn restore(
-        saved: SavedTranslations,
-        loader: Option<Box<dyn CatalogLoader>>,
+    pub(super) fn restore_record(
+        &mut self,
+        record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
-    ) -> Result<Self, AdapterError> {
-        let mut result = Self {
-            loader,
-            revision: saved.revision.map(|r| map.root(r)).transpose()?,
-            selected: saved.selected,
-            service: Localization::default(),
-            pending: Vec::new(),
-        };
-        result.service.set_locale(
-            language_id(&saved.locale).map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
-        );
-        for (wait, locale, source) in saved
-            .catalogs
-            .into_iter()
-            .map(|(l, s)| (None, l, s))
-            .chain(saved.pending)
-        {
+    ) -> Result<(), AdapterError> {
+        if matches!(record.part, super::snapshot::Part::Translations) {
+            let saved: SavedTranslations = record.read()?;
+            self.revision = saved.revision.map(|r| map.root(r)).transpose()?;
+            self.selected = saved.selected;
+            self.service.set_locale(
+                language_id(&saved.locale).map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
+            );
+        } else {
+            let (wait, locale, source): (Option<WaitId>, String, String) = record.read()?;
             let wait = wait.map(|w| map.wait(w)).transpose()?;
-            let id = result
+            let id = self
                 .loader
                 .as_mut()
                 .ok_or(AdapterError::Input("restoring catalogs requires a loader"))?
                 .load(&locale, &source)
                 .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
-            result.pending.push(Pending {
+            self.pending.push(Pending {
                 wait,
                 id,
                 locale,
@@ -71,7 +74,7 @@ impl Translations {
                 result: None,
             });
         }
-        Ok(result)
+        Ok(())
     }
     pub(super) fn close(&mut self) {
         if let Some(loader) = &mut self.loader {
@@ -85,8 +88,6 @@ impl Translations {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct SavedTranslations {
     locale: String,
-    catalogs: Vec<(String, String)>,
-    pending: Vec<(Option<WaitId>, String, String)>,
     revision: Option<RootToken>,
     selected: bool,
 }
@@ -165,6 +166,9 @@ impl SessionVm {
                 self.translations.pending[index].result = loader.poll(id);
             }
             let Some(result) = &self.translations.pending[index].result else {
+                if wait.is_none() {
+                    break;
+                } // Install saved catalogs before pending replacements.
                 index += 1;
                 continue;
             };
@@ -186,7 +190,11 @@ impl SessionVm {
             if let Some(wait) = wait {
                 self.vm.complete(wait, result)?;
             }
-            let pending = self.translations.pending.swap_remove(index);
+            let pending = if wait.is_none() {
+                self.translations.pending.remove(index)
+            } else {
+                self.translations.pending.swap_remove(index)
+            };
             if let Some(Ok(catalog)) = pending.result {
                 self.translations.service.install(catalog);
             }

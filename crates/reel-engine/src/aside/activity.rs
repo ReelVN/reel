@@ -151,6 +151,7 @@ pub(super) struct Activities {
     jobs: Option<RootToken>,
     job_tail: Option<Value>,
     // Every indexed leaf is also traced through the active root's graph.
+    #[serde(skip)]
     events: BTreeMap<EventKey, Value>,
     sampling: usize,
     #[serde(skip)]
@@ -166,10 +167,50 @@ pub(super) struct Activities {
     observed_time: f64,
     target_time: f64,
     serial: u64,
+    #[serde(skip)]
     waits: Vec<(WaitId, Value)>,
 }
 
 impl Activities {
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            std::iter::once_with(|| Record::new(Part::Activities, self))
+                .chain(
+                    self.events
+                        .iter()
+                        .map(|event| Record::new(Part::ActivityEvent, &event)),
+                )
+                .chain(
+                    self.waits
+                        .iter()
+                        .map(|wait| Record::new(Part::ActivityWait, wait)),
+                ),
+        )
+    }
+    pub(super) fn restore_record(
+        &mut self,
+        record: &super::snapshot::Record,
+        map: &aside_vm::snapshot::SnapshotMap,
+    ) -> Result<(), AdapterError> {
+        use super::snapshot::Part;
+        match record.part {
+            Part::Activities => {
+                *self = record.read()?;
+                self.restore(map)?;
+            }
+            Part::ActivityEvent => {
+                let (key, value): (EventKey, Value) = record.read()?;
+                self.events.insert(key, map.value(value)?);
+            }
+            Part::ActivityWait => {
+                let (wait, value): (WaitId, Value) = record.read()?;
+                self.waits.push((map.wait(wait)?, map.value(value)?));
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
     pub(super) fn snapshot_ready(&self) -> bool {
         self.native.is_none()
             && self.cleanup.is_none()
@@ -183,13 +224,6 @@ impl Activities {
         self.head = self.head.map(|r| map.root(r)).transpose()?;
         self.jobs = self.jobs.map(|r| map.root(r)).transpose()?;
         self.job_tail = self.job_tail.map(|v| map.value(v)).transpose()?;
-        for value in self.events.values_mut() {
-            *value = map.value(*value)?;
-        }
-        for (wait, value) in &mut self.waits {
-            *wait = map.wait(*wait)?;
-            *value = map.value(*value)?;
-        }
         self.skipping = false;
         Ok(())
     }

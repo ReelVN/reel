@@ -149,6 +149,7 @@ struct RetainedKey {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RetainedKeys {
     root: RootToken,
+    #[serde(skip)]
     entries: Vec<RetainedKey>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]

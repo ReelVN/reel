@@ -42,32 +42,41 @@ struct Header {
     game: std::sync::Arc<GameSettings>,
 }
 #[derive(Clone, Copy, Serialize, Deserialize)]
-enum Part {
+pub(super) enum Part {
     Header,
     Task,
     Pending,
+    ChoiceKey,
     Narrative,
+    NarrativeOption,
     Activities,
+    ActivityEvent,
+    ActivityWait,
     Results,
+    ResultWait,
+    Presentation,
     Particles,
+    Particle,
     Audio,
+    AudioWait,
     Translations,
+    Catalog,
     StageRoot,
     Node,
 }
 #[derive(Serialize, Deserialize)]
-struct Record {
-    part: Part,
+pub(super) struct Record {
+    pub part: Part,
     bytes: Vec<u8>,
 }
 impl Record {
-    fn new(part: Part, value: &impl Serialize) -> Result<Self, SnapshotError> {
+    pub fn new(part: Part, value: &impl Serialize) -> Result<Self, AdapterError> {
         Ok(Self {
             part,
-            bytes: postcard::to_allocvec(value)?,
+            bytes: postcard::to_allocvec(value).map_err(SnapshotError::from)?,
         })
     }
-    fn read<T: for<'a> Deserialize<'a>>(&self) -> Result<T, SnapshotError> {
+    pub fn read<T: for<'a> Deserialize<'a>>(&self) -> Result<T, SnapshotError> {
         let (value, tail) = postcard::take_from_bytes(&self.bytes)?;
         if !tail.is_empty() {
             return Err(SnapshotError::Invalid("trailing session record".into()));
@@ -103,18 +112,70 @@ impl SessionSnapshot {
     }
 }
 
+pub(super) type RecordStream<'a> = Box<dyn Iterator<Item = Result<Record, AdapterError>> + 'a>;
+
 pub struct SessionCapture<'a> {
-    source: &'a SessionVm,
     vm: VmCapture<'a>,
     session: Option<crate::snapshot::SessionCapture<'a>>,
     saved_session: Option<Session>,
     records: Vec<Record>,
-    nodes: Box<dyn Iterator<Item = stage::snapshot::SavedNode> + 'a>,
-    task: usize,
-    part: u8,
+    adapters: RecordStream<'a>,
+    vm_complete: bool,
     complete: bool,
 }
 impl SessionVm {
+    fn snapshot_records(&self) -> RecordStream<'_> {
+        use std::iter::once_with;
+        let streams: [RecordStream<'_>; 10] = [
+            Box::new(
+                once_with(|| {
+                    Record::new(
+                        Part::Header,
+                        &Header {
+                            owner: self.owner,
+                            root_owner: self.root_owner,
+                            task: self.task,
+                            main_wait: self.main_wait,
+                            schedule_cursor: self.schedule_cursor,
+                            claimed: self.claimed.clone(),
+                            delivery: self.delivery,
+                            delivery_task: self.delivery_task,
+                            result_root: self.result_root,
+                            game: self.game.clone(),
+                        },
+                    )
+                })
+                .chain(self.tasks.iter().map(|task| Record::new(Part::Task, task))),
+            ),
+            Box::new(
+                once_with(|| Record::new(Part::Pending, &self.pending)).chain(
+                    self.pending
+                        .iter()
+                        .flat_map(|p| p.keys.iter())
+                        .flat_map(|keys| keys.entries.iter())
+                        .map(|key| Record::new(Part::ChoiceKey, key)),
+                ),
+            ),
+            Box::new(
+                once_with(|| Record::new(Part::Narrative, &self.narrative))
+                    .chain(self.narrative.iter().flat_map(|n| n.snapshot_options())),
+            ),
+            self.activities.snapshot_records(),
+            self.results.snapshot_records(),
+            self.audio.snapshot_records(),
+            self.translations.snapshot_records(),
+            Box::new(once_with(|| {
+                Record::new(Part::StageRoot, &self.stage.snapshot_root())
+            })),
+            Box::new(
+                self.stage
+                    .snapshot_nodes()
+                    .map(|node| Record::new(Part::Node, &node)),
+            ),
+            self.particles.snapshot_records(),
+        ];
+        Box::new(streams.into_iter().flatten())
+    }
     /// The host freezes the logical clock and media transport while this borrow lives.
     /// Drop the capture to cancel it; no state in the live session has changed.
     pub fn snapshot_begin<'a>(
@@ -135,14 +196,12 @@ impl SessionVm {
             .into());
         }
         Ok(SessionCapture {
-            source: self,
             vm: self.vm.snapshot_begin(registry())?,
             session: Some(session.snapshot_begin()),
             saved_session: None,
             records: Vec::new(),
-            nodes: Box::new(self.stage.snapshot_nodes()),
-            task: 0,
-            part: 0,
+            adapters: self.snapshot_records(),
+            vm_complete: false,
             complete: false,
         })
     }
@@ -185,6 +244,7 @@ impl SessionVm {
             cursor: 0,
             children: Vec::new(),
             child: 0,
+            child_index: 0,
             stage_root: None,
             audio,
             catalogs,
@@ -204,62 +264,18 @@ impl SessionCapture<'_> {
                 }
                 continue;
             }
-            if self.part == 0 {
+            if !self.vm_complete {
                 let p = self.vm.step(SnapshotBudget { units: 1 })?;
                 progress.bytes += p.bytes;
-                if p.complete {
-                    self.part = 1;
-                }
+                self.vm_complete = p.complete;
                 continue;
             }
-            let source = self.source;
-            let record = match self.part {
-                1 => Record::new(
-                    Part::Header,
-                    &Header {
-                        owner: source.owner,
-                        root_owner: source.root_owner,
-                        task: source.task,
-                        main_wait: source.main_wait,
-                        schedule_cursor: source.schedule_cursor,
-                        claimed: source.claimed.clone(),
-                        delivery: source.delivery,
-                        delivery_task: source.delivery_task,
-                        result_root: source.result_root,
-                        game: source.game.clone(),
-                    },
-                )?,
-                2 => {
-                    if let Some(task) = source.tasks.get(self.task) {
-                        self.task += 1;
-                        Record::new(Part::Task, task)?
-                    } else {
-                        self.part += 1;
-                        continue;
-                    }
-                }
-                3 => Record::new(Part::Pending, &source.pending)?,
-                4 => Record::new(Part::Narrative, &source.narrative)?,
-                5 => Record::new(Part::Activities, &source.activities)?,
-                6 => Record::new(Part::Results, &source.results)?,
-                7 => Record::new(Part::Particles, &source.particles)?,
-                8 => Record::new(Part::Audio, &source.audio.snapshot()?)?,
-                9 => Record::new(Part::Translations, &source.translations.snapshot())?,
-                10 => Record::new(Part::StageRoot, &source.stage.snapshot_root())?,
-                11 => {
-                    if let Some(node) = self.nodes.next() {
-                        Record::new(Part::Node, &node)?
-                    } else {
-                        self.complete = true;
-                        continue;
-                    }
-                }
-                _ => unreachable!(),
-            };
-            progress.bytes += record.bytes.len() as u64;
-            self.records.push(record);
-            if self.part != 2 && self.part != 11 {
-                self.part += 1;
+            if let Some(record) = self.adapters.next() {
+                let record = record?;
+                progress.bytes += record.bytes.len() as u64;
+                self.records.push(record);
+            } else {
+                self.complete = true;
             }
         }
         progress.complete = self.complete;
@@ -287,6 +303,7 @@ pub struct SessionRestore<'a> {
     cursor: usize,
     children: Vec<reel_ui::stage::NodeId>,
     child: usize,
+    child_index: u32,
     stage_root: Option<RootToken>,
     audio: Option<Box<dyn crate::audio::AudioBackend>>,
     catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
@@ -308,6 +325,14 @@ impl SessionRestore<'_> {
                         vm,
                         self.limits,
                     )?);
+                    let runtime = self.candidate.as_mut().unwrap();
+                    if let Some(audio) = self.audio.take() {
+                        runtime.set_audio(audio)?;
+                        runtime.suspend_audio();
+                    }
+                    if let Some(loader) = self.catalogs.take() {
+                        runtime.set_catalog_loader(loader)?;
+                    }
                     self.map = Some(map);
                 }
                 continue;
@@ -351,12 +376,20 @@ impl SessionRestore<'_> {
                             p.wait = map.wait(p.wait)?;
                             if let Some(keys) = &mut p.keys {
                                 keys.root = map.root(keys.root)?;
-                                for key in &mut keys.entries {
-                                    key.value = map.value(key.value)?;
-                                }
                             }
                         }
                         runtime.pending = pending;
+                    }
+                    Part::ChoiceKey => {
+                        let mut key: RetainedKey = record.read()?;
+                        key.value = map.value(key.value)?;
+                        runtime
+                            .pending
+                            .as_mut()
+                            .and_then(|p| p.keys.as_mut())
+                            .ok_or(AdapterError::Input("choice key without interaction"))?
+                            .entries
+                            .push(key);
                     }
                     Part::Narrative => {
                         runtime.narrative = record.read()?;
@@ -364,31 +397,36 @@ impl SessionRestore<'_> {
                             n.restore(map, runtime.identity)?;
                         }
                     }
-                    Part::Activities => {
-                        runtime.activities = record.read()?;
-                        runtime.activities.restore(map)?;
+                    Part::NarrativeOption => {
+                        runtime
+                            .narrative
+                            .as_mut()
+                            .ok_or(AdapterError::Input("choice identity without narrative"))?
+                            .restore_option(record, map, runtime.identity)?;
                     }
-                    Part::Results => {
-                        runtime.results = record.read()?;
-                        runtime.results.restore(runtime.vm.heap(), map)?;
+                    Part::Activities | Part::ActivityEvent | Part::ActivityWait => {
+                        runtime.activities.restore_record(record, map)?;
                     }
-                    Part::Particles => {
-                        runtime.particles = record.read()?;
+                    Part::Results | Part::ResultWait | Part::Presentation => {
+                        runtime
+                            .results
+                            .restore_record(record, map, runtime.vm.heap())?;
                     }
-                    Part::Audio => {
-                        runtime.audio = audio::Audio::restore(
-                            record.read()?,
-                            self.audio.take(),
+                    Part::Particles | Part::Particle => {
+                        runtime.particles.restore_record(
+                            record,
                             map,
-                            runtime.vm.heap_mut(),
+                            runtime.vm.heap(),
+                            &mut runtime.stage.scene,
                         )?;
                     }
-                    Part::Translations => {
-                        runtime.translations = localization::Translations::restore(
-                            record.read()?,
-                            self.catalogs.take(),
-                            map,
-                        )?;
+                    Part::Audio | Part::AudioWait => {
+                        runtime
+                            .audio
+                            .restore_record(record, map, runtime.vm.heap_mut())?;
+                    }
+                    Part::Translations | Part::Catalog => {
+                        runtime.translations.restore_record(record, map)?;
                     }
                     Part::StageRoot => {
                         self.stage_root = record
@@ -397,32 +435,35 @@ impl SessionRestore<'_> {
                             .transpose()?;
                     }
                     Part::Node => {
-                        runtime.stage.restore_node(
+                        if let Some(node) = runtime.stage.restore_node(
                             runtime.vm.heap_mut(),
                             map,
                             record.read()?,
                             runtime.read_limit,
-                        )?;
+                        )? {
+                            self.children.push(node);
+                        }
                     }
                 }
                 progress.bytes += record.bytes.len() as u64;
                 self.cursor += 1;
                 continue;
             }
-            if self.children.is_empty() {
-                self.children = runtime.stage.scene.nodes().map(|node| node.id).collect();
-            }
             if let Some(&node) = self.children.get(self.child) {
-                runtime.stage.restore_children(runtime.vm.heap(), node)?;
-                self.child += 1;
+                if runtime
+                    .stage
+                    .restore_child(runtime.vm.heap(), node, self.child_index)?
+                {
+                    self.child_index += 1;
+                } else {
+                    self.child += 1;
+                    self.child_index = 0;
+                }
                 continue;
             }
             runtime
                 .stage
                 .restore_root(runtime.vm.heap(), self.stage_root)?;
-            runtime
-                .particles
-                .restore(runtime.vm.heap(), map, &mut runtime.stage.scene)?;
             runtime.sync_narrative(self.session.as_ref().unwrap())?;
             self.complete = true;
         }

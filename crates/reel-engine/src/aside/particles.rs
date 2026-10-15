@@ -113,6 +113,7 @@ struct Live {
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Particles {
+    #[serde(skip)]
     live: VecDeque<Live>,
     #[serde(skip)]
     charge: Option<HeapReservation>,
@@ -122,20 +123,37 @@ pub(super) struct Particles {
     woke: bool,
 }
 impl Particles {
-    pub(super) fn restore(
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            std::iter::once_with(|| Record::new(Part::Particles, self)).chain(
+                self.live
+                    .iter()
+                    .map(|live| Record::new(Part::Particle, live)),
+            ),
+        )
+    }
+    pub(super) fn restore_record(
         &mut self,
-        heap: &Heap,
+        record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
+        heap: &Heap,
         stage: &mut reel_ui::stage::Stage,
     ) -> Result<(), AdapterError> {
-        for live in &mut self.live {
-            live.root = map.root(live.root)?;
-            stage.set_particle_frame(live.target, Some(live.frame))?;
+        use super::snapshot::Part;
+        match record.part {
+            Part::Particles => {
+                *self = record.read()?;
+            }
+            Part::Particle => {
+                let mut live: Live = record.read()?;
+                live.root = map.root(live.root)?;
+                stage.set_particle_frame(live.target, Some(live.frame))?;
+                results::reserve_queue(heap, &mut self.live, &mut self.charge)?;
+                self.live.push_back(live);
+            }
+            _ => unreachable!(),
         }
-        self.charge = Some(
-            heap.budget_usage()
-                .reserve((self.live.capacity() * size_of::<Live>()) as u64)?,
-        );
         self.revision = stage.revision();
         Ok(())
     }

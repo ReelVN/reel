@@ -204,10 +204,10 @@ impl StageBinding {
         map: &SnapshotMap,
         saved: SavedNode,
         limit: usize,
-    ) -> Result<(), AdapterError> {
+    ) -> Result<Option<NodeId>, AdapterError> {
         // Detached stage entries do not keep otherwise unreachable author nodes alive.
         let Ok(handle) = map.handle(saved.handle) else {
-            return Ok(());
+            return Ok(None);
         };
         let value = heap.import_handle(handle)?;
         let fields = heap.host_fields(value)?;
@@ -263,20 +263,22 @@ impl StageBinding {
                 input_values,
             },
         );
-        Ok(())
+        Ok(Some(id))
     }
-    pub(in crate::aside) fn restore_children(
+    pub(in crate::aside) fn restore_child(
         &mut self,
         heap: &Heap,
         parent: NodeId,
-    ) -> Result<(), AdapterError> {
+        index: u32,
+    ) -> Result<bool, AdapterError> {
         let value = self.value(heap, parent)?;
         let children = heap.host_payload(value, 1)?;
-        for i in 0..heap.sequence_len(children)? {
-            let child = self.id(heap, heap.sequence_get(children, i)?)?;
-            self.scene.add(parent, child, i as usize)?;
+        if index == heap.sequence_len(children)? {
+            return Ok(false);
         }
-        Ok(())
+        let child = self.id(heap, heap.sequence_get(children, index)?)?;
+        self.scene.add(parent, child, index as usize)?;
+        Ok(true)
     }
     pub(in crate::aside) fn restore_root(
         &mut self,

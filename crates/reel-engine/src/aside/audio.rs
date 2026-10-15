@@ -27,62 +27,78 @@ pub(super) struct Audio {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(super) struct SavedAudio {
-    live: Vec<(RootToken, Option<NodeId>, crate::audio::AudioPlayback)>,
-    waits: Vec<(WaitId, Value)>,
+struct SavedAudio {
+    root: RootToken,
+    owner: Option<NodeId>,
+    playback: Option<crate::audio::AudioPlayback>,
+    result: Option<AudioResult>,
 }
 impl Audio {
-    pub(super) fn snapshot(&self) -> Result<SavedAudio, AdapterError> {
-        let mut live = Vec::new();
-        for entry in &self.live {
-            let mut playback = self
-                .backend
-                .as_ref()
-                .ok_or(AdapterError::Input("audio backend missing"))?
-                .snapshot(entry.id)
-                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
-            if entry.result.is_some() {
-                playback.result = entry.result.clone();
-            }
-            live.push((entry.root, entry.owner, playback));
-        }
-        Ok(SavedAudio {
-            live,
-            waits: self.waits.clone(),
-        })
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            self.live
+                .iter()
+                .map(|entry| {
+                    let playback = if entry.result.is_some() {
+                        None
+                    } else {
+                        Some(
+                            self.backend
+                                .as_ref()
+                                .ok_or(AdapterError::Input("audio backend missing"))?
+                                .snapshot(entry.id)
+                                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
+                        )
+                    };
+                    Record::new(
+                        Part::Audio,
+                        &SavedAudio {
+                            root: entry.root,
+                            owner: entry.owner,
+                            playback,
+                            result: entry.result.clone(),
+                        },
+                    )
+                })
+                .chain(
+                    self.waits
+                        .iter()
+                        .map(|wait| Record::new(Part::AudioWait, wait)),
+                ),
+        )
     }
-    pub(super) fn restore(
-        saved: SavedAudio,
-        mut backend: Option<Box<dyn AudioBackend>>,
+    pub(super) fn restore_record(
+        &mut self,
+        record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
         heap: &mut Heap,
-    ) -> Result<Self, AdapterError> {
-        if let Some(b) = &mut backend {
-            b.suspend();
+    ) -> Result<(), AdapterError> {
+        if matches!(record.part, super::snapshot::Part::AudioWait) {
+            let (wait, value): (WaitId, Value) = record.read()?;
+            self.waits.push((map.wait(wait)?, map.value(value)?));
+            return Ok(());
         }
-        let mut audio = Self {
-            backend,
-            ..Default::default()
-        };
-        for (root, owner, mut playback) in saved.live {
-            let root = map.root(root)?;
-            // Music resumes its transport; voices restart the current line.
-            // Transient effects keep their producer result, without replaying sound.
-            if playback.result.is_none()
+        let mut saved: SavedAudio = record.read()?;
+        let root = map.root(saved.root)?;
+        let mut id = AudioId(0);
+        if let Some(mut playback) = saved.playback {
+            saved.result = playback.result;
+            if saved.result.is_none()
                 && matches!(playback.request.group, AudioGroup::Effects | AudioGroup::Ui)
             {
-                playback.result = Some(AudioResult::Completed);
+                saved.result = Some(AudioResult::Completed);
             }
-            let id = if playback.result.is_none() {
+            if saved.result.is_none() {
                 if playback.request.group == AudioGroup::Voice {
                     playback.request.start_position = std::time::Duration::ZERO;
                 }
                 playback.request.fade_in = std::time::Duration::ZERO;
-                let backend = audio
+                let backend = self
                     .backend
                     .as_mut()
                     .ok_or(AdapterError::Input("restoring audio requires a backend"))?;
-                let id = backend
+                id = backend
                     .play(playback.request)
                     .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
                 if playback.paused {
@@ -90,26 +106,25 @@ impl Audio {
                         .command(id, AudioCommand::Pause)
                         .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
                 }
-                id
-            } else {
-                AudioId(0)
-            };
-            heap.set_host_payload(
-                heap.root_value(root)?,
-                Slot::Id as u32,
-                Value::int(id.0 as i64),
-            )?;
-            audio.live.push(Live {
-                id,
-                root,
-                owner,
-                result: playback.result,
-            });
+            }
         }
-        for (wait, value) in saved.waits {
-            audio.waits.push((map.wait(wait)?, map.value(value)?));
-        }
-        Ok(audio)
+        heap.set_host_payload(
+            heap.root_value(root)?,
+            Slot::Id as u32,
+            Value::int(id.0 as i64),
+        )?;
+        self.live.push(Live {
+            id,
+            root,
+            owner: saved.owner,
+            result: saved.result,
+        });
+        Ok(())
+    }
+}
+impl Drop for Audio {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 pub(super) fn is_audio(heap: &Heap, value: Value) -> bool {

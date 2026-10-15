@@ -72,6 +72,7 @@ pub(super) fn reserve_queue<T>(
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Results {
     methods: Option<Methods>,
+    #[serde(skip)]
     waits: VecDeque<(WaitId, Value)>,
     #[serde(skip)]
     charge: Option<HeapReservation>,
@@ -80,33 +81,53 @@ pub(super) struct Results {
     stage_revision: u64,
     requested: u64,
     presented: u64,
+    #[serde(skip)]
     presentations: VecDeque<RootToken>,
     #[serde(skip)]
     presentation_charge: Option<HeapReservation>,
     presentation_remaining: usize,
 }
 impl Results {
-    pub(super) fn restore(
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            std::iter::once_with(|| Record::new(Part::Results, self))
+                .chain(
+                    self.waits
+                        .iter()
+                        .map(|wait| Record::new(Part::ResultWait, wait)),
+                )
+                .chain(
+                    self.presentations
+                        .iter()
+                        .map(|root| Record::new(Part::Presentation, root)),
+                ),
+        )
+    }
+    pub(super) fn restore_record(
         &mut self,
-        heap: &Heap,
+        record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
-    ) -> Result<(), aside_vm::snapshot::SnapshotError> {
-        for (wait, value) in &mut self.waits {
-            *wait = map.wait(*wait)?;
-            *value = map.value(*value)?;
+        heap: &Heap,
+    ) -> Result<(), AdapterError> {
+        use super::snapshot::Part;
+        match record.part {
+            Part::Results => {
+                *self = record.read()?;
+                self.dirty = true;
+            }
+            Part::ResultWait => {
+                let (wait, value): (WaitId, Value) = record.read()?;
+                reserve_queue(heap, &mut self.waits, &mut self.charge)?;
+                self.waits.push_back((map.wait(wait)?, map.value(value)?));
+            }
+            Part::Presentation => {
+                let root = map.root(record.read()?)?;
+                reserve_queue(heap, &mut self.presentations, &mut self.presentation_charge)?;
+                self.presentations.push_back(root);
+            }
+            _ => unreachable!(),
         }
-        for root in &mut self.presentations {
-            *root = map.root(*root)?;
-        }
-        self.charge = Some(
-            heap.budget_usage()
-                .reserve((self.waits.capacity() * size_of::<(WaitId, Value)>()) as u64)?,
-        );
-        self.presentation_charge = Some(
-            heap.budget_usage()
-                .reserve((self.presentations.capacity() * size_of::<RootToken>()) as u64)?,
-        );
-        self.dirty = true;
         Ok(())
     }
 }
