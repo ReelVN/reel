@@ -21,6 +21,132 @@ use reel_ui::{
 };
 use std::sync::Arc;
 
+#[test]
+fn children_compose_owned_subtrees_without_duplicate_mounting() {
+    let source = r#"fn component(children) { column(children: children) }
+    fn main() {
+        let outside_child = text("outside");
+        let outside = stack(children: [outside_child]);
+        let old = stack();
+        stage.replace(old);
+        let retired = text("retired");
+        retired.remove();
+        let mut rejected = 0;
+        try { column { outside_child; } } catch e { rejected += 1; }
+        try { column { outside; outside; } } catch e { rejected += 1; }
+        try { column { old; } } catch e { rejected += 1; }
+        try { column { retired; } } catch e { rejected += 1; }
+        if rejected != 4 { throw "ownership validation"; }
+        let constructor = component;
+        let result = constructor {
+            let panel = stack();
+            let control = button("control");
+            control.add(text("caption"));
+            if true { control.add(text("conditional")); }
+            panel.add(control);
+            panel;
+            for name in ["one", "two"] {
+                let card = stack();
+                card.add(text(name));
+                card;
+            }
+            // A failed construction above left this detached component intact.
+            row(children: [outside_child, outside]);
+        };
+        stage.replace(result);
+        narrator("composed");
+        result.clear();
+        result.add(text("replacement"));
+        narrator("cleared");
+    }"#;
+    let checked = reel_cli::check(source, "composition.aside").unwrap();
+    let bytes = reel_cli::build(&checked, Some("main::main")).unwrap().bytes;
+    for story in [
+        reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&bytes).unwrap(),
+    ] {
+        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+        let mut vm =
+            reel_engine::aside::SessionVm::load(&session, story.program, VmLimits::default())
+                .unwrap();
+        for function in [story.initializer, story.entry] {
+            vm.start(&session, function).unwrap();
+            loop {
+                match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+                    reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                        if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1024) {
+                            vm.reject_native(&session, ticket, error.native_fault_kind().unwrap())
+                                .unwrap();
+                        }
+                    }
+                    reel_engine::aside::SessionStep::Vm(RunOutcome::Returned(_)) => {
+                        vm.discard_delivery(&mut session).unwrap();
+                        break;
+                    }
+                    reel_engine::aside::SessionStep::Vm(RunOutcome::Waiting(_)) => break,
+                    reel_engine::aside::SessionStep::Vm(RunOutcome::Fault(id)) => {
+                        panic!("{:?}", vm.vm().delivery_fault(id).unwrap())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        vm.begin_collection().unwrap();
+        while !vm
+            .gc_step(reel_engine::aside::GcBudget {
+                units: 4096,
+                ..Default::default()
+            })
+            .unwrap()
+            .cycle_complete
+        {}
+        vm.sync_stage(&session).unwrap();
+        let root = vm.stage().root().unwrap();
+        assert_eq!(vm.stage().node(root).unwrap().children.len(), 4);
+        let mut pending = vec![root];
+        let mut labels = Vec::new();
+        while let Some(id) = pending.pop() {
+            let node = vm.stage().node(id).unwrap();
+            if let reel_ui::stage::NodeKind::Text(text) = &node.kind {
+                labels.push(text.to_string());
+            }
+            for child in node.children.iter().rev() {
+                assert_eq!(vm.stage().node(*child).unwrap().parent, Some(id));
+                pending.push(*child);
+            }
+        }
+        assert_eq!(labels, ["caption", "conditional", "one", "two", "outside"]);
+        let interaction = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(
+                    session.root_owner(),
+                    reel_engine::InputAction::Advance(interaction),
+                )
+                .unwrap();
+        }
+        loop {
+            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+                reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    vm.dispatch(&mut session, ticket, "en", 1024).unwrap();
+                }
+                reel_engine::aside::SessionStep::Vm(RunOutcome::Waiting(_)) => break,
+                reel_engine::aside::SessionStep::Vm(RunOutcome::Fault(id)) => {
+                    panic!("{:?}", vm.vm().delivery_fault(id).unwrap())
+                }
+                _ => {}
+            }
+        }
+        vm.sync_stage(&session).unwrap();
+        assert_eq!(vm.stage().root(), Some(root));
+        assert_eq!(
+            vm.stage().nodes().count(),
+            2,
+            "clear retires every composed descendant"
+        );
+    }
+}
+
 const SOURCE: &str = r##"fn main() {
     let red = stack(width: 20, height: 20, background: "#ff0000");
     let blue = stack(width: 20, height: 20, background: "#0000ff");

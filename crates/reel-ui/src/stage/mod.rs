@@ -327,6 +327,51 @@ impl Stage {
             .ok_or(StageError::IdentityExhausted)
     }
 
+    /// Keep explicitly supplied component roots in authored order. An expression
+    /// may also yield an already attached descendant of one of those roots.
+    /// This does not detach, adopt, or retire anything.
+    pub fn composition_roots(&self, candidates: &[NodeId]) -> Result<Vec<NodeId>, StageError> {
+        let mut supplied = BTreeSet::new();
+        for &id in candidates {
+            if !self.nodes.contains_key(&id) {
+                return Err(StageError::RetiredNode);
+            }
+            if !supplied.insert(id) {
+                return Err(StageError::DuplicateChild);
+            }
+        }
+        let mut roots = Vec::new();
+        let mut resolved = BTreeMap::new();
+        let mut path = Vec::new();
+        for &id in candidates {
+            path.clear();
+            let mut current = id;
+            let root = loop {
+                if let Some(&root) = resolved.get(&current) {
+                    break root;
+                }
+                if self.root == Some(current) {
+                    return Err(StageError::AlreadyParented);
+                }
+                path.push(current);
+                match self.nodes[&current].parent {
+                    Some(parent) => current = parent,
+                    None => break current,
+                }
+            };
+            if !supplied.contains(&root) {
+                return Err(StageError::AlreadyParented);
+            }
+            for &ancestor in &path {
+                resolved.insert(ancestor, root);
+            }
+            if id == root {
+                roots.push(id);
+            }
+        }
+        Ok(roots)
+    }
+
     /// Adopts each child exactly once. Constructing a detached tree does not
     /// change the displayed stage revision.
     pub fn create(

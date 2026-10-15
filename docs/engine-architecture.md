@@ -68,6 +68,8 @@ key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对
 
 ### 当前作者舞台实现合同
 
+容器构造的 children 是候选节点序列：同一序列显式提供完整组件根时，已属于该组件的后代不再作为兄弟重复挂载。根的顺序沿候选顺序；重复身份、退休节点、已挂舞台的组件或缺少完整根的外部子节点仍报错。add 返回值和单一父级所有权不变，尾随块与显式 children 数组行为一致；Aside 通用收集规则不变。Rust Stage::composition_roots 只读归一化候选，create/add 仍严格准入；失败不改现有树。范围为 reel-ui、reel-engine、源码/ASB 检查、示例与双语指南；native 签名、B01/ASB 不变，无新依赖。祖先路径在本次构造中记忆化，避免重复遍历共享长链，不增加逐帧工作。
+
 选择控件复用共同舞台：`checkbox(label: null, value: false, on_change: null, ...)` 与 toggle 共用布尔值、双向绑定及按钮激活，仅装饰和可访问性角色不同。`radio(option, label: null, value: null, on_change: null, ...)` 将选项绑定到一个业务值；同组各项的 value 连接同一模型字段，激活时写入 option，重复选择不回调，也不取消选择。option 可更新或绑定，旧选项画面的激活不能选择更新后的 option。比较沿用 list 的业务 key 规则，允许标量、字符串及对象身份；未匹配值表示无项选中。导航使用共同方向/Tab 焦点与确认输入，禁用、模态和退休沿共同生命周期。两者支持 children 与 decorated，自定义外观读取 value/option 和既有交互状态。范围为 reel-ui/reel-engine/reel-player、示例和双语指南；新增 native ABI 1，B01/ASB 不变，无新依赖。验收源码/ASB 双向绑定、互斥、动态选项、输入消费和取消；值变化保留控件身份，不重新排版未变文字。
 
 `input(bindings: null, on_action: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null bindings 表示没有动作映射。聚焦控件优先消费自己的按键，普通控件未消费的键盘事件向祖先 on_key 冒泡；文本编辑控件保留全部键盘与 IME，未消费的编辑按键也不进入游戏回调。动作映射仍要求输入节点拥有焦点或根输入兜底。失焦、隐藏、禁用、模态替换与节点退休撤销旧按键；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。此变更覆盖 reel-ui/stage、reel-player 输入路由与 reel-engine 属性/回调，不增加依赖；input native ABI 5，B01/ASB 不变。验证多键交错、重复、焦点取消和编辑控件隔离。

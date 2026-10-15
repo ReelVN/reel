@@ -137,6 +137,21 @@ Stack layers children from back to front in source order; row arranges them hori
 
 ### Editing components while running
 
+Inside a children block, use a local variable to create a control, add visuals that read its state, then explicitly provide the control itself. Descendants returned by add already belong to that control and are not mounted again by the outer container. Explicit children arrays follow the same rule. Do not provide the same node twice or borrow children from an omitted component or an already mounted stage.
+
+Without ordinary arguments, write `column { ... }` and omit the empty `()`. Ordinary function components support the same shorthand.
+
+```aside
+column(gap: 12) {
+    let control = button(width: 240, height: 48, decorated: false);
+    control.add(text("Hover me", color: derive(|| if control.hover { "#ffd580" } else { "#ffffff" })));
+    control;
+    text("Another component");
+}
+```
+
+Node identity, parentage and callback ownership are preserved. See [author_composition.aside](../../examples/author_composition.aside).
+
 A scroll region exposes writable, bindable `scroll_x/scroll_y`; layout clamps them to the actual content range. Read-only observable `viewport_width/viewport_height/content_width/content_height` can drive custom thumb geometry through derive. `content_align: "end"` places short chat content at the bottom, `"center"` centers it, and the default is `"start"`. `input(on_pointer: ...)` receives `{target,x,y,phase}` in the presented node's local coordinates, with pressed/moved/released/cancelled phases. A primary mouse press or touch captures the drag; focus loss, hiding and disabling cancel it. The callback may wait and belongs to the input node. See the [custom scrollbar](../../examples/author_scrollbar.aside).
 
 `container.add(child)` appends a subtree to a row, column or stack and returns the original child. `index:` selects a zero-based insertion position, including the current child count; omitting it or passing null appends. The subtree must have no parent and must not be mounted as the stage root. Duplicate ownership, cycles, adding to text/image or an out-of-range position produce an error and preserve the original tree. Adding and removing preserve other nodes and their widget identities; unchanged text is not reshaped.

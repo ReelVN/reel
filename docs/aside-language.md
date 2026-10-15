@@ -26,6 +26,7 @@ class/super、类/元方法 callable、完整模式与快照等仍按未实现�
 
 
 ## 二 语法与求值顺序
+没有普通参数时，`component { ... }` 等价于 `component() { ... }`；具名函数、局部函数值、成员和索引取得的函数均可使用。if/while/for/match 等头部仍保留后面的控制流块，确需尾随调用时用圆括号包住整个调用。该简写沿用同一调用与 children lowering，不增加 VM 指令。
 尾随 children 块调用作为独立语句时，可以像控制语句块一样省略分号。例如 `column { text("标题"); }` 后可直接书写下一个组件。显式分号同样有效，且不会取消子节点收集。独立 children 调用后的换行结束该语句，下一行的括号不会被解析成继续调用；取值上下文仍可正常链接后续操作。其他普通调用、绑定和赋值仍使用分号。
 
 
@@ -254,6 +255,8 @@ Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去�
 图片的 GPU 驻留与上传复用由渲染后端管理；相同资源身份的图片在已提交后可跨帧共享，脚本不需要预热缓存或重复加载。该实现不改变 image 的语言接口或 native ABI。
 
 ## 十二 Task Future 与取消
+
+Reel 节点构造把 children 候选归一化为显式提供的完整组件根；已属于这些根的后代不再重复挂载。Aside 尾随 children 块仍按原规则收集表达式，普通 add 返回值不变，显式 children 数组使用同一节点合同；这不是语言对某个方法名的特判。
 
 Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 B01/ASB 编码。
 
