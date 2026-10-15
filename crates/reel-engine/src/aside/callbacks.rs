@@ -298,7 +298,8 @@ impl SessionVm {
         if self.derived_task.is_some() || self.vm.heap().derived_pending() {
             return true;
         }
-        self.results.needs_work(self.stage.scene.revision())
+        self.particles.needs_work(self.stage.scene.revision())
+            || self.results.needs_work(self.stage.scene.revision())
             || self.issued.is_some()
             || self.task.is_some()
                 && self
@@ -321,6 +322,7 @@ impl SessionVm {
         }
         !self.tasks.is_empty()
             || self.activities.has_active()
+            || self.particles.has_active()
             || self.audio.active()
             || self.stage.has_handlers()
     }
@@ -444,6 +446,10 @@ impl SessionVm {
         self.maintain_audio()?;
         self.maintain_localization()?;
         self.activities.maintain(&mut self.vm)?;
+        self.maintain_particles(64)?;
+        if self.particles.needs_work(self.stage.scene.revision()) {
+            return Ok(SessionStep::Progress);
+        }
         if self
             .results
             .maintain(&mut self.vm, self.stage.scene.revision())?

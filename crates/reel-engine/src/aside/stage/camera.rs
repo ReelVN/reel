@@ -1,0 +1,43 @@
+//! Camera properties use the normal host property graph and action runner.
+use super::*;
+use reel_ui::stage::CameraView;
+
+#[derive(aside_host::Properties)]
+pub(in crate::aside) enum CameraField {
+    #[aside(name = "camera_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    X,
+    #[aside(name = "camera_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    Y,
+    #[aside(name = "zoom", ty = Any, default = 1, validate = validate_zoom, animatable)]
+    Zoom,
+    #[aside(name = "camera_rotation", ty = Any, default = 0, validate = validate_number, animatable)]
+    Rotation,
+}
+fn zoom(value: Value) -> Result<f64, HeapError> {
+    match number(value) {
+        Ok(value) if value > 0. => Ok(value),
+        _ => Err(HeapError::TypeMismatch),
+    }
+}
+fn validate_zoom(_: &Heap, value: Value) -> Result<(), HeapError> {
+    zoom(value).map(|_| ())
+}
+pub(super) fn kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError> {
+    let get = |field: CameraField| -> Result<Value, HeapError> {
+        Ok(heap.table_entry(fields, field.index() as u32)?.1)
+    };
+    Ok(NodeKind::Camera(CameraView {
+        x: number(get(CameraField::X)?)?,
+        y: number(get(CameraField::Y)?)?,
+        zoom: zoom(get(CameraField::Zoom)?)?,
+        rotation: number(get(CameraField::Rotation)?)?,
+    }))
+}
+pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+    let prefix = CameraField::PROPERTIES.len() as u32;
+    if index < prefix {
+        CameraField::validate(heap, index, value)
+    } else {
+        validate_layout_property(heap, index - prefix, value)
+    }
+}

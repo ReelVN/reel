@@ -1,5 +1,7 @@
 # Reel Game Creator Guide
 
+For images exceeding a device texture dimension, prepare the original with `reel prepare-image panorama.png --output panorama.reel-image`, then use `image("panorama.reel-image")`. Distribute the manifest and its adjacent `.tiles` directory together. The player loads visible tiles and a budget-limited neighbor ring; panning and zooming reuse resident pixels. See the [format and preparation contract](../prepared-images.md). Run the [large-image example](../../examples/author_large_image.aside) with a wide original and the font setup below. Preparation is explicit; build does not copy or prepare images.
+
 Design version 1.1 · Development baseline. Implementation status is stated in the guide.
 
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
@@ -203,6 +205,18 @@ A scroll region exposes writable, bindable `scroll_x/scroll_y`; layout clamps th
 
 `container.add(child)` appends a subtree to a row, column or stack and returns the original child. `index:` selects a zero-based insertion position, including the current child count; omitting it or passing null appends. The subtree must have no parent and must not be mounted as the stage root. Duplicate ownership, cycles, adding to text/image or an out-of-range position produce an error and preserve the original tree. Adding and removing preserve other nodes and their widget identities; unchanged text is not reshaped.
 
+`container.move(child, index: ...)` reorders an existing direct child without removing it. The required index is its final zero-based position; for three children it is 0, 1 or 2. The method returns the same child, and moving it to its current position does nothing. Its properties, running animations, callbacks, focus and loaded resources stay attached. A stack uses the new order from back to front; rows and columns use it for layout. A different parent or an out-of-range index is an error and leaves the tree unchanged.
+
+```aside
+let back = image("assets/panels.png");
+let front = image("assets/sun.jpg", x: 120);
+let scene = stack { back; front; };
+stage.replace(scene);
+scene.move(back, index: 1);
+```
+
+See [author_reorder.aside](../../examples/author_reorder.aside) for overlapping cards that move to the front while their animation continues. Cross-parent moves are not supported.
+
 `node.remove()` removes and retires that node and all descendants, including when called on the stage root. `container.clear()` retires only the children, preserving the container's properties and identity. Both return null. Retirement cancels associated animations and releases the stage's image requests; retired nodes cannot be remounted, read or written. Call your component function again to create another instance. Methods can be stored and passed while retaining their original receiver; a saved remove method can be called repeatedly.
 
 ```aside
@@ -246,6 +260,7 @@ Images and fonts use the same resource loading service. File reads and image dec
 
 Every basic node supports rotation, scale_x/scale_y and anchor_x/anchor_y; a container transforms the whole component. Rotation uses clockwise degrees and defaults to 0. Scale defaults to 1; negative values mirror, and zero collapses the picture and excludes it from hit testing. Anchors are fractions of the layout width and height: (0,0) is the default top-left corner and (0.5,0.5) is the center. They may also lie outside the component. The x/y values offset that anchor from the container's layout position. Scale around the anchor, rotate, then place it at that position; the parent's transform applies to the result. Width, height and row/column placement retain their size before transformation. Clips and presented geometry use the same transform. Edits preserve node identity; changing position, rotation, scale, anchor or opacity does not repeat layout.
 
+
 ```aside
 fn main() {
     let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
@@ -263,6 +278,25 @@ fn main() {
 ```
 
 See the runnable [author_transforms.aside](../../examples/author_transforms.aside); it uses the same assets and commands as the image example.
+
+### Camera framing
+
+Use `camera { ... }` to pan, zoom and rotate the view of a scene. Its `camera_x/camera_y` identify the world point shown at the center of the viewport; they default to (0,0), so specify your scene center to frame a conventional top-left scene. `zoom` defaults to 1 and must be positive. `camera_rotation` is the camera's clockwise angle in degrees; the scene turns oppositely. Normal `x/y`, `rotation`, scale and anchors place the viewport itself. Width and height set its size; omitted dimensions use content layout. Children overlap as in stack, and padding remains in viewport coordinates. `clip` defaults to true and can be disabled.
+
+```aside
+let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
+    image("assets/panels.png", width: 960, height: 540);
+    text("Look here", x: 620, y: 160);
+};
+stage.replace(view);
+await stage.presented(owner: view);
+await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
+                camera_rotation: 8, duration: 1.2, easing: "in_out"));
+```
+
+The four camera properties work with assignment, bind/derive and tween, including normal cancellation and ownership. Put HUD siblings outside the camera to keep them fixed; nested cameras are ordinary components. Motion preserves text layout and loaded images. Drawing and pointer coordinates share the accepted frame's transforms and clips. See the complete [author_camera.aside](../../examples/author_camera.aside), which needs only `fonts/body.ttf`; run it using section 1's dev/build/run commands. This is a two-dimensional camera; perspective projection is not implemented.
+
+
 
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
@@ -363,7 +397,16 @@ An ordinary fn is sufficient for story code. A chapter entry registered through 
 
 `clock(interval: 60, owner: panel)` creates an observable periodic clock. Read-only ticks counts complete intervals; elapsed is their total duration in seconds, both initially zero. Use derive to compose clocks, countdowns or progress displays. Large time steps publish the latest value directly. pause/resume/stop and await use the activity contract; paused time is excluded and retiring the owner cancels the clock. An endless clock cannot finish. See the [clock example](../../examples/author_clock.aside).
 
-Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, in, out and in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`. sequence/parallel/repeat are available; scope is not implemented yet.
+Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, cubic in/out/in_out, quadratic quad_in/quad_out/quad_in_out and sine_in/sine_out/sine_in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`. sequence/parallel/repeat are available; scope is not implemented yet.
+
+For a sine-shaped movement, choose `sine_in` to accelerate, `sine_out` to decelerate, or `sine_in_out` to start and finish slowly. All reach the exact requested endpoint. These differ from the cubic in/out/in_out curves and the quadratic quad_in/quad_out/quad_in_out curves.
+
+```aside
+await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
+```
+
+The complete [author_sine_easing.aside](../../examples/author_sine_easing.aside) compares all three sine curves over the same distance and duration; supply `fonts/body.ttf` before opening the window.
+
 
 The language runtime supports awaiting host-registered awaitable objects. An ordinary fn can use `await request` to suspend its call chain while the host handles other work. Even settled objects return on a later scheduling step; failures point to the await expression and retain the producer's cause. Engine activities now use this protocol; async fn and Future construction are not available yet. The runnable host integration check is [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs): `cargo test -p aside-compiler --test host_awaitables`.
 
@@ -990,3 +1033,21 @@ Runnable example: [author_audio.aside](../../examples/author_audio.aside), using
 ./target/debug/reel.exe check examples/author_audio.aside
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
+
+### Sprite particles
+
+`particles` creates one stage node for snow, petals or other sprite effects. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. `emit` starts it and returns an activity; configure the birth rectangle with width/height. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
+
+```aside
+let petals = particles("assets/petal.png", width: 1280, height: 20,
+    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
+    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
+    spin_spread: 60);
+stage.replace(petals);
+let falling = emit(petals, duration: 10);
+await falling;
+```
+
+Defaults: rate 60 particles/second, lifetime 5 seconds, seed 0, velocity_x/y 0/80, spread_x/y 20/20, acceleration_x/y 0/0, size 12, size_spread 4, opacity_start/end 1/0, spin 0 and spin_spread 30 degrees/second. Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size. Birth positions are uniform within the width/height captured by emit (omitted dimensions are zero); first birth occurs after 1/rate seconds. Configurations are read-only; ordinary position, rotation, scale, visibility, opacity and clipping remain editable and animatable.
+
+Omit duration to emit continuously. A finite duration includes births exactly at its endpoint and completes after surviving particles die. `pause(falling)` freezes the whole effect, `resume(falling)` continues it, and `stop(falling)` clears particles and returns Stopped from await. `finish(falling)` clears a finite effect and returns Completed; it rejects continuous emission. Calling emit again on the same node stops the previous activity and restarts its seeded sequence. The same seed and elapsed time reproduce the same particles regardless of frame timing. Retiring the node or activity owner cancels emission; hiding it does not pause it. Owner defaults follow other activities; cancelling a waiter leaves emission running. Completed activities retain their result for repeated waits. Particles share the stage image resource and renderer; no script runs for each particle. Save/restore of running effects is not available yet.

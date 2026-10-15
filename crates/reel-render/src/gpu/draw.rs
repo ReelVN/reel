@@ -8,7 +8,7 @@ use reel_ui::{
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 impl Context<'_> {
-    fn mesh_allocation(&self) -> mesh::Allocation {
+    pub(super) fn mesh_allocation(&self) -> mesh::Allocation {
         mesh::Allocation::new(
             self.budgets,
             &self.budget_scope,
@@ -157,64 +157,7 @@ impl Context<'_> {
                         record: "image repeat/reflect",
                     });
                 }
-                let image = if let Some(image) = self.images.get(&brush.image) {
-                    image.clone()
-                } else if let Some(image) = self.image_cache.get(brush.image) {
-                    self.tickets.push(super::renderer::Reservation {
-                        _shared: None,
-                        _local: super::image_cache::reserve_local(
-                            &self.budget_scope.resources,
-                            image.residency.as_ref().unwrap().bytes(),
-                            self.gpu.limits.resource_bytes,
-                        )?,
-                    });
-                    self.images.insert(brush.image, image.clone());
-                    image
-                } else {
-                    let lease = frame
-                        .resources()
-                        .leases()
-                        .iter()
-                        .find(|r| r.handle() == brush.image)
-                        .ok_or(GpuError::Unsupported {
-                            at,
-                            record: "missing image",
-                        })?;
-                    let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
-                        return Err(GpuError::Unsupported {
-                            at,
-                            record: "image type",
-                        });
-                    };
-                    let cost = resources::upload_cost([image.width, image.height])?;
-                    let resident = u64::from(image.width) * u64::from(image.height) * 8;
-                    self.glyph_cache.make_room(
-                        &self.budgets.resources,
-                        cost,
-                        self.gpu.limits.resource_bytes,
-                    );
-                    let (upload, residency) = self.image_cache.reserve_upload(
-                        &self.budgets.resources,
-                        &self.budget_scope.resources,
-                        cost,
-                        resident,
-                        self.gpu.limits.resource_bytes,
-                    )?;
-                    self.tickets.push(upload);
-                    let (mut image, _) = resources::image(
-                        self.gpu,
-                        &mut self.encoder,
-                        frame,
-                        brush.image,
-                        at,
-                        cost,
-                    )?;
-                    image.residency = Some(residency);
-                    image.source = Some(lease.clone());
-                    let image = Arc::new(image);
-                    self.images.insert(brush.image, image.clone());
-                    image
-                };
+                let image = self.image_resource(frame, brush.image, at)?;
                 let bt = brush_transform.unwrap_or(Affine::IDENTITY);
                 if bt.determinant() == 0. {
                     return Err(GpuError::Unsupported {
@@ -237,6 +180,65 @@ impl Context<'_> {
         };
         mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
         self.paint(target, &mesh, &image.view)
+    }
+    pub(super) fn image_resource(
+        &mut self,
+        frame: &RenderFrame,
+        handle: reel_ui::resources::ResourceHandle,
+        at: RecordLocation,
+    ) -> Result<Arc<resources::Image>, GpuError> {
+        Ok(if let Some(image) = self.images.get(&handle) {
+            image.clone()
+        } else if let Some(image) = self.image_cache.get(handle) {
+            self.tickets.push(super::renderer::Reservation {
+                _shared: None,
+                _local: super::image_cache::reserve_local(
+                    &self.budget_scope.resources,
+                    image.residency.as_ref().unwrap().bytes(),
+                    self.gpu.limits.resource_bytes,
+                )?,
+            });
+            self.images.insert(handle, image.clone());
+            image
+        } else {
+            let lease = frame
+                .resources()
+                .leases()
+                .iter()
+                .find(|r| r.handle() == handle)
+                .ok_or(GpuError::Unsupported {
+                    at,
+                    record: "missing image",
+                })?;
+            let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
+                return Err(GpuError::Unsupported {
+                    at,
+                    record: "image type",
+                });
+            };
+            let cost = resources::upload_cost([image.width, image.height])?;
+            let resident = u64::from(image.width) * u64::from(image.height) * 8;
+            self.glyph_cache.make_room(
+                &self.budgets.resources,
+                cost,
+                self.gpu.limits.resource_bytes,
+            );
+            let (upload, residency) = self.image_cache.reserve_upload(
+                &self.budgets.resources,
+                &self.budget_scope.resources,
+                cost,
+                resident,
+                self.gpu.limits.resource_bytes,
+            )?;
+            self.tickets.push(upload);
+            let (mut image, _) =
+                resources::image(self.gpu, &mut self.encoder, frame, handle, at, cost)?;
+            image.residency = Some(residency);
+            image.source = Some(lease.clone());
+            let image = Arc::new(image);
+            self.images.insert(handle, image.clone());
+            image
+        })
     }
     fn glyphs(
         &mut self,
@@ -338,7 +340,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    fn paint(
+    pub(super) fn paint(
         &mut self,
         target: &Target,
         mesh: &mesh::Mesh,
@@ -366,6 +368,17 @@ impl Context<'_> {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        #[cfg(test)]
+        {
+            self.gpu
+                .upload_creations
+                .mesh_buffers
+                .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+            self.gpu
+                .upload_creations
+                .brush_groups
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("reel brush"),
             layout: &self.pipelines.paint_layout,

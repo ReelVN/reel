@@ -311,6 +311,41 @@ mod tests {
     }
 
     #[test]
+    fn particles_keep_producers_live_and_wake_awaiters_after_window_suspension() {
+        for wait in [false, true] {
+            let ending = if wait {
+                "if await active != \"Completed\" { throw \"terminal\"; }"
+            } else {
+                ""
+            };
+            let mut story = runtime(&format!(
+                "fn main() {{ let snow = particles(\"snow.png\", rate: 10, lifetime: 1); stage.replace(snow); let active = emit(snow, duration: 1); {ending} }}"
+            ));
+            for _ in 0..10000 {
+                if !story.needs_work() {
+                    break;
+                }
+                story.tick(SliceBudget::default(), || 0).unwrap();
+            }
+            assert_eq!(story.driver.state(), StoryState::Running);
+            assert!(story.needs_tick());
+            story.tick(SliceBudget::default(), || 500_000_000).unwrap();
+            story.suspend(500_000_000);
+            assert!(!story.needs_tick());
+            story.resume(20_500_000_000);
+            for _ in 0..10000 {
+                if !story.needs_tick() {
+                    break;
+                }
+                story
+                    .tick(SliceBudget::default(), || 22_000_000_000)
+                    .unwrap();
+            }
+            assert_eq!(story.driver.state(), StoryState::Finished);
+        }
+    }
+
+    #[test]
     fn pure_delays_sleep_at_deadlines_and_suspension_preserves_remaining_time() {
         let mut story = runtime("fn main() { await run(delay(2)); }");
         for _ in 0..10_000 {

@@ -203,7 +203,7 @@ impl Activities {
         let tracks = get(heap, leaf, Slot::Tracks)?;
         for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
             if let Some(source) = track_source(heap, tracks, i)? {
-                if heap.host_fields(source.host).is_ok()
+                if heap.property_fields(source.host).is_ok()
                     && heap.property_claim(source)?.same_bits(leaf)
                 {
                     heap.set_property_claim(source, Value::NULL)?;

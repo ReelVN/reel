@@ -792,3 +792,103 @@ fn white_texture_cpu_measurement() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        peniko::{ImageAlphaType, ImageBrush, ImageFormat},
+        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+    };
+    use std::sync::atomic::Ordering;
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let bytes = [255, 255, 255, 255].repeat(16);
+    let ticket = pool.reserve(bytes.len() as u64).unwrap();
+    let handle = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("sprite".into()),
+                version: ContentVersion([8; 32]),
+            },
+            OwnedBytes::new(bytes, ticket).unwrap(),
+            [4, 4],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let lease = registry.acquire(handle).unwrap();
+    let ResourceData::Image { image, .. } = lease.data() else {
+        unreachable!()
+    };
+    let mut renderer = renderer(Default::default());
+    eprintln!("sprite adapter: {:?}", renderer.gpu.adapter.get_info());
+    for (particles, boundary) in [(128, false), (2048, false), (16384, false), (2048, true)] {
+        let mut scene = Scene::new();
+        for index in 0..particles {
+            if boundary && index == particles / 2 {
+                scene.push_group(Group {
+                    composite: Composite {
+                        alpha: 0.5,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            }
+            scene.draw(Draw::Fill {
+                transform: Affine::translate(((index % 100) as f64, (index / 100) as f64)),
+                fill_rule: Default::default(),
+                brush: Brush::Image(
+                    ImageBrush::new(image.clone()).with_alpha((index % 10 + 1) as f32 / 10.),
+                ),
+                brush_transform: Some(Affine::scale(0.5)),
+                shape: Geometry::Rect(Rect::new(0., 0., 2., 2.)),
+                composite: Composite::default(),
+            });
+        }
+        if boundary {
+            scene.pop_group();
+        }
+        let frame = frame_with_snapshot(scene, registry.freeze(&[handle], &pool).unwrap(), &pool);
+        let before = [
+            &renderer.gpu.upload_creations.draws,
+            &renderer.gpu.upload_creations.mesh_buffers,
+            &renderer.gpu.upload_creations.brush_groups,
+        ]
+        .map(|v| v.load(Ordering::Relaxed));
+        let start = Instant::now();
+        let prepared = renderer.prepare(&frame).unwrap();
+        let preparation = start.elapsed();
+        let transient_peak = prepared.budget_scope.transient.usage().peak_bytes;
+        let resources_peak = prepared.budget_scope.resources.usage().peak_bytes;
+        let after = [
+            &renderer.gpu.upload_creations.draws,
+            &renderer.gpu.upload_creations.mesh_buffers,
+            &renderer.gpu.upload_creations.brush_groups,
+        ]
+        .map(|v| v.load(Ordering::Relaxed));
+        let batches = if boundary { 2 } else { 1 };
+        assert_eq!(
+            std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
+            [batches, batches * 2, batches]
+        );
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        eprintln!(
+            "{particles} sprites group_boundary={boundary}: draws={batches}, mesh_uploads={}, brush_groups={batches}, prepare={preparation:?}, prepare_submit_complete={:?}, transient_peak_bytes={transient_peak}, image_peak_bytes={resources_peak}",
+            batches * 2,
+            start.elapsed()
+        );
+    }
+    counts(&renderer, 1);
+}

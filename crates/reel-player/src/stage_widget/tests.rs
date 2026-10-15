@@ -564,6 +564,183 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
     assert!(hidden.geometry().get(ids[&left].0).unwrap().is_stashed);
 }
 
+#[test]
+fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
+    use reel_ui::{
+        app::GeometryRecord,
+        peniko::{Blob, ImageAlphaType, ImageFormat},
+        stage::particles::{ParticleBatch, ParticleConfig, ParticleFrame},
+    };
+    let config = Arc::new(ParticleConfig {
+        source: "sprite.png".into(),
+        origin: None,
+        rate: 100.,
+        lifetime: 5.,
+        seed: 42,
+        velocity: [-20., 60.],
+        spread: [30., 20.],
+        acceleration: [10., -12.],
+        size: 24.,
+        size_spread: 8.,
+        opacity: [1., 1.],
+        spin: 90.,
+        spin_spread: 40.,
+    });
+    let mut frame = ParticleFrame {
+        elapsed: 1.,
+        duration: None,
+        extent: [1000., 700.],
+    };
+    let mut stage = Stage::default();
+    let id = stage
+        .create(
+            NodeKind::Particles(ParticleBatch {
+                config: config.clone(),
+                frame: Some(frame),
+            }),
+            NodeProps {
+                width: Some(1000.),
+                height: Some(700.),
+                x: -600.,
+                y: -400.,
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    stage.replace(id).unwrap();
+    let mut view = StageView::capture(&stage);
+    view.root.as_mut().unwrap().image = Some(ImageData {
+        data: Blob::new(Arc::new(vec![255_u8; 2 * 4 * 4])),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: 2,
+        height: 4,
+    });
+    let widget = NewWidget::new(StageWidget::new(Some(&view)));
+    let widget_id = widget.id();
+    let root = RenderRoot::new(
+        widget,
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(DefaultProperties::new()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(640, 420),
+            scale_factor: 1.,
+            default_font: None,
+        },
+    );
+    let mut bridge = PresentationBridge::new(
+        root,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 8 << 20,
+        },
+    )
+    .unwrap();
+    fn record(
+        bridge: &mut PresentationBridge,
+        widget: WidgetId,
+        view: &StageView,
+        frame: u64,
+    ) -> (GeometryRecord, usize) {
+        bridge.edit_widget(widget, |mut w| StageWidget::sync(&mut w.downcast(), view));
+        let source = bridge.record(FrameId(frame)).unwrap();
+        let root = bridge.root().get_widget(widget).unwrap();
+        let children = root.children();
+        let particles = children[0].downcast::<SceneWidget>().unwrap();
+        (
+            source.geometry().get(particles.id()).unwrap().clone(),
+            particles.layouts,
+        )
+    }
+    fn assert_covers_sprites(geometry: &GeometryRecord, batch: &ParticleBatch) {
+        let viewport = Rect::new(0., 0., 640., 420.);
+        let mut visible = 0;
+        for sprite in batch.samples() {
+            let transform = geometry.window_transform
+                * Affine::translate((sprite.position[0], sprite.position[1]))
+                * Affine::rotate(sprite.rotation.to_radians());
+            // The fixture image is twice as high as it is wide.
+            let bounds = transform.transform_rect_bbox(Rect::new(
+                -sprite.size * 0.5,
+                -sprite.size,
+                sprite.size * 0.5,
+                sprite.size,
+            ));
+            assert_eq!(geometry.bounding_box.union(bounds), geometry.bounding_box);
+            visible += usize::from(bounds.intersect(viewport).area() > 0.);
+        }
+        assert!(
+            visible > 0,
+            "sprites beyond the shrunken layout remain in the viewport"
+        );
+    }
+    let (_, original_layouts) = record(&mut bridge, widget_id, &view, 1);
+    let node = &mut view.root.as_mut().unwrap().node;
+    node.props.width = Some(10.);
+    node.props.height = Some(5.);
+    let (small, resized_layouts) = record(&mut bridge, widget_id, &view, 2);
+    assert!(resized_layouts > original_layouts);
+    assert_eq!(small.size, Size::new(10., 5.));
+    assert_eq!(
+        small
+            .window_transform
+            .transform_rect_bbox(small.size.to_rect())
+            .intersect(Rect::new(0., 0., 640., 420.))
+            .area(),
+        0.
+    );
+    assert_covers_sprites(
+        &small,
+        &ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        },
+    );
+
+    // A restarted emission can capture a different extent even if its final
+    // authored dimensions equal the last presentation's dimensions.
+    frame.extent = [1400., 1000.];
+    view.root.as_mut().unwrap().node.kind = NodeKind::Particles(ParticleBatch {
+        config: config.clone(),
+        frame: Some(frame),
+    });
+    let (restarted, restarted_layouts) = record(&mut bridge, widget_id, &view, 3);
+    assert!(restarted_layouts > resized_layouts);
+    assert!(restarted.bounding_box.x1 > small.bounding_box.x1);
+    assert!(restarted.bounding_box.y1 > small.bounding_box.y1);
+    assert_covers_sprites(
+        &restarted,
+        &ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        },
+    );
+
+    for step in 4..20 {
+        frame.elapsed += 0.1;
+        let node = &mut view.root.as_mut().unwrap().node;
+        node.props.rotation = -17.;
+        node.props.scale_x = 1.5;
+        let batch = ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        };
+        node.kind = NodeKind::Particles(batch.clone());
+        let (geometry, layouts) = record(&mut bridge, widget_id, &view, step);
+        assert_eq!(
+            layouts, restarted_layouts,
+            "time and affine motion remain render/compose only"
+        );
+        assert_covers_sprites(&geometry, &batch);
+    }
+}
+
 #[cfg(feature = "window")]
 #[test]
 #[ignore = "requires actual graphics adapter"]
@@ -1037,4 +1214,418 @@ fn authored_text_width_controls_scroll_extent_independently_of_parent_width() {
             "end following includes the complete last line"
         );
     }
+}
+
+#[test]
+fn camera_accepted_frame_pointer_clip_and_composition_cost() {
+    use reel_ui::core::{
+        PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState,
+        PointerType,
+    };
+    use reel_ui::dpi::PhysicalPosition;
+    use reel_ui::stage::{CameraView, InputBindings, NodeEvent, PointerPhase};
+    fn pointer(down: bool, x: f64, y: f64) -> PointerEvent {
+        let event = PointerButtonEvent {
+            pointer: PointerInfo {
+                pointer_id: Some(PointerId::PRIMARY),
+                persistent_device_id: None,
+                pointer_type: PointerType::Mouse,
+            },
+            state: PointerState {
+                position: PhysicalPosition::new(x, y),
+                ..Default::default()
+            },
+            button: Some(PointerButton::Primary),
+        };
+        if down {
+            PointerEvent::Down(event)
+        } else {
+            PointerEvent::Up(event)
+        }
+    }
+    let font = std::env::var_os("REEL_SESSION_FONT")
+        .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
+    eprintln!("camera actual font supplied={}", font.is_some());
+    let mut f = Fixture::new(font);
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Camera(CameraView {
+                x: 40.,
+                y: 30.,
+                zoom: 2.,
+                rotation: 90.,
+            }),
+            NodeProps {
+                x: 100.,
+                y: 80.,
+                width: Some(200.),
+                height: Some(160.),
+                padding: 10.,
+                clip: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.stage
+        .update(
+            f.red,
+            NodeKind::Input {
+                bindings: InputBindings::new(vec![]).unwrap(),
+                listening: false,
+                keyboard: false,
+                pointer: true,
+            },
+            NodeProps {
+                x: 30.,
+                y: 20.,
+                width: Some(300.),
+                height: Some(200.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.edit(f.blue, |p| {
+        p.x = 500.;
+    });
+    let first = f.record();
+    f.accept(&first);
+    let before = f.layouts();
+    let root = before[&f.root].0;
+    let red = before[&f.red].0;
+    affine(
+        first.geometry().get(red).unwrap().window_transform,
+        [0., -2., 2., 0., 180., 180.],
+    );
+    assert_eq!(
+        first.geometry().get(root).unwrap().clip_path,
+        Some(Rect::new(0., 0., 200., 160.))
+    );
+    let press = |f: &mut Fixture, x, y| {
+        let events =
+            f.ui.handle_pointer(&mut f.bridge, pointer(true, x, y))
+                .unwrap()
+                .events;
+        f.ui.handle_pointer(&mut f.bridge, pointer(false, x, y))
+            .unwrap();
+        events.into_iter().find_map(|event| match event {
+            NodeEvent::Pointer(event) if event.phase == PointerPhase::Pressed => Some(event),
+            _ => None,
+        })
+    };
+    let event = press(&mut f, 200., 160.).expect("camera input");
+    assert_eq!(event.node, f.red);
+    assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
+    assert!(
+        press(&mut f, 200., -40.).is_none(),
+        "viewport clip excludes transformed overflow"
+    );
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Camera(CameraView {
+                x: 60.,
+                y: 30.,
+                zoom: 2.,
+                rotation: 90.,
+            }),
+            props,
+        )
+        .unwrap();
+    let pending = f.record();
+    let event = press(&mut f, 200., 160.).expect("old accepted camera input");
+    assert!(
+        (event.position - Point::new(10., 10.)).hypot() < 1e-9,
+        "unaccepted camera motion cannot alter input coordinates"
+    );
+    f.accept(&pending);
+    let event = press(&mut f, 200., 160.).expect("new accepted camera input");
+    assert!((event.position - Point::new(30., 10.)).hypot() < 1e-9);
+    assert_eq!(f.layouts(), before);
+    drop(pending);
+    let started = std::time::Instant::now();
+    for step in 0..1000 {
+        let props = f.stage.node(f.root).unwrap().props.clone();
+        f.stage
+            .update(
+                f.root,
+                NodeKind::Camera(CameraView {
+                    x: f64::from(step) * 0.1,
+                    y: 30.,
+                    zoom: 1. + f64::from(step) * 0.001,
+                    rotation: f64::from(step) * 0.1,
+                }),
+                props,
+            )
+            .unwrap();
+        let source = f.record();
+        f.accept(&source);
+    }
+    assert_eq!(
+        f.layouts(),
+        before,
+        "camera motion preserves all identities and layout counts"
+    );
+    affine(
+        first.geometry().get(red).unwrap().window_transform,
+        [0., -2., 2., 0., 180., 180.],
+    );
+    eprintln!(
+        "1000 camera projection/record/accept frames: {:?}; added layouts=0",
+        started.elapsed()
+    );
+    // Nested cameras compose through the same child affine, with the outer
+    // camera magnifying the inner viewport's own layout placement.
+    let leaf = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                x: 10.,
+                y: 5.,
+                width: Some(20.),
+                height: Some(10.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let inner = f
+        .stage
+        .create(
+            NodeKind::Camera(CameraView {
+                x: 10.,
+                y: 5.,
+                zoom: 3.,
+                rotation: 90.,
+            }),
+            NodeProps {
+                x: 40.,
+                y: 20.,
+                width: Some(80.),
+                height: Some(60.),
+                clip: true,
+                ..Default::default()
+            },
+            vec![leaf],
+        )
+        .unwrap();
+    let outer = f
+        .stage
+        .create(
+            NodeKind::Camera(CameraView {
+                zoom: 2.,
+                ..Default::default()
+            }),
+            NodeProps {
+                x: 20.,
+                y: 30.,
+                width: Some(200.),
+                height: Some(100.),
+                clip: true,
+                ..Default::default()
+            },
+            vec![inner],
+        )
+        .unwrap();
+    f.stage.replace(outer).unwrap();
+    let nested = f.record();
+    f.accept(&nested);
+    let leaf_widget = f.layouts()[&leaf].0;
+    affine(
+        nested.geometry().get(leaf_widget).unwrap().window_transform,
+        [0., -6., 6., 0., 280., 180.],
+    );
+}
+
+#[test]
+fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
+    use reel_ui::core::{
+        PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState,
+        PointerType,
+    };
+    use reel_ui::dpi::PhysicalPosition;
+    use reel_ui::stage::NodeEvent;
+    let font = std::env::var_os("REEL_SESSION_FONT")
+        .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
+    let mut f = Fixture::new(font);
+    f.edit(f.root, |props| {
+        *props = NodeProps {
+            width: Some(180.),
+            height: Some(80.),
+            ..Default::default()
+        };
+    });
+    for (id, label) in [(f.red, "Red"), (f.blue, "Blue")] {
+        f.stage
+            .update(
+                id,
+                NodeKind::Button {
+                    label: Some(label.into()),
+                    listening: true,
+                },
+                NodeProps {
+                    width: Some(160.),
+                    height: Some(60.),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let click = |f: &mut Fixture| {
+        let mut activated = Vec::new();
+        for down in [true, false] {
+            let event = PointerButtonEvent {
+                pointer: PointerInfo {
+                    pointer_id: Some(PointerId::PRIMARY),
+                    persistent_device_id: None,
+                    pointer_type: PointerType::Mouse,
+                },
+                state: PointerState {
+                    position: PhysicalPosition::new(30., 30.),
+                    ..Default::default()
+                },
+                button: Some(PointerButton::Primary),
+            };
+            let event = if down {
+                PointerEvent::Down(event)
+            } else {
+                PointerEvent::Up(event)
+            };
+            for event in f.ui.handle_pointer(&mut f.bridge, event).unwrap().events {
+                if let NodeEvent::Click(event) = event {
+                    activated.push(event.node);
+                }
+            }
+        }
+        activated
+    };
+    let first = f.record();
+    f.accept(&first);
+    let before = f.layouts();
+    assert_eq!(click(&mut f), [f.blue]);
+    assert_eq!(f.bridge.root().focused_widget(), Some(before[&f.blue].0));
+    let retired = f
+        .stage
+        .reconcile_children(f.root, vec![f.blue, f.red])
+        .unwrap();
+    assert!(retired.is_empty());
+    let pending = f.record();
+    assert_eq!(
+        click(&mut f),
+        [f.blue],
+        "input still uses the accepted child order"
+    );
+    f.accept(&pending);
+    assert_eq!(f.bridge.root().focused_widget(), Some(before[&f.blue].0));
+    let after = f.layouts();
+    assert_eq!(after[&f.root].0, before[&f.root].0);
+    for id in [f.red, f.blue] {
+        assert_eq!(
+            after[&id], before[&id],
+            "reordering retains identity and text layout"
+        );
+    }
+    assert_eq!(
+        click(&mut f),
+        [f.red],
+        "new presentation changes the topmost target"
+    );
+}
+
+#[test]
+fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
+    use crate::assets::{AssetOptions, Assets};
+    use reel_core::prepared_image::PreparedImage;
+    use reel_ui::stage::particles::{ParticleBatch, ParticleConfig};
+    let mut stage = Stage::default();
+    let particle = stage
+        .create(
+            NodeKind::Particles(ParticleBatch {
+                config: Arc::new(ParticleConfig {
+                    source: "assets/panels.png".into(),
+                    origin: Some("snow.aside:7:3".into()),
+                    rate: 4.,
+                    lifetime: 2.,
+                    seed: 42,
+                    velocity: [0., 20.],
+                    spread: [0., 0.],
+                    acceleration: [0., 0.],
+                    size: 8.,
+                    size_spread: 0.,
+                    opacity: [1., 0.],
+                    spin: 0.,
+                    spin_spread: 0.,
+                }),
+                frame: None,
+            }),
+            NodeProps::default(),
+            vec![],
+        )
+        .unwrap();
+    let background = stage
+        .create(
+            NodeKind::Image {
+                source: "background.reel-image".into(),
+                origin: Some("snow.aside:2:3".into()),
+                fit: Default::default(),
+            },
+            NodeProps::default(),
+            vec![],
+        )
+        .unwrap();
+    let root = stage
+        .create(
+            NodeKind::Stack,
+            NodeProps::default(),
+            vec![background, particle],
+        )
+        .unwrap();
+    stage.replace(root).unwrap();
+    let mut view = StageView::capture(&stage);
+    let mut images = crate::images::Images::new(Assets::directory(AssetOptions {
+        root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+        ..Default::default()
+    }));
+    let (send, receive) = std::sync::mpsc::channel();
+    images.set_waker(Arc::new(move || {
+        let _ = send.send(());
+    }));
+    images.manifests.insert(
+        "background.reel-image".into(),
+        PreparedImage::new(4096, 2048, 512).unwrap(),
+    );
+    images.request_stage(&view);
+    while !images.poll().unwrap() {
+        receive
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+    }
+    view.resolve_metadata(&images);
+    let root = view.root.as_ref().unwrap();
+    assert_eq!(root.children[0].tiled_size, Some(Size::new(4096., 2048.)));
+    let sprite = root.children[1].image.as_ref().unwrap();
+    assert_eq!([sprite.width, sprite.height], [160, 90]);
+    assert_eq!(view.resources.len(), 1);
+    assert_eq!(
+        view.resources[0].handle(),
+        images.loaded["assets/panels.png"].handle()
+    );
+    let widget = SceneWidget::new(root);
+    assert!(widget.image.is_none());
+    assert_eq!(
+        images.loads, 1,
+        "metadata path reuses the one decoded sprite"
+    );
+
+    let NodeKind::Particles(batch) = &mut view.root.as_mut().unwrap().children[1].node.kind else {
+        unreachable!()
+    };
+    Arc::make_mut(&mut batch.config).source = "background.reel-image".into();
+    images.request_stage(&view);
+    let error = images.poll().unwrap_err();
+    assert!(error.contains("snow.aside:7:3"), "{error}");
+    assert!(error.contains("whole PNG or JPEG sprite"), "{error}");
+    assert_eq!(images.loads, 1, "unsupported request is rejected before IO");
 }

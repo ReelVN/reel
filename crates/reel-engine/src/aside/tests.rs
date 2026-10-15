@@ -7,6 +7,7 @@ mod buttons;
 mod dynamic_stage;
 mod localization;
 mod models;
+mod particles;
 mod results;
 mod rich_text;
 mod tasks;

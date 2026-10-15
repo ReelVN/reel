@@ -114,6 +114,26 @@ impl Mesh {
             .extend([start, start + 1, start + 2, start, start + 2, start + 3]);
         Ok(())
     }
+    pub(super) fn image_quad(
+        &mut self,
+        rect: Rect,
+        transform: Affine,
+        uv: Affine,
+        size: [u32; 2],
+        alpha: f32,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        let start = self.vertices.len();
+        self.quad(rect, rect)?;
+        transform_vertices(
+            &mut self.vertices[start..],
+            transform,
+            size,
+            Some(uv),
+            [alpha; 4],
+            at,
+        )
+    }
     fn push(
         &mut self,
         p: lyon_tessellation::math::Point,
@@ -386,7 +406,17 @@ fn transform_mesh(
     color: [f32; 4],
     at: RecordLocation,
 ) -> Result<(), GpuError> {
-    for v in &mut mesh.vertices {
+    transform_vertices(&mut mesh.vertices, transform, size, uv, color, at)
+}
+fn transform_vertices(
+    vertices: &mut [Vertex],
+    transform: Affine,
+    size: [u32; 2],
+    uv: Option<Affine>,
+    color: [f32; 4],
+    at: RecordLocation,
+) -> Result<(), GpuError> {
+    for v in vertices {
         let local = Point::new(f64::from(v.position[0]), f64::from(v.position[1]));
         let p = transform * local;
         v.position = [
@@ -412,6 +442,48 @@ fn transform_mesh(
 mod tests {
     use super::*;
     use reel_ui::core::Widget;
+    #[test]
+    fn image_quads_preserve_order_crop_transforms_and_alpha() {
+        let limits = super::super::GpuLimits::default();
+        let budgets = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let mut mesh = Mesh::new(Allocation::new(
+            &budgets,
+            &local,
+            limits.transient_bytes,
+            1 << 20,
+        ));
+        let at = RecordLocation {
+            fragment: 0,
+            command: 0,
+            mask_depth: 0,
+            owner: reel_ui::widgets::Label::new("").prepare().id(),
+        };
+        let bounds = Rect::new(2., 4., 6., 8.);
+        let uv = Affine::scale_non_uniform(0.1, 0.2) * Affine::translate((-2., -4.));
+        mesh.image_quad(
+            bounds,
+            Affine::translate((10., 20.)),
+            uv,
+            [100, 100],
+            0.25,
+            at,
+        )
+        .unwrap();
+        mesh.image_quad(bounds, Affine::scale(2.), uv, [100, 100], 0.75, at)
+            .unwrap();
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+        assert_eq!(mesh.vertices[0].position, [-0.76, 0.52]);
+        assert_eq!(mesh.vertices[4].position, [-0.92, 0.84]);
+        assert_eq!(mesh.vertices[0].uv, [0., 0.]);
+        assert_eq!(mesh.vertices[2].uv, [0.4, 0.8]);
+        assert!(mesh.vertices[..4].iter().all(|v| v.color == [0.25; 4]));
+        assert!(mesh.vertices[4..].iter().all(|v| v.color == [0.75; 4]));
+        drop(mesh);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+        assert_eq!(local.transient.usage().bytes, 0);
+    }
+
     #[test]
     fn stroke_float32_boundary_has_no_assertion_or_silent_clamp() {
         let at = RecordLocation {

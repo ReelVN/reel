@@ -1,5 +1,7 @@
 # Reel 游戏开发指南
 
+超出设备纹理尺寸的大图可先执行 `reel prepare-image panorama.png --output panorama.reel-image`，再使用 `image("panorama.reel-image")`。发布时同时携带清单与相邻的 `.tiles` 目录。播放器按可见范围和预算内的邻接区域加载瓦片，移动和缩放复用已驻留像素。参见[格式与预处理合同](../prepared-images.md)。 使用宽幅原图和下文的字体配置运行[大图示例](../../examples/author_large_image.aside)。目前预处理需显式执行，build 不复制或准备图片。
+
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
 [English](en.md) · [文档目录 / Documentation index](../README.md)
@@ -203,6 +205,18 @@ column(gap: 12) {
 
 `container.add(child)` 将子树追加到 row、column 或 stack，返回原 child；`index:` 可指定从零开始的插入位置，允许等于当前子节点数，省略或传 null 表示末尾。子树必须尚未挂到舞台且没有父级。重复挂载、成环、向 text/image 添加或位置越界都会报错，原树保持不变。添加和删除保留其他节点及其控件身份，未改变的文字不重新整形。
 
+`container.move(child, index: ...)` 调整已有直属子节点的顺序，无须先移除。index 必填，表示调整后的零起始位置；三个子节点的合法位置为 0、1、2。方法返回原 child，移到原位置不会改变场景。节点的属性、正在运行的动画、回调、焦点和已加载资源继续保留。stack 按新顺序从后向前叠放，row/column 按新顺序布局。非直属子节点或越界索引会报错，原树保持不变。
+
+```aside
+let back = image("assets/panels.png");
+let front = image("assets/sun.jpg", x: 120);
+let scene = stack { back; front; };
+stage.replace(scene);
+scene.move(back, index: 1);
+```
+
+完整的 [author_reorder.aside](../../examples/author_reorder.aside) 展示重叠卡片置前，同时保留正在运行的动画。不支持跨父级移动。
+
 `node.remove()` 移除并退休该节点及其全部后代，也可用于舞台根；`container.clear()` 只退休子节点，保留容器自身的属性和身份。两者返回 null。退休使相关动画取消并释放舞台对图片的请求；旧节点不能重新挂载或继续读写。需要再次展示的组件应由函数重新构造。方法可以保存和传递，始终保留原接收者；已保存的 remove 可重复调用。
 
 ```aside
@@ -246,6 +260,7 @@ fn main() {
 
 所有基础节点都支持 rotation、scale_x/scale_y 和 anchor_x/anchor_y，容器的变换作用于整个组件。rotation 是顺时针角度，默认 0；scale_x/scale_y 默认 1，负数可翻转，0 折叠画面且不参与命中。anchor_x/anchor_y 按布局宽高取比例，默认 (0,0) 为左上角，(0.5,0.5) 为中心；也可放到组件外。x/y 指定锚点相对容器排布位置的偏移。先围绕锚点缩放，再旋转，再放到该位置；父容器的变换继续作用于结果。宽高和 row/column 排布保持变换前的尺寸。裁剪与呈现几何使用相同变换，属性修改保留原节点；移动、旋转、缩放、锚点和透明度编辑不会重新排版。
 
+
 ```aside
 fn main() {
     let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
@@ -263,6 +278,25 @@ fn main() {
 ```
 
 完整可运行示例见 [author_transforms.aside](../../examples/author_transforms.aside)，资源和运行方法与图片示例相同。
+
+### 相机取景
+
+使用 `camera { ... }` 对场景平移取景、缩放和旋转。`camera_x/camera_y` 是显示在视口中心的世界坐标，默认 (0,0)；左上角为原点的场景应显式指定场景中心。`zoom` 默认 1，必须为正数。`camera_rotation` 是相机顺时针角度，场景沿反方向旋转。普通 `x/y`、`rotation`、scale 和 anchor 定位整个视口。width/height 指定视口尺寸，省略时采用内容布局。子节点像 stack 一样叠放，padding 保留在视口坐标。`clip` 默认 true，可显式关闭。
+
+```aside
+let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
+    image("assets/panels.png", width: 960, height: 540);
+    text("Look here", x: 620, y: 160);
+};
+stage.replace(view);
+await stage.presented(owner: view);
+await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
+                camera_rotation: 8, duration: 1.2, easing: "in_out"));
+```
+
+四个取景属性支持赋值、bind/derive 和 tween，沿用活动的取消和所有权规则。把 HUD 作为相机外的兄弟节点即可保持固定；相机也能嵌套组合。移动不会重新排版文字或重新加载图片；绘制与指针坐标共用已接受帧的变换和裁剪。完整的 [author_camera.aside](../../examples/author_camera.aside) 仅需提供 `fonts/body.ttf`，沿用第一节 dev/build/run 命令。这里是二维相机，尚未实现透视投影。
+
+
 
 画面的节点、绘制记录和嵌套层级随实际内容增长。输入路径在新画面发布前扩容，已有按下、拖动和释放继续对应正确的节点。实际内存预算与 GPU 纹理尺寸由运行宿主和设备管理。
 以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 game:: 模块和自定义对话视图。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。
@@ -373,7 +407,16 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 `clock(interval: 60, owner: panel)` 创建可绑定的周期时钟，ticks 是完整周期数，elapsed 是这些周期的总秒数，初始均为 0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，节点退休取消；clock 无终点，不能 finish。参见 [时钟示例](../../examples/author_clock.aside)。
 
-动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、in、out、in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 已接通；scope 尚未实现。
+动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 已接通；scope 尚未实现。
+
+需要正弦曲线运动时，使用 `sine_in` 从慢到快加速，`sine_out` 从快到慢减速，或 `sine_in_out` 两端慢、中间快。所有曲线都精确到达指定终点；它们与三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 的运动节奏不同。
+
+```aside
+await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
+```
+
+完整的 [author_sine_easing.aside](../../examples/author_sine_easing.aside) 用相同距离和时长对比三条正弦曲线；打开窗口前请提供 `fonts/body.ttf`。
+
 
 语言底层现已支持等待宿主注册的可等待对象，普通 fn 可以直接写 `await request`；它会暂停当前调用链，让宿主继续处理其他工作。已完成对象也在下一调度步骤返回，错误在 await 位置报告并保留生产者原因。引擎活动现已接入这一协议；async fn 与 Future 构造尚未实现。可运行的宿主接入检查见 [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs)，命令为 `cargo test -p aside-compiler --test host_awaitables`。
 
@@ -989,3 +1032,21 @@ Windows 播放器向系统提交双声道音频，默认设备配置为多声道
 ./target/debug/reel.exe check examples/author_audio.aside
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
+
+### 图片粒子
+
+`particles` 用一个舞台节点组合落雪、花瓣等图片效果。source 必须是完整 PNG/JPEG 精灵，分块 `.reel-image` 只供 `image` 节点使用；`emit` 启动并返回活动，width/height 指定出生矩形。示例使用你提供的 `assets/petal.png` 和 `fonts/body.ttf`，完整入口见 [author_particles.aside](../../examples/author_particles.aside)。
+
+```aside
+let petals = particles("assets/petal.png", width: 1280, height: 20,
+    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
+    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
+    spin_spread: 60);
+stage.replace(petals);
+let falling = emit(petals, duration: 10);
+await falling;
+```
+
+缺省值：rate 每秒 60 粒，lifetime 5 秒，seed 0，velocity_x/y 为 0/80，spread_x/y 为 20/20，acceleration_x/y 为 0/0，size 12，size_spread 4，opacity_start/end 为 1/0，spin 0、spin_spread 每秒 30 度。spread 表示基值两侧均匀取样的半幅；size 为图片宽度，保留原宽高比，size_spread 不得超过 size。出生位置在 emit 启动时读取的 width/height 内均匀分布（未指定时为零）；首粒在 1/rate 秒出生。配置只读；共同位置、旋转、缩放、可见性、透明度及裁剪仍可更新和动画。
+
+省略 duration 持续发射；有限时长包含截止时刻出生的粒子，等待最后一粒死亡后返回 Completed。`pause(falling)` 冻结整个效果，`resume(falling)` 继续，`stop(falling)` 清空粒子并使 await 返回 Stopped。`finish(falling)` 清空有限效果并返回 Completed，持续效果不接受 finish。同一节点再次 emit 停止原活动，从同一种子重新开始；同一种子和累计时间与分帧无关。节点或活动 owner 退休取消发射，隐藏不暂停。缺省 owner 沿用其他活动规则；取消等待者不取消生产者。终态保留以供重复等待。粒子共用舞台图片资源和绘制路径，不逐粒子运行脚本。运行效果的保存/恢复尚未实现。

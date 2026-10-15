@@ -12,7 +12,7 @@ use crate::core::{
     WidgetMut,
 };
 use crate::imaging::Painter;
-use crate::kurbo::{Axis, Size};
+use crate::kurbo::{Affine, Axis, Rect, Size};
 use crate::layout::{LenReq, Length};
 use crate::peniko::ImageBrush;
 use crate::properties::ObjectFit;
@@ -38,9 +38,20 @@ const IMAGE_SCALE: f64 = 1.0;
 ///
 /// You can change the sizing of the image with the [`ObjectFit`] property.
 pub struct Image {
-    image_data: ImageBrush,
+    image_data: Option<ImageBrush>,
+    tiles: Vec<ImageTile>,
+    tiled_size: Size,
     decorative: bool,
     alt_text: Option<ArcStr>,
+}
+
+/// One resident tile. The image includes its sampling gutter; `clip` is the
+/// tile interior in original-image coordinates and `transform` maps its pixels.
+#[derive(Clone, Debug)]
+pub struct ImageTile {
+    pub image: ImageBrush,
+    pub transform: Affine,
+    pub clip: Rect,
 }
 
 // --- MARK: BUILDERS
@@ -52,9 +63,34 @@ impl Image {
     #[inline]
     pub fn new(image_data: impl Into<ImageBrush>) -> Self {
         Self {
-            image_data: image_data.into(),
+            image_data: Some(image_data.into()),
+            tiles: Vec::new(),
+            tiled_size: Size::ZERO,
             decorative: false,
             alt_text: None,
+        }
+    }
+
+    /// Metadata-only images have no tiles until their visible resources arrive.
+    pub fn tiled(size: Size, tiles: Vec<ImageTile>) -> Self {
+        Self {
+            image_data: None,
+            tiles,
+            tiled_size: size,
+            decorative: false,
+            alt_text: None,
+        }
+    }
+
+    pub fn set_tiles(this: &mut WidgetMut<'_, Self>, size: Size, tiles: Vec<ImageTile>) {
+        let layout_changed = this.widget.image_data.is_some() || this.widget.tiled_size != size;
+        this.widget.image_data = None;
+        this.widget.tiles = tiles;
+        this.widget.tiled_size = size;
+        if layout_changed {
+            this.ctx.request_layout();
+        } else {
+            this.ctx.request_render();
         }
     }
 
@@ -86,7 +122,8 @@ impl Image {
     /// Sets new `ImageBrush`.
     #[inline]
     pub fn set_image_data(this: &mut WidgetMut<'_, Self>, image_data: impl Into<ImageBrush>) {
-        this.widget.image_data = image_data.into();
+        this.widget.image_data = Some(image_data.into());
+        this.widget.tiles.clear();
         this.ctx.request_layout();
     }
 
@@ -116,9 +153,12 @@ impl Image {
     /// This takes into account [`IMAGE_SCALE`], so a high-resolution resource can
     /// have a stable preferred logical size.
     fn preferred_size(&self) -> Size {
+        let Some(image_data) = &self.image_data else {
+            return self.tiled_size;
+        };
         Size::new(
-            self.image_data.image.width as f64 / IMAGE_SCALE,
-            self.image_data.image.height as f64 / IMAGE_SCALE,
+            image_data.image.width as f64 / IMAGE_SCALE,
+            image_data.image.height as f64 / IMAGE_SCALE,
         )
     }
 }
@@ -173,14 +213,24 @@ impl Widget for Image {
         let object_fit = props.get::<ObjectFit>(cache);
         // For drawing we want to scale the actual image data lengths, which means
         // we need to avoid using Image::preferred_size which does not match the data.
-        let image_size = Size::new(
-            self.image_data.image.width as f64,
-            self.image_data.image.height as f64,
-        );
+        let image_size = self.preferred_size();
         let transform = object_fit.affine(content_box, image_size.to_rect());
 
         painter.with_fill_clip(content_box, |painter| {
-            painter.draw_image(&self.image_data, transform);
+            if let Some(image) = &self.image_data {
+                painter.draw_image(image, transform);
+            } else {
+                for tile in &self.tiles {
+                    // Adjacent interiors share rasterization edges on the same
+                    // target. Separate antialiased clip layers would blend their
+                    // complementary coverage twice and leave seams under rotation.
+                    painter
+                        .fill(tile.clip, &tile.image)
+                        .transform(transform)
+                        .brush_transform(Some(tile.transform))
+                        .draw();
+                }
+            }
         });
     }
 

@@ -7,6 +7,7 @@ pub mod budget;
 pub mod clock;
 pub mod identity;
 pub mod io;
+pub mod prepared_image;
 pub mod queue;
 pub mod request_ids;
 pub mod result;

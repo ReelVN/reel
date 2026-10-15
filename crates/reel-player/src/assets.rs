@@ -282,6 +282,13 @@ impl Assets {
     pub fn output_pool(&self) -> BudgetPool {
         self.0.borrow().output.clone()
     }
+    pub(crate) fn resident_available(&self) -> u64 {
+        let service = self.0.borrow();
+        service
+            .options
+            .resident_bytes
+            .saturating_sub(service.output.usage().bytes)
+    }
     pub fn temporary_pool(&self) -> BudgetPool {
         self.0.borrow().temporary.clone()
     }

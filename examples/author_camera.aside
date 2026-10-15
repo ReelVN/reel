@@ -1,0 +1,50 @@
+// Supply fonts/body.ttf relative to the asset root.
+// All scenery is composed from ordinary stage nodes; no external art is needed.
+fn main() {
+    game.configure(title: "Camera study", width: 960, height: 600,
+                   fonts: ["fonts/body.ttf"]);
+    let status = model({message: "Choose a landmark or watch the opening pan."});
+    let view = camera(width: 920, height: 470, x: 20, y: 20,
+                      camera_x: 600, camera_y: 320, background: "#101b2b") {
+        stack(width: 1200, height: 640, background: "#283e54") {
+            stack(x: 40, y: 400, width: 1120, height: 180, background: "#496b69");
+            for landmark in [{name: "Library", x: 180, color: "#ad775a"},
+                             {name: "Station", x: 540, color: "#6487a4"},
+                             {name: "Tower", x: 900, color: "#937aab"}] {
+                button(landmark.name, x: landmark.x, y: 240, width: 180, height: 160,
+                       background: landmark.color, decorated: false,
+                       on_click: || { status.message = f"Selected {landmark.name}"; });
+            }
+            text("A world larger than its frame", x: 140, y: 80, font_size: 36);
+        };
+    };
+    stage.replace(stack(width: 960, height: 600, background: "#101b2b") {
+        view;
+        column(x: 20, y: 505, gap: 12) {
+            text(value: derive(|| status.message), font_size: 20);
+            row(gap: 12) {
+                button("Library", on_click: || {
+                    await run(tween(view, camera_x: 270, camera_y: 320,
+                                    zoom: 1.5, camera_rotation: -6, duration: 0.8));
+                });
+                button("Tower", on_click: || {
+                    await run(tween(view, camera_x: 990, camera_y: 320,
+                                    zoom: 1.5, camera_rotation: 6, duration: 0.8));
+                });
+                button("Overview", on_click: || {
+                    await run(tween(view, camera_x: 600, camera_y: 320,
+                                    zoom: 0.72, camera_rotation: 0, duration: 0.8));
+                });
+            }
+        }
+    });
+    await stage.presented(owner: view);
+    await run(sequence(
+        tween(view, camera_x: 270, zoom: 1.4, duration: 1.2, easing: "in_out"),
+        delay(0.5),
+        tween(view, camera_x: 990, camera_rotation: 6, duration: 2.0, easing: "in_out"),
+        delay(0.5),
+        tween(view, camera_x: 600, zoom: 0.72, camera_rotation: 0,
+              duration: 1.2, easing: "in_out")
+    ), owner: view);
+}

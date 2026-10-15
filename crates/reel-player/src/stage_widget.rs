@@ -3,7 +3,7 @@ use reel_ui::{
     accesskit::{Node, Role},
     core::*,
     imaging::{Composite, GroupRef, Painter},
-    kurbo::{Axis, Point, Rect, Size, Vec2},
+    kurbo::{Axis, Insets, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
     peniko::{Color, ImageData},
     properties::{ContentColor, ThumbColor, ThumbRadius, TrackColor, TrackThickness},
@@ -38,6 +38,8 @@ struct SceneNode {
     node: StageNode,
     children: Vec<SceneNode>,
     image: Option<ImageData>,
+    tiled_size: Option<Size>,
+    tiles: Vec<reel_ui::widgets::ImageTile>,
 }
 impl StageView {
     pub fn capture(stage: &Stage) -> Self {
@@ -52,6 +54,8 @@ impl StageView {
                 node,
                 children,
                 image: None,
+                tiled_size: None,
+                tiles: Vec::new(),
             }
         }
         Self {
@@ -113,28 +117,37 @@ impl StageView {
             })
             .collect()
     }
-    pub fn image_requests(&self) -> BTreeMap<String, Option<String>> {
+    pub fn image_requests(&self) -> Result<BTreeMap<String, Option<String>>, String> {
         let mut requests = BTreeMap::new();
         let mut pending: Vec<_> = self.root.iter().collect();
         while let Some(node) = pending.pop() {
-            if let NodeKind::Image { source, origin, .. } = &node.node.kind {
+            if let Some((source, origin)) = image_source(&node.node.kind) {
+                if matches!(node.node.kind, NodeKind::Particles(_))
+                    && source.ends_with(".reel-image")
+                {
+                    return Err(format!(
+                        "{}: particle image {source:?}: particles require a whole PNG or JPEG sprite; prepared .reel-image sources are supported by image nodes",
+                        origin.as_deref().unwrap_or("stage")
+                    ));
+                }
                 requests
-                    .entry(source.clone())
+                    .entry(source.to_owned())
                     .or_insert_with(|| origin.clone());
             }
             pending.extend(node.children.iter());
         }
-        requests
+        Ok(requests)
     }
     pub fn resolve_images(&mut self, images: &BTreeMap<String, ResourceLease>) {
         self.resources = self
             .image_requests()
+            .expect("validated stage image requests")
             .keys()
             .map(|source| images[source].clone())
             .collect();
         let mut pending: Vec<_> = self.root.iter_mut().collect();
         while let Some(node) = pending.pop() {
-            if let NodeKind::Image { source, .. } = &node.node.kind {
+            if let Some((source, _)) = image_source(&node.node.kind) {
                 let ResourceData::Image { image, .. } = images[source].data() else {
                     unreachable!()
                 };
@@ -142,6 +155,63 @@ impl StageView {
             }
             pending.extend(node.children.iter_mut());
         }
+    }
+    pub fn resolve_metadata(&mut self, images: &crate::images::Images) {
+        self.resources.clear();
+        let mut resources = std::collections::BTreeSet::new();
+        let mut pending: Vec<_> = self.root.iter_mut().collect();
+        while let Some(node) = pending.pop() {
+            if let Some((source, _)) = image_source(&node.node.kind) {
+                if let Some(manifest) = images.manifests.get(source) {
+                    node.image = None;
+                    node.tiled_size =
+                        Some(Size::new(manifest.width.into(), manifest.height.into()));
+                    node.tiles.clear();
+                } else if let Some(lease) = images.loaded.get(source) {
+                    let ResourceData::Image { image, .. } = lease.data() else {
+                        unreachable!()
+                    };
+                    node.image = Some(image.clone());
+                    node.tiled_size = None;
+                    if resources.insert(source.to_owned()) {
+                        self.resources.push(lease.clone());
+                    }
+                }
+            }
+            pending.extend(node.children.iter_mut());
+        }
+    }
+    pub fn resolve_tiles(
+        &mut self,
+        images: &crate::images::Images,
+        regions: &BTreeMap<NodeId, crate::images::ImageRegion>,
+    ) {
+        let mut pending: Vec<_> = self.root.iter_mut().collect();
+        let mut resources = std::collections::BTreeSet::new();
+        while let Some(node) = pending.pop() {
+            if let Some(region) = regions.get(&node.node.id) {
+                node.tiles = images.tile_paint(region);
+                resources.extend(region.tiles.iter().cloned());
+            }
+            pending.extend(node.children.iter_mut());
+        }
+        let mut handles: std::collections::BTreeSet<_> =
+            self.resources.iter().map(ResourceLease::handle).collect();
+        self.resources.extend(
+            resources
+                .iter()
+                .filter_map(|key| images.loaded.get(key))
+                .filter(|lease| handles.insert(lease.handle()))
+                .cloned(),
+        );
+    }
+}
+
+fn image_source(kind: &NodeKind) -> Option<(&str, &Option<String>)> {
+    match kind {
+        NodeKind::Image { source, origin, .. } => Some((source, origin)),
+        NodeKind::Particles(batch) => Some((&batch.config.source, &batch.config.origin)),
+        _ => None,
     }
 }
 
@@ -152,6 +222,39 @@ pub(crate) struct StageWidget {
     root_props: reel_ui::stage::NodeProps,
 }
 impl StageWidget {
+    pub(crate) fn image_widgets(
+        this: &mut WidgetMut<'_, Self>,
+    ) -> Vec<(NodeId, crate::images::tiles::ImageGeometry)> {
+        fn visit(
+            this: &mut WidgetMut<'_, SceneWidget>,
+            out: &mut Vec<(NodeId, crate::images::tiles::ImageGeometry)>,
+        ) {
+            if let (Some(image), NodeKind::Image { source, fit, .. }) =
+                (&this.widget.image, &this.widget.node.kind)
+            {
+                out.push((
+                    this.widget.node.id,
+                    crate::images::tiles::ImageGeometry {
+                        source: source.clone(),
+                        widget: image.id(),
+                        fit: *fit,
+                    },
+                ));
+            }
+            for (_, pod) in &mut this.widget.children {
+                if let Some(mut child) = this.ctx.get_mut(pod) {
+                    visit(&mut child, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = &mut this.widget.root
+            && let Some(mut root) = this.ctx.get_mut(root)
+        {
+            visit(&mut root, &mut out);
+        }
+        out
+    }
     pub fn new(view: Option<&StageView>) -> Self {
         let root = view.and_then(|view| view.root.as_ref());
         Self {
@@ -258,6 +361,7 @@ struct SceneWidget {
     editor: Option<WidgetPod<TextInput>>,
     image: Option<WidgetPod<Image>>,
     image_size: Size,
+    particle_image: Option<ImageData>,
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
@@ -386,18 +490,29 @@ impl SceneWidget {
             } else {
                 None
             },
-            image: view.image.as_ref().map(|image| {
-                let NodeKind::Image { fit, .. } = view.node.kind else {
-                    unreachable!()
-                };
-                NewWidget::new(Image::new(image.clone()))
-                    .with_props(fit)
-                    .to_pod()
-            }),
+            particle_image: matches!(view.node.kind, NodeKind::Particles(_))
+                .then(|| view.image.clone())
+                .flatten(),
+            image: view
+                .image
+                .as_ref()
+                .filter(|_| matches!(view.node.kind, NodeKind::Image { .. }))
+                .map(|image| Image::new(image.clone()))
+                .or_else(|| {
+                    view.tiled_size
+                        .map(|size| Image::tiled(size, view.tiles.clone()))
+                })
+                .map(|image| {
+                    let NodeKind::Image { fit, .. } = view.node.kind else {
+                        unreachable!()
+                    };
+                    NewWidget::new(image).with_props(fit).to_pod()
+                }),
             image_size: view
                 .image
                 .as_ref()
                 .map(|image| Size::new(image.width.into(), image.height.into()))
+                .or(view.tiled_size)
                 .unwrap_or(Size::ZERO),
             children: view
                 .children
@@ -420,6 +535,18 @@ impl SceneWidget {
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode, feedback: bool) -> bool {
+        if matches!(view.node.kind, NodeKind::Particles(_)) {
+            if this
+                .widget
+                .particle_image
+                .as_ref()
+                .map(|i| (i.width, i.height))
+                != view.image.as_ref().map(|i| (i.width, i.height))
+            {
+                this.ctx.request_layout();
+            }
+            this.widget.particle_image = view.image.clone();
+        }
         let mut content_changed = this.widget.node.kind != view.node.kind
             || this.widget.node.children != view.node.children
             || this.widget.node.props.visible != view.node.props.visible
@@ -481,7 +608,8 @@ impl SceneWidget {
             this.ctx.set_modal(view.node.props.modal);
         }
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
-            && this.widget.node.kind != view.node.kind
+            && (this.widget.node.kind != view.node.kind
+                || this.widget.image_size != Size::new(data.width.into(), data.height.into()))
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
             Image::set_image_data(&mut image, data.clone());
@@ -490,6 +618,16 @@ impl SceneWidget {
             };
             image.insert_prop(fit);
             this.widget.image_size = Size::new(data.width.into(), data.height.into());
+        }
+        if let (Some(pod), Some(size)) = (&mut this.widget.image, view.tiled_size)
+            && let Some(mut image) = this.ctx.get_mut(pod)
+        {
+            Image::set_tiles(&mut image, size, view.tiles.clone());
+            let NodeKind::Image { fit, .. } = view.node.kind else {
+                unreachable!()
+            };
+            image.insert_prop(fit);
+            this.widget.image_size = size;
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,
@@ -596,6 +734,10 @@ impl SceneWidget {
                 || old.clip != new.clip
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {
+                    (NodeKind::Particles(a), NodeKind::Particles(b)) => {
+                        a.config != b.config
+                            || a.frame.map(|f| f.extent) != b.frame.map(|f| f.extent)
+                    }
                     (
                         NodeKind::Scroll {
                             axis: a,
@@ -614,6 +756,9 @@ impl SceneWidget {
                 }
             {
                 this.ctx.request_layout();
+            }
+            if matches!(view.node.kind, NodeKind::Camera(_)) {
+                this.ctx.request_compose();
             }
             this.widget.node = view.node.clone();
             this.ctx.request_render();
@@ -1114,6 +1259,28 @@ impl Widget for SceneWidget {
                 );
             }
         }
+        if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
+            let insets = batch.frame.map_or(Insets::ZERO, |frame| {
+                let config = &batch.config;
+                let radius = (config.size + config.size_spread)
+                    * (1. + f64::from(image.height) / f64::from(image.width))
+                    * 0.5;
+                let reach: [f64; 2] = std::array::from_fn(|axis| {
+                    radius
+                        + (config.velocity[axis].abs() + config.spread[axis]) * config.lifetime
+                        + 0.5 * config.acceleration[axis].abs() * config.lifetime * config.lifetime
+                });
+                // Birth dimensions belong to emit's snapshot, not the current
+                // layout. Resizing must keep older sprites inside paint bounds.
+                Insets::new(
+                    reach[0],
+                    reach[1],
+                    (frame.extent[0] + reach[0] - size.width).max(0.),
+                    (frame.extent[1] + reach[1] - size.height).max(0.),
+                )
+            });
+            ctx.set_paint_insets(insets);
+        }
         if let Some(image) = &mut self.image {
             ctx.run_layout(image, inner);
             ctx.place_child(image, Point::new(padding, padding));
@@ -1196,8 +1363,16 @@ impl Widget for SceneWidget {
         } else {
             Vec2::ZERO
         };
+        let view = if let NodeKind::Camera(camera) = self.node.kind {
+            camera.transform(Size::new(
+                (self.size.width - self.node.props.padding * 2.).max(0.),
+                (self.size.height - self.node.props.padding * 2.).max(0.),
+            ))
+        } else {
+            reel_ui::kurbo::Affine::IDENTITY
+        };
         for (node, child) in &mut self.children {
-            let transform = node.props.transform(ctx.child_size(child));
+            let transform = view * node.props.transform(ctx.child_size(child));
             ctx.set_child_transform(child, transform);
             ctx.set_child_scroll_translation(child, translation);
         }
@@ -1235,6 +1410,27 @@ impl Widget for SceneWidget {
                     color(self.node.props.color),
                 )
                 .draw();
+        }
+        if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
+            use reel_ui::{kurbo::Affine, peniko::ImageBrushRef};
+            // A single widget, image resource and painter pass. Image alpha is
+            // carried in the brush, avoiding one compositing group per sprite.
+            for sprite in batch.samples() {
+                if sprite.opacity <= 0. || sprite.size <= 0. {
+                    continue;
+                }
+                let transform = Affine::translate((sprite.position[0], sprite.position[1]))
+                    * Affine::rotate(sprite.rotation.to_radians())
+                    * Affine::scale(sprite.size / f64::from(image.width))
+                    * Affine::translate((
+                        -f64::from(image.width) * 0.5,
+                        -f64::from(image.height) * 0.5,
+                    ));
+                painter.draw_image(
+                    ImageBrushRef::from(image).with_alpha(sprite.opacity as f32),
+                    transform,
+                );
+            }
         }
         self.paint_selection(ctx, painter);
     }
