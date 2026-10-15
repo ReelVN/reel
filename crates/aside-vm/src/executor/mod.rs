@@ -3645,6 +3645,11 @@ impl Vm {
                 };
                 return Ok(false);
             }
+            Opcode::PatternRequire => {
+                if !self.read(*s, r(a))?.as_bool().ok_or(FaultKind::Type)? {
+                    return Err(FaultKind::PatternMismatch);
+                }
+            }
             Opcode::MatchFail => return Err(FaultKind::MatchError),
             Opcode::Throw => {
                 let v = self.read(*s, r(a))?;

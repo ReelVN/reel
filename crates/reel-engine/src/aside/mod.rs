@@ -11,6 +11,7 @@ mod callbacks;
 mod game;
 pub use game::GameSettings;
 mod choice;
+pub mod data;
 mod dialogue;
 mod keys;
 mod lists;
@@ -458,6 +459,9 @@ impl SessionVm {
                 self.dispatch_save(ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::persistent::read" | "reel::persistent::write" | "reel::persistent::delete" => {
+                self.dispatch_persistent(ticket, &symbol, work)
+            }
             "reel::game::exit" => {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
                 self.issued = None;
@@ -891,6 +895,7 @@ impl SessionVm {
         if let Some(reader) = self.dialogue_reader.take() {
             reader.release(self.vm.heap_mut())?;
         }
+        self.saves.capture = None;
         self.issued = None;
         Ok(())
     }

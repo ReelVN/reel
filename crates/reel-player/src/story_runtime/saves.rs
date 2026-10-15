@@ -64,6 +64,16 @@ impl StoryRuntime {
         budget: SliceBudget,
     ) -> Result<bool, Error> {
         let quota = SnapshotBudget { units: 256 };
+        if !self.closing && self.starting.is_none() && self.capture.is_none() {
+            let adapter = self.driver.as_mut().unwrap().adapter_mut();
+            if adapter.save_results_pending() {
+                adapter.maintain_save_results(quota.units)?;
+                self.runnable = true;
+                if adapter.save_results_pending() {
+                    return Ok(true);
+                }
+            }
+        }
         if self.closing || self.starting.is_some() {
             saves.restore = None;
             saves.candidate = None;
@@ -102,6 +112,7 @@ impl StoryRuntime {
                 }
                 Ok(StorageResult::Saved | StorageResult::Deleted) => SaveResult::Done,
                 Ok(StorageResult::Slots(slots)) => SaveResult::Slots(slots),
+                Ok(StorageResult::Data(data)) => SaveResult::Data(data),
                 Err(error) => SaveResult::Failed(error),
             };
             self.driver
@@ -114,6 +125,13 @@ impl StoryRuntime {
         }
         if self.closing || self.starting.is_some() {
             return Ok(false);
+        }
+        if self
+            .driver
+            .as_ref()
+            .is_some_and(|d| d.adapter().save_results_pending())
+        {
+            return Ok(true);
         }
         // Keep replacement ownership bounded to one retiring session.
         if self.retiring.is_some() {
@@ -299,12 +317,18 @@ impl StoryRuntime {
                 SaveOperation::Load { slot } => StorageJob::Load(slot.clone()),
                 SaveOperation::Delete { slot } => StorageJob::Delete(slot.clone()),
                 SaveOperation::List => StorageJob::List,
+                SaveOperation::ReadData { key } => StorageJob::ReadData(key.clone()),
+                SaveOperation::WriteData { key, data } => {
+                    StorageJob::WriteData(key.clone(), data.clone())
+                }
+                SaveOperation::DeleteData { key } => StorageJob::DeleteData(key.clone()),
                 _ => unreachable!(),
             };
-            if let Err(rejected) = saves
-                .service
-                .submit(request.id, job, saves.max_snapshot_bytes)
-            {
+            let retained = match &job {
+                StorageJob::WriteData(_, data) => data.retained_bytes(),
+                _ => saves.max_snapshot_bytes,
+            };
+            if let Err(rejected) = saves.service.submit(request.id, job, retained) {
                 self.driver
                     .as_mut()
                     .unwrap()

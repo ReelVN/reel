@@ -4,6 +4,7 @@ use crate::assets::worker::Worker;
 use reel_core::{budget::QueueLimits, identity::Priority, wake::WakeSignal};
 use reel_engine::aside::{
     AdapterError,
+    data::DataDocument,
     saves::SaveRequest,
     snapshot::{OwnedSessionRestore, SessionCapture, SnapshotBudget},
 };
@@ -145,6 +146,9 @@ pub trait SaveStorage: Send + Sync + 'static {
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError>;
     fn delete(&self, slot: &str) -> Result<(), StorageError>;
     fn list(&self) -> Result<Vec<SaveSlot>, StorageError>;
+    fn write_data(&self, key: &str, data: &DataDocument) -> Result<(), StorageError>;
+    fn read_data(&self, key: &str) -> Result<Option<DataDocument>, StorageError>;
+    fn delete_data(&self, key: &str) -> Result<(), StorageError>;
 }
 
 /// Host-selected storage directory, independent of the game's read-only assets.
@@ -164,6 +168,10 @@ impl DirectorySaves {
         // become paths supplied by script or escape the host-selected directory.
         self.root
             .join(format!("{}.save", blake3::hash(slot.as_bytes()).to_hex()))
+    }
+    fn data_path(&self, key: &str) -> PathBuf {
+        self.root
+            .join(format!("{}.data", blake3::hash(key.as_bytes()).to_hex()))
     }
     fn metadata(&self, file: &mut fs::File) -> Result<SaveSlot, StorageError> {
         let mut magic = [0; 8];
@@ -190,6 +198,55 @@ impl DirectorySaves {
     }
 }
 impl SaveStorage for DirectorySaves {
+    fn write_data(&self, key: &str, data: &DataDocument) -> Result<(), StorageError> {
+        fs::create_dir_all(&self.root)?;
+        let published = reel_storage::publish(&self.data_path(key), true, |file| {
+            file.write_all(b"REELDATA\x01")?;
+            let compressed = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+            let mut writer = LimitedWriter {
+                inner: compressed,
+                remaining: self.max_snapshot_bytes,
+            };
+            data.write_to(&mut writer).map_err(io::Error::other)?;
+            writer.inner.finish()?;
+            Ok(())
+        })?;
+        if let Some(warning) = published.cleanup_warning {
+            eprintln!("{warning}");
+        }
+        Ok(())
+    }
+    fn read_data(&self, key: &str) -> Result<Option<DataDocument>, StorageError> {
+        let mut file = match fs::File::open(self.data_path(key)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut magic = [0; 9];
+        file.read_exact(&mut magic)?;
+        if &magic != b"REELDATA\x01" {
+            return Err("unsupported system record format".into());
+        }
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(file)
+            .take(self.max_snapshot_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > self.max_snapshot_bytes {
+            return Err("system record exceeds storage budget".into());
+        }
+        let data = DataDocument::decode(&bytes)?;
+        if data.retained_bytes() > self.max_snapshot_bytes {
+            return Err("system data exceeds storage budget".into());
+        }
+        Ok(Some(data))
+    }
+    fn delete_data(&self, key: &str) -> Result<(), StorageError> {
+        match fs::remove_file(self.data_path(key)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
     fn write(&self, slot: SaveSlot, snapshot: &SessionSnapshot) -> Result<(), StorageError> {
         fs::create_dir_all(&self.root)?;
         let metadata = postcard::to_allocvec(&slot)?;
@@ -257,7 +314,7 @@ struct LimitedWriter<W> {
 impl<W: Write> Write for LimitedWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() as u64 > self.remaining {
-            return Err(io::Error::other("snapshot exceeds storage budget"));
+            return Err(io::Error::other("stored data exceeds storage budget"));
         }
         let n = self.inner.write(bytes)?;
         self.remaining -= n as u64;
@@ -277,12 +334,16 @@ pub enum StorageJob {
     Load(String),
     Delete(String),
     List,
+    ReadData(String),
+    WriteData(String, Arc<DataDocument>),
+    DeleteData(String),
 }
 pub enum StorageResult {
     Saved,
     Loaded(Box<SessionSnapshot>),
     Deleted,
     Slots(Vec<SaveSlot>),
+    Data(Option<Arc<DataDocument>>),
 }
 pub struct StorageEvent {
     pub request: SaveRequestId,
@@ -329,6 +390,17 @@ impl SaveService {
                             StorageResult::Deleted
                         }
                         StorageJob::List => StorageResult::Slots(storage.list()?),
+                        StorageJob::ReadData(key) => {
+                            StorageResult::Data(storage.read_data(&key)?.map(Arc::new))
+                        }
+                        StorageJob::WriteData(key, data) => {
+                            storage.write_data(&key, &data)?;
+                            StorageResult::Saved
+                        }
+                        StorageJob::DeleteData(key) => {
+                            storage.delete_data(&key)?;
+                            StorageResult::Deleted
+                        }
                     })
                 })()
                 .map_err(|error| error.to_string());

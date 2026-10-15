@@ -150,22 +150,25 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(localization);
-    let mut saves = ExternalSymbol::dynamic("saves");
-    saves.namespace = Some(NamespaceRef {
-        module: "reel::saves".into(),
-        version: "1".into(),
-    });
-    prelude.push(saves);
-    resolver.insert(ModuleInterface {
-        canonical_path: "reel::saves".into(),
-        version: "1".into(),
-        exports: exports
-            .iter()
-            .zip(&references)
-            .filter(|(_, r)| r.module == "reel::saves")
-            .map(|(e, _)| e.clone())
-            .collect(),
-    });
+    for name in ["saves", "persistent"] {
+        let module = format!("reel::{name}");
+        let mut namespace = ExternalSymbol::dynamic(name);
+        namespace.namespace = Some(NamespaceRef {
+            module: module.clone(),
+            version: "1".into(),
+        });
+        prelude.push(namespace);
+        resolver.insert(ModuleInterface {
+            canonical_path: module.clone(),
+            version: "1".into(),
+            exports: exports
+                .iter()
+                .zip(&references)
+                .filter(|(_, r)| r.module == module)
+                .map(|(e, _)| e.clone())
+                .collect(),
+        });
+    }
     resolver.insert(ModuleInterface {
         canonical_path: "reel::localization".into(),
         version: "1".into(),

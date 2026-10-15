@@ -101,6 +101,16 @@ for caption in captions {
 
 The story VM has no fixed default memory byte quota. Object and root storage grows on demand, without the former default thresholds of 16,384 objects or 1,024 roots; embedding hosts can set an explicit budget for their environment. Long operations yield across execution slices to keep presentation responsive.
 
+Fixed-length tuples can be destructured in let and for, including nested tuples and `_`. All values are prepared before names are bound; a shape mismatch raises PatternMismatch. Closures retain each iteration's values. Array/object/rest patterns and destructuring assignment remain pending. See [tuple_bindings.aside](../../examples/tuple_bindings.aside).
+
+```aside
+let settings = {language: "zh-CN", volume: 0.8};
+for (key, value) in settings.entries() {
+    let pair = (key, value);
+    let (name, _) = pair;
+}
+```
+
 Use `match` to select dialogue, UI or behavior by value. It supports literals, names, `_`, OR and type tests, with guards after `if`. Only the first matching arm with a true guard runs; its final expression supplies the result. No match raises MatchError. Structural destructuring is not implemented yet. See [match_values.aside](../../examples/match_values.aside) for a runnable example.
 
 ```aside
@@ -692,7 +702,7 @@ These services provide data and operations; authors compose their pages. Manual 
 
 ## 12 Game Variables and Component State
 
-`model`, two-way field bindings and save restoration are implemented. state, persistent and node.state remain design targets.
+`model`, two-way field bindings, save restoration and independent system data are implemented. state and node.state remain design targets.
 
 Use model for application data independent of view nodes. Controls can share a field: input writes back to the data, and connected text, visibility and styling follow it. Run [author_models.aside](../../examples/author_models.aside): `cargo run -p reel-cli --features window -- dev examples/author_models.aside`.
 
@@ -709,14 +719,20 @@ Defaults are copied with their internal aliases and cycles preserved; the origin
 In the language, let/let mut determines whether a binding can be reassigned, model determines whether properties are observable, and state ownership determines how state is saved and released. Each serves a separate purpose.
 ```aside
 let route = state("route", {affection: 0, visited: set()});
-let unlocks = persistent("unlocks", {cg: set()});
 
 route.affection += 1;
 route.visited.add("window");
-unlocks.cg.add("window-cg");
 ```
 state(id, defaults) returns named observable state in the current session; the same ID returns the same object. It is saved and restored through saving, loading, and rollback, and recreated from defaults for a new game. Function-local values and closure captures can also be saved with the complete call stack. Named state mainly serves shared game data and stable lookup during hot reload.
-persistent(id, defaults) returns explicitly cross-playthrough observable data, written independently to global storage. Defaults fill only missing fields; repeated access preserves existing progress. Cross-playthrough state stores data values and types with persistent-data adapters. References to session nodes, tasks, or executable closures produce a lifetime-conflict diagnostic at the assignment. Idempotent operations, such as adding to sets, are recommended for unlocks. persistent.flush() can be awaited for a durable commit; the service normally coalesces updates into writes. Cross-session assignment copies data into the persistent graph, and reads return observable aliases within that graph. Any nested mutation marks it dirty. Snapshots record stable global-data identities for those aliases; loading reconnects them to current progress rather than writing back old content.
+Use `persistent.read(key, default: null)`, `persistent.write(key, value)` and `persistent.delete(key)` for system data. Operations return awaitable requests; catch handles failure, and successful writing means the file has been published. Only a missing record uses default; stored null/false/0 remain intact. Supported data includes null/bool/int/float, string/Bytes, array/table/tuple, preserving aliases and cycles. Tables store own fields only. Convert class instances, nodes, tasks and closures to data first. Records are independent of story slots and ASB versions, live in the same save-directory, and do not appear in saves.list. See [author_persistent.aside](../../examples/author_persistent.aside).
+
+```aside
+let preferences = await persistent.read("settings", default: {volume: 0.8});
+preferences.volume = 0.6;
+await persistent.write("settings", preferences);
+```
+
+Reads return ordinary copies; mutations require an explicit write. Loading a story does not overwrite system files, but local copies restore with the snapshot. Reread and apply current settings in the `restored` branch of a `saves.save` request and in new-game entries. Writes already handed to the background service continue across session replacement; unsubmitted requests are not replayed after loading. Games manage data upgrades using their own stored version fields.
 model/state copies the default data graph and creates observable properties, preserving internal aliases and cycles in the copy. Nested mutable arrays, table values, Set values, buffers, and registered observable data types all notify through shared mutation hooks; changes made through an internal alias also notify. Session objects assigned later retain their ordinary shared identity and are incorporated into the observable graph. model objects are kept alive by actual references. Temporary component state can be stored in the node's own state slots.
 ```aside
 fn settings_panel() {
@@ -729,7 +745,7 @@ fn settings_panel() {
 }
 ```
 node.state(key, defaults) belongs to that component instance. The same local key is independent across different component instances. After node destruction, the state is reclaimed normally according to reachability. Loading restores the component state; hot reload reuses it through stable node keys and state-slot keys. During ordinary execution, a call checks once and atomically adds missing fields, which the next statement can read. During candidate initialization or reconstruction, reads through the candidate view can see fields pending addition, while the live session continues to see the old values. Additions become externally visible only when the candidate transaction commits; failure preserves the old values. Data-structure upgrades use explicit, versioned migrations.
-settings belongs to the engine's global preference service; restoring a story save reads the current preferences. Changes to application state follow ordinary control flow, and their results are preserved when temporary scope effects end.
+Store global preferences with persistent and read/apply current settings at startup and after restoring a story save. Changes to application state follow ordinary control flow, and their results are preserved when temporary scope effects end.
 
 ## 13 Extending Your Own Building Blocks
 

@@ -101,6 +101,16 @@ for caption in captions {
 
 剧本 VM 默认不设固定的内存字节总额，对象和根存储按实际需求增长，不再设 16,384 个对象或 1,024 个根的默认门槛；嵌入引擎的宿主可按运行环境显式设置预算。长操作会按执行切片让出，避免阻塞画面。
 
+固定长度 tuple 可以在 let 和 for 中解构，支持嵌套和 `_` 忽略项；先准备所有值再建立名称，结构不符抛出 PatternMismatch。每轮循环的闭包保留当轮值。数组/对象/rest 解构及解构赋值仍待实现。见 [tuple_bindings.aside](../../examples/tuple_bindings.aside)。
+
+```aside
+let settings = {language: "zh-CN", volume: 0.8};
+for (key, value) in settings.entries() {
+    let pair = (key, value);
+    let (name, _) = pair;
+}
+```
+
 `match` 可以按值选择对白、界面或处理逻辑，支持字面值、名称、`_`、OR 和类型测试，guard 写在 `if` 后。只执行第一个匹配且 guard 为真的分支，分支末尾表达式提供结果；没有匹配时抛出 MatchError。结构解构尚未支持。完整例子见 [match_values.aside](../../examples/match_values.aside)。
 
 ```aside
@@ -703,7 +713,7 @@ game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命
 
 ## 十二 游戏变量与组件状态
 
-`model`、字段双向绑定和存档恢复已实现；state、persistent、node.state 仍是设计目标。
+`model`、字段双向绑定、存档恢复和独立系统数据读写已实现；state、node.state 仍是设计目标。
 
 用 model 保存独立于画面节点的业务数据。多个控件可以共享同一字段，输入直接写回数据，连接的文字、可见性和样式随之更新。运行 [author_models.aside](../../examples/author_models.aside)：`cargo run -p reel-cli --features window -- dev examples/author_models.aside`。
 
@@ -720,14 +730,20 @@ settings.palette.accent = "#ffd580";
 语言中的 let/let mut 决定绑定能否改写，model 决定属性是否可观察，状态的所属范围决定保存和释放。三者各司其职。
 ```aside
 let route = state("route", {affection: 0, visited: set()});
-let unlocks = persistent("unlocks", {cg: set()});
 
 route.affection += 1;
 route.visited.add("window");
-unlocks.cg.add("window-cg");
 ```
 state(id, defaults) 返回当前会话的具名可观察状态，同 ID 取得同一个对象。它随存档、读档与回滚恢复，新游戏重新从默认值建立。函数局部值和闭包捕获同样可以随完整调用栈保存，具名 state 主要用于共享游戏数据和热重载中的稳定定位。
-persistent(id, defaults) 返回显式跨周目的可观察数据，独立写入全局存储。默认值只补缺失字段，重复获取保留已有进度。跨周目数据存放数据值和有持久数据适配的类型，引用会话节点、任务和可执行闭包会在赋值处报告寿命冲突。解锁推荐集合等幂等写法。persistent.flush() 可等待可靠提交，平时更新由服务合并写入。跨局赋值把数据复制进持久图，读取取得该图内部的可观察别名；任意嵌套修改均标脏。快照中这些别名记录稳定全局数据身份，读档重接当前进度，而不是写回旧内容。
+系统数据使用 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)`。操作返回可等待请求，失败由 catch 接收；写入完成才表示文件已发布。缺失记录返回 default，保存的 null/false/0 保持原值。支持 null/bool/int/float、string/Bytes、array/table/tuple，保留别名与环；table 仅存自有字段。类实例、节点、任务和闭包先转换为数据。文件独立于剧情槽和 ASB 版本，位于同一 save-directory，不出现在 saves.list 中。见 [author_persistent.aside](../../examples/author_persistent.aside)。
+
+```aside
+let preferences = await persistent.read("settings", default: {volume: 0.8});
+preferences.volume = 0.6;
+await persistent.write("settings", preferences);
+```
+
+读取结果是普通副本，修改后需显式 write。剧情读档不会改写系统文件，但局部副本会随快照恢复；在 `saves.save` 请求的 `restored` 分支重新读取并应用当前设置。新游戏入口也应读取系统数据。已交给后台服务的写入不因切换会话撤销；未提交的请求不会在读档后重放。业务数据升级由游戏根据自己保存的版本字段迁移。
 model/state 的默认数据图复制后建立可观察属性，复制保留内部别名和环。内嵌可变数组、table、Set、缓冲以及注册的可观察数据类型都通过统一变更钩子通知；取得内部别名后修改也会通知。随后赋入的会话对象保持普通共享身份，并被纳入可观察图。model 对象通过实际引用保活。组件临时状态可放入节点自己的状态槽。
 ```aside
 fn settings_panel() {
@@ -740,7 +756,7 @@ fn settings_panel() {
 }
 ```
 node.state(key, defaults) 属于该组件实例。同一个局部 key 在不同组件实例中独立，节点被销毁后按可达引用正常释放；读档恢复该组件状态，热重载按稳定节点 key 与状态槽 key 复用。普通运行期调用对缺失字段做一次检查后的原子补充，下一语句即可读取。候选初始化/重建时，读取候选视图可见待加入的字段，活会话继续看旧值；补充在候选事务提交后才对外生效，失败保持旧值。数据结构升级通过带版本的显式迁移处理。
-settings 属于引擎的全局偏好服务；剧情存档恢复时读取当前偏好。业务 state 的修改采用常规控制流，scope 临时效果结束也保留其业务结果。
+作者用 persistent 保存全局偏好，并在启动和剧情存档恢复后读取、应用当前设置。业务 state 的修改采用常规控制流，scope 临时效果结束也保留其业务结果。
 
 ## 十三 作者怎样扩展自己的积木
 

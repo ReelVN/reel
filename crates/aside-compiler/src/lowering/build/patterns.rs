@@ -2,6 +2,136 @@
 use super::*;
 
 impl FunctionBuilder<'_, '_> {
+    pub(super) fn bind_value(
+        &mut self,
+        pattern: h::NodeId,
+        value: bc::Reg,
+        depth: usize,
+        fresh: bool,
+    ) -> Result<(), Box<Error>> {
+        if let Form::Name { .. } = self.l.m.hir().node(pattern).form {
+            let symbol = self.l.m.facts()[pattern.0 as usize]
+                .symbol
+                .expect("analyzed binding");
+            self.commit_binding(pattern, symbol, value, fresh)?;
+            return Ok(());
+        }
+        if matches!(self.l.m.hir().node(pattern).form, Form::Wildcard) {
+            return Ok(());
+        }
+        let mut bindings = Vec::new();
+        self.prepare_binding(pattern, value, depth, &mut bindings)?;
+        for &(node, symbol, value) in &bindings {
+            self.commit_binding(node, symbol, value, fresh)?;
+            self.release(value)?;
+        }
+        self.l.b.release(bindings);
+        Ok(())
+    }
+
+    fn commit_binding(
+        &mut self,
+        node: h::NodeId,
+        symbol: h::SymbolId,
+        value: bc::Reg,
+        fresh: bool,
+    ) -> Result<(), Box<Error>> {
+        if fresh {
+            let binding = self.local(symbol)?.ok_or_else(|| {
+                self.l.b.error(
+                    ErrorKind::InvalidIr,
+                    "for binding must belong to the current frame",
+                )
+            })?;
+            match self.def.bindings[binding.index()].storage {
+                bc::BindingStorage::Cell(_) => {
+                    self.op(bc::Opcode::CellNew, binding.0, 0, 0, node)?
+                }
+                bc::BindingStorage::Value(reg) => self.op(bc::Opcode::Clear, reg.0, 0, 0, node)?,
+            }
+        }
+        self.write(symbol, value, true, node)
+    }
+
+    fn prepare_binding(
+        &mut self,
+        node: h::NodeId,
+        value: bc::Reg,
+        depth: usize,
+        bindings: &mut Vec<(h::NodeId, h::SymbolId, bc::Reg)>,
+    ) -> Result<(), Box<Error>> {
+        self.l.b.span = self.span(node);
+        self.l.b.work(1)?;
+        if depth >= self.l.b.limits.max_depth {
+            return Err(self
+                .l
+                .b
+                .error(ErrorKind::Limit, "pattern lowering depth exceeded"));
+        }
+        match self.l.m.hir().node(node).form {
+            Form::Name { .. } => {
+                let symbol = self.l.m.facts()[node.0 as usize]
+                    .symbol
+                    .expect("analyzed binding");
+                let prepared = self.temp()?;
+                self.op(bc::Opcode::Move, prepared.0, value.0, 0, node)?;
+                self.l.b.push(bindings, (node, symbol, prepared))?;
+            }
+            Form::Wildcard => {}
+            Form::Single { child } if self.l.m.hir().node(node).kind == H::GroupPattern => {
+                self.prepare_binding(child, value, depth + 1, bindings)?;
+            }
+            Form::TypePattern {
+                pattern,
+                annotation,
+            } => {
+                let ty = self.l.ty(self.l.m.facts()[annotation.0 as usize].ty, 0)?;
+                self.require_pattern_type(node, value, ty)?;
+                self.prepare_binding(pattern, value, depth + 1, bindings)?;
+            }
+            Form::Sequence if self.l.m.hir().node(node).kind == H::TuplePattern => {
+                self.l.b.work(self.l.m.hir().elements(node).len() as u64)?;
+                let count = self.l.m.hir().children(node).count();
+                let any = self.l.builtin(bc::BuiltinType::Any)?;
+                let mut elements = Vec::new();
+                self.l.b.reserve(&mut elements, count)?;
+                elements.resize(count, any);
+                let ty = bc::TypeId(self.l.package.types.len() as u32);
+                self.l
+                    .b
+                    .push(&mut self.l.package.types, bc::TypeDef::Tuple(elements))?;
+                self.require_pattern_type(node, value, ty)?;
+                for (index, child) in self.l.m.hir().children(node).enumerate() {
+                    let index = self.constant(bc::Const::Int(index as i64), child)?;
+                    let item = self.temp()?;
+                    self.op(bc::Opcode::IndexGet, item.0, value.0, index.0, child)?;
+                    self.release(index)?;
+                    self.prepare_binding(child, item, depth + 1, bindings)?;
+                    self.release(item)?;
+                }
+            }
+            _ => {
+                return Err(self.l.b.error(
+                    ErrorKind::Unsupported,
+                    "binding pattern requires names, wildcards or fixed tuples",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn require_pattern_type(
+        &mut self,
+        node: h::NodeId,
+        value: bc::Reg,
+        ty: bc::TypeId,
+    ) -> Result<(), Box<Error>> {
+        let condition = self.temp()?;
+        self.op(bc::Opcode::Is, condition.0, value.0, ty.0, node)?;
+        self.op(bc::Opcode::PatternRequire, condition.0, 0, 0, node)?;
+        self.release(condition)
+    }
+
     pub(super) fn match_value(
         &mut self,
         node: h::NodeId,

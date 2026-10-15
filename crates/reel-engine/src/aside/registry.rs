@@ -413,6 +413,30 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec![],
         });
     }
+    for (name, parameters) in [
+        (
+            "read",
+            vec![
+                parameter("key", None),
+                parameter("default", Some(bc::Const::Null)),
+            ],
+        ),
+        (
+            "write",
+            vec![parameter("key", None), parameter("value", None)],
+        ),
+        ("delete", vec![parameter("key", None)]),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::persistent::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+            required_capabilities: vec![],
+        });
+    }
     for (name, parameters, waits) in [
         (
             "play",

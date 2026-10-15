@@ -205,6 +205,7 @@ pub enum FaultKind {
     MatchError = 20,
     UninitializedField = 21,
     ConstructionFailed = 22,
+    PatternMismatch = 23,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -360,6 +361,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::ArgsNamed,
     Opcode::Throw,
     Opcode::MatchFail,
+    Opcode::PatternRequire,
     Opcode::Rethrow,
     Opcode::Leave,
     Opcode::EndFinally,
@@ -377,6 +379,7 @@ impl FaultKind {
             Self::MissingArgument => "missing argument",
             Self::UnknownArgument => "unknown argument",
             Self::ArgumentOrder => "positional argument after named argument",
+            Self::PatternMismatch => "value does not match the binding pattern",
             Self::MatchError => "no match arm accepted the value",
             Self::UninitializedField => "field read before initialization",
             Self::ConstructionFailed => "instance construction failed",

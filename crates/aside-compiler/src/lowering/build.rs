@@ -1714,12 +1714,7 @@ fn preflight(
         b.span = node.span;
         if matches!(
             node.kind,
-            H::Yield
-                | H::TuplePattern
-                | H::ArrayPattern
-                | H::ObjectPattern
-                | H::PatternField
-                | H::RestPattern
+            H::Yield | H::ArrayPattern | H::ObjectPattern | H::PatternField | H::RestPattern
         ) {
             return Err(b.error(
                 ErrorKind::Unsupported,

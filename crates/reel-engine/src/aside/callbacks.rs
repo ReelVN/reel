@@ -384,6 +384,7 @@ impl SessionVm {
                 .is_some_and(|ticket| ticket.task == callback.task)
             {
                 self.issued = None;
+                self.saves.capture = None;
             }
         }
         Ok(())
