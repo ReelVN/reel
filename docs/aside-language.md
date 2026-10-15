@@ -593,3 +593,5 @@ Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册�
 Reel `camera` 使用普通宿主节点与 children 合成，camera_x/camera_y/zoom/camera_rotation 为可写、可绑定和可动画数值属性；camera native ABI 1，tween ABI 3。此接口不增加 Aside 语法、VM 每帧回调或平台依赖，B01/ASB 不变。
 
 Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定 native 方法（ABI 1）；同父级排序、索引验证和身份保留属于 Reel 舞台合同，不新增语法或 B01/ASB 格式。
+
+Reel tween 的 `sine_in`、`sine_out`、`sine_in_out` 是既有 easing 字符串参数的新选项，由宿主动作采样，不新增 Aside 语法、native 签名或 B01/ASB 格式。

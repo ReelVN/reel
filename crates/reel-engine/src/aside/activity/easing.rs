@@ -11,6 +11,9 @@ pub(super) enum Easing {
     QuadIn,
     QuadOut,
     QuadInOut,
+    SineIn,
+    SineOut,
+    SineInOut,
 }
 
 impl Easing {
@@ -23,9 +26,12 @@ impl Easing {
             "quad_in" => Self::QuadIn,
             "quad_out" => Self::QuadOut,
             "quad_in_out" => Self::QuadInOut,
+            "sine_in" => Self::SineIn,
+            "sine_out" => Self::SineOut,
+            "sine_in_out" => Self::SineInOut,
             _ => {
                 return Err(AdapterError::Input(
-                    "easing requires linear, in, out, in_out, quad_in, quad_out or quad_in_out",
+                    "easing requires linear, in, out, in_out, quad_in, quad_out, quad_in_out, sine_in, sine_out or sine_in_out",
                 ));
             }
         })
@@ -40,11 +46,18 @@ impl Easing {
             4 => Self::QuadIn,
             5 => Self::QuadOut,
             6 => Self::QuadInOut,
+            7 => Self::SineIn,
+            8 => Self::SineOut,
+            9 => Self::SineInOut,
             _ => unreachable!("private easing code"),
         }
     }
 
     pub(super) fn sample(self, t: f64) -> f64 {
+        // Trigonometric roundoff must not leave a completed tween short of its goal.
+        if t == 0. || t == 1. {
+            return t;
+        }
         match self {
             Self::Linear => t,
             Self::CubicIn => t * t * t,
@@ -55,6 +68,9 @@ impl Easing {
             Self::QuadOut => 1. - (1. - t).powi(2),
             Self::QuadInOut if t < 0.5 => 2. * t * t,
             Self::QuadInOut => 1. - (-2. * t + 2.).powi(2) / 2.,
+            Self::SineIn => 1. - (t * std::f64::consts::FRAC_PI_2).cos(),
+            Self::SineOut => (t * std::f64::consts::FRAC_PI_2).sin(),
+            Self::SineInOut => 0.5 - 0.5 * (t * std::f64::consts::PI).cos(),
         }
     }
 }
