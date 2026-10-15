@@ -2,34 +2,7 @@
 //! an instance advance one member at a time on the ordinary budgeted stack.
 use super::*;
 
-#[derive(Clone, Copy)]
-#[repr(u32)]
-enum ClassSlot {
-    Base,
-    Function,
-    Descriptor,
-    Members,
-    Fields,
-    Statics,
-    Closures,
-    Types,
-    State,
-}
-#[derive(Clone, Copy)]
-#[repr(u32)]
-enum InstanceSlot {
-    Class,
-    Fields,
-    State,
-    Initializers,
-}
-#[derive(Clone, Copy, PartialEq)]
-#[repr(i64)]
-enum State {
-    Constructing,
-    Ready,
-    Failed,
-}
+use crate::class::{ClassSlot, InstanceSlot, State};
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum MemberSlot {
@@ -338,7 +311,9 @@ impl Vm {
         let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
         let info = self.heap.cell_info(cell).map_err(heap_fault)?;
         if let Some(value) = write {
-            self.check_cell_type(info.contract, value)?;
+            if !self.heap.is_model_cell(cell).map_err(heap_fault)? {
+                self.check_cell_type(info.contract, value)?;
+            }
             if info.initialized {
                 self.heap.cell_write(cell, value).map_err(heap_fault)?;
             } else {
@@ -348,8 +323,42 @@ impl Vm {
         } else if !info.initialized {
             Err(FaultKind::UninitializedField)
         } else {
+            self.heap.observe_read(cell, Some(0)).map_err(heap_fault)?;
             self.heap.cell_read(cell).map_err(heap_fault)
         }
+    }
+
+    pub(super) fn class_property_ref(
+        &mut self,
+        object: Value,
+        key: Value,
+        writable: bool,
+    ) -> Result<Value, FaultKind> {
+        let name = self
+            .type_checks
+            .symbol(self.program.package(), &self.heap, key)
+            .map_err(heap_fault)?
+            .ok_or(FaultKind::MissingKey)?;
+        let (receiver, member) = self.member_target(object, name)?;
+        if self
+            .heap
+            .get_field(member, MemberSlot::Method as u32)
+            .map_err(heap_fault)?
+            .as_bool()
+            == Some(true)
+        {
+            return Err(FaultKind::Type);
+        }
+        let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
+        self.heap
+            .alloc_property_ref(
+                crate::PropertyId {
+                    host: cell,
+                    field: 0,
+                },
+                writable,
+            )
+            .map_err(heap_fault)
     }
     pub(super) fn class_member_cost(&self, object: Value) -> Result<u64, VmError> {
         let class = match self.heap.info(object)?.kind {
@@ -1149,14 +1158,4 @@ impl Vm {
         });
         Ok(())
     }
-}
-
-pub(super) fn accepts_nominal(heap: &Heap, value: Value, ty: TypeId) -> Result<bool, HeapError> {
-    if !heap.accepts_builtin(BuiltinType::Instance, value)? {
-        return Ok(false);
-    }
-    let class = heap.get_field(value, InstanceSlot::Class as u32)?;
-    let types = heap.get_field(class, ClassSlot::Types as u32)?;
-    let bits = heap.get_field(types, ty.0 / 64)?.as_int().unwrap();
-    Ok(bits & (1i64 << (ty.0 % 64)) != 0)
 }

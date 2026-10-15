@@ -9,6 +9,15 @@ enum ModelSlot {
 }
 
 impl Heap {
+    pub(crate) fn is_model_cell(&self, value: Value) -> Result<bool, HeapError> {
+        let object = self.object(self.key(value)?)?;
+        Ok(object.kind == ObjectKind::Cell && object.model)
+    }
+
+    fn uses_model_properties(&self, value: Value) -> Result<bool, HeapError> {
+        let object = self.object(self.key(value)?)?;
+        Ok(object.model && matches!(object.kind, ObjectKind::Table | ObjectKind::Cell))
+    }
     pub fn is_model_table(&self, value: Value) -> Result<bool, HeapError> {
         let object = self.object(self.key(value)?)?;
         Ok(object.kind == ObjectKind::Table && object.model)
@@ -16,7 +25,7 @@ impl Heap {
 
     /// Resolve a stable property container without changing ordinary table semantics.
     pub fn property_fields(&self, value: Value) -> Result<Value, HeapError> {
-        if self.is_model_table(value)? {
+        if self.uses_model_properties(value)? {
             Ok(value)
         } else {
             self.host_fields(value)
@@ -44,7 +53,7 @@ impl Heap {
     }
 
     pub(super) fn property_metadata_array(&self, value: Value) -> Result<Value, HeapError> {
-        if self.is_model_table(value)? {
+        if self.uses_model_properties(value)? {
             self.model_slot(value, ModelSlot::Properties)
         } else {
             self.get_field(value, 3)
@@ -56,7 +65,7 @@ impl Heap {
         value: Value,
         metadata: Value,
     ) -> Result<(), HeapError> {
-        if self.is_model_table(value)? {
+        if self.uses_model_properties(value)? {
             let storage = self.model_metadata(value)?;
             self.set_field(storage, ModelSlot::Properties as u32, metadata)
         } else {
@@ -65,7 +74,7 @@ impl Heap {
     }
 
     pub(super) fn property_versions(&self, value: Value) -> Result<Value, HeapError> {
-        if self.is_model_table(value)? {
+        if self.uses_model_properties(value)? {
             self.model_slot(value, ModelSlot::Versions)
         } else {
             self.get_field(value, 2)
@@ -77,7 +86,7 @@ impl Heap {
         value: Value,
         versions: Value,
     ) -> Result<(), HeapError> {
-        if self.is_model_table(value)? {
+        if self.uses_model_properties(value)? {
             let storage = self.model_metadata(value)?;
             self.set_field(storage, ModelSlot::Versions as u32, versions)
         } else {
@@ -108,6 +117,10 @@ impl Heap {
             object.property_owner = Some(key);
             object.observable_fields = object.payload.len() / 2;
             object.observable_writable = object.observable_fields;
+        } else if let Payload::Cell(cell) = &object.payload {
+            object.property_owner = Some(key);
+            object.observable_fields = 1;
+            object.observable_writable = u32::from(cell.contract.mutable);
         }
         Ok(())
     }
@@ -140,9 +153,15 @@ impl Heap {
             let current = self.model_work[cursor];
             let key = self.key(current)?;
             let mut edge = 0;
-            while let Some(value) = self.object(key)?.payload.edge(edge) {
-                self.model_enqueue(value)?;
-                edge += 1;
+            if self.object(key)?.kind == ObjectKind::Instance {
+                // Class layouts contain methods/statics and are shared, not data edges.
+                let (_, fields) = self.instance_data(current)?;
+                self.model_enqueue(fields)?;
+            } else {
+                while let Some(value) = self.object(key)?.payload.edge(edge) {
+                    self.model_enqueue(value)?;
+                    edge += 1;
+                }
             }
             cursor += 1;
         }
@@ -169,9 +188,14 @@ impl Heap {
                     | ObjectKind::Tuple
                     | ObjectKind::TextBuffer
                     | ObjectKind::ByteBuffer
+                    | ObjectKind::Instance
+                    | ObjectKind::Cell
             )
         {
             return Ok(());
+        }
+        if object.kind == ObjectKind::Instance {
+            self.instance_data(value)?;
         }
         if self.model_work.len() == self.model_work.capacity() {
             let old = self.model_work.capacity();
@@ -232,6 +256,36 @@ mod tests {
             reference,
         )
         .unwrap();
+        let cell = heap
+            .alloc_language_cell(crate::CellContract::untyped_mutable())
+            .unwrap();
+        heap.cell_initialize(cell, Value::int(0)).unwrap();
+        heap.observe_model_object(cell).unwrap();
+        let cell_reference = heap
+            .alloc_property_ref(
+                PropertyId {
+                    host: cell,
+                    field: 0,
+                },
+                true,
+            )
+            .unwrap();
+        let cell_fields = heap.alloc_table().unwrap();
+        heap.table_store(cell_fields, 0, Value::int(0), Value::int(0))
+            .unwrap();
+        let cell_view = heap.alloc_host(cell_fields, &[], None).unwrap();
+        heap.observe_host_properties(cell_view, 1, 0).unwrap();
+        heap.bind_host_property(
+            PropertyId {
+                host: cell_view,
+                field: 0,
+            },
+            cell_reference,
+        )
+        .unwrap();
+        let cell_root = heap
+            .add_root(RootOwner(0), RootKind::Host, cell_view)
+            .unwrap();
         let root = heap.add_root(RootOwner(0), RootKind::Host, view).unwrap();
         heap.begin_collection().unwrap();
         while heap.phase() != GcPhase::Idle {
@@ -242,15 +296,21 @@ mod tests {
         for i in 0..2_000 {
             heap.table_store(model, 0, Value::int(0), Value::int(i))
                 .unwrap();
+            heap.cell_write(cell, Value::int(i)).unwrap();
         }
         println!(
-            "2000 model-to-view updates: {:?}; no heap growth",
+            "2000 table and class-field model-to-view updates: {:?}; no heap growth",
             started.elapsed()
         );
         assert_eq!(heap.table_entry(fields, 0).unwrap().1.as_int(), Some(1999));
+        assert_eq!(
+            heap.table_entry(cell_fields, 0).unwrap().1.as_int(),
+            Some(1999)
+        );
         assert_eq!(heap.stats().chunk_allocations, before.chunk_allocations);
         assert_eq!(heap.stats().charged_bytes, before.charged_bytes);
         heap.release_root(root).unwrap();
+        heap.release_root(cell_root).unwrap();
         heap.begin_collection().unwrap();
         while heap.phase() != GcPhase::Idle {
             heap.gc_step(crate::GcBudget::default()).unwrap();

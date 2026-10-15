@@ -1,0 +1,29 @@
+class Settings {
+    let title: string = "声音设置";
+    let mut volume: float = 0.6;
+    let mut muted: bool = false;
+    let mut name: string = "旅人";
+
+    fn caption(self) -> string {
+        if self.muted { f"{self.name} · 静音" } else { f"{self.name} · {self.volume}" }
+    }
+
+    fn reset(self, event) {
+        self.volume = 0.6;
+        self.muted = false;
+        self.name = "旅人";
+    }
+}
+
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let settings = model(Settings());
+    stage.replace(column(x: 40, y: 60, gap: 20) {
+        text(bind(settings.title), font_size: 32);
+        text_input(bind(settings.name), width: 320, height: 44);
+        slider(value: bind(settings.volume), min: 0, max: 1, width: 320);
+        checkbox("静音", value: bind(settings.muted));
+        text(derive(|| settings.caption()));
+        button("恢复默认", on_click: settings.reset);
+    });
+}

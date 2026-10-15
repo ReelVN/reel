@@ -24,7 +24,7 @@ mod iterators;
 mod models;
 mod reactive;
 mod text;
-mod types;
+use crate::type_checks as types;
 use builtins::Builtin;
 use collections::{TableAction, TableWork};
 #[cfg(test)]
@@ -412,7 +412,7 @@ pub struct Vm {
     text_scratch: ChargedVec<u8>,
     native_cells: ChargedVec<bool>,
     native_values: ChargedVec<(FunctionId, u32)>,
-    type_checks: types::TypeChecks,
+    type_checks: Rc<types::TypeChecks>,
     init_symbol: Option<SymbolId>,
     globals: RootRangeToken,
     constants: RootRangeToken,
@@ -497,7 +497,8 @@ impl Vm {
             &usage,
             program.stats().owned_capacity_bytes as u64
                 + (std::mem::size_of::<CodeLease>() - std::mem::size_of::<BytecodePackage>()
-                    + 2 * std::mem::size_of::<usize>()) as u64,
+                    + std::mem::size_of::<types::TypeChecks>()
+                    + 4 * std::mem::size_of::<usize>()) as u64,
         )?;
         let native_count = p
             .functions
@@ -703,11 +704,15 @@ impl Vm {
             .iter()
             .position(|name| name == "init")
             .map(|i| SymbolId(i as u32));
+        let type_checks = Rc::new(type_checks);
+        let program = Rc::new(CodeLease {
+            program,
+            charge: program_charge,
+            checks: type_checks.clone(),
+        });
+        heap.code = Some(program.clone());
         Ok(Self {
-            program: Rc::new(CodeLease {
-                program,
-                charge: program_charge,
-            }),
+            program,
             slots,
             active,
             tasks,
@@ -2696,6 +2701,31 @@ impl Vm {
             }
             Opcode::MakeClass => (24, VALUE_CHUNK_BYTES * 6),
             Opcode::SuperRef => (4, VALUE_CHUNK_BYTES),
+            Opcode::PropertyRef => {
+                let object = self.slots.read(at(s.regs, b))?;
+                if object.tag() == ValueTag::Object
+                    && matches!(
+                        self.heap.info(object)?.kind,
+                        ObjectKind::Instance | ObjectKind::Super
+                    )
+                {
+                    let Descriptor::Property { key, .. } = f.descriptors[c as usize] else {
+                        unreachable!()
+                    };
+                    let key = self.slots.read(at(s.regs, key.0))?;
+                    let bytes = if key.tag() == ValueTag::Object {
+                        self.heap.info(key)?.len
+                    } else {
+                        0
+                    };
+                    (
+                        self.type_checks.symbol_work(bytes) + self.class_member_cost(object)?,
+                        VALUE_CHUNK_BYTES,
+                    )
+                } else {
+                    (1, VALUE_CHUNK_BYTES)
+                }
+            }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self
                     .slots
@@ -2978,6 +3008,15 @@ impl Vm {
                     unreachable!()
                 };
                 let key = self.read(*s, key)?;
+                if matches!(
+                    self.heap.info(host).map_err(heap_fault)?.kind,
+                    ObjectKind::Instance | ObjectKind::Super
+                ) {
+                    let reference = self.class_property_ref(host, key, writable)?;
+                    self.write(*s, r(a), reference)?;
+                    s.pc.0 += 1;
+                    return Ok(true);
+                }
                 let fields = self.heap.property_fields(host).map_err(heap_fault)?;
                 self.start_table(
                     s,

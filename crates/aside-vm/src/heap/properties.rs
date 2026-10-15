@@ -111,6 +111,10 @@ impl Heap {
     }
 
     pub fn host_property(&self, property: PropertyId) -> Result<Value, HeapError> {
+        if self.is_model_cell(property.host)? {
+            self.property_access(property)?;
+            return self.cell_read(property.host);
+        }
         Ok(self
             .table_entry(self.property_fields(property.host)?, property.field)?
             .1)
@@ -263,7 +267,7 @@ impl Heap {
         Ok(())
     }
 
-    pub(super) fn proposed_property(&self, table: Value, field: u32) -> Option<Value> {
+    pub(crate) fn proposed_property(&self, table: Value, field: u32) -> Option<Value> {
         let value = self.property_proposal?;
         let owner = self.object(self.key(table).ok()?).ok()?.property_owner?;
         let host = Value::object(self.id, owner.data().as_ffi());
@@ -321,10 +325,16 @@ impl Heap {
         self.prepare_properties(value, script)?;
         for i in 0..self.property_work.len() {
             let property = self.property_work[i];
-            let fields = self.property_fields(property.host)?;
-            let (key, old) = self.table_entry(fields, property.field)?;
-            if !old.same_bits(value) {
-                self.store_table_entry(fields, property.field, key, value)?;
+            if self.is_model_cell(property.host)? {
+                if !self.cell_read(property.host)?.same_bits(value) {
+                    self.store_cell_value(property.host, value)?;
+                }
+            } else {
+                let fields = self.property_fields(property.host)?;
+                let (key, old) = self.table_entry(fields, property.field)?;
+                if !old.same_bits(value) {
+                    self.store_table_entry(fields, property.field, key, value)?;
+                }
             }
             if script {
                 self.record_host_write(property.host, property.field)?;

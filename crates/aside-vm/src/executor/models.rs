@@ -1,5 +1,6 @@
 //! Resumable data graph copying, owned by the calling native activation.
 use super::*;
+use crate::class::{InstanceSlot, State};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
@@ -92,6 +93,25 @@ impl ModelCopy {
             ObjectKind::Array | ObjectKind::Tuple => heap.alloc_array(&[])?,
             ObjectKind::TextBuffer => heap.alloc_text_buffer("")?,
             ObjectKind::ByteBuffer => heap.alloc_byte_buffer(&[])?,
+            ObjectKind::Instance => {
+                let (class, _) = heap.instance_data(value)?;
+                heap.alloc_record(
+                    ObjectKind::Instance,
+                    &[
+                        class,
+                        Value::NULL,
+                        Value::int(State::Ready as i64),
+                        Value::NULL,
+                    ],
+                )?
+            }
+            ObjectKind::Cell => {
+                let cell = heap.cell_info(value)?;
+                if !cell.initialized {
+                    return Err(HeapError::UninitializedCell);
+                }
+                heap.alloc_language_cell(cell.contract)?
+            }
             _ => return Err(HeapError::WrongKind),
         };
         heap.array_push(self.roots, value)?;
@@ -126,7 +146,12 @@ impl ModelCopy {
             self.cursor += 1;
             return Ok(false);
         }
-        if item.index == info.len {
+        let len = if matches!(item.kind, ObjectKind::Instance | ObjectKind::Cell) {
+            1
+        } else {
+            info.len
+        };
+        if item.index == len {
             if item.kind == ObjectKind::Tuple {
                 heap.seal_tuple(item.target)?;
             }
@@ -134,6 +159,17 @@ impl ModelCopy {
             return Ok(false);
         }
         match item.kind {
+            ObjectKind::Instance => {
+                let (_, fields) = heap.instance_data(item.source)?;
+                let fields = self.copy_value(heap, fields)?;
+                heap.set_field(item.target, InstanceSlot::Fields as u32, fields)?;
+                item.index += 1;
+            }
+            ObjectKind::Cell => {
+                let value = self.copy_value(heap, heap.cell_read(item.source)?)?;
+                heap.cell_initialize(item.target, value)?;
+                item.index += 1;
+            }
             ObjectKind::Table => {
                 let (key, value) = heap.table_entry(item.source, item.index)?;
                 let key = self.copy_value(heap, key)?;

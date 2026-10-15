@@ -1,5 +1,8 @@
 //! Shared structural contracts. The verified type DAG bounds work and scratch.
-use super::*;
+use crate::{
+    Heap, HeapBudgetUsage, HeapError, Value, bytecode::*, executor::VmError,
+    root_ranges::ChargedVec,
+};
 use std::cell::RefCell;
 
 #[derive(Clone, Copy)]
@@ -9,10 +12,11 @@ struct Cursor {
     next: usize,
 }
 
-pub(super) struct TypeChecks {
+pub(crate) struct TypeChecks {
     work: ChargedVec<u64>,
     signature_work: ChargedVec<u64>,
     stack: RefCell<ChargedVec<Cursor>>,
+    symbols: ChargedVec<SymbolId>,
 }
 
 impl TypeChecks {
@@ -56,10 +60,18 @@ impl TypeChecks {
             );
         }
         let stack = ChargedVec::new(usage, depths.data.iter().copied().max().unwrap_or(0))?;
+        let mut symbols = ChargedVec::new(usage, p.symbols.len())?;
+        symbols
+            .data
+            .extend((0..p.symbols.len()).map(|i| SymbolId(i as u32)));
+        symbols
+            .data
+            .sort_unstable_by(|a, b| p.symbols[a.index()].cmp(&p.symbols[b.index()]));
         Ok(Self {
             work,
             signature_work,
             stack: RefCell::new(stack),
+            symbols,
         })
     }
 
@@ -68,6 +80,53 @@ impl TypeChecks {
     }
     pub(super) fn argument_extra(&self, sig: SignatureId) -> u64 {
         self.signature_work.data[sig.index()]
+    }
+
+    pub(crate) fn symbol_work(&self, bytes: u32) -> u64 {
+        u64::from(self.symbols.data.len().checked_ilog2().unwrap_or(0) + 1) * (u64::from(bytes) + 1)
+    }
+
+    /// Resolve dynamic property names without allocating text or scanning all symbols.
+    pub(crate) fn symbol(
+        &self,
+        p: &BytecodePackage,
+        heap: &Heap,
+        key: Value,
+    ) -> Result<Option<SymbolId>, HeapError> {
+        use std::cmp::Ordering;
+        if !heap.accepts_builtin(BuiltinType::String, key)? {
+            return Err(HeapError::TypeMismatch);
+        }
+        let bytes = heap.info(key)?.len as usize;
+        let mut low = 0;
+        let mut high = self.symbols.data.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let symbol = self.symbols.data[middle];
+            let text = p.symbols[symbol.index()].as_bytes();
+            let mut offset = 0;
+            let mut ordering = bytes.cmp(&text.len());
+            while offset < bytes {
+                let segment = heap.byte_segment(key, offset as u32)?;
+                let length = segment.len().min(text.len().saturating_sub(offset));
+                let comparison = segment[..length].cmp(&text[offset..offset + length]);
+                if comparison != Ordering::Equal {
+                    ordering = comparison;
+                    break;
+                }
+                if length < segment.len() {
+                    ordering = Ordering::Greater;
+                    break;
+                }
+                offset += length;
+            }
+            match ordering {
+                Ordering::Equal => return Ok(Some(symbol)),
+                Ordering::Less => high = middle,
+                Ordering::Greater => low = middle + 1,
+            }
+        }
+        Ok(None)
     }
 
     pub(super) fn accepts(
@@ -89,7 +148,7 @@ impl TypeChecks {
                     match &p.types[ty.index()] {
                         TypeDef::Builtin(kind) => accepted = heap.accepts_builtin(*kind, value)?,
                         TypeDef::Named { .. } => {
-                            accepted = classes::accepts_nominal(heap, value, ty)?
+                            accepted = crate::class::accepts_nominal(heap, value, ty)?
                         }
                         TypeDef::Tuple(items) => {
                             if !heap.accepts_builtin(BuiltinType::Tuple, value)?
@@ -150,6 +209,7 @@ impl TypeChecks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{HeapLimits, SessionEpoch};
     #[test]
     fn structural_checks_reuse_charged_stack_without_allocations() {
         let mut p = fixtures::helper_native();

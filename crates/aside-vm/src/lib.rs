@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 pub mod bytecode;
 mod cell;
+mod class;
 pub mod executor;
 mod fault;
 mod frame_slots;
@@ -10,6 +11,7 @@ mod heap;
 mod payload;
 mod root_ranges;
 mod slots;
+mod type_checks;
 mod value;
 
 pub use cell::{CellContract, CellInfo};

@@ -274,6 +274,7 @@ pub(crate) struct Root {
 
 /// Single-threaded integer-handle graph. All publishing writes pass the barrier.
 pub struct Heap {
+    pub(crate) code: Option<Rc<crate::fault::CodeLease>>,
     pub(crate) id: HeapId,
     pub(crate) epoch: SessionEpoch,
     pub(crate) objects: Slots<HeapKey, Object>,
@@ -355,6 +356,7 @@ impl Heap {
         let usage = HeapBudgetUsage::new(limits.max_bytes);
         usage.charge(estimate - BOOK_BYTES);
         let mut heap = Self {
+            code: None,
             id: HeapId::fresh().ok_or(HeapError::IdentityExhausted)?,
             epoch,
             objects: Slots::new(initial_objects, limits.max_objects as usize, retirement),
@@ -771,6 +773,22 @@ impl Heap {
         value: Value,
     ) -> Result<(), HeapError> {
         self.property_fields(host)?;
+        if self.is_model_cell(host)? {
+            if index != 0 {
+                return Err(HeapError::OutOfBounds);
+            }
+            let contract = self.cell_info(host)?.contract;
+            let accepted = if let (Some(ty), Some(code)) = (contract.type_id, &self.code) {
+                code.checks.accepts(code.package(), self, ty, value)?
+            } else {
+                self.accepts_builtin(contract.ty, value)?
+            };
+            return if accepted {
+                Ok(())
+            } else {
+                Err(HeapError::TypeMismatch)
+            };
+        }
         if let Some(validate) = self.object(self.key(host)?)?.host_validator {
             validate(self, host, index, value)?;
         }
@@ -803,7 +821,12 @@ impl Heap {
             versions = self.alloc_array(&[])?;
             self.set_property_versions(host, versions)?;
         }
-        while self.sequence_len(versions)? < self.table_len(fields)? {
+        let count = if self.is_model_cell(host)? {
+            1
+        } else {
+            self.table_len(fields)?
+        };
+        while self.sequence_len(versions)? < count {
             self.array_push(versions, Value::int(0))?;
         }
         Ok(())
