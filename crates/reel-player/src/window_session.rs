@@ -137,7 +137,11 @@ impl WindowSession {
                     story.driver_mut()?.handle_pointer(bridge, event)?;
                     story.wake_input();
                 }
-                story.driver_mut()?.sync(bridge, root)
+                story.driver_mut()?.sync(bridge, root)?;
+                // Publishing the reveal clock can invalidate derived UI even
+                // while the narrative task is waiting for the next click.
+                story.wake_input();
+                Ok(())
             }
         }
     }
