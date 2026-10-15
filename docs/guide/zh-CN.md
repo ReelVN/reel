@@ -135,6 +135,35 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 
 stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。`scroll(height: 360) { ... }` 创建纵向滚动区域；axis 可设为 "horizontal" 或 "both"。滚轮、触摸拖动和键盘/手柄焦点跟随共用正常输入；滚动不会重建文字布局。`follow_end: true` 使已处于末端的 NVL 页跟随新内容，上滚阅读后保留位置。
 
+### 用类组织有行为的数据
+
+`class` 可以把角色、词条等数据的字段、类型和方法放在一起。`let` 字段只初始化一次，`let mut` 字段允许修改；字段初值按实例分别求值。构造方法写 `fn init(self, ...)`，也支持命名参数和缺省值。参数注解可以引用本地或导入的类，派生实例满足基类注解。
+
+```aside
+class PoemWord {
+    let text: string;
+    let score: int;
+
+    fn init(self, text: string, score: int = 1) {
+        self.text = text;
+        self.score = score;
+    }
+
+    fn caption(self) -> string {
+        f"{self.text} · {self.score}"
+    }
+}
+
+fn word_label(word: PoemWord) {
+    text(word.caption())
+}
+
+let word = PoemWord("星光", score: 3);
+let caption = word.caption;
+```
+
+`caption()` 保留 `word` 接收者，适合传给回调。继承写 `class Child: Parent`，覆盖方法用 `super.method()` 调用词法基类；派生类未声明 `init` 时继承基类构造，声明后可显式调用一次 `super.init(...)`。`static let` 和 `static fn` 属于类。构造结束必须完成所有字段初始化，失败或取消后，已发布的实例引用与方法均报告 ConstructionFailed。类的字段布局固定，派生类通过方法扩展行为。可运行示例见 [author_classes.aside](../../examples/author_classes.aside)。当前可观察 UI 数据使用后文的 `model({...})`；类实例接入模型复制和属性绑定仍在 [#149](https://github.com/jhq223/reel/issues/149) 跟踪。
+
 ### 在运行中修改组件
 
 子节点块中可以先用局部变量构造控件，再添加依赖控件状态的外观，最后显式提供控件本身。add 返回的后代已归该控件所有，不会在外层再次挂载；显式 children 数组也遵循同一规则。不能重复提供同一节点，或借用另一个未提供的组件及已挂载舞台的子节点。
@@ -697,7 +726,7 @@ cargo run --locked -p reel-engine --example story_contract
 
 宿主自动推进旁白并选择第一项，实际经过编译、模块初始化、VM 等待/恢复和 owner 退休。导入符号及名称节点指向同一 native 时会正确合并；冲突注册仍拒绝。宿主链接包沿用请求的内容版本，ABI v1 保持独立。
 
-当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。有限动画与按钮事件已接通；视频、类、delegate/hooks、property-bag 和保存恢复仍未实现。
+当前支持没有必填参数、没有捕获环境的普通模块级入口，包括私有函数。对白和选择按内容布局并支持滚动，不另设固定两行或两个选项的上限。源码窗口启动和 ASB 窗口启动已实现；自然结束保留最后画面，关闭窗口完成清理。上述无窗口示例专注对白与选择，完整基础节点组合请用第一节的作者舞台示例。有限动画与按钮事件已接通；视频、delegate/hooks、property-bag 和保存恢复仍未实现。
 
 ## 可运行按钮与回调
 

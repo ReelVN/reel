@@ -1,0 +1,20 @@
+// Source: original/doc/examples/pages/language/classes-basics.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Constructors and receivers use Aside syntax; original stdout is retained.
+class Weapon {
+    let mut weaponName = "unknown";
+    let mut ammoBelt = 0;
+    fn init(self, weaponName, ammoBelt) {
+        self.weaponName = weaponName;
+        self.ammoBelt = ammoBelt;
+    }
+    fn fire(self) {
+        if self.ammoBelt <= 0 { return f"{self.weaponName}: empty"; }
+        self.ammoBelt -= 1;
+        f"{self.weaponName}: {self.ammoBelt} left"
+    }
+}
+let rifle = Weapon("ak74", 2);
+println(rifle.fire());
+println(rifle.fire());
+println("rifle instanceof Weapon =", rifle is Weapon);

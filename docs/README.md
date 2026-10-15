@@ -15,7 +15,7 @@
 
 | 领域 | 现在实际可用 | 主要缺口与跟踪 |
 | --- | --- | --- |
-| Aside / VM | 多源码链接→B01→执行；函数、闭包、默认/命名参数、位置/具名 spread、rest、集合编辑、异常/finally、可调用宿主对象/方法及 await、增量 GC。[语言执行边界](../crates/aside-compiler/LOWERING.md) | 类/元方法、完整模式/标准库、通用 async/Future、generator/thread 和快照。[#65](https://github.com/jhq223/reel/issues/65) |
+| Aside / VM | 多源码链接→B01→执行；函数、闭包、默认/命名参数、spread、rest、类/类型字段/继承/绑定方法、集合编辑、异常/finally、可调用宿主对象及 await、增量 GC。[语言执行边界](../crates/aside-compiler/LOWERING.md) | 类的可观察模型集成、元方法、完整模式/标准库、通用 async/Future、generator/thread 和快照。[#65](https://github.com/jhq223/reel/issues/65) |
 | 剧情 | 角色/旁白、ADV 行组、choose 的等待与恢复、历史、Unicode 字素揭示和公共播放时钟；只读对白/选择/历史模型、自定义 ADV/NVL 与历史界面、可观察自动阅读/暂停/快进服务与可复用已读记录。[阅读服务](../examples/author_reading.aside) · [作者剧情界面](../examples/author_narrative.aside) · [角色对白](../examples/author_dialogue.aside) | 章节跳转、本地化和保存恢复等完整创作流程，见总清单 |
 | 舞台 / UI | text/image/row/column/stack/button/input/slider/toggle/scroll、PNG/JPEG、布局/变换/裁剪、原节点属性更新、局部 add/remove/clear；按钮及值变更回调可以等待活动，设置控件支持脚本回写和连续输入，model、bind/unbind、derive 连接可观察状态并共享动画写入权；view 按实际数据依赖重建内容，list 按 key 保留节点、局部状态及焦点；只读交互状态和 decorated 支持作者自绘按钮/开关；modal 隔离输入，支持嵌套焦点恢复。[动态组件](../examples/author_dynamic_stage.aside) · [按钮](../examples/author_buttons.aside) · [模态菜单](../examples/author_modal.aside) · [设置页](../examples/author_settings.aside) · [属性连接](../examples/author_bindings.aside) · [控件外观](../examples/author_control_states.aside) · [动态列表](../examples/author_list.aside) | 滑条外观槽位、文本输入、列表虚拟化、通用事件和 scope。[#90](https://github.com/jhq223/reel/issues/90) · [#63](https://github.com/jhq223/reel/issues/63) |
 | 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、属性接管和 owner 退休；纯变换不重新布局。[可运行例](../examples/author_activities.aside) | 通用 scope、快进和活动快照尚未接通。组合动作合同：[#88](https://github.com/jhq223/reel/issues/88) |
@@ -26,7 +26,7 @@
 | 输入 | 鼠标、多触点、键盘和手柄；命名动作、保持/模拟值与重映射；已接受画面的空间导航及焦点滚动。[作者动作](../examples/author_input.aside) | 手柄 Windows 后端初始化已验证，实体设备及其他平台仍待实测；小游戏会话/更新由 [#101](https://github.com/jhq223/reel/issues/101) 继续 |
 | 平台 | PlatformHost/Presentation/StoryRuntime/RenderBackend 与作者资源 HAL 已贯通，Winit 与 WGPU 可独立启用；内置窗口复用相同接口。[宿主接入](../crates/reel-player/README.md) | 媒体适配、原生 IME/可访问性及各设备运行仍需交付。[#93](https://github.com/jhq223/reel/issues/93) |
 
-Quirrel 原始输入、预期输出及来源保留在 [compiler fixtures](../crates/aside-compiler/tests/fixtures/quirrel/README.md)。当前映射登记了 **67 个完整文件的迁移**，会编译、往返 B01 并在真实 VM 中执行；其余保留资产不等于已迁移或已通过。新宿主测试不计入原始测试迁移。
+Quirrel 原始输入、预期输出及来源保留在 [compiler fixtures](../crates/aside-compiler/tests/fixtures/quirrel/README.md)。当前映射登记了 **69 个完整文件的迁移**，会编译、往返 B01 并在真实 VM 中执行；其余保留资产不等于已迁移或已通过。新宿主测试不计入原始测试迁移。
 
 ### 先运行已支持的示例
 

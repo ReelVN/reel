@@ -1,5 +1,6 @@
 mod arguments;
 mod chains;
+mod classes;
 mod collections;
 mod composition;
 mod expressions;
@@ -126,6 +127,7 @@ pub(super) fn lower_prepared<'a>(
         preflight(m, links, project, &mut budget)?;
     }
     let b = budget;
+    let module_id = project.map_or(bc::ModuleId(package.modules.len() as u32), |p| p.module);
     let symbol_count = m.symbols().len();
     let mut lower = Lowerer {
         m,
@@ -148,7 +150,7 @@ pub(super) fn lower_prepared<'a>(
         native_nodes: Vec::new(),
         native_symbols: Vec::new(),
         source: bc::SourceId(0),
-        module: bc::ModuleId(0),
+        module: module_id,
     };
     lower.type_cache = lower.b.filled(m.types().len(), None)?;
     lower.native_values = lower.b.filled(lower.package.natives.len(), None)?;
@@ -544,6 +546,7 @@ impl Lowerer<'_> {
             h::Type::Table => Some(B::Table),
             h::Type::Future => Some(B::Future),
             h::Type::Generator => Some(B::Generator),
+            h::Type::Class(_) => Some(B::Class),
             h::Type::Closure | h::Type::Function(_) | h::Type::BoundMethod(_) => Some(B::Closure),
             _ => None,
         };
@@ -551,6 +554,16 @@ impl Lowerer<'_> {
             self.builtin(ty)?
         } else {
             let def = match &self.m.types()[id.0 as usize] {
+                h::Type::Instance(node) => {
+                    let ty = self.class_type(*node)?;
+                    self.type_cache[id.0 as usize] = Some(ty);
+                    return Ok(ty);
+                }
+                h::Type::Named(name) => {
+                    let ty = self.external_class_type(*name)?;
+                    self.type_cache[id.0 as usize] = Some(ty);
+                    return Ok(ty);
+                }
                 h::Type::Tuple(ids) | h::Type::Union(ids) => {
                     self.b.work(ids.len() as u64)?;
                     let mut out = Vec::new();
@@ -652,13 +665,10 @@ impl Lowerer<'_> {
     fn prepare_functions(&mut self) -> Result<(), Box<Error>> {
         for f in self.m.functions() {
             self.b.span = self.m.hir().node(f.node).span;
-            if f.kind != h::FunctionKind::Plain
-                || f.receiver != h::Receiver::None
-                || f.role != h::FunctionRole::Body
-            {
+            if f.kind != h::FunctionKind::Plain {
                 return Err(self.b.error(
                     ErrorKind::Unsupported,
-                    "async/generator/class functions belong to later lowering",
+                    "async/generator functions belong to later lowering",
                 ));
             }
             let mut parameters = Vec::new();
@@ -1199,6 +1209,25 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         };
         let entry = out.block()?;
         out.start(entry)?;
+        if let Some(owner) = owner {
+            for index in 0..out.l.owned[owner.0 as usize].len() {
+                let sym = out.l.owned[owner.0 as usize][index];
+                if out.l.m.symbols()[sym.0 as usize].kind == h::SymbolKind::Super {
+                    let value = out.temp()?;
+                    out.op(bc::Opcode::SuperRef, value.0, 0, 0, node)?;
+                    if let Some(binding) = out.local(sym)? {
+                        if matches!(
+                            out.def.bindings[binding.index()].storage,
+                            bc::BindingStorage::Cell(_)
+                        ) {
+                            out.op(bc::Opcode::CellNew, binding.0, 0, 0, node)?;
+                        }
+                        out.op(bc::Opcode::BindInit, binding.0, value.0, 0, node)?;
+                    }
+                    out.release(value)?;
+                }
+            }
+        }
         Ok(out)
     }
     fn span(&self, n: h::NodeId) -> TextRange {
@@ -1416,7 +1445,10 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
         }
         Ok(())
     }
-    fn closure(&mut self, function: h::FunctionId, n: h::NodeId) -> Result<bc::Reg, Box<Error>> {
+    fn capture_sources(
+        &mut self,
+        function: h::FunctionId,
+    ) -> Result<Vec<bc::CaptureSource>, Box<Error>> {
         let mut captures = Vec::new();
         let f = &self.l.m.functions()[function.0 as usize];
         self.l.b.work(f.captures.len() as u64)?;
@@ -1433,6 +1465,10 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             };
             self.l.b.push(&mut captures, source)?;
         }
+        Ok(captures)
+    }
+    fn closure(&mut self, function: h::FunctionId, n: h::NodeId) -> Result<bc::Reg, Box<Error>> {
+        let captures = self.capture_sources(function)?;
         let descriptor = self.descriptor(bc::Descriptor::Closure {
             function: self.l.outputs[function.0 as usize],
             captures,
@@ -1446,6 +1482,9 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
             let symbols = &self.l.m.scopes()[scope.0 as usize].symbols;
             self.l.b.work(symbols.len() as u64)?;
             for &sym in symbols {
+                if self.l.m.symbols()[sym.0 as usize].kind == h::SymbolKind::Super {
+                    continue;
+                }
                 if let Some(binding) = self.local(sym)? {
                     let binding_def = &self.def.bindings[binding.index()];
                     if binding_def.initialization == bc::BindingInitialization::Explicit {
@@ -1524,10 +1563,12 @@ impl<'b, 'a> FunctionBuilder<'b, 'a> {
 }
 
 fn body_binding(symbol: &h::Symbol, origin: &Origin, span: TextRange) -> bool {
-    !matches!(
-        symbol.initialization,
-        h::Initialization::Parameter | h::Initialization::External
-    ) && (!matches!(origin, Origin::Default { .. }) || span.contains_range(symbol.declaration))
+    (symbol.kind == h::SymbolKind::Super
+        || !matches!(
+            symbol.initialization,
+            h::Initialization::Parameter | h::Initialization::External
+        ))
+        && (!matches!(origin, Origin::Default { .. }) || span.contains_range(symbol.declaration))
 }
 
 fn binary(operator: K) -> Option<bc::Opcode> {
@@ -1673,8 +1714,7 @@ fn preflight(
         b.span = node.span;
         if matches!(
             node.kind,
-            H::Class
-                | H::Yield
+            H::Yield
                 | H::TuplePattern
                 | H::ArrayPattern
                 | H::ObjectPattern

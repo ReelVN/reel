@@ -202,6 +202,8 @@ pub enum FaultKind {
     ModuleInitializationCycle = 18,
     ArgumentOrder = 19,
     MatchError = 20,
+    UninitializedField = 21,
+    ConstructionFailed = 22,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -329,6 +331,8 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::MakeTuple,
     Opcode::MakeArray,
     Opcode::MakeTable,
+    Opcode::MakeClass,
+    Opcode::SuperRef,
     Opcode::MemberGet,
     Opcode::MemberSet,
     Opcode::PropertyRef,
@@ -372,6 +376,8 @@ impl FaultKind {
             Self::UnknownArgument => "unknown argument",
             Self::ArgumentOrder => "positional argument after named argument",
             Self::MatchError => "no match arm accepted the value",
+            Self::UninitializedField => "field read before initialization",
+            Self::ConstructionFailed => "instance construction failed",
             Self::Overflow => "integer overflow",
             Self::DivisionByZero => "division by zero",
             Self::Effect => "effect constraint",

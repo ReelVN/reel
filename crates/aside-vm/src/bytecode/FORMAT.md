@@ -81,8 +81,9 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 0056 | MemberSet | x,y,s | next | yes | - |
 | 0057 | TableSpread | x,y | next (own slots snapshot) | yes | - |
 | 0058 | ArraySpread | x,y | next (elements snapshot) | yes | - |
-| 0059 | MakeClass | d,q:Class(base,fields,methods,initializers) | next | yes | - |
+| 0059 | MakeClass | d,q:Class(nominal type,base,fields,methods,initializers) | next | yes | - |
 | 005a | SuperGet | d,x,q:Super(lexical base,symbol) | next | yes | - |
+| 006a | SuperRef | d (captures the current method's receiver and lexical base) | next | yes | - |
 | 005b | PropertyRef | d,x,q:Property(key,read/write) | next | yes | - |
 | 005c | ChildrenPush | x,y | append composable host value to array; ignore null | yes | - |
 | 005f | ArrayPush | x,y | append one value to array | yes | - |

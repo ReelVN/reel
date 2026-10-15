@@ -406,9 +406,9 @@ fn window(f: &FunctionDef, w: RegWindow) -> Result<(), Error> {
         "register window",
     )
 }
-fn unique_slice<T>(
+fn unique_slice<T, K: Ord>(
     items: &[T],
-    key: impl Fn(&T) -> u32,
+    key: impl Fn(&T) -> K,
     b: &mut Budget,
     label: &str,
 ) -> Result<(), Error> {
@@ -1406,13 +1406,26 @@ fn validate_descriptor(
             }
         }
         Descriptor::Class(c) => {
+            if let Some(id) = c.nominal {
+                ty(p, id)?;
+                check(
+                    matches!(p.types[id.index()], TypeDef::Named { module, .. } if module == f.module),
+                    ErrorKind::Signature,
+                    "class nominal type module",
+                )?;
+            }
             if let Some(base) = c.base {
                 reg(f, base)?;
             }
-            unique_slice(&c.fields, |field| field.name.0, b, "duplicate class field")?;
+            unique_slice(
+                &c.fields,
+                |field| (field.name.0, field.is_static),
+                b,
+                "duplicate class field",
+            )?;
             unique_slice(
                 &c.methods,
-                |method| method.name.0,
+                |method| (method.name.0, method.is_static),
                 b,
                 "duplicate class method",
             )?;

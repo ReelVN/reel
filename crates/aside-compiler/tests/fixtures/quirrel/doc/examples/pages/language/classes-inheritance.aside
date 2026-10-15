@@ -1,0 +1,15 @@
+// Source: original/doc/examples/pages/language/classes-inheritance.nut
+// Origin: Quirrel 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe; license: LICENSE
+// Explicit self, super and is preserve the original inheritance/output oracle.
+class Vehicle {
+    let mut hitPoints = 100;
+    fn describe(self) { f"{self.hitPoints} hp" }
+}
+class Tank: Vehicle {
+    let mut turretAngle = 0;
+    fn init(self) { self.hitPoints = 250; }
+    fn describe(self) { super.describe() + f", turret {self.turretAngle}" }
+}
+let abrams = Tank();
+println(abrams.describe());
+println("abrams instanceof Vehicle =", abrams is Vehicle);

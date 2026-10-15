@@ -335,6 +335,7 @@ pub struct ClassMethod {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassDesc {
+    pub nominal: Option<TypeId>,
     pub base: Option<Reg>,
     pub fields: Vec<ClassField>,
     pub methods: Vec<ClassMethod>,
