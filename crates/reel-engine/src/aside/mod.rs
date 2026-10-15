@@ -501,7 +501,7 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work })
             }
-            "reel::run" => {
+            "reel::run" | "reel::clock" => {
                 let args = self.vm.host_arguments(ticket)?;
                 let [action, owner] = [args[0], args[1]];
                 let owner = if owner.tag() == aside_vm::ValueTag::Null {
@@ -509,7 +509,13 @@ impl SessionVm {
                 } else {
                     owner
                 };
-                let (done, work) = self.activities.run(
+                let start = if symbol == "reel::clock" {
+                    activity::Activities::clock
+                } else {
+                    activity::Activities::run
+                };
+                let (done, work) = start(
+                    &mut self.activities,
                     &mut self.vm,
                     &self.stage,
                     self.root_owner,

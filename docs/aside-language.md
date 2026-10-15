@@ -255,6 +255,8 @@ Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去�
 
 ## 十二 Task Future 与取消
 
+Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 B01/ASB 变化。
+
 Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，B01/ASB 不变。
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。

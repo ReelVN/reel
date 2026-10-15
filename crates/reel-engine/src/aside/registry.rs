@@ -455,6 +455,14 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("tween", tween, false),
         ("delay", vec![parameter("seconds", None)], false),
         (
+            "clock",
+            vec![
+                parameter("interval", Some(bc::Const::Int(1))),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        (
             "run",
             vec![
                 parameter("action", None),
