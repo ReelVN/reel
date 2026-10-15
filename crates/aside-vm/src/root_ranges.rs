@@ -28,8 +28,41 @@ impl RootRangeToken {
         }
     }
 }
+impl serde::Serialize for RootRangeToken {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use slotmap::Key;
+        serde::Serialize::serialize(&self.key.data().as_ffi(), s)
+    }
+}
+impl<'de> serde::Deserialize<'de> for RootRangeToken {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let key = <u64 as serde::Deserialize>::deserialize(d)?;
+        if crate::slots::heap_key(key).is_none() {
+            return Err(serde::de::Error::custom("invalid snapshot range"));
+        }
+        Ok(Self {
+            heap: HeapId(0),
+            epoch: SessionEpoch(0),
+            key: slotmap::KeyData::from_ffi(key).into(),
+            _thread: PhantomData,
+        })
+    }
+}
+impl crate::snapshot::SnapshotMap {
+    pub(crate) fn rebase_range(
+        &self,
+        range: RootRangeToken,
+    ) -> Result<RootRangeToken, crate::snapshot::SnapshotError> {
+        use slotmap::Key;
+        self.check(range.heap, Some(range.epoch))?;
+        self.ranges
+            .get(&range.key.data().as_ffi())
+            .copied()
+            .ok_or_else(|| crate::snapshot::SnapshotError::Invalid("missing root range".into()))
+    }
+}
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RangeDescriptor {
     pub owner: RootOwner,
     pub kind: RootKind,

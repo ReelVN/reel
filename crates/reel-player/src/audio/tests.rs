@@ -99,7 +99,46 @@ fn request(looping: bool) -> AudioRequest {
         group: AudioGroup::Effects,
         pan: 0.,
         fade_in: Duration::ZERO,
+        start_position: Duration::ZERO,
     }
+}
+
+#[test]
+fn restored_music_starts_at_saved_content_position_before_output_resumes() {
+    let (mut first, output) = rig();
+    let mut music = request(true);
+    music.group = AudioGroup::Music;
+    let id = first.play(music).unwrap();
+    until(|| {
+        first.maintain();
+        output.render();
+        first.snapshot(id).unwrap().request.start_position > Duration::from_millis(15)
+    });
+    first.suspend();
+    let saved = first.snapshot(id).unwrap();
+    assert!(saved.result.is_none());
+    let position = saved.request.start_position;
+    let (mut restored, restored_output) = rig();
+    restored.suspend();
+    let id = restored.play(saved.request).unwrap();
+    until(|| {
+        restored.maintain();
+        matches!(restored.entries[&id].phase, Phase::Playing(_))
+    });
+    assert_eq!(restored_output.render(), 0.);
+    restored.resume();
+    until(|| {
+        restored.maintain();
+        restored_output.render();
+        restored.snapshot(id).unwrap().request.start_position > position
+    });
+    first.close();
+    restored.close();
+    until(|| {
+        first.maintain();
+        restored.maintain();
+        !first.cleanup_pending() && !restored.cleanup_pending()
+    });
 }
 
 #[test]
@@ -162,14 +201,14 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
             runtime.tick(SliceBudget::default(), || 0).unwrap();
             assert!(
                 matches!(
-                    runtime.driver.state(),
+                    runtime.driver().state(),
                     StoryState::Running | StoryState::Finished
                 ),
                 "state: {:?}, fault: {:?}",
-                runtime.driver.state(),
-                runtime.driver.fault()
+                runtime.driver().state(),
+                runtime.driver().fault()
             );
-            runtime.driver.state() == StoryState::Finished && !runtime.needs_tick()
+            runtime.driver().state() == StoryState::Finished && !runtime.needs_tick()
         });
         assert!(peak > 0.1, "real decoded PCM must reach output");
         assert_eq!(pcm.usage().bytes, 0);

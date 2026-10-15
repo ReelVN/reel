@@ -32,6 +32,9 @@ pub struct StoryWindowOptions {
     pub locale: String,
     pub logical_size: Option<[u32; 2]>,
     pub canvas_size: Option<[u32; 2]>,
+    /// Host-selected user data, independent of read-only game assets.
+    pub save_directory: Option<std::path::PathBuf>,
+    pub save_bytes: u64,
 }
 impl Default for StoryWindowOptions {
     fn default() -> Self {
@@ -42,6 +45,8 @@ impl Default for StoryWindowOptions {
             locale: "en".into(),
             logical_size: None,
             canvas_size: None,
+            save_directory: None,
+            save_bytes: 256 << 20,
         }
     }
 }
@@ -164,9 +169,11 @@ impl ApplicationHandler for App {
             Err(e) => self.fail(event_loop, e),
         }
     }
-    fn suspended(&mut self, _: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_mut() {
-            state.suspend();
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_mut()
+            && let Err(error) = state.suspend()
+        {
+            self.fail(event_loop, error);
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -196,8 +203,7 @@ impl ApplicationHandler for App {
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F6) =>
             {
-                state.suspend();
-                state.resume()
+                state.suspend().and_then(|()| state.resume())
             }
             WindowEvent::CloseRequested => {
                 self.close(event_loop);

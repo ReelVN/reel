@@ -31,7 +31,7 @@ impl ReadProgress {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Mode {
     #[default]
     Manual,
@@ -41,7 +41,7 @@ enum Mode {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReadingState {
     mode: Mode,
     paused: bool,

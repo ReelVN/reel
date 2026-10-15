@@ -1,7 +1,7 @@
 //! One work buffer and a constant-cost commit for collection transformations.
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) struct BulkWork {
     call: BuiltinCall,
     index: u32,

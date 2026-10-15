@@ -942,52 +942,53 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
             !runtime.needs_tick(),
             "no reveal before an accepted presentation"
         );
-        let (mut bridge, root) = bridge(&runtime.driver);
-        present(&mut runtime.driver, &mut bridge, root, 1);
+        let (mut bridge, root) = bridge(runtime.driver());
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 1);
         tick(&mut runtime, 0);
-        let history = &runtime.driver.ui().session().view().history[0];
+        let history = &runtime.driver().ui().session().view().history[0];
         assert_eq!(history.lines()[0].speaker_id(), Some("mio"));
         assert_eq!(history.lines()[0].speaker_name(), "Mio");
         tick(&mut runtime, 100_000_000);
-        assert_eq!(reveal(&runtime.driver), ["A"]);
+        assert_eq!(reveal(runtime.driver()), ["A"]);
         tick(&mut runtime, 200_000_000);
-        assert_eq!(reveal(&runtime.driver), ["Aé"]);
-        runtime.suspend(200_000_000);
+        assert_eq!(reveal(runtime.driver()), ["Aé"]);
+        runtime.suspend(200_000_000).unwrap();
         assert!(!runtime.needs_tick());
         runtime.resume(10_200_000_000);
         tick(&mut runtime, 10_200_000_000);
-        assert_eq!(reveal(&runtime.driver), ["Aé"]);
+        assert_eq!(reveal(runtime.driver()), ["Aé"]);
         tick(&mut runtime, 10_300_000_000);
-        assert_eq!(reveal(&runtime.driver), ["Aé👨‍👩‍👧‍👦"]);
-        runtime.driver.begin_collection().unwrap();
+        assert_eq!(reveal(runtime.driver()), ["Aé👨‍👩‍👧‍👦"]);
+        runtime.driver_mut().unwrap().begin_collection().unwrap();
         while !runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .gc_step(Default::default())
             .unwrap()
             .cycle_complete
         {}
-        present(&mut runtime.driver, &mut bridge, root, 2);
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 2);
         gamepad_press(
-            &mut runtime.driver,
+            runtime.driver_mut().unwrap(),
             &mut bridge,
             reel_ui::input::GamepadButton::South,
         );
-        settle(&mut runtime.driver);
-        assert_eq!(reveal(&runtime.driver), ["Aé👨‍👩‍👧‍👦雨"]);
+        settle(runtime.driver_mut().unwrap());
+        assert_eq!(reveal(runtime.driver()), ["Aé👨‍👩‍👧‍👦雨"]);
         assert!(!runtime.needs_tick(), "full text sleeps");
-        present(&mut runtime.driver, &mut bridge, root, 3);
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 3);
         gamepad_press(
-            &mut runtime.driver,
+            runtime.driver_mut().unwrap(),
             &mut bridge,
             reel_ui::input::GamepadButton::South,
         );
-        settle(&mut runtime.driver);
-        assert_eq!(runtime.driver.ui().session().view().history.len(), 2);
-        present(&mut runtime.driver, &mut bridge, root, 4);
+        settle(runtime.driver_mut().unwrap());
+        assert_eq!(runtime.driver().ui().session().view().history.len(), 2);
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 4);
         tick(&mut runtime, 11_000_000_000);
         tick(&mut runtime, 11_100_000_000);
-        assert_eq!(reveal(&runtime.driver), ["一", "四"]);
-        let history = &runtime.driver.ui().session().view().history[1];
+        assert_eq!(reveal(runtime.driver()), ["一", "四"]);
+        let history = &runtime.driver().ui().session().view().history[1];
         assert_eq!(history.lines()[0].speaker_name(), "Mio");
         assert_eq!(history.lines()[1].speaker_name(), "Eri");
         assert_ne!(
@@ -995,9 +996,10 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
             history.lines()[1].content().id()
         );
         // A held confirmation freezes the accepted text until release.
-        present(&mut runtime.driver, &mut bridge, root, 5);
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 5);
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(
                 &mut bridge,
                 TextEvent::Navigation(reel_ui::input::ActionEvent {
@@ -1008,9 +1010,10 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
             )
             .unwrap();
         tick(&mut runtime, 20_000_000_000);
-        assert_eq!(reveal(&runtime.driver), ["一", "四"]);
+        assert_eq!(reveal(runtime.driver()), ["一", "四"]);
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(
                 &mut bridge,
                 TextEvent::Navigation(reel_ui::input::ActionEvent {
@@ -1020,31 +1023,31 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
                 }),
             )
             .unwrap();
-        settle(&mut runtime.driver);
-        assert_eq!(reveal(&runtime.driver), ["一二三", "四五"]);
-        present(&mut runtime.driver, &mut bridge, root, 6);
+        settle(runtime.driver_mut().unwrap());
+        assert_eq!(reveal(runtime.driver()), ["一二三", "四五"]);
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 6);
         gamepad_press(
-            &mut runtime.driver,
+            runtime.driver_mut().unwrap(),
             &mut bridge,
             reel_ui::input::GamepadButton::South,
         );
-        settle(&mut runtime.driver);
-        present(&mut runtime.driver, &mut bridge, root, 7);
+        settle(runtime.driver_mut().unwrap());
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 7);
         tick(&mut runtime, 21_000_000_000);
         assert_eq!(
-            reveal(&runtime.driver),
+            reveal(runtime.driver()),
             ["The conversation stays in history."]
         );
         assert!(!runtime.needs_tick());
-        present(&mut runtime.driver, &mut bridge, root, 8);
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 8);
         gamepad_press(
-            &mut runtime.driver,
+            runtime.driver_mut().unwrap(),
             &mut bridge,
             reel_ui::input::GamepadButton::South,
         );
-        settle(&mut runtime.driver);
-        assert_eq!(runtime.driver.state(), StoryState::Finished);
-        assert_eq!(runtime.driver.ui().session().view().history.len(), 3);
+        settle(runtime.driver_mut().unwrap());
+        assert_eq!(runtime.driver().state(), StoryState::Finished);
+        assert_eq!(runtime.driver().ui().session().view().history.len(), 3);
     }
 }
 

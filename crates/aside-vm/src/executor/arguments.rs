@@ -2,7 +2,7 @@
 //! Dynamic names stay in the argument roots; cursors contain no heap pointers.
 use super::*;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct ArgumentBinding {
     pub index: u32,
     positional: u32,

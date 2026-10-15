@@ -14,6 +14,7 @@ pub(super) enum Kind {
     Task = -1102,
     Presentation = -1103,
     Particle = -1104,
+    Operation = -1105,
 }
 #[repr(u32)]
 enum Slot {
@@ -32,6 +33,7 @@ enum State {
     Cancelling,
     Faulted,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Methods {
     settle: [FunctionId; 3],
     cancel_task: FunctionId,
@@ -68,21 +70,69 @@ pub(super) fn reserve_queue<T>(
     *charge = Some(next_charge);
     Ok(())
 }
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Results {
     methods: Option<Methods>,
+    #[serde(skip)]
     waits: VecDeque<(WaitId, Value)>,
+    #[serde(skip)]
     charge: Option<HeapReservation>,
     remaining: usize,
     dirty: bool,
     stage_revision: u64,
     requested: u64,
     presented: u64,
+    #[serde(skip)]
     presentations: VecDeque<RootToken>,
+    #[serde(skip)]
     presentation_charge: Option<HeapReservation>,
     presentation_remaining: usize,
 }
-fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+impl Results {
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            std::iter::once_with(|| Record::new(Part::Results, self))
+                .chain(
+                    self.waits
+                        .iter()
+                        .map(|wait| Record::new(Part::ResultWait, wait)),
+                )
+                .chain(
+                    self.presentations
+                        .iter()
+                        .map(|root| Record::new(Part::Presentation, root)),
+                ),
+        )
+    }
+    pub(super) fn restore_record(
+        &mut self,
+        record: &super::snapshot::Record,
+        map: &aside_vm::snapshot::SnapshotMap,
+        heap: &Heap,
+    ) -> Result<(), AdapterError> {
+        use super::snapshot::Part;
+        match record.part {
+            Part::Results => {
+                *self = record.read()?;
+                self.dirty = true;
+            }
+            Part::ResultWait => {
+                let (wait, value): (WaitId, Value) = record.read()?;
+                reserve_queue(heap, &mut self.waits, &mut self.charge)?;
+                self.waits.push_back((map.wait(wait)?, map.value(value)?));
+            }
+            Part::Presentation => {
+                let root = map.root(record.read()?)?;
+                reserve_queue(heap, &mut self.presentations, &mut self.presentation_charge)?;
+                self.presentations.push_back(root);
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+}
+pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<(), AdapterError> {
@@ -100,6 +150,7 @@ pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
         Some(-1102) => Ok(Kind::Task),
         Some(-1103) => Ok(Kind::Presentation),
         Some(-1104) => Ok(Kind::Particle),
+        Some(-1105) => Ok(Kind::Operation),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -199,14 +250,20 @@ impl Results {
         let object = heap.alloc_host(
             fields,
             &slots[..if kind == Kind::Particle { 5 } else { 4 }],
-            Some(readonly),
+            if kind == Kind::Operation {
+                None
+            } else {
+                Some(readonly)
+            },
         )?;
         for (index, (name, function)) in ["resolve", "reject", "cancel"]
             .into_iter()
             .zip(methods.settle)
             .enumerate()
         {
-            if kind == Kind::Particle || (kind != Kind::Completion && name != "cancel") {
+            if matches!(kind, Kind::Particle | Kind::Operation)
+                || (kind != Kind::Completion && name != "cancel")
+            {
                 continue;
             }
             let function = if kind == Kind::Task {
@@ -230,6 +287,9 @@ impl Results {
         }
         vm.bind_awaitable(object, methods.wait)?;
         Ok(object)
+    }
+    pub(super) fn create_operation(&mut self, vm: &mut Vm) -> Result<Value, AdapterError> {
+        self.create(vm, Value::NULL, Kind::Operation)
     }
     pub(super) fn create_particle(
         &mut self,

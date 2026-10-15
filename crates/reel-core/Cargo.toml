@@ -8,6 +8,9 @@ publish = false
 [features]
 test-support = []
 
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive", "rc"] }
+
 [lints]
 workspace = true
 

@@ -22,7 +22,7 @@ pub struct ParticleConfig {
     pub spin_spread: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleFrame {
     pub elapsed: f64,
     pub duration: Option<f64>,

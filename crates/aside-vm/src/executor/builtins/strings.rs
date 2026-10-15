@@ -2,13 +2,13 @@
 use super::*;
 use crate::executor::text::Utf8;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) struct TextWork {
     call: BuiltinCall,
     mode: TextMode,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum TextMode {
     Scan {
         offset: u32,

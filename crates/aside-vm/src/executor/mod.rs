@@ -23,6 +23,7 @@ mod collections;
 mod iterators;
 mod models;
 mod reactive;
+pub(crate) mod snapshot;
 mod text;
 use crate::type_checks as types;
 use builtins::Builtin;
@@ -37,7 +38,7 @@ mod parameters;
 mod review_tests;
 pub use api::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct FaultSeed {
     kind: FaultKind,
     location: Location,
@@ -46,7 +47,7 @@ struct FaultSeed {
     author_value: bool,
     awaited: Option<(FaultId, u64)>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum BuildPhase {
     ErrorValue,
     Envelope,
@@ -55,7 +56,7 @@ enum BuildPhase {
     Awaited,
     Complete,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct FaultBuild {
     frame: FrameId,
     seed: FaultSeed,
@@ -63,7 +64,7 @@ struct FaultBuild {
     implicit: Option<FaultId>,
     event: u64,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ReturnTo {
     Class {
         frame: FrameId,
@@ -88,7 +89,7 @@ enum ReturnTo {
         parameter: u32,
     },
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ArgSource {
     None,
     Await {
@@ -106,7 +107,7 @@ enum ArgSource {
         frame: FrameId,
     },
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ScriptPhase {
     Class(classes::ClassStep),
     Copy {
@@ -187,13 +188,13 @@ enum ScriptPhase {
         reason: ExitReason,
     },
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ExitReason {
     Return,
     Throw(FaultSeed),
     Leave(Pc),
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct ScriptFrame {
     id: FrameId,
     code: CodeRef,
@@ -216,7 +217,7 @@ struct ScriptFrame {
     phase: ScriptPhase,
     table_work: Option<TableWork>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum NativePhase {
     Copy {
         source: ArgSource,
@@ -255,7 +256,7 @@ enum NativePhase {
     Commit(bool),
     Release(bool),
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct NativeFrame {
     id: FrameId,
     native: NativeId,
@@ -289,7 +290,7 @@ impl NativeFrame {
         3 + u64::from(self.bindings.is_some())
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum Frame {
     Script(ScriptFrame),
     Native(NativeFrame),
@@ -302,7 +303,7 @@ impl Frame {
         }
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Unwind {
     frame: FrameId,
     origin: Pc,
@@ -311,13 +312,13 @@ struct Unwind {
     value: RootRangeToken,
     replacement_event: Option<u64>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Terminal {
     id: DeliveryId,
     fault: Option<FaultSeed>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct CaughtFault {
     frame: FrameId,
     region: RegionId,
@@ -444,9 +445,18 @@ struct WorkProbe {
 impl Vm {
     pub fn load(
         program: VerifiedProgram,
+        support: RuntimeSupport,
+        limits: VmLimits,
+        epoch: SessionEpoch,
+    ) -> Result<Self, VmError> {
+        Self::load_initial(program, support, limits, epoch, true)
+    }
+    fn load_initial(
+        program: VerifiedProgram,
         mut support: RuntimeSupport,
         limits: VmLimits,
         epoch: SessionEpoch,
+        initialize: bool,
     ) -> Result<Self, VmError> {
         support.opcodes = SUPPORTED_OPCODES.to_vec();
         program.require_runtime(&support)?;
@@ -498,7 +508,8 @@ impl Vm {
         let program_charge = Reservation::new(
             &usage,
             program.stats().owned_capacity_bytes as u64
-                + (std::mem::size_of::<CodeLease>() - std::mem::size_of::<BytecodePackage>()
+                + (std::mem::size_of::<CodeLease>() + program.shared_header_bytes()
+                    - std::mem::size_of::<BytecodePackage>()
                     + std::mem::size_of::<types::TypeChecks>()
                     + 4 * std::mem::size_of::<usize>()) as u64,
         )?;
@@ -552,9 +563,9 @@ impl Vm {
         let mut native_values = ChargedVec::new(&usage, native_count)?;
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
         let mut tasks = ChargedVec::new(&usage, 1)?;
-        tasks
-            .data
-            .push(TaskState::new(&usage, &mut heap, &mut slots, limits, true)?);
+        tasks.data.push(TaskState::new(
+            &usage, &mut heap, &mut slots, limits, initialize,
+        )?);
         let scratch = ChargedVec::new(
             &usage,
             limits.max_arguments.max(
@@ -572,58 +583,64 @@ impl Vm {
         let constants = slots.open_module_set(
             &mut heap,
             RootOwner(u64::MAX),
-            u32::try_from(
-                p.constants
-                    .len()
-                    .checked_add(p.symbols.len())
-                    .and_then(|n| n.checked_add(native_count))
-                    .ok_or(VmError::Limit)?,
-            )
-            .map_err(|_| VmError::Limit)?,
+            if !initialize {
+                0
+            } else {
+                u32::try_from(
+                    p.constants
+                        .len()
+                        .checked_add(p.symbols.len())
+                        .and_then(|n| n.checked_add(native_count))
+                        .ok_or(VmError::Limit)?,
+                )
+                .map_err(|_| VmError::Limit)?
+            },
         )?;
-        for (i, c) in p.constants.iter().enumerate() {
-            let value = match c {
-                Const::Null => Value::NULL,
-                Const::Bool(v) => Value::bool(*v),
-                Const::Int(v) => Value::int(*v),
-                Const::FloatBits(v) => Value::float(f64::from_bits(*v)),
-                Const::Utf8(v) => heap.alloc_string(v)?,
-                Const::Bytes(v) => heap.alloc_bytes(v)?,
-                Const::Tuple(elements) => {
-                    // Verified constant DAG references only earlier constants. The load
-                    // path has a strict per-constant limit, like UTF-8/byte
-                    // constants. Runtime MakeTuple instead uses resumable steps.
-                    if elements.len() > limits.heap.max_mutation_values as usize {
-                        return Err(VmError::Limit);
+        if initialize {
+            for (i, c) in p.constants.iter().enumerate() {
+                let value = match c {
+                    Const::Null => Value::NULL,
+                    Const::Bool(v) => Value::bool(*v),
+                    Const::Int(v) => Value::int(*v),
+                    Const::FloatBits(v) => Value::float(f64::from_bits(*v)),
+                    Const::Utf8(v) => heap.alloc_string(v)?,
+                    Const::Bytes(v) => heap.alloc_bytes(v)?,
+                    Const::Tuple(elements) => {
+                        // Verified constant DAG references only earlier constants. The load
+                        // path has a strict per-constant limit, like UTF-8/byte
+                        // constants. Runtime MakeTuple instead uses resumable steps.
+                        if elements.len() > limits.heap.max_mutation_values as usize {
+                            return Err(VmError::Limit);
+                        }
+                        let tuple = heap.alloc_array(&[])?;
+                        slots.write(&mut heap, at(constants, i as u32), tuple)?;
+                        for element in elements {
+                            let value = slots.read(at(constants, element.0))?;
+                            heap.array_push(tuple, value)?;
+                        }
+                        heap.seal_tuple(tuple)?;
+                        tuple
                     }
-                    let tuple = heap.alloc_array(&[])?;
-                    slots.write(&mut heap, at(constants, i as u32), tuple)?;
-                    for element in elements {
-                        let value = slots.read(at(constants, element.0))?;
-                        heap.array_push(tuple, value)?;
-                    }
-                    heap.seal_tuple(tuple)?;
-                    tuple
-                }
-            };
-            slots.write(&mut heap, at(constants, i as u32), value)?;
-        }
-        // Only member operands need a runtime string. Other symbols remain
-        // metadata, avoiding an object allocation per unrelated identifier.
-        for function in &p.functions {
-            for instruction in &function.code {
-                if matches!(
-                    instruction_spec(instruction.opcode).unwrap().opcode,
-                    Opcode::MemberGet | Opcode::MemberSet
-                ) {
-                    let symbol = instruction.operands[2];
-                    let position = p.constants.len() as u32 + symbol;
+                };
+                slots.write(&mut heap, at(constants, i as u32), value)?;
+            }
+            // Only member operands need a runtime string. Other symbols remain
+            // metadata, avoiding an object allocation per unrelated identifier.
+            for function in &p.functions {
+                for instruction in &function.code {
                     if matches!(
-                        slots.read(at(constants, position)),
-                        Err(HeapError::UninitializedSlot)
+                        instruction_spec(instruction.opcode).unwrap().opcode,
+                        Opcode::MemberGet | Opcode::MemberSet
                     ) {
-                        let value = heap.alloc_string(&p.symbols[symbol as usize])?;
-                        slots.write(&mut heap, at(constants, position), value)?;
+                        let symbol = instruction.operands[2];
+                        let position = p.constants.len() as u32 + symbol;
+                        if matches!(
+                            slots.read(at(constants, position)),
+                            Err(HeapError::UninitializedSlot)
+                        ) {
+                            let value = heap.alloc_string(&p.symbols[symbol as usize])?;
+                            slots.write(&mut heap, at(constants, position), value)?;
+                        }
                     }
                 }
             }
@@ -635,15 +652,17 @@ impl Vm {
             if matches!(function.kind, FunctionKind::Native(_)) {
                 let position =
                     (p.constants.len() + p.symbols.len() + native_values.data.len()) as u32;
-                let value = heap.alloc_record(
-                    ObjectKind::Closure,
-                    &[
-                        Value::int(index as i64),
-                        Value::int(p.content_version as i64),
-                        Value::int(function.module.0 as i64),
-                    ],
-                )?;
-                slots.write(&mut heap, at(constants, position), value)?;
+                if initialize {
+                    let value = heap.alloc_record(
+                        ObjectKind::Closure,
+                        &[
+                            Value::int(index as i64),
+                            Value::int(p.content_version as i64),
+                            Value::int(function.module.0 as i64),
+                        ],
+                    )?;
+                    slots.write(&mut heap, at(constants, position), value)?;
+                }
                 native_values
                     .data
                     .push((FunctionId(index as u32), position));
@@ -652,48 +671,54 @@ impl Vm {
         let globals = slots.open_module_set(
             &mut heap,
             RootOwner(u64::MAX),
-            p.modules.iter().map(|m| m.globals.len() as u32).sum(),
+            if initialize {
+                p.modules.iter().map(|m| m.globals.len() as u32).sum()
+            } else {
+                0
+            },
         )?;
-        let mut offset = 0;
-        for (mi, module) in p.modules.iter().enumerate() {
-            for global in &module.globals {
-                let ty = match p.types[global.ty.index()] {
-                    TypeDef::Builtin(ty) => ty,
-                    _ => BuiltinType::Any,
-                };
-                let cell = heap.alloc_language_cell(CellContract {
-                    mutable: global.mutable,
-                    ty,
-                    type_id: Some(global.ty),
-                    module: ModuleId(mi as u32),
-                    code_version: p.content_version,
-                    module_version: p.content_version,
-                })?;
-                slots.write(&mut heap, at(globals, offset), cell)?;
-                if let Some(f) = global.linked_function {
-                    let closure = if matches!(p.functions[f.index()].kind, FunctionKind::Native(_))
-                    {
-                        let index = native_values
-                            .data
-                            .binary_search_by_key(&f.0, |(function, _)| function.0)
-                            .expect("prepared native callable");
-                        slots.read(at(constants, native_values.data[index].1))?
-                    } else {
-                        heap.alloc_record(
-                            ObjectKind::Closure,
-                            &[
-                                Value::int(f.0 as i64),
-                                Value::int(p.content_version as i64),
-                                Value::int(mi as i64),
-                            ],
-                        )?
+        if initialize {
+            let mut offset = 0;
+            for (mi, module) in p.modules.iter().enumerate() {
+                for global in &module.globals {
+                    let ty = match p.types[global.ty.index()] {
+                        TypeDef::Builtin(ty) => ty,
+                        _ => BuiltinType::Any,
                     };
-                    if !type_checks.accepts(p, &heap, global.ty, closure)? {
-                        return Err(HeapError::TypeMismatch.into());
+                    let cell = heap.alloc_language_cell(CellContract {
+                        mutable: global.mutable,
+                        ty,
+                        type_id: Some(global.ty),
+                        module: ModuleId(mi as u32),
+                        code_version: p.content_version,
+                        module_version: p.content_version,
+                    })?;
+                    slots.write(&mut heap, at(globals, offset), cell)?;
+                    if let Some(f) = global.linked_function {
+                        let closure =
+                            if matches!(p.functions[f.index()].kind, FunctionKind::Native(_)) {
+                                let index = native_values
+                                    .data
+                                    .binary_search_by_key(&f.0, |(function, _)| function.0)
+                                    .expect("prepared native callable");
+                                slots.read(at(constants, native_values.data[index].1))?
+                            } else {
+                                heap.alloc_record(
+                                    ObjectKind::Closure,
+                                    &[
+                                        Value::int(f.0 as i64),
+                                        Value::int(p.content_version as i64),
+                                        Value::int(mi as i64),
+                                    ],
+                                )?
+                            };
+                        if !type_checks.accepts(p, &heap, global.ty, closure)? {
+                            return Err(HeapError::TypeMismatch.into());
+                        }
+                        heap.cell_initialize(cell, closure)?;
                     }
-                    heap.cell_initialize(cell, closure)?;
+                    offset += 1;
                 }
-                offset += 1;
             }
         }
         let init_symbol = p
@@ -738,6 +763,9 @@ impl Vm {
     }
     pub fn program(&self) -> &VerifiedProgram {
         &self.program
+    }
+    pub fn limits(&self) -> VmLimits {
+        self.limits
     }
     pub fn task_id(&self) -> Option<TaskId> {
         self.active

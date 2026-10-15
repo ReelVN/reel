@@ -3,7 +3,7 @@ use crate::bytecode::{BuiltinType, ModuleId, TypeId};
 use crate::payload::Payload;
 use crate::{Heap, HeapError, ObjectKind, Value, ValueTag};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellContract {
     pub mutable: bool,
     pub ty: BuiltinType,
@@ -30,6 +30,7 @@ pub struct CellInfo {
     pub initialized: bool,
     pub contract: CellContract,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct CellState {
     pub value: Option<Value>,
     pub contract: CellContract,

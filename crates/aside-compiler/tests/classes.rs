@@ -251,3 +251,104 @@ fn retained_method_and_typed_field_updates_reuse_storage() {
         started.elapsed()
     );
 }
+
+#[test]
+fn snapshots_resume_instruction_work_and_exception_cleanup_without_replaying_code() {
+    use aside_vm::snapshot::{SnapshotBudget, SnapshotRegistry, VmSnapshot};
+    let source = r#"
+        let mut writes = 0;
+        class Counter { let items = [1, 2, 3]; fn read(self) { self.items[1] } }
+        fn value() {
+            let counter = Counter();
+            let tuple = (counter, [counter]);
+            try { throw 7; } catch caught {
+                writes += 1;
+                try { return counter.read() + 39 + writes; }
+                finally { writes += 1; let joined = "x" + "y"; if tuple[1][0] != counter || joined != "xy" { throw 0; } }
+            } finally { writes += 1; }
+        }
+        fn main() { let answer = value(); if writes != 3 { throw writes; } answer }
+    "#;
+    let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let compiled = lowering::compile(
+        &module,
+        &lowering::Linkage::default(),
+        lowering::Options::default(),
+    )
+    .unwrap();
+    let package = compiled.program.package().clone();
+    let main = bc::FunctionId(
+        package
+            .functions
+            .iter()
+            .position(|f| package.symbols[f.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let registry = SnapshotRegistry::default();
+    let mut vm = Vm::load(
+        compiled.program,
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    let init = vm
+        .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
+        .unwrap();
+    finish(&mut vm, init, false);
+    let mut task = vm
+        .start(main, &[], RootOwner(1), bc::Context::Ordinary)
+        .unwrap();
+    let mut budget = SliceBudget {
+        instructions: 1,
+        work: 1,
+        allocation_bytes: 0,
+        deadline_ns: None,
+    };
+    let mut epochs = 1;
+    loop {
+        let outcome = vm.run_slice(task, budget, || 0).unwrap();
+        if let RunOutcome::BudgetYield(usage) = outcome {
+            budget.work = usage.required_work.max(1);
+            budget.allocation_bytes = usage.required_allocation;
+        }
+        let mut capture = vm.snapshot_begin(&registry).unwrap();
+        while !capture.step(SnapshotBudget::default()).unwrap().complete {}
+        let image = VmSnapshot::decode(&capture.finish().unwrap().encode().unwrap()).unwrap();
+        epochs += 1;
+        assert!(
+            epochs < 4000,
+            "execution must make progress across restores"
+        );
+        let mut restoring = Vm::restore_begin(
+            &image,
+            bc::verify(package.clone(), bc::Limits::default()).unwrap(),
+            bc::RuntimeSupport::default(),
+            VmLimits::default(),
+            SessionEpoch(epochs),
+            &registry,
+        )
+        .unwrap();
+        while !restoring.step(SnapshotBudget::default()).unwrap().complete {}
+        let (loaded, map) = restoring.finish().unwrap();
+        vm = loaded;
+        task = map.task(task).unwrap();
+        match outcome {
+            RunOutcome::Returned(id) => {
+                assert_eq!(
+                    vm.delivery_value(map.delivery(id).unwrap())
+                        .unwrap()
+                        .as_int(),
+                    Some(42)
+                );
+                break;
+            }
+            RunOutcome::BudgetYield(_) => (),
+            other => panic!("unexpected snapshot execution outcome: {other:?}"),
+        }
+    }
+    eprintln!("restored at {} separate execution boundaries", epochs - 1);
+}

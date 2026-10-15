@@ -31,6 +31,13 @@ pub fn contracts() -> Vec<NativeContract> {
         .collect()
 }
 
+/// Reconnect the library's heap-owned state when restoring an execution snapshot.
+pub fn register_snapshots(
+    registry: &mut aside_host::aside_vm::snapshot::SnapshotRegistry,
+) -> Result<(), aside_host::aside_vm::snapshot::SnapshotError> {
+    registry.register_validator("std.random", 1, random::readonly)
+}
+
 /// Public names only; bound method implementations are not free functions.
 pub fn prelude() -> Vec<ExternalSymbol> {
     vec![random::random::binding().contract.external()]

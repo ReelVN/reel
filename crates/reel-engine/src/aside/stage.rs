@@ -5,6 +5,7 @@ pub(super) mod controls;
 pub(super) mod input;
 mod interaction;
 pub(super) mod scroll;
+pub(super) mod snapshot;
 pub(super) mod text_input;
 
 use aside_vm::{
@@ -267,46 +268,8 @@ impl StageBinding {
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, index as u32, key, *argument)?;
         }
-        let kind = match symbol {
-            "reel::text" => NodeKind::Text(super::rich_text::read(heap, args[0], read_limit)?),
-            "reel::text_input" => text_input::kind(heap, fields, read_limit)?,
-            "reel::slider" => controls::slider_kind(heap, fields)?,
-            "reel::toggle" | "reel::checkbox" => controls::toggle_kind(
-                heap,
-                fields,
-                read_limit,
-                if symbol == "reel::checkbox" {
-                    reel_ui::stage::ToggleAppearance::Checkbox
-                } else {
-                    reel_ui::stage::ToggleAppearance::Switch
-                },
-            )?,
-            "reel::radio" => controls::radio_kind(heap, fields, 0, read_limit)?,
-            "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
-            "reel::input" => {
-                input::validate(heap, 1, args[1])?;
-                input::validate(heap, 2, args[2])?;
-                input::validate(heap, 3, args[3])?;
-                NodeKind::Input {
-                    bindings: input::read_bindings(heap, args[0])?,
-                    listening: args[1].tag() != ValueTag::Null,
-                    keyboard: args[2].tag() != ValueTag::Null,
-                    pointer: args[3].tag() != ValueTag::Null,
-                }
-            }
-            "reel::particles" => super::particles::kind(heap, args, origin, read_limit)?,
-            "reel::image" => NodeKind::Image {
-                source: read_source(heap, args[0], read_limit)?,
-                fit: read_fit(heap, args[1])?,
-                origin,
-            },
-            "reel::camera" => camera::kind(heap, fields)?,
-            "reel::scroll" => scroll::kind(heap, fields)?,
-            "reel::row" => NodeKind::Row,
-            "reel::column" => NodeKind::Column,
-            "reel::stack" => NodeKind::Stack,
-            _ => unreachable!("registered stage constructor"),
-        };
+        let shape = snapshot::Shape::from_symbol(symbol);
+        let kind = shape.project(heap, fields, origin, read_limit)?;
         let props = read_props(heap, fields, prefix.len(), read_limit)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
@@ -343,30 +306,7 @@ impl StageBinding {
                 Value::NULL,
                 Value::NULL,
             ],
-            Some(match symbol {
-                "reel::camera" => |heap, _, index, value| camera::validate(heap, index, value),
-                "reel::scroll" => |heap, _, index, value| scroll::validate(heap, index, value),
-                "reel::slider" => controls::validate_slider,
-                "reel::toggle" | "reel::checkbox" => {
-                    |heap, _, index, value| controls::validate_toggle(heap, index, value)
-                }
-                "reel::radio" => {
-                    |heap, _, index, value| controls::validate_radio(heap, index, value)
-                }
-                "reel::text" => |heap, _, index, value| validate_text_property(heap, index, value),
-                "reel::text_input" => {
-                    |heap, _, index, value| text_input::validate(heap, index, value)
-                }
-                "reel::particles" => super::particles::validate,
-                "reel::image" => {
-                    |heap, _, index, value| validate_image_property(heap, index, value)
-                }
-                "reel::button" => {
-                    |heap, _, index, value| validate_button_property(heap, index, value)
-                }
-                "reel::input" => |heap, _, index, value| input::validate(heap, index, value),
-                _ => |heap, _, index, value| validate_layout_property(heap, index, value),
-            }),
+            Some(shape.validator()),
         )?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = heap.alloc_string(name)?;

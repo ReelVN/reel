@@ -11,6 +11,125 @@ use reel_ui::{
     stage::NodeKind,
 };
 
+#[test]
+fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_write_failure() {
+    use crate::saves::{DirectorySaves, RuntimeSaves, SaveService, SaveStorage};
+    use reel_core::{budget::QueueLimits, wake::WakeSignal};
+    use std::sync::Arc;
+    const SOURCE: &str = r#"
+        let data = model({count: 1});
+        fn main() {
+            stage.replace(stack(width: 600, height: 400) {
+                button("Save", x: 0, width: 90, height: 40, on_click: |e| {
+                    await saves.save("slot/一", title: "Chapter One"); data.count += 1;
+                });
+                button("Load", x: 100, width: 90, height: 40, on_click: |e| { await saves.load("slot/一"); throw "old load callback resumed"; });
+                button("Change", x: 200, width: 90, height: 40, on_click: |e| { data.count += 10; });
+                text(value: derive(|| f"count={data.count}"), y: 100);
+            });
+        }
+    "#;
+    let folder = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/reel-artifacts/save-tests")
+        .join(format!(
+            "restart-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    let storage = Arc::new(DirectorySaves::new(&folder, 16 << 20));
+    let create = || {
+        let wake = WakeSignal::new(|| {});
+        let service = SaveService::new(
+            storage.clone(),
+            QueueLimits {
+                max_requests: 1,
+                max_bytes: 16 << 20,
+            },
+            wake.clone(),
+        );
+        runtime(SOURCE).with_saves(RuntimeSaves::new(service, 16 << 20, move || {
+            Box::new(crate::audio::AudioPlayer::new(
+                crate::assets::Assets::directory(Default::default()),
+                Default::default(),
+                wake.clone(),
+                |_| Err("test has no sound output".into()),
+            ))
+        }))
+    };
+    let wait = |runtime: &mut StoryRuntime| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while runtime.needs_tick() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "save/load did not settle"
+            );
+            runtime
+                .tick(SliceBudget::default(), || 5_000_000_000)
+                .unwrap();
+            std::thread::yield_now();
+        }
+    };
+    let activate = |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge, x: f64| {
+        for kind in ["move", "down", "up"] {
+            runtime
+                .driver_mut()
+                .unwrap()
+                .handle_pointer(bridge, mouse(kind, (x, 20.)))
+                .unwrap();
+        }
+        runtime.wake_input();
+        wait(runtime);
+    };
+    let has_count = |runtime: &StoryRuntime, expected: &str| {
+        assert!(
+            runtime.driver().adapter().stage().nodes().any(
+                |node| matches!(&node.kind, NodeKind::Text(text) if text.as_ref() == expected)
+            ),
+            "expected {expected}"
+        );
+    };
+    let mut first = create();
+    wait(&mut first);
+    let (mut bridge, root) = mount(first.driver().ui());
+    present(&mut first, &mut bridge, root, 1);
+    activate(&mut first, &mut bridge, 40.);
+    has_count(&first, "count=2");
+    let slots = storage.list().unwrap();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].title, "Chapter One");
+    first.close().unwrap();
+    wait(&mut first);
+    drop(first);
+    drop(bridge);
+
+    let mut second = create();
+    wait(&mut second);
+    let (mut bridge, root) = mount(second.driver().ui());
+    present(&mut second, &mut bridge, root, 1);
+    activate(&mut second, &mut bridge, 240.);
+    has_count(&second, "count=11");
+    present(&mut second, &mut bridge, root, 2);
+    activate(&mut second, &mut bridge, 140.);
+    has_count(&second, "count=2");
+    present(&mut second, &mut bridge, root, 3);
+    activate(&mut second, &mut bridge, 240.);
+    has_count(&second, "count=12");
+
+    let snapshot = storage.read("slot/一").unwrap();
+    let original = snapshot.encode().unwrap();
+    let too_small = DirectorySaves::new(&folder, 1);
+    assert!(too_small.write(slots[0].clone(), &snapshot).is_err());
+    assert_eq!(storage.read("slot/一").unwrap().encode().unwrap(), original);
+    second.close().unwrap();
+    wait(&mut second);
+    storage.delete("slot/一").unwrap();
+    assert!(storage.list().unwrap().is_empty());
+    std::fs::remove_dir(&folder).unwrap();
+}
+
 fn runtime(source: &str) -> StoryRuntime {
     StoryRuntime::new(
         AsideSessionUi::from_source(
@@ -48,9 +167,9 @@ fn present(
     root: WidgetId,
     frame: u64,
 ) {
-    runtime.driver.sync(bridge, root).unwrap();
+    runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
     let recording = bridge.record(FrameId(frame)).unwrap();
-    let stamp = runtime.driver.projection_stamp();
+    let stamp = runtime.driver().projection_stamp();
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
             recording.key(),
@@ -59,12 +178,13 @@ fn present(
         )),
         NoticeResult::Accepted
     );
-    runtime.driver.presented(stamp).unwrap();
+    runtime.driver_mut().unwrap().presented(stamp).unwrap();
 }
 fn click(runtime: &mut StoryRuntime, bridge: &mut PresentationBridge) {
     for kind in ["move", "down", "up"] {
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_pointer(bridge, mouse(kind, (50., 30.)))
             .unwrap();
     }
@@ -84,7 +204,7 @@ fn key(state: keyboard::KeyState, key: keyboard::Key) -> TextEvent {
 }
 fn caption(runtime: &StoryRuntime) -> String {
     runtime
-        .driver
+        .driver()
         .adapter()
         .stage()
         .nodes()
@@ -118,11 +238,12 @@ fn text_input_ime_selection_cancel_submit_and_focus_use_the_real_stage() {
     );
     // Reveal scheduling is part of the pending narrative; settle it once.
     drain(&mut runtime);
-    let (mut bridge, root) = super::tests::mount_with_font(runtime.driver.ui(), Some(font.into()));
+    let (mut bridge, root) =
+        super::tests::mount_with_font(runtime.driver().ui(), Some(font.into()));
     let mut frame = 1;
     present(&mut runtime, &mut bridge, root, frame);
     let interaction = runtime
-        .driver
+        .driver()
         .ui()
         .session()
         .view()
@@ -131,7 +252,7 @@ fn text_input_ime_selection_cancel_submit_and_focus_use_the_real_stage() {
         .id();
     let state = |runtime: &StoryRuntime| {
         runtime
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -142,11 +263,15 @@ fn text_input_ime_selection_cancel_submit_and_focus_use_the_real_stage() {
             .unwrap()
     };
     let mut send = |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge, event| {
-        runtime.driver.handle_text(bridge, event).unwrap();
+        runtime
+            .driver_mut()
+            .unwrap()
+            .handle_text(bridge, event)
+            .unwrap();
         runtime.wake_input();
         // One clock value; no real-time sleeps or native window/GPU dependency.
         drain(runtime);
-        assert_eq!(runtime.driver.state(), StoryState::Running);
+        assert_eq!(runtime.driver().state(), StoryState::Running);
         frame += 1;
         present(runtime, bridge, root, frame);
     };
@@ -260,7 +385,7 @@ fn text_input_ime_selection_cancel_submit_and_focus_use_the_real_stage() {
     assert_eq!(state(&runtime), "戻る:5:1");
     assert_eq!(
         runtime
-            .driver
+            .driver()
             .ui()
             .session()
             .view()
@@ -288,13 +413,14 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     }"#,
     );
     drain(&mut runtime);
-    assert_eq!(runtime.driver.state(), StoryState::Running);
-    let (mut bridge, root) = mount(runtime.driver.ui());
+    assert_eq!(runtime.driver().state(), StoryState::Running);
+    let (mut bridge, root) = mount(runtime.driver().ui());
     click(&mut runtime, &mut bridge);
     assert_eq!(caption(&runtime), "Ready", "unpresented input");
     present(&mut runtime, &mut bridge, root, 1);
     runtime
-        .driver
+        .driver_mut()
+        .unwrap()
         .handle_text(
             &mut bridge,
             key(
@@ -309,7 +435,8 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
         .expect("Tab enters the button");
     // Release without a matching Down must not activate.
     runtime
-        .driver
+        .driver_mut()
+        .unwrap()
         .handle_pointer(&mut bridge, mouse("up", (50., 30.)))
         .unwrap();
     drain(&mut runtime);
@@ -317,7 +444,11 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     click(&mut runtime, &mut bridge);
     assert_eq!(caption(&runtime), "Pointer");
     assert_eq!(bridge.root().focused_widget(), Some(focus));
-    runtime.driver.sync(&mut bridge, root).unwrap();
+    runtime
+        .driver_mut()
+        .unwrap()
+        .sync(&mut bridge, root)
+        .unwrap();
     click(&mut runtime, &mut bridge);
     assert_eq!(
         caption(&runtime),
@@ -332,7 +463,8 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     );
     for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(
                 &mut bridge,
                 key(state, keyboard::Key::Named(keyboard::NamedKey::Enter)),
@@ -345,7 +477,8 @@ fn author_buttons_route_accepted_pointer_and_keyboard_without_desktop_backend() 
     present(&mut runtime, &mut bridge, root, 3);
     for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(
                 &mut bridge,
                 key(state, keyboard::Key::Character(" ".into())),
@@ -376,24 +509,25 @@ fn control_click_does_not_advance_dialogue_and_callback_fault_keeps_source() {
     );
     drain(&mut runtime);
     let interaction = runtime
-        .driver
+        .driver()
         .ui()
         .session()
         .view()
         .interaction
         .unwrap()
         .id();
-    let (mut bridge, root) = mount(runtime.driver.ui());
+    let (mut bridge, root) = mount(runtime.driver().ui());
     present(&mut runtime, &mut bridge, root, 1);
     for kind in ["move", "down", "up"] {
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_pointer(&mut bridge, mouse(kind, (50., 30.)))
             .unwrap();
     }
     assert_eq!(
         runtime
-            .driver
+            .driver()
             .ui()
             .session()
             .view()
@@ -433,33 +567,38 @@ fn suspended_button_animation_advances_without_polling_vm_and_closes_its_wait() 
     }"#,
     );
     drain(&mut runtime);
-    let (mut bridge, root) = mount(runtime.driver.ui());
+    let (mut bridge, root) = mount(runtime.driver().ui());
     present(&mut runtime, &mut bridge, root, 1);
     for kind in ["move", "down", "up"] {
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_pointer(&mut bridge, mouse(kind, (50., 30.)))
             .unwrap();
     }
     runtime.wake_input();
     for step in 0..10_000 {
         runtime.tick(SliceBudget::default(), || 0).unwrap();
-        if runtime.driver.activities_need_time()
-            && !runtime.driver.has_runnable_tasks()
-            && runtime.driver.adapter().vm().heap().phase() == aside_vm::GcPhase::Idle
+        if runtime.driver().activities_need_time()
+            && !runtime.driver().has_runnable_tasks()
+            && runtime.driver().adapter().vm().heap().phase() == aside_vm::GcPhase::Idle
         {
             break;
         }
         assert!(step < 9999, "waiting callback did not finish collection");
     }
-    let before = runtime.driver.adapter().vm().stats().slices;
+    let before = runtime.driver().adapter().vm().stats().slices;
     for ns in [100_000_000, 200_000_000, 300_000_000] {
         runtime.tick(SliceBudget::default(), || ns).unwrap();
     }
-    assert_eq!(runtime.driver.adapter().vm().stats().slices, before);
-    runtime.driver.sync(&mut bridge, root).unwrap();
+    assert_eq!(runtime.driver().adapter().vm().stats().slices, before);
+    runtime
+        .driver_mut()
+        .unwrap()
+        .sync(&mut bridge, root)
+        .unwrap();
     let target = runtime
-        .driver
+        .driver()
         .adapter()
         .stage()
         .nodes()
@@ -482,7 +621,7 @@ fn concurrent_touch_callbacks_keep_their_own_presented_down_stamp() {
     }"#,
     );
     drain(&mut runtime);
-    let (mut bridge, root) = mount(runtime.driver.ui());
+    let (mut bridge, root) = mount(runtime.driver().ui());
     present(&mut runtime, &mut bridge, root, 1);
     let touch = |kind, id, x| {
         let mut e = mouse(kind, (x, 25.));
@@ -508,13 +647,17 @@ fn concurrent_touch_callbacks_keep_their_own_presented_down_stamp() {
         touch("cancel", 3, 125.),
         touch("up", 2, 25.),
     ] {
-        runtime.driver.handle_pointer(&mut bridge, e).unwrap();
+        runtime
+            .driver_mut()
+            .unwrap()
+            .handle_pointer(&mut bridge, e)
+            .unwrap();
     }
     runtime.wake_input();
     drain(&mut runtime);
     assert!(
         runtime
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -527,11 +670,15 @@ fn concurrent_touch_callbacks_keep_their_own_presented_down_stamp() {
         touch("up", 2, 25.),
         touch("up", 3, 125.),
     ] {
-        runtime.driver.handle_pointer(&mut bridge, e).unwrap();
+        runtime
+            .driver_mut()
+            .unwrap()
+            .handle_pointer(&mut bridge, e)
+            .unwrap();
     }
     runtime.wake_input();
     drain(&mut runtime);
-    assert_eq!(runtime.driver.adapter().stage().nodes().filter(|n| matches!(&n.kind, NodeKind::Button { label: Some(label), .. } if label == "Pressed")).count(), 2);
+    assert_eq!(runtime.driver().adapter().stage().nodes().filter(|n| matches!(&n.kind, NodeKind::Button { label: Some(label), .. } if label == "Pressed")).count(), 2);
 }
 
 #[test]
@@ -678,11 +825,11 @@ fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
     }"#,
     );
     drain(&mut runtime);
-    let (mut bridge, root) = mount(runtime.driver.ui());
+    let (mut bridge, root) = mount(runtime.driver().ui());
     present(&mut runtime, &mut bridge, root, 1);
     let state = |runtime: &StoryRuntime| {
         runtime
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -698,7 +845,8 @@ fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
     click(&mut runtime, &mut bridge);
     assert_eq!(state(&runtime), "true:false:true:false");
     runtime
-        .driver
+        .driver_mut()
+        .unwrap()
         .handle_text(
             &mut bridge,
             key(
@@ -717,7 +865,8 @@ fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
         "geometry refresh does not change modality"
     );
     runtime
-        .driver
+        .driver_mut()
+        .unwrap()
         .handle_pointer(&mut bridge, mouse("move", (50., 90.)))
         .unwrap();
     runtime.wake_input();
@@ -728,7 +877,8 @@ fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
         "only the hovered second button is highlighted"
     );
     runtime
-        .driver
+        .driver_mut()
+        .unwrap()
         .handle_text(&mut bridge, TextEvent::WindowFocusChange(false))
         .unwrap();
     runtime.wake_input();
@@ -771,9 +921,10 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             },
         );
         let mut runtime = runtime(&story);
-        runtime.driver = runtime
-            .driver
-            .with_asset_options(crate::assets::AssetOptions {
+        runtime
+            .driver_mut()
+            .unwrap()
+            .set_asset_options(crate::assets::AssetOptions {
                 root: generated.unwrap_or_else(|| {
                     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
                 }),
@@ -781,14 +932,15 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             });
         let (send, receive) = std::sync::mpsc::channel();
         runtime
-            .driver
+            .driver_mut()
+            .unwrap()
             .set_resource_waker(std::sync::Arc::new(move || {
                 let _ = send.send(());
             }));
         drain(&mut runtime);
         let state = |runtime: &StoryRuntime| {
             runtime
-                .driver
+                .driver()
                 .adapter()
                 .stage()
                 .nodes()
@@ -801,12 +953,16 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
                 })
                 .unwrap()
         };
-        let (mut bridge, root) = mount(runtime.driver.ui());
-        runtime.driver.sync(&mut bridge, root).unwrap();
-        assert!(runtime.driver.ui().images_pending());
-        let old = runtime.driver.projection_stamp();
-        super::tests::accept(runtime.driver.ui_mut(), &mut bridge, 1);
-        runtime.driver.presented(old).unwrap();
+        let (mut bridge, root) = mount(runtime.driver().ui());
+        runtime
+            .driver_mut()
+            .unwrap()
+            .sync(&mut bridge, root)
+            .unwrap();
+        assert!(runtime.driver().ui().images_pending());
+        let old = runtime.driver().projection_stamp();
+        super::tests::accept(runtime.driver_mut().unwrap().ui_mut(), &mut bridge, 1);
+        runtime.driver_mut().unwrap().presented(old).unwrap();
         runtime.wake_input();
         drain(&mut runtime);
         assert_eq!(
@@ -814,13 +970,17 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             "waiting",
             "the retained frame has no loaded image"
         );
-        while runtime.driver.ui().images_pending() {
+        while runtime.driver().ui().images_pending() {
             receive
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .expect("image completion wakes the host");
-            runtime.driver.sync(&mut bridge, root).unwrap();
+            runtime
+                .driver_mut()
+                .unwrap()
+                .sync(&mut bridge, root)
+                .unwrap();
         }
-        let resources = runtime.driver.ui().image_resources();
+        let resources = runtime.driver().ui().image_resources();
         let handles: std::collections::BTreeSet<_> =
             resources.iter().map(|lease| lease.handle()).collect();
         assert_eq!(
@@ -842,13 +1002,17 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             "recording and rejecting do not acknowledge presentation"
         );
         present(&mut runtime, &mut bridge, root, 3);
-        let first = runtime.driver.projection_stamp();
+        let first = runtime.driver().projection_stamp();
         assert_eq!(first.presentation_request, 1);
         runtime.wake_input();
         drain(&mut runtime);
-        runtime.driver.sync(&mut bridge, root).unwrap();
+        runtime
+            .driver_mut()
+            .unwrap()
+            .sync(&mut bridge, root)
+            .unwrap();
         assert_eq!(state(&runtime), "first");
-        runtime.driver.presented(first).unwrap();
+        runtime.driver_mut().unwrap().presented(first).unwrap();
         runtime.wake_input();
         drain(&mut runtime);
         assert_eq!(
@@ -859,7 +1023,11 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         present(&mut runtime, &mut bridge, root, 4);
         runtime.wake_input();
         drain(&mut runtime);
-        runtime.driver.sync(&mut bridge, root).unwrap();
+        runtime
+            .driver_mut()
+            .unwrap()
+            .sync(&mut bridge, root)
+            .unwrap();
         assert_eq!(state(&runtime), "done");
         runtime.close().unwrap();
         drain(&mut runtime);

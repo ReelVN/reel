@@ -175,6 +175,11 @@ impl DecodedSound {
         self.data.settings.fade_in_tween = (!duration.is_zero()).then(|| tween(duration));
         self
     }
+    /// Select the content position before admission, without a first-buffer seek race.
+    pub fn with_start_position(mut self, position: Duration) -> Self {
+        self.data.settings.start_position = position.as_secs_f64().into();
+        self
+    }
     pub(crate) fn volume_db(&self) -> f32 {
         match self.data.settings.volume {
             reel_audio::Value::Fixed(value) => value.0,

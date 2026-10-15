@@ -5,7 +5,7 @@ use aside_vm::bytecode::{FunctionId, FunctionKind};
 use aside_vm::executor::{HostResponse, HostTicket};
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
 
-fn immutable(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn immutable(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 

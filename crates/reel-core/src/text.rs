@@ -31,7 +31,7 @@ pub struct TextLink {
     pub id: Arc<str>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TextSpeed {
     PerSecond(f64),
     PlayerMultiple(f64),
@@ -67,6 +67,26 @@ pub struct TextCue {
 pub struct Text {
     plain: Arc<str>,
     rich: Option<Arc<RichText>>,
+}
+
+impl serde::Serialize for Text {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (
+            self.markup().is_some(),
+            self.markup().unwrap_or(&self.plain),
+        )
+            .serialize(serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for Text {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (rich, source): (bool, String) = serde::Deserialize::deserialize(deserializer)?;
+        if rich {
+            Self::parse(source).map_err(serde::de::Error::custom)
+        } else {
+            Ok(Self::from(source))
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]

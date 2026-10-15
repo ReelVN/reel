@@ -264,6 +264,31 @@ fn db(volume: f64) -> f32 {
     }
 }
 impl AudioBackend for AudioPlayer {
+    fn snapshot(&self, id: AudioId) -> Result<reel_engine::audio::AudioPlayback, String> {
+        let entry = self
+            .entries
+            .get(&id)
+            .ok_or("audio activity is no longer retained")?;
+        let mut request = entry.request.clone();
+        if let Phase::Playing(media) = entry.phase {
+            let state = self
+                .service
+                .as_ref()
+                .and_then(|s| s.snapshot(media))
+                .ok_or("audio transport missing")?;
+            request.start_position =
+                Duration::try_from_secs_f64(state.position_seconds).map_err(|e| e.to_string())?;
+        }
+        Ok(reel_engine::audio::AudioPlayback {
+            request,
+            paused: entry.paused,
+            result: if let Phase::Done(result) = &entry.phase {
+                Some(result.clone())
+            } else {
+                None
+            },
+        })
+    }
     fn play(&mut self, request: AudioRequest) -> Result<AudioId, String> {
         if self.closed {
             return Err("audio session closed".into());
@@ -443,6 +468,7 @@ impl AudioBackend for AudioPlayer {
                 sound = sound
                     .with_volume_db(db(entry.request.volume))
                     .with_pan(entry.request.pan as f32)
+                    .with_start_position(entry.request.start_position)
                     .with_fade_in(entry.request.fade_in);
                 let service = self.service.as_mut().unwrap();
                 entry.phase = match service.play(AudioActivityRequest {

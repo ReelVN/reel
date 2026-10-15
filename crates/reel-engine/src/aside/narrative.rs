@@ -46,10 +46,12 @@ enum ReadingField {
     SkipUnread,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Narrative {
     dialogue: Value,
     choice: Value,
     interaction: Option<InteractionId>,
+    #[serde(skip)]
     option_ids: Vec<(HeapHandle, ChoiceId)>,
     roots: Value,
     reading: Value,
@@ -68,6 +70,46 @@ fn clear_collection(heap: &mut Heap, host: Value, field: u32) -> Result<(), Adap
 }
 
 impl Narrative {
+    pub(super) fn snapshot_options(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            self.option_ids
+                .iter()
+                .map(|option| Record::new(Part::NarrativeOption, option)),
+        )
+    }
+    pub(super) fn restore_option(
+        &mut self,
+        record: &super::snapshot::Record,
+        map: &aside_vm::snapshot::SnapshotMap,
+        identity: SessionIdentity,
+    ) -> Result<(), AdapterError> {
+        let (handle, mut id): (HeapHandle, ChoiceId) = record.read()?;
+        id.rebase(identity);
+        self.option_ids.push((map.handle(handle)?, id));
+        Ok(())
+    }
+    pub(super) fn restore(
+        &mut self,
+        map: &aside_vm::snapshot::SnapshotMap,
+        identity: SessionIdentity,
+    ) -> Result<(), aside_vm::snapshot::SnapshotError> {
+        self.dialogue = map.value(self.dialogue)?;
+        self.choice = map.value(self.choice)?;
+        self.roots = map.value(self.roots)?;
+        self.reading = map.value(self.reading)?;
+        if let Some(id) = &mut self.interaction {
+            id.rebase(identity);
+        }
+        for (handle, id) in &mut self.option_ids {
+            *handle = map.handle(*handle)?;
+            id.rebase(identity);
+        }
+        if let Some(history) = &mut self.history {
+            history.value = map.value(history.value)?;
+        }
+        Ok(())
+    }
     fn new(vm: &mut Vm, owner: RootOwner) -> Result<Self, AdapterError> {
         let method = |name: &str| {
             vm.program()

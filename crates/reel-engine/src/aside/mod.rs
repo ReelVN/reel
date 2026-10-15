@@ -22,6 +22,8 @@ mod publication;
 mod registry;
 mod results;
 mod rich_text;
+pub mod saves;
+pub mod snapshot;
 pub mod source;
 mod stage;
 #[cfg(test)]
@@ -54,6 +56,12 @@ pub enum AdapterError {
     Markup(reel_core::text::MarkupError),
     Allocation,
     Stage(reel_ui::stage::StageError),
+    Snapshot(aside_vm::snapshot::SnapshotError),
+}
+impl From<aside_vm::snapshot::SnapshotError> for AdapterError {
+    fn from(error: aside_vm::snapshot::SnapshotError) -> Self {
+        Self::Snapshot(error)
+    }
 }
 impl From<reel_ui::stage::StageError> for AdapterError {
     fn from(error: reel_ui::stage::StageError) -> Self {
@@ -134,14 +142,18 @@ impl AdapterError {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct RetainedKey {
     key: String,
     value: Value,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 struct RetainedKeys {
     root: RootToken,
+    #[serde(skip)]
     entries: Vec<RetainedKey>,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PendingInteraction {
     interaction: InteractionId,
     task: TaskId,
@@ -200,6 +212,7 @@ pub struct SessionVm {
     stage: stage::StageBinding,
     activities: activity::Activities,
     results: results::Results,
+    saves: saves::Saves,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     audio: audio::Audio,
@@ -227,6 +240,11 @@ impl SessionVm {
             return Err(AdapterError::Input("owner revoked"));
         }
         let vm = Vm::load(program, support, limits, SessionEpoch(identity.epoch.0))?;
+        Self::from_vm(session, vm, limits)
+    }
+    fn from_vm(session: &Session, vm: Vm, limits: VmLimits) -> Result<Self, AdapterError> {
+        let identity = session.identity();
+        let owner = session.root_owner();
         let stage = stage::StageBinding::new(vm.program())?;
         let standard = aside_std::StandardLibrary::new(vm.program());
         Ok(Self {
@@ -256,6 +274,7 @@ impl SessionVm {
             stage,
             activities: activity::Activities::default(),
             results: results::Results::default(),
+            saves: saves::Saves::default(),
             particles: particles::Particles::default(),
             standard,
             audio: audio::Audio::default(),
@@ -282,6 +301,9 @@ impl SessionVm {
     }
     pub fn vm(&self) -> &Vm {
         &self.vm
+    }
+    pub fn logical_time(&self) -> f64 {
+        self.activities.time()
     }
 
     /// The work requested shutdown; the embedding host owns cleanup and its window.
@@ -411,6 +433,13 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::saves::save"
+            | "reel::saves::load"
+            | "reel::saves::delete"
+            | "reel::saves::list" => {
+                self.dispatch_save(ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::game::exit" => {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
                 self.issued = None;
@@ -1149,6 +1178,7 @@ impl SessionVm {
         self.audio.close();
         self.translations.close();
         self.results.clear();
+        self.saves.clear();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;

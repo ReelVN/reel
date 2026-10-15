@@ -90,7 +90,7 @@ fn tagged(heap: &Heap, value: Value, tag: i64) -> Result<(), AdapterError> {
     }
     Ok(())
 }
-fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::TypeMismatch)
 }
 fn present(value: Value) -> bool {
@@ -144,23 +144,90 @@ struct NativeWork {
 }
 
 type EventKey = (u64, u64, u32);
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Activities {
     skipping: bool,
     head: Option<RootToken>,
     jobs: Option<RootToken>,
     job_tail: Option<Value>,
     // Every indexed leaf is also traced through the active root's graph.
+    #[serde(skip)]
     events: BTreeMap<EventKey, Value>,
     sampling: usize,
+    #[serde(skip)]
     native: Option<NativeWork>,
+    #[serde(skip)]
     cleanup: Option<Cleanup>,
+    #[serde(skip)]
     control: Option<Control>,
+    #[serde(skip)]
     round: Option<Round>,
     clock_round: bool,
     time: f64,
     observed_time: f64,
     target_time: f64,
     serial: u64,
+    #[serde(skip)]
     waits: Vec<(WaitId, Value)>,
+}
+
+impl Activities {
+    pub(super) fn time(&self) -> f64 {
+        self.time
+    }
+    pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
+        use super::snapshot::{Part, Record};
+        Box::new(
+            std::iter::once_with(|| Record::new(Part::Activities, self))
+                .chain(
+                    self.events
+                        .iter()
+                        .map(|event| Record::new(Part::ActivityEvent, &event)),
+                )
+                .chain(
+                    self.waits
+                        .iter()
+                        .map(|wait| Record::new(Part::ActivityWait, wait)),
+                ),
+        )
+    }
+    pub(super) fn restore_record(
+        &mut self,
+        record: &super::snapshot::Record,
+        map: &aside_vm::snapshot::SnapshotMap,
+    ) -> Result<(), AdapterError> {
+        use super::snapshot::Part;
+        match record.part {
+            Part::Activities => {
+                *self = record.read()?;
+                self.restore(map)?;
+            }
+            Part::ActivityEvent => {
+                let (key, value): (EventKey, Value) = record.read()?;
+                self.events.insert(key, map.value(value)?);
+            }
+            Part::ActivityWait => {
+                let (wait, value): (WaitId, Value) = record.read()?;
+                self.waits.push((map.wait(wait)?, map.value(value)?));
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+    pub(super) fn snapshot_ready(&self) -> bool {
+        self.native.is_none()
+            && self.cleanup.is_none()
+            && self.control.is_none()
+            && self.round.is_none()
+    }
+    pub(super) fn restore(
+        &mut self,
+        map: &aside_vm::snapshot::SnapshotMap,
+    ) -> Result<(), aside_vm::snapshot::SnapshotError> {
+        self.head = self.head.map(|r| map.root(r)).transpose()?;
+        self.jobs = self.jobs.map(|r| map.root(r)).transpose()?;
+        self.job_tail = self.job_tail.map(|v| map.value(v)).transpose()?;
+        self.skipping = false;
+        Ok(())
+    }
 }

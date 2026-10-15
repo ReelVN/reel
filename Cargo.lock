@@ -260,6 +260,9 @@ name = "aside-vm"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "blake3",
+ "postcard",
+ "serde",
  "slotmap",
 ]
 
@@ -483,6 +486,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
+]
+
+[[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -771,6 +783,18 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "equivalent"
@@ -2620,6 +2644,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
+ "serde",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2826,7 +2862,6 @@ version = "0.1.0"
 dependencies = [
  "aside-compiler",
  "aside-vm",
- "atomic-write-file",
  "codespan-reporting",
  "image",
  "libc",
@@ -2834,6 +2869,7 @@ dependencies = [
  "reel-engine",
  "reel-package",
  "reel-player",
+ "reel-storage",
  "reel-ui",
  "serde_json",
 ]
@@ -2841,6 +2877,9 @@ dependencies = [
 [[package]]
 name = "reel-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "reel-dev"
@@ -2860,8 +2899,11 @@ dependencies = [
  "aside-std",
  "aside-vm",
  "fluent-bundle",
+ "postcard",
  "reel-core",
  "reel-ui",
+ "self_cell",
+ "serde",
  "stats_alloc",
  "unic-langid",
  "unicode-segmentation",
@@ -2897,14 +2939,19 @@ dependencies = [
  "arboard",
  "aside-vm",
  "blake3",
+ "flate2",
  "gilrs",
  "image",
  "pollster",
+ "postcard",
  "reel-core",
  "reel-engine",
  "reel-media",
  "reel-render",
+ "reel-storage",
  "reel-ui",
+ "self_cell",
+ "serde",
  "stats_alloc",
  "ui-events-winit",
  "wgpu",
@@ -2924,6 +2971,13 @@ dependencies = [
  "reel-ui",
  "swash",
  "wgpu",
+]
+
+[[package]]
+name = "reel-storage"
+version = "0.1.0"
+dependencies = [
+ "atomic-write-file",
 ]
 
 [[package]]
@@ -2961,6 +3015,7 @@ dependencies = [
  "peniko",
  "reel-core",
  "reel-text",
+ "serde",
  "smallvec",
  "stats_alloc",
  "time",

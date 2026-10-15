@@ -7,7 +7,7 @@ use crate::*;
 use std::rc::Rc;
 
 /// Stable built-in registry. Future adapters must explicitly register other registries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FaultCode {
     pub registry_version: u64,
     pub kind: FaultKind,
@@ -21,7 +21,7 @@ impl FaultCode {
     }
 }
 /// Complete envelope identity, including heap, epoch and full slot generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FaultId(pub(crate) HeapHandle);
 impl FaultId {
     pub fn as_value(self) -> Value {
@@ -43,7 +43,7 @@ impl NewFault {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StackFrameKind {
     Script,
     Native {
@@ -52,7 +52,7 @@ pub enum StackFrameKind {
         continuation: ContinuationState,
     },
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StackEntry {
     pub frame: FrameId,
     pub location: Location,
@@ -61,12 +61,12 @@ pub struct StackEntry {
     pub source_version: u64,
     pub kind: StackFrameKind,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CloseKind {
     Generator,
     Thread,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReplacedExit {
     Throw(FaultId),
     Return,
@@ -80,7 +80,7 @@ pub enum ReplacedExit {
         activation: u64,
     },
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CauseKind {
     CaughtFault,
     ExplicitCause,
@@ -136,6 +136,7 @@ impl std::ops::Deref for CodeLease {
         &self.program
     }
 }
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum FaultData {
     Envelope {
         code: FaultCode,
