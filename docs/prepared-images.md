@@ -49,4 +49,10 @@ GPU pixel and device-limit verification is target-specific and reported separate
 Run the contracts with `cargo test --locked -p reel-core --lib prepared_image`,
 `cargo test --locked -p reel-cli --lib prepare_image -- --nocapture`, and
 `cargo test --locked -p reel-player --lib image -- --nocapture`.
+On a graphics target, run
+`cargo test --locked -p reel-player --features window --lib prepared_tiles_match_contiguous_image_through_rotated_camera -- --ignored --nocapture`.
+It compares adjoining tiles against a contiguous image through real rotated camera
+views and reports decoded working-set bytes, GPU residency/upload reservation and
+warm reuse. The synthetic two-dimensional source exceeds the tested device limit;
+only a local tile neighborhood is generated for this check.
 Generated originals, pyramids and logs belong under ignored `target/reel-artifacts`.

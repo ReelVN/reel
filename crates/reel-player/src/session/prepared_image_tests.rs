@@ -12,6 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "window")]
+#[path = "prepared_image_gpu_tests.rs"]
+mod gpu_tests;
+
 pub(super) fn fixture() -> (
     SessionUi,
     PresentationBridge,
