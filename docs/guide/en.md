@@ -864,6 +864,10 @@ Rust hosts submit AccessKit ActionRequest through `SessionUi::handle_access` / `
 
 `text_input` edits a single line. Its value can bind to a writable model field; on_change runs after committed text changes, and on_submit runs on Enter. Both events carry target and value. IME preedit neither writes to the model nor triggers these callbacks. It supports cursor movement, selection, deletion, copy, cut, and paste. The system IME owns conversion and candidate selection; embedding hosts forward portable IME events and handle candidate-window position signals. Assigned values must be single-line strings; newlines in user input or paste become spaces. Style it with common node properties and compose your own background and focus indication; it adds no default border.
 
+With an explicit height, input text is vertically centered in the content area together with its caret, selection and IME position. A regular text node with an explicit width measures its automatic height using all wrapped lines at that width.
+
+Inline event links show an underline on hover or keyboard focus without reshaping text. A custom scrollbar should clamp its drag fraction to 0 through 1 before writing scroll_y, so its visuals do not follow an out-of-range value awaiting layout feedback; see author_scrollbar.aside.
+
 ```aside
 let profile = model({name: ""});
 text_input(value: bind(profile.name), width: 280, height: 40,

@@ -10,6 +10,7 @@ pub struct GlyphBitmap {
     pub pixels: Vec<f32>,
 }
 pub fn rasterize(
+    context: &mut ScaleContext,
     frame: &RenderFrame,
     run: &FrameGlyphRun,
     index: usize,
@@ -49,7 +50,6 @@ pub fn rasterize(
         at,
         record: "glyph id",
     })?;
-    let mut context = ScaleContext::new();
     let mut scaler = context
         .builder(font)
         .size(run.font_size)
@@ -133,8 +133,8 @@ pub fn rasterize(
         }
     }
     Ok(Some(GlyphBitmap {
-        x: f64::from(glyph.x) + f64::from(image.placement.left),
-        y: f64::from(glyph.y) - f64::from(image.placement.top),
+        x: f64::from(image.placement.left),
+        y: -f64::from(image.placement.top),
         size,
         pixels,
     }))

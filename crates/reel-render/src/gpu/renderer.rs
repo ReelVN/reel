@@ -23,6 +23,7 @@ pub struct Prepared {
     frames: Vec<RenderFrame>,
     tickets: Vec<Reservation>,
     images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
+    glyphs: super::glyph_cache::FrameGlyphs,
     budget_scope: Budgets,
     admission: BudgetTicket,
     generation: super::DeviceGeneration,
@@ -42,6 +43,7 @@ struct Inflight {
     _frames: Vec<RenderFrame>,
     _tickets: Vec<Reservation>,
     _images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
+    _glyphs: super::glyph_cache::FrameGlyphs,
     _admission: BudgetTicket,
 }
 pub struct Renderer {
@@ -53,6 +55,7 @@ pub struct Renderer {
     owner: Arc<()>,
     pipelines: PipelineSlots,
     images: super::image_cache::ImageCache,
+    glyphs: super::glyph_cache::GlyphCache,
 }
 pub(super) struct Budgets {
     pub(super) targets: BudgetPool,
@@ -127,6 +130,7 @@ impl Renderer {
             owner: Arc::new(()),
             pipelines: PipelineSlots::default(),
             images: Default::default(),
+            glyphs: Default::default(),
         }
     }
     pub(super) fn reserve_readback(
@@ -164,6 +168,7 @@ impl Renderer {
     ) -> Result<(), GpuError> {
         self.gpu.check()?;
         self.images.retire(&[]);
+        self.glyphs.retire(&[]);
         let result = self.gpu.device.poll(wgpu::PollType::Poll);
         self.gpu.check()?;
         result.map_err(|e| GpuError::Device(e.to_string()))?;
@@ -183,6 +188,7 @@ impl Renderer {
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
         self.images.retire(resources);
+        self.glyphs.retire(resources);
         for submission in &self.inflight {
             for frame in &submission._frames {
                 for lease in frame.resources().leases() {
@@ -219,6 +225,7 @@ impl Renderer {
     ) -> Result<Prepared, GpuError> {
         self.gpu.check()?;
         self.images.retire(&[]);
+        self.glyphs.retire(&[]);
         let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
         let size = frame.info().physical_size;
         let budget_scope = Budgets::new(self.gpu.limits);
@@ -251,6 +258,8 @@ impl Renderer {
             tickets,
             images: HashMap::new(),
             image_cache: &self.images,
+            glyph_cache: &self.glyphs,
+            glyphs: Default::default(),
             white: None,
             available_targets: Vec::new(),
         };
@@ -277,6 +286,7 @@ impl Renderer {
             frames,
             tickets: ctx.tickets,
             images: ctx.images,
+            glyphs: ctx.glyphs,
             budget_scope: ctx.budget_scope,
             admission,
             generation: self.gpu.generation,
@@ -305,6 +315,7 @@ impl Renderer {
         let done = Arc::new(AtomicBool::new(false));
         self.gpu.queue.submit([prepared.encoder.finish()]);
         self.images.publish(&prepared.images);
+        self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
         self.gpu
             .queue
@@ -315,6 +326,7 @@ impl Renderer {
             _frames: prepared.frames,
             _tickets: prepared.tickets,
             _images: prepared.images,
+            _glyphs: prepared.glyphs,
             _admission: prepared.admission,
         });
         self.gpu.check()?;

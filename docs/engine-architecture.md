@@ -68,6 +68,10 @@ key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对
 
 ### 当前作者舞台实现合同
 
+文字 GPU 绘制按字体资源、字体索引、字号、hint、变体坐标和字形 ID 复用字形图集，使用 guillotiere 分配图集矩形；同页连续字形合批，位置和颜色不进入字形缓存键。未提交上传仅在当前 preparation 可见，提交后发布；图集矩形由 prepared/in-flight/cache 共同保活，最后引用释放后才能复用。页面与上传分别计入现有资源预算，压力时回收无使用者缓存，字体退休解除缓存。该修复覆盖 reel-render 及实际 GPU 重复文字检查，B01/ASB 和作者接口不变。
+
+单行 text_input 在给定高度内垂直居中，文字、选区、光标、点击及 IME 候选位置使用同一偏移。文本节点的自动高度按其显式宽度换行测量，滚动末端以完整排版高度为准。范围为 reel-ui/reel-player，保持既有 native ABI，无新语法。
+
 容器构造的 children 是候选节点序列：同一序列显式提供完整组件根时，已属于该组件的后代不再作为兄弟重复挂载。根的顺序沿候选顺序；重复身份、退休节点、已挂舞台的组件或缺少完整根的外部子节点仍报错。add 返回值和单一父级所有权不变，尾随块与显式 children 数组行为一致；Aside 通用收集规则不变。Rust Stage::composition_roots 只读归一化候选，create/add 仍严格准入；失败不改现有树。范围为 reel-ui、reel-engine、源码/ASB 检查、示例与双语指南；native 签名、B01/ASB 不变，无新依赖。祖先路径在本次构造中记忆化，避免重复遍历共享长链，不增加逐帧工作。
 
 选择控件复用共同舞台：`checkbox(label: null, value: false, on_change: null, ...)` 与 toggle 共用布尔值、双向绑定及按钮激活，仅装饰和可访问性角色不同。`radio(option, label: null, value: null, on_change: null, ...)` 将选项绑定到一个业务值；同组各项的 value 连接同一模型字段，激活时写入 option，重复选择不回调，也不取消选择。option 可更新或绑定，旧选项画面的激活不能选择更新后的 option。比较沿用 list 的业务 key 规则，允许标量、字符串及对象身份；未匹配值表示无项选中。导航使用共同方向/Tab 焦点与确认输入，禁用、模态和退休沿共同生命周期。两者支持 children 与 decorated，自定义外观读取 value/option 和既有交互状态。范围为 reel-ui/reel-engine/reel-player、示例和双语指南；新增 native ABI 1，B01/ASB 不变，无新依赖。验收源码/ASB 双向绑定、互斥、动态选项、输入消费和取消；值变化保留控件身份，不重新排版未变文字。

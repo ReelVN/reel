@@ -23,6 +23,8 @@ pub(super) struct Context<'a> {
     pub(super) tickets: Vec<Reservation>,
     pub(super) images: HashMap<reel_ui::resources::ResourceHandle, Arc<resources::Image>>,
     pub(super) image_cache: &'a super::image_cache::ImageCache,
+    pub(super) glyph_cache: &'a super::glyph_cache::GlyphCache,
+    pub(super) glyphs: super::glyph_cache::FrameGlyphs,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) available_targets: Vec<Target>,
 }

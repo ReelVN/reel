@@ -30,6 +30,7 @@ pub struct TextInput {
     composition: Option<(Arc<str>, usize, usize)>,
     width: f64,
     scroll_x: f64,
+    text_y: f64,
 }
 
 fn single_line(text: &str) -> Cow<'_, str> {
@@ -59,6 +60,7 @@ impl TextInput {
             composition: None,
             width: 0.,
             scroll_x: 0.,
+            text_y: 0.,
         }
     }
 
@@ -130,7 +132,7 @@ impl TextInput {
     }
 
     fn ime_area(&self) -> Rect {
-        rect(self.editor.ime_cursor_area()) - Vec2::new(self.scroll_x, 0.)
+        rect(self.editor.ime_cursor_area()) + Vec2::new(-self.scroll_x, self.text_y)
     }
 }
 
@@ -171,7 +173,7 @@ impl Widget for TextInput {
             }
             _ => return,
         };
-        let point = ctx.local_position(position) + Vec2::new(self.scroll_x, 0.);
+        let point = ctx.local_position(position) + Vec2::new(self.scroll_x, -self.text_y);
         let composing = self.composition.is_some();
         let (fonts, layout) = ctx.text_contexts();
         self.cancel_compose(fonts, layout);
@@ -412,6 +414,13 @@ impl Widget for TextInput {
         self.width = size.width;
         let (fonts, layout) = ctx.text_contexts();
         self.editor.refresh_layout(fonts, layout);
+        self.text_y = ((size.height
+            - self
+                .editor
+                .try_layout()
+                .map_or(0., |layout| f64::from(layout.height())))
+            * 0.5)
+            .max(0.);
         self.keep_caret_visible();
         ctx.set_clip_path(size.to_rect());
         ctx.set_ime_area(self.ime_area());
@@ -424,7 +433,7 @@ impl Widget for TextInput {
         painter: &mut Painter<'_>,
     ) {
         let color = props.get::<ContentColor>(ctx.property_cache()).color;
-        let transform = Affine::translate((-self.scroll_x, 0.));
+        let transform = Affine::translate((-self.scroll_x, self.text_y));
         if ctx.is_focus_target() {
             self.editor.selection_geometry_with(|bounds, _| {
                 painter

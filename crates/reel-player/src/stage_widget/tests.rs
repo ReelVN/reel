@@ -968,3 +968,73 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
         "short content aligns to the viewport bottom"
     );
 }
+
+#[test]
+#[ignore = "requires REEL_SESSION_FONT for wrapped text measurement"]
+fn authored_text_width_controls_scroll_extent_independently_of_parent_width() {
+    let font = std::fs::read(std::env::var_os("REEL_SESSION_FONT").unwrap()).unwrap();
+    let mut f = Fixture::new(Some(font.into()));
+    f.edit(f.red, |p| p.visible = false);
+    f.edit(f.blue, |p| {
+        *p = NodeProps {
+            width: Some(110.),
+            font_size: 24.,
+            ..Default::default()
+        };
+    });
+    let props = f.stage.node(f.blue).unwrap().props.clone();
+    f.stage
+        .update(
+            f.blue,
+            NodeKind::Text(
+                "A wrapped chat message stays completely visible. "
+                    .repeat(10)
+                    .into(),
+            ),
+            props,
+        )
+        .unwrap();
+    let props = NodeProps {
+        width: Some(200.),
+        height: Some(90.),
+        ..Default::default()
+    };
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Scroll {
+                axis: ScrollAxis::Vertical,
+                follow_end: true,
+                align: reel_ui::widgets::ScrollAlign::End,
+                offset: Vec2::ZERO,
+            },
+            props,
+        )
+        .unwrap();
+    let mut measured = None;
+    for width in [200., 500., 140.] {
+        f.edit(f.root, |p| p.width = Some(width));
+        let source = f.record();
+        f.accept(&source);
+        let id = f.layouts()[&f.root].0;
+        let root = f
+            .bridge
+            .root()
+            .get_widget(id)
+            .unwrap()
+            .downcast::<SceneWidget>()
+            .unwrap();
+        let height = root.scroll.content().height;
+        assert!(height > 90., "the paragraph must overflow the viewport");
+        assert_eq!(
+            height,
+            *measured.get_or_insert(height),
+            "explicit text width determines every wrapped line"
+        );
+        assert_eq!(
+            root.scroll.offset().y,
+            height - 90.,
+            "end following includes the complete last line"
+        );
+    }
+}

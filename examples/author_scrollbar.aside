@@ -1,9 +1,10 @@
 fn scrollbar(viewport, x, height) {
+    fn clamp(value, low, high) { if value < low { low } else if value > high { high } else { value } }
     let drag = model({grab: 0});
     let thumb_height = derive(|| if viewport.content_height <= height { height }
         else { height * height / viewport.content_height });
     let thumb_y = derive(|| if viewport.content_height <= height { 0 }
-        else { viewport.scroll_y / (viewport.content_height-height) * (height-thumb_height.value) });
+        else { clamp(viewport.scroll_y / (viewport.content_height-height), 0, 1) * (height-thumb_height.value) });
     let track = input(x: x, width: 24, height: height, background: "#203040",
         on_pointer: |event| {
             if event.phase == "pressed" {
@@ -13,7 +14,7 @@ fn scrollbar(viewport, x, height) {
             }
             if event.phase == "pressed" || event.phase == "moved" {
                 if viewport.content_height > height {
-                    viewport.scroll_y = (event.y-drag.grab)/(height-thumb_height.value)*(viewport.content_height-height);
+                    viewport.scroll_y = clamp((event.y-drag.grab)/(height-thumb_height.value), 0, 1)*(viewport.content_height-height);
                 }
             }
         });
