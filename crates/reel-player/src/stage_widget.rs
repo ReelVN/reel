@@ -615,6 +615,9 @@ impl SceneWidget {
             {
                 this.ctx.request_layout();
             }
+            if matches!(view.node.kind, NodeKind::Camera(_)) {
+                this.ctx.request_compose();
+            }
             this.widget.node = view.node.clone();
             this.ctx.request_render();
         }
@@ -1196,8 +1199,16 @@ impl Widget for SceneWidget {
         } else {
             Vec2::ZERO
         };
+        let view = if let NodeKind::Camera(camera) = self.node.kind {
+            camera.transform(Size::new(
+                (self.size.width - self.node.props.padding * 2.).max(0.),
+                (self.size.height - self.node.props.padding * 2.).max(0.),
+            ))
+        } else {
+            reel_ui::kurbo::Affine::IDENTITY
+        };
         for (node, child) in &mut self.children {
-            let transform = node.props.transform(ctx.child_size(child));
+            let transform = view * node.props.transform(ctx.child_size(child));
             ctx.set_child_transform(child, transform);
             ctx.set_child_scroll_translation(child, translation);
         }

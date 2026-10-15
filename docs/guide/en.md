@@ -246,6 +246,7 @@ Images and fonts use the same resource loading service. File reads and image dec
 
 Every basic node supports rotation, scale_x/scale_y and anchor_x/anchor_y; a container transforms the whole component. Rotation uses clockwise degrees and defaults to 0. Scale defaults to 1; negative values mirror, and zero collapses the picture and excludes it from hit testing. Anchors are fractions of the layout width and height: (0,0) is the default top-left corner and (0.5,0.5) is the center. They may also lie outside the component. The x/y values offset that anchor from the container's layout position. Scale around the anchor, rotate, then place it at that position; the parent's transform applies to the result. Width, height and row/column placement retain their size before transformation. Clips and presented geometry use the same transform. Edits preserve node identity; changing position, rotation, scale, anchor or opacity does not repeat layout.
 
+
 ```aside
 fn main() {
     let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
@@ -263,6 +264,25 @@ fn main() {
 ```
 
 See the runnable [author_transforms.aside](../../examples/author_transforms.aside); it uses the same assets and commands as the image example.
+
+### Camera framing
+
+Use `camera { ... }` to pan, zoom and rotate the view of a scene. Its `camera_x/camera_y` identify the world point shown at the center of the viewport; they default to (0,0), so specify your scene center to frame a conventional top-left scene. `zoom` defaults to 1 and must be positive. `camera_rotation` is the camera's clockwise angle in degrees; the scene turns oppositely. Normal `x/y`, `rotation`, scale and anchors place the viewport itself. Width and height set its size; omitted dimensions use content layout. Children overlap as in stack, and padding remains in viewport coordinates. `clip` defaults to true and can be disabled.
+
+```aside
+let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
+    image("assets/panels.png", width: 960, height: 540);
+    text("Look here", x: 620, y: 160);
+};
+stage.replace(view);
+await stage.presented(owner: view);
+await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
+                camera_rotation: 8, duration: 1.2, easing: "in_out"));
+```
+
+The four camera properties work with assignment, bind/derive and tween, including normal cancellation and ownership. Put HUD siblings outside the camera to keep them fixed; nested cameras are ordinary components. Motion preserves text layout and loaded images. Drawing and pointer coordinates share the accepted frame's transforms and clips. See the complete [author_camera.aside](../../examples/author_camera.aside), which needs only `fonts/body.ttf`; run it using section 1's dev/build/run commands. This is a two-dimensional camera; perspective projection is not implemented.
+
+
 
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.

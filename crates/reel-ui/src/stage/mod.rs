@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Author-owned scene composition, shared by the script host and presentation.
+mod camera;
+pub use camera::CameraView;
+
 use crate::input::{ActionPhase, Binding};
 use crate::kurbo::{Affine, Point, Size, Vec2};
 use crate::properties::ObjectFit;
@@ -198,6 +201,7 @@ pub enum NodeKind {
         align: crate::widgets::ScrollAlign,
         offset: Vec2,
     },
+    Camera(CameraView),
     Row,
     Column,
     Stack,
@@ -435,7 +439,8 @@ impl Stage {
         let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             container.kind,
-            NodeKind::Row
+            NodeKind::Camera(_)
+                | NodeKind::Row
                 | NodeKind::Column
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
@@ -475,7 +480,8 @@ impl Stage {
         let container = self.nodes.get(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             container.kind,
-            NodeKind::Row
+            NodeKind::Camera(_)
+                | NodeKind::Row
                 | NodeKind::Column
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
@@ -551,7 +557,8 @@ impl Stage {
         let node = self.nodes.get_mut(&parent).ok_or(StageError::RetiredNode)?;
         if !matches!(
             node.kind,
-            NodeKind::Row
+            NodeKind::Camera(_)
+                | NodeKind::Row
                 | NodeKind::Column
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack

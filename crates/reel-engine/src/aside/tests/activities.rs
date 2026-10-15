@@ -711,3 +711,122 @@ fn skipping_finishes_story_sequences_with_a_small_budget_without_finishing_ui_or
         assert_eq!(d.text(), "finished");
     }
 }
+
+#[test]
+fn camera_source_asb_binding_animation_takeover_and_retirement() {
+    let code = r#"fn opening() {
+        let data = model({focus: 200});
+        let view = camera(camera_x: bind(data.focus), camera_y: 100,
+                          width: 400, height: 200) { text("world"); };
+        let readout = text("focus", x: derive(|| view.camera_x + view.zoom));
+        stage.replace(stack { view; readout; });
+        if !view.clip || view.zoom != 1 { throw "camera defaults"; }
+        let mut rejected = 0;
+        try { view.zoom = 0; } catch e { rejected += 1; }
+        try { camera(zoom: -1); } catch e { rejected += 1; }
+        try { tween(view, zoom: 0); } catch e { rejected += 1; }
+        try { tween(readout, camera_x: 10); } catch e { rejected += 1; }
+        if rejected != 4 || view.zoom != 1 { throw "camera validation"; }
+        let first = run(tween(view, camera_x: 400, camera_y: 200,
+                              zoom: 2, camera_rotation: 90, duration: 2));
+        narrator("moving");
+        let second = run(tween(view, camera_x: 500, duration: 1));
+        if await first != "Stopped" { throw "takeover"; }
+        data.focus = 333;
+        if await second != "Stopped" { throw "bound assignment takeover"; }
+        if view.camera_x != 333 { throw "binding"; }
+        let third = run(tween(view, camera_x: 350, duration: 1));
+        finish(third);
+        if await third != "Completed" || data.focus != 350 { throw "released model claim"; }
+        let pending = run(tween(view, zoom: 3, duration: 10), owner: view);
+        view.remove();
+        let mut cancelled = false;
+        try { await pending; } catch e { cancelled = true; }
+        if !cancelled { throw "camera owner cancellation"; }
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        collect(&mut vm);
+        let chunks = vm.vm.heap().stats().chunk_allocations;
+        let started = std::time::Instant::now();
+        for step in 1..=256 {
+            advance_clock(&mut vm, &session, step as f64 / 256., 64);
+        }
+        assert_eq!(
+            vm.vm.heap().stats().chunk_allocations,
+            chunks,
+            "camera tween must not allocate VM payload chunks per sample"
+        );
+        models::drive(&mut vm, &mut session, false);
+        let camera = vm
+            .stage()
+            .nodes()
+            .find_map(|node| match node.kind {
+                reel_ui::stage::NodeKind::Camera(view) => Some(view),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            (camera.x, camera.y, camera.zoom, camera.rotation),
+            (300., 150., 1.5, 45.)
+        );
+        let readout = vm
+            .stage()
+            .nodes()
+            .find(|node| node.kind == reel_ui::stage::NodeKind::Text("focus".into()))
+            .unwrap();
+        assert_eq!(readout.props.x, 301.5);
+        eprintln!(
+            "camera encoded={encoded}: 256 tween samples {:?}; VM chunk growth=0",
+            started.elapsed()
+        );
+        advance_dialogue(&mut vm, &mut session);
+        assert!(
+            !vm.stage()
+                .nodes()
+                .any(|node| matches!(node.kind, reel_ui::stage::NodeKind::Camera(_)))
+        );
+        assert!(!vm.activities_need_time());
+    }
+}
+
+#[test]
+fn camera_public_example_executes_source_and_asb() {
+    let source = include_str!("../../../../../examples/author_camera.aside")
+        .replace("fn main()", "fn opening()");
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(&source, encoded);
+        assert!(matches!(
+            drive(&mut vm, &mut session),
+            RunOutcome::Waiting(_)
+        ));
+        vm.sync_stage(&session).unwrap();
+        assert_eq!(vm.presentation_request(), 1);
+        vm.accept_presentation(&session, 1).unwrap();
+        assert!(matches!(
+            drive(&mut vm, &mut session),
+            RunOutcome::Waiting(_)
+        ));
+        advance_clock(&mut vm, &session, 5.4, 8);
+        assert!(matches!(
+            drive(&mut vm, &mut session),
+            RunOutcome::Returned(_)
+        ));
+        vm.sync_stage(&session).unwrap();
+        let view = vm
+            .stage()
+            .nodes()
+            .find_map(|node| match node.kind {
+                reel_ui::stage::NodeKind::Camera(view) => Some(view),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            (view.x, view.y, view.zoom, view.rotation),
+            (600., 320., 0.72, 0.)
+        );
+        assert!(!vm.activities_need_time());
+    }
+}

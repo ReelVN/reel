@@ -1038,3 +1038,226 @@ fn authored_text_width_controls_scroll_extent_independently_of_parent_width() {
         );
     }
 }
+
+#[test]
+fn camera_accepted_frame_pointer_clip_and_composition_cost() {
+    use reel_ui::core::{
+        PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState,
+        PointerType,
+    };
+    use reel_ui::dpi::PhysicalPosition;
+    use reel_ui::stage::{CameraView, InputBindings, NodeEvent, PointerPhase};
+    fn pointer(down: bool, x: f64, y: f64) -> PointerEvent {
+        let event = PointerButtonEvent {
+            pointer: PointerInfo {
+                pointer_id: Some(PointerId::PRIMARY),
+                persistent_device_id: None,
+                pointer_type: PointerType::Mouse,
+            },
+            state: PointerState {
+                position: PhysicalPosition::new(x, y),
+                ..Default::default()
+            },
+            button: Some(PointerButton::Primary),
+        };
+        if down {
+            PointerEvent::Down(event)
+        } else {
+            PointerEvent::Up(event)
+        }
+    }
+    let font = std::env::var_os("REEL_SESSION_FONT")
+        .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
+    eprintln!("camera actual font supplied={}", font.is_some());
+    let mut f = Fixture::new(font);
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Camera(CameraView {
+                x: 40.,
+                y: 30.,
+                zoom: 2.,
+                rotation: 90.,
+            }),
+            NodeProps {
+                x: 100.,
+                y: 80.,
+                width: Some(200.),
+                height: Some(160.),
+                padding: 10.,
+                clip: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.stage
+        .update(
+            f.red,
+            NodeKind::Input {
+                bindings: InputBindings::new(vec![]).unwrap(),
+                listening: false,
+                keyboard: false,
+                pointer: true,
+            },
+            NodeProps {
+                x: 30.,
+                y: 20.,
+                width: Some(300.),
+                height: Some(200.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.edit(f.blue, |p| {
+        p.x = 500.;
+    });
+    let first = f.record();
+    f.accept(&first);
+    let before = f.layouts();
+    let root = before[&f.root].0;
+    let red = before[&f.red].0;
+    affine(
+        first.geometry().get(red).unwrap().window_transform,
+        [0., -2., 2., 0., 180., 180.],
+    );
+    assert_eq!(
+        first.geometry().get(root).unwrap().clip_path,
+        Some(Rect::new(0., 0., 200., 160.))
+    );
+    let press = |f: &mut Fixture, x, y| {
+        let events =
+            f.ui.handle_pointer(&mut f.bridge, pointer(true, x, y))
+                .unwrap()
+                .events;
+        f.ui.handle_pointer(&mut f.bridge, pointer(false, x, y))
+            .unwrap();
+        events.into_iter().find_map(|event| match event {
+            NodeEvent::Pointer(event) if event.phase == PointerPhase::Pressed => Some(event),
+            _ => None,
+        })
+    };
+    let event = press(&mut f, 200., 160.).expect("camera input");
+    assert_eq!(event.node, f.red);
+    assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
+    assert!(
+        press(&mut f, 200., -40.).is_none(),
+        "viewport clip excludes transformed overflow"
+    );
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Camera(CameraView {
+                x: 60.,
+                y: 30.,
+                zoom: 2.,
+                rotation: 90.,
+            }),
+            props,
+        )
+        .unwrap();
+    let pending = f.record();
+    let event = press(&mut f, 200., 160.).expect("old accepted camera input");
+    assert!(
+        (event.position - Point::new(10., 10.)).hypot() < 1e-9,
+        "unaccepted camera motion cannot alter input coordinates"
+    );
+    f.accept(&pending);
+    let event = press(&mut f, 200., 160.).expect("new accepted camera input");
+    assert!((event.position - Point::new(30., 10.)).hypot() < 1e-9);
+    assert_eq!(f.layouts(), before);
+    drop(pending);
+    let started = std::time::Instant::now();
+    for step in 0..1000 {
+        let props = f.stage.node(f.root).unwrap().props.clone();
+        f.stage
+            .update(
+                f.root,
+                NodeKind::Camera(CameraView {
+                    x: f64::from(step) * 0.1,
+                    y: 30.,
+                    zoom: 1. + f64::from(step) * 0.001,
+                    rotation: f64::from(step) * 0.1,
+                }),
+                props,
+            )
+            .unwrap();
+        let source = f.record();
+        f.accept(&source);
+    }
+    assert_eq!(
+        f.layouts(),
+        before,
+        "camera motion preserves all identities and layout counts"
+    );
+    affine(
+        first.geometry().get(red).unwrap().window_transform,
+        [0., -2., 2., 0., 180., 180.],
+    );
+    eprintln!(
+        "1000 camera projection/record/accept frames: {:?}; added layouts=0",
+        started.elapsed()
+    );
+    // Nested cameras compose through the same child affine, with the outer
+    // camera magnifying the inner viewport's own layout placement.
+    let leaf = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                x: 10.,
+                y: 5.,
+                width: Some(20.),
+                height: Some(10.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let inner = f
+        .stage
+        .create(
+            NodeKind::Camera(CameraView {
+                x: 10.,
+                y: 5.,
+                zoom: 3.,
+                rotation: 90.,
+            }),
+            NodeProps {
+                x: 40.,
+                y: 20.,
+                width: Some(80.),
+                height: Some(60.),
+                clip: true,
+                ..Default::default()
+            },
+            vec![leaf],
+        )
+        .unwrap();
+    let outer = f
+        .stage
+        .create(
+            NodeKind::Camera(CameraView {
+                zoom: 2.,
+                ..Default::default()
+            }),
+            NodeProps {
+                x: 20.,
+                y: 30.,
+                width: Some(200.),
+                height: Some(100.),
+                clip: true,
+                ..Default::default()
+            },
+            vec![inner],
+        )
+        .unwrap();
+    f.stage.replace(outer).unwrap();
+    let nested = f.record();
+    f.accept(&nested);
+    let leaf_widget = f.layouts()[&leaf].0;
+    affine(
+        nested.geometry().get(leaf_widget).unwrap().window_transform,
+        [0., -6., 6., 0., 280., 180.],
+    );
+}

@@ -246,6 +246,7 @@ fn main() {
 
 所有基础节点都支持 rotation、scale_x/scale_y 和 anchor_x/anchor_y，容器的变换作用于整个组件。rotation 是顺时针角度，默认 0；scale_x/scale_y 默认 1，负数可翻转，0 折叠画面且不参与命中。anchor_x/anchor_y 按布局宽高取比例，默认 (0,0) 为左上角，(0.5,0.5) 为中心；也可放到组件外。x/y 指定锚点相对容器排布位置的偏移。先围绕锚点缩放，再旋转，再放到该位置；父容器的变换继续作用于结果。宽高和 row/column 排布保持变换前的尺寸。裁剪与呈现几何使用相同变换，属性修改保留原节点；移动、旋转、缩放、锚点和透明度编辑不会重新排版。
 
+
 ```aside
 fn main() {
     let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
@@ -263,6 +264,25 @@ fn main() {
 ```
 
 完整可运行示例见 [author_transforms.aside](../../examples/author_transforms.aside)，资源和运行方法与图片示例相同。
+
+### 相机取景
+
+使用 `camera { ... }` 对场景平移取景、缩放和旋转。`camera_x/camera_y` 是显示在视口中心的世界坐标，默认 (0,0)；左上角为原点的场景应显式指定场景中心。`zoom` 默认 1，必须为正数。`camera_rotation` 是相机顺时针角度，场景沿反方向旋转。普通 `x/y`、`rotation`、scale 和 anchor 定位整个视口。width/height 指定视口尺寸，省略时采用内容布局。子节点像 stack 一样叠放，padding 保留在视口坐标。`clip` 默认 true，可显式关闭。
+
+```aside
+let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
+    image("assets/panels.png", width: 960, height: 540);
+    text("Look here", x: 620, y: 160);
+};
+stage.replace(view);
+await stage.presented(owner: view);
+await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
+                camera_rotation: 8, duration: 1.2, easing: "in_out"));
+```
+
+四个取景属性支持赋值、bind/derive 和 tween，沿用活动的取消和所有权规则。把 HUD 作为相机外的兄弟节点即可保持固定；相机也能嵌套组合。移动不会重新排版文字或重新加载图片；绘制与指针坐标共用已接受帧的变换和裁剪。完整的 [author_camera.aside](../../examples/author_camera.aside) 仅需提供 `fonts/body.ttf`，沿用第一节 dev/build/run 命令。这里是二维相机，尚未实现透视投影。
+
+
 
 画面的节点、绘制记录和嵌套层级随实际内容增长。输入路径在新画面发布前扩容，已有按下、拖动和释放继续对应正确的节点。实际内存预算与 GPU 纹理尺寸由运行宿主和设备管理。
 以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 game:: 模块和自定义对话视图。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。

@@ -1,5 +1,6 @@
 //! Stable Aside host nodes projected into Reel's one shared stage model.
 use std::collections::BTreeMap;
+pub(super) mod camera;
 pub(super) mod controls;
 pub(super) mod input;
 mod interaction;
@@ -204,6 +205,7 @@ impl StageBinding {
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
+            NodeKind::Camera(_) => camera::CameraField::PROPERTIES.len() as u32,
             NodeKind::Text(_) => 2,
             NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
@@ -295,6 +297,7 @@ impl StageBinding {
                 fit: read_fit(heap, args[1])?,
                 origin,
             },
+            "reel::camera" => camera::kind(heap, fields)?,
             "reel::scroll" => scroll::kind(heap, fields)?,
             "reel::row" => NodeKind::Row,
             "reel::column" => NodeKind::Column,
@@ -306,7 +309,8 @@ impl StageBinding {
         let references = heap.alloc_array(&[])?;
         if matches!(
             kind,
-            NodeKind::Row
+            NodeKind::Camera(_)
+                | NodeKind::Row
                 | NodeKind::Column
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
@@ -337,6 +341,7 @@ impl StageBinding {
                 Value::NULL,
             ],
             Some(match symbol {
+                "reel::camera" => |heap, _, index, value| camera::validate(heap, index, value),
                 "reel::scroll" => |heap, _, index, value| scroll::validate(heap, index, value),
                 "reel::slider" => controls::validate_slider,
                 "reel::toggle" | "reel::checkbox" => {
@@ -515,6 +520,10 @@ impl StageBinding {
                         input::InputField::PROPERTIES.len(),
                     )
                 }
+                NodeKind::Camera(_) => (
+                    camera::kind(heap, fields)?,
+                    camera::CameraField::PROPERTIES.len(),
+                ),
                 NodeKind::Scroll { .. } => (
                     scroll::kind(heap, fields)?,
                     scroll::ScrollField::PROPERTIES.len(),

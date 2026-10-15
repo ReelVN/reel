@@ -650,6 +650,7 @@ impl SessionVm {
             | "reel::image"
             | "reel::row"
             | "reel::column"
+            | "reel::camera"
             | "reel::scroll"
             | "reel::stack"
             | "reel::stage::replace" => {
