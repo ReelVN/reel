@@ -216,7 +216,17 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
-                    self.draw(frame, &current.scopes.last().target, draw, transform, at)?
+                    let consumed = self.image_batch(
+                        frame,
+                        &current.scopes.last().target,
+                        &current.commands[current.next - 1..],
+                        transform,
+                    )?;
+                    if consumed == 0 {
+                        self.draw(frame, &current.scopes.last().target, draw, transform, at)?;
+                    } else {
+                        current.next += consumed - 1;
+                    }
                 }
                 FrameOp::External(_) => {
                     return Err(GpuError::Unsupported {

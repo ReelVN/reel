@@ -70,6 +70,15 @@ impl Images {
     pub fn has_result_pending(&self) -> bool {
         self.assets.needs_poll()
     }
+    pub fn request_stage(&mut self, view: &crate::stage_widget::StageView) {
+        match view.image_requests() {
+            Ok(wanted) => self.request(wanted),
+            Err(error) => {
+                self.request(BTreeMap::new());
+                self.failure = Some(error);
+            }
+        }
+    }
     pub fn request(&mut self, wanted: BTreeMap<String, Option<String>>) {
         if self.closed {
             return;

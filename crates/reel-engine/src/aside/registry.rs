@@ -15,6 +15,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         ],
         "reel::text" => &["value", "on_link"],
         "reel::text_input" => &["value", "on_change", "on_submit"],
+        "reel::particles" => super::particles::PREFIX,
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
@@ -101,6 +102,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         "text",
         "text_input",
         "image",
+        "particles",
         "row",
         "column",
         "stack",
@@ -120,6 +122,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     .iter()
                     .map(|p| p.parameter()),
             );
+        } else if name == "particles" {
+            parameters.extend(super::particles::parameters());
         } else if name == "scroll" {
             parameters.extend(
                 super::stage::scroll::ScrollField::PROPERTIES
@@ -209,7 +213,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "camera" {
+            abi_version: if matches!(name, "camera" | "particles") {
                 1
             } else if matches!(name, "checkbox" | "radio") {
                 3
@@ -646,6 +650,23 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec![],
         });
     }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::emit".into(),
+        abi_version: 1,
+        parameters: ["node", "duration", "owner"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| NativeParameter {
+                name: name.into(),
+                ty: BuiltinType::Any,
+                default: (i != 0).then_some(bc::Const::Null),
+            })
+            .collect(),
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
     contracts.extend(aside_std::contracts());
     contracts
 }

@@ -1023,3 +1023,21 @@ Windows 播放器向系统提交双声道音频，默认设备配置为多声道
 ./target/debug/reel.exe check examples/author_audio.aside
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
+
+### 图片粒子
+
+`particles` 用一个舞台节点组合落雪、花瓣等图片效果。source 必须是完整 PNG/JPEG 精灵，分块 `.reel-image` 只供 `image` 节点使用；`emit` 启动并返回活动，width/height 指定出生矩形。示例使用你提供的 `assets/petal.png` 和 `fonts/body.ttf`，完整入口见 [author_particles.aside](../../examples/author_particles.aside)。
+
+```aside
+let petals = particles("assets/petal.png", width: 1280, height: 20,
+    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
+    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
+    spin_spread: 60);
+stage.replace(petals);
+let falling = emit(petals, duration: 10);
+await falling;
+```
+
+缺省值：rate 每秒 60 粒，lifetime 5 秒，seed 0，velocity_x/y 为 0/80，spread_x/y 为 20/20，acceleration_x/y 为 0/0，size 12，size_spread 4，opacity_start/end 为 1/0，spin 0、spin_spread 每秒 30 度。spread 表示基值两侧均匀取样的半幅；size 为图片宽度，保留原宽高比，size_spread 不得超过 size。出生位置在 emit 启动时读取的 width/height 内均匀分布（未指定时为零）；首粒在 1/rate 秒出生。配置只读；共同位置、旋转、缩放、可见性、透明度及裁剪仍可更新和动画。
+
+省略 duration 持续发射；有限时长包含截止时刻出生的粒子，等待最后一粒死亡后返回 Completed。`pause(falling)` 冻结整个效果，`resume(falling)` 继续，`stop(falling)` 清空粒子并使 await 返回 Stopped。`finish(falling)` 清空有限效果并返回 Completed，持续效果不接受 finish。同一节点再次 emit 停止原活动，从同一种子重新开始；同一种子和累计时间与分帧无关。节点或活动 owner 退休取消发射，隐藏不暂停。缺省 owner 沿用其他活动规则；取消等待者不取消生产者。终态保留以供重复等待。粒子共用舞台图片资源和绘制路径，不逐粒子运行脚本。运行效果的保存/恢复尚未实现。

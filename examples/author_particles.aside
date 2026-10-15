@@ -1,0 +1,18 @@
+// Supply your own assets/petal.png and fonts/body.ttf under --assets.
+fn main() {
+    game.configure(title: "Sprite particles", width: 1280, height: 720, fonts: "fonts/body.ttf");
+    let petals = particles("assets/petal.png", width: 1280, height: 20,
+        rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
+        velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
+        spin_spread: 60);
+    let scene = stack(width: 1280, height: 720, clip: true, background: "#172534") { petals; };
+    stage.replace(scene);
+    await stage.presented(owner: petals);
+    let falling = emit(petals, duration: 30);
+    scene.add(row(x: 24, y: 640, gap: 12) {
+        button("Pause", on_click: || pause(falling));
+        button("Resume", on_click: || resume(falling));
+        button("Stop", on_click: || stop(falling));
+    });
+    await falling;
+}

@@ -880,7 +880,7 @@ impl SessionUi {
                 self.pause_dialogue();
                 self.reading_modal = modal;
             }
-            self.images.request(view.image_requests());
+            self.images.request_stage(&view);
             let mut binding = self.binding.borrow_mut();
             binding.accepted = None;
             let buttons = view.button_changes(
@@ -912,14 +912,14 @@ impl SessionUi {
     pub fn with_asset_options(mut self, options: crate::assets::AssetOptions) -> Self {
         self.images = crate::images::Images::new(crate::assets::Assets::directory(options));
         if let Some(view) = &self.pending_stage {
-            self.images.request(view.image_requests());
+            self.images.request_stage(view);
         }
         self
     }
     pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
         self.images = crate::images::Images::new(assets);
         if let Some(view) = &self.pending_stage {
-            self.images.request(view.image_requests());
+            self.images.request_stage(view);
         }
         self
     }

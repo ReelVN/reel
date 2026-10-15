@@ -4,6 +4,7 @@
 //! Author-owned scene composition, shared by the script host and presentation.
 mod camera;
 pub use camera::CameraView;
+pub mod particles;
 
 use crate::input::{ActionPhase, Binding};
 use crate::kurbo::{Affine, Point, Size, Vec2};
@@ -158,6 +159,7 @@ pub struct NodeClick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
+    Particles(particles::ParticleBatch),
     Text(reel_core::text::Text),
     TextInput {
         value: Arc<str>,
@@ -331,6 +333,23 @@ impl Stage {
     pub fn nodes(&self) -> impl Iterator<Item = &StageNode> {
         self.nodes.values()
     }
+    /// Publish a constant-size particle clock projection without copying nodes.
+    pub fn set_particle_frame(
+        &mut self,
+        id: NodeId,
+        frame: Option<particles::ParticleFrame>,
+    ) -> Result<(), StageError> {
+        let node = self.nodes.get_mut(&id).ok_or(StageError::RetiredNode)?;
+        let NodeKind::Particles(batch) = &mut node.kind else {
+            return Err(StageError::NotContainer);
+        };
+        if batch.frame != frame {
+            batch.frame = frame;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(())
+    }
+
     pub fn next_identity(&self) -> Result<NodeId, StageError> {
         self.next_id
             .checked_add(1)

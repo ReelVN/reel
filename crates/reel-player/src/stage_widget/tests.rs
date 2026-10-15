@@ -1356,3 +1356,99 @@ fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
         "new presentation changes the topmost target"
     );
 }
+
+#[test]
+fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
+    use crate::assets::{AssetOptions, Assets};
+    use reel_core::prepared_image::PreparedImage;
+    use reel_ui::stage::particles::{ParticleBatch, ParticleConfig};
+    let mut stage = Stage::default();
+    let particle = stage
+        .create(
+            NodeKind::Particles(ParticleBatch {
+                config: Arc::new(ParticleConfig {
+                    source: "assets/panels.png".into(),
+                    origin: Some("snow.aside:7:3".into()),
+                    rate: 4.,
+                    lifetime: 2.,
+                    seed: 42,
+                    velocity: [0., 20.],
+                    spread: [0., 0.],
+                    acceleration: [0., 0.],
+                    size: 8.,
+                    size_spread: 0.,
+                    opacity: [1., 0.],
+                    spin: 0.,
+                    spin_spread: 0.,
+                }),
+                frame: None,
+            }),
+            NodeProps::default(),
+            vec![],
+        )
+        .unwrap();
+    let background = stage
+        .create(
+            NodeKind::Image {
+                source: "background.reel-image".into(),
+                origin: Some("snow.aside:2:3".into()),
+                fit: Default::default(),
+            },
+            NodeProps::default(),
+            vec![],
+        )
+        .unwrap();
+    let root = stage
+        .create(
+            NodeKind::Stack,
+            NodeProps::default(),
+            vec![background, particle],
+        )
+        .unwrap();
+    stage.replace(root).unwrap();
+    let mut view = StageView::capture(&stage);
+    let mut images = crate::images::Images::new(Assets::directory(AssetOptions {
+        root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+        ..Default::default()
+    }));
+    let (send, receive) = std::sync::mpsc::channel();
+    images.set_waker(Arc::new(move || {
+        let _ = send.send(());
+    }));
+    images.manifests.insert(
+        "background.reel-image".into(),
+        PreparedImage::new(4096, 2048, 512).unwrap(),
+    );
+    images.request_stage(&view);
+    while !images.poll().unwrap() {
+        receive
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+    }
+    view.resolve_metadata(&images);
+    let root = view.root.as_ref().unwrap();
+    assert_eq!(root.children[0].tiled_size, Some(Size::new(4096., 2048.)));
+    let sprite = root.children[1].image.as_ref().unwrap();
+    assert_eq!([sprite.width, sprite.height], [160, 90]);
+    assert_eq!(view.resources.len(), 1);
+    assert_eq!(
+        view.resources[0].handle(),
+        images.loaded["assets/panels.png"].handle()
+    );
+    let widget = SceneWidget::new(root);
+    assert!(widget.image.is_none());
+    assert_eq!(
+        images.loads, 1,
+        "metadata path reuses the one decoded sprite"
+    );
+
+    let NodeKind::Particles(batch) = &mut view.root.as_mut().unwrap().children[1].node.kind else {
+        unreachable!()
+    };
+    Arc::make_mut(&mut batch.config).source = "background.reel-image".into();
+    images.request_stage(&view);
+    let error = images.poll().unwrap_err();
+    assert!(error.contains("snow.aside:7:3"), "{error}");
+    assert!(error.contains("whole PNG or JPEG sprite"), "{error}");
+    assert_eq!(images.loads, 1, "unsupported request is rejected before IO");
+}
