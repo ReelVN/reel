@@ -107,6 +107,20 @@ fn closure_or_and_control_heads_use_one_expression_grammar() {
         E::Block,
     );
     assert_eq!(has(&p, K::Children), 3);
+    let p = ok(
+        "column { row { text(\"a\"); } ui.row { text(\"b\"); } }",
+        E::Block,
+    );
+    assert_eq!(has(&p, K::Children), 3);
+    let p = ok(
+        "if ready { go(); } while ready { go(); } for x in values { x; } match value { _ => null, }",
+        E::Block,
+    );
+    assert_eq!(has(&p, K::Children), 0);
+    ok("components[0] { node; }", E::Expression);
+    ok("(component) { node; }", E::Expression);
+    let p = ok("row {}\n(text(\"next\"));", E::Block);
+    assert_eq!(has(&p, K::CallExpr), 2);
     let p = ok("row() {}\n(text(\"next\"));", E::Block);
     assert_eq!(has(&p, K::CallExpr), 3);
     rejects("text(\"a\") text(\"b\");", E::Block, D::MissingSemicolon);
@@ -114,6 +128,16 @@ fn closure_or_and_control_heads_use_one_expression_grammar() {
     assert_eq!(has(&p, K::NamedArg), 1);
     rejects(
         "component(children: nodes) { node; }",
+        E::Expression,
+        D::ChildrenConflict,
+    );
+    rejects(
+        "component { first; } { second; }",
+        E::Expression,
+        D::ChildrenConflict,
+    );
+    rejects(
+        "component() { first; } { second; }",
         E::Expression,
         D::ChildrenConflict,
     );

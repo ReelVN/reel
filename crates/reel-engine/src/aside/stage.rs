@@ -312,7 +312,10 @@ impl StageBinding {
                 for index in 0..heap.sequence_len(input)? {
                     let child = heap.sequence_get(input, index)?;
                     children.push(self.id(heap, child)?);
-                    heap.array_push(references, child)?;
+                }
+                children = self.scene.composition_roots(&children)?;
+                for &child in &children {
+                    heap.array_push(references, self.value(heap, child)?)?;
                 }
             }
         }

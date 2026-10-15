@@ -483,15 +483,19 @@ impl Parser<'_> {
                     children_named: named_children,
                     ..Expr::new(kind)
                 };
-            } else if op == K::LBrace && !head && lhs.kind == K::CallExpr && 15 >= min {
-                let conflict = lhs.children_named;
+            } else if op == K::LBrace
+                && !head
+                && matches!(
+                    lhs.kind,
+                    K::CallExpr | K::NameExpr | K::MemberExpr | K::IndexExpr | K::GroupExpr
+                )
+                && 15 >= min
+            {
+                let conflict = lhs.children_named || lhs.children_block;
                 self.wrap(cp, K::CallExpr);
                 self.start(K::Children);
                 if conflict {
-                    self.error(
-                        D::ChildrenConflict,
-                        "explicit children and a trailing children block cannot coexist",
-                    );
+                    self.error(D::ChildrenConflict, "a call can supply children only once");
                 }
                 self.block();
                 self.finish();
