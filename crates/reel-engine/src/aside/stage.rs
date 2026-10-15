@@ -84,7 +84,7 @@ pub(super) struct StageBinding {
     pub scene: Stage,
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
-    methods: [FunctionId; 4],
+    methods: [FunctionId; 5],
 }
 struct NodeBinding {
     handle: HeapHandle,
@@ -101,11 +101,12 @@ struct NodeBinding {
 impl StageBinding {
     pub fn new(program: &VerifiedProgram) -> Result<Self, AdapterError> {
         let p = program.package();
-        let mut methods = [FunctionId(0); 4];
+        let mut methods = [FunctionId(0); 5];
         for (slot, symbol) in methods.iter_mut().zip([
             add::SYMBOL,
             remove::SYMBOL,
             clear::SYMBOL,
+            move_child::SYMBOL,
             input::value::SYMBOL,
         ]) {
             *slot = p
@@ -424,7 +425,7 @@ impl StageBinding {
                 )?;
             }
         }
-        for (i, (name, function)) in ["add", "remove", "clear", "value"]
+        for (i, (name, function)) in ["add", "remove", "clear", "move", "value"]
             .into_iter()
             .zip(self.methods)
             .enumerate()
@@ -841,13 +842,14 @@ impl StageBinding {
     }
 }
 
-pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 5] {
+pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 6] {
     [
         add::binding(),
         remove::binding(),
         clear::binding(),
         input::binding::binding(),
         input::value::binding(),
+        move_child::binding(),
     ]
 }
 
@@ -882,6 +884,48 @@ pub(super) fn add(
     context.host.scene.add(parent_id, child_id, index)?;
     heap.set_host_payload(receiver, 1, next)?;
     heap.set_host_payload(child, 2, receiver)?;
+    Ok(child)
+}
+
+/// Reorder one direct child using the existing reconciliation path. No node is
+/// adopted or retired, and all VM references still point at the same objects.
+#[aside_host::native(symbol = "reel::node::move", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
+pub(super) fn move_child(
+    #[aside(context)] context: &mut CallContext<'_, StageBinding>,
+    receiver: Value,
+    child: Value,
+    index: i64,
+) -> Result<Value, AdapterError> {
+    let heap = context.vm.heap_mut();
+    let parent = context.host.id(heap, receiver)?;
+    let id = context.host.id(heap, child)?;
+    let node = context.host.scene.node(parent).unwrap();
+    if context.host.scene.node(id).unwrap().parent != Some(parent) {
+        return Err(AdapterError::Input(
+            "move requires a direct child of this container",
+        ));
+    }
+    let index = usize::try_from(index)
+        .map_err(|_| AdapterError::Input("child index must be nonnegative"))?;
+    if index >= node.children.len() {
+        return Err(AdapterError::Input(
+            "child index is outside the existing children",
+        ));
+    }
+    let previous = node.children.iter().position(|&value| value == id).unwrap();
+    if previous == index {
+        return Ok(child);
+    }
+    let mut children = node.children.clone();
+    children.remove(previous);
+    children.insert(index, id);
+    let references = heap.alloc_array(&[])?;
+    for &id in &children {
+        heap.array_push(references, context.host.value(heap, id)?)?;
+    }
+    let retired = context.host.scene.reconcile_children(parent, children)?;
+    debug_assert!(retired.is_empty());
+    heap.set_host_payload(receiver, 1, references)?;
     Ok(child)
 }
 

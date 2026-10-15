@@ -1261,3 +1261,98 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
         [0., -6., 6., 0., 280., 180.],
     );
 }
+
+#[test]
+fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
+    use reel_ui::core::{
+        PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState,
+        PointerType,
+    };
+    use reel_ui::dpi::PhysicalPosition;
+    use reel_ui::stage::NodeEvent;
+    let font = std::env::var_os("REEL_SESSION_FONT")
+        .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
+    let mut f = Fixture::new(font);
+    f.edit(f.root, |props| {
+        *props = NodeProps {
+            width: Some(180.),
+            height: Some(80.),
+            ..Default::default()
+        };
+    });
+    for (id, label) in [(f.red, "Red"), (f.blue, "Blue")] {
+        f.stage
+            .update(
+                id,
+                NodeKind::Button {
+                    label: Some(label.into()),
+                    listening: true,
+                },
+                NodeProps {
+                    width: Some(160.),
+                    height: Some(60.),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let click = |f: &mut Fixture| {
+        let mut activated = Vec::new();
+        for down in [true, false] {
+            let event = PointerButtonEvent {
+                pointer: PointerInfo {
+                    pointer_id: Some(PointerId::PRIMARY),
+                    persistent_device_id: None,
+                    pointer_type: PointerType::Mouse,
+                },
+                state: PointerState {
+                    position: PhysicalPosition::new(30., 30.),
+                    ..Default::default()
+                },
+                button: Some(PointerButton::Primary),
+            };
+            let event = if down {
+                PointerEvent::Down(event)
+            } else {
+                PointerEvent::Up(event)
+            };
+            for event in f.ui.handle_pointer(&mut f.bridge, event).unwrap().events {
+                if let NodeEvent::Click(event) = event {
+                    activated.push(event.node);
+                }
+            }
+        }
+        activated
+    };
+    let first = f.record();
+    f.accept(&first);
+    let before = f.layouts();
+    assert_eq!(click(&mut f), [f.blue]);
+    assert_eq!(f.bridge.root().focused_widget(), Some(before[&f.blue].0));
+    let retired = f
+        .stage
+        .reconcile_children(f.root, vec![f.blue, f.red])
+        .unwrap();
+    assert!(retired.is_empty());
+    let pending = f.record();
+    assert_eq!(
+        click(&mut f),
+        [f.blue],
+        "input still uses the accepted child order"
+    );
+    f.accept(&pending);
+    assert_eq!(f.bridge.root().focused_widget(), Some(before[&f.blue].0));
+    let after = f.layouts();
+    assert_eq!(after[&f.root].0, before[&f.root].0);
+    for id in [f.red, f.blue] {
+        assert_eq!(
+            after[&id], before[&id],
+            "reordering retains identity and text layout"
+        );
+    }
+    assert_eq!(
+        click(&mut f),
+        [f.red],
+        "new presentation changes the topmost target"
+    );
+}

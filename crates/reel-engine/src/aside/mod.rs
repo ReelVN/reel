@@ -618,10 +618,14 @@ impl SessionVm {
                         work: 0,
                     })
             }
-            stage::add::SYMBOL | stage::remove::SYMBOL | stage::clear::SYMBOL => {
+            stage::add::SYMBOL
+            | stage::remove::SYMBOL
+            | stage::clear::SYMBOL
+            | stage::move_child::SYMBOL => {
                 let invoke = match symbol.as_str() {
                     stage::add::SYMBOL => stage::add::invoke,
                     stage::remove::SYMBOL => stage::remove::invoke,
+                    stage::move_child::SYMBOL => stage::move_child::invoke,
                     _ => stage::clear::invoke,
                 };
                 invoke(&mut self.stage, &mut self.vm, ticket)?;

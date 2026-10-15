@@ -203,6 +203,18 @@ column(gap: 12) {
 
 `container.add(child)` 将子树追加到 row、column 或 stack，返回原 child；`index:` 可指定从零开始的插入位置，允许等于当前子节点数，省略或传 null 表示末尾。子树必须尚未挂到舞台且没有父级。重复挂载、成环、向 text/image 添加或位置越界都会报错，原树保持不变。添加和删除保留其他节点及其控件身份，未改变的文字不重新整形。
 
+`container.move(child, index: ...)` 调整已有直属子节点的顺序，无须先移除。index 必填，表示调整后的零起始位置；三个子节点的合法位置为 0、1、2。方法返回原 child，移到原位置不会改变场景。节点的属性、正在运行的动画、回调、焦点和已加载资源继续保留。stack 按新顺序从后向前叠放，row/column 按新顺序布局。非直属子节点或越界索引会报错，原树保持不变。
+
+```aside
+let back = image("assets/panels.png");
+let front = image("assets/sun.jpg", x: 120);
+let scene = stack { back; front; };
+stage.replace(scene);
+scene.move(back, index: 1);
+```
+
+完整的 [author_reorder.aside](../../examples/author_reorder.aside) 展示重叠卡片置前，同时保留正在运行的动画。不支持跨父级移动。
+
 `node.remove()` 移除并退休该节点及其全部后代，也可用于舞台根；`container.clear()` 只退休子节点，保留容器自身的属性和身份。两者返回 null。退休使相关动画取消并释放舞台对图片的请求；旧节点不能重新挂载或继续读写。需要再次展示的组件应由函数重新构造。方法可以保存和传递，始终保留原接收者；已保存的 remove 可重复调用。
 
 ```aside

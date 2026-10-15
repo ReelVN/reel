@@ -203,6 +203,18 @@ A scroll region exposes writable, bindable `scroll_x/scroll_y`; layout clamps th
 
 `container.add(child)` appends a subtree to a row, column or stack and returns the original child. `index:` selects a zero-based insertion position, including the current child count; omitting it or passing null appends. The subtree must have no parent and must not be mounted as the stage root. Duplicate ownership, cycles, adding to text/image or an out-of-range position produce an error and preserve the original tree. Adding and removing preserve other nodes and their widget identities; unchanged text is not reshaped.
 
+`container.move(child, index: ...)` reorders an existing direct child without removing it. The required index is its final zero-based position; for three children it is 0, 1 or 2. The method returns the same child, and moving it to its current position does nothing. Its properties, running animations, callbacks, focus and loaded resources stay attached. A stack uses the new order from back to front; rows and columns use it for layout. A different parent or an out-of-range index is an error and leaves the tree unchanged.
+
+```aside
+let back = image("assets/panels.png");
+let front = image("assets/sun.jpg", x: 120);
+let scene = stack { back; front; };
+stage.replace(scene);
+scene.move(back, index: 1);
+```
+
+See [author_reorder.aside](../../examples/author_reorder.aside) for overlapping cards that move to the front while their animation continues. Cross-parent moves are not supported.
+
 `node.remove()` removes and retires that node and all descendants, including when called on the stage root. `container.clear()` retires only the children, preserving the container's properties and identity. Both return null. Retirement cancels associated animations and releases the stage's image requests; retired nodes cannot be remounted, read or written. Call your component function again to create another instance. Methods can be stored and passed while retaining their original receiver; a saved remove method can be called repeatedly.
 
 ```aside
