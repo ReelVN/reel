@@ -597,3 +597,5 @@ Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定
 ## Reel 粒子宿主接口
 
 Reel 注册 `particles` 和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。B01/ASB 与语言语法不变。
+
+Reel tween 的 `sine_in`、`sine_out`、`sine_in_out` 是既有 easing 字符串参数的新选项，由宿主动作采样，不新增 Aside 语法、native 签名或 B01/ASB 格式。

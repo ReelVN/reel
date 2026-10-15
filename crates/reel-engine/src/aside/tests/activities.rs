@@ -830,3 +830,58 @@ fn camera_public_example_executes_source_and_asb() {
         assert!(!vm.activities_need_time());
     }
 }
+
+#[test]
+fn sine_easing_public_example_source_asb_endpoints_midpoints_and_sampling_cost() {
+    let source = include_str!("../../../../../examples/author_sine_easing.aside")
+        .replace("fn main()", "fn opening()");
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(&source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        vm.accept_presentation(&session, vm.presentation_request())
+            .unwrap();
+        models::drive(&mut vm, &mut session, false);
+        let allocations = vm.vm.heap().stats().chunk_allocations;
+        let root = vm.stage().node(vm.stage().root().unwrap()).unwrap();
+        let markers = root
+            .children
+            .iter()
+            .map(|row| vm.stage().node(*row).unwrap().children[1])
+            .collect::<Vec<_>>();
+        for (time, expected) in [
+            (0., [0.; 3]),
+            (
+                0.5,
+                [0.0761204674887133, 0.3826834323650898, 0.1464466094067262],
+            ),
+            (1., [0.2928932188134524, 0.7071067811865475, 0.5]),
+            (
+                1.5,
+                [0.6173165676349102, 0.9238795325112867, 0.8535533905932737],
+            ),
+            (2., [1.; 3]),
+        ] {
+            advance_clock(&mut vm, &session, time, 4);
+            vm.sync_stage(&session).unwrap();
+            for (&marker, progress) in markers.iter().zip(expected) {
+                let actual = vm.stage().node(marker).unwrap().props.x;
+                let expected = 160. + 560. * progress;
+                if time == 0. || time == 2. {
+                    assert_eq!(actual, expected, "sine tween endpoint is exact");
+                } else {
+                    assert!(
+                        (actual - expected).abs() < 1e-9,
+                        "time={time} actual={actual} expected={expected}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            vm.vm.heap().stats().chunk_allocations,
+            allocations,
+            "sine sampling must not allocate VM payload chunks"
+        );
+        assert!(!vm.activities_need_time());
+        models::drive(&mut vm, &mut session, false);
+    }
+}
