@@ -9,6 +9,7 @@ mod localization;
 mod models;
 mod results;
 mod rich_text;
+mod tasks;
 
 const STORY: &str =
     "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";

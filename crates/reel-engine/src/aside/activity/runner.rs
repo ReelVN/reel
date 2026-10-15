@@ -170,13 +170,8 @@ impl Activities {
         } else {
             ((time - start_time) / duration).clamp(0., 1.)
         };
-        let t = match payload(heap, action, EASING)?.as_int().unwrap() {
-            1 => t * t * t,
-            2 => 1. - (1. - t).powi(3),
-            3 if t < 0.5 => 4. * t * t * t,
-            3 => 1. - (-2. * t + 2.).powi(3) / 2.,
-            _ => t,
-        };
+        let t = super::easing::Easing::from_code(payload(heap, action, EASING)?.as_int().unwrap())
+            .sample(t);
         let target = payload(heap, action, TARGET)?;
         let fields = heap.host_fields(target)?;
         let tracks = get(heap, leaf, Slot::Tracks)?;

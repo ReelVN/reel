@@ -561,6 +561,10 @@ await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
 
 ## 十 选择与会变化的内容
 
+独立演出或小游戏后台逻辑使用 `spawn(work, owner: root)`。work 是零参数函数、闭包或绑定方法，可以循环并等待动画/结果；`await task` 取得返回值或原错误，重复等待得到同一终态。`task.cancel()` 首次请求取消返回 true，之后返回 false；任务清理后等待者收到 Cancelled。取消不会执行脚本 finally，资源应交给节点所有权管理。节点移除自动取消所属任务，隐藏不取消；取消等待者不取消生产者。省略 owner 时继承回调/任务节点，在主剧情中归会话。正文在当前调用者等待或返回后开始调度，不占用主剧情的对白/选项权限；初始化、纯 derive 和 NoWait 中不能启动任务。见 [author_tasks.aside](../../examples/author_tasks.aside)。普通固定演出继续用 sequence/parallel/repeat；`tween` 可用 `quad_in`、`quad_out`、`quad_in_out` 表达二次曲线，in/out/in_out 表达三次曲线。
+
+任务容量随实际并发数量增长和复用，不需要作者预先指定任务数。Rust 宿主可用 `VmLimits.max_tasks` 设置自己的准入配额；分配仍计入堆预算。
+
 表单、登录、设置或小游戏可以返回自己的结果。`completion(owner: root)` 创建一次性可等待对象，回调调用 `.resolve(value)` 提交任意值（省略为 null），主流程通过 `await` 继续；其他输入和活动照常执行。组件可以把节点和结果一起返回：
 ```aside
 fn name_form() {

@@ -1,12 +1,13 @@
-//! Node-owned tasks share the VM and its bounded slices with the story task.
+//! Events and spawned work share one cooperative scheduler and owner retirement.
 use super::*;
 use aside_vm::ValueTag;
 use reel_ui::stage::NodeId;
 
-pub(super) struct Callback {
+pub(super) struct ScriptTask {
     pub task: TaskId,
     pub owner: OwnerHandle,
-    pub node: NodeId,
+    pub node: Option<NodeId>,
+    pub result: Option<RootToken>,
     pub wait: Option<WaitId>,
     pub cancelling: bool,
 }
@@ -234,30 +235,60 @@ impl SessionVm {
         closure: Value,
         event: Value,
     ) -> Result<bool, AdapterError> {
-        self.callbacks
+        self.start_owned_task(session, Some(node), closure, &[event], None)?;
+        Ok(true)
+    }
+
+    pub(super) fn start_owned_task(
+        &mut self,
+        session: &mut Session,
+        node: Option<NodeId>,
+        closure: Value,
+        arguments: &[Value],
+        result: Option<Value>,
+    ) -> Result<TaskId, AdapterError> {
+        self.tasks
             .try_reserve(1)
             .map_err(|_| AdapterError::Allocation)?;
         let owner = session.create_owner()?;
+        let result = match result {
+            Some(value) => match self.vm.heap_mut().add_root(
+                RootOwner(owner.owner_id().0),
+                RootKind::Host,
+                value,
+            ) {
+                Ok(root) => Some(root),
+                Err(error) => {
+                    session.revoke_owner(owner)?;
+                    return Err(error.into());
+                }
+            },
+            None => None,
+        };
         let task = match self.vm.start_closure(
             closure,
-            &[event],
+            arguments,
             RootOwner(owner.owner_id().0),
             Context::Ordinary,
         ) {
             Ok(task) => task,
             Err(error) => {
+                if let Some(root) = result {
+                    self.vm.heap_mut().release_root(root)?;
+                }
                 session.revoke_owner(owner)?;
                 return Err(error.into());
             }
         };
-        self.callbacks.push(Callback {
+        self.tasks.push(ScriptTask {
             task,
             owner,
             node,
+            result,
             wait: None,
             cancelling: false,
         });
-        Ok(true)
+        Ok(task)
     }
 
     pub fn has_runnable_tasks(&self) -> bool {
@@ -273,9 +304,11 @@ impl SessionVm {
                 && self
                     .main_wait
                     .is_none_or(|wait| !self.vm.wait_is_pending(wait))
-            || self.callbacks.iter().any(|callback| {
+            || self.tasks.iter().any(|callback| {
                 callback.cancelling
-                    || self.stage.scene.node(callback.node).is_none()
+                    || callback
+                        .node
+                        .is_some_and(|node| self.stage.scene.node(node).is_none())
                     || callback
                         .wait
                         .is_none_or(|wait| !self.vm.wait_is_pending(wait))
@@ -286,26 +319,32 @@ impl SessionVm {
         if self.derived_task.is_some() || self.vm.heap().derived_pending() {
             return true;
         }
-        !self.callbacks.is_empty()
+        !self.tasks.is_empty()
             || self.activities.has_active()
             || self.audio.active()
             || self.stage.has_handlers()
     }
 
     pub(super) fn callback_owner(&self, session: &Session, task: TaskId) -> Option<RootOwner> {
-        self.callbacks
+        self.tasks
             .iter()
             .find(|c| {
                 c.task == task
                     && !c.cancelling
                     && session.is_owner_live(c.owner)
-                    && self.stage.scene.node(c.node).is_some()
+                    && c.node
+                        .is_none_or(|node| self.stage.scene.node(node).is_some())
             })
             .map(|c| RootOwner(c.owner.owner_id().0))
     }
     pub(super) fn default_activity_owner(&self, task: TaskId) -> Result<Value, AdapterError> {
-        match self.callbacks.iter().find(|c| c.task == task) {
-            Some(callback) => self.stage.value(self.vm.heap(), callback.node),
+        match self
+            .tasks
+            .iter()
+            .find(|c| c.task == task)
+            .and_then(|c| c.node)
+        {
+            Some(node) => self.stage.value(self.vm.heap(), node),
             None => Ok(Value::NULL),
         }
     }
@@ -315,11 +354,14 @@ impl SessionVm {
         session: &mut Session,
         index: usize,
     ) -> Result<(), AdapterError> {
-        let callback = &mut self.callbacks[index];
+        let callback = &mut self.tasks[index];
         if !callback.cancelling {
-            // Current Reel natives retain no independent roots under callback
-            // owners. Node/activity roots belong to the session; VM ranges are
-            // released by actual task cleanup before this owner can be reused.
+            // Spawned result roots remain owned by this task until cleanup. Node
+            // and activity roots belong to the session and their explicit nodes.
+            if let Some(root) = callback.result {
+                let object = self.vm.heap().root_value(root)?;
+                super::results::cancelling(self.vm.heap_mut(), object)?;
+            }
             session.revoke_owner_with_retirement(
                 callback.owner,
                 OwnerRetirementRequirements {
@@ -347,7 +389,19 @@ impl SessionVm {
         session: &mut Session,
         index: usize,
     ) -> Result<(), AdapterError> {
-        let callback = self.callbacks.remove(index);
+        let callback = self.tasks.remove(index);
+        if let Some(root) = callback.result {
+            if callback.cancelling {
+                let object = self.vm.heap().root_value(root)?;
+                super::results::finish_task(
+                    self.vm.heap_mut(),
+                    object,
+                    super::results::TaskResult::Cancelled,
+                )?;
+                self.results.changed();
+            }
+            self.vm.heap_mut().release_root(root)?;
+        }
         if callback.cancelling {
             session.confirm_owner_task_cleanup(callback.owner)?;
         } else {
@@ -377,9 +431,11 @@ impl SessionVm {
             self.sync_narrative(session)?;
         }
         self.deliver_completion(session)?;
-        for index in 0..self.callbacks.len() {
-            let callback = &self.callbacks[index];
-            if self.stage.scene.node(callback.node).is_none()
+        for index in 0..self.tasks.len() {
+            let callback = &self.tasks[index];
+            if callback
+                .node
+                .is_some_and(|node| self.stage.scene.node(node).is_none())
                 || !session.is_owner_live(callback.owner)
             {
                 self.cancel_callback(session, index)?;
@@ -428,7 +484,7 @@ impl SessionVm {
             }
             return Ok(SessionStep::Vm(outcome));
         }
-        let count = self.callbacks.len() + 1;
+        let count = self.tasks.len() + 1;
         let selected = (0..count)
             .map(|offset| (self.schedule_cursor + offset) % count)
             .find(|&index| {
@@ -438,7 +494,7 @@ impl SessionVm {
                             .main_wait
                             .is_none_or(|wait| !self.vm.wait_is_pending(wait))
                 } else {
-                    let callback = &self.callbacks[index - 1];
+                    let callback = &self.tasks[index - 1];
                     callback.cancelling
                         || callback
                             .wait
@@ -458,13 +514,13 @@ impl SessionVm {
         let task = if index == 0 {
             self.task.unwrap()
         } else {
-            self.callbacks[index - 1].task
+            self.tasks[index - 1].task
         };
         self.feedback_only = false;
         self.reactive_ready = false;
         let outcome = match self.vm.run_slice(task, budget, now) {
             Ok(outcome) => outcome,
-            Err(VmError::Idle) if index > 0 && self.callbacks[index - 1].cancelling => {
+            Err(VmError::Idle) if index > 0 && self.tasks[index - 1].cancelling => {
                 self.schedule_cursor = index + 1;
                 self.retire_callback(session, index - 1)?;
                 self.reactive_ready = true;
@@ -483,6 +539,22 @@ impl SessionVm {
             self.activities.after_script(self.vm.heap())?;
         }
         match outcome {
+            RunOutcome::Returned(delivery) | RunOutcome::Fault(delivery)
+                if index > 0 && self.tasks[index - 1].result.is_some() =>
+            {
+                let root = self.tasks[index - 1].result.unwrap();
+                let object = self.vm.heap().root_value(root)?;
+                let result = match self.vm.delivery_fault(delivery)? {
+                    Some(fault) => super::results::TaskResult::Faulted(fault.as_value()),
+                    None => super::results::TaskResult::Returned(self.vm.delivery_value(delivery)?),
+                };
+                super::results::finish_task(self.vm.heap_mut(), object, result)?;
+                self.results.changed();
+                self.schedule_cursor = index + 1;
+                self.vm.discard_delivery(delivery)?;
+                self.retire_callback(session, index - 1)?;
+                return Ok(SessionStep::Progress);
+            }
             RunOutcome::Returned(delivery) if index > 0 => {
                 self.schedule_cursor = index + 1;
                 self.vm.discard_delivery(delivery)?;
@@ -500,7 +572,7 @@ impl SessionVm {
                 if index == 0 {
                     self.main_wait = Some(wait);
                 } else {
-                    self.callbacks[index - 1].wait = Some(wait);
+                    self.tasks[index - 1].wait = Some(wait);
                 }
             }
             _ => {}

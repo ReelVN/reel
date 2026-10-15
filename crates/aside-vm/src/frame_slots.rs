@@ -349,6 +349,37 @@ impl FrameSlots {
         self.free = Some(free);
         Ok(())
     }
+    /// Host task admission is an exclusive safe point. Retain execution room
+    /// while adding pooled roots; ordinary instruction windows remain budgeted.
+    pub(crate) fn reserve_task(&mut self, heap: &mut Heap, roots: u32) -> Result<(), HeapError> {
+        let headroom = roots.saturating_add(self.limits.max_window_len);
+        if self
+            .free
+            .as_ref()
+            .unwrap()
+            .data
+            .iter()
+            .any(|span| span.len >= headroom)
+        {
+            return Ok(());
+        }
+        let minimum = self
+            .active_values
+            .checked_add(roots)
+            .ok_or(HeapError::WindowCapacity)?;
+        let desired = self.active_values.saturating_add(headroom);
+        let capacity = self
+            .stats()
+            .capacity
+            .saturating_mul(2)
+            .max(desired)
+            .min(self.limits.max_capacity);
+        if capacity < minimum {
+            return Err(HeapError::WindowCapacity);
+        }
+        self.relocate(heap, capacity)?;
+        Ok(())
+    }
     pub fn read(&self, at: RangePosition) -> Result<Value, HeapError> {
         let i = self.position(at)?;
         if !self.initialized(i) {

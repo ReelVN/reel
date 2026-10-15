@@ -238,6 +238,43 @@ fn author_tween_await_clock_projection_and_steady_heap_cost() {
 }
 
 #[test]
+fn quadratic_curves_keep_distinct_midpoints_and_exact_endpoints() {
+    let code = r#"fn opening() {
+        let root = stack(); stage.replace(root);
+        for curve in ["quad_in", "quad_out", "quad_in_out"] {
+            let node = text(curve); root.add(node);
+            run(tween(node, x: 100, duration: 1, easing: curve));
+        }
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let allocations = vm.vm.heap().stats().chunk_allocations;
+        for (time, expected) in [
+            (0.25, [6.25, 43.75, 12.5]),
+            (0.75, [56.25, 93.75, 87.5]),
+            (1., [100.; 3]),
+        ] {
+            advance_clock(&mut vm, &session, time, 32);
+            vm.sync_stage(&session).unwrap();
+            for (curve, expected) in ["quad_in", "quad_out", "quad_in_out"]
+                .into_iter()
+                .zip(expected)
+            {
+                let node = vm
+                    .stage()
+                    .nodes()
+                    .find(|node| node.kind == reel_ui::stage::NodeKind::Text(curve.into()))
+                    .unwrap();
+                assert_eq!(node.props.x, expected);
+            }
+        }
+        assert_eq!(vm.vm.heap().stats().chunk_allocations, allocations);
+        assert!(!vm.activities_need_time());
+    }
+}
+
+#[test]
 fn activity_controls_takeover_direct_writes_and_retirement() {
     let code = r#"fn opening() {
         let node = text("moving");

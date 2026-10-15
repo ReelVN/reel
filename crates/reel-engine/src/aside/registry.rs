@@ -511,6 +511,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         ("completion::cancel", vec![parameter("result", None)], false),
         (
+            "spawn",
+            vec![
+                parameter("work", None),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        ("task::cancel", vec![parameter("task", None)], false),
+        (
             "repeat",
             vec![
                 parameter("action", None),

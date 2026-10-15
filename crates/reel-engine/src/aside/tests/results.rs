@@ -215,13 +215,7 @@ fn shared_results_survive_waiter_cancellation_and_bounded_delivery_rounds() {
             )
             .unwrap();
         }
-        let mut limits = VmLimits {
-            max_tasks: 160,
-            ..Default::default()
-        };
-        limits.slots.max_capacity = 262_144;
-        limits.slots.initial_capacity = 262_144;
-        let mut vm = SessionVm::load(&session, story.program, limits).unwrap();
+        let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
         vm.start(&session, story.initializer).unwrap();
         drive(&mut vm, &mut session, true);
         vm.start(&session, story.entry).unwrap();

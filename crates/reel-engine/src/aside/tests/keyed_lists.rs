@@ -269,9 +269,9 @@ fn deleting_a_row_cancels_its_waiting_callback_and_activity() {
         assert!(!vm.activities_need_time());
         assert!(has_text(&vm, "not completed"));
         assert!(
-            vm.callbacks
+            vm.tasks
                 .iter()
-                .all(|c| c.cancelling || vm.stage().node(c.node).is_some())
+                .all(|c| c.cancelling || c.node.is_none_or(|node| vm.stage().node(node).is_some()))
         );
     }
 }
