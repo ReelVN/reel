@@ -103,6 +103,20 @@ struct App {
     closing: bool,
 }
 impl App {
+    fn recover_or_fail(&mut self, event_loop: &ActiveEventLoop, error: Error) {
+        if matches!(
+            error.downcast_ref::<GpuError>(),
+            Some(GpuError::DeviceLost(_))
+        ) {
+            if let Some(state) = &mut self.state
+                && let Err(error) = state.recover_device()
+            {
+                self.fail(event_loop, error);
+            }
+        } else {
+            self.fail(event_loop, error);
+        }
+    }
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl std::fmt::Display) {
         self.error.get_or_insert_with(|| error.to_string());
         self.close(event_loop);
@@ -272,13 +286,7 @@ impl ApplicationHandler for App {
             _ => Ok(()),
         };
         if let Err(e) = result {
-            if matches!(e.downcast_ref::<GpuError>(), Some(GpuError::DeviceLost(_))) {
-                if let Err(e) = self.state.as_mut().unwrap().recover_device() {
-                    self.fail(event_loop, e);
-                }
-            } else {
-                self.fail(event_loop, e);
-            }
+            self.recover_or_fail(event_loop, e);
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -321,14 +329,12 @@ impl ApplicationHandler for App {
                 self.close(event_loop);
                 return;
             }
+            if let Err(error) = state.prepare_initial_frame() {
+                self.recover_or_fail(event_loop, error);
+                return;
+            }
             if let Err(e) = state.poll_completions() {
-                if matches!(e, GpuError::DeviceLost(_)) {
-                    if let Err(e) = state.recover_device() {
-                        self.fail(event_loop, e);
-                    }
-                } else {
-                    self.fail(event_loop, e);
-                }
+                self.recover_or_fail(event_loop, Box::new(e));
                 return;
             }
             if state.presentation.needs_redraw() {

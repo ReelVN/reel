@@ -47,6 +47,8 @@ let fixes a variable's binding while leaving node properties mutable. Use let mu
 The desktop player rebuilds a lost graphics device while retaining the current story state. Diagnostics include the backend's device-loss reason. If rebuilding fails, the player reports the error and exits.
 
 ### Available Check, Build and Run Commands
+The desktop player waits for the first mounted scene's fonts and images before presenting it. Platforms that support hidden windows show the window after the first frame is accepted. To provide a loading screen, mount ordinary stage nodes first, then start subsequent tasks. Startup errors retain their source locations.
+
 The examples configure fonts/body.ttf in main. Run these Windows commands from the repository root to copy Microsoft YaHei into a temporary asset directory for local verification. Supply fonts with distribution rights when publishing your work. Close the window opened by dev or run before continuing.
 
 ```powershell

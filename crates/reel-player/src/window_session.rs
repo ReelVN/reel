@@ -18,6 +18,16 @@ pub(crate) enum WindowSession {
 }
 
 impl WindowSession {
+    pub(crate) fn initial_frame_ready(&self) -> bool {
+        match self {
+            Self::Diagnostic(_) => true,
+            Self::Aside(story) => {
+                !story.driver.ui().images_pending()
+                    && (story.driver.ui().has_stage_root()
+                        || story.driver.state() == crate::aside_session::StoryState::Finished)
+            }
+        }
+    }
     pub(crate) fn check_fonts(&self) -> Result<(), Error> {
         if let Self::Aside(story) = self
             && story.driver.adapter().game_settings().fonts.is_empty()

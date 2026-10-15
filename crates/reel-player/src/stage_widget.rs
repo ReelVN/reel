@@ -67,6 +67,10 @@ impl StageView {
         }
         self.root.as_ref().is_some_and(visit)
     }
+    #[cfg(feature = "window")]
+    pub fn has_root(&self) -> bool {
+        self.root.is_some()
+    }
     /// Compare button content only. Animated geometry uses accepted hit testing;
     /// changes outside a control cannot invalidate its activation.
     pub fn button_changes(&self, previous: Option<&Self>, feedback: bool) -> Vec<(NodeId, bool)> {
