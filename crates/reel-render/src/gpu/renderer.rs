@@ -262,6 +262,7 @@ impl Renderer {
             glyphs: Default::default(),
             white: None,
             available_targets: Vec::new(),
+            scissor: super::targets::Scissor::full(size),
         };
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],

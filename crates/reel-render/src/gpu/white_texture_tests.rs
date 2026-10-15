@@ -9,7 +9,7 @@ use reel_ui::{
         Composite,
         record::{Clip, Draw, Geometry, Group, Scene},
     },
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Rect, Shape},
     peniko::{Brush, Color},
 };
 use std::time::Instant;
@@ -43,7 +43,8 @@ fn workload(solids: usize, clips: usize, color: Color) -> Scene {
     for _ in 0..clips {
         scene.push_clip(Clip::Fill {
             transform: Affine::IDENTITY,
-            shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
+            // Exercise coverage textures independently of rectangular scissor clips.
+            shape: Geometry::Path(Rect::new(0., 0., 400., 300.).to_path(0.1)),
             fill_rule: Default::default(),
         });
         scene.pop_clip();
@@ -94,7 +95,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     let bytes = std::fs::read(std::env::var("REEL_R01_TEST_FONT").unwrap()).unwrap();
     let reservation = pool.reserve(bytes.len() as u64).unwrap();
     let font = Blob::from(bytes);
-    let mut registry = ResourceRegistry::new(4, 65536).unwrap();
+    let mut registry = ResourceRegistry::new(4, 65264).unwrap();
     let handle = registry
         .register(
             reel_core::identity::ResourceVersion {
@@ -260,7 +261,7 @@ fn empty(renderer: &Renderer) {
 fn white_texture_upload_extent_cost() {
     assert_eq!(
         super::super::resources::upload_cost([1, 1]).unwrap(),
-        16 + 256 + 256 + 8
+        256 + 8
     );
 }
 
@@ -281,12 +282,12 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
             .prepare(&frame(workload(solids, clips, Color::WHITE), &pool))
             .unwrap();
         counts(&renderer, before + 1);
-        assert_eq!(renderer.usage().resources, 536);
+        assert_eq!(renderer.usage().resources, 264);
         assert_eq!(prepared.budget_scope.resources.usage().tickets, 1);
         drop(prepared);
         empty(&renderer);
         eprintln!(
-            "solids={solids} clips={clips} actual=[texture,staging,copy]=[1,1,1] resource_bytes=536"
+            "solids={solids} clips={clips} actual=[texture,staging,copy]=[1,1,1] resource_bytes=264"
         );
     }
     let red = frame(workload(50, 50, Color::from_rgb8(255, 0, 0)), &pool);
@@ -294,7 +295,7 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
     let before = renderer.gpu.upload_creations.snapshot()[0];
     let prepared = renderer.crossfade(&red, &blue, 0.25).unwrap();
     counts(&renderer, before + 1);
-    assert_eq!(renderer.usage().resources, 536);
+    assert_eq!(renderer.usage().resources, 264);
     let pixels = renderer.readback(prepared).unwrap();
     assert!(pixels.iter().all(|p| {
         p.iter()
@@ -302,7 +303,7 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
             .all(|(a, b)| (*a - b).abs() < 0.006)
     }));
     empty(&renderer);
-    eprintln!("crossfade=200 uses actual=[1,1,1] resource_bytes=536; analytical pixels passed");
+    eprintln!("crossfade=200 uses actual=[1,1,1] resource_bytes=264; analytical pixels passed");
 
     use reel_ui::imaging::{
         MaskMode,
@@ -319,7 +320,7 @@ fn white_texture_lazy_counts_and_crossfade_pixels() {
     let before = renderer.gpu.upload_creations.snapshot()[0];
     let prepared = renderer.prepare(&frame(masked, &pool)).unwrap();
     counts(&renderer, before + 1);
-    assert_eq!(renderer.usage().resources, 536);
+    assert_eq!(renderer.usage().resources, 264);
     let pixels = renderer.readback(prepared).unwrap();
     assert!(
         pixels
@@ -341,7 +342,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
         resources::{ColorEncoding, ResourceData, ResourceRegistry},
     };
     let pool = pool();
-    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let mut registry = ResourceRegistry::new(1, 65264).unwrap();
     let handle = registry
         .register_image(
             ResourceVersion {
@@ -381,12 +382,12 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     let mut renderer = renderer(Default::default());
     let p = renderer.prepare(&image_only).unwrap();
     counts(&renderer, 1); // One image upload; an unused white slot creates nothing.
-    assert_eq!(renderer.usage().resources, 536);
+    assert_eq!(renderer.usage().resources, 264);
     drop(p);
     empty(&renderer);
     let p = renderer.prepare(&mixed).unwrap();
     counts(&renderer, 3); // Independent image and shared white, even at the same 1x1 size.
-    assert_eq!(renderer.usage().resources, 1072);
+    assert_eq!(renderer.usage().resources, 528);
     let pixels = renderer.readback(p).unwrap();
     assert!(
         pixels
@@ -402,7 +403,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     empty(&renderer);
 
     let mut limited = self::renderer(super::super::GpuLimits {
-        resource_bytes: 536,
+        resource_bytes: 264,
         ..Default::default()
     });
     let prepared = limited.prepare(&image_only).unwrap();
@@ -423,6 +424,81 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
+fn rectangle_clips_share_targets_and_preserve_group_opacity() {
+    let pool = pool();
+    let mut scene = Scene::new();
+    fill(&mut scene, Color::from_rgb8(255, 0, 0));
+    for rect in [
+        Rect::new(0., 0., 400., 300.),
+        Rect::new(100., 50., 300., 250.),
+    ] {
+        scene.push_clip(Clip::Fill {
+            transform: Affine::IDENTITY,
+            shape: Geometry::Rect(rect),
+            fill_rule: Default::default(),
+        });
+    }
+    scene.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    fill(&mut scene, Color::from_rgb8(0, 0, 255));
+    scene.push_clip(Clip::Fill {
+        transform: Affine::IDENTITY,
+        shape: Geometry::Rect(Rect::new(150., 100., 250., 200.)),
+        fill_rule: Default::default(),
+    });
+    fill(&mut scene, Color::from_rgb8(0, 255, 0));
+    scene.pop_clip();
+    scene.pop_group();
+    scene.pop_clip();
+    scene.pop_clip();
+    scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Solid(Color::WHITE),
+        brush_transform: None,
+        shape: Geometry::Rect(Rect::new(0., 0., 50., 50.)),
+        composite: Composite::default(),
+    });
+    let mut renderer = renderer(Default::default());
+    let prepared = renderer.prepare(&frame(scene, &pool)).unwrap();
+    let target =
+        super::super::targets::target_bytes([64, 48], renderer.gpu.quality([64, 48]).unwrap())
+            .unwrap();
+    assert_eq!(
+        renderer.usage().targets,
+        2 * target,
+        "only output and isolated opacity group need targets"
+    );
+    let pixels = renderer.readback(prepared).unwrap();
+    for (i, pixel) in pixels.iter().enumerate() {
+        let (x, y) = (i % 64, i / 64);
+        let expected = if x < 8 && y < 8 {
+            [1., 1., 1., 1.]
+        } else if (24..40).contains(&x) && (16..32).contains(&y) {
+            [0.5, 0.5, 0., 1.]
+        } else if (16..48).contains(&x) && (8..40).contains(&y) {
+            [0.5, 0., 0.5, 1.]
+        } else {
+            [1., 0., 0., 1.]
+        };
+        assert!(
+            pixel
+                .iter()
+                .zip(expected)
+                .all(|(a, b)| (*a - b).abs() < 0.006),
+            "pixel {x},{y}: {pixel:?}"
+        );
+    }
+    empty(&renderer);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
 fn submitted_images_share_residency_under_overlapping_frame_pressure() {
     use reel_core::{
         budget::OwnedBytes,
@@ -433,10 +509,10 @@ fn submitted_images_share_residency_under_overlapping_frame_pressure() {
         resources::{ColorEncoding, ResourceData, ResourceRegistry},
     };
     let pool = pool();
-    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+    let mut registry = ResourceRegistry::new(2, 65264).unwrap();
     let mut handles = Vec::new();
     let mut scene = Scene::new();
-    let size = [1280, 720];
+    let size = [2048, 1959];
     for (index, pixel) in [[255, 0, 0, 255], [0, 255, 0, 255]].into_iter().enumerate() {
         let bytes = pixel.repeat((size[0] * size[1]) as usize);
         let ticket = pool.reserve(bytes.len() as u64).unwrap();
@@ -469,7 +545,7 @@ fn submitted_images_share_residency_under_overlapping_frame_pressure() {
     }
     let frame = frame_with_snapshot(scene, registry.freeze(&handles, &pool).unwrap(), &pool);
     let mut renderer = renderer(super::super::GpuLimits {
-        resource_bytes: 80 << 20,
+        resource_bytes: 128 << 20,
         ..Default::default()
     });
     let first = renderer.prepare(&frame).unwrap();
@@ -515,7 +591,7 @@ fn submitted_images_share_residency_under_overlapping_frame_pressure() {
     drop(retained);
     empty(&renderer);
     eprintln!(
-        "two 720p images: uploads={upload_bytes} bytes, resident={} bytes; overlapping and subsequent frames perform zero new image uploads",
+        "two 2048x1959 menu images: uploads={upload_bytes} bytes, resident={} bytes; overlapping and subsequent frames perform zero new image uploads",
         2 * u64::from(size[0]) * u64::from(size[1]) * 8
     );
 }
@@ -526,7 +602,7 @@ fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions(
     let pool = pool();
     let good = frame(workload(100, 0, Color::WHITE), &pool);
     let renderer = renderer(super::super::GpuLimits {
-        resource_bytes: 536,
+        resource_bytes: 264,
         ..Default::default()
     });
     let first = renderer.prepare(&good).unwrap();
@@ -535,7 +611,7 @@ fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions(
         renderer.prepare(&good),
         Err(GpuError::Pressure {
             domain: "resources",
-            requested: 536,
+            requested: 264,
             available: 0
         })
     ));
@@ -577,15 +653,15 @@ fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions(
     counts(&renderer, 5); // Second input fails after the first input initialized the slot.
     empty(&renderer);
     let small = self::renderer(super::super::GpuLimits {
-        resource_bytes: 535,
+        resource_bytes: 263,
         ..Default::default()
     });
     assert!(matches!(
         small.prepare(&good),
         Err(GpuError::Budget {
             domain: "resources",
-            requested: 536,
-            available: 535
+            requested: 264,
+            available: 263
         })
     ));
     counts(&small, 0);
@@ -678,7 +754,7 @@ fn white_texture_concurrent_contexts_and_delayed_completion_keep_tickets() {
             .collect::<Vec<_>>()
     });
     counts(&renderer, 8);
-    assert_eq!(renderer.usage().resources, 8 * 536);
+    assert_eq!(renderer.usage().resources, 8 * 264);
     assert_eq!(renderer.budgets.resources.usage().tickets, 8);
     assert!(matches!(renderer.prepare(&frame), Err(GpuError::Busy)));
     let mut ids = Vec::new();
@@ -768,7 +844,7 @@ fn white_texture_cpu_measurement() {
                 std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
                 [expected; 3]
             );
-            assert_eq!(renderer.usage().resources, expected as u64 * 536);
+            assert_eq!(renderer.usage().resources, expected as u64 * 264);
             drop(prepared);
             empty(&renderer);
         }
@@ -786,7 +862,7 @@ fn white_texture_cpu_measurement() {
             "adapter={:?}; load={solids} solids+{clips} clips size=64x48 samples=30 quality={:?} uploads={expected} resource_bytes={} p50_us={:.3} p95_us={:.3}",
             renderer.gpu.adapter.get_info(),
             renderer.gpu.quality([64, 48]).unwrap(),
-            expected * 536,
+            expected * 264,
             samples[14].as_secs_f64() * 1e6,
             samples[28].as_secs_f64() * 1e6
         );
@@ -806,7 +882,7 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
     };
     use std::sync::atomic::Ordering;
     let pool = pool();
-    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let mut registry = ResourceRegistry::new(1, 65264).unwrap();
     let bytes = [255, 255, 255, 255].repeat(16);
     let ticket = pool.reserve(bytes.len() as u64).unwrap();
     let handle = registry

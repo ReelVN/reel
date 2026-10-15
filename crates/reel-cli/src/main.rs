@@ -10,7 +10,7 @@ use std::{
     process::ExitCode,
 };
 
-const HELP: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]\nreel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>]\nreel run <file.asb> [--assets <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
+const HELP: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]\nreel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>] [--save-directory <directory>]\nreel run <file.asb> [--assets <directory>] [--save-directory <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
 
 struct Args {
     command: String,
@@ -20,6 +20,7 @@ struct Args {
     entry: Option<String>,
     overwrite: bool,
     assets: Option<PathBuf>,
+    save_directory: Option<PathBuf>,
     modules: std::collections::BTreeMap<String, PathBuf>,
 }
 fn args(raw: &[OsString]) -> Result<Args, String> {
@@ -33,6 +34,7 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     let (mut source, mut format, mut output, mut entry) = (None, None, None, None);
     let (mut options, mut overwrite) = (true, false);
     let mut assets = None;
+    let mut save_directory = None;
     let mut modules = std::collections::BTreeMap::new();
     let mut iter = raw[1..].iter();
     while let Some(arg) = iter.next() {
@@ -80,6 +82,10 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
             assets = Some(PathBuf::from(
                 iter.next().ok_or("--assets requires a directory")?,
             ));
+        } else if options && arg == "--save-directory" {
+            save_directory = Some(PathBuf::from(
+                iter.next().ok_or("--save-directory requires a directory")?,
+            ));
         } else if options && arg == "--overwrite" {
             if overwrite {
                 return Err("--overwrite may only be specified once".into());
@@ -99,7 +105,9 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     }
     let playing = raw[0] == "dev" || raw[0] == "run";
     if playing && (output.is_some() || overwrite || format.is_some()) {
-        return Err("dev/run accept --assets and dev also accepts --entry/--module".into());
+        return Err(
+            "dev/run accept --assets/--save-directory and dev also accepts --entry/--module".into(),
+        );
     }
     if raw[0] == "run" && entry.is_some() {
         return Err("run uses the entry selected when the package was built".into());
@@ -107,8 +115,8 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     if raw[0] == "run" && !modules.is_empty() {
         return Err("run uses the modules linked into the package".into());
     }
-    if !playing && assets.is_some() {
-        return Err("--assets is used by dev/run".into());
+    if !playing && (assets.is_some() || save_directory.is_some()) {
+        return Err("--assets and --save-directory are used by dev/run".into());
     }
     if let Some(path) = &output
         && (path.to_str().is_none() || path.extension().is_none_or(|ext| ext != "asb"))
@@ -123,6 +131,7 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
         entry,
         overwrite,
         assets,
+        save_directory,
         modules,
     })
 }
@@ -199,7 +208,7 @@ fn run() -> io::Result<u8> {
         };
         return match reel_package::decode(&bytes, reel_package::Limits::default()) {
             Ok(package) => match reel_cli::story_from_package(package) {
-                Ok(story) => launch(story, parsed.assets, path),
+                Ok(story) => launch(story, parsed.assets, parsed.save_directory, path),
                 Err(error) => {
                     failure(false, "package", Some(path), &error.to_string())?;
                     Ok(1)
@@ -247,6 +256,7 @@ fn run() -> io::Result<u8> {
             Ok(story) => launch(
                 story,
                 parsed.assets.or_else(|| Some(loaded.root.clone())),
+                parsed.save_directory,
                 path,
             ),
             Err(failed) => source_error(false, path, inputs, failed),
@@ -420,6 +430,7 @@ fn source_error(
 fn launch(
     story: reel_engine::aside::source::CompiledStory,
     assets: Option<PathBuf>,
+    save_directory: Option<PathBuf>,
     path: &str,
 ) -> io::Result<u8> {
     #[cfg(feature = "window")]
@@ -427,11 +438,12 @@ fn launch(
         let mut options = reel_player::shell::StoryWindowOptions::default();
         options.assets.root =
             assets.unwrap_or_else(|| std::path::Path::new(path).parent().unwrap().to_path_buf());
+        options.save_directory = save_directory;
         reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
     };
     #[cfg(not(feature = "window"))]
     let result: Result<(), String> = {
-        let _ = (story, assets);
+        let _ = (story, assets, save_directory);
         Err("build the window player with: cargo build -p reel-cli --features window".into())
     };
     match result {

@@ -14,14 +14,17 @@ type Error = Box<dyn std::error::Error>;
 
 pub(crate) enum WindowSession {
     Diagnostic(Box<SessionHostDiagnostic>),
-    Aside(Box<StoryRuntime>),
+    Aside {
+        story: Box<StoryRuntime>,
+        hover: Option<PointerEvent>,
+    },
 }
 
 impl WindowSession {
     pub(crate) fn initial_frame_ready(&self) -> bool {
         match self {
             Self::Diagnostic(_) => true,
-            Self::Aside(story) => {
+            Self::Aside { story, .. } => {
                 !story.driver().ui().images_pending()
                     && (story.driver().ui().has_stage_root()
                         || story.driver().projection_stamp().presentation_request != 0
@@ -30,7 +33,7 @@ impl WindowSession {
         }
     }
     pub(crate) fn check_fonts(&self) -> Result<(), Error> {
-        if let Self::Aside(story) = self
+        if let Self::Aside { story, .. } = self
             && story.driver().adapter().game_settings().fonts.is_empty()
             && (story.driver().adapter().stage().root().is_some()
                 || story.driver().ui().session().view().interaction.is_some()
@@ -45,7 +48,7 @@ impl WindowSession {
         &self,
     ) -> Option<&std::sync::Arc<reel_engine::aside::GameSettings>> {
         match self {
-            Self::Aside(story) => Some(story.driver().adapter().game_settings()),
+            Self::Aside { story, .. } => Some(story.driver().adapter().game_settings()),
             Self::Diagnostic(_) => None,
         }
     }
@@ -56,7 +59,20 @@ impl WindowSession {
     ) -> Result<Handled, Error> {
         match self {
             Self::Diagnostic(host) => Ok(host.ui.handle_pointer(bridge, event)?.handled),
-            Self::Aside(story) => story.driver_mut()?.handle_pointer(bridge, event),
+            Self::Aside { story, hover } => {
+                // Capture owns the immutable session. Retain just the latest mouse
+                // hover rather than cancelling a save when the cursor drifts.
+                if story.capturing()
+                    && matches!(&event, PointerEvent::Move(e)
+                        if e.current.buttons.is_empty()
+                            && matches!(e.pointer.pointer_type, reel_ui::core::PointerType::Mouse))
+                {
+                    *hover = Some(event);
+                    return Ok(Handled::Yes);
+                }
+                *hover = None;
+                story.driver_mut()?.handle_pointer(bridge, event)
+            }
         }
     }
     pub(crate) fn handle_text(
@@ -66,24 +82,30 @@ impl WindowSession {
     ) -> Result<Handled, Error> {
         match self {
             Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
-            Self::Aside(story) => story.driver_mut()?.handle_text(bridge, event),
+            Self::Aside { story, hover } => {
+                *hover = None;
+                story.driver_mut()?.handle_text(bridge, event)
+            }
         }
     }
     pub(crate) fn aside(driver: AsideSessionUi) -> Self {
-        Self::Aside(Box::new(StoryRuntime::new(driver)))
+        Self::Aside {
+            story: Box::new(StoryRuntime::new(driver)),
+            hover: None,
+        }
     }
 
     pub(crate) fn ui(&self) -> &SessionUi {
         match self {
             Self::Diagnostic(host) => &host.ui,
-            Self::Aside(story) => story.driver().ui(),
+            Self::Aside { story, .. } => story.driver().ui(),
         }
     }
 
     pub(crate) fn ui_mut(&mut self) -> Result<&mut SessionUi, Error> {
         Ok(match self {
             Self::Diagnostic(host) => &mut host.ui,
-            Self::Aside(story) => story.driver_mut()?.ui_mut(),
+            Self::Aside { story, .. } => story.driver_mut()?.ui_mut(),
         })
     }
 
@@ -94,7 +116,7 @@ impl WindowSession {
     ) -> Result<(), Error> {
         match self {
             Self::Diagnostic(host) => host.after_input(bridge, root),
-            Self::Aside(story) => {
+            Self::Aside { story, .. } => {
                 story.driver_mut()?.sync_input(bridge, root)?;
                 story.wake_input();
                 Ok(())
@@ -109,8 +131,18 @@ impl WindowSession {
     ) -> Result<(), Error> {
         match self {
             Self::Diagnostic(host) => host.ui.sync(bridge, root),
-            Self::Aside(story) if story.capturing() => Ok(()),
-            Self::Aside(story) => story.driver_mut()?.sync(bridge, root),
+            Self::Aside { story, .. } if story.capturing() => Ok(()),
+            Self::Aside { story, hover } => {
+                if let Some(event) = hover.take() {
+                    story.driver_mut()?.handle_pointer(bridge, event)?;
+                    story.wake_input();
+                }
+                story.driver_mut()?.sync(bridge, root)?;
+                // Publishing the reveal clock can invalidate derived UI even
+                // while the narrative task is waiting for the next click.
+                story.wake_input();
+                Ok(())
+            }
         }
     }
 
@@ -120,7 +152,7 @@ impl WindowSession {
     ) -> Result<(), Error> {
         match self {
             Self::Diagnostic(host) => host.ui.presented(stamp),
-            Self::Aside(story) => {
+            Self::Aside { story, .. } => {
                 if story.capturing() {
                     return Ok(());
                 }
@@ -132,26 +164,26 @@ impl WindowSession {
     }
     pub(crate) fn needs_tick(&self) -> bool {
         match self {
-            Self::Aside(story) => story.needs_tick(),
+            Self::Aside { story, .. } => story.needs_tick(),
             Self::Diagnostic(host) => host.ui.dialogue_needs_time(),
         }
     }
     pub(crate) fn suspend(&mut self, now: u64) -> Result<(), Error> {
         self.ui_mut()?.pause_dialogue();
-        if let Self::Aside(story) = self {
+        if let Self::Aside { story, .. } = self {
             story.suspend(now)?;
         }
         Ok(())
     }
     pub(crate) fn resume(&mut self, now: u64) {
-        if let Self::Aside(story) = self {
+        if let Self::Aside { story, .. } = self {
             story.resume(now);
         }
     }
 
     pub(crate) fn tick_interval(&self) -> std::time::Duration {
         match self {
-            Self::Aside(story) => story.tick_interval(),
+            Self::Aside { story, .. } => story.tick_interval(),
             Self::Diagnostic(host) => host.ui.dialogue_interval(30.),
         }
     }
@@ -162,7 +194,7 @@ impl WindowSession {
         mut now: impl FnMut() -> u64,
     ) -> Result<(), Error> {
         match self {
-            Self::Aside(story) => story.tick(budget, now)?,
+            Self::Aside { story, .. } => story.tick(budget, now)?,
             Self::Diagnostic(host) => {
                 host.ui.advance_dialogue(now(), 30.)?;
             }
@@ -176,26 +208,26 @@ impl WindowSession {
                 host.ui.cancel();
                 Ok(())
             }
-            Self::Aside(story) => story.close(),
+            Self::Aside { story, .. } => story.close(),
         }
     }
 
     pub(crate) fn close_complete(&self) -> bool {
         match self {
             Self::Diagnostic(_) => true,
-            Self::Aside(story) => story.close_complete(),
+            Self::Aside { story, .. } => story.close_complete(),
         }
     }
 
     pub(crate) fn exit_requested(&self) -> bool {
-        matches!(self, Self::Aside(story) if story.driver().adapter().exit_requested())
+        matches!(self, Self::Aside { story, .. } if story.driver().adapter().exit_requested())
     }
 
     #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
     pub(crate) fn diagnostic_step(&self) -> u8 {
         match self {
             Self::Diagnostic(host) => host.diagnostic_step(),
-            Self::Aside(_) => unreachable!("diagnostic-only fixture"),
+            Self::Aside { .. } => unreachable!("diagnostic-only fixture"),
         }
     }
 }
@@ -204,6 +236,99 @@ impl WindowSession {
 mod tests {
     use super::*;
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+
+    #[test]
+    fn mouse_hover_during_capture_preserves_save_and_coalesces_pending_motion() {
+        use crate::saves::{Candidate, DirectorySaves, RuntimeSaves, SaveService, SaveStorage};
+        use reel_core::{budget::QueueLimits, wake::WakeSignal};
+        use reel_ui::core::{PointerInfo, PointerState, PointerType, PointerUpdate};
+        use std::sync::Arc;
+        let driver = AsideSessionUi::from_source(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            r#"fn main() { await saves.save("hover"); stage.replace(text("saved")); }"#,
+            "hover_save",
+            1,
+            "main",
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        let Candidate {
+            driver,
+            mut bridge,
+            root,
+        } = Candidate::new(driver).unwrap();
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/reel-artifacts/save-tests")
+            .join(format!("hover-{}", std::process::id()));
+        let storage = Arc::new(DirectorySaves::new(&folder, 16 << 20));
+        let wake = WakeSignal::new(|| {});
+        let service = SaveService::new(
+            storage.clone(),
+            QueueLimits {
+                max_requests: 1,
+                max_bytes: 16 << 20,
+            },
+            wake.clone(),
+        );
+        let runtime =
+            StoryRuntime::new(driver).with_saves(RuntimeSaves::new(service, 16 << 20, move || {
+                Box::new(crate::audio::AudioPlayer::new(
+                    crate::assets::Assets::directory(Default::default()),
+                    Default::default(),
+                    wake.clone(),
+                    |_| Err("test has no sound output".into()),
+                ))
+            }));
+        let mut window = WindowSession::Aside {
+            story: Box::new(runtime),
+            hover: None,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut captured = false;
+        while window.needs_tick() {
+            assert!(std::time::Instant::now() < deadline, "save did not settle");
+            window.tick(SliceBudget::default(), || 0).unwrap();
+            if matches!(&window, WindowSession::Aside { story, .. } if story.capturing()) {
+                captured = true;
+                for x in [10., 20., 30.] {
+                    window
+                        .handle_pointer(
+                            &mut bridge,
+                            PointerEvent::Move(PointerUpdate {
+                                pointer: PointerInfo {
+                                    pointer_id: None,
+                                    persistent_device_id: None,
+                                    pointer_type: PointerType::Mouse,
+                                },
+                                current: PointerState {
+                                    position: (x, 10.).into(),
+                                    ..Default::default()
+                                },
+                                coalesced: vec![],
+                                predicted: vec![],
+                            }),
+                        )
+                        .unwrap();
+                }
+                assert!(
+                    matches!(&window, WindowSession::Aside { story, hover: Some(PointerEvent::Move(e)) }
+                    if story.capturing() && e.current.position.x == 30.)
+                );
+            }
+            window.sync(&mut bridge, root).unwrap();
+            std::thread::yield_now();
+        }
+        assert!(captured);
+        assert!(
+            matches!(&window, WindowSession::Aside { story, hover: None }
+            if story.driver().state() == crate::aside_session::StoryState::Finished)
+        );
+        assert_eq!(storage.list().unwrap().len(), 1);
+        window.close().unwrap();
+        storage.delete("hover").unwrap();
+        std::fs::remove_dir(folder).unwrap();
+    }
 
     #[test]
     fn font_configuration_is_required_at_presentation_and_can_run_after_startup_slices() {
