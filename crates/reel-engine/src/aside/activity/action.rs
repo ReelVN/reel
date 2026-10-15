@@ -12,11 +12,12 @@ pub(in crate::aside) enum Kind {
     Parallel,
     Repeat,
     Delay,
+    Clock,
 }
 
 impl Kind {
     pub(super) fn is_leaf(self) -> bool {
-        matches!(self, Self::Tween | Self::Delay)
+        matches!(self, Self::Tween | Self::Delay | Self::Clock)
     }
 }
 
@@ -27,6 +28,7 @@ pub(super) fn kind(heap: &Heap, action: Value) -> Result<Kind, AdapterError> {
         2 => Kind::Parallel,
         3 => Kind::Repeat,
         4 => Kind::Delay,
+        5 => Kind::Clock,
         _ => unreachable!("private action schema"),
     })
 }
@@ -129,6 +131,21 @@ pub(in crate::aside) fn delay(heap: &mut Heap, seconds: Value) -> Result<Value, 
         return Err(AdapterError::Input("delay seconds must be nonnegative"));
     }
     description(heap, Kind::Delay, Value::NULL, seconds, Value::NULL)
+}
+
+pub(super) fn clock(heap: &mut Heap, interval: Value) -> Result<Value, AdapterError> {
+    let interval = stage::number(interval)?;
+    if interval <= 0. {
+        return Err(AdapterError::Input("clock interval must be positive"));
+    }
+    // Clock is an endless leaf; TIMES holds its interval instead of a repeat count.
+    description(
+        heap,
+        Kind::Clock,
+        Value::NULL,
+        f64::INFINITY,
+        Value::float(interval),
+    )
 }
 
 pub(in crate::aside) fn repeat(

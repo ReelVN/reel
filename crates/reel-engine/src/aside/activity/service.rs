@@ -2,6 +2,22 @@
 use super::*;
 
 impl Activities {
+    pub fn clock(
+        &mut self,
+        vm: &mut Vm,
+        stage: &StageBinding,
+        root_owner: RootOwner,
+        ticket: HostTicket,
+        args: [Value; 2],
+        budget: u32,
+    ) -> Result<(bool, u32), AdapterError> {
+        let action = if self.native.is_none() {
+            action::clock(vm.heap_mut(), args[0])?
+        } else {
+            Value::NULL
+        };
+        self.run(vm, stage, root_owner, ticket, [action, args[1]], budget)
+    }
     pub fn run(
         &mut self,
         vm: &mut Vm,
@@ -38,6 +54,13 @@ impl Activities {
                 heap.array_push(results, value)?;
             }
             let fields = heap.alloc_table()?;
+            let clock = action::kind(heap, action)? == action::Kind::Clock;
+            if clock {
+                for (index, name) in ["ticks", "elapsed"].into_iter().enumerate() {
+                    let key = heap.alloc_string(name)?;
+                    heap.table_store(fields, index as u32, key, Value::float(0.))?;
+                }
+            }
             let serial = self
                 .serial
                 .checked_add(1)
@@ -53,7 +76,11 @@ impl Activities {
             slots[RootSlot::Serial as usize] = Value::int(serial as i64);
             slots[RootSlot::PausedAt as usize] = Value::float(self.time);
             slots[RootSlot::Forcing as usize] = Value::bool(false);
-            let activity = heap.alloc_host(fields, &slots, Some(readonly))?;
+            let activity =
+                heap.alloc_host(fields, &slots, if clock { None } else { Some(readonly) })?;
+            if clock {
+                heap.observe_host_properties(activity, 0, 2)?;
+            }
             let root = heap.add_root(root_owner, RootKind::Host, activity)?;
             if let Err(error) =
                 vm.bind_awaitable(activity, aside_vm::bytecode::NativeId(native as u32))

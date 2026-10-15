@@ -1,5 +1,76 @@
 use super::*;
 
+#[test]
+fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
+    use std::time::Duration;
+    let source = r#"fn opening() {
+        let owner = stack(); stage.replace(owner);
+        let timer = clock(interval: 60, owner: owner);
+        let output = text("clock", x: bind(timer.ticks), y: bind(timer.elapsed));
+        owner.add(output);
+        let mut rejected = 0;
+        try { clock(interval: 0); } catch e { rejected += 1; }
+        try { timer.ticks = 5; } catch e { rejected += 1; }
+        try { finish(timer); } catch e { rejected += 1; }
+        if rejected != 3 { throw "clock contract"; }
+        narrator("running");
+        pause(timer);
+        narrator("paused");
+        resume(timer);
+        narrator("resumed");
+        stop(timer);
+        if await timer != "Stopped" { throw "stop"; }
+        let retired = clock(owner: owner);
+        owner.remove();
+        let mut cancelled = false;
+        try { await retired; } catch e { cancelled = true; }
+        if !cancelled { throw "owner cancellation"; }
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let position = |vm: &SessionVm| {
+            let node = vm
+                .stage()
+                .nodes()
+                .find(|n| n.kind == reel_ui::stage::NodeKind::Text("clock".into()))
+                .unwrap();
+            (node.props.x, node.props.y)
+        };
+        assert_eq!(position(&vm), (0., 0.));
+        assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(60)));
+        let allocations = vm.vm.heap().stats().chunk_allocations;
+        advance_clock(&mut vm, &session, 59., 1);
+        assert_eq!(vm.vm.heap().stats().chunk_allocations, allocations);
+        assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(1)));
+        let work = advance_clock(&mut vm, &session, 60_000_000., 1);
+        assert!(
+            work.work < 40,
+            "a million missed ticks must be coalesced: {work:?}"
+        );
+        assert_eq!(vm.vm.heap().stats().chunk_allocations, allocations);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(position(&vm), (1_000_000., 60_000_000.));
+        advance_dialogue(&mut vm, &mut session);
+        assert_eq!(vm.activities_poll_after(), None);
+        advance_clock(&mut vm, &session, 60_000_030., 1);
+        advance_dialogue(&mut vm, &mut session);
+        assert_eq!(vm.activities_poll_after(), Some(Duration::from_secs(60)));
+        advance_clock(&mut vm, &session, 60_000_090., 1);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(position(&vm), (1_000_001., 60_000_060.));
+        let id = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        models::drive(&mut vm, &mut session, false);
+        assert!(!vm.activities_need_time());
+        assert!(!vm.activities.has_active());
+    }
+}
+
 fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     loop {
         match next(vm, session) {

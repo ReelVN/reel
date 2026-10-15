@@ -123,9 +123,28 @@ impl Activities {
 
     fn schedule(&mut self, heap: &mut Heap, leaf: Value) -> Result<(), AdapterError> {
         let start = get(heap, leaf, Slot::StartedAt)?.as_float().unwrap();
-        let duration = action::duration(heap, get(heap, leaf, Slot::Action)?)?;
+        let action = get(heap, leaf, Slot::Action)?;
+        let clock = kind(heap, leaf)? == Kind::Clock;
+        let duration = if clock {
+            let activity = get(heap, leaf, Slot::Activity)?;
+            let ticks = heap
+                .host_property(PropertyId {
+                    host: activity,
+                    field: 0,
+                })?
+                .as_float()
+                .unwrap();
+            (ticks + 1.) * payload(heap, action, action::TIMES)?.as_float().unwrap()
+        } else {
+            action::duration(heap, action)?
+        };
         // A positive duration must move the clock even below its current ULP.
-        let deadline = (start + duration).max(start.next_up());
+        let minimum = if clock {
+            self.target_time.max(start)
+        } else {
+            start
+        };
+        let deadline = (start + duration).max(minimum.next_up());
         self.events
             .insert(Self::event_key(heap, leaf, deadline)?, leaf);
         if Self::needs_sampling(heap, leaf)? {
@@ -140,7 +159,7 @@ impl Activities {
     }
 
     fn sample(heap: &mut Heap, leaf: Value, time: f64, end: bool) -> Result<(), AdapterError> {
-        if kind(heap, leaf)? == Kind::Delay {
+        if matches!(kind(heap, leaf)?, Kind::Delay | Kind::Clock) {
             return Ok(());
         }
         let action = get(heap, leaf, Slot::Action)?;
@@ -202,6 +221,17 @@ impl Activities {
     }
 
     fn leaf_done(&mut self, heap: &mut Heap, leaf: Value, time: f64) -> Result<(), AdapterError> {
+        if kind(heap, leaf)? == Kind::Clock {
+            let action = get(heap, leaf, Slot::Action)?;
+            let activity = get(heap, leaf, Slot::Activity)?;
+            let start = get(heap, leaf, Slot::StartedAt)?.as_float().unwrap();
+            let interval = payload(heap, action, action::TIMES)?.as_float().unwrap();
+            let ticks = ((self.target_time.max(time) - start) / interval).floor();
+            self.remove_event(heap, leaf)?;
+            super::super::observable::publish(heap, activity, 0, Value::float(ticks))?;
+            super::super::observable::publish(heap, activity, 1, Value::float(ticks * interval))?;
+            return self.schedule(heap, leaf);
+        }
         if Self::sample(heap, leaf, time, true).is_err() {
             let activity = get(heap, leaf, Slot::Activity)?;
             return self.begin_cleanup(heap, activity, State::Failed, None);
@@ -279,7 +309,7 @@ impl Activities {
                 )
             };
         }
-        if kind(heap, current)? == Kind::Delay {
+        if matches!(kind(heap, current)?, Kind::Delay | Kind::Clock) {
             return self.start_leaf(heap, current, time, forcing);
         }
         let target = payload(heap, action, TARGET)?;
@@ -388,7 +418,9 @@ impl Activities {
         }
         let parent = node(heap, activity, parent_index)?;
         match kind(heap, parent)? {
-            Kind::Tween | Kind::Delay => unreachable!("leaf actions have no children"),
+            Kind::Tween | Kind::Delay | Kind::Clock => {
+                unreachable!("leaf actions have no children")
+            }
             Kind::Sequence => {
                 let sibling = int(heap, current, Slot::Sibling)?;
                 if sibling >= 0 {
