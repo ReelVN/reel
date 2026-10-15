@@ -3,6 +3,88 @@ use aside_vm::snapshot::SnapshotBudget;
 use reel_ui::stage::{InteractionState, NodeInteraction, NodeKind};
 
 #[test]
+fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations() {
+    let code = r#"
+    let mut calls = 0;
+    fn opening() {
+        calls += 1;
+        let other = saves.delete("old");
+        let request = saves.save("chapter/一", title: "第一章");
+        let label = text(value: bind(request.status));
+        stage.replace(label);
+        await request;
+        if request.status != "succeeded" || request.error != null || !request.restored || calls != 1 {
+            throw "save replay or result lost";
+        }
+        let mut interrupted = false;
+        try { await other; } catch error { interrupted = error == "OperationInterrupted"; }
+        if !interrupted || other.status != "failed" { throw "other write replayed"; }
+        let slots = await saves.list();
+        if slots.len() != 1 || slots[0].id != "chapter/一" || slots[0].title != "第一章" {
+            throw "slot metadata";
+        }
+        narrator("restored once");
+    }
+    "#;
+    let (mut session, mut runtime) = models::prepared(code, true);
+    models::drive(&mut runtime, &mut session, false);
+    let _delete = runtime.take_save_request().unwrap();
+    let save = runtime.take_save_request().unwrap();
+    assert!(runtime.take_save_request().is_none());
+    let program = runtime.vm.program().clone();
+    let mut capture = runtime.snapshot_begin(&session).unwrap();
+    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let mut image = capture.finish().unwrap();
+    image.commit_save(save.id).unwrap();
+    let bytes = image.encode().unwrap();
+    let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+    let mut restore = SessionVm::restore_begin(
+        &mut image,
+        program,
+        VmLimits::default(),
+        SessionIdentity {
+            session_id: SessionId(41),
+            epoch: Epoch(20),
+        },
+        crate::ReadProgress::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let (mut restored_session, mut restored) = restore.finish().unwrap();
+    assert!(
+        !restored
+            .complete_save_request(save.id, saves::SaveResult::Done)
+            .unwrap()
+    );
+    models::drive(&mut restored, &mut restored_session, false);
+    let list = restored.take_save_request().unwrap();
+    assert!(matches!(list.operation, saves::SaveOperation::List));
+    assert!(
+        restored
+            .complete_save_request(
+                list.id,
+                saves::SaveResult::Slots(vec![saves::SaveSlot {
+                    id: "chapter/一".into(),
+                    title: "第一章".into(),
+                    saved_at: 42,
+                }])
+            )
+            .unwrap()
+    );
+    models::drive(&mut restored, &mut restored_session, false);
+    assert!(
+        matches!(restored_session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "restored once")
+    );
+    // Persisted-copy normalization never completes the real pending write.
+    assert!(
+        matches!(runtime.stage().nodes().find(|n| matches!(&n.kind, NodeKind::Text(_))).map(|n| &n.kind),
+        Some(NodeKind::Text(text)) if text.as_ref() == "pending")
+    );
+}
+
+#[test]
 fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities() {
     let code = r##"
     let mut entries = 0;

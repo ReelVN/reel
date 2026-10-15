@@ -172,6 +172,9 @@ pub(super) struct Activities {
 }
 
 impl Activities {
+    pub(super) fn time(&self) -> f64 {
+        self.time
+    }
     pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
         use super::snapshot::{Part, Record};
         Box::new(

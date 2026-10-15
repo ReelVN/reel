@@ -80,6 +80,58 @@ pub struct AsideSessionUi {
 }
 
 impl AsideSessionUi {
+    pub(crate) fn snapshot_begin(
+        &self,
+    ) -> Result<reel_engine::aside::snapshot::SessionCapture<'_>, reel_engine::aside::AdapterError>
+    {
+        self.vm.snapshot_begin(self.ui.session())
+    }
+    pub(crate) fn adapter_mut(&mut self) -> &mut SessionVm {
+        &mut self.vm
+    }
+    pub(crate) fn restored(
+        session: Session,
+        vm: SessionVm,
+        locale: String,
+        assets: crate::assets::Assets,
+    ) -> Result<Self, Error> {
+        let mut ui = SessionUi::new(session)?.with_assets(assets);
+        ui.set_stage(vm.stage());
+        Ok(Self {
+            ui,
+            vm,
+            entry: None,
+            locale,
+            state: StoryState::Running,
+            host_failure: None,
+        })
+    }
+    pub(crate) fn locale(&self) -> &str {
+        &self.locale
+    }
+    pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
+        self.vm.maintain_audio()?;
+        self.vm.maintain_localization()?;
+        if self.vm.localization_pending() {
+            return Ok(false);
+        }
+        match self.vm.step_reactive(self.ui.session(), budget, || 0)? {
+            Some(reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket))) => {
+                self.vm
+                    .dispatch(self.ui.session_mut(), ticket, &self.locale, 64)?;
+            }
+            Some(reel_engine::aside::SessionStep::Vm(RunOutcome::Fault(_))) => {
+                return Err("restored derived expression failed".into());
+            }
+            Some(_) => {}
+            None => {
+                self.vm.sync_stage(self.ui.session())?;
+                self.ui.set_stage(self.vm.stage());
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     pub fn from_source(
         session: Session,
         text: &str,
@@ -146,13 +198,17 @@ impl AsideSessionUi {
     }
     /// Select asset resolution and memory policy before driving the story.
     pub fn with_asset_options(mut self, options: crate::assets::AssetOptions) -> Self {
-        self.ui = self.ui.with_asset_options(options);
+        self.set_asset_options(options);
+        self
+    }
+    pub fn set_asset_options(&mut self, options: crate::assets::AssetOptions) {
+        self.ui
+            .set_assets(crate::assets::Assets::directory(options));
         self.vm
             .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
                 self.ui.assets(),
             )))
             .expect("select assets before driving the story");
-        self
     }
     pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
         self.ui = self.ui.with_assets(assets);

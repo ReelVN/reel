@@ -44,7 +44,8 @@ fn history_press(down: bool) -> PointerEvent {
     }
 }
 fn text(story: &StoryRuntime) -> &str {
-    let Some(InteractionView::Dialogue(dialogue)) = story.driver.ui().session().view().interaction
+    let Some(InteractionView::Dialogue(dialogue)) =
+        story.driver().ui().session().view().interaction
     else {
         panic!("expected dialogue")
     };
@@ -78,10 +79,11 @@ fn sentence_timing_preserves_pauses_and_waits_for_presentation_before_continuing
         .unwrap();
         let mut story = StoryRuntime::new(driver);
         tick(&mut story, 0);
-        let (mut bridge, root) = bridge(&story.driver);
-        present(&mut story.driver, &mut bridge, root, 1);
+        let (mut bridge, root) = bridge(story.driver());
+        present(story.driver_mut().unwrap(), &mut bridge, root, 1);
         let visible = |story: &StoryRuntime| {
-            let Some(InteractionView::Dialogue(d)) = story.driver.ui().session().view().interaction
+            let Some(InteractionView::Dialogue(d)) =
+                story.driver().ui().session().view().interaction
             else {
                 panic!("dialogue");
             };
@@ -92,7 +94,7 @@ fn sentence_timing_preserves_pauses_and_waits_for_presentation_before_continuing
         assert_eq!(story.tick_interval(), Duration::from_millis(500));
         tick(&mut story, 250_000_000);
         assert_eq!(story.tick_interval(), Duration::from_millis(250));
-        story.suspend(250_000_000);
+        story.suspend(250_000_000).unwrap();
         tick(&mut story, 10_250_000_000);
         story.resume(10_250_000_000);
         tick(&mut story, 10_250_000_000);
@@ -117,31 +119,31 @@ fn sentence_timing_preserves_pauses_and_waits_for_presentation_before_continuing
             "ABCDEF",
             "completed text has not been presented"
         );
-        present(&mut story.driver, &mut bridge, root, 2);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 2);
         tick(&mut story, 20_000_000_000);
         assert_eq!(text(&story), "manual");
-        assert!(!story.driver.ui().session().reading().automatic());
-        present(&mut story.driver, &mut bridge, root, 3);
+        assert!(!story.driver().ui().session().reading().automatic());
+        present(story.driver_mut().unwrap(), &mut bridge, root, 3);
         tick(&mut story, 20_000_000_000);
         assert_eq!(story.tick_interval(), Duration::from_secs(10));
-        click_at(&mut story.driver, &mut bridge, 500., 300.);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 500., 300.);
         story.wake_input();
         assert_eq!(visible(&story), "manual", "one click bypasses all timing");
-        present(&mut story.driver, &mut bridge, root, 4);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 4);
         assert!(!story.needs_tick(), "manual line still waits for advance");
-        click_at(&mut story.driver, &mut bridge, 500., 300.);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 500., 300.);
         story.wake_input();
         tick(&mut story, 20_000_000_000);
-        present(&mut story.driver, &mut bridge, root, 5);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 5);
         tick(&mut story, 20_000_000_000);
         assert_eq!(visible(&story), "fast");
         tick(&mut story, 24_000_000_000);
-        present(&mut story.driver, &mut bridge, root, 6);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 6);
         assert!(
             !story.needs_tick(),
             "every grouped line must request automatic continuation"
         );
-        let history = &story.driver.ui().session().view().history;
+        let history = &story.driver().ui().session().view().history;
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].lines()[0].content().styled().cues().len(), 8);
     }
@@ -201,9 +203,9 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
         .unwrap();
         let mut story = StoryRuntime::new(driver);
         tick(&mut story, 0);
-        let (mut bridge, root) = bridge(&story.driver);
+        let (mut bridge, root) = bridge(story.driver());
         assert!(!story.needs_tick(), "no reading before first presentation");
-        present(&mut story.driver, &mut bridge, root, 1);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 1);
         tick(&mut story, 0); // reveal full text
         tick(&mut story, 5_000_000_000);
         assert_eq!(
@@ -211,16 +213,17 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
             "first",
             "unpresented full text cannot auto advance"
         );
-        present(&mut story.driver, &mut bridge, root, 2);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 2);
         tick(&mut story, 5_000_000_000);
         assert_eq!(story.tick_interval(), Duration::from_millis(500));
         tick(&mut story, 5_250_000_000);
         assert_eq!(story.tick_interval(), Duration::from_millis(250));
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_pointer(&mut bridge, history_press(true))
             .unwrap();
-        assert!(!story.driver.ui().dialogue_needs_time());
+        assert!(!story.driver().ui().dialogue_needs_time());
         tick(&mut story, 99_000_000_000);
         assert_eq!(
             text(&story),
@@ -228,17 +231,18 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
             "held gesture must not consume the auto deadline"
         );
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_pointer(&mut bridge, history_press(false))
             .unwrap();
-        settle(&mut story.driver);
+        settle(story.driver_mut().unwrap());
         story.wake_input();
-        present(&mut story.driver, &mut bridge, root, 3);
-        assert!(story.driver.ui().session().reading().paused());
+        present(story.driver_mut().unwrap(), &mut bridge, root, 3);
+        assert!(story.driver().ui().session().reading().paused());
         assert!(!story.needs_tick());
         assert!(
             story
-                .driver
+                .driver()
                 .adapter()
                 .stage()
                 .nodes()
@@ -246,34 +250,36 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
         );
         tick(&mut story, 100_000_000_000);
         assert_eq!(text(&story), "first");
-        click_at(&mut story.driver, &mut bridge, 30., 30.);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 30., 30.);
         story.wake_input();
-        present(&mut story.driver, &mut bridge, root, 4);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 4);
         tick(&mut story, 100_000_000_000);
         assert_eq!(story.tick_interval(), Duration::from_millis(500));
-        click_at(&mut story.driver, &mut bridge, 310., 30.);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 310., 30.);
         story.wake_input();
-        present(&mut story.driver, &mut bridge, root, 5);
-        assert!(!story.driver.ui().session().reading().paused());
+        present(story.driver_mut().unwrap(), &mut bridge, root, 5);
+        assert!(!story.driver().ui().session().reading().paused());
         assert!(
             !story.needs_tick(),
             "a visible modal blocks auto even without explicit pause"
         );
         tick(&mut story, 110_000_000_000);
         assert_eq!(text(&story), "first");
-        click_at(&mut story.driver, &mut bridge, 30., 30.);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 30., 30.);
         story.wake_input();
-        present(&mut story.driver, &mut bridge, root, 6);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 6);
         tick(&mut story, 110_000_000_000);
         assert_eq!(story.tick_interval(), Duration::from_millis(500));
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(&mut bridge, TextEvent::WindowFocusChange(false))
             .unwrap();
         assert!(!story.needs_tick());
         tick(&mut story, 200_000_000_000);
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(&mut bridge, TextEvent::WindowFocusChange(true))
             .unwrap();
         tick(&mut story, 200_000_000_000);
@@ -281,12 +287,12 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
         assert_eq!(text(&story), "first");
         tick(&mut story, 200_500_000_000);
         assert_eq!(text(&story), "second");
-        assert_eq!(story.driver.ui().session().view().history.len(), 2);
-        present(&mut story.driver, &mut bridge, root, 7);
+        assert_eq!(story.driver().ui().session().view().history.len(), 2);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 7);
         tick(&mut story, 201_000_000_000);
-        present(&mut story.driver, &mut bridge, root, 8);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 8);
         tick(&mut story, 201_000_000_000);
-        story.suspend(201_200_000_000);
+        story.suspend(201_200_000_000).unwrap();
         tick(&mut story, 301_000_000_000);
         assert!(!story.needs_tick());
         story.resume(301_200_000_000);
@@ -295,34 +301,38 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
         assert_eq!(text(&story), "second");
         tick(&mut story, 301_700_000_000);
         assert!(matches!(
-            story.driver.ui().session().view().interaction,
+            story.driver().ui().session().view().interaction,
             Some(InteractionView::Choice(_))
         ));
-        present(&mut story.driver, &mut bridge, root, 9);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 9);
         tick(&mut story, 401_000_000_000);
         assert!(
             !story.needs_tick(),
             "choice must sleep and wait for actual input"
         );
         // Choice controls remain ordinary navigable widgets.
-        gamepad_press(&mut story.driver, &mut bridge, GamepadButton::DpadDown);
-        click_at(&mut story.driver, &mut bridge, 30., 240.);
+        gamepad_press(
+            story.driver_mut().unwrap(),
+            &mut bridge,
+            GamepadButton::DpadDown,
+        );
+        click_at(story.driver_mut().unwrap(), &mut bridge, 30., 240.);
         story.wake_input();
         tick(&mut story, 401_000_000_000);
         assert_eq!(text(&story), "last");
-        present(&mut story.driver, &mut bridge, root, 10);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 10);
         // Authors can disable automatic reading without changing their dialogue UI.
-        click_at(&mut story.driver, &mut bridge, 170., 30.);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 170., 30.);
         story.wake_input();
         tick(&mut story, 402_000_000_000);
-        present(&mut story.driver, &mut bridge, root, 11);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 11);
         tick(&mut story, 500_000_000_000);
         assert_eq!(text(&story), "last");
-        assert!(!story.driver.ui().session().reading().automatic());
+        assert!(!story.driver().ui().session().reading().automatic());
         story.close().unwrap();
         tick(&mut story, 500_000_000_000);
         assert!(story.close_complete());
-        assert_eq!(story.driver.state(), StoryState::Cancelled);
+        assert_eq!(story.driver().state(), StoryState::Cancelled);
     }
 }
 
@@ -394,13 +404,13 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
         .unwrap();
         let mut story = StoryRuntime::new(driver);
         tick(&mut story, 0);
-        let (mut bridge, root) = bridge(&story.driver);
-        present(&mut story.driver, &mut bridge, root, 1);
+        let (mut bridge, root) = bridge(story.driver());
+        present(story.driver_mut().unwrap(), &mut bridge, root, 1);
         tick(&mut story, 0);
-        present(&mut story.driver, &mut bridge, root, 2);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 2);
         tick(&mut story, 0);
-        assert_eq!(story.driver.ui().session().view().history.len(), 2);
-        present(&mut story.driver, &mut bridge, root, 3);
+        assert_eq!(story.driver().ui().session().view().history.len(), 2);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 3);
         // Root input must work immediately, before clicking/focusing any controls.
         let key = |value| {
             TextEvent::Input(InputEvent::Value {
@@ -409,19 +419,27 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
                 value,
             })
         };
-        story.driver.handle_text(&mut bridge, key(1.)).unwrap();
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, key(1.))
+            .unwrap();
         story.wake_input();
         tick(&mut story, 0);
-        assert!(story.driver.ui().session().reading().skipping());
+        assert!(story.driver().ui().session().reading().skipping());
         tick(&mut story, 0);
-        assert_eq!(story.driver.ui().session().view().history.len(), 3);
+        assert_eq!(story.driver().ui().session().view().history.len(), 3);
         assert_eq!(text(&story), "repeat");
-        present(&mut story.driver, &mut bridge, root, 4);
-        story.driver.handle_text(&mut bridge, key(0.)).unwrap();
-        settle(&mut story.driver);
+        present(story.driver_mut().unwrap(), &mut bridge, root, 4);
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, key(0.))
+            .unwrap();
+        settle(story.driver_mut().unwrap());
         story.wake_input();
         tick(&mut story, 0);
-        assert!(!story.driver.ui().session().reading().skipping());
+        assert!(!story.driver().ui().session().reading().skipping());
         assert_eq!(
             text(&story),
             "repeat",
@@ -434,52 +452,66 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
                 value,
             })
         };
-        present(&mut story.driver, &mut bridge, root, 5);
-        story.driver.handle_text(&mut bridge, pad(1.)).unwrap();
+        present(story.driver_mut().unwrap(), &mut bridge, root, 5);
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, pad(1.))
+            .unwrap();
         story.wake_input();
         tick(&mut story, 0);
-        assert!(story.driver.ui().session().reading().skipping());
+        assert!(story.driver().ui().session().reading().skipping());
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(&mut bridge, TextEvent::WindowFocusChange(false))
             .unwrap();
-        settle(&mut story.driver);
-        assert!(!story.driver.ui().session().reading().skipping());
+        settle(story.driver_mut().unwrap());
+        assert!(!story.driver().ui().session().reading().skipping());
         assert!(
             story
-                .driver
+                .driver()
                 .adapter()
                 .stage()
                 .nodes()
                 .any(|n| n.kind == NodeKind::Text("skip:off".into()))
         );
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .handle_text(&mut bridge, TextEvent::WindowFocusChange(true))
             .unwrap();
-        present(&mut story.driver, &mut bridge, root, 6);
-        story.driver.handle_text(&mut bridge, pad(1.)).unwrap();
+        present(story.driver_mut().unwrap(), &mut bridge, root, 6);
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, pad(1.))
+            .unwrap();
         story.wake_input();
         tick(&mut story, 0);
         tick(&mut story, 0);
         assert_eq!(text(&story), "unread");
         assert!(
-            !story.driver.ui().session().reading().skipping(),
+            !story.driver().ui().session().reading().skipping(),
             "unread boundary clears held skip"
         );
-        story.driver.handle_text(&mut bridge, pad(0.)).unwrap();
-        settle(&mut story.driver);
-        present(&mut story.driver, &mut bridge, root, 7);
-        click_at(&mut story.driver, &mut bridge, 30., 30.);
-        assert!(story.driver.ui().session().reading().skip_unread());
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, pad(0.))
+            .unwrap();
+        settle(story.driver_mut().unwrap());
+        present(story.driver_mut().unwrap(), &mut bridge, root, 7);
+        click_at(story.driver_mut().unwrap(), &mut bridge, 30., 30.);
+        assert!(story.driver().ui().session().reading().skip_unread());
         story.wake_input();
         tick(&mut story, 0);
         assert!(matches!(
-            story.driver.ui().session().view().interaction,
+            story.driver().ui().session().view().interaction,
             Some(InteractionView::Choice(_))
         ));
         assert!(
-            !story.driver.ui().session().reading().skipping(),
+            !story.driver().ui().session().reading().skipping(),
             "skip all still stops at choices"
         );
         story.close().unwrap();

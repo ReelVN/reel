@@ -170,17 +170,17 @@ mod tests {
         let mut runtime = StoryRuntime::new(driver);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut waited = false;
-        while runtime.driver.state() != StoryState::Finished || runtime.needs_tick() {
+        while runtime.driver().state() != StoryState::Finished || runtime.needs_tick() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "catalog runtime stalled"
             );
             assert!(matches!(
-                runtime.driver.state(),
+                runtime.driver().state(),
                 StoryState::Running | StoryState::Finished
             ));
             runtime.tick(SliceBudget::default(), || 0).unwrap();
-            if runtime.driver.adapter().localization_pending() {
+            if runtime.driver().adapter().localization_pending() {
                 waited = true;
                 assert!(runtime.needs_tick());
                 std::thread::sleep(std::time::Duration::from_millis(1));

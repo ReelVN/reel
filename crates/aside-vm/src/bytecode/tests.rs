@@ -2164,11 +2164,18 @@ fn verified_native_cache_capacity_matches_actual_retained_allocation() {
     assert_eq!(
         allocation.bytes_current as usize,
         stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
+            + program.shared_header_bytes()
     );
     assert_eq!(stats.derived_capacity_bytes, 16 + 2 * 4);
     assert!(
         allocation.bytes_max as usize
             <= stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
+                + program.shared_header_bytes()
                 + stats.validation_scratch_peak
     );
+    let allocation = allocation_counter::measure(|| {
+        let shared = program.clone();
+        assert!(std::ptr::eq(shared.package(), program.package()));
+    });
+    assert_eq!(allocation.bytes_total, 0);
 }

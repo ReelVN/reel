@@ -1,9 +1,7 @@
 //! Portable execution and session snapshots. Device adapters are supplied by the host.
 use super::*;
-use aside_vm::snapshot::{
-    SnapshotBudget, SnapshotError, SnapshotMap, SnapshotProgress, SnapshotRegistry, VmCapture,
-    VmRestore, VmSnapshot,
-};
+pub use aside_vm::snapshot::{SnapshotBudget, SnapshotError, SnapshotProgress};
+use aside_vm::snapshot::{SnapshotMap, SnapshotRegistry, VmCapture, VmRestore, VmSnapshot};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
@@ -63,6 +61,8 @@ pub(super) enum Part {
     Catalog,
     StageRoot,
     Node,
+    Saves,
+    SaveRequest,
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct Record {
@@ -92,8 +92,31 @@ pub struct SessionSnapshot {
     vm: VmSnapshot,
     session: Option<Session>,
     records: Vec<Record>,
+    committed_save: Option<saves::SaveRequestId>,
 }
 impl SessionSnapshot {
+    /// Serialize directly into the host's compression/file writer on its worker.
+    pub fn write_to(
+        &self,
+        mut writer: impl std::io::Write,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        writer.write_all(b"REELSAV1")?;
+        postcard::to_io(self, writer)?;
+        Ok(())
+    }
+    /// The storage service marks only the request whose snapshot it will commit.
+    /// Dropping this image without publishing it leaves the live request untouched.
+    pub fn commit_save(&mut self, request: saves::SaveRequestId) -> Result<(), SnapshotError> {
+        if self
+            .session
+            .as_ref()
+            .is_none_or(|session| session.identity() != request.session)
+        {
+            return Err(SnapshotError::Invalid("foreign save request".into()));
+        }
+        self.committed_save = Some(request);
+        Ok(())
+    }
     pub fn encode(&self) -> Result<Vec<u8>, SnapshotError> {
         Ok(postcard::to_extend(self, b"REELSAV1".to_vec())?)
     }
@@ -126,7 +149,7 @@ pub struct SessionCapture<'a> {
 impl SessionVm {
     fn snapshot_records(&self) -> RecordStream<'_> {
         use std::iter::once_with;
-        let streams: [RecordStream<'_>; 10] = [
+        let streams: [RecordStream<'_>; 11] = [
             Box::new(
                 once_with(|| {
                     Record::new(
@@ -162,6 +185,7 @@ impl SessionVm {
             ),
             self.activities.snapshot_records(),
             self.results.snapshot_records(),
+            self.saves.snapshot_records(),
             self.audio.snapshot_records(),
             self.translations.snapshot_records(),
             Box::new(once_with(|| {
@@ -217,6 +241,26 @@ impl SessionVm {
         audio: Option<Box<dyn crate::audio::AudioBackend>>,
         catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     ) -> Result<SessionRestore<'a>, AdapterError> {
+        let session = image
+            .session
+            .take()
+            .ok_or(AdapterError::Input("snapshot already consumed"))?;
+        Self::restore_session(
+            image, session, program, limits, identity, progress, audio, catalogs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restore_session<'a>(
+        image: &'a SessionSnapshot,
+        mut session: Session,
+        program: VerifiedProgram,
+        limits: VmLimits,
+        identity: SessionIdentity,
+        progress: crate::ReadProgress,
+        audio: Option<Box<dyn crate::audio::AudioBackend>>,
+        catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
+    ) -> Result<SessionRestore<'a>, AdapterError> {
         let support = aside_host::runtime_support(
             program.package(),
             &registry::contracts(),
@@ -230,12 +274,9 @@ impl SessionVm {
             SessionEpoch(identity.epoch.0),
             registry(),
         )?;
-        let mut session = image
-            .session
-            .take()
-            .ok_or(AdapterError::Input("snapshot already consumed"))?;
         session.restore_identity(identity, progress)?;
         Ok(SessionRestore {
+            committed_save: image.committed_save.map(|id| id.serial),
             vm: Some(vm),
             map: None,
             candidate: None,
@@ -251,6 +292,48 @@ impl SessionVm {
             limits,
             complete: false,
         })
+    }
+}
+
+type RestoreCursor<'a> = Option<SessionRestore<'a>>;
+self_cell::self_cell! {
+    struct RestoreCell {
+        owner: SessionSnapshot,
+        #[not_covariant]
+        dependent: RestoreCursor,
+    }
+}
+/// Movable restoration state for event loops; each step uses the same work budget.
+pub struct OwnedSessionRestore(RestoreCell);
+impl OwnedSessionRestore {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mut image: SessionSnapshot,
+        program: VerifiedProgram,
+        limits: VmLimits,
+        identity: SessionIdentity,
+        progress: crate::ReadProgress,
+        audio: Option<Box<dyn crate::audio::AudioBackend>>,
+        catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
+    ) -> Result<Self, AdapterError> {
+        let session = image
+            .session
+            .take()
+            .ok_or(AdapterError::Input("snapshot already consumed"))?;
+        Ok(Self(RestoreCell::try_new(image, |image| {
+            SessionVm::restore_session(
+                image, session, program, limits, identity, progress, audio, catalogs,
+            )
+            .map(Some)
+        })?))
+    }
+    pub fn step(&mut self, budget: SnapshotBudget) -> Result<SnapshotProgress, AdapterError> {
+        self.0
+            .with_dependent_mut(|_, cursor| cursor.as_mut().unwrap().step(budget))
+    }
+    pub fn finish(mut self) -> Result<(Session, SessionVm), AdapterError> {
+        self.0
+            .with_dependent_mut(|_, cursor| cursor.take().unwrap().finish())
     }
 }
 impl SessionCapture<'_> {
@@ -286,6 +369,7 @@ impl SessionCapture<'_> {
             return Err(SnapshotError::Busy("session capture incomplete").into());
         }
         Ok(SessionSnapshot {
+            committed_save: None,
             version: 1,
             vm: self.vm.finish()?,
             session: self.saved_session,
@@ -295,6 +379,7 @@ impl SessionCapture<'_> {
 }
 
 pub struct SessionRestore<'a> {
+    committed_save: Option<u64>,
     vm: Option<VmRestore<'a>>,
     map: Option<SnapshotMap>,
     candidate: Option<SessionVm>,
@@ -341,6 +426,9 @@ impl SessionRestore<'_> {
             let runtime = self.candidate.as_mut().unwrap();
             if let Some(record) = self.records.get(self.cursor) {
                 match record.part {
+                    Part::Saves | Part::SaveRequest => {
+                        runtime.restore_save_record(record, map, self.committed_save)?;
+                    }
                     Part::Header => {
                         let mut header: Header = record.read()?;
                         header.owner.rebase(runtime.identity);

@@ -144,6 +144,22 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(localization);
+    let mut saves = ExternalSymbol::dynamic("saves");
+    saves.namespace = Some(NamespaceRef {
+        module: "reel::saves".into(),
+        version: "1".into(),
+    });
+    prelude.push(saves);
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::saves".into(),
+        version: "1".into(),
+        exports: exports
+            .iter()
+            .zip(&references)
+            .filter(|(_, r)| r.module == "reel::saves")
+            .map(|(e, _)| e.clone())
+            .collect(),
+    });
     resolver.insert(ModuleInterface {
         canonical_path: "reel::localization".into(),
         version: "1".into(),

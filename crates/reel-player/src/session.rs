@@ -266,6 +266,21 @@ impl SessionWidget {
             .collect();
     }
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
+        if this.widget.source_owner != ui.source_owner {
+            // A restored session has fresh input ownership even when node IDs match.
+            let old = std::mem::replace(
+                &mut this.widget.stage,
+                WidgetPod::new(StageWidget::new(ui.stage.as_ref())),
+            );
+            this.ctx.remove_child(old);
+            this.widget.source_owner = ui.source_owner;
+            this.widget.binding = ui.binding.clone();
+            this.widget.inputs = ui.inputs.clone();
+            this.widget.events = ui.events.clone();
+            this.widget.scroll = ui.scroll.clone();
+            this.widget.scrolling = ScrollState::default();
+            this.ctx.children_changed();
+        }
         let authored_changed = this.widget.authored != (ui.stage.is_some() || !ui.preview);
         this.widget.authored = ui.stage.is_some() || !ui.preview;
         this.widget.dialogue_active = matches!(
@@ -917,14 +932,21 @@ impl SessionUi {
         self
     }
     pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
+        self.set_assets(assets);
+        self
+    }
+    pub(crate) fn set_assets(&mut self, assets: crate::assets::Assets) {
         self.images = crate::images::Images::new(assets);
         if let Some(view) = &self.pending_stage {
             self.images.request_stage(view);
         }
-        self
     }
     pub fn assets(&self) -> crate::assets::Assets {
         self.images.assets.clone()
+    }
+    pub(crate) fn adopt_presentation(&mut self) {
+        self.clear_presented();
+        self.stage_dirty = true;
     }
     /// Called by resource adapters when a terminal result is ready to poll.
     pub fn set_resource_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {

@@ -107,7 +107,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     .unwrap();
     let mut story = StoryRuntime::new(driver);
     settle(&mut story, 0);
-    let (bridge, root) = mount(story.driver.ui());
+    let (bridge, root) = mount(story.driver().ui());
     let info = SurfaceInfo {
         physical_size: [640, 420],
         scale_factor: 1.,
@@ -147,12 +147,16 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
                   view: &mut Presentation,
                   backend: &mut Backend,
                   host: &mut Host| {
-        story.driver.sync(&mut view.bridge, root).unwrap();
+        story
+            .driver_mut()
+            .unwrap()
+            .sync(&mut view.bridge, root)
+            .unwrap();
         let mut stamp = None;
         let result = view
             .render(backend, host, |bridge, id, info| {
                 let source = bridge.record(id).unwrap();
-                stamp = Some(story.driver.projection_stamp());
+                stamp = Some(story.driver().projection_stamp());
                 let mut build = FrameBuild::new(
                     source,
                     ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap(),
@@ -181,25 +185,34 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
             })
             .unwrap();
         if result.accepted {
-            story.driver.presented(stamp.unwrap()).unwrap();
+            story
+                .driver_mut()
+                .unwrap()
+                .presented(stamp.unwrap())
+                .unwrap();
         }
         result
     };
     let click = |story: &mut StoryRuntime, view: &mut Presentation| {
         for kind in ["move", "down", "up"] {
             story
-                .driver
+                .driver_mut()
+                .unwrap()
                 .handle_pointer(&mut view.bridge, mouse(kind, (50., 30.)))
                 .unwrap();
         }
         story.wake_input();
         settle(story, 0);
-        story.driver.sync(&mut view.bridge, root).unwrap();
+        story
+            .driver_mut()
+            .unwrap()
+            .sync(&mut view.bridge, root)
+            .unwrap();
     };
     click(&mut story, &mut view);
     assert_eq!(
         story
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -214,7 +227,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     click(&mut story, &mut view);
     assert_eq!(
         story
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -225,10 +238,14 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         10.
     );
     settle(&mut story, 250_000_000);
-    story.driver.sync(&mut view.bridge, root).unwrap();
+    story
+        .driver_mut()
+        .unwrap()
+        .sync(&mut view.bridge, root)
+        .unwrap();
     assert_eq!(
         story
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -288,10 +305,10 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     assert_eq!(view.bridge.accepted_key().unwrap().frame_id(), accepted);
     assert_eq!(view.bridge.pending_count(), 0);
 
-    story.suspend(250_000_000);
+    story.suspend(250_000_000).unwrap();
     view.suspend();
     backend.suspend();
-    story.driver.clear_presented().unwrap();
+    story.driver_mut().unwrap().clear_presented().unwrap();
     assert!(!story.needs_tick());
     story
         .tick(SliceBudget::default(), || panic!("suspended host sleeps"))
@@ -309,10 +326,14 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     backend.configure(resumed).unwrap();
     story.resume(10_250_000_000);
     settle(&mut story, 10_250_000_000);
-    story.driver.sync(&mut view.bridge, root).unwrap();
+    story
+        .driver_mut()
+        .unwrap()
+        .sync(&mut view.bridge, root)
+        .unwrap();
     assert_eq!(
         story
-            .driver
+            .driver()
             .adapter()
             .stage()
             .nodes()
@@ -331,12 +352,16 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     view.poll(&mut backend, &mut events, 1).unwrap();
     assert!(render(&mut story, &mut view, &mut backend, &mut host).accepted);
     settle(&mut story, 11_000_000_000);
-    story.driver.sync(&mut view.bridge, root).unwrap();
-    let node = story.driver.adapter().stage().nodes().next().unwrap();
+    story
+        .driver_mut()
+        .unwrap()
+        .sync(&mut view.bridge, root)
+        .unwrap();
+    let node = story.driver().adapter().stage().nodes().next().unwrap();
     assert_eq!(node.props.y, 100.);
     assert!(!node.props.enabled);
 
-    story.suspend(11_000_000_000);
+    story.suspend(11_000_000_000).unwrap();
     view.suspend();
     backend.suspend();
     story.close().unwrap();

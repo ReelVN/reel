@@ -508,7 +508,8 @@ impl Vm {
         let program_charge = Reservation::new(
             &usage,
             program.stats().owned_capacity_bytes as u64
-                + (std::mem::size_of::<CodeLease>() - std::mem::size_of::<BytecodePackage>()
+                + (std::mem::size_of::<CodeLease>() + program.shared_header_bytes()
+                    - std::mem::size_of::<BytecodePackage>()
                     + std::mem::size_of::<types::TypeChecks>()
                     + 4 * std::mem::size_of::<usize>()) as u64,
         )?;
@@ -762,6 +763,9 @@ impl Vm {
     }
     pub fn program(&self) -> &VerifiedProgram {
         &self.program
+    }
+    pub fn limits(&self) -> VmLimits {
+        self.limits
     }
     pub fn task_id(&self) -> Option<TaskId> {
         self.active

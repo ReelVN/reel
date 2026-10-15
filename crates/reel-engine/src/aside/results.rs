@@ -14,6 +14,7 @@ pub(super) enum Kind {
     Task = -1102,
     Presentation = -1103,
     Particle = -1104,
+    Operation = -1105,
 }
 #[repr(u32)]
 enum Slot {
@@ -149,6 +150,7 @@ pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
         Some(-1102) => Ok(Kind::Task),
         Some(-1103) => Ok(Kind::Presentation),
         Some(-1104) => Ok(Kind::Particle),
+        Some(-1105) => Ok(Kind::Operation),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -248,14 +250,20 @@ impl Results {
         let object = heap.alloc_host(
             fields,
             &slots[..if kind == Kind::Particle { 5 } else { 4 }],
-            Some(readonly),
+            if kind == Kind::Operation {
+                None
+            } else {
+                Some(readonly)
+            },
         )?;
         for (index, (name, function)) in ["resolve", "reject", "cancel"]
             .into_iter()
             .zip(methods.settle)
             .enumerate()
         {
-            if kind == Kind::Particle || (kind != Kind::Completion && name != "cancel") {
+            if matches!(kind, Kind::Particle | Kind::Operation)
+                || (kind != Kind::Completion && name != "cancel")
+            {
                 continue;
             }
             let function = if kind == Kind::Task {
@@ -279,6 +287,9 @@ impl Results {
         }
         vm.bind_awaitable(object, methods.wait)?;
         Ok(object)
+    }
+    pub(super) fn create_operation(&mut self, vm: &mut Vm) -> Result<Value, AdapterError> {
+        self.create(vm, Value::NULL, Kind::Operation)
     }
     pub(super) fn create_particle(
         &mut self,

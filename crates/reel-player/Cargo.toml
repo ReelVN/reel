@@ -13,6 +13,11 @@ audio-output = ["reel-media/cpal-output"]
 window = ["audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
+reel-storage = { path = "../reel-storage" }
+serde = { version = "=1.0.229", features = ["derive"] }
+postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
+flate2 = "=1.1.10"
+self_cell = "=1.3.0"
 reel-media = { path = "../reel-media", default-features = false, features = ["decode"] }
 reel-ui.workspace = true
 reel-engine = { path = "../reel-engine" }

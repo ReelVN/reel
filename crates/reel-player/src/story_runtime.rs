@@ -1,13 +1,17 @@
 //! Event-loop scheduling for the existing Aside session driver, without native handles.
 use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
+mod saves;
 
 type Error = Box<dyn std::error::Error>;
 
 /// Backend-independent VM, activity and GC scheduler. Hosts supply monotonic
 /// time and call `wake_input` after submitting input to the session driver.
 pub struct StoryRuntime {
-    pub driver: AsideSessionUi,
+    driver: Option<AsideSessionUi>,
+    saves: Option<crate::saves::RuntimeSaves>,
+    capture: Option<crate::saves::Capture>,
+    capture_started: Option<u64>,
     runnable: bool,
     collecting: bool,
     gc_turn: bool,
@@ -15,6 +19,7 @@ pub struct StoryRuntime {
     retried_collection: bool,
     closing: bool,
     logical_ns: u64,
+    time_offset_ns: u64,
     suspended_at: Option<u64>,
     suspended_ns: u64,
 }
@@ -22,7 +27,10 @@ pub struct StoryRuntime {
 impl StoryRuntime {
     pub fn new(driver: AsideSessionUi) -> Self {
         Self {
-            driver,
+            driver: Some(driver),
+            saves: None,
+            capture: None,
+            capture_started: None,
             runnable: true,
             collecting: false,
             gc_turn: false,
@@ -30,33 +38,61 @@ impl StoryRuntime {
             retried_collection: false,
             closing: false,
             logical_ns: 0,
+            time_offset_ns: 0,
             suspended_at: None,
             suspended_ns: 0,
         }
     }
 
+    pub fn driver(&self) -> &AsideSessionUi {
+        self.driver
+            .as_ref()
+            .unwrap_or_else(|| self.capture.as_ref().unwrap().owner())
+    }
+    pub fn capturing(&self) -> bool {
+        self.capture.is_some()
+    }
+    pub fn driver_mut(&mut self) -> Result<&mut AsideSessionUi, Error> {
+        self.interrupt_capture()?;
+        Ok(self.driver.as_mut().unwrap())
+    }
+    pub fn with_saves(mut self, saves: crate::saves::RuntimeSaves) -> Self {
+        self.saves = Some(saves);
+        self
+    }
+    pub fn set_saves(&mut self, saves: crate::saves::RuntimeSaves) {
+        self.saves = Some(saves);
+    }
     pub fn needs_tick(&self) -> bool {
+        if self.capture.is_some() || self.saves.as_ref().is_some_and(|s| s.busy()) {
+            return true;
+        }
         (self.suspended_at.is_none() || self.closing)
             && (self.needs_work()
-                || self.driver.adapter().audio_poll_after().is_some()
-                || self.driver.adapter().localization_pending()
-                || self.driver.activities_need_time()
-                || self.driver.ui().dialogue_needs_time())
+                || self.driver().adapter().has_save_requests()
+                || self.driver().adapter().audio_poll_after().is_some()
+                || self.driver().adapter().localization_pending()
+                || self.driver().activities_need_time()
+                || self.driver().ui().dialogue_needs_time())
     }
 
     /// Suspend story time. Execution deadlines always remain on the unadjusted host clock.
-    pub fn suspend(&mut self, now_ns: u64) {
+    pub fn suspend(&mut self, now_ns: u64) -> Result<(), Error> {
+        self.interrupt_capture()?;
         self.suspended_at.get_or_insert(now_ns);
-        self.runnable |= self.driver.ui().session().reading().skipping();
+        self.runnable |= self.driver().ui().session().reading().skipping();
         self.driver
+            .as_mut()
+            .unwrap()
             .ui_mut()
             .session_mut()
             .set_skip_reading(false, false);
-        self.driver.ui_mut().pause_dialogue();
-        self.driver.suspend_audio();
+        self.driver.as_mut().unwrap().ui_mut().pause_dialogue();
+        self.driver.as_mut().unwrap().suspend_audio();
+        Ok(())
     }
     pub fn resume(&mut self, now_ns: u64) {
-        self.driver.resume_audio();
+        self.driver.as_mut().unwrap().resume_audio();
         if let Some(start) = self.suspended_at.take() {
             self.suspended_ns = self
                 .suspended_ns
@@ -67,16 +103,19 @@ impl StoryRuntime {
     fn needs_work(&self) -> bool {
         self.runnable
             || self.collecting
-            || self.driver.cleanup_pending()
-            || self.driver.activities_pending()
+            || self.driver().cleanup_pending()
+            || self.driver().activities_pending()
     }
 
     pub fn tick_interval(&self) -> std::time::Duration {
+        if self.capture.is_some() || self.saves.as_ref().is_some_and(|s| s.busy()) {
+            return std::time::Duration::from_millis(1);
+        }
         if self.needs_work() {
             return std::time::Duration::from_millis(1);
         }
-        let audio = self.driver.adapter().audio_poll_after();
-        let audio = if self.driver.adapter().localization_pending() {
+        let audio = self.driver().adapter().audio_poll_after();
+        let audio = if self.driver().adapter().localization_pending() {
             Some(audio.map_or(std::time::Duration::from_millis(10), |t| {
                 t.min(std::time::Duration::from_millis(10))
             }))
@@ -84,11 +123,11 @@ impl StoryRuntime {
             audio
         };
         let reveal = self
-            .driver
+            .driver()
             .ui()
-            .dialogue_interval(self.driver.adapter().game_settings().text_speed);
-        let interval = if let Some(interval) = self.driver.activities_poll_after() {
-            if self.driver.ui().dialogue_needs_time() {
+            .dialogue_interval(self.driver().adapter().game_settings().text_speed);
+        let interval = if let Some(interval) = self.driver().activities_poll_after() {
+            if self.driver().ui().dialogue_needs_time() {
                 reveal.min(interval)
             } else {
                 interval
@@ -100,56 +139,80 @@ impl StoryRuntime {
     }
 
     pub fn wake_input(&mut self) {
-        if self.driver.state() == StoryState::Running
-            && (self.driver.has_runnable_tasks()
-                || self.driver.ui().session().view().interaction.is_none())
+        if self.driver().state() == StoryState::Running
+            && (self.driver().has_runnable_tasks()
+                || self.driver().ui().session().view().interaction.is_none())
         {
             self.runnable = true;
         }
     }
 
     pub fn close(&mut self) -> Result<(), Error> {
+        self.interrupt_capture()?;
         self.closing = true;
         self.runnable = false;
         self.collecting = false;
-        self.driver.cancel()
+        self.driver.as_mut().unwrap().cancel()
     }
 
     pub fn close_complete(&self) -> bool {
-        self.closing && !self.driver.cleanup_pending()
+        self.closing
+            && !self.driver().cleanup_pending()
+            && self.saves.as_ref().is_none_or(|s| !s.busy())
     }
 
     /// Run bounded VM/GC slices until the window deadline or an idle wait. Native
     /// continuations share that deadline, so they do not each cost a window frame.
     /// Without a deadline, run exactly one slice for manually scheduled hosts.
     pub fn tick(&mut self, budget: SliceBudget, mut now: impl FnMut() -> u64) -> Result<(), Error> {
+        if !self.needs_tick() {
+            return Ok(());
+        }
+        let now_ns = now();
+        if self.capture.is_none()
+            && let Some(start) = self.capture_started.take()
+        {
+            self.suspended_ns += now_ns.saturating_sub(start);
+        }
+        if self.maintain_saves(now_ns, budget)? {
+            return Ok(());
+        }
         if self.suspended_at.is_some() && !self.closing {
             return Ok(());
         }
-        if self.driver.maintain_audio()? | self.driver.maintain_localization()?
-            || (self.driver.adapter().task().is_none()
-                && !self.driver.adapter().has_live_work()
-                && self.driver.state() == StoryState::Running)
+        if self.driver.as_mut().unwrap().maintain_audio()?
+            | self.driver.as_mut().unwrap().maintain_localization()?
+            || (self.driver().adapter().task().is_none()
+                && !self.driver().adapter().has_live_work()
+                && self.driver().state() == StoryState::Running)
         {
             self.runnable = true;
         }
         if !self.closing && self.needs_tick() {
-            self.logical_ns = self.logical_ns.max(now().saturating_sub(self.suspended_ns));
-            let speed = self.driver.adapter().game_settings().text_speed;
+            self.logical_ns = self.logical_ns.max(
+                now()
+                    .saturating_add(self.time_offset_ns)
+                    .saturating_sub(self.suspended_ns),
+            );
+            let speed = self.driver().adapter().game_settings().text_speed;
             let reading_changed = self
                 .driver
+                .as_mut()
+                .unwrap()
                 .ui_mut()
                 .advance_dialogue(self.logical_ns, speed)?;
-            if reading_changed && self.driver.ui().session().view().interaction.is_none() {
+            if reading_changed && self.driver().ui().session().view().interaction.is_none() {
                 self.runnable = true;
             }
             let progress = self
                 .driver
+                .as_mut()
+                .unwrap()
                 .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;
             if progress.woke
                 || (progress.work != 0
-                    && self.driver.adapter().task().is_none()
-                    && !self.driver.adapter().has_live_work())
+                    && self.driver().adapter().task().is_none()
+                    && !self.driver().adapter().has_live_work())
             {
                 self.runnable = true;
             }
@@ -168,13 +231,18 @@ impl StoryRuntime {
     /// Alternate VM and incremental GC work, draining invalidated payloads before
     /// allocating again. A wait finishes collection before sleeping.
     fn step(&mut self, budget: SliceBudget, now: impl FnMut() -> u64) -> Result<(), Error> {
-        if self.driver.cleanup_pending() {
-            self.driver.cleanup_step(256, budget, now)?;
+        if self.driver().cleanup_pending() {
+            self.driver
+                .as_mut()
+                .unwrap()
+                .cleanup_step(256, budget, now)?;
             return Ok(());
         }
-        if self.driver.activities_pending() {
+        if self.driver().activities_pending() {
             if self
                 .driver
+                .as_mut()
+                .unwrap()
                 .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?
                 .woke
             {
@@ -185,9 +253,15 @@ impl StoryRuntime {
         if self.collecting
             && (self.gc_turn
                 || !self.runnable
-                || self.driver.adapter().vm().heap().stats().pending_bytes != 0)
+                || self.driver().adapter().vm().heap().stats().pending_bytes != 0)
         {
-            if self.driver.gc_step(GcBudget::default())?.cycle_complete {
+            if self
+                .driver
+                .as_mut()
+                .unwrap()
+                .gc_step(GcBudget::default())?
+                .cycle_complete
+            {
                 self.collecting = false;
                 if self.retry_after_collection {
                     self.runnable = true;
@@ -200,7 +274,7 @@ impl StoryRuntime {
         if !self.runnable {
             return Ok(());
         }
-        let progress = self.driver.tick(budget, 256, now)?;
+        let progress = self.driver.as_mut().unwrap().tick(budget, 256, now)?;
         match progress {
             StoryProgress::ExitRequested => {
                 self.close()?;
@@ -210,17 +284,20 @@ impl StoryRuntime {
             | StoryProgress::Vm(RunOutcome::Waiting(_))
             | StoryProgress::Finished
             | StoryProgress::Cancelled
-            | StoryProgress::Idle => self.runnable = self.driver.has_runnable_tasks(),
+            | StoryProgress::Idle => self.runnable = self.driver().has_runnable_tasks(),
             StoryProgress::HostFailed(_) => {
                 self.runnable = false;
-                let failure = self.driver.host_failure().expect("host failure recorded");
+                let failure = self.driver().host_failure().expect("host failure recorded");
                 return Err(format!("story host {:?}: {}", failure.stage, failure.error).into());
             }
             StoryProgress::Faulted(_) => {
                 self.runnable = false;
-                let fault = self.driver.fault()?.expect("fault delivery remains rooted");
+                let fault = self
+                    .driver()
+                    .fault()?
+                    .expect("fault delivery remains rooted");
                 let location = if let Some(span) = fault.location.source {
-                    let package = self.driver.adapter().vm().program().package();
+                    let package = self.driver().adapter().vm().program().package();
                     let source = &package.sources[span.file.index()];
                     let before = &source.text[..span.start as usize];
                     let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
@@ -229,7 +306,7 @@ impl StoryRuntime {
                 } else {
                     format!("{:?}", fault.location)
                 };
-                let value = self.driver.adapter().format_fault_value(fault)?;
+                let value = self.driver().adapter().format_fault_value(fault)?;
                 return Err(format!("{location}: story fault {:?}: {value}", fault.kind).into());
             }
             StoryProgress::Vm(RunOutcome::ResourceBlocked(blocked)) => {
@@ -240,7 +317,7 @@ impl StoryRuntime {
                     eprintln!("story resource blocked: {blocked:?}; close the window to cancel");
                 } else {
                     if !self.collecting {
-                        self.driver.begin_collection()?;
+                        self.driver.as_mut().unwrap().begin_collection()?;
                         self.collecting = true;
                     }
                     self.retried_collection = true;
@@ -250,9 +327,9 @@ impl StoryRuntime {
             }
             _ => self.retried_collection = false,
         }
-        if self.driver.state() == StoryState::Running {
+        if self.driver().state() == StoryState::Running {
             if !self.collecting {
-                self.driver.begin_collection()?;
+                self.driver.as_mut().unwrap().begin_collection()?;
                 self.collecting = true;
             }
             self.gc_turn = true;
@@ -327,10 +404,10 @@ mod tests {
                 }
                 story.tick(SliceBudget::default(), || 0).unwrap();
             }
-            assert_eq!(story.driver.state(), StoryState::Running);
+            assert_eq!(story.driver().state(), StoryState::Running);
             assert!(story.needs_tick());
             story.tick(SliceBudget::default(), || 500_000_000).unwrap();
-            story.suspend(500_000_000);
+            story.suspend(500_000_000).unwrap();
             assert!(!story.needs_tick());
             story.resume(20_500_000_000);
             for _ in 0..10000 {
@@ -341,7 +418,7 @@ mod tests {
                     .tick(SliceBudget::default(), || 22_000_000_000)
                     .unwrap();
             }
-            assert_eq!(story.driver.state(), StoryState::Finished);
+            assert_eq!(story.driver().state(), StoryState::Finished);
         }
     }
 
@@ -361,7 +438,7 @@ mod tests {
             story.tick_interval(),
             std::time::Duration::from_millis(1500)
         );
-        story.suspend(500_000_000);
+        story.suspend(500_000_000).unwrap();
         assert!(!story.needs_tick());
         story
             .tick(SliceBudget::default(), || panic!("suspended timer polled"))
@@ -379,7 +456,7 @@ mod tests {
                 .tick(SliceBudget::default(), || 22_000_000_000)
                 .unwrap();
         }
-        assert_eq!(story.driver.state(), StoryState::Finished);
+        assert_eq!(story.driver().state(), StoryState::Finished);
         assert!(!story.needs_tick());
     }
 
@@ -409,11 +486,19 @@ mod tests {
             panic!("window work did not settle");
         };
         let input = |story: &mut StoryRuntime| {
-            let owner = story.driver.ui().session().root_owner();
-            let id = story.driver.ui().session().view().interaction.unwrap().id();
+            let owner = story.driver().ui().session().root_owner();
+            let id = story
+                .driver()
+                .ui()
+                .session()
+                .view()
+                .interaction
+                .unwrap()
+                .id();
             for _ in 0..2 {
                 story
-                    .driver
+                    .driver_mut()
+                    .unwrap()
                     .ui_mut()
                     .session_mut()
                     .handle_local_input(owner, InputAction::Advance(id))
@@ -444,7 +529,7 @@ mod tests {
             .tick(SliceBudget::default(), || 10_500_000_000)
             .unwrap();
         work(&mut story, 10_500_000_000);
-        assert_eq!(story.driver.state(), StoryState::Finished);
+        assert_eq!(story.driver().state(), StoryState::Finished);
         assert!(!story.needs_tick());
     }
 
@@ -467,21 +552,29 @@ mod tests {
         "#;
         let mut story = runtime(text);
         window_tick(&mut story);
-        assert_eq!(story.driver.ui().session().view().history.len(), 1);
+        assert_eq!(story.driver().ui().session().view().history.len(), 1);
         drain(&mut story);
-        assert_eq!(story.driver.ui().session().view().history.len(), 1);
+        assert_eq!(story.driver().ui().session().view().history.len(), 1);
         assert!(matches!(
-            story.driver.ui().session().view().interaction,
+            story.driver().ui().session().view().interaction,
             Some(InteractionView::Dialogue(_))
         ));
         story
             .tick(SliceBudget::default(), || panic!("waiting must not run VM"))
             .unwrap();
-        let owner = story.driver.ui().session().root_owner();
-        let id = story.driver.ui().session().view().interaction.unwrap().id();
+        let owner = story.driver().ui().session().root_owner();
+        let id = story
+            .driver()
+            .ui()
+            .session()
+            .view()
+            .interaction
+            .unwrap()
+            .id();
         for _ in 0..2 {
             story
-                .driver
+                .driver_mut()
+                .unwrap()
                 .ui_mut()
                 .session_mut()
                 .handle_local_input(owner, InputAction::Advance(id))
@@ -489,13 +582,15 @@ mod tests {
         }
         story.wake_input();
         drain(&mut story);
-        let Some(InteractionView::Choice(choice)) = story.driver.ui().session().view().interaction
+        let Some(InteractionView::Choice(choice)) =
+            story.driver().ui().session().view().interaction
         else {
             panic!("choice")
         };
         let option = choice.options()[0].id().clone();
         story
-            .driver
+            .driver_mut()
+            .unwrap()
             .ui_mut()
             .session_mut()
             .handle_local_input(owner, InputAction::Select(option))
@@ -505,23 +600,23 @@ mod tests {
         // The synthetic clock measures yielding, not scene construction time.
         // A constructor's parameter defaults may span several bounded ticks.
         for _ in 0..8 {
-            if story.driver.adapter().stage().revision() > 0 {
+            if story.driver().adapter().stage().revision() > 0 {
                 break;
             }
             window_tick(&mut story);
         }
-        assert!(story.driver.adapter().stage().revision() > 0);
-        assert_eq!(story.driver.state(), StoryState::Running);
+        assert!(story.driver().adapter().stage().revision() > 0);
+        assert_eq!(story.driver().state(), StoryState::Running);
         assert!(clock >= 2_000_000);
         drain(&mut story);
-        assert_eq!(story.driver.state(), StoryState::Finished);
-        let heap = story.driver.adapter().vm().heap().stats();
+        assert_eq!(story.driver().state(), StoryState::Finished);
+        let heap = story.driver().adapter().vm().heap().stats();
         eprintln!(
             "1200 scene replacements: peak_charged_bytes={}, peak_pending_bytes={}",
             heap.peak_charged_bytes, heap.peak_pending_bytes
         );
         assert_eq!(
-            story.driver.ui().session().owner_lifecycle(owner),
+            story.driver().ui().session().owner_lifecycle(owner),
             Some(OwnerLifecycle::Retired)
         );
         story.close().unwrap();
@@ -529,15 +624,15 @@ mod tests {
 
         let mut waiting = runtime(text);
         drain(&mut waiting);
-        let owner = waiting.driver.ui().session().root_owner();
+        let owner = waiting.driver().ui().session().root_owner();
         waiting.close().unwrap();
         drain(&mut waiting);
         assert!(waiting.close_complete());
         assert_eq!(
-            waiting.driver.ui().session().owner_lifecycle(owner),
+            waiting.driver().ui().session().owner_lifecycle(owner),
             Some(OwnerLifecycle::Retired)
         );
-        assert!(waiting.driver.adapter().task().is_none());
+        assert!(waiting.driver().adapter().task().is_none());
 
         let mut faulted = runtime("fn main() {\n    throw \"boom\";\n}");
         let mut failure = None;
@@ -550,7 +645,7 @@ mod tests {
         let failure = failure.unwrap();
         assert!(failure.contains("window_story:2:5:"), "{failure}");
         assert!(failure.contains("Thrown: boom"), "{failure}");
-        assert!(matches!(faulted.driver.state(), StoryState::Faulted(_)));
+        assert!(matches!(faulted.driver().state(), StoryState::Faulted(_)));
         faulted.close().unwrap();
         drain(&mut faulted);
         assert!(faulted.close_complete());

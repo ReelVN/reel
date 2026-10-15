@@ -66,15 +66,15 @@ fn source_and_asb_exit_from_story_or_waiting_callback_retire_the_session() {
                     break;
                 }
             }
-            assert!(runtime.driver.adapter().exit_requested());
+            assert!(runtime.driver().adapter().exit_requested());
             assert!(runtime.close_complete());
             assert!(!runtime.needs_tick());
-            assert!(runtime.driver.adapter().task().is_none());
+            assert!(runtime.driver().adapter().task().is_none());
             assert_eq!(
-                runtime.driver.ui().session().owner_lifecycle(owner),
+                runtime.driver().ui().session().owner_lifecycle(owner),
                 Some(OwnerLifecycle::Retired)
             );
-            assert!(runtime.driver.fault().unwrap().is_none());
+            assert!(runtime.driver().fault().unwrap().is_none());
         }
     }
 }

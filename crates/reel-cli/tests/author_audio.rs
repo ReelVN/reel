@@ -59,12 +59,12 @@ fn author_audio_source_and_asb_complete_on_native_output() {
                 .unwrap();
             assert!(
                 matches!(
-                    runtime.driver.state(),
+                    runtime.driver().state(),
                     StoryState::Running | StoryState::Finished
                 ),
                 "native audio state: {:?}, fault: {:?}",
-                runtime.driver.state(),
-                runtime.driver.fault()
+                runtime.driver().state(),
+                runtime.driver().fault()
             );
             assert!(
                 start.elapsed() < Duration::from_secs(10),
@@ -72,7 +72,7 @@ fn author_audio_source_and_asb_complete_on_native_output() {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(runtime.driver.state(), StoryState::Finished);
-        assert!(!runtime.driver.cleanup_pending());
+        assert_eq!(runtime.driver().state(), StoryState::Finished);
+        assert!(!runtime.driver().cleanup_pending());
     }
 }

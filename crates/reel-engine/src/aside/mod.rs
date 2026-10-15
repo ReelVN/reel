@@ -22,6 +22,7 @@ mod publication;
 mod registry;
 mod results;
 mod rich_text;
+pub mod saves;
 pub mod snapshot;
 pub mod source;
 mod stage;
@@ -211,6 +212,7 @@ pub struct SessionVm {
     stage: stage::StageBinding,
     activities: activity::Activities,
     results: results::Results,
+    saves: saves::Saves,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     audio: audio::Audio,
@@ -272,6 +274,7 @@ impl SessionVm {
             stage,
             activities: activity::Activities::default(),
             results: results::Results::default(),
+            saves: saves::Saves::default(),
             particles: particles::Particles::default(),
             standard,
             audio: audio::Audio::default(),
@@ -298,6 +301,9 @@ impl SessionVm {
     }
     pub fn vm(&self) -> &Vm {
         &self.vm
+    }
+    pub fn logical_time(&self) -> f64 {
+        self.activities.time()
     }
 
     /// The work requested shutdown; the embedding host owns cleanup and its window.
@@ -427,6 +433,13 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::saves::save"
+            | "reel::saves::load"
+            | "reel::saves::delete"
+            | "reel::saves::list" => {
+                self.dispatch_save(ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::game::exit" => {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
                 self.issued = None;
@@ -1165,6 +1178,7 @@ impl SessionVm {
         self.audio.close();
         self.translations.close();
         self.results.clear();
+        self.saves.clear();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;

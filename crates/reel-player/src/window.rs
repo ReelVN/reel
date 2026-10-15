@@ -89,14 +89,64 @@ impl State {
         driver: AsideSessionUi,
         options: StoryWindowOptions,
     ) -> Result<Self, Error> {
-        Self::with_mode(
+        let root = if let Some(root) = &options.save_directory {
+            root.clone()
+        } else {
+            #[cfg(target_os = "windows")]
+            let data = std::env::var_os("LOCALAPPDATA")
+                .map(std::path::PathBuf::from)
+                .ok_or("LOCALAPPDATA is unavailable; set StoryWindowOptions.save_directory")?;
+            #[cfg(not(target_os = "windows"))]
+            let data = std::env::var_os("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|home| std::path::PathBuf::from(home).join(".local/share"))
+                })
+                .ok_or(
+                    "user data directory is unavailable; set StoryWindowOptions.save_directory",
+                )?;
+            crate::saves::game_save_directory(
+                &data,
+                &options.assets.root.canonicalize()?.to_string_lossy(),
+            )
+        };
+        let save_bytes = options.save_bytes;
+        let assets = driver.ui().assets();
+        let audio = options.audio.clone();
+        let mut state = Self::with_mode(
             event_loop,
             generation,
             GpuLimits::default(),
             Some(WindowSession::aside(driver)),
             Some(options),
-        )
+        )?;
+        let window = state.window.clone();
+        let wake = reel_core::wake::WakeSignal::new(move || window.request_redraw());
+        let service = crate::saves::SaveService::new(
+            Arc::new(crate::saves::DirectorySaves::new(root, save_bytes)),
+            reel_core::budget::QueueLimits {
+                max_requests: 1,
+                max_bytes: save_bytes,
+            },
+            wake.clone(),
+        );
+        if let Some(WindowSession::Aside(runtime)) = &mut state.session {
+            runtime.set_saves(crate::saves::RuntimeSaves::new(
+                service,
+                save_bytes,
+                move || {
+                    Box::new(crate::audio::AudioPlayer::desktop(
+                        assets.clone(),
+                        audio.clone(),
+                        wake.clone(),
+                    ))
+                },
+            ));
+        }
+        Ok(state)
     }
+
     fn with_limits(
         event_loop: &ActiveEventLoop,
         generation: u64,
@@ -140,7 +190,7 @@ impl State {
         let instance = wgpu::Instance::default();
         if let Some(session) = &mut session {
             let window = Arc::downgrade(&window);
-            session.ui_mut().set_resource_waker(Arc::new(move || {
+            session.ui_mut()?.set_resource_waker(Arc::new(move || {
                 if let Some(window) = window.upgrade() {
                     window.request_redraw();
                 }
@@ -351,7 +401,7 @@ impl State {
         });
         // Invalidates candidates even if fresh negotiation subsequently fails.
         if let Some(session) = &mut self.session {
-            session.ui_mut().clear_presented();
+            session.ui_mut()?.clear_presented();
             session.sync(&mut self.presentation.bridge, self.root_id)?;
         }
         Ok(())
@@ -432,7 +482,7 @@ impl State {
         else {
             return Ok(false);
         };
-        self.session.as_mut().unwrap().ui_mut().clear_presented();
+        self.session.as_mut().unwrap().ui_mut()?.clear_presented();
         let paths = settings.fonts.clone();
         let assets = self.session.as_ref().unwrap().ui().assets();
         self.font_requests.retain(|path, id| {
@@ -513,7 +563,7 @@ impl State {
         self.closing = true;
         self.presentation.suspend();
         if let Some(session) = &mut self.session {
-            session.ui_mut().close_resources();
+            session.ui_mut()?.close_resources();
             session.close()?;
         }
         Ok(())
@@ -684,7 +734,7 @@ impl State {
         );
         Ok(())
     }
-    pub(crate) fn suspend(&mut self) {
+    pub(crate) fn suspend(&mut self) -> Result<(), Error> {
         self.stop_gamepads();
         self.touch.clear();
         self.input.cancel(|_| {});
@@ -696,9 +746,10 @@ impl State {
         self.presentation.suspend();
         self.backend.suspend();
         if let Some(session) = &mut self.session {
-            session.ui_mut().clear_presented();
-            session.suspend(self.host.monotonic_now().0);
+            session.ui_mut()?.clear_presented();
+            session.suspend(self.host.monotonic_now().0)?;
         }
+        Ok(())
     }
     pub(crate) fn is_suspended(&self) -> bool {
         self.backend.surface().is_none()
@@ -1272,7 +1323,7 @@ mod tests {
         );
         let generation = state.backend.renderer_mut().gpu().generation();
         let epoch = state.epoch;
-        state.suspend();
+        state.suspend().unwrap();
         assert!(state.is_suspended());
         assert!(state.presentation.bridge.accepted_key().is_none());
         assert!(state.presentation.accepted_frame.is_none());
@@ -1430,9 +1481,13 @@ mod tests {
     }
     fn advance_session_text(state: &mut State) {
         let session = state.session.as_mut().unwrap();
-        session.ui_mut().pause_dialogue();
-        session.ui_mut().advance_dialogue(0, 30.).unwrap();
-        session.ui_mut().advance_dialogue(33_333_334, 30.).unwrap();
+        session.ui_mut().unwrap().pause_dialogue();
+        session.ui_mut().unwrap().advance_dialogue(0, 30.).unwrap();
+        session
+            .ui_mut()
+            .unwrap()
+            .advance_dialogue(33_333_334, 30.)
+            .unwrap();
         session
             .sync(&mut state.presentation.bridge, state.root_id)
             .unwrap();
@@ -1485,7 +1540,7 @@ mod tests {
         assert!(state.story_deadline().is_none());
         assert!(state.presentation.bridge.accepted_key().is_none());
         present_session(&mut state);
-        state.suspend();
+        state.suspend().unwrap();
         assert!(state.story_deadline().is_none());
         assert!(state.presentation.bridge.accepted_key().is_none());
         state.resume().unwrap();
@@ -1538,8 +1593,24 @@ mod tests {
         drop(state);
         let mut cancelled = State::new_session(event_loop, 1).unwrap();
         present_session(&mut cancelled);
-        assert!(cancelled.session.as_mut().unwrap().ui_mut().cancel());
-        assert!(!cancelled.session.as_mut().unwrap().ui_mut().cancel());
+        assert!(
+            cancelled
+                .session
+                .as_mut()
+                .unwrap()
+                .ui_mut()
+                .unwrap()
+                .cancel()
+        );
+        assert!(
+            !cancelled
+                .session
+                .as_mut()
+                .unwrap()
+                .ui_mut()
+                .unwrap()
+                .cancel()
+        );
         cancelled
             .session
             .as_mut()
@@ -1728,6 +1799,7 @@ fn main() {{
         for _ in 0..2 {
             session
                 .ui_mut()
+                .unwrap()
                 .session_mut()
                 .handle_local_input(owner, reel_engine::InputAction::Advance(id))
                 .unwrap();

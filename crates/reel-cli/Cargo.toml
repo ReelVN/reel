@@ -24,7 +24,7 @@ reel-engine = { path = "../reel-engine" }
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg"] }
 reel-player = { path = "../reel-player", optional = true }
-atomic-write-file = "=0.3.1"
+reel-storage = { path = "../reel-storage" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.190"

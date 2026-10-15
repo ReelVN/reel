@@ -2862,7 +2862,6 @@ version = "0.1.0"
 dependencies = [
  "aside-compiler",
  "aside-vm",
- "atomic-write-file",
  "codespan-reporting",
  "image",
  "libc",
@@ -2870,6 +2869,7 @@ dependencies = [
  "reel-engine",
  "reel-package",
  "reel-player",
+ "reel-storage",
  "reel-ui",
  "serde_json",
 ]
@@ -2902,6 +2902,7 @@ dependencies = [
  "postcard",
  "reel-core",
  "reel-ui",
+ "self_cell",
  "serde",
  "stats_alloc",
  "unic-langid",
@@ -2938,14 +2939,19 @@ dependencies = [
  "arboard",
  "aside-vm",
  "blake3",
+ "flate2",
  "gilrs",
  "image",
  "pollster",
+ "postcard",
  "reel-core",
  "reel-engine",
  "reel-media",
  "reel-render",
+ "reel-storage",
  "reel-ui",
+ "self_cell",
+ "serde",
  "stats_alloc",
  "ui-events-winit",
  "wgpu",
@@ -2965,6 +2971,13 @@ dependencies = [
  "reel-ui",
  "swash",
  "wgpu",
+]
+
+[[package]]
+name = "reel-storage"
+version = "0.1.0"
+dependencies = [
+ "atomic-write-file",
 ]
 
 [[package]]

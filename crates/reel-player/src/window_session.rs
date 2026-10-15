@@ -22,18 +22,18 @@ impl WindowSession {
         match self {
             Self::Diagnostic(_) => true,
             Self::Aside(story) => {
-                !story.driver.ui().images_pending()
-                    && (story.driver.ui().has_stage_root()
-                        || story.driver.projection_stamp().presentation_request != 0
-                        || story.driver.state() == crate::aside_session::StoryState::Finished)
+                !story.driver().ui().images_pending()
+                    && (story.driver().ui().has_stage_root()
+                        || story.driver().projection_stamp().presentation_request != 0
+                        || story.driver().state() == crate::aside_session::StoryState::Finished)
             }
         }
     }
     pub(crate) fn check_fonts(&self) -> Result<(), Error> {
         if let Self::Aside(story) = self
-            && story.driver.adapter().game_settings().fonts.is_empty()
-            && (story.driver.adapter().stage().root().is_some()
-                || story.driver.ui().session().view().interaction.is_some()
+            && story.driver().adapter().game_settings().fonts.is_empty()
+            && (story.driver().adapter().stage().root().is_some()
+                || story.driver().ui().session().view().interaction.is_some()
                 || !story.needs_tick())
         {
             return Err("configure font files in main with game.configure(fonts: [\"fonts/body.ttf\"]) before presenting the story".into());
@@ -45,7 +45,7 @@ impl WindowSession {
         &self,
     ) -> Option<&std::sync::Arc<reel_engine::aside::GameSettings>> {
         match self {
-            Self::Aside(story) => Some(story.driver.adapter().game_settings()),
+            Self::Aside(story) => Some(story.driver().adapter().game_settings()),
             Self::Diagnostic(_) => None,
         }
     }
@@ -56,7 +56,7 @@ impl WindowSession {
     ) -> Result<Handled, Error> {
         match self {
             Self::Diagnostic(host) => Ok(host.ui.handle_pointer(bridge, event)?.handled),
-            Self::Aside(story) => story.driver.handle_pointer(bridge, event),
+            Self::Aside(story) => story.driver_mut()?.handle_pointer(bridge, event),
         }
     }
     pub(crate) fn handle_text(
@@ -66,7 +66,7 @@ impl WindowSession {
     ) -> Result<Handled, Error> {
         match self {
             Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
-            Self::Aside(story) => story.driver.handle_text(bridge, event),
+            Self::Aside(story) => story.driver_mut()?.handle_text(bridge, event),
         }
     }
     pub(crate) fn aside(driver: AsideSessionUi) -> Self {
@@ -76,15 +76,15 @@ impl WindowSession {
     pub(crate) fn ui(&self) -> &SessionUi {
         match self {
             Self::Diagnostic(host) => &host.ui,
-            Self::Aside(story) => story.driver.ui(),
+            Self::Aside(story) => story.driver().ui(),
         }
     }
 
-    pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
-        match self {
+    pub(crate) fn ui_mut(&mut self) -> Result<&mut SessionUi, Error> {
+        Ok(match self {
             Self::Diagnostic(host) => &mut host.ui,
-            Self::Aside(story) => story.driver.ui_mut(),
-        }
+            Self::Aside(story) => story.driver_mut()?.ui_mut(),
+        })
     }
 
     pub(crate) fn after_input(
@@ -95,7 +95,7 @@ impl WindowSession {
         match self {
             Self::Diagnostic(host) => host.after_input(bridge, root),
             Self::Aside(story) => {
-                story.driver.sync_input(bridge, root)?;
+                story.driver_mut()?.sync_input(bridge, root)?;
                 story.wake_input();
                 Ok(())
             }
@@ -109,7 +109,8 @@ impl WindowSession {
     ) -> Result<(), Error> {
         match self {
             Self::Diagnostic(host) => host.ui.sync(bridge, root),
-            Self::Aside(story) => story.driver.sync(bridge, root),
+            Self::Aside(story) if story.capturing() => Ok(()),
+            Self::Aside(story) => story.driver_mut()?.sync(bridge, root),
         }
     }
 
@@ -120,7 +121,10 @@ impl WindowSession {
         match self {
             Self::Diagnostic(host) => host.ui.presented(stamp),
             Self::Aside(story) => {
-                story.driver.presented(stamp)?;
+                if story.capturing() {
+                    return Ok(());
+                }
+                story.driver_mut()?.presented(stamp)?;
                 story.wake_input();
             }
         }
@@ -132,11 +136,12 @@ impl WindowSession {
             Self::Diagnostic(host) => host.ui.dialogue_needs_time(),
         }
     }
-    pub(crate) fn suspend(&mut self, now: u64) {
-        self.ui_mut().pause_dialogue();
+    pub(crate) fn suspend(&mut self, now: u64) -> Result<(), Error> {
+        self.ui_mut()?.pause_dialogue();
         if let Self::Aside(story) = self {
-            story.suspend(now);
+            story.suspend(now)?;
         }
+        Ok(())
     }
     pub(crate) fn resume(&mut self, now: u64) {
         if let Self::Aside(story) = self {
@@ -183,7 +188,7 @@ impl WindowSession {
     }
 
     pub(crate) fn exit_requested(&self) -> bool {
-        matches!(self, Self::Aside(story) if story.driver.adapter().exit_requested())
+        matches!(self, Self::Aside(story) if story.driver().adapter().exit_requested())
     }
 
     #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]

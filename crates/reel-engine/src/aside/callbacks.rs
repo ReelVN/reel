@@ -325,6 +325,7 @@ impl SessionVm {
             || self.activities.has_active()
             || self.particles.has_active()
             || self.audio.active()
+            || self.saves.active()
             || self.stage.has_handlers()
     }
 
@@ -417,7 +418,7 @@ impl SessionVm {
         &mut self,
         session: &mut Session,
         budget: SliceBudget,
-        now: impl FnMut() -> u64,
+        mut now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
         self.live(session)?;
         if self
@@ -467,29 +468,8 @@ impl SessionVm {
         if self.delivery.is_some() {
             return Err(AdapterError::Input("delivery not retired"));
         }
-        if self.reactive_ready
-            && self.derived_task.is_none()
-            && let Some(output) = self.vm.heap_mut().next_derived()?
-        {
-            self.derived_task = Some(self.vm.start_derived(output, self.root_owner)?);
-        }
-        if let Some(task) = self.derived_task {
-            let outcome = self.vm.run_slice(task, budget, now)?;
-            match outcome {
-                RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
-                RunOutcome::Returned(id) => {
-                    self.vm.discard_delivery(id)?;
-                    self.derived_task = None;
-                    self.sync_stage(session)?;
-                    return Ok(SessionStep::Progress);
-                }
-                RunOutcome::Fault(id) => {
-                    self.delivery = Some(id);
-                    self.delivery_task = Some(task);
-                }
-                _ => {}
-            }
-            return Ok(SessionStep::Vm(outcome));
+        if let Some(progress) = self.step_reactive(session, budget, &mut now)? {
+            return Ok(progress);
         }
         let count = self.tasks.len() + 1;
         let selected = (0..count)
@@ -585,5 +565,41 @@ impl SessionVm {
             _ => {}
         }
         Ok(SessionStep::Vm(outcome))
+    }
+}
+
+impl SessionVm {
+    /// Rebuild only derived presentation values; no story/callback task is run.
+    pub fn step_reactive(
+        &mut self,
+        session: &Session,
+        budget: SliceBudget,
+        now: impl FnMut() -> u64,
+    ) -> Result<Option<SessionStep>, AdapterError> {
+        if self.reactive_ready
+            && self.derived_task.is_none()
+            && let Some(output) = self.vm.heap_mut().next_derived()?
+        {
+            self.derived_task = Some(self.vm.start_derived(output, self.root_owner)?);
+        }
+        if let Some(task) = self.derived_task {
+            let outcome = self.vm.run_slice(task, budget, now)?;
+            match outcome {
+                RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
+                RunOutcome::Returned(id) => {
+                    self.vm.discard_delivery(id)?;
+                    self.derived_task = None;
+                    self.sync_stage(session)?;
+                    return Ok(Some(SessionStep::Progress));
+                }
+                RunOutcome::Fault(id) => {
+                    self.delivery = Some(id);
+                    self.delivery_task = Some(task);
+                }
+                _ => {}
+            }
+            return Ok(Some(SessionStep::Vm(outcome)));
+        }
+        Ok(None)
     }
 }

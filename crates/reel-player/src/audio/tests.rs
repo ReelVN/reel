@@ -201,14 +201,14 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
             runtime.tick(SliceBudget::default(), || 0).unwrap();
             assert!(
                 matches!(
-                    runtime.driver.state(),
+                    runtime.driver().state(),
                     StoryState::Running | StoryState::Finished
                 ),
                 "state: {:?}, fault: {:?}",
-                runtime.driver.state(),
-                runtime.driver.fault()
+                runtime.driver().state(),
+                runtime.driver().fault()
             );
-            runtime.driver.state() == StoryState::Finished && !runtime.needs_tick()
+            runtime.driver().state() == StoryState::Finished && !runtime.needs_tick()
         });
         assert!(peak > 0.1, "real decoded PCM must reach output");
         assert_eq!(pcm.usage().bytes, 0);

@@ -35,8 +35,11 @@ pub enum CleanupDestination {
     Leave(Pc),
 }
 /// Construction is restricted to the verifier. Accessors only borrow immutable data.
+#[derive(Clone, Debug)]
+pub struct VerifiedProgram(std::sync::Arc<VerifiedData>);
+
 #[derive(Debug)]
-pub struct VerifiedProgram {
+struct VerifiedData {
     identity: [u8; 32],
     package: BytecodePackage,
     stats: PackageStats,
@@ -63,8 +66,11 @@ struct DerivedLayouts {
     modules: ModuleBindings,
 }
 impl VerifiedProgram {
+    pub(crate) fn shared_header_bytes(&self) -> usize {
+        std::mem::size_of::<VerifiedData>() + 2 * std::mem::size_of::<usize>()
+    }
     pub(crate) fn snapshot_identity(&self) -> [u8; 32] {
-        self.identity
+        self.0.identity
     }
     /// Imports resolve to their original cell; access costs are independent of
     /// the number of source modules or the length of a reexport chain.
@@ -73,16 +79,20 @@ impl VerifiedProgram {
         module: ModuleId,
         global: GlobalId,
     ) -> Result<GlobalBinding, Error> {
-        let start = *get(&self.module_bindings.offsets, module.0, "global module")?;
-        let end = *get(&self.module_bindings.offsets, module.0 + 1, "global module")?;
+        let start = *get(&self.0.module_bindings.offsets, module.0, "global module")?;
+        let end = *get(
+            &self.0.module_bindings.offsets,
+            module.0 + 1,
+            "global module",
+        )?;
         check(global.0 < end - start, ErrorKind::Index, "global binding")?;
-        Ok(self.module_bindings.values[(start + global.0) as usize])
+        Ok(self.0.module_bindings.values[(start + global.0) as usize])
     }
     pub fn package(&self) -> &BytecodePackage {
-        &self.package
+        &self.0.package
     }
     pub fn stats(&self) -> PackageStats {
-        self.stats
+        self.0.stats
     }
     /// Validated canonical native storage, derived once from all default prefixes.
     /// Rest and parameters outside every default prefix are ordinary Value slots.
@@ -92,8 +102,8 @@ impl VerifiedProgram {
         native: NativeId,
         parameter: u32,
     ) -> Result<BindingStorage, Error> {
-        let native = get(&self.package.natives, native.0, "native parameter layout")?;
-        let signature = &self.package.signatures[native.signature.index()];
+        let native = get(&self.0.package.natives, native.0, "native parameter layout")?;
+        let signature = &self.0.package.signatures[native.signature.index()];
         check(
             (parameter as usize)
                 < signature.parameters.len() + usize::from(signature.rest.is_some()),
@@ -102,6 +112,7 @@ impl VerifiedProgram {
         )?;
         Ok(
             if self
+                .0
                 .native_parameter_cells
                 .binary_search(&(native.signature.0, parameter))
                 .is_ok()
@@ -115,14 +126,15 @@ impl VerifiedProgram {
     /// False selects the ordinary native binder's no-Cell path. Borrowing these
     /// immutable tables allocates nothing; execution accounts its own query work.
     pub fn native_parameters_need_cells(&self, native: NativeId) -> Result<bool, Error> {
-        let native = get(&self.package.natives, native.0, "native parameter layout")?;
+        let native = get(&self.0.package.natives, native.0, "native parameter layout")?;
         Ok(self
+            .0
             .native_parameter_cells
             .binary_search_by_key(&native.signature.0, |&(signature, _)| signature)
             .is_ok())
     }
     pub fn source_at(&self, function: FunctionId, pc: Pc) -> Option<SourceSpan> {
-        let f = self.package.functions.get(function.index())?;
+        let f = self.0.package.functions.get(function.index())?;
         if pc.index() >= f.code.len() && !(matches!(f.kind, FunctionKind::Native(_)) && pc.0 == 0) {
             return None;
         }
@@ -182,7 +194,7 @@ impl VerifiedProgram {
         pc: Pc,
         skip: Option<RegionId>,
     ) -> Result<&FunctionDef, Error> {
-        let f = get(&self.package.functions, function.0, "exception function")?;
+        let f = get(&self.0.package.functions, function.0, "exception function")?;
         check(
             pc.index() < f.code.len(),
             ErrorKind::Index,
@@ -201,8 +213,8 @@ impl VerifiedProgram {
     /// A dispatcher must check its actual implemented opcodes and native registry.
     /// This includes unreachable code: unsupported instructions are never no-ops.
     pub fn require_runtime(&self, support: &RuntimeSupport) -> Result<(), Error> {
-        let p = &self.package;
-        let mut b = Budget::new(self.limits, self.stats.owned_capacity_bytes);
+        let p = &self.0.package;
+        let mut b = Budget::new(self.0.limits, self.0.stats.owned_capacity_bytes);
         for c in &p.capabilities {
             if !contains_text(&support.capabilities, &p.symbols[c.index()], &mut b)? {
                 return Err(Error::new(
@@ -283,14 +295,14 @@ impl VerifiedProgram {
 }
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
     let (stats, layouts) = validate_program(&package, limits)?;
-    Ok(VerifiedProgram {
+    Ok(VerifiedProgram(std::sync::Arc::new(VerifiedData {
         identity: super::codec::identity(&package, limits)?,
         package,
         stats,
         limits,
         native_parameter_cells: layouts.native_parameters,
         module_bindings: layouts.modules,
-    })
+    })))
 }
 struct Budget {
     limits: Limits,
@@ -2085,8 +2097,8 @@ pub fn disassemble(program: &VerifiedProgram, out: &mut impl Write) -> std::fmt:
         p.language_version,
         p.host_abi_version,
         p.content_version,
-        program.stats.encoded_bytes,
-        program.stats.owned_capacity_bytes
+        program.stats().encoded_bytes,
+        program.stats().owned_capacity_bytes
     )?;
     for (id, module) in p.modules.iter().enumerate() {
         writeln!(

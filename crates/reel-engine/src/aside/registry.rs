@@ -383,6 +383,28 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ty: BuiltinType::Any,
         default,
     };
+    for (name, parameters) in [
+        (
+            "save",
+            vec![
+                parameter("slot", None),
+                parameter("title", Some(bc::Const::Null)),
+            ],
+        ),
+        ("load", vec![parameter("slot", None)]),
+        ("delete", vec![parameter("slot", None)]),
+        ("list", vec![]),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::saves::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+            required_capabilities: vec![],
+        });
+    }
     for (name, parameters, waits) in [
         (
             "play",
