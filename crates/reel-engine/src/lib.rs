@@ -12,6 +12,7 @@ pub mod aside;
 pub mod audio;
 pub mod localization;
 mod reading;
+mod reveal;
 pub use reading::{ReadProgress, ReadingState};
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};
@@ -185,6 +186,7 @@ pub struct DialogueLine {
     /// Every grapheme endpoint, including the initial zero boundary.
     grapheme_boundaries: Vec<usize>,
     revealed_count: usize,
+    timing: reveal::RevealTiming,
 }
 
 impl DialogueLine {
@@ -218,7 +220,7 @@ impl DialogueLine {
     }
 
     pub fn resolved_text(&self) -> &str {
-        // This version accepts only plain text, already resolved by the caller.
+        // Styling and timing retain the same immutable, already resolved body.
         self.content.fallback()
     }
 
@@ -521,6 +523,7 @@ impl Completion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
+    InvalidTextSpeed,
     SessionNotRunning,
     ForeignOwner,
     OwnerNotLive,
@@ -1084,6 +1087,7 @@ impl Session {
                 content: content.clone(),
                 grapheme_boundaries: boundaries,
                 revealed_count: 0,
+                timing: Default::default(),
             });
             current_line_ids.push(line_id);
             history_lines.push(HistoryLine {
@@ -1172,6 +1176,53 @@ impl Session {
         id: InteractionId,
         graphemes_per_line: usize,
     ) -> Result<bool, SessionError> {
+        let paused = self.reading.paused();
+        let dialogue = self.reveal_dialogue_mut(owner, id)?;
+        if paused {
+            return Ok(false);
+        }
+        let mut changed = false;
+        for line in &mut dialogue.lines {
+            let total_count = line.grapheme_boundaries.len() - 1;
+            let next =
+                line.revealed_count + graphemes_per_line.min(total_count - line.revealed_count);
+            if graphemes_per_line != 0 {
+                changed |= next != line.revealed_count || !line.playback_complete();
+                line.revealed_count = next;
+                line.skip_timing();
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Advance each line's own speed and pause cues on the shared logical clock.
+    pub fn advance_reveal(
+        &mut self,
+        owner: OwnerHandle,
+        id: InteractionId,
+        elapsed: std::time::Duration,
+        player_speed: f64,
+    ) -> Result<bool, SessionError> {
+        if !player_speed.is_finite() || player_speed < 0. {
+            return Err(SessionError::InvalidTextSpeed);
+        }
+        let paused = self.reading.paused();
+        let dialogue = self.reveal_dialogue_mut(owner, id)?;
+        if paused {
+            return Ok(false);
+        }
+        let mut changed = false;
+        for line in &mut dialogue.lines {
+            changed |= line.advance_reveal(elapsed, player_speed);
+        }
+        Ok(changed)
+    }
+
+    fn reveal_dialogue_mut(
+        &mut self,
+        owner: OwnerHandle,
+        id: InteractionId,
+    ) -> Result<&mut DialogueInteraction, SessionError> {
         self.ensure_running()?;
         if owner.identity != self.identity {
             return Err(SessionError::ForeignOwner);
@@ -1192,18 +1243,7 @@ impl Session {
         let Interaction::Dialogue(dialogue) = active else {
             return Err(SessionError::WrongInteractionKind);
         };
-        if self.reading.paused() {
-            return Ok(false);
-        }
-        let mut changed = false;
-        for line in &mut dialogue.lines {
-            let total_count = line.grapheme_boundaries.len() - 1;
-            let next =
-                line.revealed_count + graphemes_per_line.min(total_count - line.revealed_count);
-            changed |= next != line.revealed_count;
-            line.revealed_count = next;
-        }
-        Ok(changed)
+        Ok(dialogue)
     }
 
     /// Process each live same-session sequence at most once, even if its action is
@@ -1283,8 +1323,9 @@ impl Session {
                 let mut revealed = false;
                 for line in &mut dialogue.lines {
                     let total_count = line.grapheme_boundaries.len() - 1;
-                    if line.revealed_count < total_count {
+                    if !line.playback_complete() {
                         line.revealed_count = total_count;
+                        line.skip_timing();
                         revealed = true;
                     }
                 }

@@ -52,6 +52,102 @@ fn text(story: &StoryRuntime) -> &str {
 }
 
 #[test]
+fn sentence_timing_preserves_pauses_and_waits_for_presentation_before_continuing() {
+    let source = r#"
+    let d = game.dialogue();
+    fn main() {
+        game.configure(text_speed: 4);
+        stage.replace(text(value: bind(d.text), reveal: bind(d.reveal)));
+        narrator(rich("[speed=0]A[/speed][pause=0.5][speed=2]BC[/speed][speed=2x]DE[/speed]F[pause=0.5][next]"));
+        narrator(rich("[pause=10]manual[pause=10]"));
+        say([character("A").line(rich("[speed=0]fast[/speed][next]")),
+             character("B").line(rich("[speed=1]slow[/speed]"))]);
+    }"#;
+    let checked = reel_cli::check(source, "sentence-timing.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        let mut story = StoryRuntime::new(driver);
+        tick(&mut story, 0);
+        let (mut bridge, root) = bridge(&story.driver);
+        present(&mut story.driver, &mut bridge, root, 1);
+        let visible = |story: &StoryRuntime| {
+            let Some(InteractionView::Dialogue(d)) = story.driver.ui().session().view().interaction
+            else {
+                panic!("dialogue");
+            };
+            d.lines()[0].visible_text().to_owned()
+        };
+        tick(&mut story, 0);
+        assert_eq!(visible(&story), "A");
+        assert_eq!(story.tick_interval(), Duration::from_millis(500));
+        tick(&mut story, 250_000_000);
+        assert_eq!(story.tick_interval(), Duration::from_millis(250));
+        story.suspend(250_000_000);
+        tick(&mut story, 10_250_000_000);
+        story.resume(10_250_000_000);
+        tick(&mut story, 10_250_000_000);
+        assert_eq!(story.tick_interval(), Duration::from_millis(250));
+        tick(&mut story, 10_500_000_000);
+        assert_eq!(visible(&story), "A");
+        tick(&mut story, 11_000_000_000);
+        assert_eq!(visible(&story), "AB");
+        tick(&mut story, 11_500_000_000);
+        assert_eq!(visible(&story), "ABC");
+        tick(&mut story, 11_625_000_000);
+        assert_eq!(visible(&story), "ABCD");
+        tick(&mut story, 11_750_000_000);
+        assert_eq!(visible(&story), "ABCDE");
+        tick(&mut story, 12_000_000_000);
+        assert_eq!(visible(&story), "ABCDEF");
+        assert_eq!(story.tick_interval(), Duration::from_millis(500));
+        tick(&mut story, 12_500_000_000);
+        tick(&mut story, 20_000_000_000);
+        assert_eq!(
+            text(&story),
+            "ABCDEF",
+            "completed text has not been presented"
+        );
+        present(&mut story.driver, &mut bridge, root, 2);
+        tick(&mut story, 20_000_000_000);
+        assert_eq!(text(&story), "manual");
+        assert!(!story.driver.ui().session().reading().automatic());
+        present(&mut story.driver, &mut bridge, root, 3);
+        tick(&mut story, 20_000_000_000);
+        assert_eq!(story.tick_interval(), Duration::from_secs(10));
+        click_at(&mut story.driver, &mut bridge, 500., 300.);
+        story.wake_input();
+        assert_eq!(visible(&story), "manual", "one click bypasses all timing");
+        present(&mut story.driver, &mut bridge, root, 4);
+        assert!(!story.needs_tick(), "manual line still waits for advance");
+        click_at(&mut story.driver, &mut bridge, 500., 300.);
+        story.wake_input();
+        tick(&mut story, 20_000_000_000);
+        present(&mut story.driver, &mut bridge, root, 5);
+        tick(&mut story, 20_000_000_000);
+        assert_eq!(visible(&story), "fast");
+        tick(&mut story, 24_000_000_000);
+        present(&mut story.driver, &mut bridge, root, 6);
+        assert!(
+            !story.needs_tick(),
+            "every grouped line must request automatic continuation"
+        );
+        let history = &story.driver.ui().session().view().history;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].lines()[0].content().styled().cues().len(), 8);
+    }
+}
+
+#[test]
 fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() {
     let source = r#"
     let r = game.reading();

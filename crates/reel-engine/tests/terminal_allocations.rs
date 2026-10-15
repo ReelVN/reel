@@ -63,7 +63,32 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
     let retirement_root = retirement.root_owner();
     let retiring = retirement.create_owner().unwrap();
 
+    let mut timed = Session::new(SessionId(5), Epoch(1)).unwrap();
+    let timed_root = timed.root_owner();
+    let rich = reel_core::text::Text::parse(
+        "[speed=0]e[pause=0.25]\u{301}👩🏽‍🚀[/speed][speed=2x]雨[speed=2]声[/speed]停[/speed][pause=0.5]"
+    ).unwrap();
+    let timed_id = timed
+        .begin_say(
+            timed_root,
+            &[DialogueLineInput {
+                speaker_id: None,
+                speaker_name: "",
+                content_id: "timed",
+                text: (&rich).into(),
+            }],
+            "zh-CN",
+        )
+        .unwrap();
+
     let region = Region::new(GLOBAL);
+    let timed_first = timed.advance_reveal(timed_root, timed_id, std::time::Duration::ZERO, 4.);
+    let timed_visible = match timed.view().interaction.unwrap() {
+        InteractionView::Dialogue(d) => d.lines()[0].reveal().visible_bytes.end,
+        _ => unreachable!(),
+    };
+    let timed_last =
+        timed.advance_reveal(timed_root, timed_id, std::time::Duration::from_secs(2), 4.);
     let revealed = dialogue.reveal_more(root, id, 1);
     let first = dialogue.handle_local_input(ui_owner, InputAction::Advance(id));
     let duplicate = dialogue.handle_input(InputEvent {
@@ -105,6 +130,16 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
     assert_eq!(metrics.allocations, 0, "{metrics:?}");
     assert_eq!(metrics.reallocations, 0, "{metrics:?}");
     assert_eq!(metrics.bytes_allocated, 0, "{metrics:?}");
+    assert_eq!(timed_first, Ok(true));
+    assert_eq!(
+        timed_visible,
+        "e\u{301}".len(),
+        "pause must not split a grapheme"
+    );
+    assert_eq!(timed_last, Ok(true));
+    assert!(
+        matches!(timed.view().interaction, Some(InteractionView::Dialogue(d)) if d.lines()[0].playback_complete())
+    );
     assert_eq!(revealed, Ok(true));
     assert_eq!(first, Ok(InputOutcome::Revealed));
     assert_eq!(duplicate, Err(InputRejection::DuplicateOrOutOfOrder));

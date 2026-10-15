@@ -6,16 +6,18 @@ use std::time::Duration;
 pub(super) struct Playback {
     interaction: Option<InteractionId>,
     last_ns: Option<u64>,
-    fraction: f64,
     reading_revision: u64,
     auto_last: Option<u64>,
     remaining: Duration,
 }
 
 pub(super) fn dialogue_complete(session: &Session) -> bool {
-    matches!(session.view().interaction, Some(InteractionView::Dialogue(d)) if d.lines().iter().all(|line| {
-        let r = line.reveal(); r.revealed_count == r.total_count
-    }))
+    matches!(session.view().interaction, Some(InteractionView::Dialogue(d)) if d.lines().iter().all(|line| line.playback_complete()))
+}
+
+fn continues(session: &Session) -> bool {
+    matches!(session.view().interaction, Some(InteractionView::Dialogue(d)) if !d.lines().is_empty()
+        && d.lines().iter().all(|line| line.content().styled().continue_after()))
 }
 
 impl SessionUi {
@@ -33,13 +35,12 @@ impl SessionUi {
             && !self.session.reading().paused()
             && (self.session.reading().skipping()
                 || !dialogue_complete(&self.session)
-                || (self.session.reading().automatic()
+                || ((self.session.reading().automatic() || continues(&self.session))
                     && accepted.is_some_and(|stamp| stamp.dialogue_complete)))
     }
 
     pub fn pause_dialogue(&mut self) {
         self.playback.last_ns = None;
-        self.playback.fraction = 0.;
         self.playback.auto_last = None;
         self.playback.remaining = self.session.reading().delay();
     }
@@ -79,6 +80,12 @@ impl SessionUi {
             return Ok(true);
         }
         if dialogue_complete(&self.session) {
+            if continues(&self.session) {
+                self.session
+                    .handle_local_input(self.session.root_owner(), InputAction::Advance(id))?;
+                self.pause_dialogue();
+                return Ok(true);
+            }
             let last = self.playback.auto_last.replace(now_ns).unwrap_or(now_ns);
             self.playback.remaining = self
                 .playback
@@ -93,16 +100,13 @@ impl SessionUi {
             return Ok(false);
         }
         let last = self.playback.last_ns.replace(now_ns).unwrap_or(now_ns);
-        let units = if speed == 0. {
-            usize::MAX
-        } else {
-            self.playback.fraction += now_ns.saturating_sub(last) as f64 * speed / 1_000_000_000.;
-            let count = self.playback.fraction.floor() as usize;
-            self.playback.fraction -= count as f64;
-            count
-        };
         self.session
-            .reveal_more(self.session.root_owner(), id, units)
+            .advance_reveal(
+                self.session.root_owner(),
+                id,
+                Duration::from_nanos(now_ns.saturating_sub(last)),
+                speed,
+            )
             .map_err(Into::into)
     }
 
@@ -115,16 +119,20 @@ impl SessionUi {
         }
         if dialogue_complete(&self.session) {
             // First tick establishes the deadline after actual presentation.
-            return if self.playback.auto_last.is_none() {
+            return if continues(&self.session) || self.playback.auto_last.is_none() {
                 Duration::ZERO
             } else {
                 self.playback.remaining
             };
         }
-        Duration::from_nanos(if speed == 0. {
-            0
-        } else {
-            ((1. - self.playback.fraction) * 1_000_000_000. / speed).ceil() as u64
-        })
+        let Some(InteractionView::Dialogue(dialogue)) = self.session.view().interaction else {
+            return Duration::MAX;
+        };
+        dialogue
+            .lines()
+            .iter()
+            .map(|line| line.playback_interval(speed))
+            .min()
+            .unwrap_or(Duration::MAX)
     }
 }

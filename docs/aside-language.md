@@ -252,7 +252,7 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `game.set_skip(enabled, unread: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。
 
-Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去掉标记后的正文；rich_escape(text) 为显式富文本插值转义左方括号。它们不改变 Aside 字符串、插值或类型系统。text.value、narrator、角色调用与 character.line 接受 string 或此宿主值，bind/derive 保留通常语义；game.dialogue 和 game.history 的 text 字段保留提交值的样式。`text(..., on_link: callback)` 交付只读 `{target, id}` 事件，回调归文字节点所有。标记、排版和输入语义见架构规范与创作者指南。rich/rich_escape ABI 1，narrator/character.speak/character.line ABI 2；增加 text_align/line_height 后节点构造 ABI 为 input 6、scroll/text_input/list/view 2、其余 5，tween ABI 2。B01 编码不变。
+Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去掉标记后的正文；rich_escape(text) 为显式富文本插值转义左方括号。它们不改变 Aside 字符串、插值或类型系统。text.value、narrator、角色调用与 character.line 接受 string 或此宿主值，bind/derive 保留通常语义；game.dialogue 和 game.history 的 text 字段保留提交值的样式。`text(..., on_link: callback)` 交付只读 `{target, id}` 事件，回调归文字节点所有。富文本也可携带句内速度、停顿与自动续句标记，由共享对白播放器解释，不增加 VM 指令。标记、排版和输入语义见架构规范与创作者指南。rich/rich_escape ABI 1，narrator/character.speak/character.line ABI 2；增加 text_align/line_height 后节点构造 ABI 为 input 6、scroll/text_input/list/view 2、其余 5，tween ABI 2。B01 编码不变。
 
 图片的 GPU 驻留与上传复用由渲染后端管理；相同资源身份的图片在已提交后可跨帧共享，脚本不需要预热缓存或重复加载。该实现不改变 image 的语言接口或 native ABI。
 
