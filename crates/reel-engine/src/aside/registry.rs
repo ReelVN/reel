@@ -17,7 +17,8 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
-        "reel::toggle" => &["label", "value", "on_change"],
+        "reel::toggle" | "reel::checkbox" => &["label", "value", "on_change"],
+        "reel::radio" => &["option", "label", "value", "on_change"],
         "reel::input" => &["bindings", "on_action", "on_key", "on_pointer"],
         _ => &[],
     }
@@ -106,6 +107,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         "input",
         "slider",
         "toggle",
+        "checkbox",
+        "radio",
         "scroll",
     ] {
         let mut parameters = Vec::new();
@@ -133,9 +136,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     .iter()
                     .map(|p| p.parameter()),
             );
-        } else if name == "toggle" {
+        } else if matches!(name, "toggle" | "checkbox") {
             parameters.extend(
                 super::stage::controls::ToggleField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
+        } else if name == "radio" {
+            parameters.extend(
+                super::stage::controls::RadioField::PROPERTIES
                     .iter()
                     .map(|p| p.parameter()),
             );
@@ -165,7 +174,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
 
         if matches!(
             name,
-            "row" | "column" | "stack" | "button" | "input" | "toggle" | "scroll"
+            "row"
+                | "column"
+                | "stack"
+                | "button"
+                | "input"
+                | "toggle"
+                | "checkbox"
+                | "radio"
+                | "scroll"
         ) {
             parameters.push(NativeParameter {
                 name: "children".into(),
@@ -176,7 +193,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "input" {
+            abi_version: if matches!(name, "checkbox" | "radio") {
+                1
+            } else if name == "input" {
                 7
             } else if name == "scroll" {
                 3
