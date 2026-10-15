@@ -96,7 +96,11 @@ impl State {
             let data = std::env::var_os("LOCALAPPDATA")
                 .map(std::path::PathBuf::from)
                 .ok_or("LOCALAPPDATA is unavailable; set StoryWindowOptions.save_directory")?;
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
+            let data = std::env::var_os("HOME")
+                .map(|home| std::path::PathBuf::from(home).join("Library/Application Support"))
+                .ok_or("HOME is unavailable; set StoryWindowOptions.save_directory")?;
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             let data = std::env::var_os("XDG_DATA_HOME")
                 .map(std::path::PathBuf::from)
                 .or_else(|| {
