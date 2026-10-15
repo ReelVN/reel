@@ -107,8 +107,20 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
         .unwrap();
     let text = "Chat history: office ffi Reel 0123456789. ".repeat(160);
     let root = RenderRoot::new(
-        NewWidget::new(reel_ui::widgets::Label::new(text))
-            .with_props(reel_ui::properties::LineBreaking::WordWrap),
+        NewWidget::new(
+            reel_ui::widgets::Label::new(text)
+                .with_style(StyleProperty::FontStyle(
+                    reel_ui::reel_text::FontStyle::Italic,
+                ))
+                .with_outline(Some(TextOutline {
+                    width: 2.,
+                    color: Color::from_rgb8(255, 0, 0),
+                })),
+        )
+        .with_props((
+            reel_ui::properties::LineBreaking::WordWrap,
+            reel_ui::properties::ContentColor::new(Color::WHITE),
+        )),
         |_| {},
         RenderRootOptions {
             default_properties: Arc::new(DefaultProperties::new()),
@@ -136,6 +148,22 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
         })
         .sum();
     assert!(glyph_count > 4000);
+    let runs = frame
+        .commands()
+        .iter()
+        .filter_map(|c| match &c.op {
+            reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => Some(run),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        runs.iter().any(|run| run.glyph_transform.is_some()),
+        "regular font synthesizes italic"
+    );
+    assert!(
+        runs.iter()
+            .any(|run| matches!(run.style, reel_ui::peniko::Style::Stroke(_)))
+    );
     let mut renderer = renderer(super::super::GpuLimits::default());
     eprintln!(
         "adapter={:?}, glyphs={glyph_count}",
@@ -146,6 +174,38 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     drop(discarded);
     let pixels = renderer.readback(accepted).unwrap();
     assert!(pixels.iter().filter(|p| p[3] > 0.1).count() > 100);
+    assert!(
+        pixels
+            .iter()
+            .any(|p| p[0] > 0.3 && p[1] < 0.01 && p[2] < 0.01),
+        "red outline remains outside fill"
+    );
+    assert!(
+        pixels
+            .iter()
+            .any(|p| p[0] > 0.3 && p[1] > 0.3 && p[2] > 0.3),
+        "white fill uses a separate coverage cache entry"
+    );
+    let run = runs
+        .iter()
+        .find(|r| matches!(r.style, reel_ui::peniko::Style::Stroke(_)))
+        .unwrap();
+    let at = frame.commands()[0].origin.at;
+    let mut raster = super::super::glyph::Rasterizer::default();
+    assert!(matches!(
+        super::super::glyph::rasterize(&mut raster, &frame, run, 0, at, 1, 8192),
+        Err(GpuError::Budget {
+            domain: "glyph raster",
+            ..
+        })
+    ));
+    assert!(matches!(
+        super::super::glyph::rasterize(&mut raster, &frame, run, 0, at, u64::MAX, 1),
+        Err(GpuError::Unsupported {
+            record: "glyph raster exceeds device texture dimensions",
+            ..
+        })
+    ));
     let warm = renderer.gpu.upload_creations.snapshot();
     let resident = renderer.usage().resources;
     assert!(resident <= 2 << 20, "atlas residency {resident}");

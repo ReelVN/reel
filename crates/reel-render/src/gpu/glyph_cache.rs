@@ -18,23 +18,61 @@ use wgpu::util::DeviceExt;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct Key {
+    run: Arc<RunKey>,
+    glyph: u32,
+}
+#[derive(PartialEq, Eq, Hash)]
+pub(super) struct RunKey {
     font: ResourceHandle,
     index: u32,
     size: u32,
     hint: bool,
     coords: Vec<i16>,
-    glyph: u32,
+    transform: Option<[u64; 6]>,
+    embolden: [u64; 2],
+    style: StyleKey,
 }
-impl Key {
-    pub fn new(run: &FrameGlyphRun, index: usize) -> Self {
+#[derive(PartialEq, Eq, Hash)]
+enum StyleKey {
+    Fill(bool),
+    Stroke {
+        width: u64,
+        join: u8,
+        miter: u64,
+        caps: [u8; 2],
+        offset: u64,
+        dashes: Vec<u64>,
+    },
+}
+impl RunKey {
+    pub fn new(run: &FrameGlyphRun) -> Self {
         Self {
             font: run.font,
             index: run.font_index,
             size: run.font_size.to_bits(),
             hint: run.hint,
             coords: run.normalized_coords.to_vec(),
-            glyph: run.glyphs[index].id,
+            transform: run.glyph_transform.map(|t| t.as_coeffs().map(f64::to_bits)),
+            embolden: [run.font_embolden.x.to_bits(), run.font_embolden.y.to_bits()],
+            style: match &run.style {
+                reel_ui::peniko::Style::Fill(fill) => {
+                    StyleKey::Fill(*fill == reel_ui::peniko::Fill::EvenOdd)
+                }
+                reel_ui::peniko::Style::Stroke(s) => StyleKey::Stroke {
+                    width: s.width.to_bits(),
+                    join: s.join as u8,
+                    miter: s.miter_limit.to_bits(),
+                    caps: [s.start_cap as u8, s.end_cap as u8],
+                    offset: s.dash_offset.to_bits(),
+                    dashes: s.dash_pattern.iter().map(|v| v.to_bits()).collect(),
+                },
+            },
         }
+    }
+}
+impl Key {
+    pub fn new(run: Arc<RunKey>, glyph: u32) -> Self {
+        Self { run, glyph }
     }
 }
 pub(super) struct Page {
@@ -76,7 +114,7 @@ impl Drop for Glyph {
 pub(super) struct GlyphCache {
     entries: Mutex<HashMap<Key, Arc<Glyph>>>,
     pages: Mutex<Vec<Weak<Page>>>,
-    raster: Mutex<swash::scale::ScaleContext>,
+    raster: Mutex<glyph::Rasterizer>,
 }
 #[derive(Default)]
 pub(super) struct FrameGlyphs {
@@ -267,8 +305,7 @@ impl GlyphCache {
         let mut bytes = vec![0; cost as usize];
         for y in 0..bitmap.size[1] as usize {
             for x in 0..bitmap.size[0] as usize {
-                let alpha =
-                    (bitmap.pixels[(y * bitmap.size[0] as usize + x) * 4] * 255.).round() as u8;
+                let alpha = bitmap.alpha[y * bitmap.size[0] as usize + x];
                 let start = (y + 1) * row as usize + (x + 1) * 4;
                 bytes[start..start + 4].fill(alpha);
             }
