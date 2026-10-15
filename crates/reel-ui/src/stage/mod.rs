@@ -3,7 +3,7 @@
 
 //! Author-owned scene composition, shared by the script host and presentation.
 use crate::input::{ActionPhase, Binding};
-use crate::kurbo::{Affine, Size};
+use crate::kurbo::{Affine, Point, Size, Vec2};
 use crate::properties::ObjectFit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -62,6 +62,8 @@ pub enum NodeEvent {
     Action(NodeAction),
     Change(NodeChange),
     Interaction(NodeInteraction),
+    Scroll(NodeScroll),
+    Pointer(NodePointer),
     Text(NodeText),
     Key(NodeKey),
 }
@@ -70,6 +72,27 @@ pub struct NodeLink {
     pub node: NodeId,
     pub id: Arc<str>,
     pub text: reel_core::text::Text,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeScroll {
+    pub node: NodeId,
+    pub requested: Vec2,
+    pub offset: Vec2,
+    pub viewport: Size,
+    pub content: Size,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+    Pressed,
+    Moved,
+    Released,
+    Cancelled,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodePointer {
+    pub node: NodeId,
+    pub position: Point,
+    pub phase: PointerPhase,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,10 +174,13 @@ pub enum NodeKind {
         bindings: InputBindings,
         listening: bool,
         keyboard: bool,
+        pointer: bool,
     },
     Scroll {
         axis: crate::widgets::ScrollAxis,
         follow_end: bool,
+        align: crate::widgets::ScrollAlign,
+        offset: Vec2,
     },
     Row,
     Column,

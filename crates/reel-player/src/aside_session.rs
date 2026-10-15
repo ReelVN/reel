@@ -327,7 +327,10 @@ impl AsideSessionUi {
                         NodeEvent::Action(action) => {
                             self.vm.input_action(self.ui.session_mut(), action)?;
                         }
-                        NodeEvent::Interaction(_) => {}
+                        NodeEvent::Pointer(input) => {
+                            self.vm.input_pointer(self.ui.session_mut(), input)?;
+                        }
+                        NodeEvent::Interaction(_) | NodeEvent::Scroll(_) => {}
                     }
                 }
                 if changed {

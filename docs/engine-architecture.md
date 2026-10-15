@@ -48,6 +48,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 按业务身份复用的作者列表
 
+滚动组合公开 `scroll_x/scroll_y` 可写可绑定位置，以及 `viewport_width/viewport_height/content_width/content_height` 只读可观察尺寸。实际布局将位置钳制到内容范围，滚轮、触摸与焦点跟随回写同一位置；只有改变的数据发布通知。`content_align: "start" | "center" | "end"` 在滚动轴上对齐短内容，默认 start；follow_end 继续保留上滚阅读位置。位置更新只合成，不重新测量文字。`input(on_pointer: callback)` 交付主指针拖动的 `{target,x,y,phase}`，坐标来自已接受呈现的节点局部坐标，phase 为 pressed/moved/released/cancelled；按下捕获，失焦/隐藏/禁用取消，回调归节点所有。作者以普通节点和绑定组合轨道、滑块和箭头，不固定滚动条外观。范围为 reel-ui/reel-engine/reel-player、示例与双语指南；scroll ABI 3、input ABI 7，B01/ASB 不变，无新依赖。验证拖动及模态取消、双向位置绑定、短内容对齐、追加跟随及连续滚动期间布局次数不增长。
+
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
 `list(items, key:, build:, ...NodeProps)` 是 Reel native ABI 2，B01/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。

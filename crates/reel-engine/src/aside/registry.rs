@@ -5,14 +5,20 @@ use aside_vm::bytecode::{self as bc, BuiltinType, Effects};
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
-        "reel::scroll" => &["axis", "follow_end"],
+        "reel::scroll" => &[
+            "axis",
+            "follow_end",
+            "content_align",
+            "scroll_x",
+            "scroll_y",
+        ],
         "reel::text" => &["value", "on_link"],
         "reel::text_input" => &["value", "on_change", "on_submit"],
         "reel::image" => &["source", "fit"],
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
         "reel::toggle" => &["label", "value", "on_change"],
-        "reel::input" => &["bindings", "on_action", "on_key"],
+        "reel::input" => &["bindings", "on_action", "on_key", "on_pointer"],
         _ => &[],
     }
 }
@@ -104,18 +110,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     ] {
         let mut parameters = Vec::new();
         if name == "scroll" {
-            parameters.extend([
-                NativeParameter {
-                    name: "axis".into(),
-                    ty: BuiltinType::String,
-                    default: Some(bc::Const::Utf8("vertical".into())),
-                },
-                NativeParameter {
-                    name: "follow_end".into(),
-                    ty: BuiltinType::Bool,
-                    default: Some(bc::Const::Bool(false)),
-                },
-            ]);
+            parameters.extend(
+                super::stage::scroll::ScrollField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
         } else if name == "input" {
             parameters.extend(
                 super::stage::input::InputField::PROPERTIES
@@ -178,8 +177,10 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: if name == "input" {
-                6
-            } else if matches!(name, "scroll" | "text_input") {
+                7
+            } else if name == "scroll" {
+                3
+            } else if name == "text_input" {
                 2
             } else {
                 5

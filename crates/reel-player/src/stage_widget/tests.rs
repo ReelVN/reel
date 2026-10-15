@@ -794,6 +794,8 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
                 NodeKind::Scroll {
                     axis,
                     follow_end: true,
+                    align: reel_ui::widgets::ScrollAlign::Start,
+                    offset: Vec2::ZERO,
                 },
                 props,
             )
@@ -883,4 +885,32 @@ fn scroll_retains_layouts_reading_position_and_end_following() {
     assert_eq!(position(&f), Vec2::new(400., 130.));
     configure(&mut f, ScrollAxis::Horizontal);
     assert_eq!(position(&f), Vec2::new(900., 0.));
+    f.edit(f.root, |p| p.height = Some(500.));
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Scroll {
+                axis: ScrollAxis::Vertical,
+                follow_end: true,
+                align: reel_ui::widgets::ScrollAlign::End,
+                offset: Vec2::ZERO,
+            },
+            props,
+        )
+        .unwrap();
+    let source = f.record();
+    f.accept(&source);
+    let red_id = f.layouts()[&f.red].0;
+    assert_eq!(
+        source
+            .geometry()
+            .get(red_id)
+            .unwrap()
+            .window_transform
+            .translation()
+            .y,
+        250.,
+        "short content aligns to the viewport bottom"
+    );
 }
