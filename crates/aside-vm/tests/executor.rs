@@ -2623,7 +2623,8 @@ fn exhausted_unwind_roots_preserve_the_complete_fault_until_hard_teardown() {
     let p = finally_program(true);
     let registry = support(&p);
     let mut limits = VmLimits::default();
-    limits.heap.max_root_ranges = 39;
+    // Four permanent pooled/module ranges plus five activation/unwind ranges.
+    limits.heap.max_root_ranges = 9;
     let mut v = Vm::load(
         verify(p, Limits::default()).unwrap(),
         registry,
@@ -2649,6 +2650,39 @@ fn exhausted_unwind_roots_preserve_the_complete_fault_until_hard_teardown() {
         Err(VmError::Idle)
     ) {}
     assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+}
+
+#[test]
+fn task_pool_growth_failure_releases_partial_roots_and_preserves_the_live_task() {
+    let p = fixtures::helper_native();
+    let mut limits = VmLimits::default();
+    // Module/pool (4) + caller (4) + first new pool range (1). The next
+    // delivery range cannot be admitted and must roll back the new range.
+    limits.heap.max_root_ranges = 9;
+    let mut v = Vm::load(
+        verify(p.clone(), Limits::default()).unwrap(),
+        support(&p),
+        limits,
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let task = v
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let before = v.stats().slots.active_ranges;
+    assert!(matches!(
+        v.start(fixtures::ENTRY, &[], RootOwner(18), Context::Ordinary),
+        Err(VmError::Heap(HeapError::RootRangeCapacity))
+    ));
+    assert_eq!(v.stats().slots.active_ranges, before);
+    v.cancel_task(task).unwrap();
+    while !matches!(
+        v.run_slice(task, SliceBudget::default(), || 0),
+        Err(VmError::Idle)
+    ) {}
+    assert_eq!(v.stats().slots.active_ranges, v.pooled_root_ranges());
+    v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
 }
 #[test]
 fn explicit_throw_in_catch_sets_new_source_and_retains_original_value_as_cause() {

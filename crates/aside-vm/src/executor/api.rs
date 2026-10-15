@@ -239,6 +239,7 @@ impl std::fmt::Display for VmError {
 impl std::error::Error for VmError {}
 #[derive(Clone, Copy, Debug)]
 pub struct VmLimits {
+    /// Optional host task quota. Task state is allocated on demand and reused.
     pub max_tasks: u32,
     pub heap: HeapLimits,
     /// Execution storage. Loaded constants, symbols, native values and globals
@@ -253,11 +254,11 @@ pub struct VmLimits {
 impl Default for VmLimits {
     fn default() -> Self {
         Self {
-            max_tasks: 16,
+            max_tasks: u32::MAX,
             heap: HeapLimits::default(),
             slots: FrameSlotsLimits {
                 initial_capacity: 16384,
-                max_capacity: 16384,
+                max_capacity: u32::MAX,
                 max_window_len: 8192,
             },
             max_frames: 128,

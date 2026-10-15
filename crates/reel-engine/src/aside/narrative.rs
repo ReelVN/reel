@@ -418,10 +418,10 @@ impl SessionVm {
                     .ok_or(AdapterError::Input("skip unread requires bool"))?;
                 session.set_skip_reading(enabled, unread);
                 self.skip_input = self
-                    .callbacks
+                    .tasks
                     .iter()
                     .find(|callback| callback.task == ticket.task)
-                    .map(|callback| callback.node)
+                    .and_then(|callback| callback.node)
                     .filter(|node| {
                         session.reading().skipping()
                             && self.stage.scene.node(*node).is_some_and(|node| {
@@ -460,7 +460,7 @@ impl SessionVm {
                     None
                 };
                 let owner = self
-                    .callbacks
+                    .tasks
                     .iter()
                     .find(|callback| callback.task == ticket.task)
                     .map_or(self.owner, |callback| callback.owner);

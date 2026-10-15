@@ -195,17 +195,8 @@ pub(in crate::aside) fn tween(
     if duration < 0. {
         return Err(AdapterError::Input("duration must be nonnegative"));
     }
-    let easing = match super::super::text::read_string(heap, args[2], read_limit)?.as_str() {
-        "linear" => 0,
-        "in" => 1,
-        "out" => 2,
-        "in_out" => 3,
-        _ => {
-            return Err(AdapterError::Input(
-                "easing requires linear, in, out or in_out",
-            ));
-        }
-    };
+    let easing =
+        super::easing::Easing::parse(&super::super::text::read_string(heap, args[2], read_limit)?)?;
     let goals = heap.alloc_array(&[])?;
     for ((index, _), &value) in NodeProperty::PROPERTIES
         .iter()
@@ -228,7 +219,7 @@ pub(in crate::aside) fn tween(
             Value::int(ACTION),
             target,
             Value::float(duration),
-            Value::int(easing),
+            Value::int(easing as i64),
             goals,
             Value::int(Kind::Tween as i64),
             Value::NULL,

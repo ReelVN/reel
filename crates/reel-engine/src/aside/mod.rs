@@ -179,7 +179,7 @@ pub struct SessionVm {
     root_owner: RootOwner,
     task: Option<TaskId>,
     main_wait: Option<WaitId>,
-    callbacks: Vec<callbacks::Callback>,
+    tasks: Vec<callbacks::ScriptTask>,
     schedule_cursor: usize,
     derived_task: Option<TaskId>,
     reactive_ready: bool,
@@ -234,7 +234,7 @@ impl SessionVm {
             root_owner: RootOwner(owner.owner_id().0),
             task: None,
             main_wait: None,
-            callbacks: Vec::new(),
+            tasks: Vec::new(),
             schedule_cursor: 0,
             derived_task: None,
             reactive_ready: true,
@@ -338,7 +338,7 @@ impl SessionVm {
         self.revoked
             && (self.root_cursor < self.root_end
                 || self.task.is_some()
-                || !self.callbacks.is_empty()
+                || !self.tasks.is_empty()
                 || self.derived_task.is_some()
                 || self.audio.cleanup_pending())
     }
@@ -471,6 +471,8 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::completion"
+            | "reel::spawn"
+            | "reel::task::cancel"
             | "reel::completion::resolve"
             | "reel::completion::reject"
             | "reel::completion::cancel"
@@ -478,7 +480,7 @@ impl SessionVm {
                 if symbol == "reel::completion::await" {
                     self.check_wait(session, ticket)?;
                 }
-                self.dispatch_result(ticket, &symbol)?;
+                self.dispatch_result(session, ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::list" => {
@@ -1057,7 +1059,7 @@ impl SessionVm {
         } else if task == self.derived_task {
             self.derived_task = None;
         } else if let Some(index) = self
-            .callbacks
+            .tasks
             .iter()
             .position(|callback| Some(callback.task) == task)
         {
@@ -1073,7 +1075,7 @@ impl SessionVm {
         if self.task.is_some()
             || self.pending.is_some()
             || self.delivery.is_some()
-            || !self.callbacks.is_empty()
+            || !self.tasks.is_empty()
             || self.derived_task.is_some()
             || self.vm.heap().derived_pending()
         {
@@ -1096,7 +1098,7 @@ impl SessionVm {
                 Err(error) => Err(error.into()),
             };
         }
-        for index in 0..self.callbacks.len() {
+        for index in 0..self.tasks.len() {
             self.cancel_callback(session, index)?;
         }
         for index in 0..session.owners.len() {
@@ -1163,7 +1165,7 @@ impl SessionVm {
             self.root_cursor as usize,
             slots as usize,
         )?;
-        if let Some(callback) = self.callbacks.first() {
+        if let Some(callback) = self.tasks.first() {
             match self.vm.run_slice(callback.task, budget, now) {
                 Err(VmError::Idle) => {
                     self.retire_callback(session, 0)?;

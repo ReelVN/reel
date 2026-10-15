@@ -324,7 +324,7 @@ struct CaughtFault {
     info: FaultSeed,
     activation: u64,
 }
-/// One shared heap/module set, with bounded independent task state machines.
+/// One shared heap/module set, with independently owned task state machines.
 struct TaskState {
     frames: ChargedVec<Frame>,
     unwinds: ChargedVec<Unwind>,
@@ -376,7 +376,13 @@ impl TaskState {
             None
         };
         let delivery = if pooled {
-            Some(slots.open(heap, RootOwner(u64::MAX), RootKind::Delivery, 2)?)
+            match slots.open(heap, RootOwner(u64::MAX), RootKind::Delivery, 2) {
+                Ok(range) => Some(range),
+                Err(error) => {
+                    slots.release(heap, equality_roots.unwrap())?;
+                    return Err(error.into());
+                }
+            }
         } else {
             None
         };
@@ -458,11 +464,7 @@ impl Vm {
                 .max_unwinds
                 .checked_mul(2)
                 .is_none_or(|n| n > limits.slots.max_window_len)
-            || limits
-                .max_tasks
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(2))
-                .is_none_or(|n| n > limits.heap.max_root_ranges)
+            || limits.heap.max_root_ranges < 4
             || limits.max_native_faults == 0
         {
             return Err(VmError::Limit);
@@ -531,10 +533,7 @@ impl Vm {
                     .initial_capacity
                     .checked_add(module_slots)
                     .ok_or(VmError::Limit)?,
-                max_capacity: execution
-                    .max_capacity
-                    .checked_add(module_slots)
-                    .ok_or(VmError::Limit)?,
+                max_capacity: execution.max_capacity.saturating_add(module_slots),
                 max_window_len: execution.max_window_len,
             },
         )?;
@@ -552,12 +551,10 @@ impl Vm {
         }
         let mut native_values = ChargedVec::new(&usage, native_count)?;
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
-        let mut tasks = ChargedVec::new(&usage, limits.max_tasks as usize)?;
-        for _ in 0..limits.max_tasks {
-            tasks
-                .data
-                .push(TaskState::new(&usage, &mut heap, &mut slots, limits, true)?);
-        }
+        let mut tasks = ChargedVec::new(&usage, 1)?;
+        tasks
+            .data
+            .push(TaskState::new(&usage, &mut heap, &mut slots, limits, true)?);
         let scratch = ChargedVec::new(
             &usage,
             limits.max_arguments.max(
@@ -1118,12 +1115,10 @@ impl Vm {
             serial,
         };
         self.restore_active();
-        let slot = self
-            .tasks
-            .data
-            .iter()
-            .position(|s| s.task_id.is_none())
-            .ok_or(VmError::Limit)?;
+        let slot = match self.tasks.data.iter().position(|s| s.task_id.is_none()) {
+            Some(slot) => slot,
+            None => self.grow_task_pool()?,
+        };
         self.select_slot(slot);
         self.active.task_id = Some(task);
         self.active.task_owner = Some(owner);
@@ -1176,6 +1171,30 @@ impl Vm {
         self.active.task_id = Some(task);
         Ok(task)
     }
+    fn grow_task_pool(&mut self) -> Result<usize, VmError> {
+        let slot = self.tasks.data.len();
+        if slot >= self.limits.max_tasks as usize {
+            return Err(VmError::Limit);
+        }
+        let usage = self.heap.budget_usage();
+        if slot == self.tasks.data.capacity() {
+            let capacity = slot.saturating_mul(2).min(self.limits.max_tasks as usize);
+            let mut next = ChargedVec::new(&usage, capacity)?;
+            next.data.append(&mut self.tasks.data);
+            self.tasks = next;
+        }
+        let roots = self
+            .limits
+            .max_unwinds
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(2))
+            .ok_or(VmError::Limit)?;
+        self.slots.reserve_task(&mut self.heap, roots)?;
+        let task = TaskState::new(&usage, &mut self.heap, &mut self.slots, self.limits, true)?;
+        self.tasks.data.push(task);
+        Ok(slot)
+    }
+
     /// Register a trusted callable host object. Its first native parameter is
     /// the object itself; argument binding and effects share ordinary calls.
     pub fn bind_callable(&mut self, object: Value, function: FunctionId) -> Result<(), VmError> {
@@ -1887,7 +1906,7 @@ impl Vm {
         Ok(())
     }
     pub fn pooled_root_ranges(&self) -> u32 {
-        2 + 2 * self.limits.max_tasks
+        2 + 2 * self.tasks.data.len() as u32
     }
     pub fn run_slice(
         &mut self,

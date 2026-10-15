@@ -551,6 +551,10 @@ Pixels changed by an effect and logical input regions are declared separately. O
 
 ## 10 Choices and Changing Content
 
+Use `spawn(work, owner: root)` for independent scripted scenes or background game logic. work is a zero-argument function, closure or bound method and may loop and await animations/results. `await task` returns its value or raises its original error; repeated awaits share the terminal result. `task.cancel()` returns true for the first cancellation request and false afterwards; waiters receive Cancelled after cleanup. Cancellation does not run script finally blocks, so attach resources to their owning nodes. Removing a node cancels its tasks; hiding it does not. Cancelling a waiter leaves the producer running. An omitted owner inherits the callback/task node, or the session in the main story. Work starts after the caller waits or returns and has no main-story dialogue/choice permission. Initialization, pure derive and NoWait contexts cannot spawn tasks. See [author_tasks.aside](../../examples/author_tasks.aside). Use sequence/parallel/repeat for fixed animations; tween supports quadratic `quad_in`, `quad_out`, `quad_in_out` curves alongside the cubic in/out/in_out curves.
+
+Task capacity grows with actual concurrency and is reused; authors do not reserve a task count. Rust hosts can set their own admission quota through `VmLimits.max_tasks`; allocations still count against the heap budget.
+
 Forms, sign-in screens, settings and embedded games can return their own results. `completion(owner: root)` creates a one-shot awaitable. A callback submits any value with `.resolve(value)` (null when omitted), and the caller continues through `await` while other input and activities keep running. A component can return its node and result together:
 ```aside
 fn name_form() {

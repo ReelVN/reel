@@ -131,7 +131,7 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
     assert_eq!(text_x(&vm, "status"), 1.);
     vm.click(&mut session, button(&vm, "remove")).unwrap();
     pump(&mut vm, &mut session);
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert!(!vm.activities_need_time());
     assert!(
         !vm.text_input(&mut session, &change("author", "retired"))
@@ -173,7 +173,7 @@ fn modal_click_validation_reads_script_writes_before_projection() {
         before.chunk_allocations,
         vm.vm.heap().stats().chunk_allocations
     );
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert!(vm.click(&mut s, close).unwrap());
     drive(&mut vm, &mut s, false);
     assert!(vm.click(&mut s, blocked).unwrap());
@@ -209,7 +209,7 @@ fn callbacks_share_captures_reuse_retired_storage_and_outlive_main() {
     for n in 2..=512 {
         assert!(vm.click(&mut s, id).unwrap());
         pump(&mut vm, &mut s);
-        assert!(vm.callbacks.is_empty());
+        assert!(vm.tasks.is_empty());
         if n % 16 == 0 {
             collect(&mut vm);
         }
@@ -282,17 +282,17 @@ fn independent_callbacks_await_one_producer_beside_main_dialogue() {
         assert!(vm.click(&mut s, id).unwrap());
     }
     pump(&mut vm, &mut s);
-    assert_eq!(vm.callbacks.len(), 3);
+    assert_eq!(vm.tasks.len(), 3);
     let remove = button(&vm, "cancel consumer");
     vm.click(&mut s, remove).unwrap();
     pump(&mut vm, &mut s);
-    assert_eq!(vm.callbacks.len(), 2);
+    assert_eq!(vm.tasks.len(), 2);
     assert!(!vm.has_runnable_tasks());
     collect(&mut vm);
     assert!(super::activities::advance_clock(&mut vm, &s, 1., 1).woke);
     pump(&mut vm, &mut s);
     assert_eq!(text_x(&vm, "count"), 1111.);
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert_eq!(s.view().interaction.unwrap().id(), interaction);
     vm.revoke(&mut s).unwrap();
     while vm.cleanup_pending() {
@@ -330,11 +330,11 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
     let remove = button(&vm, "remove");
     vm.click(&mut s, waiting).unwrap();
     pump(&mut vm, &mut s);
-    assert_eq!(vm.callbacks.len(), 1);
+    assert_eq!(vm.tasks.len(), 1);
     super::activities::advance_clock(&mut vm, &s, 0.5, 1);
     vm.click(&mut s, remove).unwrap();
     pump(&mut vm, &mut s);
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert!(!vm.click(&mut s, waiting).unwrap());
     vm.advance_time(&s, 2., 16).unwrap();
     pump(&mut vm, &mut s);
@@ -344,13 +344,13 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
     let close = button(&vm, "close pending");
     vm.click(&mut s, close).unwrap();
     pump(&mut vm, &mut s);
-    assert_eq!(vm.callbacks.len(), 1);
+    assert_eq!(vm.tasks.len(), 1);
     vm.revoke(&mut s).unwrap();
     while vm.cleanup_pending() {
         vm.cleanup_step(&mut s, 1, SliceBudget::default(), || 0)
             .unwrap();
     }
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert_eq!(s.storage_usage().pending_owner_retirements, 0);
 }
 
@@ -377,13 +377,13 @@ fn retiring_a_future_target_wakes_waiters_of_paused_compositions_without_clock_t
     let waiter = button(&vm, "wait");
     vm.click(&mut s, waiter).unwrap();
     pump(&mut vm, &mut s);
-    assert_eq!(vm.callbacks.len(), 1);
+    assert_eq!(vm.tasks.len(), 1);
     let retire = button(&vm, "retire");
     vm.click(&mut s, retire).unwrap();
     pump(&mut vm, &mut s);
     collect(&mut vm);
     assert_eq!(text_x(&vm, "count"), 1.);
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert!(!vm.activities.has_active());
 }
 
@@ -440,7 +440,7 @@ fn value_controls_recheck_current_flags_and_retire_waiting_change_tasks() {
         vm.stage().node(silent).unwrap().kind,
         NodeKind::Toggle { value: true, .. }
     ));
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     let mut change = NodeChange {
         node: value,
         value: ControlValue::Number(0.5),
@@ -463,10 +463,10 @@ fn value_controls_recheck_current_flags_and_retire_waiting_change_tasks() {
     change.range = Some(SliderRange::new(0., 2., None).unwrap());
     assert!(vm.change(&mut session, &change).unwrap());
     pump(&mut vm, &mut session);
-    assert_eq!(vm.callbacks.len(), 1);
+    assert_eq!(vm.tasks.len(), 1);
     vm.click(&mut session, button(&vm, "remove")).unwrap();
     pump(&mut vm, &mut session);
-    assert!(vm.callbacks.is_empty());
+    assert!(vm.tasks.is_empty());
     assert!(!vm.change(&mut session, &change).unwrap());
     vm.advance_time(&session, 2., 16).unwrap();
     pump(&mut vm, &mut session);
