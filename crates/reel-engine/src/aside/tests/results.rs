@@ -21,6 +21,63 @@ fn click(vm: &mut SessionVm, session: &mut Session, label: &str) {
 }
 
 #[test]
+fn presentation_requests_settle_before_late_waits_and_follow_owner_cancellation() {
+    let code = r#"fn opening() {
+        let root = column { text("waiting"); };
+        stage.replace(root);
+        let first = stage.presented(owner: root);
+        let late = stage.presented(owner: root);
+        if (await first) != null { throw "wrong presentation result"; }
+        root.remove();
+        if late.cancel() || (await late) != null || (await first) != null {
+            throw "accepted requests must keep their terminal result";
+        }
+        let owner = stack();
+        stage.replace(owner);
+        let revoked = stage.presented(owner: owner);
+        owner.remove();
+        let mut cancelled = false;
+        try { await revoked; } catch error { cancelled = true; }
+        if !cancelled { throw "owner retirement did not cancel"; }
+        let explicit = stage.presented();
+        if !explicit.cancel() || explicit.cancel() { throw "cancel must settle once"; }
+        cancelled = false;
+        try { await explicit; } catch error { cancelled = true; }
+        if !cancelled { throw "explicit cancel did not reach await"; }
+        stage.replace(text("done"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        collect(&mut vm);
+        assert_eq!(vm.presentation_request(), 2);
+        vm.accept_presentation(&session, 0).unwrap();
+        drive(&mut vm, &mut session, true);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("waiting".into()))
+        );
+        vm.accept_presentation(&session, 2).unwrap();
+        drive(&mut vm, &mut session, true);
+        collect(&mut vm);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("done".into()))
+        );
+        vm.accept_presentation(&session, 1).unwrap();
+        vm.revoke(&mut session).unwrap();
+        while vm.cleanup_pending() {
+            vm.cleanup_step(&mut session, 1, SliceBudget::default(), || 0)
+                .unwrap();
+        }
+        collect(&mut vm);
+        assert_eq!(vm.vm.heap().stats().roots, 0);
+    }
+}
+
+#[test]
 fn removing_a_hovered_control_freezes_its_pending_skin_derivations() {
     use reel_ui::stage::{InteractionState, NodeEvent, NodeInteraction};
     let code = r#"fn opening() {

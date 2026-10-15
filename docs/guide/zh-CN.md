@@ -176,6 +176,14 @@ let caption = word.caption;
 
 ### 在运行中修改组件
 
+需要让演出从资源就绪后的画面开始，可先挂载节点，再 `await stage.presented(owner: node)`，之后启动动画。等待包含派生布局和图片、字体准备，以实际接受的帧为准；其他任务、音乐和动画继续运行。返回对象可重复等待，`.cancel()` 取消该请求，owner 节点退休也会取消。省略 owner 时沿用当前回调/任务节点，主剧情中归会话。见 [author_scene_entry.aside](../../examples/author_scene_entry.aside)：
+
+```aside
+stage.replace(scene);
+await stage.presented(owner: scene);
+await run(tween(scene, opacity: 1, duration: 0.5));
+```
+
 子节点块中可以先用局部变量构造控件，再添加依赖控件状态的外观，最后显式提供控件本身。add 返回的后代已归该控件所有，不会在外层再次挂载；显式 children 数组也遵循同一规则。不能重复提供同一节点，或借用另一个未提供的组件及已挂载舞台的子节点。
 
 没有普通参数时可写 `column { ... }`，省去空的 `()`；普通函数组件也适用。

@@ -1,7 +1,7 @@
 //! One-shot component results. Pending native frames own all subscription values.
 use super::{AdapterError, FaultKind, HostTicket, Session, SessionVm};
 use aside_vm::{
-    Heap, HeapError, HeapReservation, Value, ValueTag,
+    Heap, HeapError, HeapReservation, RootKind, RootToken, Value, ValueTag,
     bytecode::{FunctionId, FunctionKind, NativeId},
     executor::{Completion, HostResponse, Vm, WaitId},
 };
@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 pub(super) enum Kind {
     Completion = -1101,
     Task = -1102,
+    Presentation = -1103,
 }
 #[repr(u32)]
 enum Slot {
@@ -34,6 +35,37 @@ struct Methods {
     cancel_task: FunctionId,
     wait: NativeId,
 }
+
+fn reserve_queue<T>(
+    heap: &Heap,
+    queue: &mut VecDeque<T>,
+    charge: &mut Option<HeapReservation>,
+) -> Result<(), AdapterError> {
+    if queue.len() < queue.capacity() {
+        return Ok(());
+    }
+    let capacity = queue
+        .len()
+        .max(4)
+        .checked_mul(2)
+        .ok_or(AdapterError::Allocation)?;
+    let bytes = capacity
+        .checked_mul(size_of::<T>())
+        .ok_or(AdapterError::Allocation)? as u64;
+    // Account for old and replacement storage until the move is complete.
+    let mut next_charge = heap.budget_usage().reserve(bytes)?;
+    let mut next = VecDeque::new();
+    next.try_reserve_exact(capacity)
+        .map_err(|_| AdapterError::Allocation)?;
+    let actual = (next.capacity() * size_of::<T>()) as u64;
+    if actual != bytes {
+        next_charge = heap.budget_usage().reserve(actual)?;
+    }
+    next.append(queue);
+    *queue = next;
+    *charge = Some(next_charge);
+    Ok(())
+}
 #[derive(Default)]
 pub(super) struct Results {
     methods: Option<Methods>,
@@ -42,6 +74,11 @@ pub(super) struct Results {
     remaining: usize,
     dirty: bool,
     stage_revision: u64,
+    requested: u64,
+    presented: u64,
+    presentations: VecDeque<RootToken>,
+    presentation_charge: Option<HeapReservation>,
+    presentation_remaining: usize,
 }
 fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
@@ -56,6 +93,7 @@ fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
     match heap.host_payload(object, Slot::Tag as u32)?.as_int() {
         Some(-1101) => Ok(Kind::Completion),
         Some(-1102) => Ok(Kind::Task),
+        Some(-1103) => Ok(Kind::Presentation),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -70,7 +108,7 @@ fn state(heap: &mut Heap, object: Value) -> Result<State, AdapterError> {
         Some(5) => State::Faulted,
         _ => unreachable!("private result state"),
     };
-    if state == State::Pending && kind == Kind::Completion {
+    if state == State::Pending && kind != Kind::Task {
         let owner = heap.host_payload(object, Slot::Owner as u32)?;
         if owner.tag() != ValueTag::Null {
             match heap.host_fields(owner) {
@@ -160,7 +198,7 @@ impl Results {
             .zip(methods.settle)
             .enumerate()
         {
-            if kind == Kind::Task && name != "cancel" {
+            if kind != Kind::Completion && name != "cancel" {
                 continue;
             }
             let function = if kind == Kind::Task {
@@ -173,7 +211,11 @@ impl Results {
             let key = heap.alloc_string(name)?;
             heap.table_store(
                 fields,
-                if kind == Kind::Task { 0 } else { index as u32 },
+                if kind != Kind::Completion {
+                    0
+                } else {
+                    index as u32
+                },
                 key,
                 method,
             )?;
@@ -195,29 +237,7 @@ impl Results {
             };
             vm.respond(ticket, result)?;
         } else {
-            if self.waits.len() == self.waits.capacity() {
-                let capacity = self
-                    .waits
-                    .len()
-                    .max(4)
-                    .checked_mul(2)
-                    .ok_or(AdapterError::Allocation)?;
-                let bytes = capacity
-                    .checked_mul(size_of::<(WaitId, Value)>())
-                    .ok_or(AdapterError::Allocation)? as u64;
-                // Charge both old and replacement storage until the move finishes.
-                let mut charge = vm.heap().budget_usage().reserve(bytes)?;
-                let mut next = VecDeque::new();
-                next.try_reserve_exact(capacity)
-                    .map_err(|_| AdapterError::Allocation)?;
-                let actual = (next.capacity() * size_of::<(WaitId, Value)>()) as u64;
-                if actual != bytes {
-                    charge = vm.heap().budget_usage().reserve(actual)?;
-                }
-                next.append(&mut self.waits);
-                self.waits = next;
-                self.charge = Some(charge);
-            }
+            reserve_queue(vm.heap(), &mut self.waits, &mut self.charge)?;
             let wait = ticket.wait_id();
             vm.respond(ticket, HostResponse::Pending(wait))?;
             self.waits.push_back((wait, object));
@@ -228,8 +248,11 @@ impl Results {
         self.dirty = true;
     }
     pub fn needs_work(&self, stage_revision: u64) -> bool {
-        !self.waits.is_empty()
-            && (self.dirty || self.remaining != 0 || self.stage_revision != stage_revision)
+        (!self.waits.is_empty() || !self.presentations.is_empty())
+            && (self.dirty
+                || self.remaining != 0
+                || self.presentation_remaining != 0
+                || self.stage_revision != stage_revision)
     }
     /// Finish a registration-order round before running more scripts. Values in
     /// cancelled native frames may already be collected: check WaitId first.
@@ -237,10 +260,38 @@ impl Results {
         if !self.needs_work(stage_revision) {
             return Ok(false);
         }
-        if self.remaining == 0 {
+        if self.remaining == 0 && self.presentation_remaining == 0 {
             self.remaining = self.waits.len();
+            self.presentation_remaining = self.presentations.len();
             self.dirty = false;
             self.stage_revision = stage_revision;
+        }
+        // Producers settle before consumers or scripts run, including requests
+        // whose callers have not awaited them yet. Keep only their result rooted.
+        for _ in 0..self.presentation_remaining.min(64) {
+            let root = *self.presentations.front().unwrap();
+            let object = vm.heap().root_value(root)?;
+            let heap = vm.heap_mut();
+            let pending = state(heap, object)? == State::Pending;
+            let request = heap.host_payload(object, Slot::Value as u32)?.as_int();
+            let keep = pending && request.is_some_and(|request| request as u64 > self.presented);
+            if pending && !keep {
+                settle(heap, object, State::Resolved, Value::NULL)?;
+            }
+            self.presentations.pop_front();
+            if keep {
+                self.presentations.push_back(root);
+            } else {
+                heap.release_root(root)?;
+            }
+            self.presentation_remaining -= 1;
+        }
+        if self.presentation_remaining != 0 {
+            return Ok(true);
+        }
+        if self.presentations.is_empty() {
+            self.presentations = VecDeque::new();
+            self.presentation_charge = None;
         }
         for _ in 0..self.remaining.min(64) {
             let &(wait, object) = self.waits.front().unwrap();
@@ -267,6 +318,10 @@ impl Results {
         Ok(self.needs_work(stage_revision))
     }
     pub fn clear(&mut self) {
+        // The session's bounded owner scan retires outstanding producer roots.
+        self.presentations = VecDeque::new();
+        self.presentation_charge = None;
+        self.presentation_remaining = 0;
         self.waits = VecDeque::new();
         self.charge = None;
         self.remaining = 0;
@@ -301,6 +356,28 @@ pub(super) fn finish_task(
     settle(heap, object, state, value)
 }
 impl SessionVm {
+    /// Include this request sequence in the next stable scene projection.
+    pub fn presentation_request(&self) -> u64 {
+        self.results.requested
+    }
+
+    /// A host calls this only after accepting the frame carrying this request.
+    pub fn accept_presentation(
+        &mut self,
+        session: &Session,
+        request: u64,
+    ) -> Result<(), AdapterError> {
+        self.same_session(session)?;
+        if request > self.results.requested {
+            return Err(AdapterError::Input("unknown presentation request"));
+        }
+        if request > self.results.presented {
+            self.results.presented = request;
+            self.results.changed();
+        }
+        Ok(())
+    }
+
     pub(super) fn dispatch_result(
         &mut self,
         session: &mut Session,
@@ -364,7 +441,13 @@ impl SessionVm {
         if symbol == "reel::completion::await" {
             self.results.subscribe(&mut self.vm, ticket, object)?;
         } else {
-            let value = if symbol == "reel::completion" {
+            let value = if matches!(symbol, "reel::completion" | "reel::stage::presented") {
+                let presentation = symbol == "reel::stage::presented";
+                if presentation
+                    && (ticket.context.no_wait || ticket.context.init || ticket.context.derived)
+                {
+                    return Err(AdapterError::Vm(aside_vm::executor::VmError::Effect));
+                }
                 let owner = if object.tag() == ValueTag::Null {
                     self.default_activity_owner(ticket.task)?
                 } else {
@@ -373,9 +456,42 @@ impl SessionVm {
                 if owner.tag() != ValueTag::Null {
                     self.stage.id(self.vm.heap(), owner)?;
                 }
-                self.results.create(&mut self.vm, owner, Kind::Completion)?
+                let kind = if presentation {
+                    Kind::Presentation
+                } else {
+                    Kind::Completion
+                };
+                let result = self.results.create(&mut self.vm, owner, kind)?;
+                if presentation {
+                    reserve_queue(
+                        self.vm.heap(),
+                        &mut self.results.presentations,
+                        &mut self.results.presentation_charge,
+                    )?;
+                    let request = self
+                        .results
+                        .requested
+                        .checked_add(1)
+                        .ok_or(AdapterError::Input("presentation sequence exhausted"))?;
+                    self.vm.heap_mut().set_host_payload(
+                        result,
+                        Slot::Value as u32,
+                        Value::int(request as i64),
+                    )?;
+                    let root =
+                        self.vm
+                            .heap_mut()
+                            .add_root(self.root_owner, RootKind::Host, result)?;
+                    self.results.presentations.push_back(root);
+                    self.results.changed();
+                    self.results.requested = request;
+                }
+                result
             } else {
-                if kind(self.vm.heap(), object)? != Kind::Completion {
+                let kind = kind(self.vm.heap(), object)?;
+                if kind != Kind::Completion
+                    && !(kind == Kind::Presentation && symbol == "reel::completion::cancel")
+                {
                     return Err(AdapterError::Input("expected completion"));
                 }
                 let value = arguments.get(1).copied().unwrap_or(Value::NULL);

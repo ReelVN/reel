@@ -233,6 +233,10 @@ impl AsideSessionUi {
     }
     pub fn presented(&mut self, stamp: ProjectionStamp) -> Result<(), Error> {
         self.ui.presented(stamp);
+        if self.state == StoryState::Running {
+            self.vm
+                .accept_presentation(self.ui.session(), stamp.presentation_request)?;
+        }
         let events = self.ui.take_events();
         self.accept_events(events)
     }
@@ -256,6 +260,7 @@ impl AsideSessionUi {
             } else {
                 self.ui.set_stage(self.vm.stage());
             }
+            self.ui.request_presentation(self.vm.presentation_request());
         }
         self.sync_input(bridge, root)
     }

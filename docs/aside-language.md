@@ -26,6 +26,8 @@ class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元�
 
 
 ## 二 语法与求值顺序
+Reel 的 `await stage.presented(owner: null)` 等待请求之后的稳定舞台投影实际呈现并返回 null，复用宿主 Awaitable。也可保存返回对象后等待多次，或调用 `.cancel()`；节点 owner 退休取消未决请求。创建请求只能在普通剧情/回调中执行，初始化与 NoWait/纯派生边界不可绕过。此接口新增 native ABI 1，不改变语言 await、B01 或 ASB。
+
 Reel 作者窗口在首个挂载场景的字体、图片准备好后提交首帧；支持隐藏窗口的平台在首帧接受后显示窗口。此行为不改变脚本等待语义或 ASB/native ABI；脚本可先挂载加载界面，再通过原有活动与任务安排后续内容。
 
 没有普通参数时，`component { ... }` 等价于 `component() { ... }`；具名函数、局部函数值、成员和索引取得的函数均可使用。if/while/for/match 等头部仍保留后面的控制流块，确需尾随调用时用圆括号包住整个调用。该简写沿用同一调用与 children lowering，不增加 VM 指令。

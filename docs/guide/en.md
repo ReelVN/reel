@@ -176,6 +176,14 @@ let caption = word.caption;
 
 ### Editing components while running
 
+To start an animation from a ready frame, mount the nodes, then `await stage.presented(owner: node)` before starting it. The wait includes derived layout and image/font preparation and settles only after actual frame acceptance; other tasks, music and animations continue. The returned object supports repeated waits and `.cancel()`; retiring its owner also cancels it. Omitted ownership follows the current callback/task node, or the session in the main story. See [author_scene_entry.aside](../../examples/author_scene_entry.aside):
+
+```aside
+stage.replace(scene);
+await stage.presented(owner: scene);
+await run(tween(scene, opacity: 1, duration: 0.5));
+```
+
 Inside a children block, use a local variable to create a control, add visuals that read its state, then explicitly provide the control itself. Descendants returned by add already belong to that control and are not mounted again by the outer container. Explicit children arrays follow the same rule. Do not provide the same node twice or borrow children from an omitted component or an already mounted stage.
 
 Without ordinary arguments, write `column { ... }` and omit the empty `()`. Ordinary function components support the same shorthand.

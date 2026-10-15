@@ -41,6 +41,7 @@ type Error = Box<dyn std::error::Error>;
 /// paints preserve this revision; changing interaction or reveal increments it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProjectionStamp {
+    pub(crate) presentation_request: u64,
     dialogue_complete: bool,
     revision: u64,
     button_revision: u64,
@@ -196,6 +197,7 @@ impl SessionWidget {
         let mut binding = self.binding.borrow_mut();
         *binding = InputBinding {
             button_revision: binding.button_revision,
+            buttons: std::mem::take(&mut binding.buttons),
             ..Default::default()
         };
     }
@@ -800,6 +802,7 @@ impl SessionUi {
         let projection = Projection::from_session(&session, preview)?;
         let choice_owners = allocate_choice_owners(&mut session, projection.choices.len())?;
         let stamp = ProjectionStamp {
+            presentation_request: 0,
             dialogue_complete: dialogue_complete(&session),
             revision: 1,
             button_revision: 0,
@@ -857,6 +860,11 @@ impl SessionUi {
             .is_none_or(|view| view.revision != stage.revision())
         {
             let mut view = StageView::capture(stage);
+            view.presentation_request = self
+                .pending_stage
+                .as_ref()
+                .or(self.stage.as_ref())
+                .map_or(0, |previous| previous.presentation_request);
             view.feedback = feedback
                 && self
                     .pending_stage
@@ -922,6 +930,18 @@ impl SessionUi {
     }
     pub fn images_pending(&self) -> bool {
         self.pending_stage.is_some()
+    }
+    /// Bind the request to the candidate carrying the stable authored state.
+    /// Pending image work must not attach it to the retained previous frame.
+    pub(crate) fn request_presentation(&mut self, request: u64) {
+        if let Some(view) = &mut self.pending_stage {
+            view.presentation_request = request;
+        } else if let Some(view) = &mut self.stage
+            && view.presentation_request != request
+        {
+            view.presentation_request = request;
+            self.stage_dirty = true;
+        }
     }
     #[cfg(feature = "window")]
     pub(crate) fn has_stage_root(&self) -> bool {
@@ -1038,6 +1058,10 @@ impl SessionUi {
                 .ok_or("UI projection revision exhausted")?;
             self.stamp.interaction = self.projection.interaction;
             self.stamp.button_revision = self.stage.as_ref().map_or(0, |view| view.button_revision);
+            self.stamp.presentation_request = self
+                .stage
+                .as_ref()
+                .map_or(0, |view| view.presentation_request);
             self.input_fallback = bridge.edit_widget(root_id, |mut widget| {
                 let mut widget = widget.downcast::<SessionWidget>();
                 SessionWidget::sync(&mut widget, self);

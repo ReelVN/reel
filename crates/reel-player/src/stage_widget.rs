@@ -28,6 +28,7 @@ use input::NodeInput;
 pub(crate) struct StageView {
     pub revision: u64,
     pub button_revision: u64,
+    pub presentation_request: u64,
     pub feedback: bool,
     root: Option<SceneNode>,
     pub resources: Vec<ResourceLease>,
@@ -56,6 +57,7 @@ impl StageView {
         Self {
             revision: stage.revision(),
             button_revision: 0,
+            presentation_request: 0,
             feedback: false,
             root: stage.root().map(|id| capture_node(stage, id)),
             resources: Vec::new(),
