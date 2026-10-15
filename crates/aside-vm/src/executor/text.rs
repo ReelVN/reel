@@ -3,7 +3,7 @@ use super::*;
 use std::fmt::Write;
 
 /// Carries only the incomplete scalar between chunks; std owns UTF-8 rules.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Utf8 {
     tail: [u8; 4],
     len: u8,

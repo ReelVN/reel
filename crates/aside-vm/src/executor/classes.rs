@@ -13,7 +13,7 @@ enum MemberSlot {
     Method,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum ClassStep {
     Build {
         dest: Reg,
@@ -34,7 +34,7 @@ pub(super) enum ClassStep {
         index: u32,
     },
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum BuildPhase {
     Members,
     Fields,
@@ -45,7 +45,7 @@ pub(super) enum BuildPhase {
     StaticResult,
     Finish,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum ConstructPhase {
     Allocate,
     Fields,

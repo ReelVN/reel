@@ -16,12 +16,12 @@ pub struct PackageStats {
     pub validation_work: u64,
     pub validation_scratch_peak: usize,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HandlerKind {
     Catch,
     Finally,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HandlerTarget {
     pub region: RegionId,
     pub kind: HandlerKind,
@@ -37,6 +37,7 @@ pub enum CleanupDestination {
 /// Construction is restricted to the verifier. Accessors only borrow immutable data.
 #[derive(Debug)]
 pub struct VerifiedProgram {
+    identity: [u8; 32],
     package: BytecodePackage,
     stats: PackageStats,
     limits: Limits,
@@ -62,6 +63,9 @@ struct DerivedLayouts {
     modules: ModuleBindings,
 }
 impl VerifiedProgram {
+    pub(crate) fn snapshot_identity(&self) -> [u8; 32] {
+        self.identity
+    }
     /// Imports resolve to their original cell; access costs are independent of
     /// the number of source modules or the length of a reexport chain.
     pub fn global_binding(
@@ -280,6 +284,7 @@ impl VerifiedProgram {
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
     let (stats, layouts) = validate_program(&package, limits)?;
     Ok(VerifiedProgram {
+        identity: super::codec::identity(&package, limits)?,
         package,
         stats,
         limits,

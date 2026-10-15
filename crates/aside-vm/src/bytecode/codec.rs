@@ -12,6 +12,7 @@ trait Wire: Sized {
 }
 struct Writer {
     bytes: Option<Vec<u8>>,
+    digest: Option<blake3::Hasher>,
     len: usize,
     max: usize,
     capacity: usize,
@@ -42,6 +43,9 @@ impl Writer {
             .ok_or_else(|| Error::new(ErrorKind::Limit, "encoded length overflow"))?;
         if self.len > self.max || self.len as u64 > self.limits.max_work {
             return Err(Error::new(ErrorKind::Limit, "encoded byte/work limit"));
+        }
+        if let Some(digest) = &mut self.digest {
+            digest.update(bytes);
         }
         if let Some(out) = &mut self.bytes {
             out.extend_from_slice(bytes);
@@ -959,6 +963,7 @@ fn encode_fields(
     owned: usize,
 ) -> Result<Vec<u8>, Error> {
     let mut measure = Writer {
+        digest: None,
         bytes: None,
         len: HEADER_BYTES,
         max: limits.max_bytes,
@@ -995,6 +1000,7 @@ fn encode_fields(
         ));
     }
     let mut w = Writer {
+        digest: None,
         bytes: Some(bytes),
         len: 0,
         max: limits.max_bytes,
@@ -1105,6 +1111,7 @@ pub(crate) fn measure(
     limits: Limits,
 ) -> Result<(usize, usize, u64), Error> {
     let mut w = Writer {
+        digest: None,
         bytes: None,
         len: HEADER_BYTES,
         max: limits.max_bytes,
@@ -1118,4 +1125,23 @@ pub(crate) fn measure(
 #[cfg(test)]
 pub(super) fn encode_unverified(package: &BytecodePackage) -> Vec<u8> {
     encode_fields(package, Limits::default(), 0).expect("bounded malformed test fixture")
+}
+
+// Hash canonical fields without materializing another copy of the code package.
+pub(crate) fn identity(package: &BytecodePackage, limits: Limits) -> Result<[u8; 32], Error> {
+    let mut writer = Writer {
+        bytes: None,
+        digest: Some(blake3::Hasher::new()),
+        len: 0,
+        max: limits.max_bytes,
+        capacity: 0,
+        records: 0,
+        limits,
+    };
+    package.format_version.put(&mut writer)?;
+    package.language_version.put(&mut writer)?;
+    package.host_abi_version.put(&mut writer)?;
+    package.content_version.put(&mut writer)?;
+    package.put(&mut writer)?;
+    Ok(*writer.digest.unwrap().finalize().as_bytes())
 }

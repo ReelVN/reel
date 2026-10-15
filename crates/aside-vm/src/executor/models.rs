@@ -3,13 +3,23 @@ use super::*;
 use crate::class::{InstanceSlot, State};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy)]
-struct CopyObject {
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(super) struct CopyObject {
     source: Value,
     target: Value,
     kind: ObjectKind,
     version: u64,
     index: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct CopySnapshot {
+    frame: FrameId,
+    roots: Value,
+    result: Value,
+    cursor: usize,
+    validating: bool,
+    count: usize,
 }
 
 pub(super) struct ModelCopy {
@@ -33,6 +43,72 @@ impl Drop for ModelCopy {
 }
 
 impl ModelCopy {
+    pub(super) fn snapshot(&self) -> CopySnapshot {
+        CopySnapshot {
+            frame: self.frame,
+            roots: self.roots,
+            result: self.result,
+            cursor: self.cursor,
+            validating: self.validating,
+            count: self.objects.len(),
+        }
+    }
+    pub(super) fn snapshot_object(&self, index: usize) -> Option<&CopyObject> {
+        self.objects.get(index)
+    }
+    pub(super) fn restore(
+        saved: CopySnapshot,
+        heap: &Heap,
+        map: &crate::snapshot::SnapshotMap,
+    ) -> Result<Self, crate::snapshot::SnapshotError> {
+        if saved.cursor > saved.count {
+            return Err(crate::snapshot::SnapshotError::Invalid(
+                "model copy cursor".into(),
+            ));
+        }
+        Ok(Self {
+            frame: saved.frame,
+            roots: map.value(saved.roots)?,
+            result: map.value(saved.result)?,
+            objects: Vec::new(),
+            identities: HashMap::new(),
+            cursor: saved.cursor,
+            validating: saved.validating,
+            charge: 0,
+            usage: heap.budget_usage(),
+        })
+    }
+    pub(super) fn restore_object(
+        &mut self,
+        index: u32,
+        mut object: CopyObject,
+        heap: &Heap,
+        map: &crate::snapshot::SnapshotMap,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        if index as usize != self.objects.len() {
+            return Err(crate::snapshot::SnapshotError::Invalid(
+                "model copy object order".into(),
+            ));
+        }
+        object.source = map.value(object.source)?;
+        object.target = map.value(object.target)?;
+        self.reserve()?;
+        self.identities
+            .insert(heap.handle(object.source)?, self.objects.len());
+        self.objects.push(object);
+        Ok(())
+    }
+    pub(super) fn validate_snapshot(
+        &self,
+        saved: CopySnapshot,
+    ) -> Result<(), crate::snapshot::SnapshotError> {
+        if self.objects.len() != saved.count {
+            return Err(crate::snapshot::SnapshotError::Invalid(
+                "model copy object count".into(),
+            ));
+        }
+        Ok(())
+    }
     fn new(heap: &mut Heap, frame: FrameId, defaults: Value) -> Result<Self, HeapError> {
         let mut copy = Self {
             frame,

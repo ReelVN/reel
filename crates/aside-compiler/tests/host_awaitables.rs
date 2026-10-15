@@ -12,6 +12,22 @@ fn producer() { throw "producer failed"; }
 fn consumer(request) { try { throw 7; } catch previous { await request } }
 fn cooperative(request) { try { await request } catch cancelled { return 42; } }
 fn repeat(request) { let mut total = 0; for i in 0..128 { total += await request; } total }
+class SavedCounter { let mut value:int = 40; fn read(self) { self.value } }
+fn saved_state(request) {
+    let counter = SavedCounter();
+    let aliases = [counter, counter];
+    let cycle = []; cycle.append(cycle);
+    let mut calls = 0;
+    let bump = || { calls += 1; counter.read() + calls };
+    bump();
+    try { throw 7; } catch caught {
+        let result = await request;
+        aliases[0].value = 39;
+        if aliases[1].value != 39 || cycle[0] != cycle || caught != 7 { return 0; }
+        counter.value = 40;
+        return bump() + result;
+    } finally { counter.value += 1; }
+}
 "#;
 
 fn fixture() -> Vm {
@@ -379,4 +395,172 @@ fn await_enforces_dynamic_context_and_reuses_storage_for_repeated_settled_result
     );
     eprintln!("128 settled awaits: no additional heap payload chunks after first dispatch");
     vm.heap_mut().release_root(root).unwrap();
+}
+#[test]
+fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_completion() {
+    use aside_vm::snapshot::{SnapshotBudget, SnapshotError, SnapshotRegistry, VmSnapshot};
+    fn sendable<T: Send>() {}
+    sendable::<VmSnapshot>();
+    let mut vm = fixture();
+    let (object, _) = request(&mut vm);
+    let first = start(&mut vm, "saved_state", &[object], 1, bc::Context::Ordinary);
+    let a = ticket(&mut vm, first, object, false);
+    vm.respond(a, HostResponse::Pending(a.wait_id())).unwrap();
+    let second = start(&mut vm, "saved_state", &[object], 2, bc::Context::Ordinary);
+    let b = ticket(&mut vm, second, object, true);
+    vm.respond(b, HostResponse::Pending(b.wait_id())).unwrap();
+
+    let dead = vm.heap_mut().alloc_array(&[]).unwrap();
+    let weak = vm.heap_mut().alloc_weakref(dead).unwrap();
+    let root = vm
+        .heap_mut()
+        .add_root(RootOwner(99), RootKind::Host, weak)
+        .unwrap();
+    let bytes = vm.heap_mut().alloc_byte_buffer(&[]).unwrap();
+    for _ in 0..32 {
+        vm.heap_mut().bytes_append(bytes, &[73; 1024]).unwrap();
+    }
+    let byte_root = vm
+        .heap_mut()
+        .add_root(RootOwner(99), RootKind::Host, bytes)
+        .unwrap();
+    fn readonly(_: &aside_vm::Heap, _: Value, _: u32, _: Value) -> Result<(), aside_vm::HeapError> {
+        Err(aside_vm::HeapError::ReadOnly)
+    }
+    let fields = vm.heap_mut().alloc_table().unwrap();
+    let host = vm
+        .heap_mut()
+        .alloc_host(fields, &[], Some(readonly))
+        .unwrap();
+    vm.heap_mut()
+        .add_root(RootOwner(99), RootKind::Host, host)
+        .unwrap();
+    let mut registry = SnapshotRegistry::default();
+    let mut unsupported = vm.snapshot_begin(&registry).unwrap();
+    loop {
+        match unsupported.step(SnapshotBudget::default()) {
+            Ok(progress) => assert!(
+                !progress.complete,
+                "unregistered native schema must not silently disappear"
+            ),
+            Err(SnapshotError::MissingAdapter { .. }) => break,
+            other => panic!("unexpected snapshot adapter outcome: {other:?}"),
+        }
+    }
+    drop(unsupported);
+    registry
+        .register_validator("test.readonly", 1, readonly)
+        .unwrap();
+    let mut capture = vm.snapshot_begin(&registry).unwrap();
+    let mut slices = 0;
+    loop {
+        let progress = capture.step(SnapshotBudget { units: 1 }).unwrap();
+        assert!(progress.units <= 1);
+        assert!(progress.bytes <= 2048, "one record must remain bounded");
+        slices += 1;
+        if progress.complete {
+            break;
+        }
+    }
+    assert!(slices > 32, "large buffers must split across captures");
+    let image = capture.finish().unwrap();
+    let encoded = image.encode().unwrap();
+    eprintln!(
+        "snapshot bytes={}, records={}, capture_slices={slices}",
+        encoded.len(),
+        image.record_count()
+    );
+    let image = VmSnapshot::decode(&encoded).unwrap();
+    let p = vm.program().package().clone();
+    let support = bc::RuntimeSupport {
+        natives: vec![bc::NativeSupport {
+            symbol: "host::await_request".into(),
+            abi_version: 1,
+            signature: p.signatures[p.natives[0].signature.index()].clone(),
+            required_capabilities: vec![],
+        }],
+        ..Default::default()
+    };
+    let program = bc::verify(p, bc::Limits::default()).unwrap();
+    let mut wrong = program.package().clone();
+    let changed = wrong
+        .constants
+        .iter_mut()
+        .find(|c| **c == bc::Const::Int(40))
+        .unwrap();
+    *changed = bc::Const::Int(41);
+    assert!(matches!(
+        Vm::restore_begin(
+            &image,
+            bc::verify(wrong, bc::Limits::default()).unwrap(),
+            support.clone(),
+            VmLimits::default(),
+            SessionEpoch(2),
+            &registry
+        ),
+        Err(SnapshotError::CodeMismatch)
+    ));
+    let mut wrong_registry = SnapshotRegistry::default();
+    wrong_registry
+        .register_validator("test.readonly", 2, readonly)
+        .unwrap();
+    let mut candidate = Vm::restore_begin(
+        &image,
+        bc::verify(program.package().clone(), bc::Limits::default()).unwrap(),
+        support.clone(),
+        VmLimits::default(),
+        SessionEpoch(2),
+        &wrong_registry,
+    )
+    .unwrap();
+    loop {
+        match candidate.step(SnapshotBudget::default()) {
+            Ok(progress) => assert!(!progress.complete),
+            Err(SnapshotError::AdapterVersion { version: 1, .. }) => break,
+            other => panic!("unexpected restore adapter outcome: {other:?}"),
+        }
+    }
+    drop(candidate);
+    let mut restore = Vm::restore_begin(
+        &image,
+        program,
+        support,
+        VmLimits::default(),
+        SessionEpoch(2),
+        &registry,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let (mut loaded, map) = restore.finish().unwrap();
+    assert_ne!(loaded.heap().id(), vm.heap().id());
+    let weak = loaded.heap().root_value(map.root(root).unwrap()).unwrap();
+    assert!(
+        loaded.heap_mut().upgrade_weakref(weak).unwrap().is_none(),
+        "weak edges cannot retain otherwise dead data"
+    );
+    let bytes = loaded
+        .heap()
+        .root_value(map.root(byte_root).unwrap())
+        .unwrap();
+    let mut tail = [0; 1024];
+    loaded
+        .heap()
+        .read_bytes(bytes, 31 * 1024, &mut tail)
+        .unwrap();
+    assert_eq!(tail, [73; 1024]);
+    assert!(
+        loaded
+            .complete(a.wait_id(), Completion::Ready(Value::int(99)))
+            .is_err()
+    );
+    for (task, wait) in [(first, a.wait_id()), (second, b.wait_id())] {
+        loaded
+            .complete(map.wait(wait).unwrap(), Completion::Ready(Value::int(0)))
+            .unwrap();
+        returned(&mut loaded, map.task(task).unwrap(), true, 42);
+    }
+    // Restoring did not consume the source's waits or mutate its shared cells.
+    vm.complete(a.wait_id(), Completion::Ready(Value::int(0)))
+        .unwrap();
+    returned(&mut vm, first, true, 42);
 }

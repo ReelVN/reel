@@ -11,6 +11,7 @@ mod heap;
 mod payload;
 mod root_ranges;
 mod slots;
+pub mod snapshot;
 mod type_checks;
 mod value;
 

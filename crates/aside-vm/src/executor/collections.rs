@@ -186,7 +186,7 @@ impl Vm {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) enum TableAction {
     Spread(TableSpread),
     Build {
@@ -211,7 +211,7 @@ pub(super) enum TableAction {
         value: Reg,
     },
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct TableWork {
     action: TableAction,
     entry: u32,

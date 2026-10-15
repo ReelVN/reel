@@ -668,7 +668,7 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 ## 十一 存档 历史 路线与跳过
 
-本节的历史数据和自动阅读控制已实现；存读档、路线切换与按章节跳转仍是后续设计。界面由作者组合，服务不生成固定页面。
+本节的历史数据和自动阅读控制已实现；存读档、路线切换与按章节跳转仍是后续设计。VM 已支持执行状态快照，作者可用的槽位服务还需接通会话和资源恢复，见[存档架构](../engine-architecture.md#九-存档与回滚)。界面由作者组合，服务不生成固定页面。
 
 saves 是独立服务。save(slot_id) 返回 SaveRequest，quick_save() 使用快速槽；load(slot_id) 和 quick_load() 返回 LoadRequest。请求有只读 status 与 error，可用 derive 或 bind 显示进度；请求本身可等待，保存按钮通常只提交请求并观察模型。成功意味着槽位已提交到存储。调用者也可直接等待自己发出的保存请求：捕获在调用后的可恢复边界进行，这份存档里的对应请求恢复为已成功结果，等待者继续执行后面的语句。保存调用始终只执行一次。其他在途外部写请求跨进程恢复时，以可处理的 OperationInterrupted 错误结算；当前存档对应的请求使用上述成功规则。载入请求成功会替换会话，旧会话拥有的回调任务结束，进程级服务继续发布结果。
 saves.slots(page: 1, page_size: 12) 返回 SlotPage，可观察 items 包含稳定 id、occupied、chapter、saved_at、thumbnail 和 status。saves.delete(slot_id) 返回 DeleteRequest，成功后对应摘要变为空槽。每页页码从 1 开始，page_size 与页码决定固定普通槽位集合；快速槽独立。作者通过 grid、image、text、button 组成页面，翻页只更换显示的集合。

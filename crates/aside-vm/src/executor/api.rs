@@ -4,7 +4,7 @@ use crate::{
     FrameSlotsLimits, FrameSlotsStats, HeapError, HeapId, HeapLimits, HeapStats, RootOwner,
     SessionEpoch, Value,
 };
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FrameId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskId {
@@ -12,14 +12,14 @@ pub struct TaskId {
     pub(super) epoch: SessionEpoch,
     pub(super) serial: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModuleInstanceId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeRef {
     pub function: FunctionId,
     pub version: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     pub code: CodeRef,
     pub pc: Pc,
@@ -39,7 +39,7 @@ pub struct WaitId {
     pub(super) epoch: SessionEpoch,
     pub(super) serial: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NativeInput {
     Entry,
     Continue { version: u64, stage: u64 },
@@ -48,7 +48,7 @@ pub enum NativeInput {
     WaitingReturned,
     WaitingFault,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextFlags {
     pub no_wait: bool,
     pub init: bool,
@@ -63,7 +63,7 @@ impl From<Context> for ContextFlags {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContinuationState {
     pub version: u64,
     pub stage: u64,
@@ -144,7 +144,7 @@ impl Default for SliceBudget {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SliceUsage {
     pub instructions: u32,
     pub work: u64,
@@ -161,7 +161,7 @@ pub enum RunOutcome {
     Fault(DeliveryId),
     ResourceBlocked(ResourceBlocked),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockedResource {
     HeapObjects,
     CatchRecords,
@@ -171,7 +171,7 @@ pub enum BlockedResource {
     WindowValues,
     HeapBytes,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceBlocked {
     pub task: TaskId,
     pub resource: BlockedResource,
@@ -180,6 +180,7 @@ pub struct ResourceBlocked {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum FaultKind {
     Thrown = 0,
     Type = 1,

@@ -115,6 +115,27 @@ impl Value {
     }
 }
 
+// Snapshot references are detached keys. Only SnapshotMap may turn decoded
+// references into values in a live heap; there is no process identity on disk.
+impl serde::Serialize for Value {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&(self.tag as u8, self.payload), s)
+    }
+}
+impl<'de> serde::Deserialize<'de> for Value {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (tag, bits) = <(u8, u64) as serde::Deserialize>::deserialize(d)?;
+        Ok(match tag {
+            0 if bits == 0 => Self::NULL,
+            1 if bits <= 1 => Self::bool(bits != 0),
+            2 => Self::int(bits as i64),
+            3 => Self::float(f64::from_bits(bits)),
+            4 if crate::slots::heap_key(bits).is_some() => Self::object(HeapId(0), bits),
+            _ => return Err(serde::de::Error::custom("invalid snapshot value")),
+        })
+    }
+}
+
 /// Host-side scoped handle. Long-term retention still requires a RootToken.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct HeapHandle {
@@ -122,6 +143,25 @@ pub struct HeapHandle {
     pub epoch: SessionEpoch,
     pub key: u64,
     pub(crate) _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl serde::Serialize for HeapHandle {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&self.key, s)
+    }
+}
+impl<'de> serde::Deserialize<'de> for HeapHandle {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let key = <u64 as serde::Deserialize>::deserialize(d)?;
+        if crate::slots::heap_key(key).is_none() {
+            return Err(serde::de::Error::custom("invalid snapshot handle"));
+        }
+        Ok(Self {
+            heap: HeapId(0),
+            epoch: SessionEpoch(0),
+            key,
+            _thread: std::marker::PhantomData,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

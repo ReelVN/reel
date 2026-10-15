@@ -2,14 +2,14 @@
 //! and destination versions cover mutations by other tasks between slices.
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) enum CaptureKind {
     Elements,
     PositionalArguments,
     NamedArguments,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) struct SpreadCapture {
     pub kind: CaptureKind,
     pub index: u32,
@@ -18,7 +18,7 @@ pub(in crate::executor) struct SpreadCapture {
     pub destination_version: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) enum TableFinish {
     Instruction,
     Build {
@@ -28,7 +28,7 @@ pub(in crate::executor) enum TableFinish {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) struct TableSpread {
     pub source: Reg,
     pub index: u32,

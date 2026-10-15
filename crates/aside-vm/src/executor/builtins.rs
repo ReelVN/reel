@@ -7,6 +7,7 @@ pub(super) use strings::TextWork;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(i64)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) enum Builtin {
     Len,
     Append,
@@ -130,7 +131,7 @@ impl Builtin {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct BuiltinCall {
     descriptor: DescriptorId,
     dest: Reg,

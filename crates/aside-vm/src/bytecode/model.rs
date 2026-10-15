@@ -4,6 +4,7 @@ macro_rules! indices {
     ($($name:ident),+ $(,)?) => { $(
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
+        #[derive(serde::Serialize, serde::Deserialize)]
         pub struct $name(pub u32);
         impl $name { pub fn index(self) -> usize { self.0 as usize } }
     )+ };
@@ -76,7 +77,7 @@ pub enum Const {
     Bytes(Vec<u8>),
     Tuple(Vec<ConstId>),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BuiltinType {
     Any,
     Null,
@@ -109,7 +110,7 @@ pub enum TypeDef {
     },
 }
 /// A mask of allowed effects, not a promise that a call will actually wait.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Effects(pub u32);
 impl Effects {
     pub const ALLOCATE: u32 = 1;
@@ -197,7 +198,7 @@ pub enum CaptureKind {
     Value,
     Cell,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BindingStorage {
     Value(Reg),
     Cell(Reg),
@@ -285,7 +286,7 @@ impl Instruction {
 }
 const _: () = assert!(std::mem::size_of::<Instruction>() == 16);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RegWindow {
     pub start: Reg,
     pub len: u32,
@@ -471,7 +472,7 @@ pub struct SourceFile {
     pub path: SymbolId,
     pub text: String,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceSpan {
     pub file: SourceId,
     pub start: u32,

@@ -1,6 +1,7 @@
 mod model;
 mod properties;
 mod reactive;
+pub(crate) mod snapshot;
 mod storage;
 pub(crate) use reactive::DerivedSlot;
 mod table;
@@ -17,7 +18,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 pub use table::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ObjectKind {
     Cell,
     Array,
@@ -89,7 +90,7 @@ impl ObjectKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RootKind {
     TaskFrame,
     Session,
@@ -101,7 +102,7 @@ pub enum RootKind {
     Arguments,
     Exception,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootOwner(pub u64);
 
 /// Explicitly owned registration. Release through the heap; copying is not a new root.
