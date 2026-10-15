@@ -35,8 +35,10 @@ GPU frame; input and `stage.presented()` cannot accept that unfinished projectio
 Superseded requests are cancelled, late results cannot enter the new demand, and
 retirement releases image leases through the existing resource lifecycle. Optional
 prefetch is evicted/deferred before required loading. Accepted and pending frames
-retain their actual leases and budget charges. Painting clips interiors while the
-one-pixel neighbor gutter supplies bilinear samples across tile boundaries.
+retain their actual leases and budget charges. Painting fills interior rectangles
+directly on the shared target while the one-pixel neighbor gutter supplies bilinear
+samples across tile boundaries. Tile interiors do not use separate clip layers;
+adjacent antialiased edges must share rasterization before group compositing.
 
 Scope: reel-core format, reel-cli preparation, reel-player loading/layout, reel-ui
 image painting and bridge geometry access; no second graph, runtime or image codec.
