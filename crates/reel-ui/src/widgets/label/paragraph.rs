@@ -1,6 +1,6 @@
 //! One shaped paragraph with ranged styles and baseline-aligned ruby boxes.
 use crate::{
-    core::{BrushIndex, StyleProperty, StyleSet, render_text, render_text_revealed},
+    core::{BrushIndex, StyleProperty, StyleSet, TextOutline, render_text, render_text_revealed},
     imaging::Painter,
     kurbo::Affine,
     peniko::{Brush, Color},
@@ -52,6 +52,8 @@ impl Paragraph {
         text: &Text,
         styles: &StyleSet,
         width: Option<f32>,
+        scale: f32,
+        quantize: bool,
     ) -> Self {
         Self::fragment(
             fonts,
@@ -62,6 +64,8 @@ impl Paragraph {
             true,
             true,
             width,
+            scale,
+            quantize,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -74,6 +78,8 @@ impl Paragraph {
         ruby: bool,
         emphasis: bool,
         width: Option<f32>,
+        scale: f32,
+        quantize: bool,
     ) -> Self {
         let mut out = Self {
             plain: range.clone(),
@@ -103,6 +109,8 @@ impl Paragraph {
                 false,
                 true,
                 None,
+                scale,
+                quantize,
             );
             let mut note_styles = styles.clone();
             let base_size = text
@@ -134,6 +142,8 @@ impl Paragraph {
                 false,
                 false,
                 None,
+                scale,
+                quantize,
             );
             if let Some(color) = text.style_at(unit.start).and_then(|s| s.color) {
                 note.default_color = Some(brush(color));
@@ -156,7 +166,7 @@ impl Paragraph {
             cursor = unit.end;
         }
         out.append(text, cursor..range.end);
-        let mut builder = context.ranged_builder(fonts, &out.text, 1., true);
+        let mut builder = context.ranged_builder(fonts, &out.text, scale, quantize);
         for property in styles.inner().values() {
             builder.push_default(property.clone());
         }
@@ -224,13 +234,29 @@ impl Paragraph {
         color: Brush,
         hint: bool,
         visible: Range<usize>,
+        outline: Option<TextOutline>,
     ) {
         self.brushes[0] = self.default_color.clone().unwrap_or_else(|| color.clone());
         let range = self.position(visible.start)..self.position(visible.end);
         if range.start == 0 && range.end == self.text.len() {
-            render_text(painter, transform, &self.layout, &self.brushes, hint);
+            render_text(
+                painter,
+                transform,
+                &self.layout,
+                &self.brushes,
+                hint,
+                outline,
+            );
         } else {
-            render_text_revealed(painter, transform, &self.layout, &self.brushes, hint, range);
+            render_text_revealed(
+                painter,
+                transform,
+                &self.layout,
+                &self.brushes,
+                hint,
+                range,
+                outline,
+            );
         }
         if self.emphasis {
             let shown = self.position(visible.start)..self.position(visible.end);
@@ -300,6 +326,7 @@ impl Paragraph {
                     color.clone(),
                     hint,
                     visible.clone(),
+                    outline,
                 );
                 if visible.start <= item.range.start && item.range.end <= visible.end {
                     let note_x = position.x + (item.width - item.note.width()) / 2.;
@@ -309,6 +336,7 @@ impl Paragraph {
                         color.clone(),
                         hint,
                         0..usize::MAX,
+                        outline,
                     );
                 }
             }

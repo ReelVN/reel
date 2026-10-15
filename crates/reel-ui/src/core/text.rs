@@ -31,6 +31,23 @@ pub type StyleProperty = reel_text::StyleProperty<'static, BrushIndex>;
 /// A set of styles specialised for use within Masonry.
 pub type StyleSet = reel_text::StyleSet<BrushIndex>;
 
+/// Width fitting for complete text, independent of its currently revealed prefix.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TextFit {
+    #[default]
+    None,
+    Shrink {
+        min_font_size: f32,
+    },
+}
+
+/// Outward outline in logical units, drawn beneath the glyph fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextOutline {
+    pub width: f64,
+    pub color: peniko::Color,
+}
+
 use accesskit::{TextDecoration, TextDecorationStyle};
 use kurbo::{Affine, Line, Stroke};
 use peniko::{Brush, Fill};
@@ -49,6 +66,7 @@ pub fn render_text(
     brushes: &[Brush],
     // TODO: Should this be part of `BrushIndex` (i.e. `brushes`)?
     hint: bool,
+    outline: Option<TextOutline>,
 ) {
     for line in layout.lines() {
         for item in line.items() {
@@ -109,6 +127,19 @@ pub fn render_text(
                     }
                 })
                 .collect();
+            if let Some(outline) = outline.filter(|outline| outline.width > 0.) {
+                painter
+                    .glyphs(font, &Brush::Solid(outline.color))
+                    .hint(hint)
+                    .transform(transform)
+                    .glyph_transform(glyph_xform)
+                    .font_size(font_size)
+                    .normalized_coords(coords)
+                    .draw(
+                        &peniko::Style::Stroke(Stroke::new(outline.width * 2.)),
+                        &glyphs,
+                    );
+            }
             painter
                 .glyphs(font, brush)
                 .hint(hint)
@@ -160,8 +191,17 @@ pub fn render_text_revealed(
     brushes: &[Brush],
     hint: bool,
     visible_bytes: std::ops::Range<usize>,
+    outline: Option<TextOutline>,
 ) {
-    render_text_inner(painter, transform, layout, brushes, hint, visible_bytes);
+    render_text_inner(
+        painter,
+        transform,
+        layout,
+        brushes,
+        hint,
+        visible_bytes,
+        outline,
+    );
 }
 
 fn render_text_inner(
@@ -171,6 +211,7 @@ fn render_text_inner(
     brushes: &[Brush],
     hint: bool,
     visible_bytes: std::ops::Range<usize>,
+    outline: Option<TextOutline>,
 ) {
     for line in layout.lines() {
         let mut last_run = None;
@@ -253,6 +294,19 @@ fn render_text_inner(
                 }
             }
             if !glyphs.is_empty() {
+                if let Some(outline) = outline.filter(|outline| outline.width > 0.) {
+                    painter
+                        .glyphs(font, &Brush::Solid(outline.color))
+                        .hint(hint)
+                        .transform(transform)
+                        .glyph_transform(glyph_xform)
+                        .font_size(font_size)
+                        .normalized_coords(coords)
+                        .draw(
+                            &peniko::Style::Stroke(Stroke::new(outline.width * 2.)),
+                            &glyphs,
+                        );
+                }
                 painter
                     .glyphs(font, brush)
                     .hint(hint)
@@ -429,10 +483,28 @@ mod reveal_tests {
                 &brushes,
                 true,
                 range,
+                None,
             );
         } else {
-            render_text(&mut painter, Affine::IDENTITY, layout, &brushes, true);
+            render_text(&mut painter, Affine::IDENTITY, layout, &brushes, true, None);
         }
+        scene
+    }
+    fn outlined(layout: &Layout<BrushIndex>, range: std::ops::Range<usize>) -> Scene {
+        let mut scene = Scene::new();
+        let mut painter = Painter::new(&mut scene);
+        render_text_revealed(
+            &mut painter,
+            Affine::IDENTITY,
+            layout,
+            &[Color::BLACK.into(), Color::WHITE.into()],
+            true,
+            range,
+            Some(TextOutline {
+                width: 2.,
+                color: Color::from_rgb8(255, 170, 255),
+            }),
+        );
         scene
     }
     fn glyphs(scene: &Scene) -> Vec<(Glyph, Brush)> {
@@ -463,6 +535,32 @@ mod reveal_tests {
             for styled in [false, true] {
                 let layout = layout(text, styled);
                 let original = glyphs(&painted(&layout, None));
+                // Each outline reuses precisely the fill glyph positions. A
+                // partially revealed ligature cannot leave a hidden outline.
+                for end in text.char_indices().map(|(i, _)| i).chain([text.len()]) {
+                    let ordinary = glyphs(&painted(&layout, Some(0..end)));
+                    let stroked = outlined(&layout, 0..end);
+                    let drawn = glyphs(&stroked);
+                    let fill: Vec<_> = drawn
+                        .iter()
+                        .filter(|(_, brush)| {
+                            *brush != Brush::Solid(Color::from_rgb8(255, 170, 255))
+                        })
+                        .cloned()
+                        .collect();
+                    assert_eq!(fill, ordinary);
+                    assert_eq!(drawn.len(), ordinary.len() * 2);
+                    for command in stroked.commands() {
+                        if let Command::Draw(id) = command
+                            && let Draw::GlyphRun(run) = stroked.draw_op(*id)
+                            && run.brush == Brush::Solid(Color::from_rgb8(255, 170, 255))
+                        {
+                            assert!(
+                                matches!(&run.style, peniko::Style::Stroke(stroke) if stroke.width == 4.)
+                            );
+                        }
+                    }
+                }
                 assert!(!original.is_empty(), "real font must shape this case");
                 assert_eq!(
                     glyphs(&painted(&layout, Some(0..text.len()))),

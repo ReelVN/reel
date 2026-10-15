@@ -2,15 +2,26 @@
 use super::GpuError;
 use reel_ui::frame::{FrameGlyphRun, RecordLocation, RenderFrame};
 use reel_ui::resources::ResourceData;
-use swash::scale::{Render, ScaleContext, Source, image::Content};
+use reel_ui::{kurbo, peniko};
+use swash::{
+    scale::{ScaleContext, outline::Outline},
+    zeno,
+};
+
+#[derive(Default)]
+pub(super) struct Rasterizer {
+    scale: ScaleContext,
+    outline: Outline,
+    scratch: zeno::Scratch,
+}
 pub struct GlyphBitmap {
     pub x: f64,
     pub y: f64,
     pub size: [u32; 2],
-    pub pixels: Vec<f32>,
+    pub alpha: Vec<u8>,
 }
 pub fn rasterize(
-    context: &mut ScaleContext,
+    context: &mut Rasterizer,
     frame: &RenderFrame,
     run: &FrameGlyphRun,
     index: usize,
@@ -39,18 +50,13 @@ pub fn rasterize(
             record: "font collection index",
         },
     )?;
-    if run.font_embolden != reel_ui::kurbo::Vec2::ZERO {
-        return Err(GpuError::Unsupported {
-            at,
-            record: "glyph embolden",
-        });
-    }
     let glyph = &run.glyphs[index];
     let id = u16::try_from(glyph.id).map_err(|_| GpuError::Unsupported {
         at,
         record: "glyph id",
     })?;
     let mut scaler = context
+        .scale
         .builder(font)
         .size(run.font_size)
         .hint(run.hint)
@@ -62,80 +68,123 @@ pub fn rasterize(
             record: "color glyph layers",
         });
     }
-    if let Some(outline) = scaler.scale_outline(id) {
-        let bounds = outline.bounds();
-        let width = bounds.width().ceil() + 4.;
-        let height = bounds.height().ceil() + 4.;
-        if !width.is_finite()
-            || !height.is_finite()
-            || width > max_dimension as f32
-            || height > max_dimension as f32
-        {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "glyph raster exceeds device texture dimensions",
-            });
-        }
-        let cost = super::resources::upload_cost([width.max(1.) as u32, height.max(1.) as u32])?;
-        if cost > available {
-            return Err(GpuError::Budget {
-                domain: "glyph raster",
-                requested: cost,
-                available,
-            });
-        }
-    }
-    let Some(image) = Render::new(&[Source::Outline])
-        .format(swash::zeno::Format::Alpha)
-        .render(&mut scaler, id)
-    else {
-        if scaler
-            .scale_outline(id)
-            .is_some_and(|o| o.points().is_empty())
-        {
-            return Ok(None);
-        }
+    let outline = &mut context.outline;
+    if !scaler.scale_outline_into(id, outline) {
         return Err(GpuError::Unsupported {
             at,
             record: "missing glyph outline",
         });
+    }
+    if outline.points().is_empty() {
+        return Ok(None);
+    }
+    if run.font_embolden != kurbo::Vec2::ZERO {
+        outline.embolden(run.font_embolden.x as f32, run.font_embolden.y as f32);
+    }
+    if let Some(transform) = run.glyph_transform {
+        let [a, b, c, d, e, f] = transform.as_coeffs().map(|v| v as f32);
+        outline.transform(&zeno::Transform::new(a, b, c, d, e, f));
+    }
+    if outline
+        .points()
+        .iter()
+        .any(|p| !p.x.is_finite() || !p.y.is_finite())
+    {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "glyph raster coordinates",
+        });
+    }
+    let dashes;
+    let style = match &run.style {
+        peniko::Style::Fill(fill) => zeno::Style::Fill(match fill {
+            peniko::Fill::NonZero => zeno::Fill::NonZero,
+            peniko::Fill::EvenOdd => zeno::Fill::EvenOdd,
+        }),
+        peniko::Style::Stroke(stroke) => {
+            dashes = stroke
+                .dash_pattern
+                .iter()
+                .map(|v| *v as f32)
+                .collect::<Vec<_>>();
+            let width = stroke.width as f32;
+            let miter_limit = stroke.miter_limit as f32;
+            let offset = stroke.dash_offset as f32;
+            if !width.is_finite()
+                || width < 0.
+                || !offset.is_finite()
+                || !miter_limit.is_finite()
+                || miter_limit < 0.
+                || dashes.iter().any(|v| !v.is_finite() || *v < 0.)
+            {
+                return Err(GpuError::Unsupported {
+                    at,
+                    record: "glyph stroke parameters",
+                });
+            }
+            if width == 0. {
+                return Ok(None);
+            }
+            zeno::Style::Stroke(zeno::Stroke {
+                width,
+                join: match stroke.join {
+                    kurbo::Join::Bevel => zeno::Join::Bevel,
+                    kurbo::Join::Round => zeno::Join::Round,
+                    kurbo::Join::Miter if miter_limit < 1. => zeno::Join::Bevel,
+                    kurbo::Join::Miter => zeno::Join::Miter,
+                },
+                miter_limit,
+                start_cap: cap(stroke.start_cap),
+                end_cap: cap(stroke.end_cap),
+                dashes: if dashes.iter().any(|v| *v > 0.) {
+                    &dashes
+                } else {
+                    &[]
+                },
+                offset,
+                scale: true,
+            })
+        }
     };
-    let size = [image.placement.width, image.placement.height];
+    // Measure the final stroked outline before allocating its coverage buffer.
+    // Reuse Swash's rasterizer, including its scratch storage, without shaping again.
+    let mut mask = zeno::Mask::with_scratch(outline.path(), &mut context.scratch);
+    let mut size = [0; 2];
+    mask.format(zeno::Format::Alpha)
+        .origin(zeno::Origin::BottomLeft)
+        .style(style)
+        .inspect(|_, width, height| size = [width, height]);
     if size.contains(&0) {
         return Ok(None);
+    }
+    if size.iter().any(|v| *v > max_dimension) {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "glyph raster exceeds device texture dimensions",
+        });
     }
     let cost = super::resources::upload_cost(size)?;
     if cost > available {
         return Err(GpuError::Budget {
-            domain: "glyph",
+            domain: "glyph raster",
             requested: cost,
             available,
         });
     }
-    let mut pixels = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
-    match image.content {
-        Content::Mask => {
-            for a in image.data {
-                pixels.extend([f32::from(a) / 255.; 4]);
-            }
-        }
-        Content::Color => {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "color glyph encoding",
-            });
-        }
-        Content::SubpixelMask => {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "subpixel glyph",
-            });
-        }
-    }
+    let mut alpha = vec![0; size[0] as usize * size[1] as usize];
+    let placement = mask.render_into(&mut alpha, None);
     Ok(Some(GlyphBitmap {
-        x: f64::from(image.placement.left),
-        y: -f64::from(image.placement.top),
+        x: f64::from(placement.left),
+        y: -f64::from(placement.top),
         size,
-        pixels,
+        alpha,
     }))
+}
+
+fn cap(cap: kurbo::Cap) -> zeno::Cap {
+    match cap {
+        kurbo::Cap::Butt => zeno::Cap::Butt,
+        kurbo::Cap::Square => zeno::Cap::Square,
+        kurbo::Cap::Round => zeno::Cap::Round,
+    }
 }

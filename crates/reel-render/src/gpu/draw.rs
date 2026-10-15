@@ -253,15 +253,6 @@ impl Context<'_> {
                 record: "non-solid glyph brush",
             });
         };
-        if !matches!(run.style, reel_ui::peniko::Style::Fill(_))
-            || run.glyph_transform.is_some()
-            || run.font_embolden != reel_ui::kurbo::Vec2::ZERO
-        {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "glyph stroke or glyph transform",
-            });
-        }
         let color = color
             .convert::<LinearSrgb>()
             .premultiply()
@@ -269,8 +260,9 @@ impl Context<'_> {
             .map(|x| x * run.composite.alpha);
         let mut page: Option<Arc<super::glyph_cache::Page>> = None;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
+        let run_key = Arc::new(super::glyph_cache::RunKey::new(run));
         for index in 0..run.glyphs.len() {
-            let key = super::glyph_cache::Key::new(run, index);
+            let key = super::glyph_cache::Key::new(run_key.clone(), run.glyphs[index].id);
             let glyph = if let Some(glyph) = self.glyphs.entries.get(&key) {
                 glyph.clone()
             } else {

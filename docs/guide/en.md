@@ -551,9 +551,13 @@ Pixels changed by an effect and logical input regions are declared separately. O
 
 ## 10 Choices and Changing Content
 
+Use `text_fit: "shrink"` to fit a complete title or option into a fixed width; `min_font_size` sets its lower font-size bound. The default, `text_fit: "none"`, keeps normal layout. Fitting only shrinks, preserves explicit line breaks and scales rich text and ruby together; typewriter reveal does not change the size. Use clip if text still overflows at the minimum. `text_outline` sets the outward glyph outline width and `text_outline_color` sets its color for text and control labels. For example: `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`. These properties accept derive, so hover or focus can change the text appearance.
+
 Use `spawn(work, owner: root)` for independent scripted scenes or background game logic. work is a zero-argument function, closure or bound method and may loop and await animations/results. `await task` returns its value or raises its original error; repeated awaits share the terminal result. `task.cancel()` returns true for the first cancellation request and false afterwards; waiters receive Cancelled after cleanup. Cancellation does not run script finally blocks, so attach resources to their owning nodes. Removing a node cancels its tasks; hiding it does not. Cancelling a waiter leaves the producer running. An omitted owner inherits the callback/task node, or the session in the main story. Work starts after the caller waits or returns and has no main-story dialogue/choice permission. Initialization, pure derive and NoWait contexts cannot spawn tasks. See [author_tasks.aside](../../examples/author_tasks.aside). Use sequence/parallel/repeat for fixed animations; tween supports quadratic `quad_in`, `quad_out`, `quad_in_out` curves alongside the cubic in/out/in_out curves.
 
 Task capacity grows with actual concurrency and is reused; authors do not reserve a task count. Rust hosts can set their own admission quota through `VmLimits.max_tasks`; allocations still count against the heap budget.
+
+See [author_fitted_text.aside](../../examples/author_fitted_text.aside) for a runnable example of resizing, switching text languages and hover outlines.
 
 Forms, sign-in screens, settings and embedded games can return their own results. `completion(owner: root)` creates a one-shot awaitable. A callback submits any value with `.resolve(value)` (null when omitted), and the caller continues through `await` while other input and activities keep running. A component can return its node and result together:
 ```aside
