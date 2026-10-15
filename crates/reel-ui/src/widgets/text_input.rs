@@ -443,7 +443,7 @@ impl Widget for TextInput {
             });
         }
         if let Some(layout) = self.editor.try_layout() {
-            render_text(painter, transform, layout, &[color.into()], true);
+            render_text(painter, transform, layout, &[color.into()], true, None);
         }
         if ctx.is_focus_target()
             && ctx.is_window_focused()

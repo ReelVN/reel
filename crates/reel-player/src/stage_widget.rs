@@ -225,6 +225,12 @@ fn font_style(font: &str) -> StyleProperty {
         std::borrow::Cow::Owned(font.to_owned()),
     ))
 }
+fn text_outline(props: &reel_ui::stage::NodeProps) -> Option<reel_ui::core::TextOutline> {
+    (props.text_outline > 0.).then(|| reel_ui::core::TextOutline {
+        width: props.text_outline,
+        color: color(props.text_outline_color),
+    })
+}
 impl SceneWidget {
     fn caption(kind: &NodeKind) -> Option<&str> {
         match kind {
@@ -264,6 +270,8 @@ impl SceneWidget {
                         .with_visible_bytes(Self::reveal_range(&view.node))
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
                         .with_text_alignment(view.node.props.text_align)
+                        .with_text_fit(view.node.props.text_fit)
+                        .with_outline(text_outline(&view.node.props))
                         .with_style(StyleProperty::LineHeight(
                             reel_ui::reel_text::LineHeight::FontSizeRelative(
                                 view.node.props.line_height as f32,
@@ -463,6 +471,8 @@ impl SceneWidget {
             if this.widget.node.props.text_align != view.node.props.text_align {
                 Label::set_text_alignment(&mut label, view.node.props.text_align);
             }
+            Label::set_text_fit(&mut label, view.node.props.text_fit);
+            Label::set_outline(&mut label, text_outline(&view.node.props));
             if this.widget.node.props.line_height != view.node.props.line_height {
                 Label::insert_style(
                     &mut label,
@@ -528,6 +538,7 @@ impl SceneWidget {
                 || old.padding != new.padding
                 || old.font_size != new.font_size
                 || old.font != new.font
+                || old.text_fit != new.text_fit
                 || old.clip != new.clip
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {

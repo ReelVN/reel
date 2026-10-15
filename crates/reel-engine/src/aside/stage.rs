@@ -69,6 +69,14 @@ pub(super) enum NodeProperty {
     TextAlign,
     #[aside(name = "line_height", ty = Any, default = 1.2, validate = validate_nonnegative, animatable)]
     LineHeight,
+    #[aside(name = "text_fit", ty = String, default = "none", validate = validate_text_fit)]
+    TextFit,
+    #[aside(name = "min_font_size", ty = Any, default = 0, validate = validate_nonnegative)]
+    MinFontSize,
+    #[aside(name = "text_outline", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    TextOutline,
+    #[aside(name = "text_outline_color", ty = String, default = "#000000", validate = validate_color)]
+    TextOutlineColor,
 }
 
 pub(super) struct StageBinding {
@@ -1143,6 +1151,22 @@ fn text_align(heap: &Heap, value: Value) -> Result<reel_ui::TextAlign, HeapError
 fn validate_text_align(heap: &Heap, value: Value) -> Result<(), HeapError> {
     text_align(heap, value).map(|_| ())
 }
+fn shrink_text(heap: &Heap, value: Value) -> Result<bool, HeapError> {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 6 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 6];
+    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    match &bytes[..info.len as usize] {
+        b"none" => Ok(false),
+        b"shrink" => Ok(true),
+        _ => Err(HeapError::TypeMismatch),
+    }
+}
+fn validate_text_fit(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    shrink_text(heap, value).map(|_| ())
+}
 fn read_props(
     heap: &Heap,
     fields: Value,
@@ -1173,6 +1197,15 @@ fn read_props(
         font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
         line_height: nonnegative(get(NodeProperty::LineHeight)?)?,
+        text_fit: if shrink_text(heap, get(NodeProperty::TextFit)?)? {
+            reel_ui::core::TextFit::Shrink {
+                min_font_size: nonnegative(get(NodeProperty::MinFontSize)?)? as f32,
+            }
+        } else {
+            reel_ui::core::TextFit::None
+        },
+        text_outline: nonnegative(get(NodeProperty::TextOutline)?)?,
+        text_outline_color: color(heap, get(NodeProperty::TextOutlineColor)?)?,
         color: color(heap, get(NodeProperty::Color)?)?,
         background: if background.tag() == ValueTag::Null {
             None
