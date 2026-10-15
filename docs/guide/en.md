@@ -135,6 +135,12 @@ Implemented: text, image, row, column, stack and stage.replace use one shared no
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
+### Random choices
+
+`let rng = random();` creates an independent random stream. `rng.int(0, 10)` returns an integer from 0 through 9, `rng.float()` returns a number in [0, 1), and `rng.pick(items)` returns an original element from a nonempty array or tuple. `random(seed: 42)` reproduces the same call sequence; a saved `let pick = rng.pick` keeps using that stream. Draw in an event or story function and write the result to a model, rather than drawing inside derive. Failed draws do not advance the state. See [author_random.aside](../../examples/author_random.aside).
+
+`random` comes from the independent Aside standard library and is imported automatically by Reel; `use std::random;` is also supported. Create streams in main or an event handler; module initialization and derive are effect-restricted. Seeded sequences are reproducible within the same library version.
+
 ### Organizing data and behavior with classes
 
 Use `class` to group character or word data with named fields, types and methods. A `let` field is initialized once; `let mut` permits writes. Field initializers run separately for each instance. Constructors use `fn init(self, ...)`, including named arguments and defaults. Parameter annotations can name local or imported classes; derived instances satisfy base-class annotations.

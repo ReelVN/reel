@@ -199,6 +199,7 @@ pub struct SessionVm {
     stage: stage::StageBinding,
     activities: activity::Activities,
     results: results::Results,
+    standard: aside_std::StandardLibrary,
     audio: audio::Audio,
     translations: localization::Translations,
     game: std::sync::Arc<GameSettings>,
@@ -225,6 +226,7 @@ impl SessionVm {
         }
         let vm = Vm::load(program, support, limits, SessionEpoch(identity.epoch.0))?;
         let stage = stage::StageBinding::new(vm.program())?;
+        let standard = aside_std::StandardLibrary::new(vm.program());
         Ok(Self {
             vm,
             identity,
@@ -252,6 +254,7 @@ impl SessionVm {
             stage,
             activities: activity::Activities::default(),
             results: results::Results::default(),
+            standard,
             audio: audio::Audio::default(),
             translations: localization::Translations::default(),
             game: std::sync::Arc::new(GameSettings::default()),
@@ -381,6 +384,10 @@ impl SessionVm {
         work: u32,
     ) -> Result<NativeDispatch, AdapterError> {
         self.check_ticket(session, ticket)?;
+        if self.standard.dispatch(&mut self.vm, ticket)? {
+            self.issued = None;
+            return Ok(NativeDispatch::Ready { work: 1 });
+        }
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {

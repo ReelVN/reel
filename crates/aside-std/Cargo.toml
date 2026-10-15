@@ -1,0 +1,17 @@
+[package]
+name = "aside-std"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Host-independent standard library for Aside"
+
+[dependencies]
+aside-host = { path = "../aside-host" }
+fastrand = "=2.5.0"
+
+[dev-dependencies]
+stats_alloc = "=0.1.10"
+
+[lints]
+workspace = true

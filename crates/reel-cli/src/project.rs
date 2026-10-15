@@ -143,7 +143,7 @@ pub fn load_with_modules(
                 && l.tokens[0].kind == aside_compiler::SyntaxKind::Ident
                 && usize::from(l.tokens[0].range.end()) == alias.len()
         });
-        if !valid || matches!(alias.as_str(), "main" | "game" | "reel") {
+        if !valid || matches!(alias.as_str(), "main" | "game" | "reel" | "std") {
             return Err(setup_error(format!(
                 "invalid or reserved module alias {alias}"
             )));
@@ -270,7 +270,11 @@ pub fn load_with_modules(
             });
         }
         for (request, span) in discovery.requests {
-            if request.path.first().is_some_and(|root| root == "reel") {
+            if request
+                .path
+                .first()
+                .is_some_and(|root| matches!(root.as_str(), "reel" | "std"))
+            {
                 continue;
             }
             let requested = canonical(&request.path, &aliases);

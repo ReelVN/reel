@@ -65,8 +65,14 @@ fn collect(vm: &mut SessionVm) {
 #[test]
 fn default_reel_environment_respects_author_scopes_and_explicit_aliases() {
     let code = r#"use reel::prelude::text as reel_text;
+        use std::random as standard_random;
         fn text(value) { value + " author" }
         fn opening() {
+            let rng = random(seed: 42);
+            let same = standard_random(seed: 42);
+            if rng.int(0, 1000) != same.int(0, 1000) { throw "standard prelude"; }
+            let set = rng.pick;
+            if set(["Reel"]) != "Reel" { throw "standard native dispatch"; }
             if text("module") != "module author" { throw "module precedence"; }
             let image = |value| value + " local";
             if image("binding") != "binding local" { throw "local precedence"; }

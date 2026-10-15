@@ -135,6 +135,12 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 
 stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。`scroll(height: 360) { ... }` 创建纵向滚动区域；axis 可设为 "horizontal" 或 "both"。滚轮、触摸拖动和键盘/手柄焦点跟随共用正常输入；滚动不会重建文字布局。`follow_end: true` 使已处于末端的 NVL 页跟随新内容，上滚阅读后保留位置。
 
+### 随机选择
+
+`let rng = random();` 创建一个独立随机流；`rng.int(0, 10)` 返回 0 到 9 的整数，`rng.float()` 返回大于等于 0、小于 1 的小数，`rng.pick(items)` 从非空数组或 tuple 返回一个原元素。`random(seed: 42)` 可复现同一调用序列，保存 `let pick = rng.pick` 仍使用原随机流。先在事件或剧情中抽取，再把结果写入 model；不要在 derive 中抽取。抽取失败不推进状态。示例见 [author_random.aside](../../examples/author_random.aside)。
+
+`random` 来自独立的 Aside 标准库，Reel 自动导入，也支持显式 `use std::random;`。在 main 或事件函数中创建随机流；模块初始化与 derive 沿用现有副作用约束。固定种子的复现范围为同一标准库版本。
+
 ### 用类组织有行为的数据
 
 `class` 可以把角色、词条等数据的字段、类型和方法放在一起。`let` 字段只初始化一次，`let mut` 字段允许修改；字段初值按实例分别求值。构造方法写 `fn init(self, ...)`，也支持命名参数和缺省值。参数注解可以引用本地或导入的类，派生实例满足基类注解。
