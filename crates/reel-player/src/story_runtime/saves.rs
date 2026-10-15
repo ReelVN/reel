@@ -31,6 +31,9 @@ impl StoryRuntime {
         budget: SliceBudget,
     ) -> Result<bool, Error> {
         let Some(mut saves) = self.saves.take() else {
+            if self.starting.is_some() {
+                return Ok(false);
+            }
             if let Some(request) = self
                 .driver
                 .as_mut()
@@ -61,13 +64,7 @@ impl StoryRuntime {
         budget: SliceBudget,
     ) -> Result<bool, Error> {
         let quota = SnapshotBudget { units: 256 };
-        if let Some(retiring) = &mut saves.retiring {
-            retiring.cleanup_step(256, budget, || now_ns)?;
-            if !retiring.cleanup_pending() {
-                saves.retiring = None;
-            }
-        }
-        if self.closing {
+        if self.closing || self.starting.is_some() {
             saves.restore = None;
             saves.candidate = None;
             saves.pending = None;
@@ -75,7 +72,7 @@ impl StoryRuntime {
         let mut events = Vec::new();
         saves.service.drain(&mut events, 8);
         for event in events {
-            if self.closing {
+            if self.closing || self.starting.is_some() {
                 continue;
             }
             let result = match event.result {
@@ -90,7 +87,7 @@ impl StoryRuntime {
                         driver.adapter().vm().limits(),
                         identity,
                         driver.ui().session().read_progress().clone(),
-                        Some((saves.audio)()),
+                        self.audio_factory.as_ref().map(|factory| factory()),
                         Some(Box::new(crate::localization::AssetCatalogLoader::new(
                             driver.ui().assets(),
                         ))),
@@ -115,7 +112,11 @@ impl StoryRuntime {
             saves.pending = None;
             self.runnable = true;
         }
-        if self.closing {
+        if self.closing || self.starting.is_some() {
+            return Ok(false);
+        }
+        // Keep replacement ownership bounded to one retiring session.
+        if self.retiring.is_some() {
             return Ok(false);
         }
 
@@ -132,6 +133,7 @@ impl StoryRuntime {
                     vm,
                     live.locale().into(),
                     live.ui().assets(),
+                    live.initializer(),
                 )?)?);
             }
             if let Some(candidate) = &mut saves.candidate {
@@ -151,7 +153,7 @@ impl StoryRuntime {
                 let mut candidate = saves.candidate.take().unwrap().driver;
                 let mut old = self.driver.take().unwrap();
                 old.cancel()?;
-                saves.retiring = Some(old);
+                self.retiring = Some(old);
                 self.logical_ns = (candidate.adapter().logical_time() * 1_000_000_000.) as u64;
                 self.time_offset_ns = self.logical_ns;
                 self.suspended_ns = now_ns;

@@ -1291,6 +1291,23 @@ impl Vm {
         Ok(())
     }
 
+    /// Resolve a function value that carries no receiver or captured environment.
+    /// The identity belongs to this verified program; no heap value crosses into
+    /// a replacement VM. Hosts validate the entry's signature and context.
+    pub fn unbound_function(&self, value: Value) -> Result<FunctionId, VmError> {
+        if self.heap.info(value)?.kind != ObjectKind::Closure {
+            return Err(VmError::Contract("entry must be an unbound function"));
+        }
+        let function = self.closure_function(value)?;
+        if !self.program.package().functions[function.index()]
+            .captures
+            .is_empty()
+        {
+            return Err(VmError::Contract("entry must not capture local state"));
+        }
+        Ok(function)
+    }
+
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
         let closure = self.script_closure(closure)?;
         let info = self.heap.info(closure)?;

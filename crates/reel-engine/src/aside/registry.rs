@@ -237,6 +237,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for (symbol, parameters, effects) in [
         ("reel::game::exit", vec![], Effects::WRITE | Effects::HOST),
+        (
+            "reel::game::start",
+            vec!["entry"],
+            Effects::WRITE | Effects::HOST,
+        ),
         ("reel::game::dialogue", vec![], Effects::ALLOCATE),
         ("reel::game::choice", vec![], Effects::ALLOCATE),
         ("reel::game::history", vec![], Effects::ALLOCATE),

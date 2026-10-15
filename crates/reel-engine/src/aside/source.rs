@@ -22,21 +22,7 @@ impl CompiledStory {
     /// admission remains exclusively the responsibility of SessionVm::load.
     pub fn validate(&self) -> Result<(), SourceError> {
         let p = self.program.package();
-        let function = p
-            .functions
-            .get(self.entry.index())
-            .ok_or(SourceError::Entry)?;
-        let signature = &p.signatures[function.signature.index()];
-        if !function.captures.is_empty()
-            || function.kind != bc::FunctionKind::Plain
-            || function.context != bc::Context::Ordinary
-            || signature
-                .parameters
-                .iter()
-                .any(|parameter| parameter.default.is_none())
-        {
-            return Err(SourceError::Entry);
-        }
+        validate_entry(&self.program, self.entry)?;
         let initializer = p
             .functions
             .get(self.initializer.index())
@@ -53,6 +39,26 @@ impl CompiledStory {
         }
         Ok(())
     }
+}
+
+pub(super) fn validate_entry(
+    program: &bc::VerifiedProgram,
+    entry: bc::FunctionId,
+) -> Result<(), SourceError> {
+    let p = program.package();
+    let function = p.functions.get(entry.index()).ok_or(SourceError::Entry)?;
+    let signature = &p.signatures[function.signature.index()];
+    if !function.captures.is_empty()
+        || function.kind != bc::FunctionKind::Plain
+        || function.context != bc::Context::Ordinary
+        || signature
+            .parameters
+            .iter()
+            .any(|parameter| parameter.default.is_none())
+    {
+        return Err(SourceError::Entry);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

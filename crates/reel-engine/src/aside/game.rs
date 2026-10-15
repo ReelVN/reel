@@ -28,6 +28,11 @@ impl SessionVm {
         &self.game
     }
 
+    /// Carry host-visible configuration into a fresh story session.
+    pub fn inherit_game_settings(&mut self, settings: Arc<GameSettings>) {
+        self.game = settings;
+    }
+
     pub(super) fn configure_game(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
         let args = self.vm.host_arguments(ticket)?;
         let mut next = (*self.game).clone();

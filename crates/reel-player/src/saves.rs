@@ -59,31 +59,23 @@ impl Capture {
     }
 }
 
-/// Storage and device reconstruction are injected independently of the window backend.
+/// Storage is injected independently of the window and audio backend.
 pub struct RuntimeSaves {
     pub(crate) service: SaveService,
-    pub(crate) audio: Box<dyn Fn() -> Box<dyn reel_engine::audio::AudioBackend>>,
     pub(crate) max_snapshot_bytes: u64,
     pub(crate) pending: Option<SaveRequest>,
     pub(crate) restore: Option<OwnedSessionRestore>,
     pub(crate) candidate: Option<Candidate>,
-    pub(crate) retiring: Option<AsideSessionUi>,
     pub(crate) next_epoch: u64,
 }
 impl RuntimeSaves {
-    pub fn new(
-        service: SaveService,
-        max_snapshot_bytes: u64,
-        audio: impl Fn() -> Box<dyn reel_engine::audio::AudioBackend> + 'static,
-    ) -> Self {
+    pub fn new(service: SaveService, max_snapshot_bytes: u64) -> Self {
         Self {
             service,
-            audio: Box::new(audio),
             max_snapshot_bytes,
             pending: None,
             restore: None,
             candidate: None,
-            retiring: None,
             next_epoch: 0,
         }
     }
@@ -91,7 +83,6 @@ impl RuntimeSaves {
         self.pending.is_some()
             || self.restore.is_some()
             || self.candidate.is_some()
-            || self.retiring.is_some()
             || !self.service.is_idle()
     }
 }

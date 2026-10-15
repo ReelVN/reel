@@ -136,17 +136,14 @@ impl State {
             wake.clone(),
         );
         if let Some(WindowSession::Aside { story: runtime, .. }) = &mut state.session {
-            runtime.set_saves(crate::saves::RuntimeSaves::new(
-                service,
-                save_bytes,
-                move || {
-                    Box::new(crate::audio::AudioPlayer::desktop(
-                        assets.clone(),
-                        audio.clone(),
-                        wake.clone(),
-                    ))
-                },
-            ));
+            runtime.set_saves(crate::saves::RuntimeSaves::new(service, save_bytes));
+            runtime.set_audio_factory(move || {
+                Box::new(crate::audio::AudioPlayer::desktop(
+                    assets.clone(),
+                    audio.clone(),
+                    wake.clone(),
+                ))
+            });
         }
         Ok(state)
     }

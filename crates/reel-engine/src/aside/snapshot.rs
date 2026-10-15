@@ -213,6 +213,7 @@ impl SessionVm {
             || !self.stage_ready()
             || !self.activities.snapshot_ready()
             || self.exit_requested
+            || self.start_requested.is_some()
         {
             return Err(SnapshotError::Busy(
                 "finish native admission and stage maintenance before capture",

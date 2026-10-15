@@ -25,6 +25,8 @@ class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元�
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
 
+Reel 的 `game.start(entry)` 接收无捕获、无必需参数的普通函数值，在新会话重新初始化模块后执行；接受请求后调用者不再继续。它是宿主 native ABI 1，不改变语言函数、B01 或 ASB。
+
 ## 二 语法与求值顺序
 Reel 的 `await stage.presented(owner: null)` 等待请求之后的稳定舞台投影实际呈现并返回 null，复用宿主 Awaitable。也可保存返回对象后等待多次，或调用 `.cancel()`；节点 owner 退休取消未决请求。创建请求只能在普通剧情/回调中执行，初始化与 NoWait/纯派生边界不可绕过。此接口新增 native ABI 1，不改变语言 await、B01 或 ASB。
 

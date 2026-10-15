@@ -221,6 +221,7 @@ pub struct SessionVm {
     narrative: Option<narrative::Narrative>,
     skip_input: Option<reel_ui::stage::NodeId>,
     exit_requested: bool,
+    start_requested: Option<source::StoryFunction>,
 }
 
 impl SessionVm {
@@ -283,6 +284,7 @@ impl SessionVm {
             narrative: None,
             skip_input: None,
             exit_requested: false,
+            start_requested: None,
         })
     }
 
@@ -309,6 +311,12 @@ impl SessionVm {
     /// The work requested shutdown; the embedding host owns cleanup and its window.
     pub fn exit_requested(&self) -> bool {
         self.exit_requested
+    }
+
+    /// A validated entry in this program. The host replaces the session before
+    /// executing any more script and reruns the module initializer first.
+    pub fn start_requested(&self) -> Option<source::StoryFunction> {
+        self.start_requested
     }
 
     /// Format a still-rooted fault's author value without traversing object graphs.
@@ -433,6 +441,16 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::game::start" => {
+                let value = self.vm.host_arguments(ticket)?[0];
+                let entry = self.vm.unbound_function(value)?;
+                source::validate_entry(self.vm.program(), entry)
+                    .map_err(|_| AdapterError::Input("game.start requires an ordinary function with no captures or required parameters"))?;
+                self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+                self.issued = None;
+                self.start_requested = Some(entry);
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::saves::save"
             | "reel::saves::load"
             | "reel::saves::delete"
@@ -803,7 +821,7 @@ impl SessionVm {
         budget: SliceBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
-        if self.exit_requested {
+        if self.exit_requested || self.start_requested.is_some() {
             self.live(session)?;
             return Ok(SessionStep::Idle);
         }

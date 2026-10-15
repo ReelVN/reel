@@ -21,9 +21,9 @@ button 与可等待的 on_click 回调已接通，见文末可运行示例。mod
 ## 一 最小项目与共同写法
 `game.exit()` 请求关闭作品；接收后不再执行脚本，播放器完成任务和资源清理后退出窗口。可先等待淡出动画再调用。嵌入宿主接收同一请求并决定外层应用的行为。完整按钮示例见 [author_exit.aside](../../examples/author_exit.aside)，运行前提供 fonts/body.ttf。
 
-从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。下面标题页中的 game.start 仍属于后续游戏入口服务。
+从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
-Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 属于后续游戏入口服务。
+Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 已实现。
 ```aside
 use game::ui::title::title;
 
@@ -403,7 +403,7 @@ fn opening() {
 }
 story.register("chapter01.opening", opening, title: "窗上的光");
 ```
-普通 fn 即可承载剧情。story.register 的章节入口使用模块级函数且无必需参数。game.start 使用函数自己的稳定模块符号，普通新游戏入口无须额外登记；按章节 ID 访问的路线/重启操作才使用注册表。登记发生在模块候选中，验证与模块发布一起提交。game.start(opening) 接收同样的符号入口，从 UI 事件提交新游戏请求；引擎先在最新已发布模块集合验证入口，再建立新会话调用它，初始化全局剧情变量、自动播放和快进状态。普通 helper 调用保留原模块绑定。
+`game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。跨 ASB 的热更新入口解析与持久脚本全局尚未实现。可运行示例见 [author_game_start.aside](../../examples/author_game_start.aside)。
 
 ## 四 时间顺序与同时发生的变化
 
@@ -842,7 +842,7 @@ fn main() {
 
 点击把原按钮作为 event.target 传入闭包。回调可以 await 动画；同步代码执行到等待或结束才切换其他脚本任务，普通读改写不会因引擎分片被打断。不同回调可以等待同一活动，取消一个等待者不会停止其他等待者共用的活动。
 
-回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start、可观察绑定和通用事件订阅仍待实现。
+回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start 和节点属性绑定已实现；通用事件订阅仍待实现。
 
 主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认宿主支持鼠标和触摸点击、Tab 焦点导航与 Enter/空格激活。手柄十字键/左摇杆按当前画面位置导航，长选项列表会随焦点滚动，南侧按钮确认，东侧按钮与 Escape 向当前 UI 发送返回。确认在配对松开时生效；切换弹窗、失焦或断连会取消旧输入，返回不直接退出应用。多个触点可同时操作不同控件；拖出按钮后松开不触发点击，系统取消或窗口挂起会释放交互。已有按钮无需为触屏重写，可运行 [author_buttons.aside](../../examples/author_buttons.aside)。内置桌面宿主已接入系统 IME，系统可访问性尚待适配。
 
