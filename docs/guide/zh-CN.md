@@ -515,6 +515,8 @@ stage.replace(column(gap: 16) { start; status; });
 ```
 `...style` 将对象自有字段作为具名参数传入，普通函数、节点构造器和提取的方法使用相同规则。覆盖值先合并为一个对象；重复传同一参数会报错。位置参数放在具名参数之前，尾随 children 也是具名参数。完整初始化和按钮交互见 [author_buttons.aside](../../examples/author_buttons.aside)。
 节点属性可以直接修改；持续跟随业务或偏好变化的外观使用 bind/derive。普通风格记录用于构造，运行期共享配色可以用 model 保存，再把其属性绑定到文字与图片。作者自己的组件既可完全手绘，也可沿用熟悉的布局与控件行为。
+
+按钮高亮可使用 `derive(|| control.hover || control.focus_visible)`。只读 `focus_visible` 在键盘/手柄导航时显示焦点，使用指针后隐藏该提示；`focused` 仍保留实际焦点，不影响随后按回车确认。两个属性均包含后代，隐藏、禁用或窗口失焦时停止显示。背景演出不会使无关按钮的输入失效；替换按钮内容仍须显示新画面后才能接受新选择。参见 [author_fitted_text.aside](../../examples/author_fitted_text.aside)。
 UI 与立绘共同运动时，把它们放进同一个组，再对组执行动作。
 ```aside
 let cast = group() {

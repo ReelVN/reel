@@ -172,6 +172,16 @@ pub(super) fn run_event_pass<E>(
 }
 
 // --- MARK: POINTER_EVENT
+pub(crate) fn set_focus_visible(root: &mut RenderRoot, visible: bool) {
+    if root.global_state.focus_visible != visible {
+        root.global_state.focus_visible = visible;
+        super::update::run_global_update_pass(
+            root,
+            &crate::core::Update::FocusVisibilityChanged(visible),
+        );
+    }
+}
+
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
 pub(crate) fn run_on_pointer_event_with_view(
     root: &mut RenderRoot,
@@ -187,6 +197,12 @@ pub(crate) fn run_on_pointer_event_with_view(
 
     let scale = view.scale(root.global_state.scale_factor);
     let physical_pos = try_event_position(event);
+    if matches!(event, PointerEvent::Down(_) | PointerEvent::Scroll(_))
+        || matches!(event, PointerEvent::Move(_))
+            && physical_pos != root.global_state.pointer.last_pointer_physical
+    {
+        set_focus_visible(root, false);
+    }
     root.global_state.pointer.last_pointer_physical = physical_pos;
     let event_pos = physical_pos.map(|p| p.to_logical(scale));
 
@@ -458,6 +474,11 @@ pub(crate) fn run_on_pointer_event_with_view(
 // --- MARK: TEXT EVENT
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
 pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -> Handled {
+    if matches!(event, TextEvent::Keyboard(key) if key.state == KeyState::Down
+        && !matches!(key.key, Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Meta)))
+    {
+        set_focus_visible(root, true);
+    }
     if let TextEvent::Navigation(event) = event {
         return super::navigation::run(root, *event);
     }

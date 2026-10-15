@@ -533,3 +533,205 @@ fn concurrent_touch_callbacks_keep_their_own_presented_down_stamp() {
     drain(&mut runtime);
     assert_eq!(runtime.driver.adapter().stage().nodes().filter(|n| matches!(&n.kind, NodeKind::Button { label: Some(label), .. } if label == "Pressed")).count(), 2);
 }
+
+#[test]
+fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
+    use reel_ui::stage::{NodeEvent, NodeProps, Stage};
+    let mut stage = Stage::default();
+    let label = stage
+        .create(NodeKind::Text("first".into()), NodeProps::default(), vec![])
+        .unwrap();
+    let control = stage
+        .create(
+            NodeKind::Button {
+                label: None,
+                listening: true,
+            },
+            NodeProps {
+                width: Some(180.),
+                height: Some(60.),
+                ..Default::default()
+            },
+            vec![label],
+        )
+        .unwrap();
+    let other = stage
+        .create(
+            NodeKind::Text("background".into()),
+            NodeProps {
+                x: 250.,
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let root = stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![control, other])
+        .unwrap();
+    stage.replace(root).unwrap();
+    let mut ui = SessionUi::new(session()).unwrap();
+    ui.set_stage(&stage);
+    let (mut bridge, root) = mount(&ui);
+    ui.sync(&mut bridge, root).unwrap();
+    super::tests::accept(&mut ui, &mut bridge, 1);
+    let clicks = |dispatch: UiDispatch| {
+        dispatch
+            .events
+            .into_iter()
+            .filter(|event| matches!(event, NodeEvent::Click(_)))
+            .count()
+    };
+    let edit = |stage: &mut Stage, id, text: &str| {
+        let props = stage.node(id).unwrap().props.clone();
+        stage
+            .update(id, NodeKind::Text(text.into()), props)
+            .unwrap();
+    };
+    let mut frame = 1;
+    for keyboard in [false, true] {
+        let send = |ui: &mut SessionUi, bridge: &mut PresentationBridge, down| {
+            if keyboard {
+                ui.handle_text(
+                    bridge,
+                    key(
+                        if down {
+                            keyboard::KeyState::Down
+                        } else {
+                            keyboard::KeyState::Up
+                        },
+                        keyboard::Key::Named(keyboard::NamedKey::Enter),
+                    ),
+                )
+                .unwrap()
+            } else {
+                ui.handle_pointer(bridge, mouse(if down { "down" } else { "up" }, (50., 30.)))
+                    .unwrap()
+            }
+        };
+        for published in [false, true] {
+            send(&mut ui, &mut bridge, true);
+            edit(
+                &mut stage,
+                other,
+                &format!("animation {keyboard} {published}"),
+            );
+            ui.set_stage(&stage);
+            ui.sync(&mut bridge, root).unwrap();
+            if published {
+                frame += 1;
+                super::tests::accept(&mut ui, &mut bridge, frame);
+            }
+            assert_eq!(
+                clicks(send(&mut ui, &mut bridge, false)),
+                1,
+                "unrelated animation must retain the press"
+            );
+        }
+        send(&mut ui, &mut bridge, true);
+        edit(&mut stage, label, &format!("new choice {keyboard}"));
+        ui.set_stage(&stage);
+        // Feedback can arrive before the queued semantic update is applied.
+        let mut props = stage.node(control).unwrap().props.clone();
+        props.color = [255, 0, 0, if keyboard { 255 } else { 128 }];
+        stage
+            .update(control, stage.node(control).unwrap().kind.clone(), props)
+            .unwrap();
+        ui.set_feedback_stage(&stage);
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(clicks(send(&mut ui, &mut bridge, false)), 0);
+        // Pressing an unpresented replacement cannot turn into a valid release
+        // just because a frame arrives while the button is held.
+        send(&mut ui, &mut bridge, true);
+        frame += 1;
+        super::tests::accept(&mut ui, &mut bridge, frame);
+        assert_eq!(
+            clicks(send(&mut ui, &mut bridge, false)),
+            0,
+            "press began before replacement was presented"
+        );
+        send(&mut ui, &mut bridge, true);
+        assert_eq!(clicks(send(&mut ui, &mut bridge, false)), 1);
+        send(&mut ui, &mut bridge, true);
+        edit(&mut stage, label, &format!("replacement {keyboard}"));
+        ui.set_stage(&stage);
+        ui.sync(&mut bridge, root).unwrap();
+        frame += 1;
+        super::tests::accept(&mut ui, &mut bridge, frame);
+        assert_eq!(
+            clicks(send(&mut ui, &mut bridge, false)),
+            0,
+            "newly presented content cancels the old press"
+        );
+    }
+}
+
+#[test]
+fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
+    let mut runtime = runtime(
+        r#"fn main() {
+        let first = button("first", width: 180, height: 60, on_click: |e| {});
+        let second = button("second", width: 180, height: 60, on_click: |e| {});
+        stage.replace(column {
+            first; second;
+            text(derive(|| f"{first.focused}:{first.focus_visible}:{first.hover}:{second.hover}"));
+        });
+    }"#,
+    );
+    drain(&mut runtime);
+    let (mut bridge, root) = mount(runtime.driver.ui());
+    present(&mut runtime, &mut bridge, root, 1);
+    let state = |runtime: &StoryRuntime| {
+        runtime
+            .driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find_map(|node| {
+                if let NodeKind::Text(text) = &node.kind {
+                    Some(text.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    };
+    click(&mut runtime, &mut bridge);
+    assert_eq!(state(&runtime), "true:false:true:false");
+    runtime
+        .driver
+        .handle_text(
+            &mut bridge,
+            key(
+                keyboard::KeyState::Down,
+                keyboard::Key::Named(keyboard::NamedKey::Enter),
+            ),
+        )
+        .unwrap();
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(state(&runtime), "true:true:true:false");
+    present(&mut runtime, &mut bridge, root, 2);
+    assert_eq!(
+        state(&runtime),
+        "true:true:true:false",
+        "geometry refresh does not change modality"
+    );
+    runtime
+        .driver
+        .handle_pointer(&mut bridge, mouse("move", (50., 90.)))
+        .unwrap();
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(
+        state(&runtime),
+        "true:false:false:true",
+        "only the hovered second button is highlighted"
+    );
+    runtime
+        .driver
+        .handle_text(&mut bridge, TextEvent::WindowFocusChange(false))
+        .unwrap();
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(state(&runtime), "false:false:false:false");
+}

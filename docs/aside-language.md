@@ -276,6 +276,8 @@ Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四�
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 
+节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；B01/ASB 不变。
+
 Reel 通过 `spawn(work, owner: null)` 启动零参数脚本工作，返回可 await、可 cancel 的宿主任务；节点所有权和取消遵循引擎的作者活动合同。它复用上述普通调用栈，不改变尚未实现的语言级 async/Future 语义。VM 任务槽按同时活动数量增长并复用，默认没有固定任务数配额；宿主仍可通过 `VmLimits.max_tasks` 显式设限。新任务在宿主准入点扩展、整理执行存储，保留根身份并计入堆预算；不会按最大任务配额预分配全部调用栈。
 
 async fn 调用立即返回任务 Future，函数体在后续调度片开始；创建带 ParentTaskId 的新任务，继承当前明确 owner。普通调用返回不取消任务，丢弃 Future 不等于取消。spawn(owner:,task:) 指定其他合法所有者，无主后台任务不能被暗中创建。ParentTaskId 供因果追踪，不等于自动强制结构化寿命。

@@ -91,6 +91,8 @@ pub(crate) struct RenderRootState {
 
     /// Currently focused widget.
     pub(crate) focused_widget: Option<WidgetId>,
+    /// Navigation appearance is independent of the keyboard event target.
+    pub(crate) focus_visible: bool,
 
     /// List of ancestors of the currently focused widget.
     pub(crate) focused_path: Vec<WidgetId>,
@@ -346,6 +348,7 @@ impl RenderRoot {
                 pointer_hover_spare: Vec::with_capacity(128),
                 pointer_active_spare: Vec::with_capacity(128),
                 focused_widget: None,
+                focus_visible: false,
                 focused_path: Vec::new(),
                 next_focused_widget: None,
                 focus_anchor: None,

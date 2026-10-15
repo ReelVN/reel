@@ -1482,6 +1482,12 @@ impl_context_method!(
             self.widget_state.has_focus_target
         }
 
+        /// Whether keyboard/controller input currently requests focus indications.
+        /// Combine with this widget's focus state when painting an indication.
+        pub fn focus_visible(&self) -> bool {
+            self.global_state.focus_visible
+        }
+
         /// Whether the window is focused.
         pub fn is_window_focused(&self) -> bool {
             self.global_state.window_focused

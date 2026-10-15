@@ -194,15 +194,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: if matches!(name, "checkbox" | "radio") {
-                2
-            } else if name == "input" {
-                8
-            } else if name == "scroll" {
-                4
-            } else if name == "text_input" {
                 3
+            } else if name == "input" {
+                9
+            } else if name == "scroll" {
+                5
+            } else if name == "text_input" {
+                4
             } else {
-                6
+                7
             },
             parameters,
             result: BuiltinType::Any,

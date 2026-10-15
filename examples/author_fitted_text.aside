@@ -8,7 +8,7 @@ fn main() {
     option.add(text(value: derive(|| if state.english { "Extraordinary possibilities" } else { "非同寻常的可能性" }),
         width: derive(|| if state.wide { 480 } else { 180 }), x: 10, y: 12,
         color: "#202030", font_size: 38, text_fit: "shrink", min_font_size: 14,
-        text_outline: derive(|| if option.hover || option.focused { 2 } else { 0 }),
+            text_outline: derive(|| if option.hover || option.focus_visible { 2 } else { 0 }),
         text_outline_color: "#ffaaff"));
     stage.replace(stack(width: 800, height: 480) {
         option;

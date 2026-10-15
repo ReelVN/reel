@@ -86,6 +86,9 @@ pub enum Update {
     /// The host window gained or lost focus; delivered to the whole widget tree.
     WindowFocusChanged(bool),
 
+    /// Keyboard/controller navigation or pointer input changed focus appearance.
+    FocusVisibilityChanged(bool),
+
     /// Called when the [disabled] state of the widget is changed.
     ///
     /// See also [`is_disabled`] and [`set_disabled`].
@@ -271,6 +274,7 @@ impl Update {
             Self::WidgetAdded => "WidgetAdded",
             Self::WindowFocusChanged(false) => "WindowFocusChanged(false)",
             Self::WindowFocusChanged(true) => "WindowFocusChanged(true)",
+            Self::FocusVisibilityChanged(_) => "FocusVisibilityChanged",
             Self::DisabledChanged(false) => "DisabledChanged(false)",
             Self::StashedChanged(false) => "StashedChanged(false)",
             Self::HoveredChanged(false) => "HoveredChanged(false)",

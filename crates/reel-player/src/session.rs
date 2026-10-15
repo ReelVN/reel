@@ -30,6 +30,7 @@ use reel_ui::{
 };
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeMap,
     ops::Range,
     rc::Rc,
 };
@@ -54,6 +55,7 @@ struct InputBinding {
     contacts: Vec<(PointerInfo, ProjectionStamp, Option<u64>)>,
     button_revision: u64,
     accepted_buttons: Option<u64>,
+    buttons: BTreeMap<reel_ui::stage::NodeId, u64>,
     button_down: Option<u64>,
     non_pointer: bool,
     navigation_down: Option<ProjectionStamp>,
@@ -62,9 +64,12 @@ impl InputBinding {
     fn permits_control(&self) -> bool {
         self.control_accepted.is_some() && (self.down.is_some() || self.non_pointer)
     }
-    fn permits_button(&self) -> bool {
-        self.accepted_buttons == Some(self.button_revision)
-            && (self.button_down == Some(self.button_revision) || self.non_pointer)
+    fn permits_button(&self, node: reel_ui::stage::NodeId) -> bool {
+        self.buttons.get(&node).is_some_and(|revision| {
+            self.accepted_buttons
+                .is_some_and(|accepted| accepted >= *revision)
+                && (self.non_pointer || self.button_down.is_some_and(|down| down >= *revision))
+        })
     }
     fn permits(&self, current: ProjectionStamp) -> bool {
         self.accepted == Some(current) && (self.down == Some(current) || self.non_pointer)
@@ -460,7 +465,7 @@ impl Widget for SessionWidget {
                 NodeEvent::Link(link) if self.binding.borrow().permits_control() => {
                     self.events.borrow_mut().push(NodeEvent::Link(link.clone()));
                 }
-                NodeEvent::Click(click) if self.binding.borrow().permits_button() => {
+                NodeEvent::Click(click) if self.binding.borrow().permits_button(click.node) => {
                     self.events.borrow_mut().push(NodeEvent::Click(*click));
                 }
                 NodeEvent::Change(change) if self.binding.borrow().permits_control() => {
@@ -851,7 +856,12 @@ impl SessionUi {
             .or(self.stage.as_ref())
             .is_none_or(|view| view.revision != stage.revision())
         {
-            let view = StageView::capture(stage);
+            let mut view = StageView::capture(stage);
+            view.feedback = feedback
+                && self
+                    .pending_stage
+                    .as_ref()
+                    .is_none_or(|pending| pending.feedback);
             let modal = view.has_modal();
             if modal {
                 self.session.set_skip_reading(false, false);
@@ -861,13 +871,29 @@ impl SessionUi {
                 self.reading_modal = modal;
             }
             self.images.request(view.image_requests());
-            self.pending_stage = Some(view);
             let mut binding = self.binding.borrow_mut();
             binding.accepted = None;
-            if !feedback {
+            let buttons = view.button_changes(
+                self.pending_stage.as_ref().or(self.stage.as_ref()),
+                feedback,
+            );
+            if buttons.iter().any(|(_, changed)| *changed) {
                 binding.button_revision = binding.button_revision.wrapping_add(1);
-                binding.accepted_buttons = None;
             }
+            let revision = binding.button_revision;
+            view.button_revision = revision;
+            binding.buttons = buttons
+                .into_iter()
+                .map(|(id, changed)| {
+                    let version = if changed {
+                        revision
+                    } else {
+                        binding.buttons.get(&id).copied().unwrap_or(revision)
+                    };
+                    (id, version)
+                })
+                .collect();
+            self.pending_stage = Some(view);
             // Stable control identities retain gestures across value/layout changes.
             // Scene retirement, configuration and modal changes are checked by routing.
         }
@@ -926,9 +952,7 @@ impl SessionUi {
     pub fn presented(&mut self, stamp: ProjectionStamp) {
         let mut binding = self.binding.borrow_mut();
         binding.control_accepted = Some(stamp);
-        if stamp.button_revision == binding.button_revision {
-            binding.accepted_buttons = Some(binding.button_revision);
-        }
+        binding.accepted_buttons = Some(stamp.button_revision);
         if !self.images_pending() {
             binding.accepted = Some(stamp);
         }
@@ -942,6 +966,7 @@ impl SessionUi {
         let mut binding = self.binding.borrow_mut();
         *binding = InputBinding {
             button_revision: binding.button_revision,
+            buttons: std::mem::take(&mut binding.buttons),
             ..Default::default()
         };
     }
@@ -1008,7 +1033,7 @@ impl SessionUi {
                 .checked_add(1)
                 .ok_or("UI projection revision exhausted")?;
             self.stamp.interaction = self.projection.interaction;
-            self.stamp.button_revision = self.binding.borrow().button_revision;
+            self.stamp.button_revision = self.stage.as_ref().map_or(0, |view| view.button_revision);
             self.input_fallback = bridge.edit_widget(root_id, |mut widget| {
                 let mut widget = widget.downcast::<SessionWidget>();
                 SessionWidget::sync(&mut widget, self);
@@ -1298,7 +1323,7 @@ mod tests {
             id,
         )
     }
-    fn accept(ui: &mut SessionUi, bridge: &mut PresentationBridge, frame: u64) {
+    pub(super) fn accept(ui: &mut SessionUi, bridge: &mut PresentationBridge, frame: u64) {
         let source = bridge.record(FrameId(frame)).unwrap();
         let stamp = ui.projection_stamp();
         assert_eq!(
