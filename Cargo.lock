@@ -2899,6 +2899,7 @@ name = "reel-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "guillotiere",
  "half",
  "lyon_tessellation",
  "pollster",

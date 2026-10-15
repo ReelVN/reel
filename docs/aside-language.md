@@ -258,6 +258,8 @@ Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去�
 
 Reel 节点构造把 children 候选归一化为显式提供的完整组件根；已属于这些根的后代不再重复挂载。Aside 尾随 children 块仍按原规则收集表达式，普通 add 返回值不变，显式 children 数组使用同一节点合同；这不是语言对某个方法名的特判。
 
+text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。富文本事件链接悬停/聚焦下划线仅重绘。均沿既有宿主属性与输入合同，不新增 Aside 语法或 ABI。
+
 Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 B01/ASB 编码。
 
 Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 B01/ASB 变化。

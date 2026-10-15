@@ -78,6 +78,114 @@ fn frame_with_snapshot(
 fn counts(renderer: &Renderer, uploads: usize) {
     assert_eq!(renderer.gpu.upload_creations.snapshot(), [uploads; 3]);
 }
+
+#[test]
+#[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
+fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparations() {
+    use reel_ui::{
+        app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
+        core::*,
+        dpi::PhysicalSize,
+        peniko::Blob,
+        resources::{ResourceData, ResourceRegistry},
+    };
+    use std::sync::atomic::Ordering;
+    let pool = pool();
+    let bytes = std::fs::read(std::env::var("REEL_R01_TEST_FONT").unwrap()).unwrap();
+    let reservation = pool.reserve(bytes.len() as u64).unwrap();
+    let font = Blob::from(bytes);
+    let mut registry = ResourceRegistry::new(4, 65536).unwrap();
+    let handle = registry
+        .register(
+            reel_core::identity::ResourceVersion {
+                key: reel_core::identity::AssetKey("atlas-font".into()),
+                version: reel_core::identity::ContentVersion([1; 32]),
+            },
+            ResourceData::Font(font.clone()),
+            reservation,
+        )
+        .unwrap();
+    let text = "Chat history: office ffi Reel 0123456789. ".repeat(160);
+    let root = RenderRoot::new(
+        NewWidget::new(reel_ui::widgets::Label::new(text))
+            .with_props(reel_ui::properties::LineBreaking::WordWrap),
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(DefaultProperties::new()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(400, 300),
+            scale_factor: 1.,
+            default_font: Some(font),
+        },
+    );
+    let mut bridge = r01_fixture::bridge(root);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&[handle], &pool).unwrap(),
+        &pool,
+    );
+    let glyph_count: usize = frame
+        .commands()
+        .iter()
+        .filter_map(|c| match &c.op {
+            reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => {
+                Some(run.glyphs.len())
+            }
+            _ => None,
+        })
+        .sum();
+    assert!(glyph_count > 4000);
+    let mut renderer = renderer(super::super::GpuLimits::default());
+    eprintln!(
+        "adapter={:?}, glyphs={glyph_count}",
+        renderer.gpu.adapter.get_info()
+    );
+    let discarded = renderer.prepare(&frame).unwrap();
+    let accepted = renderer.prepare(&frame).unwrap();
+    drop(discarded);
+    let pixels = renderer.readback(accepted).unwrap();
+    assert!(pixels.iter().filter(|p| p[3] > 0.1).count() > 100);
+    let warm = renderer.gpu.upload_creations.snapshot();
+    let resident = renderer.usage().resources;
+    assert!(resident <= 2 << 20, "atlas residency {resident}");
+    let started = Instant::now();
+    let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+    for _ in 0..120 {
+        renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert_eq!(renderer.usage().resources, resident);
+        assert_eq!(renderer.usage().targets, 0);
+    }
+    let uploads = renderer.gpu.upload_creations.snapshot();
+    // An optional white coverage texture is independent of glyph count.
+    assert!(uploads[0] - warm[0] <= 120);
+    assert!(uploads[2] - warm[2] <= 120);
+    let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws;
+    assert!(
+        draws / 120 < glyph_count / 10,
+        "draws must be per run/page, not per glyph"
+    );
+    eprintln!(
+        "120 frames {:?}: atlas={resident} bytes; new textures={}, uploads={}, draws/frame={}",
+        started.elapsed(),
+        uploads[0] - warm[0],
+        uploads[2] - warm[2],
+        draws / 120
+    );
+    registry.retire(handle);
+    renderer.retire(&[]);
+    assert_eq!(
+        renderer.usage().resources,
+        0,
+        "font retirement releases glyph pages after observed completion"
+    );
+}
 fn usage(renderer: &Renderer) -> [u64; 3] {
     let u = renderer.usage();
     [u.targets, u.resources, u.transient]

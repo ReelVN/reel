@@ -864,6 +864,10 @@ Rust 宿主可通过 `SessionUi::handle_access` / `AsideSessionUi::handle_access
 
 `text_input` 提供单行文本编辑。value 可以连接可写模型字段；on_change 在提交文本改变后调用，on_submit 在 Enter 确认时调用，事件都有 target 和 value。中文输入法的预编辑不会提前写入模型或触发回调。支持光标移动、选区、删除及复制、剪切和粘贴。中文转换与候选词由系统输入法提供；嵌入宿主转发公共 IME 事件并响应候选窗位置通知。value 赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。外观使用共同节点属性，默认不绘制额外边框，作者可以自行组合背景和焦点提示。
 
+指定 height 时，输入文字在内容区内垂直居中，光标、选区和输入法位置随之对齐。普通 text 指定 width 后，自动高度包含该宽度下的全部换行。
+
+富文本事件链接在悬停或键盘聚焦时显示下划线；反馈只重绘，不重新排版文字。自定义滚动条应将拖动比例限制在 0 到 1，再写入 scroll_y，以免外观跟随尚未由布局校正的越界值；完整实现见 author_scrollbar.aside。
+
 ```aside
 let profile = model({name: ""});
 text_input(value: bind(profile.name), width: 280, height: 40,

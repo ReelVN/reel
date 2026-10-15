@@ -13,6 +13,7 @@ pub(super) struct UploadCreations {
     pub(super) textures: std::sync::atomic::AtomicUsize,
     pub(super) staging: std::sync::atomic::AtomicUsize,
     pub(super) copies: std::sync::atomic::AtomicUsize,
+    pub(super) draws: std::sync::atomic::AtomicUsize,
 }
 #[cfg(test)]
 impl UploadCreations {

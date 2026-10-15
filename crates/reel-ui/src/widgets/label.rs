@@ -51,6 +51,7 @@ pub struct Label {
     styles: StyleSet,
     text_alignment: TextAlign,
     pressed_link: Option<usize>,
+    hovered_link: Option<usize>,
     focused_link: usize,
     link_button: super::ButtonBehavior,
 
@@ -203,6 +204,7 @@ impl Label {
             styles,
             text_alignment: TextAlign::Start,
             pressed_link: None,
+            hovered_link: None,
             focused_link: 0,
             link_button: Default::default(),
             hint: true,
@@ -373,6 +375,7 @@ impl Label {
         this.ctx.set_interactive(text.has_links(), text.has_links());
         this.widget.text = text;
         this.widget.pressed_link = None;
+        this.widget.hovered_link = None;
         this.widget.focused_link = 0;
         this.widget.link_button = Default::default();
         this.widget.visible_bytes = None;
@@ -593,6 +596,13 @@ impl Widget for Label {
             return;
         }
         match event {
+            PointerEvent::Move(e) => {
+                let hovered = self.link_at(ctx.local_position(e.current.position));
+                if self.hovered_link != hovered {
+                    self.hovered_link = hovered;
+                    ctx.request_render();
+                }
+            }
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
                 self.pressed_link = self.link_at(ctx.local_position(e.state.position));
                 if let Some(index) = self.pressed_link {
@@ -674,6 +684,9 @@ impl Widget for Label {
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
         self.link_button.update(event);
+        if (!ctx.is_hovered() || ctx.is_disabled()) && self.hovered_link.take().is_some() {
+            ctx.request_render();
+        }
         if matches!(
             event,
             Update::DisabledChanged(true)
@@ -819,8 +832,10 @@ impl Widget for Label {
             self.hint,
             self.visible_bytes.clone().unwrap_or(0..self.text.len()),
         );
-        if ctx.is_focus_target()
-            && let Some(link) = self.text.links().get(self.focused_link)
+        if let Some(index) = self
+            .hovered_link
+            .or_else(|| ctx.is_focus_target().then_some(self.focused_link))
+            && let Some(link) = self.text.links().get(index)
             && self
                 .visible_bytes
                 .as_ref()

@@ -1,7 +1,7 @@
 use super::{GpuError, mesh, renderer::reserve, replay::Context, resources, targets::Target};
 use reel_ui::frame::{FrameDraw, RecordLocation, RenderFrame};
 use reel_ui::{
-    imaging::record::{Clip, Geometry},
+    imaging::record::Clip,
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, Fill, color::LinearSrgb},
 };
@@ -65,6 +65,11 @@ impl Context<'_> {
             .saturating_sub(self.budget_scope.resources.usage().bytes);
         let cost = resources::upload_cost(size)?;
         self.image_cache.make_room(
+            &self.budgets.resources,
+            cost,
+            self.gpu.limits.resource_bytes,
+        );
+        self.glyph_cache.make_room(
             &self.budgets.resources,
             cost,
             self.gpu.limits.resource_bytes,
@@ -183,6 +188,11 @@ impl Context<'_> {
                     };
                     let cost = resources::upload_cost([image.width, image.height])?;
                     let resident = u64::from(image.width) * u64::from(image.height) * 8;
+                    self.glyph_cache.make_room(
+                        &self.budgets.resources,
+                        cost,
+                        self.gpu.limits.resource_bytes,
+                    );
                     let (upload, residency) = self.image_cache.reserve_upload(
                         &self.budgets.resources,
                         &self.budget_scope.resources,
@@ -243,7 +253,10 @@ impl Context<'_> {
                 record: "non-solid glyph brush",
             });
         };
-        if !matches!(run.style, reel_ui::peniko::Style::Fill(_)) || run.glyph_transform.is_some() {
+        if !matches!(run.style, reel_ui::peniko::Style::Fill(_))
+            || run.glyph_transform.is_some()
+            || run.font_embolden != reel_ui::kurbo::Vec2::ZERO
+        {
             return Err(GpuError::Unsupported {
                 at,
                 record: "glyph stroke or glyph transform",
@@ -254,38 +267,82 @@ impl Context<'_> {
             .premultiply()
             .components
             .map(|x| x * run.composite.alpha);
+        let mut page: Option<Arc<super::glyph_cache::Page>> = None;
+        let mut batch = mesh::Mesh::new(self.mesh_allocation());
         for index in 0..run.glyphs.len() {
-            let available = self
-                .gpu
-                .limits
-                .resource_bytes
-                .saturating_sub(self.budget_scope.resources.usage().bytes);
-            let Some(bitmap) = super::glyph::rasterize(
-                frame,
-                run,
-                index,
-                at,
-                available,
-                self.gpu.device.limits().max_texture_dimension_2d,
-            )?
+            let key = super::glyph_cache::Key::new(run, index);
+            let glyph = if let Some(glyph) = self.glyphs.entries.get(&key) {
+                glyph.clone()
+            } else {
+                let glyph = match self.glyph_cache.get(&key) {
+                    Some(glyph) => glyph,
+                    None => self.glyph_cache.rasterize(
+                        self.gpu,
+                        &mut self.encoder,
+                        frame,
+                        run,
+                        index,
+                        at,
+                        self.budgets,
+                        &self.budget_scope,
+                        &mut self.tickets,
+                        self.image_cache,
+                    )?,
+                };
+                super::glyph_cache::GlyphCache::charge(
+                    &mut self.glyphs,
+                    &glyph,
+                    &self.budget_scope.resources,
+                    self.gpu.limits.resource_bytes,
+                    &mut self.tickets,
+                )?;
+                self.glyphs.entries.insert(key, glyph.clone());
+                glyph
+            };
+            let super::glyph_cache::Glyph::Image {
+                page: glyph_page,
+                origin,
+                size,
+                offset,
+                ..
+            } = glyph.as_ref()
             else {
                 continue;
             };
-            let image = self.upload(bitmap.size, &bitmap.pixels)?;
-            let shape = Geometry::Rect(Rect::new(
-                bitmap.x,
-                bitmap.y,
-                bitmap.x + f64::from(bitmap.size[0]),
-                bitmap.y + f64::from(bitmap.size[1]),
-            ));
-            let mut mesh =
-                mesh::tessellate(&shape, Fill::NonZero, None, at, self.mesh_allocation())?;
-            let uv = Affine::scale_non_uniform(
-                1. / f64::from(bitmap.size[0]),
-                1. / f64::from(bitmap.size[1]),
-            ) * Affine::translate((-bitmap.x, -bitmap.y));
-            mesh::transform(&mut mesh, outer * run.transform, self.size, uv, color, at)?;
-            self.paint(target, &mesh, &image.view)?;
+            if let Some(previous) = &page
+                && !Arc::ptr_eq(previous, glyph_page)
+            {
+                mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
+                self.paint(target, &batch, &previous.view)?;
+                batch = mesh::Mesh::new(self.mesh_allocation());
+            }
+            page = Some(glyph_page.clone());
+            let x = f64::from(run.glyphs[index].x) + offset[0];
+            let y = f64::from(run.glyphs[index].y) + offset[1];
+            let bounds = Rect::new(x, y, x + f64::from(size[0]), y + f64::from(size[1]));
+            let visible = (outer * run.transform)
+                .transform_rect_bbox(bounds)
+                .inflate(1., 1.)
+                .intersect(Rect::new(
+                    0.,
+                    0.,
+                    f64::from(self.size[0]),
+                    f64::from(self.size[1]),
+                ));
+            if visible.width() <= 0. || visible.height() <= 0. {
+                continue;
+            }
+            let uv = Rect::new(
+                f64::from(origin[0]) / f64::from(glyph_page.size[0]),
+                f64::from(origin[1]) / f64::from(glyph_page.size[1]),
+                f64::from(origin[0] + size[0]) / f64::from(glyph_page.size[0]),
+                f64::from(origin[1] + size[1]) / f64::from(glyph_page.size[1]),
+            );
+            batch.quad(bounds, uv)?;
+        }
+        if let Some(page) = page {
+            mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
+            self.paint(target, &batch, &page.view)?;
         }
         Ok(())
     }
@@ -298,6 +355,11 @@ impl Context<'_> {
         if mesh.indices.is_empty() {
             return Ok(());
         }
+        #[cfg(test)]
+        self.gpu
+            .upload_creations
+            .draws
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.transient(
             (mesh.vertices.len() * size_of::<mesh::Vertex>() + mesh.indices.len() * 4) as u64,
         )?;

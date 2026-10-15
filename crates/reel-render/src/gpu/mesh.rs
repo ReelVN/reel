@@ -12,7 +12,7 @@ use reel_core::budget::BudgetPool;
 use reel_ui::frame::RecordLocation;
 use reel_ui::{
     imaging::record::Geometry,
-    kurbo::{Affine, PathEl, Point, Shape, Stroke},
+    kurbo::{Affine, PathEl, Point, Rect, Shape, Stroke},
     peniko::Fill,
 };
 
@@ -86,6 +86,34 @@ impl Allocation {
     }
 }
 impl Mesh {
+    pub(super) fn new(allocation: Allocation) -> Self {
+        Self {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            allocation,
+            error: None,
+        }
+    }
+    pub(super) fn quad(&mut self, rect: Rect, uv: Rect) -> Result<(), GpuError> {
+        self.allocation.grow(&mut self.vertices, 4)?;
+        self.allocation.grow(&mut self.indices, 6)?;
+        let start = self.vertices.len() as u32;
+        for (p, t) in [
+            ((rect.x0, rect.y0), (uv.x0, uv.y0)),
+            ((rect.x1, rect.y0), (uv.x1, uv.y0)),
+            ((rect.x1, rect.y1), (uv.x1, uv.y1)),
+            ((rect.x0, rect.y1), (uv.x0, uv.y1)),
+        ] {
+            self.vertices.push(Vertex {
+                position: [p.0 as f32, p.1 as f32],
+                uv: [t.0 as f32, t.1 as f32],
+                color: [1.; 4],
+            });
+        }
+        self.indices
+            .extend([start, start + 1, start + 2, start, start + 2, start + 3]);
+        Ok(())
+    }
     fn push(
         &mut self,
         p: lyon_tessellation::math::Point,
@@ -339,6 +367,25 @@ pub fn transform(
     color: [f32; 4],
     at: RecordLocation,
 ) -> Result<(), GpuError> {
+    transform_mesh(mesh, transform, size, Some(uv), color, at)
+}
+pub(super) fn transform_glyphs(
+    mesh: &mut Mesh,
+    transform: Affine,
+    size: [u32; 2],
+    color: [f32; 4],
+    at: RecordLocation,
+) -> Result<(), GpuError> {
+    transform_mesh(mesh, transform, size, None, color, at)
+}
+fn transform_mesh(
+    mesh: &mut Mesh,
+    transform: Affine,
+    size: [u32; 2],
+    uv: Option<Affine>,
+    color: [f32; 4],
+    at: RecordLocation,
+) -> Result<(), GpuError> {
     for v in &mut mesh.vertices {
         let local = Point::new(f64::from(v.position[0]), f64::from(v.position[1]));
         let p = transform * local;
@@ -346,8 +393,10 @@ pub fn transform(
             (p.x * 2. / f64::from(size[0]) - 1.) as f32,
             (1. - p.y * 2. / f64::from(size[1])) as f32,
         ];
-        let p = uv * local;
-        v.uv = [p.x as f32, p.y as f32];
+        if let Some(uv) = uv {
+            let p = uv * local;
+            v.uv = [p.x as f32, p.y as f32];
+        }
         v.color = color;
         if v.position.iter().chain(&v.uv).any(|n| !n.is_finite()) {
             return Err(GpuError::Unsupported {

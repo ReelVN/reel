@@ -935,7 +935,12 @@ impl Widget for SceneWidget {
             return Length::px(length + padding.get());
         }
         let available = LenDef::from(request).reduce(padding);
-        let cross = cross.map(|value| value.saturating_sub(padding));
+        let cross = if axis == Axis::Vertical {
+            props.width.map(Length::px).or(cross)
+        } else {
+            cross
+        }
+        .map(|value| value.saturating_sub(padding));
         let context = ctx.context_size();
         let sequential = self.sequential(axis);
         let mut total: f64 = 0.;

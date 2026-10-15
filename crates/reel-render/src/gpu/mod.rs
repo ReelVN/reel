@@ -8,6 +8,7 @@ mod renderer;
 mod resources;
 pub use renderer::{Prepared, Renderer, Usage};
 mod glyph;
+mod glyph_cache;
 mod present;
 mod readback;
 pub use present::SurfacePass;
