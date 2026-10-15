@@ -24,6 +24,13 @@ reports; the owner synchronizes language/index/bilingual guide changes.
 
 ## Interface and behavior
 
+Class execution now lowers named/local/anonymous declarations to the shared B01
+Class descriptor. Typed fields, per-instance initializers, constructors, methods,
+static members, inheritance and lexical super execute in the common VM. Imported
+class types retain canonical module/export identity. See `tests/classes.rs` and
+`tests/lowering_modules.rs`; the historical increments below describe their own
+acceptance boundaries rather than current class support.
+
 `lowering::lower(&AnalyzedModule, &Linkage, Options)` produces immutable IR;
 `IrModule::emit()` relocates it and returns a B01 `VerifiedProgram`, metadata,
 entry function and resource statistics. `compile` combines these steps. `Linkage`

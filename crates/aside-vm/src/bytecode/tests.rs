@@ -762,6 +762,7 @@ fn gallery(op: Opcode) -> BytecodePackage {
         }),
         Descriptor::Table(vec![[Reg(1), Reg(2)]]),
         Descriptor::Class(ClassDesc {
+            nominal: None,
             base: Some(Reg(1)),
             fields: vec![ClassField {
                 name: SymbolId(12),

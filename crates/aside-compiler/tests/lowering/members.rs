@@ -363,14 +363,7 @@ fn conditional_paths_dominate_member_uses_and_keep_cleanup_edges() {
 
 #[test]
 fn member_deferred_constructs_remain_located_rejections() {
-    for (source, expected, detail) in [
-        (
-            "class A{fn get(self){1}}",
-            "class A{fn get(self){1}}",
-            "Class",
-        ),
-        ("fn f(){let [a]=[1];}", "[a]", "pattern"),
-    ] {
+    for (source, expected, detail) in [("fn f(){let [a]=[1];}", "[a]", "pattern")] {
         let m = analyzed(source);
         let e = lowering::lower(&m, &Linkage::default(), Options::default()).unwrap_err();
         assert_eq!(e.kind, lowering::ErrorKind::Unsupported);

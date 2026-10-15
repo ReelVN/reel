@@ -32,6 +32,8 @@ pub enum ObjectKind {
     Closure,
     BoundBuiltin,
     BoundNative,
+    BoundScript,
+    Super,
     PropertyRef,
     Generator,
     Thread,
@@ -70,6 +72,8 @@ impl ObjectKind {
                 | Self::Closure
                 | Self::BoundBuiltin
                 | Self::BoundNative
+                | Self::BoundScript
+                | Self::Super
                 | Self::PropertyRef
                 | Self::Generator
                 | Self::Thread
@@ -172,6 +176,8 @@ pub enum HeapError {
     },
     UninitializedSlot,
     UninitializedCell,
+    UninitializedField,
+    ConstructionFailed,
     AlreadyInitialized,
     ReadOnly,
     TypeMismatch,
@@ -886,6 +892,8 @@ impl Heap {
                     | ObjectKind::Closure
                     | ObjectKind::BoundBuiltin
                     | ObjectKind::BoundNative
+                    | ObjectKind::BoundScript
+                    | ObjectKind::Super
                     | ObjectKind::PropertyRef
             )
         {

@@ -22,6 +22,7 @@ impl TypeChecks {
         for ty in &p.types {
             let (cost, depth) = match ty {
                 TypeDef::Builtin(_) => (1, 0usize),
+                TypeDef::Named { .. } => (3, 0usize),
                 TypeDef::Tuple(items) | TypeDef::Union(items) => {
                     let mut cost = 3u64;
                     let mut depth = 0;
@@ -87,6 +88,9 @@ impl TypeChecks {
                 if let Some((ty, value)) = current.take() {
                     match &p.types[ty.index()] {
                         TypeDef::Builtin(kind) => accepted = heap.accepts_builtin(*kind, value)?,
+                        TypeDef::Named { .. } => {
+                            accepted = classes::accepts_nominal(heap, value, ty)?
+                        }
                         TypeDef::Tuple(items) => {
                             if !heap.accepts_builtin(BuiltinType::Tuple, value)?
                                 || heap.sequence_len(value)? as usize != items.len()

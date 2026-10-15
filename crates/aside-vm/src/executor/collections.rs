@@ -76,6 +76,7 @@ impl Vm {
         kind: FaultKind,
     ) -> Result<(), VmError> {
         s.table_work = None;
+        self.abort_class(*s)?;
         if kind != FaultKind::UnhashableKey {
             self.put(s.env, 1, Value::NULL)?;
         }

@@ -91,6 +91,40 @@ fn repeated_text_is_shared_across_modules_and_defaults_after_roundtrip() {
 }
 
 #[test]
+fn imported_classes_keep_nominal_identity_across_aliases_and_inheritance() {
+    let compilation = compile(&[
+        (
+            "types",
+            "pub class Word {let score:int;fn init(self,score){self.score=score;}fn value(self){self.score}}",
+        ),
+        ("other", "pub class Word {let score=0;}"),
+        ("facade", "pub use types::{Word as Entry};"),
+        (
+            "main",
+            "use facade::Entry;use other::{Word as Other};use types as t;class PoemWord:Entry{fn value(self){super.value()+2}}fn accepts(word:t::Word)->Entry{word}fn main(){let word:Entry=accepts(PoemWord(40));let mut caught=false;try{accepts(Other());}catch e{caught=true;}if caught{word.value()}else{0}}",
+        ),
+    ]);
+    let p = compilation.program.package();
+    let main = bc::FunctionId(
+        p.functions
+            .iter()
+            .position(|f| p.symbols[f.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let encoded = bc::encode(p, bc::Limits::default()).unwrap();
+    let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
+    let mut vm = Vm::load(
+        program,
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    value(&mut vm, compilation.initializer);
+    assert_eq!(value(&mut vm, main).as_int(), Some(42));
+}
+
+#[test]
 fn imported_functions_reexports_and_objects_keep_one_identity_and_private_environment() {
     let compilation = compile(&[
         (

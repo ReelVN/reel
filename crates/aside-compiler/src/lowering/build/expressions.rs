@@ -74,6 +74,7 @@ impl FunctionBuilder<'_, '_> {
                 },
             ) => self.binding_value(n, pattern, initializer, depth),
             (H::Function, _) | (H::Import, _) => Ok(None),
+            (H::Class, Form::Class { base, .. }) => self.class_value(n, base, depth),
             (H::Name, _) => {
                 let symbol = self.l.m.facts()[n.0 as usize].symbol.ok_or_else(|| {
                     self.l

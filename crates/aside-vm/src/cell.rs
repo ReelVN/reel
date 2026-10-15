@@ -64,6 +64,7 @@ impl Heap {
                         | (Closure, ObjectKind::Closure)
                         | (Closure, ObjectKind::BoundBuiltin)
                         | (Closure, ObjectKind::BoundNative)
+                        | (Closure, ObjectKind::BoundScript)
                         | (Generator, ObjectKind::Generator)
                         | (Thread, ObjectKind::Thread)
                         | (Future, ObjectKind::Future)

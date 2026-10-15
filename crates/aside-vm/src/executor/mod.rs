@@ -15,6 +15,7 @@ use arguments::{ArgumentBinding, ArgumentStep, ParameterNames};
 mod awaitables;
 mod builtins;
 mod calls;
+mod classes;
 use calls::NativeSite;
 #[cfg(test)]
 mod collection_tests;
@@ -64,6 +65,10 @@ struct FaultBuild {
 }
 #[derive(Clone, Copy)]
 enum ReturnTo {
+    Class {
+        frame: FrameId,
+        call: Pc,
+    },
     Delivery,
     Register {
         frame: FrameId,
@@ -103,6 +108,7 @@ enum ArgSource {
 }
 #[derive(Clone, Copy)]
 enum ScriptPhase {
+    Class(classes::ClassStep),
     Copy {
         source: ArgSource,
         index: u32,
@@ -407,6 +413,7 @@ pub struct Vm {
     native_cells: ChargedVec<bool>,
     native_values: ChargedVec<(FunctionId, u32)>,
     type_checks: types::TypeChecks,
+    init_symbol: Option<SymbolId>,
     globals: RootRangeToken,
     constants: RootRangeToken,
     heap: Heap,
@@ -478,7 +485,7 @@ impl Vm {
                 ));
             }
             if f.register_count > limits.slots.max_window_len
-                || f.regions.len() as u64 * 2 + 3 > limits.slots.max_window_len as u64
+                || f.regions.len() as u64 * 2 + 4 > limits.slots.max_window_len as u64
             {
                 return Err(VmError::Limit);
             }
@@ -691,6 +698,11 @@ impl Vm {
                 offset += 1;
             }
         }
+        let init_symbol = p
+            .symbols
+            .iter()
+            .position(|name| name == "init")
+            .map(|i| SymbolId(i as u32));
         Ok(Self {
             program: Rc::new(CodeLease {
                 program,
@@ -705,6 +717,7 @@ impl Vm {
             native_cells,
             native_values,
             type_checks,
+            init_symbol,
 
             globals,
             constants,
@@ -819,7 +832,7 @@ impl Vm {
                         return self.loc(current, current.pc);
                     }
                 }
-                ReturnTo::Register { frame, call, .. } => {
+                ReturnTo::Register { frame, call, .. } | ReturnTo::Class { frame, call } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
                         Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
                         _ => self.loc(current, current.pc),
@@ -907,7 +920,7 @@ impl Vm {
             return self.native_push_cost(native, count) + 1;
         }
         let values = f.register_count as u64
-            + 3
+            + 4
             + 2 * f.regions.len() as u64
             + count as u64 * 2
             + self.program.package().signatures[f.signature.index()]
@@ -964,8 +977,14 @@ impl Vm {
                 .flatten();
             return self.push_native_bound(native, source, count, site, receiver);
         }
+        if !matches!(source, ArgSource::Prefix { .. })
+            && let Some(closure) = closure
+        {
+            self.enter_initializer(closure, function)?;
+        }
+        let f = &self.program.package().functions[function.index()];
         let registers = f.register_count;
-        let env_len = 3 + f.regions.len() as u32 * 2;
+        let env_len = 4 + f.regions.len() as u32 * 2;
         let sig = &self.program.package().signatures[f.signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let context = inherit(context, f.context);
@@ -1013,6 +1032,14 @@ impl Vm {
             }
         };
         self.put(env, 0, closure.unwrap_or(Value::NULL))?;
+        if !shared_parameters
+            && let Some(receiver) = closure
+                .map(|v| self.script_receiver(v))
+                .transpose()?
+                .flatten()
+        {
+            self.put(bound, 0, receiver)?;
+        }
         let s = ScriptFrame {
             id,
             code: CodeRef {
@@ -1128,7 +1155,7 @@ impl Vm {
                 s.phase = if rest {
                     ScriptPhase::Rest
                 } else {
-                    ScriptPhase::Bind(ArgumentBinding::new(0))
+                    ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(*s)?))
                 }
             }
             Frame::Native(n) => {
@@ -1213,6 +1240,7 @@ impl Vm {
     }
 
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
+        let closure = self.script_closure(closure)?;
         let info = self.heap.info(closure)?;
         if info.kind == ObjectKind::Host {
             return Ok(self.heap.host_call(closure)?);
@@ -2019,6 +2047,7 @@ impl Vm {
     fn release_frame(&mut self, f: Frame) -> Result<(), VmError> {
         match f {
             Frame::Script(s) => {
+                self.abort_class(s)?;
                 for r in [s.regs, s.env, s.args, s.bound] {
                     self.slots.release(&mut self.heap, r)?;
                 }
@@ -2078,6 +2107,11 @@ impl Vm {
         let top = self.active.frames.data.len() - 1;
         let signature = self.program.package().functions[s.code.function.index()].signature;
         match s.phase {
+            ScriptPhase::Class(step) => {
+                if !self.class_step(&mut s, step, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Copy { source, index } => {
                 if !m.take(0, 1, 0) {
                     return Ok(false);
@@ -2104,7 +2138,7 @@ impl Vm {
                     {
                         ScriptPhase::Rest
                     } else {
-                        ScriptPhase::Bind(ArgumentBinding::new(0))
+                        ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(s)?))
                     };
                 }
             }
@@ -2118,7 +2152,7 @@ impl Vm {
                 match self.heap.alloc_array(&[]) {
                     Ok(rest) => {
                         self.put(s.bound, count, rest)?;
-                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(0));
+                        s.phase = ScriptPhase::Bind(ArgumentBinding::new(self.receiver_prefix(s)?));
                     }
                     Err(error) => self.preparation_fault(&mut s, heap_fault(error))?,
                 }
@@ -2308,6 +2342,7 @@ impl Vm {
                     }
                     Ok(false) => {}
                     Err(kind) => {
+                        self.abort_class(s)?;
                         self.put(s.env, 1, Value::NULL)?;
                         self.clear(s.env, 2)?;
                         s.phase = ScriptPhase::Exit {
@@ -2519,8 +2554,8 @@ impl Vm {
                 });
                 if let Some(index) = index {
                     let record = self.active.caught.data.remove(index);
-                    self.clear(s.env, 3 + record.region.0 * 2)?;
                     self.clear(s.env, 4 + record.region.0 * 2)?;
+                    self.clear(s.env, 5 + record.region.0 * 2)?;
                     self.active.frames.data[top] = Frame::Script(s);
                     return Ok(true);
                 }
@@ -2591,15 +2626,30 @@ impl Vm {
                             / 2
                     }
                 };
+                let mut allocation = 0;
                 let cost = match d.target {
                     CallTarget::Function(id) => self.script_push_cost(id, count),
                     CallTarget::Native(id) => self.native_push_cost(id, count),
-                    CallTarget::Register(r) => self
-                        .closure_function(self.slots.read(at(s.regs, r.0))?)
-                        .map(|id| self.script_push_cost(id, count))
-                        .unwrap_or(1),
+                    CallTarget::Register(r) => {
+                        let target = self.slots.read(at(s.regs, r.0))?;
+                        if self.is_text(target, ObjectKind::Class) {
+                            allocation = VALUE_CHUNK_BYTES * 3;
+                            24
+                        } else {
+                            let cost = self
+                                .closure_function(target)
+                                .map(|id| self.script_push_cost(id, count))
+                                .unwrap_or(1);
+                            if self.is_text(target, ObjectKind::BoundScript) {
+                                allocation = VALUE_CHUNK_BYTES;
+                                cost + self.initializer_cost(target)?
+                            } else {
+                                cost
+                            }
+                        }
+                    }
                 };
-                (cost + self.active.unwinds.data.len() as u64 + 1, 0)
+                (cost + self.active.unwinds.data.len() as u64 + 1, allocation)
             }
             Opcode::Await => {
                 let cost = self
@@ -2644,9 +2694,24 @@ impl Vm {
                 };
                 (1 + extra, 0)
             }
-            Opcode::MemberGet => {
-                let object = self.slots.read(at(s.regs, b))?;
+            Opcode::MakeClass => (24, VALUE_CHUNK_BYTES * 6),
+            Opcode::SuperRef => (4, VALUE_CHUNK_BYTES),
+            Opcode::MemberGet | Opcode::MemberSet => {
+                let object = self
+                    .slots
+                    .read(at(s.regs, if op == Opcode::MemberGet { b } else { _a }))?;
                 let kind = self.heap.info(object)?.kind;
+                if matches!(
+                    kind,
+                    ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
+                ) {
+                    let extra = if op == Opcode::MemberSet {
+                        self.class_write_cost(object, SymbolId(c))?
+                    } else {
+                        0
+                    };
+                    return Ok((self.class_member_cost(object)? + extra, VALUE_CHUNK_BYTES));
+                }
                 (
                     1,
                     if matches!(kind, ObjectKind::Array | ObjectKind::Tuple) {
@@ -2757,6 +2822,8 @@ impl Vm {
         if matches!(
             op,
             Opcode::PropertyRef
+                | Opcode::MakeClass
+                | Opcode::SuperRef
                 | Opcode::CellNew
                 | Opcode::MakeClosure
                 | Opcode::MakeTuple
@@ -2781,6 +2848,14 @@ impl Vm {
             return Err(FaultKind::Effect);
         }
         match op {
+            Opcode::MakeClass => {
+                self.start_class(s, r(a), DescriptorId(b))?;
+                return Ok(false);
+            }
+            Opcode::SuperRef => {
+                let value = self.super_ref(*s)?;
+                self.write(*s, r(a), value)?;
+            }
             Opcode::TextNew => {
                 let value = self.heap.alloc_byte_buffer(&[]).map_err(heap_fault)?;
                 self.write(*s, r(a), value)?;
@@ -2918,6 +2993,22 @@ impl Vm {
             }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
+                if matches!(
+                    self.heap.info(object).map_err(heap_fault)?.kind,
+                    ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
+                ) {
+                    let value = if op == Opcode::MemberSet {
+                        Some(self.read(*s, r(b))?)
+                    } else {
+                        None
+                    };
+                    let result = self.class_member(object, SymbolId(c), value, s.effects)?;
+                    if op == Opcode::MemberGet {
+                        self.write(*s, r(a), result)?;
+                    }
+                    s.pc.0 += 1;
+                    return Ok(true);
+                }
                 if op == Opcode::MemberGet && self.heap.is_property_ref(object) {
                     if self.program.package().symbols[c as usize] != "value" {
                         return Err(FaultKind::MissingKey);
@@ -3094,7 +3185,9 @@ impl Vm {
                 if !s.closure {
                     return Err(FaultKind::InvalidState);
                 }
-                let closure = self.slots.read(at(s.env, 0)).map_err(heap_fault)?;
+                let closure = self
+                    .script_closure(self.slots.read(at(s.env, 0)).map_err(heap_fault)?)
+                    .map_err(vm_fault)?;
                 let v = self.heap.get_field(closure, b + 3).map_err(heap_fault)?;
                 self.write(*s, r(a), v)?;
             }
@@ -3241,7 +3334,9 @@ impl Vm {
                             self.read(*s, binding.storage.reg())?
                         }
                         CaptureSource::Capture(id) => {
-                            let closure = self.slots.read(at(s.env, 0)).map_err(heap_fault)?;
+                            let closure = self
+                                .script_closure(self.slots.read(at(s.env, 0)).map_err(heap_fault)?)
+                                .map_err(vm_fault)?;
                             self.heap.get_field(closure, id.0 + 3).map_err(heap_fault)?
                         }
                     };
@@ -3341,14 +3436,23 @@ impl Vm {
                 }
                 let dynamic = if let CallTarget::Register(reg) = target {
                     let closure = self.read(*s, reg)?;
+                    if self.is_text(closure, ObjectKind::Class) {
+                        self.start_construct(s, closure, r(a), DescriptorId(b), count)?;
+                        return Ok(false);
+                    }
                     if self.is_text(closure, ObjectKind::BoundBuiltin) {
                         self.start_builtin(s, closure, DescriptorId(b), r(a), count)?;
                         return Ok(false);
                     }
                     Some((
                         closure,
-                        self.closure_function(closure)
-                            .map_err(|_| FaultKind::Type)?,
+                        self.closure_function(closure).map_err(|error| {
+                            if matches!(error, VmError::Heap(HeapError::ConstructionFailed)) {
+                                FaultKind::ConstructionFailed
+                            } else {
+                                FaultKind::Type
+                            }
+                        })?,
                     ))
                 } else {
                     None
@@ -3774,7 +3878,7 @@ impl Vm {
                     let ExitReason::Throw(info) = reason else {
                         return Err(VmError::Contract("catch on normal exit"));
                     };
-                    let base = 3 + handler.region.0 * 2;
+                    let base = 4 + handler.region.0 * 2;
                     self.put(s.env, base, value)?;
                     if info.fault.is_some() {
                         let cause = self.value(s.env, 2)?;
@@ -3905,12 +4009,15 @@ impl Vm {
                     fault: error,
                 });
             }
-            ReturnTo::Register { frame, call, .. } | ReturnTo::Default { frame, call, .. } => {
+            ReturnTo::Register { frame, call, .. }
+            | ReturnTo::Default { frame, call, .. }
+            | ReturnTo::Class { frame, call } => {
                 let i = self.index(frame)?;
                 let Frame::Script(mut parent) = self.active.frames.data[i] else {
                     return Err(VmError::Contract("return target"));
                 };
                 if let Some(info) = error {
+                    self.abort_class(parent)?;
                     self.put(parent.env, 1, value)?;
                     if let Some(c) = cause {
                         self.put(parent.env, 2, c)?;
@@ -3930,6 +4037,7 @@ impl Vm {
                 } else {
                     match ret {
                         ReturnTo::Register { reg, .. } => self.put(parent.regs, reg.0, value)?,
+                        ReturnTo::Class { .. } => self.put(parent.env, 2, value)?,
                         ReturnTo::Default { parameter, .. } => {
                             self.put(parent.bound, parameter, value)?;
                             parent.phase = ScriptPhase::Defaults { parameter };
@@ -4252,6 +4360,8 @@ fn no_wait(context: ContextFlags) -> bool {
 fn heap_fault(e: HeapError) -> FaultKind {
     match e {
         HeapError::UninitializedSlot | HeapError::UninitializedCell => FaultKind::Uninitialized,
+        HeapError::UninitializedField => FaultKind::UninitializedField,
+        HeapError::ConstructionFailed => FaultKind::ConstructionFailed,
         HeapError::ReadOnly => FaultKind::ReadOnly,
         HeapError::TypeMismatch | HeapError::WrongKind => FaultKind::Type,
         HeapError::AlreadyInitialized => FaultKind::AlreadyInitialized,
@@ -4268,6 +4378,8 @@ fn language_fault(e: VmError) -> Result<FaultKind, VmError> {
         VmError::Contract("invalid argument name") => Ok(FaultKind::Type),
         VmError::Heap(
             h @ (HeapError::UninitializedSlot
+            | HeapError::UninitializedField
+            | HeapError::ConstructionFailed
             | HeapError::UninitializedCell
             | HeapError::AlreadyInitialized
             | HeapError::ReadOnly

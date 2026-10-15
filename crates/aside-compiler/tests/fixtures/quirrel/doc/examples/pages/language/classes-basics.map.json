@@ -1,0 +1,19 @@
+{
+  "source": "doc/examples/pages/language/classes-basics.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "segments": [
+    {
+      "original": [
+        0,
+        468
+      ],
+      "aside": [
+        0,
+        728
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Translate class fields, explicit self, constructor, lexical super and instanceof to Aside; retain original evaluation order and stdout."
+    }
+  ],
+  "assertions": []
+}

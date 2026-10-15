@@ -1,0 +1,19 @@
+{
+  "source": "doc/examples/pages/language/classes-inheritance.nut",
+  "coordinate_unit": "UTF-8 bytes; zero-based half-open ranges",
+  "segments": [
+    {
+      "original": [
+        0,
+        544
+      ],
+      "aside": [
+        0,
+        607
+      ],
+      "kind": "reviewed_edit",
+      "reason": "Translate class fields, explicit self, constructor, lexical super and instanceof to Aside; retain original evaluation order and stdout."
+    }
+  ],
+  "assertions": []
+}

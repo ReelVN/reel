@@ -135,6 +135,35 @@ Implemented: text, image, row, column, stack and stage.replace use one shared no
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
+### Organizing data and behavior with classes
+
+Use `class` to group character or word data with named fields, types and methods. A `let` field is initialized once; `let mut` permits writes. Field initializers run separately for each instance. Constructors use `fn init(self, ...)`, including named arguments and defaults. Parameter annotations can name local or imported classes; derived instances satisfy base-class annotations.
+
+```aside
+class PoemWord {
+    let text: string;
+    let score: int;
+
+    fn init(self, text: string, score: int = 1) {
+        self.text = text;
+        self.score = score;
+    }
+
+    fn caption(self) -> string {
+        f"{self.text} · {self.score}"
+    }
+}
+
+fn word_label(word: PoemWord) {
+    text(word.caption())
+}
+
+let word = PoemWord("星光", score: 3);
+let caption = word.caption;
+```
+
+`caption()` retains its `word` receiver and can be passed as a callback. Write `class Child: Parent` for inheritance and use `super.method()` for the lexical base implementation. A derived class inherits `init` unless it declares its own; that constructor can explicitly call `super.init(...)` once. `static let` and `static fn` belong to the class. Construction must initialize every field; failure or cancellation makes escaped instances and bound methods report ConstructionFailed. Field layouts are fixed; derived classes extend behavior through methods. See [author_classes.aside](../../examples/author_classes.aside) for a runnable example. Observable UI data currently uses `model({...})` below; instance copying and property-binding integration are tracked in [#149](https://github.com/jhq223/reel/issues/149).
+
 ### Editing components while running
 
 Inside a children block, use a local variable to create a control, add visuals that read its state, then explicitly provide the control itself. Descendants returned by add already belong to that control and are not mounted again by the outer container. Explicit children arrays follow the same rule. Do not provide the same node twice or borrow children from an omitted component or an already mounted stage.

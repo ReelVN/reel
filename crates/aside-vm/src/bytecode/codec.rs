@@ -457,6 +457,7 @@ record!(ClassMethod {
     captures
 });
 record!(ClassDesc {
+    nominal,
     base,
     fields,
     methods

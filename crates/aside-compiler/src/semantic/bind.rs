@@ -325,7 +325,7 @@ pub(super) fn analyze(
             break;
         }
         let name = b.intern_name(&binding.symbol.name);
-        let ty = b.hint(&binding.symbol.ty);
+        let ty = b.external_type(&binding.symbol);
         if let Some(symbol) = b.declare_binding(
             Declaration {
                 name,
@@ -440,6 +440,16 @@ impl Binder<'_> {
         self.types.insert(t.clone(), id);
         self.out.types.push(t);
         id
+    }
+    fn external_type(&mut self, symbol: &ExternalSymbol) -> TypeId {
+        if matches!(symbol.ty, TypeHint::Named(_))
+            && let Some(reference) = &symbol.reference
+            && let Some(export) = &reference.export
+        {
+            let name = self.intern_name(&format!("{}::{export}", reference.module));
+            return self.intern_type(Type::Named(name));
+        }
+        self.hint(&symbol.ty)
     }
     fn hint(&mut self, t: &TypeHint) -> TypeId {
         match t {
@@ -1280,10 +1290,7 @@ impl Binder<'_> {
         }
         if let Some(descriptor) = descriptor {
             let ty = match &descriptor.ty {
-                TypeHint::Named(name) => {
-                    let name = self.intern_name(name);
-                    self.intern_type(Type::Named(name))
-                }
+                TypeHint::Named(_) => self.external_type(&descriptor),
                 TypeHint::Any => ANY,
                 _ => {
                     self.error(
@@ -2093,7 +2100,7 @@ impl Binder<'_> {
                 match self.resolve(&request) {
                     Ok(mut result) if result.version == namespace.version => {
                         if let Some(symbol) = result.bindings.pop() {
-                            let ty = self.hint(&symbol.ty);
+                            let ty = self.external_type(&symbol);
                             self.external_nodes.insert(n, Arc::new(symbol));
                             return ty;
                         }
@@ -2965,7 +2972,7 @@ impl Binder<'_> {
                 for ext in import.bindings {
                     let local = alias.as_deref().unwrap_or(&ext.name);
                     let name = self.intern_name(local);
-                    let ty = self.hint(&ext.ty);
+                    let ty = self.external_type(&ext);
                     if let Some(s) = self.declare(Declaration {
                         name,
                         span: self.span(n),

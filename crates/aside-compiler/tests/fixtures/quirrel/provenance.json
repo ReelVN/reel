@@ -3,6 +3,16 @@
   "upstream": "19f17df9b6ee43c91ef5c635fd45970ec76c5dbe",
   "files": [
     {
+      "path": "doc/examples/pages/language/classes-basics.aside",
+      "source": "original/doc/examples/pages/language/classes-basics.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original output"
+    },
+    {
+      "path": "doc/examples/pages/language/classes-inheritance.aside",
+      "source": "original/doc/examples/pages/language/classes-inheritance.nut",
+      "validation": "source compilation, B01 roundtrip, VM execution; original output"
+    },
+    {
       "path": "doc/examples/pages/language/bindings-basic.aside",
       "source": "original/doc/examples/pages/language/bindings-basic.nut",
       "validation": "source compilation, B01 roundtrip, VM execution; original assertions and output"
