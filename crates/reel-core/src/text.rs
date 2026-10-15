@@ -31,6 +31,38 @@ pub struct TextLink {
     pub id: Arc<str>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextSpeed {
+    PerSecond(f64),
+    PlayerMultiple(f64),
+}
+impl Default for TextSpeed {
+    fn default() -> Self {
+        Self::PlayerMultiple(1.)
+    }
+}
+impl TextSpeed {
+    pub fn per_second(self, player_speed: f64) -> f64 {
+        match self {
+            Self::PerSecond(speed) => speed,
+            Self::PlayerMultiple(factor) => (player_speed * factor).min(f64::MAX),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextCueKind {
+    Speed(TextSpeed),
+    Pause(std::time::Duration),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextCue {
+    /// UTF-8 boundary in the body; playback rounds forward to a whole grapheme.
+    pub offset: usize,
+    pub kind: TextCueKind,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Text {
     plain: Arc<str>,
@@ -43,6 +75,8 @@ struct RichText {
     spans: Vec<TextSpan>,
     ruby: Vec<Ruby>,
     links: Vec<TextLink>,
+    cues: Vec<TextCue>,
+    continue_after: bool,
 }
 
 impl Default for Text {
@@ -100,6 +134,7 @@ struct OpenTag<'a> {
     start: usize,
     style: TextStyle,
     ruby: Option<&'a str>,
+    speed: TextSpeed,
 }
 
 impl Text {
@@ -121,6 +156,12 @@ impl Text {
     pub fn has_links(&self) -> bool {
         !self.links().is_empty()
     }
+    pub fn cues(&self) -> &[TextCue] {
+        self.rich.as_ref().map_or(&[], |r| &r.cues)
+    }
+    pub fn continue_after(&self) -> bool {
+        self.rich.as_ref().is_some_and(|r| r.continue_after)
+    }
     pub fn storage_bytes(&self) -> usize {
         self.plain.len()
             + self.rich.as_ref().map_or(0, |r| {
@@ -129,6 +170,7 @@ impl Text {
                     + r.spans.capacity() * std::mem::size_of::<TextSpan>()
                     + r.ruby.capacity() * std::mem::size_of::<Ruby>()
                     + r.links.capacity() * std::mem::size_of::<TextLink>()
+                    + r.cues.capacity() * std::mem::size_of::<TextCue>()
                     + r.ruby.iter().map(|r| r.annotation.len()).sum::<usize>()
                     + r.links.iter().map(|link| link.id.len()).sum::<usize>()
             })
@@ -148,6 +190,9 @@ impl Text {
         let mut spans: Vec<TextSpan> = Vec::new();
         let mut ruby = Vec::new();
         let mut links = Vec::new();
+        let mut cues = Vec::new();
+        let mut continue_after = false;
+        let mut speed = TextSpeed::default();
         let mut tags: Vec<OpenTag<'_>> = Vec::new();
         let mut style = TextStyle::default();
         let mut cursor = 0;
@@ -185,6 +230,13 @@ impl Text {
                             id: style.link.clone().unwrap(),
                         });
                     }
+                    if name == "speed" {
+                        speed = open.speed;
+                        cues.push(TextCue {
+                            offset: plain.len(),
+                            kind: TextCueKind::Speed(speed),
+                        });
+                    }
                     style = open.style;
                 } else {
                     let (name, argument) = tag
@@ -192,7 +244,46 @@ impl Text {
                         .map_or((tag, None), |(a, b)| (a, Some(b)));
                     let mut next = style.clone();
                     let mut annotation = None;
+                    let previous_speed = speed;
                     match (name, argument) {
+                        ("next", None) => {
+                            continue_after = true;
+                            cursor += end + 1;
+                            continue;
+                        }
+                        ("pause", Some(value)) => {
+                            let seconds: f64 =
+                                value.parse().map_err(|_| error("invalid pause duration"))?;
+                            let duration = std::time::Duration::try_from_secs_f64(seconds)
+                                .map_err(|_| {
+                                    error("pause duration must be finite and nonnegative")
+                                })?;
+                            cues.push(TextCue {
+                                offset: plain.len(),
+                                kind: TextCueKind::Pause(duration),
+                            });
+                            cursor += end + 1;
+                            continue;
+                        }
+                        ("speed", Some(value)) => {
+                            let (value, multiple) = value
+                                .strip_suffix('x')
+                                .map_or((value, false), |v| (v, true));
+                            let value: f64 =
+                                value.parse().map_err(|_| error("invalid text speed"))?;
+                            if !value.is_finite() || value < 0. {
+                                return Err(error("text speed must be finite and nonnegative"));
+                            }
+                            speed = if multiple {
+                                TextSpeed::PlayerMultiple(value)
+                            } else {
+                                TextSpeed::PerSecond(value)
+                            };
+                            cues.push(TextCue {
+                                offset: plain.len(),
+                                kind: TextCueKind::Speed(speed),
+                            });
+                        }
                         ("b", None) => next.bold = true,
                         ("i", None) => next.italic = true,
                         ("u", None) => next.underline = true,
@@ -232,6 +323,7 @@ impl Text {
                         start: plain.len(),
                         style,
                         ruby: annotation,
+                        speed: previous_speed,
                     });
                     style = next;
                 }
@@ -274,6 +366,8 @@ impl Text {
                 spans,
                 ruby,
                 links,
+                cues,
+                continue_after,
             })),
         })
     }
@@ -325,6 +419,10 @@ mod tests {
             ("[ruby=a][/ruby]", 8),
             ("[link=a][link=b]x[/link][/link]", 8),
             ("[ruby=a][ruby=b]x[/ruby][/ruby]", 8),
+            ("[speed=-1]x[/speed]", 0),
+            ("[speed=NaNx]x[/speed]", 0),
+            ("[pause=inf]x", 0),
+            ("[pause=-1]x", 0),
         ] {
             assert_eq!(Text::parse(s).unwrap_err().offset, offset, "{s}");
         }
