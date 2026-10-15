@@ -1,0 +1,17 @@
+// Prepare your original PNG/JPEG first:
+// reel prepare-image panorama.png --output target/reel-artifacts/author-assets/panorama.reel-image
+// Supply fonts/body.ttf in the same asset directory, as in the creator guide.
+// reel dev examples/author_large_image.aside --assets target/reel-artifacts/author-assets
+fn main() {
+    game.configure(title: "Prepared panorama", width: 960, height: 540, fonts: ["fonts/body.ttf"]);
+    let panorama = image("panorama.reel-image", height: 540);
+    stage.replace(stack(width: 960, height: 540, clip: true) {
+        panorama;
+    });
+    await stage.presented();
+    await run(tween(panorama, x: -2400, duration: 6, easing: "linear"));
+    await run(tween(panorama, x: 0, scale_x: 0.5, scale_y: 0.5, duration: 3));
+    await run(tween(panorama, scale_x: 1, scale_y: 1, duration: 3));
+    await run(tween(panorama, x: -2400, duration: 6, easing: "linear"));
+    await stage.presented();
+}

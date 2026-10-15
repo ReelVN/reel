@@ -11,6 +11,8 @@ mod button_tests;
 mod hal_tests;
 #[cfg(test)]
 mod image_tests;
+#[cfg(test)]
+mod prepared_image_tests;
 use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
 };
@@ -955,10 +957,6 @@ impl SessionUi {
     pub fn image_resources(&self) -> &[reel_ui::resources::ResourceLease] {
         self.stage.as_ref().map_or(&[], |view| &view.resources)
     }
-    #[cfg(feature = "window")]
-    pub(crate) fn prepare_assets(&mut self) -> Result<bool, Error> {
-        Ok(self.images.poll()?)
-    }
     pub(crate) fn close_resources(&mut self) {
         self.pending_stage = None;
         self.images.close();
@@ -1006,7 +1004,13 @@ impl SessionUi {
         root_id: WidgetId,
     ) -> Result<(), Error> {
         bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
-        if self.images.poll()? {
+        let images_ready = self.images.poll()?;
+        if self.images.metadata_ready() && !self.images.manifests.is_empty() {
+            if !self.prepare_tiles(bridge, root_id)? {
+                self.pause_dialogue();
+                return Ok(());
+            }
+        } else if images_ready {
             if let Some(mut view) = self.pending_stage.take() {
                 view.resolve_images(&self.images.loaded);
                 self.stage = Some(view);
@@ -1074,6 +1078,66 @@ impl SessionUi {
             self.stage_dirty = false;
         }
         Ok(())
+    }
+    fn prepare_tiles(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        root_id: WidgetId,
+    ) -> Result<bool, Error> {
+        let mut candidate = self.pending_stage.take();
+        if let Some(view) = &mut candidate {
+            view.resolve_metadata(&self.images);
+        }
+        if let Some(view) = &candidate {
+            bridge.edit_widget(root_id, |mut widget| {
+                let mut widget = widget.downcast::<SessionWidget>();
+                let this = &mut widget;
+                let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
+                StageWidget::sync(&mut stage, view);
+            });
+        }
+        let widgets = bridge.edit_widget(root_id, |mut widget| {
+            let mut widget = widget.downcast::<SessionWidget>();
+            let this = &mut widget;
+            let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
+            StageWidget::image_widgets(&mut stage)
+        });
+        let geometry = bridge
+            .layout_geometry()
+            .map_err(|error| format!("image layout geometry: {error:?}"))?;
+        let mut regions = std::collections::BTreeMap::new();
+        let mut demand: std::collections::BTreeMap<String, crate::images::TileDemand> =
+            std::collections::BTreeMap::new();
+        for (id, image) in widgets {
+            if let Some(manifest) = self.images.manifests.get(&image.source) {
+                let (region, tiles) =
+                    crate::images::tiles::visible_tiles(*manifest, &image, &geometry);
+                regions.insert(id, region);
+                for (key, tile) in tiles {
+                    demand
+                        .entry(key)
+                        .and_modify(|previous| previous.required |= tile.required)
+                        .or_insert(tile);
+                }
+            }
+        }
+        let changed = self.images.request_tiles(demand);
+        if candidate.is_none() && changed {
+            candidate = self.stage.clone();
+        }
+        if !self.images.poll()? {
+            self.pending_stage = candidate;
+            return Ok(false);
+        }
+        if let Some(mut view) = candidate {
+            // Rebuild leases from this demand; previous accepted frames retain their own.
+            view.resolve_metadata(&self.images);
+            view.resolve_tiles(&self.images, &regions);
+            self.stage = Some(view);
+            self.stage_dirty = true;
+            self.images.commit();
+        }
+        Ok(true)
     }
     pub fn handle_pointer(
         &mut self,

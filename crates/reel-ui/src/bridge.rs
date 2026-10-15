@@ -360,6 +360,18 @@ impl PresentationBridge {
     pub fn snapshot_usage(&self) -> BudgetUsage {
         self.snapshots.usage()
     }
+    /// Inspect composed candidate layout without minting a presentation request,
+    /// painting, or replacing accepted input geometry. The same snapshot budget applies.
+    pub fn layout_geometry(&self) -> Result<PresentedGeometryView, RecordError> {
+        let reservation = self
+            .snapshots
+            .reserve(self.limits.geometry.max_bytes as u64)
+            .map_err(|_| RecordError::SnapshotBudget)?;
+        self.root
+            .capture_presented_geometry(self.limits.geometry)
+            .map(|view| view.with_retention_guard(Arc::new(reservation)))
+            .map_err(RecordError::Geometry)
+    }
     pub fn pending_count(&self) -> usize {
         self.pending.iter().filter(|p| p.eligible()).count()
     }

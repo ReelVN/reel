@@ -2828,6 +2828,7 @@ dependencies = [
  "aside-vm",
  "atomic-write-file",
  "codespan-reporting",
+ "image",
  "libc",
  "reel-core",
  "reel-engine",

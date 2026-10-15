@@ -10,7 +10,7 @@ use std::{
     process::ExitCode,
 };
 
-const HELP: &str = "reel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>]\nreel run <file.asb> [--assets <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
+const HELP: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]\nreel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>]\nreel run <file.asb> [--assets <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
 
 struct Args {
     command: String,
@@ -155,6 +155,9 @@ fn failure(json_format: bool, stage: &str, path: Option<&str>, message: &str) ->
 }
 fn run() -> io::Result<u8> {
     let raw: Vec<_> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|arg| arg == "prepare-image") {
+        return prepare_image_command(&raw[1..]);
+    }
     let help = |arg: &OsString| arg == "--help" || arg == "-h";
     if (raw.len() == 1 && help(&raw[0]))
         || (raw.len() == 2
@@ -304,6 +307,67 @@ fn run() -> io::Result<u8> {
             Ok(0)
         }
         Err(failed) => source_error(parsed.json, path, inputs, failed),
+    }
+}
+
+fn prepare_image_command(raw: &[OsString]) -> io::Result<u8> {
+    const USAGE: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]";
+    if raw.len() == 1 && (raw[0] == "--help" || raw[0] == "-h") {
+        writeln!(io::stdout().lock(), "{USAGE}")?;
+        return Ok(0);
+    }
+    let parse = || -> Result<_, String> {
+        let mut source = None;
+        let mut output = None;
+        let mut edge = 512;
+        let mut args = raw.iter();
+        while let Some(arg) = args.next() {
+            if arg == "--output" {
+                if output.is_some() {
+                    return Err("duplicate --output".into());
+                }
+                output = Some(PathBuf::from(args.next().ok_or("missing output path")?));
+            } else if arg == "--tile-size" {
+                edge = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .ok_or("tile size must be a positive integer")?;
+                if edge == 0 || edge.checked_add(2).is_none() {
+                    return Err("invalid tile size".into());
+                }
+            } else if arg.to_string_lossy().starts_with('-') || source.is_some() {
+                return Err(USAGE.into());
+            } else {
+                source = Some(PathBuf::from(arg));
+            }
+        }
+        Ok((source.ok_or(USAGE)?, output.ok_or(USAGE)?, edge))
+    };
+    let (source, output, edge) = match parse() {
+        Ok(args) => args,
+        Err(error) => {
+            failure(false, "usage", None, &error)?;
+            return Ok(2);
+        }
+    };
+    match reel_cli::prepare_image::prepare(&source, &output, edge) {
+        Ok(manifest) => {
+            writeln!(
+                io::stdout().lock(),
+                "Prepared {}×{}, {} levels, tile interior {}: {}",
+                manifest.width,
+                manifest.height,
+                manifest.levels(),
+                manifest.tile_edge,
+                output.display()
+            )?;
+            Ok(0)
+        }
+        Err(error) => {
+            failure(false, "prepare-image", source.to_str(), &error)?;
+            Ok(1)
+        }
     }
 }
 

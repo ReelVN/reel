@@ -352,6 +352,7 @@ impl State {
         // Invalidates candidates even if fresh negotiation subsequently fails.
         if let Some(session) = &mut self.session {
             session.ui_mut().clear_presented();
+            session.sync(&mut self.presentation.bridge, self.root_id)?;
         }
         Ok(())
     }
@@ -473,9 +474,6 @@ impl State {
                 };
                 data.push(font.clone());
             }
-            if !self.session.as_mut().unwrap().ui_mut().prepare_assets()? {
-                return Ok(false);
-            }
             if !self.presentation.bridge.set_default_fonts(&data) {
                 return Err(format!(
                     "{}: configured font files contain no usable font",
@@ -539,6 +537,14 @@ impl State {
         Ok(())
     }
     pub(crate) fn render(&mut self) -> Result<(), Error> {
+        // Candidate metadata layout is never eligible for paint/presentation.
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.ui().images_pending())
+        {
+            return Ok(());
+        }
         // Startup may span several VM slices before main supplies the font files.
         if !self.is_diagnostic() && self.active_fonts.is_empty() {
             return Ok(());
