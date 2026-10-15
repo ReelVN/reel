@@ -106,11 +106,19 @@ enum ActivationKey {
     Space,
 }
 impl ButtonBehavior {
+    /// Retire an in-flight keyboard/controller activation when its content changes.
+    pub fn cancel(&mut self) {
+        self.pressed_key = None;
+        self.pressed_navigation = false;
+    }
     /// Keyboard/controller activation remains held until release or cancellation.
     pub fn is_pressed(&self) -> bool {
         self.pressed_key.is_some() || self.pressed_navigation
     }
     pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
+        if !ctx.input_configuration_is_current() {
+            return None;
+        }
         match event {
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
                 ctx.request_focus();
@@ -133,6 +141,10 @@ impl ButtonBehavior {
         None
     }
     pub fn text(&mut self, ctx: &mut EventCtx<'_>, event: &TextEvent) -> Option<ButtonPress> {
+        if !ctx.input_configuration_is_current() {
+            self.cancel();
+            return None;
+        }
         if let TextEvent::Navigation(event) = event
             && event.action == crate::input::NavigationAction::Confirm
         {
@@ -149,8 +161,7 @@ impl ButtonBehavior {
             }
         }
         if matches!(event, TextEvent::WindowFocusChange(false)) {
-            self.pressed_key = None;
-            self.pressed_navigation = false;
+            self.cancel();
         }
         if let TextEvent::Keyboard(event) = event {
             let key = match &event.key {
@@ -177,8 +188,7 @@ impl ButtonBehavior {
                 | Update::DisabledChanged(true)
                 | Update::StashedChanged(true)
         ) {
-            self.pressed_key = None;
-            self.pressed_navigation = false;
+            self.cancel();
         }
     }
     pub fn access(event: &AccessEvent) -> Option<ButtonPress> {

@@ -114,6 +114,7 @@ pub struct InteractionState {
     pub hover: bool,
     pub pressed: bool,
     pub focused: bool,
+    pub focus_visible: bool,
     pub disabled: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

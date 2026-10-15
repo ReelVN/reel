@@ -505,6 +505,9 @@ stage.replace(column(gap: 16) { start; status; });
 ```
 `...style` passes own object fields as named arguments. Ordinary functions, node constructors and extracted methods share these rules. Merge overrides into one object first; supplying the same argument twice is an error. Positional arguments precede named arguments, including trailing children. See [author_buttons.aside](../../examples/author_buttons.aside) for initialization and button interaction.
 Node properties can be changed directly. Use bind/derive for appearance that should keep following application state or preference changes. Ordinary style records are used during construction. A shared runtime color palette can be stored in a model, with its properties bound to text and images. Authors can draw their components entirely themselves or reuse familiar layout and control behavior.
+
+Use `derive(|| control.hover || control.focus_visible)` for button highlights. Read-only `focus_visible` displays focus during keyboard/controller navigation and hides that indication after pointer use; `focused` retains the actual target, so Enter can still activate it. Both include descendants, and hiding, disabling or losing window focus removes the indication. Background animation does not invalidate unrelated buttons; replacement button content must be presented before accepting a new choice. See [author_fitted_text.aside](../../examples/author_fitted_text.aside).
+
 To move UI and character portraits together, place them in the same group and apply the action to that group.
 ```aside
 let cast = group() {

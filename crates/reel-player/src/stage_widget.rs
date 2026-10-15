@@ -27,6 +27,8 @@ use input::NodeInput;
 #[derive(Clone, Default)]
 pub(crate) struct StageView {
     pub revision: u64,
+    pub button_revision: u64,
+    pub feedback: bool,
     root: Option<SceneNode>,
     pub resources: Vec<ResourceLease>,
 }
@@ -53,6 +55,8 @@ impl StageView {
         }
         Self {
             revision: stage.revision(),
+            button_revision: 0,
+            feedback: false,
             root: stage.root().map(|id| capture_node(stage, id)),
             resources: Vec::new(),
         }
@@ -62,6 +66,46 @@ impl StageView {
             node.node.props.visible && (node.node.props.modal || node.children.iter().any(visit))
         }
         self.root.as_ref().is_some_and(visit)
+    }
+    /// Compare button content only. Animated geometry uses accepted hit testing;
+    /// changes outside a control cannot invalidate its activation.
+    pub fn button_changes(&self, previous: Option<&Self>, feedback: bool) -> Vec<(NodeId, bool)> {
+        fn buttons(view: &StageView) -> BTreeMap<NodeId, &SceneNode> {
+            let mut found = BTreeMap::new();
+            let mut pending: Vec<_> = view.root.iter().collect();
+            while let Some(node) = pending.pop() {
+                if matches!(node.node.kind, NodeKind::Button { .. }) {
+                    found.insert(node.node.id, node);
+                }
+                pending.extend(node.children.iter());
+            }
+            found
+        }
+        fn same_content(a: &SceneNode, b: &SceneNode) -> bool {
+            let mut pending = vec![(a, b)];
+            while let Some((a, b)) = pending.pop() {
+                if a.node.id != b.node.id
+                    || a.node.kind != b.node.kind
+                    || a.node.props.visible != b.node.props.visible
+                    || a.node.props.enabled != b.node.props.enabled
+                    || a.children.len() != b.children.len()
+                {
+                    return false;
+                }
+                pending.extend(a.children.iter().zip(&b.children));
+            }
+            true
+        }
+        let previous = previous.map(buttons).unwrap_or_default();
+        buttons(self)
+            .into_iter()
+            .map(|(id, node)| {
+                let changed = previous
+                    .get(&id)
+                    .is_none_or(|old| !feedback && !same_content(old, node));
+                (id, changed)
+            })
+            .collect()
     }
     pub fn image_requests(&self) -> BTreeMap<String, Option<String>> {
         let mut requests = BTreeMap::new();
@@ -135,7 +179,7 @@ impl StageWidget {
         } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root)
             && let Some(mut child) = this.ctx.get_mut(pod)
         {
-            SceneWidget::sync(&mut child, node);
+            SceneWidget::sync(&mut child, node, view.feedback);
         }
         let props = view
             .root
@@ -369,7 +413,11 @@ impl SceneWidget {
             layouts: 0,
         }
     }
-    fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode) {
+    fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode, feedback: bool) -> bool {
+        let mut content_changed = this.widget.node.kind != view.node.kind
+            || this.widget.node.children != view.node.children
+            || this.widget.node.props.visible != view.node.props.visible
+            || this.widget.node.props.enabled != view.node.props.enabled;
         if let (Some(pod), NodeKind::TextInput { value }) =
             (&mut this.widget.editor, &view.node.kind)
             && let Some(mut editor) = this.ctx.get_mut(pod)
@@ -513,7 +561,7 @@ impl SceneWidget {
                 this.ctx.request_compose();
             }
             if let Some(mut child) = this.ctx.get_mut(pod) {
-                Self::sync(&mut child, next);
+                content_changed |= Self::sync(&mut child, next, feedback);
             }
         }
         if let (
@@ -564,23 +612,17 @@ impl SceneWidget {
             this.widget.node = view.node.clone();
             this.ctx.request_render();
         }
+        if content_changed && !feedback && this.widget.is_button() {
+            this.widget.button.cancel();
+            this.ctx.invalidate_input_configuration();
+        }
+        content_changed
     }
-    fn interaction(
-        &mut self,
-        hover: bool,
-        active: bool,
-        focused: bool,
-        disabled: bool,
-        stashed: bool,
-        window_focused: bool,
-    ) -> Option<NodeEvent> {
-        let available = !disabled && !stashed && window_focused;
-        let next = InteractionState {
-            hover: available && hover,
-            pressed: available && (active || self.button.is_pressed()),
-            focused: available && focused,
-            disabled,
-        };
+    fn interaction(&mut self, mut next: InteractionState, available: bool) -> Option<NodeEvent> {
+        next.hover &= available;
+        next.pressed = available && (next.pressed || self.button.is_pressed());
+        next.focused &= available;
+        next.focus_visible &= next.focused;
         if next == self.interaction {
             return None;
         }
@@ -633,12 +675,14 @@ impl SceneWidget {
 macro_rules! publish_interaction {
     ($widget:expr, $ctx:expr) => {
         if let Some(event) = $widget.interaction(
-            $ctx.has_hovered(),
-            $ctx.has_active(),
-            $ctx.has_focus_target(),
-            $ctx.is_disabled(),
-            $ctx.is_stashed(),
-            $ctx.is_window_focused(),
+            InteractionState {
+                hover: $ctx.has_hovered(),
+                pressed: $ctx.has_active(),
+                focused: $ctx.has_focus_target(),
+                focus_visible: $ctx.focus_visible(),
+                disabled: $ctx.is_disabled(),
+            },
+            !$ctx.is_disabled() && !$ctx.is_stashed() && $ctx.is_window_focused(),
         ) {
             $ctx.submit_action::<NodeEvent>(event);
         }
@@ -846,7 +890,14 @@ impl Widget for SceneWidget {
         ) {
             self.scroll.cancel();
         }
-        if self.is_button() && matches!(event, Update::FocusChanged(_) | Update::DisabledChanged(_))
+        if self.is_button()
+            && matches!(
+                event,
+                Update::FocusChanged(_)
+                    | Update::FocusVisibilityChanged(_)
+                    | Update::WindowFocusChanged(_)
+                    | Update::DisabledChanged(_)
+            )
         {
             ctx.request_render();
         }
@@ -884,12 +935,14 @@ impl Widget for SceneWidget {
             _ => ctx.has_focus_target(),
         };
         if let Some(event) = self.interaction(
-            ctx.has_hovered(),
-            ctx.has_active(),
-            focused,
-            disabled,
-            stashed,
-            ctx.is_window_focused(),
+            InteractionState {
+                hover: ctx.has_hovered(),
+                pressed: ctx.has_active(),
+                focused,
+                focus_visible: ctx.focus_visible(),
+                disabled,
+            },
+            !disabled && !stashed && ctx.is_window_focused(),
         ) {
             ctx.submit_action::<NodeEvent>(event);
         }
@@ -1163,7 +1216,12 @@ impl Widget for SceneWidget {
         if let Some(background) = self.node.props.background {
             painter.fill_rect(self.size.to_rect(), color(background));
         }
-        if self.node.props.decorated && self.is_button() && ctx.is_focus_target() {
+        if self.node.props.decorated
+            && self.is_button()
+            && ctx.is_focus_target()
+            && ctx.focus_visible()
+            && ctx.is_window_focused()
+        {
             painter
                 .stroke(
                     self.size.to_rect().inset(-2.).to_rounded_rect(3.),

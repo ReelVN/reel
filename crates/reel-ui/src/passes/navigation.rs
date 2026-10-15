@@ -56,6 +56,9 @@ pub(crate) fn cancel(root: &mut RenderRoot) {
     }
 }
 pub(crate) fn run(root: &mut RenderRoot, event: NavigationEvent) -> Handled {
+    if matches!(event.phase, ActionPhase::Pressed | ActionPhase::Repeated) {
+        super::event::set_focus_visible(root, true);
+    }
     let source = root.global_state.input_geometry_source.clone();
     let view = source.borrow();
     if matches!(view, GeometryView::Presented(None)) {

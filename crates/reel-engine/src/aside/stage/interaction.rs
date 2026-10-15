@@ -2,7 +2,7 @@
 use super::*;
 use reel_ui::stage::{InteractionState, NodeInteraction};
 
-pub(super) const FIELDS: [&str; 4] = ["hover", "pressed", "focused", "disabled"];
+pub(super) const FIELDS: [&str; 5] = ["hover", "pressed", "focused", "disabled", "focus_visible"];
 
 pub(super) fn publish(
     heap: &mut Heap,
@@ -11,9 +11,15 @@ pub(super) fn publish(
     state: InteractionState,
 ) -> Result<bool, AdapterError> {
     let mut changed = false;
-    for (i, value) in [state.hover, state.pressed, state.focused, state.disabled]
-        .into_iter()
-        .enumerate()
+    for (i, value) in [
+        state.hover,
+        state.pressed,
+        state.focused,
+        state.disabled,
+        state.focus_visible,
+    ]
+    .into_iter()
+    .enumerate()
     {
         let property = PropertyId {
             host,
