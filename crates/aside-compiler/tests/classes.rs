@@ -27,8 +27,14 @@ fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
         }
         match outcome {
             RunOutcome::BudgetYield(usage) => {
-                budget.work = usage.required_work.max(1);
-                budget.allocation_bytes = usage.required_allocation;
+                if tiny {
+                    budget.work = usage.required_work.max(1);
+                    budget.allocation_bytes = usage.required_allocation;
+                } else {
+                    budget.work = budget.work.max(usage.required_work);
+                    budget.allocation_bytes =
+                        budget.allocation_bytes.max(usage.required_allocation);
+                }
             }
             RunOutcome::Returned(id) => {
                 let value = vm.delivery_value(id).unwrap();

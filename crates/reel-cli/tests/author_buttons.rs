@@ -13,6 +13,58 @@ use support::*;
 const SOURCE: &str = include_str!("../../../examples/author_buttons.aside");
 
 #[test]
+fn bound_class_method_keeps_its_receiver_after_entry_returns() {
+    let source = r#"
+    class Counter {
+        let mut count: int = 0;
+        let caption;
+        fn init(self, caption) { self.caption = caption; }
+        fn click(self, event) {
+            self.count += 1;
+            self.caption.value = f"{self.count}";
+        }
+    }
+    fn main() {
+        let caption = text("0", y: 150);
+        let counter = Counter(caption);
+        stage.replace(stack(width: 640, height: 420) {
+            caption;
+            button("Count", x: 20, y: 20, width: 180, height: 60,
+                on_click: counter.click);
+        });
+    }"#;
+    let checked = reel_cli::check(source, "class-callback.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        assert_eq!(driver.state(), StoryState::Running);
+        let (mut bridge, root) = bridge(&driver);
+        present(&mut driver, &mut bridge, root, 1);
+        for count in 1..=2 {
+            click_at(&mut driver, &mut bridge, 50., 50.);
+            present(&mut driver, &mut bridge, root, count + 1);
+            assert!(
+                driver
+                    .adapter()
+                    .stage()
+                    .nodes()
+                    .any(|node| { node.kind == NodeKind::Text(count.to_string().into()) })
+            );
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires REEL_SESSION_FONT for real inline link hit geometry"]
 fn rich_links_consume_presented_mouse_touch_and_gamepad_input_without_advancing_story() {
     let source = r#"

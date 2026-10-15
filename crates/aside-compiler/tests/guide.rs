@@ -10,6 +10,7 @@ const SCENES: &[(&str, E)] = &[
     ("value match expressions", E::Block),
     ("collection editing and own fields", E::Block),
     ("locally composed control", E::Block),
+    ("typed author classes", E::Module),
     ("dynamic stage module", E::Module),
     ("image module", E::Module),
     ("transform module", E::Module),

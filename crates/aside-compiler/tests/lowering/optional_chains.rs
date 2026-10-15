@@ -507,7 +507,8 @@ fn optional_assignment_and_deferred_spread_and_class_are_located_rejections() {
                 .any(|d| d.code == DiagnosticCode::InvalidAssignment)
         );
     }
-    for (source, detail) in [("fn f(){let [a]=[1];}", "pattern")] {
+    {
+        let (source, detail) = ("fn f(){let [a]=[1];}", "pattern");
         let e = lowering::lower(&analyzed(source), &Linkage::default(), Options::default())
             .unwrap_err();
         assert_eq!(e.kind, lowering::ErrorKind::Unsupported);

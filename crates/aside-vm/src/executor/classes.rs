@@ -374,10 +374,17 @@ impl Vm {
         Ok(extra)
     }
     pub(super) fn initializer_cost(&self, closure: Value) -> Result<u64, VmError> {
+        let function = self.closure_function(self.heap.get_field(closure, 0)?)?;
+        if self.init_symbol != Some(self.program.package().functions[function.index()].name) {
+            return Ok(0);
+        }
         let Some(receiver) = self.script_receiver(closure)? else {
             return Ok(0);
         };
         let calls = self.instance_slot(receiver, InstanceSlot::Initializers)?;
+        if calls.same_bits(Value::NULL) {
+            return Ok(0);
+        }
         Ok(u64::from(self.heap.info(calls)?.len) + 3)
     }
     pub(super) fn start_class(
@@ -1023,8 +1030,12 @@ impl Vm {
                         .as_int()
                         .unwrap() as usize;
                     let field = &self.class_desc(owner)?.fields[field_index];
+                    let function = self
+                        .class_slot(owner, ClassSlot::Function)?
+                        .as_int()
+                        .unwrap();
                     let cell = self.heap.alloc_language_cell(self.contract(
-                        ModuleId(s.module.0),
+                        self.program.package().functions[function as usize].module,
                         field.ty,
                         field.mutable,
                     ))?;
@@ -1107,6 +1118,11 @@ impl Vm {
                         instance,
                         InstanceSlot::State as u32,
                         Value::int(State::Ready as i64),
+                    )?;
+                    self.heap.set_field(
+                        instance,
+                        InstanceSlot::Initializers as u32,
+                        Value::NULL,
                     )?;
                     self.put(s.regs, dest.0, instance)?;
                     self.clear(s.env, 2)?;
