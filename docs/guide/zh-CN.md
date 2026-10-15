@@ -795,6 +795,19 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 ## 数值控件与设置页
 
+`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。方向键、手柄方向和 Tab 移动焦点，确认键、鼠标或触摸选择；重复选择不触发 on_change。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
+
+```aside
+let settings = model({sound: true, language: "zh-CN"});
+column(gap: 12) {
+    checkbox("Sound", value: bind(settings.sound));
+    radio("zh-CN", "简体中文", value: bind(settings.language));
+    radio("en", "English", value: bind(settings.language));
+}
+```
+
+两者可以用 children 与 `decorated: false` 完全自定义外观。多选框读取 value；单选项可在 derive 中比较 value 和 option 选择自己的图片或颜色。绑定维持选择状态，外观无需 on_change 手工同步。完整可运行示例见 [author_selection.aside](../../examples/author_selection.aside)，提供 fonts/body.ttf 后运行。
+
 `slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` 提供水平滑条；`toggle(label: null, value: false, on_change: null, children: [], ...)` 提供开关。二者共享舞台位置、大小、颜色、可见性、禁用和模态属性，开关还可组合子节点。下面是可运行的 [author_settings.aside](../../examples/author_settings.aside)，提供 fonts/body.ttf 后可直接运行。
 
 滑条要求有限且递增的 min/max、区间内的有限 value；step 为 null 或有限正数，以 min 为步进起点，两端均可选。脚本可赋任意区间内 value，不受输入步长限制。写 min/max 时当前 value 也须满足新范围，错误保留原值。鼠标或触摸拖动、方向键、Home/End、Shift 加速、手柄左右导航与可访问性操作共用同一控件。

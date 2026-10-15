@@ -133,6 +133,14 @@ pub struct NodeChange {
 pub enum ControlValue {
     Number(f64),
     Bool(bool),
+    /// Activate the option from this accepted presentation revision.
+    Selection(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToggleAppearance {
+    Switch,
+    Checkbox,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -163,6 +171,13 @@ pub enum NodeKind {
         label: Option<String>,
         value: bool,
         listening: bool,
+        appearance: ToggleAppearance,
+    },
+    Radio {
+        label: Option<String>,
+        selected: bool,
+        /// Changes only when the option's identity changes, not for hover/value updates.
+        revision: u64,
     },
     Image {
         source: String,
@@ -374,6 +389,7 @@ impl Stage {
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
+                | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);
@@ -413,6 +429,7 @@ impl Stage {
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
+                | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);
@@ -488,6 +505,7 @@ impl Stage {
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
+                | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
         ) {
             return Err(StageError::NotContainer);

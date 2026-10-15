@@ -645,6 +645,7 @@ fn transformed_stage_pixels_obey_group_clip_opacity_mirroring_and_zero_scale() {
                 label: None,
                 value: true,
                 listening: false,
+                appearance: reel_ui::stage::ToggleAppearance::Switch,
             },
             NodeProps {
                 y: 60.,
@@ -666,7 +667,7 @@ fn transformed_stage_pixels_obey_group_clip_opacity_mirroring_and_zero_scale() {
         .readback(renderer.prepare(&frame).unwrap())
         .unwrap();
     near(start[20 * 640 + 10], [1., 0., 0., 1.]);
-    near(start[80 * 640 + 12], [0., 1., 0., 1.]);
+    near(start[80 * 640 + 19], [0., 1., 0., 1.]);
     let props = f.stage.node(slider).unwrap().props.clone();
     f.stage
         .update(
@@ -707,7 +708,50 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
             vec![],
         )
         .unwrap();
-    f.stage.replace(id).unwrap();
+    let check = f
+        .stage
+        .create(
+            NodeKind::Toggle {
+                label: Some("Checkbox".into()),
+                value: false,
+                listening: false,
+                appearance: reel_ui::stage::ToggleAppearance::Checkbox,
+            },
+            NodeProps {
+                y: 60.,
+                width: Some(220.),
+                height: Some(40.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let radio = f
+        .stage
+        .create(
+            NodeKind::Radio {
+                label: Some("Radio".into()),
+                selected: false,
+                revision: 0,
+            },
+            NodeProps {
+                y: 110.,
+                width: Some(220.),
+                height: Some(40.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    let root = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps::default(),
+            vec![id, check, radio],
+        )
+        .unwrap();
+    f.stage.replace(root).unwrap();
     let source = f.record();
     f.accept(&source);
     let baseline = f.layouts();
@@ -725,6 +769,16 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
                 props,
             )
             .unwrap();
+        for selected in [check, radio] {
+            let node = f.stage.node(selected).unwrap();
+            let mut kind = node.kind.clone();
+            match &mut kind {
+                NodeKind::Toggle { value, .. } => *value = i % 2 == 0,
+                NodeKind::Radio { selected, .. } => *selected = i % 2 == 0,
+                _ => unreachable!(),
+            }
+            f.stage.update(selected, kind, node.props.clone()).unwrap();
+        }
         let source = f.record();
         f.accept(&source);
     }
@@ -734,7 +788,7 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
         "value changes must not rebuild or relayout controls"
     );
     eprintln!(
-        "2000 control updates with CPU recording/presentation: {:?}; added layouts=0",
+        "2000 slider/checkbox/radio frames with CPU recording/presentation: {:?}; added layouts=0",
         started.elapsed()
     );
 }

@@ -795,6 +795,19 @@ Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `
 
 ## Value controls and settings
 
+`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Arrow keys, controller directions and Tab move focus; confirm, mouse or touch selects. Selecting the current value does not call on_change. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
+
+```aside
+let settings = model({sound: true, language: "zh-CN"});
+column(gap: 12) {
+    checkbox("Sound", value: bind(settings.sound));
+    radio("zh-CN", "简体中文", value: bind(settings.language));
+    radio("en", "English", value: bind(settings.language));
+}
+```
+
+Both compose children and accept `decorated: false` for a fully custom appearance. Check boxes read value; radio items can compare value with option in derive to select their own images or colors. Bindings maintain selection, without manual visual updates in on_change. See [author_selection.aside](../../examples/author_selection.aside); supply fonts/body.ttf before running.
+
 `slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` provides a horizontal slider; `toggle(label: null, value: false, on_change: null, children: [], ...)` provides a switch. Both share stage position, size, colors, visibility, enabled state and modal scope; toggles also compose child nodes. The following [author_settings.aside](../../examples/author_settings.aside) runs after supplying fonts/body.ttf.
 
 Sliders require finite increasing min/max and a finite value inside that range. step is null or finite and positive, anchored at min, with both endpoints reachable. Scripts may assign any in-range value regardless of input step. Assigning min/max must also leave the current value in range; invalid writes preserve the previous state. Mouse/touch dragging, arrow keys, Home/End, Shift acceleration, left/right controller navigation and accessibility actions share one control.

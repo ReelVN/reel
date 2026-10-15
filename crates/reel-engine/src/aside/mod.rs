@@ -12,6 +12,7 @@ mod game;
 pub use game::GameSettings;
 mod choice;
 mod dialogue;
+mod keys;
 mod lists;
 mod localization;
 mod narrative;
@@ -632,6 +633,8 @@ impl SessionVm {
             | "reel::text_input"
             | "reel::slider"
             | "reel::toggle"
+            | "reel::checkbox"
+            | "reel::radio"
             | "reel::button"
             | "reel::input"
             | "reel::image"

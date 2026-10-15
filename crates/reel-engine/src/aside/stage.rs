@@ -84,6 +84,8 @@ struct NodeBinding {
     input_source: Option<HeapHandle>,
     text_source: Option<HeapHandle>,
     text_listening: bool,
+    /// Weak identity stamp only: never dereferenced or treated as a GC root.
+    radio_option: Option<Value>,
     input_values: BTreeMap<std::sync::Arc<str>, f32>,
 }
 
@@ -198,6 +200,7 @@ impl StageBinding {
             NodeKind::TextInput { .. } => text_input::TextInputField::PROPERTIES.len() as u32,
             NodeKind::Slider { .. } => controls::SliderField::PROPERTIES.len() as u32,
             NodeKind::Toggle { .. } => controls::ToggleField::PROPERTIES.len() as u32,
+            NodeKind::Radio { .. } => controls::RadioField::PROPERTIES.len() as u32,
             NodeKind::Input { .. } => input::InputField::PROPERTIES.len() as u32,
             NodeKind::Scroll { .. } => scroll::ScrollField::PROPERTIES.len() as u32,
             NodeKind::Image { .. } | NodeKind::Button { .. } => 2,
@@ -256,7 +259,17 @@ impl StageBinding {
             "reel::text" => NodeKind::Text(super::rich_text::read(heap, args[0], read_limit)?),
             "reel::text_input" => text_input::kind(heap, fields, read_limit)?,
             "reel::slider" => controls::slider_kind(heap, fields)?,
-            "reel::toggle" => controls::toggle_kind(heap, fields, read_limit)?,
+            "reel::toggle" | "reel::checkbox" => controls::toggle_kind(
+                heap,
+                fields,
+                read_limit,
+                if symbol == "reel::checkbox" {
+                    reel_ui::stage::ToggleAppearance::Checkbox
+                } else {
+                    reel_ui::stage::ToggleAppearance::Switch
+                },
+            )?,
+            "reel::radio" => controls::radio_kind(heap, fields, 0, read_limit)?,
             "reel::button" => button_kind(heap, args[0], args[1], read_limit)?,
             "reel::input" => {
                 input::validate(heap, 1, args[1])?;
@@ -291,6 +304,7 @@ impl StageBinding {
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
                 | NodeKind::Toggle { .. }
+                | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
         ) {
             let input = args[args.len() - 1];
@@ -314,8 +328,11 @@ impl StageBinding {
             Some(match symbol {
                 "reel::scroll" => |heap, _, index, value| scroll::validate(heap, index, value),
                 "reel::slider" => controls::validate_slider,
-                "reel::toggle" => {
+                "reel::toggle" | "reel::checkbox" => {
                     |heap, _, index, value| controls::validate_toggle(heap, index, value)
+                }
+                "reel::radio" => {
+                    |heap, _, index, value| controls::validate_radio(heap, index, value)
                 }
                 "reel::text" => |heap, _, index, value| validate_text_property(heap, index, value),
                 "reel::text_input" => {
@@ -368,7 +385,8 @@ impl StageBinding {
         }
         let control_field = match symbol {
             "reel::slider" => Some(controls::SliderField::Value.index()),
-            "reel::toggle" => Some(controls::ToggleField::Value.index()),
+            "reel::toggle" | "reel::checkbox" => Some(controls::ToggleField::Value.index()),
+            "reel::radio" => Some(controls::RadioField::Value.index()),
             "reel::text_input" => Some(text_input::TextInputField::Value.index()),
             _ => None,
         };
@@ -434,6 +452,7 @@ impl StageBinding {
                     None
                 },
                 text_listening: symbol == "reel::text" && args[1].tag() != ValueTag::Null,
+                radio_option: (symbol == "reel::radio").then_some(args[0]),
                 input_values,
             },
         );
@@ -493,10 +512,27 @@ impl StageBinding {
                     controls::slider_kind(heap, fields)?,
                     controls::SliderField::PROPERTIES.len(),
                 ),
-                NodeKind::Toggle { .. } => (
-                    controls::toggle_kind(heap, fields, read_limit)?,
+                NodeKind::Toggle { appearance, .. } => (
+                    controls::toggle_kind(heap, fields, read_limit, *appearance)?,
                     controls::ToggleField::PROPERTIES.len(),
                 ),
+                NodeKind::Radio { revision, .. } => {
+                    let option = heap
+                        .table_entry(fields, controls::RadioField::Option.index() as u32)?
+                        .1;
+                    let changed = !binding
+                        .radio_option
+                        .is_some_and(|old| old.same_bits(option));
+                    (
+                        controls::radio_kind(
+                            heap,
+                            fields,
+                            revision.wrapping_add(u64::from(changed)),
+                            read_limit,
+                        )?,
+                        controls::RadioField::PROPERTIES.len(),
+                    )
+                }
                 NodeKind::Button { .. } => (
                     button_kind(
                         heap,
@@ -544,6 +580,16 @@ impl StageBinding {
             updates.push((id, kind, props, version));
         }
         for (id, kind, props, version) in updates {
+            if matches!(kind, NodeKind::Radio { .. }) {
+                let value = heap.import_handle(self.handles[&id].handle)?;
+                self.handles.get_mut(&id).unwrap().radio_option = Some(
+                    heap.table_entry(
+                        heap.host_fields(value)?,
+                        controls::RadioField::Option.index() as u32,
+                    )?
+                    .1,
+                );
+            }
             if matches!(kind, NodeKind::Text(_) | NodeKind::TextInput { .. }) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 let source = heap.table_entry(heap.host_fields(value)?, 0)?.1;
@@ -754,9 +800,10 @@ impl StageBinding {
             let node = self.scene.node(id).unwrap();
             if match &node.kind {
                 NodeKind::Text(_) => self.handles[&id].text_listening,
-                NodeKind::Slider { .. } | NodeKind::Toggle { .. } | NodeKind::TextInput { .. } => {
-                    true
-                }
+                NodeKind::Slider { .. }
+                | NodeKind::Toggle { .. }
+                | NodeKind::Radio { .. }
+                | NodeKind::TextInput { .. } => true,
                 NodeKind::Button { listening, .. } => *listening,
                 NodeKind::Input {
                     bindings,

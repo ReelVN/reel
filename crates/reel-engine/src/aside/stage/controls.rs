@@ -1,7 +1,7 @@
 //! Stateful controls share the stage's property storage and callback ownership.
 use super::*;
 use reel_ui::{
-    stage::{ControlValue, NodeChange},
+    stage::{ControlValue, NodeChange, ToggleAppearance},
     widgets::SliderRange,
 };
 
@@ -26,6 +26,55 @@ pub(in crate::aside) enum ToggleField {
     Value,
     #[aside(name = "on_change", ty = Any, default = null, validate = validate_callback)]
     OnChange,
+}
+#[derive(aside_host::Properties)]
+pub(in crate::aside) enum RadioField {
+    #[aside(name = "option", ty = Any)]
+    Option,
+    #[aside(name = "label", ty = Any, default = null, validate = validate_label)]
+    Label,
+    #[aside(name = "value", ty = Any, default = null)]
+    Value,
+    #[aside(name = "on_change", ty = Any, default = null, validate = validate_callback)]
+    OnChange,
+}
+
+pub(super) fn radio_kind(
+    heap: &Heap,
+    fields: Value,
+    revision: u64,
+    limit: usize,
+) -> Result<NodeKind, AdapterError> {
+    let get = |field: RadioField| {
+        heap.table_entry(fields, field.index() as u32)
+            .map(|(_, v)| v)
+    };
+    let label = get(RadioField::Label)?;
+    validate_callback(heap, get(RadioField::OnChange)?)?;
+    Ok(NodeKind::Radio {
+        label: if label.tag() == ValueTag::Null {
+            None
+        } else {
+            Some(read_text(heap, label, limit)?)
+        },
+        selected: super::super::keys::compare(
+            heap,
+            get(RadioField::Value)?,
+            get(RadioField::Option)?,
+            limit,
+        )?
+        .is_eq(),
+        revision,
+    })
+}
+
+pub(super) fn validate_radio(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+    let count = RadioField::PROPERTIES.len() as u32;
+    if index < count {
+        RadioField::validate(heap, index, value)
+    } else {
+        validate_layout_property(heap, index - count, value)
+    }
 }
 fn validate_step(heap: &Heap, value: Value) -> Result<(), HeapError> {
     if value.tag() == ValueTag::Null {
@@ -93,6 +142,7 @@ pub(super) fn toggle_kind(
     heap: &Heap,
     fields: Value,
     limit: usize,
+    appearance: ToggleAppearance,
 ) -> Result<NodeKind, AdapterError> {
     let label = heap
         .table_entry(fields, ToggleField::Label.index() as u32)?
@@ -115,6 +165,7 @@ pub(super) fn toggle_kind(
         label,
         value,
         listening: callback.tag() != ValueTag::Null,
+        appearance,
     })
 }
 pub(super) fn validate_slider(
@@ -150,7 +201,8 @@ impl StageBinding {
             return Ok(None);
         };
         let slider = matches!(node.kind, NodeKind::Slider { .. });
-        if !slider && !matches!(node.kind, NodeKind::Toggle { .. }) {
+        let radio = matches!(node.kind, NodeKind::Radio { .. });
+        if !slider && !radio && !matches!(node.kind, NodeKind::Toggle { .. }) {
             return Ok(None);
         }
         if !self.mounted_in_scope(heap, change.node, self.modal_scope(heap)?)? {
@@ -171,6 +223,25 @@ impl StageBinding {
                 SliderField::OnChange.index(),
                 Value::float(range.snap(value)),
             )
+        } else if let NodeKind::Radio { revision, .. } = node.kind {
+            if change.value != ControlValue::Selection(revision) {
+                return Ok(None);
+            }
+            let option = heap
+                .table_entry(fields, RadioField::Option.index() as u32)?
+                .1;
+            // A script can change option after presentation but before stage sync.
+            if !self.handles[&change.node]
+                .radio_option
+                .is_some_and(|old| old.same_bits(option))
+            {
+                return Ok(None);
+            }
+            (
+                RadioField::Value.index(),
+                RadioField::OnChange.index(),
+                option,
+            )
         } else {
             let ControlValue::Bool(value) = change.value else {
                 return Ok(None);
@@ -184,6 +255,8 @@ impl StageBinding {
         let (_, old) = heap.table_entry(fields, index as u32)?;
         let equal = if slider {
             number(old)? == number(value)?
+        } else if radio {
+            super::super::keys::compare(heap, old, value, 256)?.is_eq()
         } else {
             old.same_bits(value)
         };
@@ -209,6 +282,7 @@ impl StageBinding {
         match &mut kind {
             NodeKind::Slider { value: current, .. } => *current = number(value)?,
             NodeKind::Toggle { value: current, .. } => *current = value.as_bool().unwrap(),
+            NodeKind::Radio { selected, .. } => *selected = true,
             _ => unreachable!(),
         }
         self.scene.update(change.node, kind, node.props.clone())?;

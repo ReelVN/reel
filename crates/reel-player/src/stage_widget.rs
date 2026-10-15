@@ -19,6 +19,7 @@ use reel_ui::{
 };
 use std::collections::BTreeMap;
 mod input;
+mod selection;
 #[cfg(test)]
 mod tests;
 use input::NodeInput;
@@ -228,14 +229,16 @@ impl SceneWidget {
     fn caption(kind: &NodeKind) -> Option<&str> {
         match kind {
             NodeKind::Text(text) => Some(text),
-            NodeKind::Button { label, .. } | NodeKind::Toggle { label, .. } => label.as_deref(),
+            NodeKind::Button { label, .. }
+            | NodeKind::Toggle { label, .. }
+            | NodeKind::Radio { label, .. } => label.as_deref(),
             _ => None,
         }
     }
     fn is_button(&self) -> bool {
         matches!(
             self.node.kind,
-            NodeKind::Button { .. } | NodeKind::Toggle { .. }
+            NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
         )
     }
     fn reveal_range(node: &StageNode) -> std::ops::Range<usize> {
@@ -248,7 +251,10 @@ impl SceneWidget {
     }
     fn new(view: &SceneNode) -> Self {
         let label = match &view.node.kind {
-            NodeKind::Text(_) | NodeKind::Button { .. } | NodeKind::Toggle { .. } => Some(
+            NodeKind::Text(_)
+            | NodeKind::Button { .. }
+            | NodeKind::Toggle { .. }
+            | NodeKind::Radio { .. } => Some(
                 NewWidget::new(
                     Label::new("")
                         .with_rich_text(match &view.node.kind {
@@ -574,7 +580,13 @@ impl SceneWidget {
         }))
     }
     fn activate(&mut self) -> NodeEvent {
-        if let NodeKind::Toggle { value, .. } = &mut self.node.kind {
+        if let NodeKind::Radio { revision, .. } = self.node.kind {
+            NodeEvent::Change(NodeChange {
+                node: self.node.id,
+                value: ControlValue::Selection(revision),
+                range: None,
+            })
+        } else if let NodeKind::Toggle { value, .. } = &mut self.node.kind {
             *value = !*value;
             NodeEvent::Change(NodeChange {
                 node: self.node.id,
@@ -944,7 +956,7 @@ impl Widget for SceneWidget {
                 .compute_length(label, available, context, axis, cross)
                 .get();
         }
-        if self.node.props.decorated && matches!(self.node.kind, NodeKind::Toggle { .. }) {
+        if self.node.props.decorated && self.selection_state().is_some() {
             total = if axis == Axis::Horizontal {
                 total + 32.
             } else {
@@ -1000,8 +1012,10 @@ impl Widget for SceneWidget {
             ctx.set_stashed(label, !present);
             if present {
                 let inset = if self.node.props.decorated
-                    && matches!(self.node.kind, NodeKind::Toggle { .. })
-                {
+                    && matches!(
+                        self.node.kind,
+                        NodeKind::Toggle { .. } | NodeKind::Radio { .. }
+                    ) {
                     32.
                 } else {
                     0.
@@ -1009,7 +1023,7 @@ impl Widget for SceneWidget {
                 let label_area = Size::new((inner.width - inset).max(0.), inner.height);
                 let chosen = if matches!(
                     self.node.kind,
-                    NodeKind::Button { .. } | NodeKind::Toggle { .. }
+                    NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
                 ) {
                     ctx.compute_size(label, SizeDef::fit(label_area), label_area.into())
                 } else {
@@ -1142,32 +1156,7 @@ impl Widget for SceneWidget {
                 )
                 .draw();
         }
-        if self.node.props.decorated
-            && let NodeKind::Toggle { value, .. } = self.node.kind
-        {
-            let p = self.node.props.padding;
-            let rect = reel_ui::kurbo::Rect::new(
-                p,
-                self.size.height * 0.5 - 10.,
-                p + 24.,
-                self.size.height * 0.5 + 10.,
-            );
-            let tint = color(self.node.props.color);
-            let tint =
-                tint.with_alpha(tint.components[3] * if ctx.is_disabled() { 0.4 } else { 1. });
-            painter
-                .stroke(
-                    rect.to_rounded_rect(4.),
-                    &reel_ui::kurbo::Stroke::new(2.),
-                    tint,
-                )
-                .draw();
-            if value {
-                painter
-                    .fill(rect.inset(-4.).to_rounded_rect(2.), tint)
-                    .draw();
-            }
-        }
+        self.paint_selection(ctx, painter);
     }
     fn post_paint(
         &mut self,
@@ -1180,12 +1169,15 @@ impl Widget for SceneWidget {
         }
     }
     fn accessibility_role(&self) -> Role {
-        if matches!(self.node.kind, NodeKind::Toggle { .. }) {
-            Role::Switch
-        } else if self.is_button() {
-            Role::Button
-        } else {
-            Role::GenericContainer
+        match self.node.kind {
+            NodeKind::Toggle {
+                appearance: reel_ui::stage::ToggleAppearance::Checkbox,
+                ..
+            } => Role::CheckBox,
+            NodeKind::Toggle { .. } => Role::Switch,
+            NodeKind::Radio { .. } => Role::RadioButton,
+            NodeKind::Button { .. } => Role::Button,
+            _ => Role::GenericContainer,
         }
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
@@ -1194,7 +1186,7 @@ impl Widget for SceneWidget {
             if let Some(label) = Self::caption(&self.node.kind) {
                 node.set_label(label);
             }
-            if let NodeKind::Toggle { value, .. } = self.node.kind {
+            if let Some(value) = self.selection_state() {
                 node.set_toggled(if value {
                     reel_ui::accesskit::Toggled::True
                 } else {
