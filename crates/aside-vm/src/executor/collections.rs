@@ -210,6 +210,10 @@ pub(super) enum TableAction {
         object: Reg,
         value: Reg,
     },
+    GetHost {
+        object: Reg,
+        dest: Reg,
+    },
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct TableWork {
@@ -238,7 +242,7 @@ impl Vm {
             return Err(FaultKind::Type);
         }
         self.heap.table_len(table).map_err(heap_fault)?;
-        let version = self.heap.info(table).map_err(heap_fault)?.content_version;
+        let version = self.table_version(*s, table, action).map_err(vm_fault)?;
         self.put(s.env, 1, table).map_err(vm_fault)?;
         self.put(s.env, 2, key).map_err(vm_fault)?;
         s.table_work = Some(TableWork {
@@ -319,6 +323,30 @@ impl Vm {
             _ => unreachable!(),
         }
     }
+    fn table_version(
+        &self,
+        s: ScriptFrame,
+        table: Value,
+        action: TableAction,
+    ) -> Result<u64, VmError> {
+        let host_property = match action {
+            TableAction::GetHost { .. } | TableAction::SetHost { .. } => true,
+            TableAction::PropertyRef { object, .. } => {
+                self.heap.info(self.value(s.regs, object.0)?)?.kind == ObjectKind::Host
+            }
+            _ => false,
+        };
+        let info = self.heap.info(table)?;
+        // Host property names identify stable slots. Input, animation and layout
+        // may update their values between slices without invalidating name lookup.
+        // Collection operations still require their original content snapshot.
+        Ok(if host_property {
+            info.structure_version
+        } else {
+            info.content_version
+        })
+    }
+
     pub(super) fn table_changed(&self, s: ScriptFrame) -> Result<bool, VmError> {
         let Some(work) = s.table_work else {
             return Ok(false);
@@ -331,10 +359,8 @@ impl Vm {
         } else {
             false
         };
-        Ok(
-            source_changed
-                || self.heap.info(self.value(s.env, 1)?)?.content_version != work.version,
-        )
+        Ok(source_changed
+            || self.table_version(s, self.value(s.env, 1)?, work.action)? != work.version)
     }
     pub(super) fn table_step(
         &mut self,
@@ -355,7 +381,10 @@ impl Vm {
             && (work.matched || work.entry == scan_len)
             && !matches!(
                 work.action,
-                TableAction::Get(_) | TableAction::MemberGet { .. } | TableAction::HasOwn(_)
+                TableAction::Get(_)
+                    | TableAction::GetHost { .. }
+                    | TableAction::MemberGet { .. }
+                    | TableAction::HasOwn(_)
             );
         let fallback = scan
             && work.entry == len
@@ -535,6 +564,24 @@ impl Vm {
             TableAction::HasOwn(dest) => {
                 self.heap.observe_read(table, None)?;
                 self.put(s.regs, dest.0, Value::bool(work.matched))?;
+            }
+            TableAction::GetHost { object, dest } => {
+                if !work.matched {
+                    return self.collection_fault(s, FaultKind::MissingKey);
+                }
+                let host = self.value(s.regs, object.0)?;
+                let property = crate::PropertyId {
+                    host,
+                    field: work.entry,
+                };
+                // Revalidate liveness and read the current value at commit. The
+                // rooted fields table alone may outlive a retired host.
+                let value = match self.heap.host_property(property) {
+                    Ok(value) => value,
+                    Err(error) => return self.collection_fault(s, heap_fault(error)),
+                };
+                self.heap.observe_read(host, Some(work.entry))?;
+                self.put(s.regs, dest.0, value)?;
             }
             TableAction::Get(dest) | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {

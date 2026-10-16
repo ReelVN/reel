@@ -127,11 +127,27 @@ impl SessionSnapshot {
         let bytes = bytes
             .strip_prefix(b"REELSAV1")
             .ok_or_else(|| SnapshotError::Invalid("save format".into()))?;
+        // Read the fixed version prefix before decoding the nested VM. Postcard
+        // does not retain custom serde error messages from that deserializer.
+        let (version, vm_bytes): (u32, _) = postcard::take_from_bytes(bytes)?;
+        if version != 4 {
+            return Err(SnapshotError::Version {
+                format: "session",
+                expected: 4,
+                actual: version,
+            });
+        }
+        let (vm_version, _): (u32, _) = postcard::take_from_bytes(vm_bytes)?;
+        if vm_version != VmSnapshot::FORMAT_VERSION {
+            return Err(SnapshotError::Version {
+                format: "VM",
+                expected: VmSnapshot::FORMAT_VERSION,
+                actual: vm_version,
+            });
+        }
         let (snapshot, tail): (Self, _) = postcard::take_from_bytes(bytes)?;
-        if snapshot.version != 4 || snapshot.session.is_none() || !tail.is_empty() {
-            return Err(SnapshotError::Invalid(
-                "session snapshot version/body".into(),
-            ));
+        if snapshot.session.is_none() || !tail.is_empty() {
+            return Err(SnapshotError::Invalid("session snapshot body".into()));
         }
         Ok(snapshot)
     }

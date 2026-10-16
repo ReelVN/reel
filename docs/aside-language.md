@@ -300,6 +300,8 @@ Reel `layered_image(layers, ...)` 使用普通零参数函数、数组、属性�
 
 Reel image 的既有 color 属性表示图像像素乘色，默认白色；直接赋值与 bind/derive 使用同一舞台属性通路，layered_image 的图层描述同样接受 color。容器 color 不继承到子节点。此行为不新增 Aside 语法、属性槽、native ABI 或存档格式。
 
+宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 2，旧版本明确报告版本不匹配；B01/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
+
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；B01/ASB 不变。

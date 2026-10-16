@@ -79,6 +79,7 @@ impl Scissor {
 /// Masks use an explicit stack; nesting does not consume the Rust call stack.
 pub(super) fn peak_targets(
     frame: &RenderFrame,
+    size: [u32; 2],
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
     struct Stream<'a> {
@@ -98,7 +99,6 @@ pub(super) fn peak_targets(
         isolated: Vec::new(),
     };
     let mut stack = Vec::new();
-    let size = frame.info().physical_size;
     let transform = Affine::scale_non_uniform(
         size[0] as f64 / frame.info().logical_size[0],
         size[1] as f64 / frame.info().logical_size[1],

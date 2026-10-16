@@ -218,7 +218,14 @@ impl Vm {
         epoch: SessionEpoch,
         registry: &'a SnapshotRegistry,
     ) -> Result<VmRestore<'a>, SnapshotError> {
-        if image.version != VERSION || image.code != program.snapshot_identity() {
+        if image.version != VERSION {
+            return Err(SnapshotError::Version {
+                format: "VM",
+                expected: VERSION,
+                actual: image.version,
+            });
+        }
+        if image.code != program.snapshot_identity() {
             return Err(SnapshotError::CodeMismatch);
         }
         if epoch.0 == image.source_epoch {

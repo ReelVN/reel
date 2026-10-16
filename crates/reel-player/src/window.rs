@@ -729,7 +729,11 @@ impl State {
             {
                 return Err(error);
             }
-            eprintln!("frame refused; keeping last accepted view: {error}");
+            if self.presentation.demand.model == crate::demand::Model::Blocked
+                || std::env::var_os("REEL_DIAGNOSTIC_TRACE").is_some()
+            {
+                eprintln!("frame deferred; keeping last accepted view: {error}");
+            }
         }
         Ok(())
     }

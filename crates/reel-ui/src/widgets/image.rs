@@ -274,6 +274,12 @@ impl Widget for Image {
         ChildrenIds::new()
     }
 
+    fn accepts_pointer_interaction(&self) -> bool {
+        // Images are presentation. A skin layered above a slider must not
+        // replace its control as the pointer target.
+        false
+    }
+
     fn make_trace_span(&self, id: WidgetId) -> Span {
         trace_span!("Image", id = id.trace())
     }

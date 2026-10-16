@@ -361,17 +361,15 @@ impl Images {
         self.tiles.clear();
         self.manifests.clear();
         self.encoded.clear();
+        self.skipped.clear();
+        self.failure = None;
         self.commit();
-        self.assets.close();
+        // Assets belongs to the host. A replacement session and other consumers
+        // keep using it after this stage has released its own requests and leases.
     }
 }
 impl Drop for Images {
     fn drop(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            self.assets.cancel(pending.id);
-        }
-        self.wanted.clear();
-        self.tiles.clear();
-        self.commit();
+        self.close();
     }
 }

@@ -25,6 +25,10 @@ fn size(window: &Window) -> WindowSize {
         height: size.height,
     }
 }
+fn matches_size(window: &Window, desired: WindowSize) -> bool {
+    window.inner_size()
+        == LogicalSize::new(desired.width, desired.height).to_physical::<u32>(window.scale_factor())
+}
 impl WindowDisplay {
     pub(super) fn new(window: &Window) -> Self {
         Self {
@@ -113,7 +117,7 @@ impl WindowDisplay {
                     .current_monitor()
                     .is_some_and(|monitor| window.inner_size() == monitor.size())
             } else {
-                size(window) == self.windowed
+                matches_size(window, self.windowed)
             };
             if window.inner_size() != previous || reached_size {
                 return Ok(self.resized(window));
@@ -122,7 +126,10 @@ impl WindowDisplay {
         }
         if !fullscreen && (change.width.is_some() || change.height.is_some()) {
             let desired = self.windowed;
-            if size(window) == desired {
+            // Logical dimensions may round to the existing physical size. In
+            // that case the platform need not emit another resize event.
+            if matches_size(window, desired) {
+                self.windowed = size(window);
                 return Ok(true);
             }
             if let Some(actual) =
@@ -133,6 +140,12 @@ impl WindowDisplay {
                     width: actual.width,
                     height: actual.height,
                 };
+                return Ok(true);
+            }
+            // Windows applies SetWindowPos immediately but Winit returns None.
+            // The actual size also covers an already-applied native request.
+            if matches_size(window, desired) {
+                self.windowed = size(window);
                 return Ok(true);
             }
             self.pending = Some(Pending {
@@ -154,10 +167,11 @@ impl WindowDisplay {
             return false;
         }
         if let Some(desired) = pending.resize_after_exit.take()
-            && size(window) != desired
+            && !matches_size(window, desired)
             && window
                 .request_inner_size(LogicalSize::new(desired.width, desired.height))
                 .is_none()
+            && !matches_size(window, desired)
         {
             return false;
         }
