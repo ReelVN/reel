@@ -350,6 +350,44 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             42,
         ),
         (
+            r#"fn main() {
+                let value={n:42};
+                let t={nil:null, off:false, zero:0, value:value, [null]:7, [(1,"x")]:9};
+                if t.get("nil",1)!=null || t.get("off",true)!=false || t.get("zero",1)!=0 {throw "present values";}
+                if t.get("absent")!=null || t.get("get",default:3)!=3 {throw "missing slots";}
+                if t.get("value")!=value || t.get("absent",default:value)!=value {throw "identity";}
+                if t.get(null)!=7 || t.get((1.0,"x"))!=9 || t.len()!=6 {throw "keys/read only";}
+                42
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let mut t={n:42}; let get=t.get; t={n:0};
+                let mut evaluated=0;
+                fn fallback(){evaluated+=1; ({n:42})}
+                if get(default:fallback(),key:"n")!=42 || evaluated!=1 {throw "bound receiver/evaluation";}
+                if get(...["absent",fallback()]).n!=42 || evaluated!=2 {throw "packed argument roots";}
+                if get("absent",default:{n:42}).n!=42 {throw "argument roots";}
+                let own={get:|key,default| key+default};
+                own.get(40,default:2)
+            }"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let t={}; let mut caught=0;
+                try {t.get([]);} catch e {caught+=1;}
+                try {t.get((1,{}));} catch e {caught+=1;}
+                try {t["absent"];} catch e {caught+=1;}
+                try {t.get();} catch e {caught+=1;}
+                try {t.get("absent",key:"again");} catch e {caught+=1;}
+                try {t.get("absent",unknown:1);} catch e {caught+=1;}
+                if caught==6 && t.get("absent",42)==42 && t.len()==0 {42} else {0}
+            }"#,
+            42,
+        ),
+        (
             r#"fn main() { let mut n=0; fn bump() { n+=1; n } let s=f"中{bump()}🙂{f"[{bump()}]"}{{字}}"; if s=="中1🙂[2]{字}" {n} else {0} }"#,
             2,
         ),

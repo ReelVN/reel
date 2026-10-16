@@ -79,12 +79,21 @@ Source files, embedded source text and string constants share the actual package
 Left-associated operations and member or call chains compile in source order without consuming nesting allowance for each link. Actual nesting through parentheses, blocks and subexpressions uses the host's configured compiler resource budget.
 
 ### Available Ranges, Collections and Interpolation
-Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
+Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
 ```aside
 let values = [];
 for value in 1..=3 { values.append(value); }
 let latest = values.pop();
 text(f"剩余 {values.len()} 项，最后一项 {latest}");
+```
+
+`table.get(key, default: null)` uses the default only for a missing key. Existing null, false and zero values are preserved, and no field is inserted. Returned objects retain their identity. The default is an ordinary argument and is evaluated normally. Use it in derive as well: later field insertion or modification updates the result. See [collections.aside](../../examples/collections.aside) for a complete example.
+
+```aside
+let settings = {volume: 0, wallpaper: null};
+let volume = settings.get("volume", default: 0.7);
+let wallpaper = settings.get("wallpaper", default: "default.png");
+let language = settings.get("language", default: "zh-CN");
 ```
 
 Array spreading `[...items, last]` accepts arrays or tuples. Table spreading `{...base, color: value}` copies own fields, with later entries taking precedence. Each spread captures in source order: later changes to the source do not alter captured elements or fields, while inner objects remain shared references. Spreading null is an error. See the runnable [collections.aside](../../examples/collections.aside) example.

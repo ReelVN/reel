@@ -37,6 +37,7 @@ pub(super) enum Builtin {
     Trim,
     TrimStart,
     TrimEnd,
+    Get,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -46,6 +47,7 @@ impl Builtin {
             (Array, "append") => Some(Self::Append),
             (Array, "pop") => Some(Self::Pop),
             (Table, "has_own") => Some(Self::HasOwn),
+            (Table, "get") => Some(Self::Get),
             (Array | Tuple, "slice") => Some(Self::Slice),
             (Array, "insert") => Some(Self::Insert),
             (Array, "remove") => Some(Self::Remove),
@@ -103,6 +105,7 @@ impl Builtin {
             Builtin::Trim,
             Builtin::TrimStart,
             Builtin::TrimEnd,
+            Builtin::Get,
         ];
         usize::try_from(id)
             .ok()
@@ -113,6 +116,7 @@ impl Builtin {
     pub(super) fn parameters(self) -> (&'static [&'static str], usize) {
         match self {
             Self::HasOwn => (&["key"], 1),
+            Self::Get => (&["key", "default"], 1),
             Self::Slice | Self::SliceBytes | Self::SliceScalars => (&["range"], 1),
             Self::Insert => (&["index", "value"], 2),
             Self::Remove => (&["index"], 1),
@@ -369,11 +373,18 @@ impl Vm {
                     })
                     .map(|()| receiver)
             }
-            Builtin::HasOwn => {
+            Builtin::HasOwn | Builtin::Get => {
                 let key = self.builtin_argument(s, call, 0)?;
-                if let Err(kind) =
-                    self.start_table(s, receiver, key, TableAction::HasOwn(call.dest))
-                {
+                let action = if matches!(call.method, Builtin::Get) {
+                    TableAction::GetDefault {
+                        dest: call.dest,
+                        descriptor: call.descriptor,
+                        fallback: call.arguments[1],
+                    }
+                } else {
+                    TableAction::HasOwn(call.dest)
+                };
+                if let Err(kind) = self.start_table(s, receiver, key, action) {
                     self.collection_fault(s, kind)?;
                 }
                 return Ok(true);

@@ -261,6 +261,9 @@ fn snapshots_resume_instruction_work_and_exception_cleanup_without_replaying_cod
         fn value() {
             let counter = Counter();
             let tuple = (counter, [counter]);
+            let get = {count: counter}.get;
+            let fallback = get(...["missing", {counter: counter}]);
+            if get("count") != counter || fallback.counter != counter { throw "get roots"; }
             try { throw 7; } catch caught {
                 writes += 1;
                 try { return counter.read() + 39 + writes; }

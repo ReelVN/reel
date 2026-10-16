@@ -205,6 +205,49 @@ fn derived_and_conditional_views_share_model_dependencies() {
 }
 
 #[test]
+fn derived_table_get_tracks_missing_inserted_replaced_and_cleared_values() {
+    let code = r#"
+    fn opening() {
+        let data = model({values: {}});
+        let mut step = 0;
+        stage.replace(column() {
+            text(value: derive(|| f"{data.values.get("key", default: "missing")}"));
+            button("update", on_click: |e| {
+                step += 1;
+                match step {
+                    1 => { data.values.key = 42; },
+                    2 => { data.values.key = null; },
+                    _ => { data.values.clear(); },
+                };
+            });
+        });
+        narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let button = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Button { .. }))
+            .unwrap()
+            .id;
+        for (step, expected) in ["missing", "42", "null", "missing"].iter().enumerate() {
+            if step != 0 {
+                assert!(vm.click(&mut session, button).unwrap());
+                models::drive(&mut vm, &mut session, true);
+            }
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text((*expected).into())),
+                "table.get must refresh after step {step}, encoded={encoded}"
+            );
+        }
+    }
+}
+
+#[test]
 fn narrative_models_compose_nvl_clear_pages_and_select_original_keys() {
     let code = r##"
     let dialogue = game.dialogue();
