@@ -214,6 +214,12 @@ pub(super) enum TableAction {
         object: Reg,
         dest: Reg,
     },
+    GetDefault {
+        dest: Reg,
+        descriptor: DescriptorId,
+        // The caller retains argument roots through key validation and lookup.
+        fallback: Option<u32>,
+    },
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct TableWork {
@@ -382,6 +388,7 @@ impl Vm {
             && !matches!(
                 work.action,
                 TableAction::Get(_)
+                    | TableAction::GetDefault { .. }
                     | TableAction::GetHost { .. }
                     | TableAction::MemberGet { .. }
                     | TableAction::HasOwn(_)
@@ -583,10 +590,34 @@ impl Vm {
                 self.heap.observe_read(host, Some(work.entry))?;
                 self.put(s.regs, dest.0, value)?;
             }
-            TableAction::Get(dest) | TableAction::MemberGet { dest, .. } => {
+            TableAction::Get(dest)
+            | TableAction::GetDefault { dest, .. }
+            | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
                     self.heap.observe_read(table, Some(work.entry))?;
                     self.heap.table_entry(table, work.entry)?.1
+                } else if let TableAction::GetDefault {
+                    descriptor,
+                    fallback,
+                    ..
+                } = work.action
+                {
+                    // Missing keys depend on the collection so insertion also
+                    // invalidates a derived read. Null values remain present.
+                    self.heap.observe_read(table, None)?;
+                    match fallback {
+                        Some(index) => {
+                            self.argument(
+                                ArgSource::Caller {
+                                    frame: s.id,
+                                    descriptor,
+                                },
+                                index,
+                            )?
+                            .1
+                        }
+                        None => Value::NULL,
+                    }
                 } else if let TableAction::MemberGet { symbol, .. } = work.action {
                     let Some(method) = Builtin::lookup(
                         ObjectKind::Table,

@@ -67,7 +67,7 @@ if condition { ... } else { ... }、while condition { ... }、for pattern in val
 
 一般表达式按源码从左到右求值一次；短路、条件和模式有各自明确规则。赋值先计算并保存目标对象与键的值，再计算右值并写入；右值随后重绑原对象或键的名称，不改变已经准备的位置；复合赋值先计算左值位置一次，再读取、求右值、计算和写入。赋值链 a = b = value; 作为一条语句，先从左到右确定所有目标位置，末尾 value 求值一次，再按从内到外的顺序写入。整条链无表达式结果；算术、参数、let 初值等取值位置使用赋值会诊断。每个解构目标按自身的原子准备/提交规则写入，整条链沿用普通副作用规则。求值错误不会自动撤销已经发生的普通副作用；有事务语义的宿主接口另行声明。
 
-当前源码执行支持 `a..b`、`a..=b` 的惰性整数区间，`for` 直接读取迭代结果，不为每轮构造临时 tuple。`range()` 的显式步长接口仍是待实现标准库。字符串插值按书写顺序求值，当前支持 null、bool、int、float、string 和 CoreError 的错误说明；容器/实例自定义字符串转换另行实现。插值使用同一个分块缓冲区，按字节计费与暂停，完成 UTF-8 验证后直接封存；每轮不复制已构造的前缀。array/tuple/table 的 `len()`、array 的 `append(...values)`/`pop()`、table 的 `has_own(key)` 已接通；方法取值保留原接收者，表自己的同名字段优先，表中的普通闭包不注入接收者。空数组 pop 抛可捕获错误，append 按实参顺序追加并返回原数组。
+当前源码执行支持 `a..b`、`a..=b` 的惰性整数区间，`for` 直接读取迭代结果，不为每轮构造临时 tuple。`range()` 的显式步长接口仍是待实现标准库。字符串插值按书写顺序求值，当前支持 null、bool、int、float、string 和 CoreError 的错误说明；容器/实例自定义字符串转换另行实现。插值使用同一个分块缓冲区，按字节计费与暂停，完成 UTF-8 验证后直接封存；每轮不复制已构造的前缀。array/tuple/table 的 `len()`、array 的 `append(...values)`/`pop()`、table 的 `has_own(key)`/`get(key, default: null)` 已接通；方法取值保留原接收者，表自己的同名字段优先，表中的普通闭包不注入接收者。空数组 pop 抛可捕获错误，append 按实参顺序追加并返回原数组。
 
 ## 三 值 绑定 相等与数值
 
@@ -101,6 +101,8 @@ array 为可变有序序列，索引只接受非负 int，越界报错，不把 
 table 为按插入顺序迭代的动态关联对象；点访问等价于字符串键读取。读取先查自有槽，再沿无环 delegate 链查找，最后按第九节执行缺失钩子。普通 table 的 = 总在自身插入或覆盖槽，不修改 delegate；覆盖不改变原位置，删除再插入移到末尾。remove 删除自有槽；set_existing 要求自有槽存在，define 要求自有槽不存在。raw 操作绕过动态钩子。
 
 has_own 只检查自有槽；has_in_chain 只检查自有与 delegate 链的真实槽，不执行 _get；try_get 执行正常读取并返回 (found, value)。get(key, default: null) 只在缺失时返回缺省，存储的 null 是已找到值。keys/values/entries 明确只枚举自有槽，entries 产生 (key, value) tuple。Map 为 table 的标准库命名别名/构造入口，不建立第二套隐含不同的映射语义。
+
+`table.get(key, default: null)` 已接通：沿当前普通表读取的键验证与可让出查找路径，找到时返回原值（包括 null、false、0），只在缺失时返回缺省，不插入字段或复制值。缺省是普通实参，按调用求值规则执行；方法取值绑定原表，自有同名字段优先。model 中缺失查找也记录依赖，后续插入能更新 derive。非法键与并发修改照常报错。当前 table 读取尚不支持 delegate 或缺失钩子，get 不另造一套读取协议。查找复用原预算，缺省值保留在调用帧的现有根中，暂停、取消和快照沿原路径处理。
 
 可散列键为 null、bool、int、除 NaN 外的 float、string、Bytes 及递归可散列 tuple。等值键必须同 hash，包括精确相等的 int/float 与正负零；可变对象及含它们的 tuple 不能作为普通键，错误指出元素路径。Set 使用同一键规则与插入顺序，提供 membership、add/remove、union/intersection/difference。IdentityMap/IdentitySet 另行按对象身份存键，适合对象索引；其键为强引用，弱键版本明确命名且不保证枚举稳定。弱集合及 weakref 的保活、失效和快照使用第十八节规则。
 

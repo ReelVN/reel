@@ -79,12 +79,21 @@ dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他
 左结合运算和属性、调用链按书写顺序编译，不按链条长度消耗嵌套额度。括号、代码块和子表达式的真正嵌套仍使用宿主配置的编译资源预算。
 
 ### 已接通的范围、容器与插值
-在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
+在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
 ```aside
 let values = [];
 for value in 1..=3 { values.append(value); }
 let latest = values.pop();
 text(f"剩余 {values.len()} 项，最后一项 {latest}");
+```
+
+`table.get(key, default: null)` 仅在键缺失时使用缺省，已有的 null、false、0 都保持原值，不添加字段；返回的对象仍是原对象。default 是普通实参，会照常求值。它也可用于 derive，随后插入或修改字段会更新结果。完整用法见 [collections.aside](../../examples/collections.aside)。
+
+```aside
+let settings = {volume: 0, wallpaper: null};
+let volume = settings.get("volume", default: 0.7);
+let wallpaper = settings.get("wallpaper", default: "default.png");
+let language = settings.get("language", default: "zh-CN");
 ```
 
 数组展开 `[...items, last]` 接受数组或 tuple；表展开 `{...base, color: value}` 复制自有字段，后项覆盖前项。展开按书写顺序捕获内容，后面的代码修改来源不会改变已捕获的元素或字段；内部对象仍共享引用。null 不能展开。完整可运行示例见 [collections.aside](../../examples/collections.aside)。
