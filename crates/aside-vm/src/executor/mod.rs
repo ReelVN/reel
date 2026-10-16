@@ -1291,6 +1291,23 @@ impl Vm {
         Ok(())
     }
 
+    /// Resolve a function value that carries no receiver or captured environment.
+    /// The identity belongs to this verified program; no heap value crosses into
+    /// a replacement VM. Hosts validate the entry's signature and context.
+    pub fn unbound_function(&self, value: Value) -> Result<FunctionId, VmError> {
+        if self.heap.info(value)?.kind != ObjectKind::Closure {
+            return Err(VmError::Contract("entry must be an unbound function"));
+        }
+        let function = self.closure_function(value)?;
+        if !self.program.package().functions[function.index()]
+            .captures
+            .is_empty()
+        {
+            return Err(VmError::Contract("entry must not capture local state"));
+        }
+        Ok(function)
+    }
+
     fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
         let closure = self.script_closure(closure)?;
         let info = self.heap.info(closure)?;
@@ -1685,11 +1702,13 @@ impl Vm {
         &mut self,
         ticket: HostTicket,
         kind: FaultKind,
+        details: Value,
     ) -> Result<(), VmError> {
         self.select_task(ticket.task)
             .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
         self.native_fault(&mut n, kind)?;
+        self.put(n.roots, 0, details)?;
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
         Ok(())
     }
@@ -3627,6 +3646,11 @@ impl Vm {
                     skip: None,
                 };
                 return Ok(false);
+            }
+            Opcode::PatternRequire => {
+                if !self.read(*s, r(a))?.as_bool().ok_or(FaultKind::Type)? {
+                    return Err(FaultKind::PatternMismatch);
+                }
             }
             Opcode::MatchFail => return Err(FaultKind::MatchError),
             Opcode::Throw => {

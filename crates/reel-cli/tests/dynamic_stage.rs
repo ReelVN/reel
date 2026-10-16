@@ -75,8 +75,7 @@ fn children_compose_owned_subtrees_without_duplicate_mounting() {
                 match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
                     reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                         if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1024) {
-                            vm.reject_native(&session, ticket, error.native_fault_kind().unwrap())
-                                .unwrap();
+                            vm.reject_native(&session, ticket, error).unwrap();
                         }
                     }
                     reel_engine::aside::SessionStep::Vm(RunOutcome::Returned(_)) => {

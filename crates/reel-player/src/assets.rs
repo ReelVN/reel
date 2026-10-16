@@ -213,6 +213,36 @@ impl Assets {
         );
         id
     }
+    /// Encoded immutable author images use the same probe/decode/resident budgets as assets.
+    pub fn request_encoded(&self, key: String, bytes: &[u8]) -> Result<LoadId, String> {
+        let mut service = self.0.borrow_mut();
+        if service.executor.is_none() {
+            return Err("asset service closed".into());
+        }
+        let ticket = service
+            .input
+            .reserve(bytes.len() as u64)
+            .map_err(|e| e.message)?;
+        let input = OwnedBytes::new(bytes.to_vec(), ticket).map_err(|e| e.reason.message)?;
+        service.next += 1;
+        let id = LoadId(service.next);
+        service.loads.insert(
+            id,
+            Load {
+                source: AssetSource {
+                    key: AssetKey(key),
+                    version: Some(reel_core::identity::ContentVersion([0; 32])),
+                },
+                kind: AssetKind::Image,
+                phase: Phase::Probe,
+                input: Some(Arc::new(input)),
+                size: [0; 2],
+                output: 0,
+                temporary: 0,
+            },
+        );
+        Ok(id)
+    }
     pub fn poll(&self, id: LoadId) -> Result<Option<ResourceLease>, String> {
         let mut service = self.0.borrow_mut();
         service.pump();

@@ -67,11 +67,23 @@ impl StageView {
             resources: Vec::new(),
         }
     }
-    pub fn has_modal(&self) -> bool {
-        fn visit(node: &SceneNode) -> bool {
-            node.node.props.visible && (node.node.props.modal || node.children.iter().any(visit))
+    pub fn input_scope(&self) -> (Option<NodeId>, Option<NodeId>) {
+        fn visit(node: &SceneNode, modal: &mut Option<NodeId>) {
+            if !node.node.props.visible {
+                return;
+            }
+            if node.node.props.modal {
+                *modal = Some(node.node.id);
+            }
+            for child in &node.children {
+                visit(child, modal);
+            }
         }
-        self.root.as_ref().is_some_and(visit)
+        let mut modal = None;
+        if let Some(root) = &self.root {
+            visit(root, &mut modal);
+        }
+        (self.root.as_ref().map(|root| root.node.id), modal)
     }
     #[cfg(feature = "window")]
     pub fn has_root(&self) -> bool {
@@ -137,6 +149,19 @@ impl StageView {
             pending.extend(node.children.iter());
         }
         Ok(requests)
+    }
+    pub fn encoded_images(&self) -> BTreeMap<String, std::sync::Arc<[u8]>> {
+        let mut result = BTreeMap::new();
+        let mut pending: Vec<_> = self.root.iter().collect();
+        while let Some(node) = pending.pop() {
+            if let NodeKind::Image { source, .. } = &node.node.kind
+                && let Some(bytes) = source.bytes()
+            {
+                result.insert(source.key().to_owned(), bytes.clone());
+            }
+            pending.extend(node.children.iter());
+        }
+        result
     }
     pub fn resolve_images(&mut self, images: &BTreeMap<String, ResourceLease>) {
         self.resources = self
@@ -209,7 +234,7 @@ impl StageView {
 
 fn image_source(kind: &NodeKind) -> Option<(&str, &Option<String>)> {
     match kind {
-        NodeKind::Image { source, origin, .. } => Some((source, origin)),
+        NodeKind::Image { source, origin, .. } => Some((source.key(), origin)),
         NodeKind::Particles(batch) => Some((&batch.config.source, &batch.config.origin)),
         _ => None,
     }
@@ -235,7 +260,7 @@ impl StageWidget {
                 out.push((
                     this.widget.node.id,
                     crate::images::tiles::ImageGeometry {
-                        source: source.clone(),
+                        source: source.key().to_owned(),
                         widget: image.id(),
                         fit: *fit,
                     },
@@ -471,14 +496,19 @@ impl SceneWidget {
                 None
             },
             slider: if let NodeKind::Slider { range, value, .. } = view.node.kind {
-                let mut slider = Slider::new(range.min(), range.max(), value);
+                let mut slider = Slider::new(range.min(), range.max(), value)
+                    .with_decorated(view.node.props.decorated);
                 if let Some(step) = range.step() {
                     slider = slider.with_step(step);
                 }
                 let tint = color(view.node.props.color);
                 Some(
                     NewWidget::new(slider)
-                        .with_props(ThumbRadius(Length::px(10.)))
+                        .with_props(ThumbRadius(Length::px(if view.node.props.decorated {
+                            10.
+                        } else {
+                            0.
+                        })))
                         .with_props(TrackThickness(Length::px(4.)))
                         .with_props(ThumbColor(tint))
                         .with_props(TrackColor {
@@ -574,6 +604,14 @@ impl SceneWidget {
             && let Some(mut slider) = this.ctx.get_mut(pod)
         {
             Slider::configure(&mut slider, *range, *value);
+            if this.widget.node.props.decorated != view.node.props.decorated {
+                Slider::set_decorated(&mut slider, view.node.props.decorated);
+                slider.insert_prop(ThumbRadius(Length::px(if view.node.props.decorated {
+                    10.
+                } else {
+                    0.
+                })));
+            }
             if this.widget.node.props.color != view.node.props.color {
                 let tint = color(view.node.props.color);
                 slider.insert_prop(ThumbColor(tint));
@@ -928,7 +966,7 @@ impl Widget for SceneWidget {
             use reel_ui::input::{Control, InputDeviceId, InputEvent};
             // Event propagation has already given child controls first refusal.
             // Editors retain even unhandled keys; ordinary controls may bubble
-            // unrelated keys to this author callback. Action maps still require focus.
+            // unrelated keys and mapped controls to their ancestor input nodes.
             if !ctx.is_text_input_focused()
                 && let TextEvent::Keyboard(key) = event
                 && input.key(self.node.id, key, |e| ctx.submit_action::<NodeEvent>(e))
@@ -941,7 +979,16 @@ impl Widget for SceneWidget {
                 TextEvent::WindowFocusChange(false)
                     | TextEvent::Input(InputEvent::Cancel | InputEvent::Disconnected(_))
             );
-            if ctx.focus_target_id().is_some() && !ctx.is_focus_target() && !cleanup {
+            let editing_key = ctx.is_text_input_focused()
+                && matches!(
+                    event,
+                    TextEvent::Keyboard(_)
+                        | TextEvent::Input(InputEvent::Value {
+                            device: InputDeviceId::Keyboard,
+                            ..
+                        })
+                );
+            if editing_key && !cleanup {
                 return;
             }
             let raw = match event {
@@ -1070,7 +1117,7 @@ impl Widget for SceneWidget {
             && let Some(input) = &mut self.input
         {
             // Includes sibling-to-sibling moves with unchanged ancestor focus state.
-            input.cancel_keys(self.node.id, |e| ctx.submit_action::<NodeEvent>(e));
+            input.cancel(self.node.id, |e| ctx.submit_action::<NodeEvent>(e));
         }
         // These notifications run before the widget state's flag is committed.
         let disabled = match event {

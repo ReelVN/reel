@@ -50,14 +50,16 @@ fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_wr
             },
             wake.clone(),
         );
-        runtime(SOURCE).with_saves(RuntimeSaves::new(service, 16 << 20, move || {
-            Box::new(crate::audio::AudioPlayer::new(
-                crate::assets::Assets::directory(Default::default()),
-                Default::default(),
-                wake.clone(),
-                |_| Err("test has no sound output".into()),
-            ))
-        }))
+        runtime(SOURCE)
+            .with_saves(RuntimeSaves::new(service, 16 << 20))
+            .with_audio_factory(move || {
+                Box::new(crate::audio::AudioPlayer::new(
+                    crate::assets::Assets::directory(Default::default()),
+                    Default::default(),
+                    wake.clone(),
+                    |_| Err("test has no sound output".into()),
+                ))
+            })
     };
     let wait = |runtime: &mut StoryRuntime| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -121,7 +123,7 @@ fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_wr
     let snapshot = storage.read("slot/一").unwrap();
     let original = snapshot.encode().unwrap();
     let too_small = DirectorySaves::new(&folder, 1);
-    assert!(too_small.write(slots[0].clone(), &snapshot).is_err());
+    assert!(too_small.write(slots[0].clone(), &snapshot, None).is_err());
     assert_eq!(storage.read("slot/一").unwrap().encode().unwrap(), original);
     second.close().unwrap();
     wait(&mut second);

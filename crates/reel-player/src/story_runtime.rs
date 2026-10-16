@@ -2,6 +2,7 @@
 use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
 mod saves;
+mod start;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -12,6 +13,10 @@ pub struct StoryRuntime {
     saves: Option<crate::saves::RuntimeSaves>,
     capture: Option<crate::saves::Capture>,
     capture_started: Option<u64>,
+    frame_capture_enabled: bool,
+    audio_factory: Option<Box<dyn Fn() -> Box<dyn reel_engine::audio::AudioBackend>>>,
+    retiring: Option<AsideSessionUi>,
+    starting: Option<reel_engine::aside::source::StoryFunction>,
     runnable: bool,
     collecting: bool,
     gc_turn: bool,
@@ -31,6 +36,10 @@ impl StoryRuntime {
             saves: None,
             capture: None,
             capture_started: None,
+            frame_capture_enabled: false,
+            audio_factory: None,
+            retiring: None,
+            starting: None,
             runnable: true,
             collecting: false,
             gc_turn: false,
@@ -63,13 +72,38 @@ impl StoryRuntime {
     pub fn set_saves(&mut self, saves: crate::saves::RuntimeSaves) {
         self.saves = Some(saves);
     }
+    /// Enable only when the host drives CaptureService against its accepted frame.
+    /// Otherwise capture requests fail explicitly instead of waiting for a backend.
+    pub fn set_frame_capture_enabled(&mut self, enabled: bool) {
+        self.frame_capture_enabled = enabled;
+    }
+    /// Supply fresh device adapters for new sessions and restored saves.
+    /// This is independent of whether the host installs save storage.
+    pub fn set_audio_factory(
+        &mut self,
+        factory: impl Fn() -> Box<dyn reel_engine::audio::AudioBackend> + 'static,
+    ) {
+        self.audio_factory = Some(Box::new(factory));
+    }
+    pub fn with_audio_factory(
+        mut self,
+        factory: impl Fn() -> Box<dyn reel_engine::audio::AudioBackend> + 'static,
+    ) -> Self {
+        self.set_audio_factory(factory);
+        self
+    }
     pub fn needs_tick(&self) -> bool {
-        if self.capture.is_some() || self.saves.as_ref().is_some_and(|s| s.busy()) {
+        if self.starting.is_some()
+            || self.retiring.is_some()
+            || self.capture.is_some()
+            || self.saves.as_ref().is_some_and(|s| s.busy())
+        {
             return true;
         }
         (self.suspended_at.is_none() || self.closing)
             && (self.needs_work()
                 || self.driver().adapter().has_save_requests()
+                || self.driver().adapter().has_capture_requests()
                 || self.driver().adapter().audio_poll_after().is_some()
                 || self.driver().adapter().localization_pending()
                 || self.driver().activities_need_time()
@@ -102,13 +136,18 @@ impl StoryRuntime {
 
     fn needs_work(&self) -> bool {
         self.runnable
+            || self.driver().adapter().capture_results_pending()
             || self.collecting
             || self.driver().cleanup_pending()
             || self.driver().activities_pending()
     }
 
     pub fn tick_interval(&self) -> std::time::Duration {
-        if self.capture.is_some() || self.saves.as_ref().is_some_and(|s| s.busy()) {
+        if self.starting.is_some()
+            || self.retiring.is_some()
+            || self.capture.is_some()
+            || self.saves.as_ref().is_some_and(|s| s.busy())
+        {
             return std::time::Duration::from_millis(1);
         }
         if self.needs_work() {
@@ -150,6 +189,7 @@ impl StoryRuntime {
     pub fn close(&mut self) -> Result<(), Error> {
         self.interrupt_capture()?;
         self.closing = true;
+        self.starting = None;
         self.runnable = false;
         self.collecting = false;
         self.driver.as_mut().unwrap().cancel()
@@ -157,6 +197,7 @@ impl StoryRuntime {
 
     pub fn close_complete(&self) -> bool {
         self.closing
+            && self.retiring.is_none()
             && !self.driver().cleanup_pending()
             && self.saves.as_ref().is_none_or(|s| !s.busy())
     }
@@ -169,16 +210,44 @@ impl StoryRuntime {
             return Ok(());
         }
         let now_ns = now();
+        if let Some(retiring) = &mut self.retiring {
+            retiring.cleanup_step(256, budget, || now_ns)?;
+            if !retiring.cleanup_pending() {
+                self.retiring = None;
+            }
+        }
         if self.capture.is_none()
             && let Some(start) = self.capture_started.take()
         {
             self.suspended_ns += now_ns.saturating_sub(start);
         }
+        if !self.frame_capture_enabled && self.capture.is_none() {
+            let adapter = self.driver.as_mut().unwrap().adapter_mut();
+            if let Some(request) = adapter.take_capture_request()? {
+                adapter.complete_capture_request(
+                    request.id,
+                    Err("frame capture is not installed by this host".into()),
+                )?;
+                self.runnable = true;
+            }
+        }
         if self.maintain_saves(now_ns, budget)? {
+            return Ok(());
+        }
+        if self.starting.is_some() {
+            self.start_session(now_ns)?;
             return Ok(());
         }
         if self.suspended_at.is_some() && !self.closing {
             return Ok(());
+        }
+        if self.driver().adapter().capture_results_pending() {
+            self.driver
+                .as_mut()
+                .unwrap()
+                .adapter_mut()
+                .maintain_capture_results(64)?;
+            self.runnable = true;
         }
         if self.driver.as_mut().unwrap().maintain_audio()?
             | self.driver.as_mut().unwrap().maintain_localization()?
@@ -222,7 +291,7 @@ impl StoryRuntime {
                 return Ok(());
             }
             self.step(budget, &mut now)?;
-            if budget.deadline_ns.is_none() || !self.needs_work() {
+            if self.starting.is_some() || budget.deadline_ns.is_none() || !self.needs_work() {
                 return Ok(());
             }
         }
@@ -276,6 +345,12 @@ impl StoryRuntime {
         }
         let progress = self.driver.as_mut().unwrap().tick(budget, 256, now)?;
         match progress {
+            StoryProgress::StartRequested(entry) => {
+                self.starting = Some(entry);
+                self.runnable = false;
+                self.collecting = false;
+                return Ok(());
+            }
             StoryProgress::ExitRequested => {
                 self.close()?;
                 return Ok(());

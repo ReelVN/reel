@@ -35,6 +35,7 @@ pub(crate) struct Images {
     pub(crate) tiles: BTreeMap<String, TileDemand>,
     skipped: BTreeSet<String>,
     wanted: BTreeMap<String, Option<String>>,
+    encoded: BTreeMap<String, Arc<[u8]>>,
     displayed: BTreeSet<String>,
     pending: Option<Pending>,
     failure: Option<String>,
@@ -55,6 +56,7 @@ impl Images {
             tiles: BTreeMap::new(),
             skipped: BTreeSet::new(),
             wanted: BTreeMap::new(),
+            encoded: BTreeMap::new(),
             displayed: BTreeSet::new(),
             pending: None,
             failure: None,
@@ -71,6 +73,7 @@ impl Images {
         self.assets.needs_poll()
     }
     pub fn request_stage(&mut self, view: &crate::stage_widget::StageView) {
+        self.encoded = view.encoded_images();
         match view.image_requests() {
             Ok(wanted) => self.request(wanted),
             Err(error) => {
@@ -187,14 +190,18 @@ impl Images {
         }) {
             if self.pending.is_none() {
                 let manifest = source.ends_with(".reel-image");
-                let id = self.assets.request(
-                    source.clone(),
-                    if manifest {
-                        AssetKind::Bytes
-                    } else {
-                        AssetKind::Image
-                    },
-                );
+                let id = if let Some(bytes) = self.encoded.get(source) {
+                    self.assets.request_encoded(source.clone(), bytes)?
+                } else {
+                    self.assets.request(
+                        source.clone(),
+                        if manifest {
+                            AssetKind::Bytes
+                        } else {
+                            AssetKind::Image
+                        },
+                    )
+                };
                 self.pending = Some(Pending {
                     source: source.clone(),
                     id,
@@ -353,6 +360,7 @@ impl Images {
         self.wanted.clear();
         self.tiles.clear();
         self.manifests.clear();
+        self.encoded.clear();
         self.commit();
         self.assets.close();
     }

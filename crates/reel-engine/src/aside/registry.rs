@@ -197,6 +197,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 | "column"
                 | "stack"
                 | "button"
+                | "slider"
                 | "input"
                 | "toggle"
                 | "checkbox"
@@ -213,7 +214,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if matches!(name, "camera" | "particles") {
+            abi_version: if name == "slider" {
+                8
+            } else if matches!(name, "camera" | "particles") {
                 1
             } else if matches!(name, "checkbox" | "radio") {
                 3
@@ -234,6 +237,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for (symbol, parameters, effects) in [
         ("reel::game::exit", vec![], Effects::WRITE | Effects::HOST),
+        (
+            "reel::game::start",
+            vec!["entry"],
+            Effects::WRITE | Effects::HOST,
+        ),
         ("reel::game::dialogue", vec![], Effects::ALLOCATE),
         ("reel::game::choice", vec![], Effects::ALLOCATE),
         ("reel::game::history", vec![], Effects::ALLOCATE),
@@ -383,21 +391,60 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ty: BuiltinType::Any,
         default,
     };
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::stage::capture".into(),
+        abi_version: 1,
+        parameters: vec![
+            parameter("width", Some(bc::Const::Null)),
+            parameter("height", Some(bc::Const::Null)),
+            parameter("owner", Some(bc::Const::Null)),
+        ],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
     for (name, parameters) in [
         (
             "save",
             vec![
                 parameter("slot", None),
                 parameter("title", Some(bc::Const::Null)),
+                parameter("thumbnail", Some(bc::Const::Null)),
             ],
         ),
         ("load", vec![parameter("slot", None)]),
         ("delete", vec![parameter("slot", None)]),
+        ("thumbnail", vec![parameter("slot", None)]),
         ("list", vec![]),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::saves::{name}"),
+            abi_version: if name == "save" { 2 } else { 1 },
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+            required_capabilities: vec![],
+        });
+    }
+    for (name, parameters) in [
+        (
+            "read",
+            vec![
+                parameter("key", None),
+                parameter("default", Some(bc::Const::Null)),
+            ],
+        ),
+        (
+            "write",
+            vec![parameter("key", None), parameter("value", None)],
+        ),
+        ("delete", vec![parameter("key", None)]),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::persistent::{name}"),
             abi_version: 1,
             parameters,
             result: BuiltinType::Any,

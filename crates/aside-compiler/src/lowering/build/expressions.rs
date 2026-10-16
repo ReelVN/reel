@@ -271,20 +271,17 @@ impl FunctionBuilder<'_, '_> {
     }
     fn binding_value(
         &mut self,
-        n: h::NodeId,
+        _n: h::NodeId,
         pattern: h::NodeId,
         initializer: Option<h::NodeId>,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
-        let symbol = self.pattern_symbol(pattern)?;
         if let Some(initializer) = initializer {
             let value = self.value(initializer, depth)?;
             let Some(value) = value else {
                 return Ok(None);
             };
-            if let Some(symbol) = symbol {
-                self.write(symbol, value, true, n)?;
-            }
+            self.bind_value(pattern, value, depth, false)?;
             self.release(value)?;
         }
         Ok(None)
@@ -457,24 +454,6 @@ impl FunctionBuilder<'_, '_> {
             n,
         )?;
         Ok(None)
-    }
-    pub(super) fn pattern_symbol(
-        &mut self,
-        n: h::NodeId,
-    ) -> Result<Option<h::SymbolId>, Box<Error>> {
-        self.l.b.span = self.span(n);
-        self.l.b.work(1)?;
-        match self.l.m.hir().node(n).form {
-            Form::Name { .. } => Ok(self.l.m.facts()[n.0 as usize].symbol),
-            Form::Wildcard => Ok(None),
-            Form::Single { child } if self.l.m.hir().node(n).kind == H::GroupPattern => {
-                self.pattern_symbol(child)
-            }
-            _ => Err(self.l.b.error(
-                ErrorKind::Unsupported,
-                "destructuring/pattern lowering belongs to later language work",
-            )),
-        }
     }
     fn short_circuit(
         &mut self,

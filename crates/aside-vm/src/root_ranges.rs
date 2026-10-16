@@ -161,6 +161,17 @@ impl Reservation {
     pub fn bytes(&self) -> u64 {
         self.bytes
     }
+    /// Adjust accounting before growing or after releasing host-owned storage.
+    pub fn resize(&mut self, bytes: u64) -> Result<(), HeapError> {
+        if bytes > self.bytes {
+            self.usage.ensure(bytes - self.bytes)?;
+            self.usage.charge(bytes - self.bytes);
+        } else {
+            self.usage.refund(self.bytes - bytes);
+        }
+        self.bytes = bytes;
+        Ok(())
+    }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {

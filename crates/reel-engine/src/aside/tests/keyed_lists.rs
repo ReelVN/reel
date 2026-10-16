@@ -37,8 +37,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session, gc: bool) {
                     p.symbols[p.natives[ticket.native.index()].symbol.index()] == "reel::list"
                 };
                 if let Err(error) = vm.dispatch(session, ticket, "en", 8) {
-                    vm.reject_native(session, ticket, error.native_fault_kind().unwrap())
-                        .unwrap();
+                    vm.reject_native(session, ticket, error).unwrap();
                 }
                 if gc && list {
                     collect(vm);
@@ -353,8 +352,7 @@ fn failed_reconciliation_preserves_mounted_children_and_reports_the_source() {
         match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                 if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1) {
-                    vm.reject_native(&session, ticket, error.native_fault_kind().unwrap())
-                        .unwrap();
+                    vm.reject_native(&session, ticket, error).unwrap();
                 }
                 collect(&mut vm);
             }

@@ -625,8 +625,8 @@ impl Heap {
     pub fn alloc_array(&mut self, values: &[Value]) -> Result<Value, HeapError> {
         self.allocate_values(ObjectKind::Array, values)
     }
-    // The executor alone owns the unpublished builder. No public tuple mutation.
-    pub(crate) fn seal_tuple(&mut self, builder: Value) -> Result<(), HeapError> {
+    /// Freeze a private, unpublished array builder without copying its edges.
+    pub fn seal_tuple(&mut self, builder: Value) -> Result<(), HeapError> {
         let key = self.key(builder)?;
         if self.object(key)?.kind != ObjectKind::Array {
             return Err(HeapError::WrongKind);
@@ -879,6 +879,15 @@ impl Heap {
             return Err(HeapError::WrongKind);
         }
         self.objects.get_mut(key).unwrap().kind = ObjectKind::String;
+        Ok(())
+    }
+    /// Freeze an unpublished byte builder without copying its payload.
+    pub fn seal_bytes(&mut self, builder: Value) -> Result<(), HeapError> {
+        let key = self.key(builder)?;
+        if self.object(key)?.kind != ObjectKind::ByteBuffer {
+            return Err(HeapError::WrongKind);
+        }
+        self.objects.get_mut(key).unwrap().kind = ObjectKind::Bytes;
         Ok(())
     }
     pub fn info(&self, value: Value) -> Result<ObjectInfo, HeapError> {

@@ -1,6 +1,8 @@
 # Aside VM 与完整语言规范
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
+标准库模块 `std::time` 使用普通 native 调用提供 now、parts 和 format。时间戳为 UTC Unix 秒 int，日期字段是普通 table，格式化结果为 string；时区名称为 string/null。调用声明 HOST 效果，parts/format 另声明 ALLOCATE；不会把现实时间读取放入纯 derive 或创建隐式刷新任务。具体接口见双语作者指南。
+
 显式 tuple 与 union 契约用于 `is`、绑定、共享捕获、参数和返回值；tuple 要求数量及逐项类型一致，union 接受任一分支。检查使用加载时计入容量的显式工作栈，执行前按类型 DAG 的工作上界计费，检查过程不分配临时容器。失败赋值不发布新值。
 CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类型)，独立宿主 Cell 保存 None 并服从自身的 builtin 契约；不会把宿主 Cell 的占位索引误当成当前包的类型。
 
@@ -24,6 +26,8 @@ class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元�
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
+
+Reel 的 `game.start(entry)` 接收无捕获、无必需参数的普通函数值，在新会话重新初始化模块后执行；接受请求后调用者不再继续。它是宿主 native ABI 1，不改变语言函数、B01 或 ASB。
 
 ## 二 语法与求值顺序
 Reel 的 `await stage.presented(owner: null)` 等待请求之后的稳定舞台投影实际呈现并返回 null，复用宿主 Awaitable。也可保存返回对象后等待多次，或调用 `.cancel()`；节点 owner 退休取消未决请求。创建请求只能在普通剧情/回调中执行，初始化与 NoWait/纯派生边界不可绕过。此接口新增 native ABI 1，不改变语言 await、B01 或 ASB。
@@ -57,7 +61,7 @@ if condition { ... } else { ... }、while condition { ... }、for pattern in val
 
 一般表达式按源码从左到右求值一次；短路、条件和模式有各自明确规则。赋值先计算并保存目标对象与键的值，再计算右值并写入；右值随后重绑原对象或键的名称，不改变已经准备的位置；复合赋值先计算左值位置一次，再读取、求右值、计算和写入。赋值链 a = b = value; 作为一条语句，先从左到右确定所有目标位置，末尾 value 求值一次，再按从内到外的顺序写入。整条链无表达式结果；算术、参数、let 初值等取值位置使用赋值会诊断。每个解构目标按自身的原子准备/提交规则写入，整条链沿用普通副作用规则。求值错误不会自动撤销已经发生的普通副作用；有事务语义的宿主接口另行声明。
 
-当前源码执行支持 `a..b`、`a..=b` 的惰性整数区间，`for` 直接读取迭代结果，不为每轮构造临时 tuple。`range()` 的显式步长接口仍是待实现标准库。字符串插值按书写顺序求值，当前支持 null、bool、int、float 和 string；容器/实例自定义字符串转换另行实现。插值使用同一个分块缓冲区，按字节计费与暂停，完成 UTF-8 验证后直接封存；每轮不复制已构造的前缀。array/tuple/table 的 `len()`、array 的 `append(...values)`/`pop()`、table 的 `has_own(key)` 已接通；方法取值保留原接收者，表自己的同名字段优先，表中的普通闭包不注入接收者。空数组 pop 抛可捕获错误，append 按实参顺序追加并返回原数组。
+当前源码执行支持 `a..b`、`a..=b` 的惰性整数区间，`for` 直接读取迭代结果，不为每轮构造临时 tuple。`range()` 的显式步长接口仍是待实现标准库。字符串插值按书写顺序求值，当前支持 null、bool、int、float、string 和 CoreError 的错误说明；容器/实例自定义字符串转换另行实现。插值使用同一个分块缓冲区，按字节计费与暂停，完成 UTF-8 验证后直接封存；每轮不复制已构造的前缀。array/tuple/table 的 `len()`、array 的 `append(...values)`/`pop()`、table 的 `has_own(key)` 已接通；方法取值保留原接收者，表自己的同名字段优先，表中的普通闭包不注入接收者。空数组 pop 抛可捕获错误，append 按实参顺序追加并返回原数组。
 
 ## 三 值 绑定 相等与数值
 
@@ -162,6 +166,8 @@ match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，�
 
 执行子集支持 match 的名称、通配符、字面值、分组、类型测试和 OR，以及 guard、分支取值和分支内控制流；结构解构及 if let/while let 仍待接通。分支绑定按每次进入创建，闭包保留当次值。匹配降低为共享比较、类型检查和控制流指令，字符串比较沿既有可恢复执行器运行；无分支命中由 MatchFail 指令产生 MatchError，源码和 ASB 行为相同。示例见 [match_values.aside](../examples/match_values.aside)。
 
+`let (key, value) = entry` 和 `for (key, value) in entries` 已支持固定长度 tuple 解构，允许嵌套 tuple、名称、`_` 和类型标记。先检查结构并准备全部结果，再建立绑定；类型或长度不匹配抛出 PatternMismatch。每轮 for 为捕获的名称建立独立绑定。使用现有 Is、IndexGet 和 PatternRequire 指令，不复制 tuple。数组/对象/rest 解构、解构赋值及 match 中的结构模式仍待实现。
+
 结构匹配只读取真实自有数据槽或注册的纯结构字段，不执行任意 _get、外部操作或等待。匹配失败不是异常；let 解构失败为 PatternMismatch。模式先校验结构与必需项，再按模式书写顺序求缺省，完成后一次建立绑定；失败不创建部分名称。解构赋值只允许已有的可重绑词法名称，先准备所有结果再提交，不能通过任意 setter 假装原子更新。全部模式遍历和临时值受预算且可保存。
 
 ## 八 函数 调用与类
@@ -248,6 +254,8 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `view(build, ...布局属性)` 返回稳定的普通容器。build 是不可等待的组件工厂，首次调用及其实际读取的可观察数据变化后生成一个 Node 或 null；成功时替换容器的旧内容并取消旧节点拥有的任务。构造失败保留旧内容并报告源码错误。该接口适合条件面板、选项与对白页；只需要更新属性时使用 bind/derive，避免重建节点。build 可以调用普通组件函数，计算依赖在每次成功构造后替换；构造期间再次修改自己读取的来源报循环错误。
 
+`slider` 接受可选 children（默认空），沿普通节点子树和方法组合。`decorated: false` 只关闭原生绘制，数值轨道覆盖完整内容宽度；拖动、键盘、手柄、绑定回写和无障碍行为保持有效。作者可将子图片的 x 绑定到 `(slider.value-slider.min)/(slider.max-slider.min)*内容宽度`，以锚点居中放置滑块。slider native ABI 为 8。
+
 `list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的值：标量保留类型，字符串按内容比较，其余对象按身份比较；对象键须复用原对象引用，null 也可作键。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，当前实例化全部条目；虚拟化另行实现。
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。game.configure 只配置呈现参数，不含默认界面开关，其 native ABI 为 3。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。
@@ -277,6 +285,8 @@ Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只�
 Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，B01/ASB 不变。
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
+
+Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等待和取消协议工作的宿主结果，成功值为普通不可变 Bytes。`image(source:)` 可消费该值，`saves.save(..., thumbnail:)` 可保存它，`saves.thumbnail(slot)` 可按需读回。截图及存储由宿主实现，不增加 Aside 图形类型、平台依赖或 B01 指令；capture/thumbnail ABI 1、save ABI 2。
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 
@@ -413,6 +423,8 @@ slotmap 的完整版本仍有回绕边界。封装删除时，在完整代数耗
 
 进程服务请求按 adapter 处理：仅当前正在持久提交的 SaveRequest，在该独立存档副本中记成功，活会话仍等待真实写盘，内存回滚快照不做此归一化。已结算请求恢复既有终态。其他未结算外部写请求只在精确进程/请求身份及完成记录匹配时重接，否则以 OperationInterrupted 结算；始终不盲目重放外部写入。
 
+Reel 宿主的 `persistent.read/write/delete` 是独立系统数据服务，不是语言关键字或全局变量代理。数据文件保存纯值图，不含执行现场或代码版本；read 返回普通数据副本，write 显式提交调用时的值图。剧情快照恢复不会重放这些写入。具体参数与存储所有权见引擎架构和作者指南。
+
 ## 十九 编译包 构建与工具
 
 Rust 扩展接入合同见 [Aside host SDK](aside-host.md)。共享宿主声明是编译签名、B01 默认参数与运行时准入的单一来源；绑定宏只生成声明及 Rust 调用包装，复用语言的参数绑定、NativeFrame、等待和 GC 协议。Aside 不依赖 Reel。
@@ -521,6 +533,8 @@ core.error_info() 返回当前实际执行调用链上最近的活动 catch 的 
 
 FaultInfo 是同一堆中的可追踪只读视图，保存它即可保留完整故障，普通变量释放后随对象图回收。视图公开 value、code、origin、stack 和带种类的 causes；value 所引用的作者对象仍遵守自身可变性。查询依赖当前执行上下文，声明为诊断读取效果，派生纯计算中给出效果诊断。运行时产生的语言错误使用 core.Error 值，含固定 code、message 和只读 details；作者可以抛任意值。Envelope 的稳定 code 来自版本化注册表，作者表中的同名字段保持普通数据。
 
+宿主通过 `Vm::respond_language_error(ticket, kind, details)` 提供原生接口错误的具体原因；details 在原调用帧中保活，再由普通 FaultBuild 纳入 CoreError，沿用故障的预算、取消和快照路径。没有详情时传 null。CoreError 的字符串插值优先显示字符串 details，否则显示对应错误码的固定 message；不遍历任意对象图，也不调用脚本转换方法。
+
 新故障默认关联同一实际调用链中最近活动 catch 的完整故障。native 显式提供 cause 时以它替代这条隐式 catch 关系；finally 替代退出产生的关系另行保留。跨 Task 的原因通过明确的任务/等待传播记录连接。
 
 ### 同一堆中的故障图
@@ -600,4 +614,4 @@ Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定
 
 Reel 注册 `particles` 和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。B01/ASB 与语言语法不变。
 
-Reel tween 的 `sine_in`、`sine_out`、`sine_in_out` 是既有 easing 字符串参数的新选项，由宿主动作采样，不新增 Aside 语法、native 签名或 B01/ASB 格式。
+Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 B01/ASB 格式。

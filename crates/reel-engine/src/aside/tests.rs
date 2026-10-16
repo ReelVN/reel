@@ -170,7 +170,7 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
                         .unwrap();
                     assert_eq!(*identity.get_or_insert(node.id), node.id);
                     let NodeKind::Image {
-                        source,
+                        source: source_name,
                         fit,
                         origin,
                     } = &node.kind
@@ -179,7 +179,7 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
                     };
                     assert_eq!(origin.as_deref(), Some("story:3:21"));
                     assert_eq!(
-                        source,
+                        source_name.key(),
                         if waits == 0 {
                             "original.png"
                         } else {
@@ -743,7 +743,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
                         assert!(matches!(error, AdapterError::Heap(HeapError::RetiredHost)));
                         let kind = error.native_fault_kind().unwrap();
                         assert_eq!(kind, FaultKind::InvalidState);
-                        vm.reject_native(&session, ticket, kind).unwrap();
+                        vm.reject_native(&session, ticket, error).unwrap();
                         continue;
                     }
                 };

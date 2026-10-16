@@ -326,6 +326,7 @@ impl SessionVm {
             || self.particles.has_active()
             || self.audio.active()
             || self.saves.active()
+            || self.captures.active()
             || self.stage.has_handlers()
     }
 
@@ -384,6 +385,7 @@ impl SessionVm {
                 .is_some_and(|ticket| ticket.task == callback.task)
             {
                 self.issued = None;
+                self.saves.capture = None;
             }
         }
         Ok(())

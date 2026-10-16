@@ -69,6 +69,7 @@ fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations
                     id: "chapter/一".into(),
                     title: "第一章".into(),
                     saved_at: 42,
+                    has_thumbnail: false,
                 }])
             )
             .unwrap()

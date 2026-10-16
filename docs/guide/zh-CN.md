@@ -21,9 +21,9 @@ button 与可等待的 on_click 回调已接通，见文末可运行示例。mod
 ## 一 最小项目与共同写法
 `game.exit()` 请求关闭作品；接收后不再执行脚本，播放器完成任务和资源清理后退出窗口。可先等待淡出动画再调用。嵌入宿主接收同一请求并决定外层应用的行为。完整按钮示例见 [author_exit.aside](../../examples/author_exit.aside)，运行前提供 fonts/body.ttf。
 
-从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。下面标题页中的 game.start 仍属于后续游戏入口服务。
+从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
-Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 属于后续游戏入口服务。
+Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 已实现。
 ```aside
 use game::ui::title::title;
 
@@ -100,6 +100,16 @@ for caption in captions {
 ### 组织组件数据
 
 剧本 VM 默认不设固定的内存字节总额，对象和根存储按实际需求增长，不再设 16,384 个对象或 1,024 个根的默认门槛；嵌入引擎的宿主可按运行环境显式设置预算。长操作会按执行切片让出，避免阻塞画面。
+
+固定长度 tuple 可以在 let 和 for 中解构，支持嵌套和 `_` 忽略项；先准备所有值再建立名称，结构不符抛出 PatternMismatch。每轮循环的闭包保留当轮值。数组/对象/rest 解构及解构赋值仍待实现。见 [tuple_bindings.aside](../../examples/tuple_bindings.aside)。
+
+```aside
+let settings = {language: "zh-CN", volume: 0.8};
+for (key, value) in settings.entries() {
+    let pair = (key, value);
+    let (name, _) = pair;
+}
+```
 
 `match` 可以按值选择对白、界面或处理逻辑，支持字面值、名称、`_`、OR 和类型测试，guard 写在 `if` 后。只执行第一个匹配且 guard 为真的分支，分支末尾表达式提供结果；没有匹配时抛出 MatchError。结构解构尚未支持。完整例子见 [match_values.aside](../../examples/match_values.aside)。
 
@@ -403,15 +413,19 @@ fn opening() {
 }
 story.register("chapter01.opening", opening, title: "窗上的光");
 ```
-普通 fn 即可承载剧情。story.register 的章节入口使用模块级函数且无必需参数。game.start 使用函数自己的稳定模块符号，普通新游戏入口无须额外登记；按章节 ID 访问的路线/重启操作才使用注册表。登记发生在模块候选中，验证与模块发布一起提交。game.start(opening) 接收同样的符号入口，从 UI 事件提交新游戏请求；引擎先在最新已发布模块集合验证入口，再建立新会话调用它，初始化全局剧情变量、自动播放和快进状态。普通 helper 调用保留原模块绑定。
+`game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。跨 ASB 的热更新入口解析与持久脚本全局尚未实现。可运行示例见 [author_game_start.aside](../../examples/author_game_start.aside)。
 
 ## 四 时间顺序与同时发生的变化
 
 `clock(interval: 60, owner: panel)` 创建可绑定的周期时钟，ticks 是完整周期数，elapsed 是这些周期的总秒数，初始均为 0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，节点退休取消；clock 无终点，不能 finish。参见 [时钟示例](../../examples/author_clock.aside)。
 
+现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock.aside)。
+
 动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 已接通；scope 尚未实现。
 
 需要正弦曲线运动时，使用 `sine_in` 从慢到快加速，`sine_out` 从快到慢减速，或 `sine_in_out` 两端慢、中间快。所有曲线都精确到达指定终点；它们与三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 的运动节奏不同。
+
+五次曲线 `quint_in`、`quint_out`、`quint_in_out` 提供更明显的加速与减速；`bounce_out` 在抵达终点时回弹，`bounce_in` 是其反向，`bounce_in_out` 在两端组合回弹。回弹不会越过起终值。用同一个 tween 描述菜单滑入和 Logo 落下，见 [author_activities.aside](../../examples/author_activities.aside)。
 
 ```aside
 await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
@@ -670,13 +684,15 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
 
-`saves.save(slot, title: null)`、`saves.load(slot)`、`saves.delete(slot)` 和 `saves.list()` 立即返回可等待请求，具有只读的 `status`（pending、succeeded、failed）与 `error`。失败会在 await 处抛出错误；成功保存意味着完整文件已原子发布。`await saves.list()` 返回已占用槽位摘要，包含字符串 id、title 和 saved_at（UTC Unix 秒）。槽位名是逻辑标识；作者决定页面与空槽，用 `"quick"` 等固定标识组合快速保存。
+`saves.save(slot, title: null, thumbnail: null)`、`saves.load(slot)`、`saves.delete(slot)`、`saves.thumbnail(slot)` 和 `saves.list()` 立即返回可等待请求，具有只读的 `status`（pending、succeeded、failed）与 `error`。失败会在 await 处抛出错误；成功保存意味着完整文件已原子发布。`await saves.list()` 返回已占用槽位摘要，包含字符串 id、title、saved_at（UTC Unix 秒）与 has_thumbnail，不加载图片。槽位名是逻辑标识；作者决定页面与空槽，用 `"quick"` 等固定标识组合快速保存。
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-捕获按工作量分片，后台编码、压缩和写盘；捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档；缩略图与跨版本迁移尚未接入。可运行的保存、关闭、重建播放器、读档与控件回调检查：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。跨版本执行快照迁移尚未实现。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
+
+截图与预览示例：[author_capture.aside](../../examples/author_capture.aside)。`await stage.capture(width: 256, height: 144)` 取得最近已呈现画面的 PNG Bytes；在打开菜单前获取，再传给 thumbnail。`await saves.thumbnail(slot)` 只读取指定槽的图片，没有图片时返回 null；将结果交给 `image(bytes)` 即可显示。未呈现画面、宿主不支持截图或资源不足都会拒绝请求，可用 try/catch 显示错误。
 
 便携桌面游戏可以在游戏目录执行 `reel run game.asb --save-directory saves`；`dev` 同样接受此选项，相对路径以启动时工作目录解析。启动器也可以传入游戏旁边的绝对路径。安装目录只读的平台应选择系统提供的可写用户数据目录；两种部署使用同一套脚本槽位 API。
 
@@ -703,7 +719,7 @@ game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命
 
 ## 十二 游戏变量与组件状态
 
-`model`、字段双向绑定和存档恢复已实现；state、persistent、node.state 仍是设计目标。
+`model`、字段双向绑定、存档恢复和独立系统数据读写已实现；state、node.state 仍是设计目标。
 
 用 model 保存独立于画面节点的业务数据。多个控件可以共享同一字段，输入直接写回数据，连接的文字、可见性和样式随之更新。运行 [author_models.aside](../../examples/author_models.aside)：`cargo run -p reel-cli --features window -- dev examples/author_models.aside`。
 
@@ -720,14 +736,20 @@ settings.palette.accent = "#ffd580";
 语言中的 let/let mut 决定绑定能否改写，model 决定属性是否可观察，状态的所属范围决定保存和释放。三者各司其职。
 ```aside
 let route = state("route", {affection: 0, visited: set()});
-let unlocks = persistent("unlocks", {cg: set()});
 
 route.affection += 1;
 route.visited.add("window");
-unlocks.cg.add("window-cg");
 ```
 state(id, defaults) 返回当前会话的具名可观察状态，同 ID 取得同一个对象。它随存档、读档与回滚恢复，新游戏重新从默认值建立。函数局部值和闭包捕获同样可以随完整调用栈保存，具名 state 主要用于共享游戏数据和热重载中的稳定定位。
-persistent(id, defaults) 返回显式跨周目的可观察数据，独立写入全局存储。默认值只补缺失字段，重复获取保留已有进度。跨周目数据存放数据值和有持久数据适配的类型，引用会话节点、任务和可执行闭包会在赋值处报告寿命冲突。解锁推荐集合等幂等写法。persistent.flush() 可等待可靠提交，平时更新由服务合并写入。跨局赋值把数据复制进持久图，读取取得该图内部的可观察别名；任意嵌套修改均标脏。快照中这些别名记录稳定全局数据身份，读档重接当前进度，而不是写回旧内容。
+系统数据使用 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)`。操作返回可等待请求，失败由 catch 接收；写入完成才表示文件已发布。缺失记录返回 default，保存的 null/false/0 保持原值。支持 null/bool/int/float、string/Bytes、array/table/tuple，保留别名与环；table 仅存自有字段。类实例、节点、任务和闭包先转换为数据。文件独立于剧情槽和 ASB 版本，位于同一 save-directory，不出现在 saves.list 中。见 [author_persistent.aside](../../examples/author_persistent.aside)。
+
+```aside
+let preferences = await persistent.read("settings", default: {volume: 0.8});
+preferences.volume = 0.6;
+await persistent.write("settings", preferences);
+```
+
+读取结果是普通副本，修改后需显式 write。剧情读档不会改写系统文件，但局部副本会随快照恢复；在 `saves.save` 请求的 `restored` 分支重新读取并应用当前设置。新游戏入口也应读取系统数据。已交给后台服务的写入不因切换会话撤销；未提交的请求不会在读档后重放。业务数据升级由游戏根据自己保存的版本字段迁移。
 model/state 的默认数据图复制后建立可观察属性，复制保留内部别名和环。内嵌可变数组、table、Set、缓冲以及注册的可观察数据类型都通过统一变更钩子通知；取得内部别名后修改也会通知。随后赋入的会话对象保持普通共享身份，并被纳入可观察图。model 对象通过实际引用保活。组件临时状态可放入节点自己的状态槽。
 ```aside
 fn settings_panel() {
@@ -740,7 +762,7 @@ fn settings_panel() {
 }
 ```
 node.state(key, defaults) 属于该组件实例。同一个局部 key 在不同组件实例中独立，节点被销毁后按可达引用正常释放；读档恢复该组件状态，热重载按稳定节点 key 与状态槽 key 复用。普通运行期调用对缺失字段做一次检查后的原子补充，下一语句即可读取。候选初始化/重建时，读取候选视图可见待加入的字段，活会话继续看旧值；补充在候选事务提交后才对外生效，失败保持旧值。数据结构升级通过带版本的显式迁移处理。
-settings 属于引擎的全局偏好服务；剧情存档恢复时读取当前偏好。业务 state 的修改采用常规控制流，scope 临时效果结束也保留其业务结果。
+作者用 persistent 保存全局偏好，并在启动和剧情存档恢复后读取、应用当前设置。业务 state 的修改采用常规控制流，scope 临时效果结束也保留其业务结果。
 
 ## 十三 作者怎样扩展自己的积木
 
@@ -793,6 +815,8 @@ Camera、Mesh、Material 和 Effect 提供透视舞台与可编程效果，状�
 网络/购买等外部写入使用独立操作记录与幂等策略；未知结果先查询确认，回放默认只读。它们与普通可回滚游戏变量的寿命区分明确。普通作者组件与脚本库始终可以扩展自己的画面、布局、演出和业务逻辑。
 
 ### 错误定位与恢复（设计合同）
+当前播放器会在源码文件、行列和错误种类后显示宿主接口的具体拒绝原因。在 catch 中可用 `f"{error}"` 显示 CoreError：优先使用字符串详情，否则使用固定错误说明；普通抛出值保持原有语义。
+
 用 try/catch 处理资源加载、媒体播放或自己抛出的错误。catch 取得原值：抛字符串就得到字符串，抛对象就得到原对象。需要原样继续报告时写 throw;；写 throw error; 表示在当前位置再次抛出，诊断同时保留前一次错误作为原因。
 core.error_info() 提供当前 catch 的错误码、原始位置、调用栈和原因。处理错误的普通 helper 也能读取这份信息；保存返回的视图会保留它引用的故障记录。finally 适合做同步收尾，普通 helper 可以在其中同步返回。若收尾又发生错误，诊断会显示它替代了哪个返回结果或错误。引擎负责跨暂停、宿主回调和存档保存这些信息。完整规范见 [语言规范：故障生命周期](../aside-language.md#二十三-完整故障记录与生命周期)。
 
@@ -842,7 +866,7 @@ fn main() {
 
 点击把原按钮作为 event.target 传入闭包。回调可以 await 动画；同步代码执行到等待或结束才切换其他脚本任务，普通读改写不会因引擎分片被打断。不同回调可以等待同一活动，取消一个等待者不会停止其他等待者共用的活动。
 
-回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start、可观察绑定和通用事件订阅仍待实现。
+回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start 和节点属性绑定已实现；通用事件订阅仍待实现。
 
 主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认宿主支持鼠标和触摸点击、Tab 焦点导航与 Enter/空格激活。手柄十字键/左摇杆按当前画面位置导航，长选项列表会随焦点滚动，南侧按钮确认，东侧按钮与 Escape 向当前 UI 发送返回。确认在配对松开时生效；切换弹窗、失焦或断连会取消旧输入，返回不直接退出应用。多个触点可同时操作不同控件；拖出按钮后松开不触发点击，系统取消或窗口挂起会释放交互。已有按钮无需为触屏重写，可运行 [author_buttons.aside](../../examples/author_buttons.aside)。内置桌面宿主已接入系统 IME，系统可访问性尚待适配。
 
@@ -851,6 +875,10 @@ fn main() {
 移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。触摸使用公共 PointerEvent；启用 winit 时可复用 TouchInput 转换原生触摸。Rust 游戏与宿主可使用 reel_ui::input::ActionMap 绑定键盘、指针和手柄，读取持续动作值并接收按下、变化、松开和取消；NavigationInput 提供可配置阈值、重复时钟和重映射。独立 gamepad feature 使用 Gilrs 接入桌面设备，不要求 Winit/WGPU。Winit 适配器已转发系统 IME 事件和候选窗位置，系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
 
 ## 模态菜单与焦点
+
+打开存档菜单前，可先用 `let preview = await stage.capture(width: 256, height: 144);` 获取当前已呈现画面的 PNG Bytes。`image(preview)` 可以直接显示它，`await saves.save("slot/1", thumbnail: preview)` 将图片与执行快照一起写入。列表的 `has_thumbnail` 表示该槽是否有预览；用 `await saves.thumbnail("slot/1")` 按需读取。capture 可省略尺寸或只指定一边，支持 owner 和取消；不要求作者操作窗口或 GPU。
+
+对白光标、立绘和其他控件播放动画时，玩家仍可正常点击、触摸或使用键盘/手柄确认。按下后若换句、完成揭示、替换舞台根或切换模态范围，必须重新按下，避免旧手势确认新内容。
 
 所有共同节点支持可写的 `modal` 属性，默认 false。可见的 modal 子树独占输入；它外部的点击和未处理的键盘事件不会继续推进剧情。多个 modal 按绘制顺序选择最上层，绘制层序由节点组合顺序决定。隐藏或移除节点释放输入范围；enabled 为 false 时仍隔离下层。
 
@@ -882,7 +910,7 @@ fn main() {
 
 ## 命名动作与输入节点
 
-`input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。根 input 在控件尚未获得焦点时即可接收键盘/手柄输入；已聚焦的子控件保持优先权。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
+`input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。根 input 在控件尚未获得焦点时即可接收键盘/手柄输入；已聚焦的子控件保持优先权，未消费的输入交给最近的祖先映射。因此菜单可统一绑定 Escape/手柄返回，场景可统一绑定快进，点击子按钮不会使这些映射失效。焦点改变取消保持中的动作；输入不跨越模态范围，文本框保留键盘与 IME。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
 
 ```aside
 fn main() {
@@ -945,6 +973,8 @@ column(gap: 12) {
 滑条要求有限且递增的 min/max、区间内的有限 value；step 为 null 或有限正数，以 min 为步进起点，两端均可选。脚本可赋任意区间内 value，不受输入步长限制。写 min/max 时当前 value 也须满足新范围，错误保留原值。鼠标或触摸拖动、方向键、Home/End、Shift 加速、手柄左右导航与可访问性操作共用同一控件。
 
 接受用户变更后先更新 node.value，再执行 on_change，事件含 target 和此次 value。脚本赋值不会触发回调；回调可等待，节点移除会取消它。更改数值和布局保留拖动；更改范围/步长会结束旧拖动，接受新画面后可重新操作。没有回调的控件也保存值。节点值可用 bind/unbind 连接；derive 生成只读值，可用于文字和外观，不能作为 slider/toggle 的写回源。
+
+滑条也能组合子节点。设 `decorated: false` 后，用图片或普通舞台节点绘制轨道、滑块及悬停/焦点状态，输入和无障碍仍由 slider 处理。此时轨道从内容区左端延伸到右端，没有内置滑块半径带来的缩进；padding 可用于给外观留边。见 [author_slider_skin.aside](../../examples/author_slider_skin.aside)，运行 `reel dev examples/author_slider_skin.aside`（准备 `fonts/body.ttf`）。
 
 ```aside
 fn main() {

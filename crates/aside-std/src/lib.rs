@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod random;
+mod time;
 
 use aside_host::aside_compiler::semantic::{ExternalSymbol, ModuleInterface};
 use aside_host::aside_vm::{
@@ -14,12 +15,15 @@ use aside_host::aside_vm::{
 };
 use aside_host::{Error, NativeBinding, NativeContract, NativeHandler};
 
-fn bindings() -> [NativeBinding<StandardLibrary, NativeError>; 4] {
+fn bindings() -> [NativeBinding<StandardLibrary, NativeError>; 7] {
     [
         random::random::binding(),
         random::int::binding(),
         random::float::binding(),
         random::pick::binding(),
+        time::now::binding(),
+        time::parts::binding(),
+        time::format::binding(),
     ]
 }
 
@@ -44,14 +48,23 @@ pub fn prelude() -> Vec<ExternalSymbol> {
 }
 
 pub fn modules() -> Vec<ModuleInterface> {
-    ["std", "std::prelude"]
+    let mut modules: Vec<_> = ["std", "std::prelude"]
         .into_iter()
         .map(|path| ModuleInterface {
             canonical_path: path.into(),
             version: "1".into(),
             exports: prelude(),
         })
-        .collect()
+        .collect();
+    modules.push(ModuleInterface {
+        canonical_path: "std::time".into(),
+        version: "1".into(),
+        exports: bindings()[4..]
+            .iter()
+            .map(|binding| binding.contract.external())
+            .collect(),
+    });
+    modules
 }
 
 /// A program's resolved native handlers. This holds code identities only; it
@@ -82,7 +95,7 @@ impl StandardLibrary {
         for (index, function) in package.functions.iter().enumerate() {
             if let FunctionKind::Native(native) = function.kind {
                 let symbol = &package.symbols[package.natives[native.index()].symbol.index()];
-                for (slot, binding) in random_methods.iter_mut().zip(&bindings[1..]) {
+                for (slot, binding) in random_methods.iter_mut().zip(&bindings[1..4]) {
                     if *symbol == binding.contract.symbol {
                         *slot = Some(FunctionId(index as u32));
                     }
@@ -103,13 +116,14 @@ impl StandardLibrary {
         };
         let message = match handler(self, vm, ticket) {
             Ok(()) => return Ok(true),
-            Err(NativeError::Input(message)) => message,
+            Err(NativeError::Input(message)) => std::borrow::Cow::Borrowed(message),
+            Err(NativeError::Message(message)) => std::borrow::Cow::Owned(message),
             Err(NativeError::Host(Error::Heap(HeapError::TypeMismatch | HeapError::WrongKind))) => {
-                "invalid argument type"
+                std::borrow::Cow::Borrowed("invalid argument type")
             }
             Err(NativeError::Host(error)) => return Err(error),
         };
-        let value = vm.heap_mut().alloc_string(message)?;
+        let value = vm.heap_mut().alloc_string(&message)?;
         vm.respond(
             ticket,
             HostResponse::Error(NewFault {
@@ -126,6 +140,7 @@ impl StandardLibrary {
 enum NativeError {
     Host(Error),
     Input(&'static str),
+    Message(String),
 }
 impl From<Error> for NativeError {
     fn from(error: Error) -> Self {

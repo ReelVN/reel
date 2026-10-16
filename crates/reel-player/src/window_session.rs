@@ -271,15 +271,16 @@ mod tests {
             },
             wake.clone(),
         );
-        let runtime =
-            StoryRuntime::new(driver).with_saves(RuntimeSaves::new(service, 16 << 20, move || {
+        let runtime = StoryRuntime::new(driver)
+            .with_saves(RuntimeSaves::new(service, 16 << 20))
+            .with_audio_factory(move || {
                 Box::new(crate::audio::AudioPlayer::new(
                     crate::assets::Assets::directory(Default::default()),
                     Default::default(),
                     wake.clone(),
                     |_| Err("test has no sound output".into()),
                 ))
-            }));
+            });
         let mut window = WindowSession::Aside {
             story: Box::new(runtime),
             hover: None,

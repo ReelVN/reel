@@ -245,7 +245,8 @@ impl StageBinding {
                 } else {
                     None
                 },
-                text_source: if matches!(saved.shape, Shape::Text | Shape::TextInput) {
+                text_source: if matches!(saved.shape, Shape::Text | Shape::TextInput | Shape::Image)
+                {
                     Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
                 } else {
                     None

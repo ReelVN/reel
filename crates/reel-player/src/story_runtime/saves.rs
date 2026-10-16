@@ -31,6 +31,9 @@ impl StoryRuntime {
         budget: SliceBudget,
     ) -> Result<bool, Error> {
         let Some(mut saves) = self.saves.take() else {
+            if self.starting.is_some() {
+                return Ok(false);
+            }
             if let Some(request) = self
                 .driver
                 .as_mut()
@@ -61,13 +64,17 @@ impl StoryRuntime {
         budget: SliceBudget,
     ) -> Result<bool, Error> {
         let quota = SnapshotBudget { units: 256 };
-        if let Some(retiring) = &mut saves.retiring {
-            retiring.cleanup_step(256, budget, || now_ns)?;
-            if !retiring.cleanup_pending() {
-                saves.retiring = None;
+        if !self.closing && self.starting.is_none() && self.capture.is_none() {
+            let adapter = self.driver.as_mut().unwrap().adapter_mut();
+            if adapter.save_results_pending() {
+                adapter.maintain_save_results(quota.units)?;
+                self.runnable = true;
+                if adapter.save_results_pending() {
+                    return Ok(true);
+                }
             }
         }
-        if self.closing {
+        if self.closing || self.starting.is_some() {
             saves.restore = None;
             saves.candidate = None;
             saves.pending = None;
@@ -75,7 +82,7 @@ impl StoryRuntime {
         let mut events = Vec::new();
         saves.service.drain(&mut events, 8);
         for event in events {
-            if self.closing {
+            if self.closing || self.starting.is_some() {
                 continue;
             }
             let result = match event.result {
@@ -90,7 +97,7 @@ impl StoryRuntime {
                         driver.adapter().vm().limits(),
                         identity,
                         driver.ui().session().read_progress().clone(),
-                        Some((saves.audio)()),
+                        self.audio_factory.as_ref().map(|factory| factory()),
                         Some(Box::new(crate::localization::AssetCatalogLoader::new(
                             driver.ui().assets(),
                         ))),
@@ -105,6 +112,7 @@ impl StoryRuntime {
                 }
                 Ok(StorageResult::Saved | StorageResult::Deleted) => SaveResult::Done,
                 Ok(StorageResult::Slots(slots)) => SaveResult::Slots(slots),
+                Ok(StorageResult::Data(data)) => SaveResult::Data(data),
                 Err(error) => SaveResult::Failed(error),
             };
             self.driver
@@ -115,7 +123,18 @@ impl StoryRuntime {
             saves.pending = None;
             self.runnable = true;
         }
-        if self.closing {
+        if self.closing || self.starting.is_some() {
+            return Ok(false);
+        }
+        if self
+            .driver
+            .as_ref()
+            .is_some_and(|d| d.adapter().save_results_pending())
+        {
+            return Ok(true);
+        }
+        // Keep replacement ownership bounded to one retiring session.
+        if self.retiring.is_some() {
             return Ok(false);
         }
 
@@ -132,6 +151,7 @@ impl StoryRuntime {
                     vm,
                     live.locale().into(),
                     live.ui().assets(),
+                    live.initializer(),
                 )?)?);
             }
             if let Some(candidate) = &mut saves.candidate {
@@ -151,7 +171,7 @@ impl StoryRuntime {
                 let mut candidate = saves.candidate.take().unwrap().driver;
                 let mut old = self.driver.take().unwrap();
                 old.cancel()?;
-                saves.retiring = Some(old);
+                self.retiring = Some(old);
                 self.logical_ns = (candidate.adapter().logical_time() * 1_000_000_000.) as u64;
                 self.time_offset_ns = self.logical_ns;
                 self.suspended_ns = now_ns;
@@ -201,13 +221,19 @@ impl StoryRuntime {
             match progress {
                 Ok(false) => return Ok(true),
                 Ok(true) => {
+                    let retained_bytes = capture.bytes;
                     let (mut driver, snapshot) = self.capture.take().unwrap().finish()?;
                     driver.resume_audio();
                     self.driver = Some(driver);
                     self.suspended_ns +=
                         now_ns.saturating_sub(self.capture_started.take().unwrap());
                     let request = saves.pending.as_ref().unwrap();
-                    let SaveOperation::Save { slot, title } = &request.operation else {
+                    let SaveOperation::Save {
+                        slot,
+                        title,
+                        thumbnail,
+                    } = &request.operation
+                    else {
                         unreachable!()
                     };
                     if let Err(rejected) = saves.service.submit(
@@ -215,9 +241,12 @@ impl StoryRuntime {
                         StorageJob::Save {
                             slot: slot.clone(),
                             title: title.clone(),
+                            thumbnail: thumbnail.clone(),
                             snapshot: Box::new(snapshot),
                         },
-                        saves.max_snapshot_bytes,
+                        retained_bytes.saturating_add(
+                            thumbnail.as_ref().map_or(0, |data| data.retained_bytes()),
+                        ),
                     ) {
                         let error = format!("save queue: {:?}", rejected.reason);
                         self.driver
@@ -297,12 +326,19 @@ impl StoryRuntime {
                 SaveOperation::Load { slot } => StorageJob::Load(slot.clone()),
                 SaveOperation::Delete { slot } => StorageJob::Delete(slot.clone()),
                 SaveOperation::List => StorageJob::List,
+                SaveOperation::Thumbnail { slot } => StorageJob::Thumbnail(slot.clone()),
+                SaveOperation::ReadData { key } => StorageJob::ReadData(key.clone()),
+                SaveOperation::WriteData { key, data } => {
+                    StorageJob::WriteData(key.clone(), data.clone())
+                }
+                SaveOperation::DeleteData { key } => StorageJob::DeleteData(key.clone()),
                 _ => unreachable!(),
             };
-            if let Err(rejected) = saves
-                .service
-                .submit(request.id, job, saves.max_snapshot_bytes)
-            {
+            let retained = match &job {
+                StorageJob::WriteData(_, data) => data.retained_bytes(),
+                _ => saves.max_snapshot_bytes,
+            };
+            if let Err(rejected) = saves.service.submit(request.id, job, retained) {
                 self.driver
                     .as_mut()
                     .unwrap()

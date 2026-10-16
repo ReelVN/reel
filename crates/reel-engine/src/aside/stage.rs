@@ -281,6 +281,7 @@ impl StageBinding {
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
+                | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
                 | NodeKind::Radio { .. }
                 | NodeKind::Input { .. }
@@ -406,7 +407,8 @@ impl StageBinding {
                 } else {
                     None
                 },
-                text_source: if matches!(symbol, "reel::text" | "reel::text_input") {
+                text_source: if matches!(symbol, "reel::text" | "reel::text_input" | "reel::image")
+                {
                     Some(heap.handle(args[0])?)
                 } else {
                     None
@@ -534,9 +536,15 @@ impl StageBinding {
                     NodeKind::Particles(batch.clone()),
                     super::particles::PREFIX.len(),
                 ),
-                NodeKind::Image { origin, .. } => (
+                NodeKind::Image { source, origin, .. } => (
                     NodeKind::Image {
-                        source: read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?,
+                        source: if binding.text_source
+                            == Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
+                        {
+                            source.clone()
+                        } else {
+                            read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?
+                        },
                         fit: read_fit(heap, heap.table_entry(fields, 1)?.1)?,
                         origin: origin.clone(),
                     },
@@ -558,7 +566,10 @@ impl StageBinding {
                     .1,
                 );
             }
-            if matches!(kind, NodeKind::Text(_) | NodeKind::TextInput { .. }) {
+            if matches!(
+                kind,
+                NodeKind::Text(_) | NodeKind::TextInput { .. } | NodeKind::Image { .. }
+            ) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 let source = heap.table_entry(heap.host_fields(value)?, 0)?.1;
                 self.handles.get_mut(&id).unwrap().text_source = Some(heap.handle(source)?);
@@ -928,12 +939,27 @@ fn read_text(heap: &Heap, value: Value, read_limit: usize) -> Result<String, Ada
     text::read_string(heap, value, read_limit)
 }
 
-fn read_source(heap: &Heap, value: Value, read_limit: usize) -> Result<String, AdapterError> {
+fn read_source(
+    heap: &Heap,
+    value: Value,
+    read_limit: usize,
+) -> Result<reel_ui::stage::ImageSource, AdapterError> {
+    if heap.info(value)?.kind == ObjectKind::Bytes {
+        let length = heap.info(value)?.len;
+        if length == 0 {
+            return Err(AdapterError::Input("image source must not be empty"));
+        }
+        let mut bytes = Vec::with_capacity(length as usize);
+        while bytes.len() < length as usize {
+            bytes.extend_from_slice(heap.byte_segment(value, bytes.len() as u32)?);
+        }
+        return Ok(reel_ui::stage::ImageSource::encoded(bytes));
+    }
     let source = read_text(heap, value, read_limit)?;
     if source.is_empty() {
         return Err(AdapterError::Input("image source must not be empty"));
     }
-    Ok(source)
+    Ok(source.into())
 }
 
 fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit, AdapterError> {
@@ -962,7 +988,7 @@ fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), 
     match index {
         0 => {
             let info = heap.info(value)?;
-            if info.kind == ObjectKind::String && info.len != 0 {
+            if matches!(info.kind, ObjectKind::String | ObjectKind::Bytes) && info.len != 0 {
                 Ok(())
             } else {
                 Err(HeapError::TypeMismatch)

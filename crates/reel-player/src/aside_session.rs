@@ -38,6 +38,8 @@ pub enum StoryProgress {
     Cancelled,
     /// The author requested shutdown; cancellation has begun and cleanup remains host-driven.
     ExitRequested,
+    /// The host must replace this session with a fresh execution of the entry.
+    StartRequested(source::StoryFunction),
 }
 
 /// Fault delivery remains rooted until explicit cancellation and cleanup.
@@ -74,6 +76,8 @@ pub struct AsideSessionUi {
     ui: SessionUi,
     vm: SessionVm,
     entry: Option<source::StoryFunction>,
+    initializer: source::StoryFunction,
+    awaiting_stage: bool,
     locale: String,
     state: StoryState,
     host_failure: Option<HostFailure>,
@@ -94,6 +98,7 @@ impl AsideSessionUi {
         vm: SessionVm,
         locale: String,
         assets: crate::assets::Assets,
+        initializer: source::StoryFunction,
     ) -> Result<Self, Error> {
         let mut ui = SessionUi::new(session)?.with_assets(assets);
         ui.set_stage(vm.stage());
@@ -101,6 +106,8 @@ impl AsideSessionUi {
             ui,
             vm,
             entry: None,
+            initializer,
+            awaiting_stage: false,
             locale,
             state: StoryState::Running,
             host_failure: None,
@@ -108,6 +115,14 @@ impl AsideSessionUi {
     }
     pub(crate) fn locale(&self) -> &str {
         &self.locale
+    }
+
+    pub(crate) fn initializer(&self) -> source::StoryFunction {
+        self.initializer
+    }
+
+    pub(crate) fn await_initial_stage(&mut self) {
+        self.awaiting_stage = true;
     }
     pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
         self.vm.maintain_audio()?;
@@ -169,6 +184,8 @@ impl AsideSessionUi {
             ui,
             vm,
             entry: Some(story.entry),
+            initializer: story.initializer,
+            awaiting_stage: false,
             locale: locale.into(),
             state: StoryState::Running,
             host_failure: None,
@@ -303,6 +320,10 @@ impl AsideSessionUi {
     }
 
     pub fn sync(&mut self, bridge: &mut PresentationBridge, root: WidgetId) -> Result<(), Error> {
+        if self.awaiting_stage && self.vm.stage().root().is_none() {
+            return Ok(());
+        }
+        self.awaiting_stage = false;
         if self.vm.activities_pending() {
             return Ok(());
         }
@@ -327,6 +348,9 @@ impl AsideSessionUi {
         bridge: &mut PresentationBridge,
         root: WidgetId,
     ) -> Result<(), Error> {
+        if self.awaiting_stage {
+            return Ok(());
+        }
         self.ui.sync(bridge, root)?;
         let events = self.ui.take_events();
         self.accept_events(events)
@@ -495,13 +519,17 @@ impl AsideSessionUi {
                         self.cancel()?;
                         Ok(StoryProgress::ExitRequested)
                     }
+                    Ok(NativeDispatch::Ready { .. }) if self.vm.start_requested().is_some() => {
+                        self.ui.clear_presented();
+                        Ok(StoryProgress::StartRequested(
+                            self.vm.start_requested().unwrap(),
+                        ))
+                    }
                     Ok(NativeDispatch::Ready { work }) => Ok(StoryProgress::Updated { work }),
                     Err(error) => {
-                        let Some(kind) = error.native_fault_kind() else {
-                            return Err(error.into());
-                        };
-                        self.vm.reject_native(self.ui.session(), ticket, kind)?;
-                        Ok(StoryProgress::NativeFault(error.to_string()))
+                        let message = error.to_string();
+                        self.vm.reject_native(self.ui.session(), ticket, error)?;
+                        Ok(StoryProgress::NativeFault(message))
                     }
                 }
             }

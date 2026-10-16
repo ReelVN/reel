@@ -65,17 +65,21 @@ impl Write for ScalarText {
     }
 }
 impl ScalarText {
-    fn new(value: Value) -> Result<Self, FaultKind> {
+    fn new(value: Value, message: Option<&str>) -> Result<Self, FaultKind> {
         let mut text = Self {
             bytes: [0; 327],
             len: 0,
         };
-        let result = match value.tag() {
-            ValueTag::Null => text.write_str("null"),
-            ValueTag::Bool => write!(text, "{}", value.as_bool().unwrap()),
-            ValueTag::Int => write!(text, "{}", value.as_int().unwrap()),
-            ValueTag::Float => write!(text, "{}", value.as_float().unwrap()),
-            _ => return Err(FaultKind::Type),
+        let result = if let Some(message) = message {
+            text.write_str(message)
+        } else {
+            match value.tag() {
+                ValueTag::Null => text.write_str("null"),
+                ValueTag::Bool => write!(text, "{}", value.as_bool().unwrap()),
+                ValueTag::Int => write!(text, "{}", value.as_int().unwrap()),
+                ValueTag::Float => write!(text, "{}", value.as_float().unwrap()),
+                _ => return Err(FaultKind::Type),
+            }
         };
         result.map_err(|_| FaultKind::InvalidState)?;
         Ok(text)
@@ -147,8 +151,25 @@ impl Vm {
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         let buffer = self.slots.read(at(s.regs, builder.0))?;
-        let input_value = self.slots.read(at(s.regs, input.0))?;
-        let is_string = self.is_text(input_value, ObjectKind::String);
+        let mut input_value = self.slots.read(at(s.regs, input.0))?;
+        let kind = if input_value.tag() == ValueTag::Object {
+            Some(self.heap.info(input_value)?.kind)
+        } else {
+            None
+        };
+        let mut message = None;
+        let is_string = if kind == Some(ObjectKind::CoreError) {
+            let error = self.heap.core_error_info(input_value)?;
+            if self.is_text(error.details, ObjectKind::String) {
+                input_value = error.details;
+                true
+            } else {
+                message = Some(error.message);
+                false
+            }
+        } else {
+            kind == Some(ObjectKind::String)
+        };
         let limit = self.text_scratch.data.capacity() as u32;
         let remaining = if is_string {
             self.heap.info(input_value)?.len - offset
@@ -166,7 +187,7 @@ impl Vm {
         let scalar = if is_string {
             None
         } else {
-            match ScalarText::new(input_value) {
+            match ScalarText::new(input_value, message) {
                 Ok(text) => Some(text),
                 Err(kind) => {
                     self.collection_fault(s, kind)?;

@@ -8,6 +8,8 @@
 Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效果，同一组节点可组成对话框、图片按钮、菜单和演出，再封装为作者组件。引擎复用 Masonry 的控件能力和 Kira 的音频能力，配套语言 Aside 以 Quirrel 为参照，用 Rust 实现编译器和 VM。
 本文规定运行时所有权、输入与渲染、媒体、持久化和开发顺序。《Aside VM 与完整语言规范》负责语法、值模型、执行帧、回收和语言兼容；《Reel 游戏开发指南》负责作者接口、组件组合与示例。跨文档的等待、绑定和恢复语义必须一致。三份文档交叉审查后成为 reel 仓库 docs/ 下的设计基线。预算与性能数字均为验收目标，尚未形成实测结论。
 
+`game.start(entry)` 已实现为新会话入口（native ABI 1，B01/ASB 不变）：entry 是当前 ASB 中不捕获局部状态、无必需参数的普通函数。调用位置先验证入口；请求接收后旧脚本不再继续，宿主结束旧任务、对白、活动和音频，重新执行模块初始化，再调用 entry。已读记录与 game.configure 配置保留；脚本全局、历史、自动/快进状态重建。资源源和存档服务由宿主复用，音频工厂独立于存档安装。替换等待上一会话清理和已提交存储操作完成，避免无限堆积退休会话；清理仍按片推进，程序共享已验证字节码，不重新编译。尚未提供跨 ASB 热更新入口解析或持久脚本全局。范围为 aside-vm 的无捕获函数身份读取、reel-engine、reel-player、示例及双语指南；无新增依赖。
+
 ## 一 产品范围与实现原则
 
 作者的数据类使用 Aside 的统一类布局与 GC，Reel 不另建脚本类包装层。实例方法进入普通 VM 调用栈，构造和字段初始化沿用 NoWait 与可让出的执行预算。
@@ -15,6 +17,8 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 `model` 的数据图包含已完成构造的类实例；复制实例和字段值，保留别名与环，共享类定义，不重跑构造。后续赋入实例保留原身份并观察其数据字段。实例仍满足原名义类型，继承与绑定方法作用于对应实例。字段沿用原语言 cell，作为同一属性图的端点；bind/derive 与控件回写保留只读和完整类型约束，失败不改变字段或已连接控件。静态字段不成为实例状态；未完成/失败的实例、可执行或资源字段不作为可复制默认数据。源码定位、GC 与复制取消沿现有路径；稳定字段读写不扫描类成员表或创建载荷。范围为 aside-vm、Reel 接入、示例与双语指南，B01/ASB 和 native ABI 不变，无新增依赖。
 
 通用库由独立的 `aside-std` crate 维护，通过 Aside host SDK 向任意宿主提供声明、模块接口和 native 调度。Reel 注册标准库并默认导入其 prelude；舞台、对白、音频和资源仍归 Reel。已有文本、集合操作继续共用 VM 实现，不复制到标准库。
+
+`std::time` 提供 `now()`（UTC Unix 秒整数）、`parts(timestamp, timezone: null)`（year/month/day/hour/minute/second/weekday/offset_seconds 数据表，weekday 为周一 1 至周日 7）及 `format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null)`。timezone 为 IANA 名称，null 使用系统时区；日期换算、夏令时和格式化复用固定版本 Jiff 0.2.38。无法识别系统时区时按 Jiff 的系统时区语义使用 UTC；显式无效时区、时间或格式抛带调用位置的错误。接口不启动计时器、不参与剧情时间或快进；作者按需要用已有活动更新界面。aside-std 保持独立，数据返回 VM 堆；无平台句柄，native ABI 1，B01/ASB 不变。范围为 aside-std、作者示例及双语指南。
 
 首批接口 `std::random(seed: null)` 创建独立随机对象；`int(min, max)` 取左闭右开整数，`float()` 取 [0,1)，`pick(items)` 从非空 array/tuple 返回原元素。复用锁定的 fastrand 2.5.0，同版本下固定种子与相同调用顺序复现同一流；省略种子由库创建新流。状态保存在普通 VM 宿主载荷中，绑定方法保留原对象；每次抽取只读写常数个值，不复制集合或创建堆载荷。非法范围和空集合在推进状态前报错。构造声明宿主效果，抽取声明写入效果，沿现有初始化与纯 derive 边界执行。新增 native ABI 1，B01/ASB 不变；范围为 aside-std、reel-engine、示例和双语指南，不引入平台句柄。
 
@@ -36,9 +40,13 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 对白推进状态
 
+滑条与按钮共享可组合子节点：`slider(..., children: [])` 的子节点按 stack 布局，`decorated: false` 关闭内置轨道、滑块和焦点描边，保留输入、绑定及无障碍行为。无装饰时数值轨道覆盖内容区完整宽度，作者以归一化 value 放置滑块并自行绘制悬停/焦点外观；padding 仍定义内容区。子节点沿共同舞台的所有权、裁剪和快照路径，不引入第二套滑条输入处理。slider native ABI 升至 8；其余 native、B01/ASB 不变，无新增依赖。范围为 reel-ui、reel-engine、reel-player、作者示例与双语指南；复核项为拖动端点、键盘/手柄、绑定回写、子树更换及恢复。外观变化不重建控件或复制资源。
+
 `game.dialogue().ready` 与 `lines` 中每行的 `ready` 是只读可观察字段，表示正文和包括尾部停顿在内的时序已完成。组字段仅在当前对白有效且所有行均完成时为 true；行在对白结束后保留 true，清页删除对应行。它不包含自动、快进、暂停或窗口焦点策略，作者与 `game.reading()` 组合决定推进光标的显隐和样式。沿已有叙事投影循环更新，不扫描正文、不创建逐帧任务；无新依赖，Aside/B01/ASB/native ABI 不变。范围为 reel-engine、现有作者示例与双语指南。
 
 ### 作者活动与窗口时钟
+
+`tween` 另支持 quint_in/quint_out/quint_in_out 五次曲线和 bounce_in/bounce_out/bounce_in_out 回弹曲线。in 加速、out 减速或在终点回弹、in_out 对称组合；采样位于 [0,1] 且起止精确为 0/1。沿既有活动采样、所有权、取消与快照路径，不分配逐帧脚本对象。范围为 reel-engine 活动采样、作者示例和双语指南；无新增依赖，native ABI、B01/ASB 不变。
 
 `stage.presented(owner: null)` 返回可等待的呈现请求；`await` 在请求之后的舞台投影实际接受呈现后返回 null。派生状态先稳定，字体与图片先完成准备；录制、拒帧和重绘旧帧均不结算请求。多个请求可随同一帧完成，重复等待同一对象共享终态。请求不暂停其他任务、音频或动画，转场组件可先挂载透明的新内容、等待呈现，再开始动画。owner 沿现有活动规则，退休取消未决请求；`.cancel()` 只取消这个请求，等待者取消不取消请求。请求不允许脚本 resolve/reject。无挂载根但显式请求呈现时允许提交空舞台。复用 completion 的 VM 根、订阅及错误路径，帧携带单调请求序号，不为等待保留场景或纹理副本；没有忙等和新线程。Rust 宿主把 `presentation_request()` 固定到稳定投影，在该投影实际接受后调用 `accept_presentation(session, request)`；旧序号不会完成新请求。范围为 reel-engine、reel-player、公开示例和双语指南；新增 native ABI 1，B01/ASB 与其他 native ABI 不变，无新依赖。
 
@@ -106,6 +114,12 @@ key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对
 
 ### 当前作者舞台实现合同
 
+`stage.capture(width: null, height: null, owner: null)` 返回可取消的 Awaitable，完成值为不可变 PNG Bytes。宿主锁定请求被取走时最后实际呈现的帧；没有已呈现帧则拒绝。省略尺寸使用该帧尺寸，只指定一边则保持比例。截图按目标尺寸绘制，不改变舞台、呈现确认或输入几何。截图后端与窗口系统独立；GPU 读回使用完成通知，PNG 编码在工作线程完成，字节及排队工作计入资源预算。节点退休、取消、会话替换和设备丢失终结请求，旧帧资源保留至 GPU 完成；截图处理中不采集执行快照。`image(source:)` 同时接受资源名和 PNG/JPEG Bytes；相同字节对象的普通属性更新复用图像来源。
+
+`saves.save(slot, title: null, thumbnail: null)` 接受 PNG Bytes，与执行快照在同一个槽文件内原子提交。`saves.list()` 只返回元数据及 has_thumbnail；`await saves.thumbnail(slot)` 按需返回 PNG Bytes 或 null。目录存储将 PNG 作为压缩快照后的可选附件，用固定尾索引定位；列表不解压快照或加载图片。缩略图由作者在打开菜单前获取，不自动截图菜单。此变更覆盖 reel-render/reel-player/reel-engine/reel-ui、示例与双语指南，capture/thumbnail native ABI 1、save ABI 2；无新依赖，Aside/B01 不变。Rust 宿主实现 `CaptureBackend` 并驱动 `CaptureService`，在 `StoryRuntime` 显式启用 frame capture；未安装能力或资源不足时请求拒绝。GPU 提交保留资源至完成，取消的 PNG 编码在输出分块处退出。作者示例：[author_capture.aside](../examples/author_capture.aside)。
+
+对白确认按已呈现的交互、揭示状态和输入范围配对，与帧重绘版本分离。推进光标、立绘动画、悬停和控件反馈不会作废同一次按下/松开；换句、揭示完成、替换舞台根或切换模态范围后，旧手势不能确认新内容。键盘、手柄和指针共用此规则，命中仍使用已接受帧的几何。范围为 reel-player 的呈现与输入准入，无新增依赖、轮询或 Aside/ASB 接口变化。
+
 文字 GPU 绘制按字体资源、字体索引、字号、hint、变体坐标和字形 ID 复用字形图集，使用 guillotiere 分配图集矩形；同页连续字形合批，位置和颜色不进入字形缓存键。未提交上传仅在当前 preparation 可见，提交后发布；图集矩形由 prepared/in-flight/cache 共同保活，最后引用释放后才能复用。页面与上传分别计入现有资源预算，压力时回收无使用者缓存，字体退休解除缓存。该修复覆盖 reel-render 及实际 GPU 重复文字检查，B01/ASB 和作者接口不变。
 
 单行 text_input 在给定高度内垂直居中，文字、选区、光标、点击及 IME 候选位置使用同一偏移。文本节点的自动高度按其显式宽度换行测量，滚动末端以完整排版高度为准。范围为 reel-ui/reel-player，保持既有 native ABI，无新语法。
@@ -114,7 +128,7 @@ key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对
 
 选择控件复用共同舞台：`checkbox(label: null, value: false, on_change: null, ...)` 与 toggle 共用布尔值、双向绑定及按钮激活，仅装饰和可访问性角色不同。`radio(option, label: null, value: null, on_change: null, ...)` 将选项绑定到一个业务值；同组各项的 value 连接同一模型字段，激活时写入 option，重复选择不回调，也不取消选择。option 可更新或绑定，旧选项画面的激活不能选择更新后的 option。比较沿用 list 的业务 key 规则，允许标量、字符串及对象身份；未匹配值表示无项选中。导航使用共同方向/Tab 焦点与确认输入，禁用、模态和退休沿共同生命周期。两者支持 children 与 decorated，自定义外观读取 value/option 和既有交互状态。范围为 reel-ui/reel-engine/reel-player、示例和双语指南；新增 native ABI 1，B01/ASB 不变，无新依赖。验收源码/ASB 双向绑定、互斥、动态选项、输入消费和取消；值变化保留控件身份，不重新排版未变文字。
 
-`input(bindings: null, on_action: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null bindings 表示没有动作映射。聚焦控件优先消费自己的按键，普通控件未消费的键盘事件向祖先 on_key 冒泡；文本编辑控件保留全部键盘与 IME，未消费的编辑按键也不进入游戏回调。动作映射仍要求输入节点拥有焦点或根输入兜底。失焦、隐藏、禁用、模态替换与节点退休撤销旧按键；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。此变更覆盖 reel-ui/stage、reel-player 输入路由与 reel-engine 属性/回调，不增加依赖；input native ABI 5，B01/ASB 不变。验证多键交错、重复、焦点取消和编辑控件隔离。
+`input(bindings: null, on_action: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null bindings 表示没有动作映射。聚焦控件优先消费自己的输入，未消费的事件沿祖先输入节点查找动作映射及 on_key；最近的匹配节点消费事件，不广播给兄弟或模态范围之外。文本编辑控件保留全部键盘与 IME，未消费的编辑按键也不进入游戏回调。根输入仍作为无焦点时的兜底。焦点改变、隐藏、禁用、模态替换与节点退休撤销旧按键及动作；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。此变更覆盖 reel-ui/stage、reel-player 输入路由与 reel-engine 属性/回调，不增加依赖；input native ABI 5，B01/ASB 不变。验证多键交错、重复、焦点取消和编辑控件隔离。
 
 `text_input(value: "", on_change: null, on_submit: null, ...NodeProps)` 是共同舞台的单行文本编辑节点，value 支持可写 bind。编辑复用 reel-text 的 PlainEditor；提交文本与 IME 预编辑分别管理，预编辑只存在于控件，提交才写回模型。on_change/on_submit 收到 target/value，Enter 提交而不推进剧情；失焦、隐藏和禁用撤销预编辑。外部值替换结束当前预编辑，普通值回显保留光标和选区。输入事件携带编辑前值，避免用旧呈现覆盖脚本已修改的文本。控件按需布局，空闲不定时轮询。字体、颜色、背景、尺寸、变换和输入范围沿共同节点；不规定字符数量上限。作者赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。平台适配器转发公共 IME 事件和候选框区域，系统负责转换与候选词；原生窗口类型不进入 UI 或 Aside。桌面复制、剪切和粘贴由可选适配器复用固定版本 arboard 3.6.1。新增节点 ABI 1，B01/ASB 不变。
 
@@ -145,6 +159,8 @@ Winit 适配器把原生触摸位置、压力和设备/触点身份转为公共 
 会话适配层在真正等待或任务结束后选择下一可运行任务，复用 VM start_closure、NativeFrame、等待、故障与 GC。同步脚本段连续执行；预算耗尽让出宿主线程，恢复后仍执行原任务，避免属性读改写在无显式等待处相互覆盖。每次接受的事件创建受 VM 资源预算管理的任务和可复用存储的会话 owner，成功返回后释放交付并退休 owner；没有固定作者事件数量限制，也不累积历史任务。任务可等待活动；活动等待维护多个消费者，消费者取消不取消共享活动，结算保留订阅顺序且用线性压缩移除失效等待。回调中省略 owner 的 run 默认归事件节点，主任务仍默认归会话。节点退休在下一次脚本推进前硬撤销所属回调，取消等待并分片清理任务，不能执行退休后的下一条脚本。关闭会话显式汇总主任务及所有回调的清理义务。narrator/choose 仍由主剧情拥有，回调调用它们报告可捕获的上下文错误，不夺取当前对白。
 
 主入口返回后，已挂载的交互节点、正在运行的活动或回调继续维持会话；没有可运行工作时休眠。全部交互与活动结束后按原自然结束路径保留最后画面。单个回调未捕获的故障保留真实源码和完整 VM 故障交付，并暂停会话，供检查和显式关闭清理。
+
+宿主接口拒绝脚本输入时保留 AdapterError 的具体原因，作为 CoreError 的字符串 details 进入原调用位置的故障。播放器和脚本字符串插值显示这份原因；无字符串详情时显示固定错误说明。成功调用不构造诊断字符串，资源不足错误不再额外分配详情。Aside/ASB 接口版本不变。
 
 本次范围：reel-ui 的 stage 与共享按钮行为、reel-engine 的绑定和任务调度、reel-player 的已呈现输入和生命周期、reel-cli 的源码/ASB 合同，以及规范、示例、双语指南。依赖 #74/#78/#80/#82；B01/ASB v1 和 native ABI v1 保持。仅桌面适配器增加锁定的 ui-events-winit 0.3.0，用于原生键盘事件转换；共同输入、舞台和调度不依赖 Winit 或 WGPU。验收覆盖真实指针配对/消费、禁用祖先、捕获闭包、并发等待、入口返回后的交互、回调自移除与替换、旧帧/旧任务过滤、关闭和源码故障；成本检查空闲不轮询 VM、保留控件身份及反复点击不积累 owner/任务/根。
 
@@ -380,8 +396,10 @@ model(defaults) 复制默认图并保持其中的别名/环，所有可变内嵌
 
 派生绑定复用属性连接图：正向依赖保活来源，反向订阅是弱引用，写入只将相关派生加入去重队列。VM 记录实际成员、索引及集合读取；每次成功计算替换条件依赖。会话在同步脚本段结束与舞台发布之间按 VM 预算排空计算，持续占用原有任务调度边界，避免计算期间其它脚本写入。局部临时对象按计算代数识别，不允许改写外部对象；原生回调只能收紧权限。
 
-persistent(id,defaults) 是显式进程级数据根，跨游戏会话存储；defaults 仅补缺失项，已有 false/null/0 保持原值。新实例默认复合对象复制后归该实例，避免共享可变默认状态。持久数据由独立数据图与适配器保存，禁止把会话 Node/Task/可执行闭包挂入跨局数据图；写入时检查引用路径与寿命。跨局赋值复制到持久数据图，内部嵌套对象通过稳定 GlobalDataId 的代理访问；所有别名修改均验证并标脏，快照记录 GlobalDataId 并重接当前数据。全局设置属于独立服务。
-普通运行期 state/persistent/node.state 调用原子补充缺失默认字段，下一语句可见。InitSafe 的 story.register、state、persistent 及组件状态默认补充先登记候选变更，候选读视图可见拟加入字段而活会话不可见，ModuleSet 提交时才一起生效；失败不修改旧注册表或全局进度。全局数据的普通修改立即可观察、后台合并写盘；flush 返回可等待的可靠提交请求。跨结构版本迁移使用版本化纯数据回调，在隔离数据图成功后再替换。
+作者可用固定 tuple 解构遍历系统记录：`for (key, value) in record.entries()`。编译器在建立任一绑定前完成结构检查和元素准备，按普通 VM 指令预算执行；循环捕获保留各轮值，不为解构复制容器。
+系统数据通过 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)` 独立读写（native ABI 1）。它们返回与 saves 相同的可等待请求；缺失记录返回 default，已存的 null/false/0 不视为缺失。write 在调用返回前按预算捕获纯数据，后台发布完成才结算；read 按预算重建独立数据副本。支持 null/bool/int/float、string/Bytes、array/table/tuple，保留图内别名与环；table 只保存自有字段，不保存委托、模型绑定或类方法。实例、可执行闭包、节点和任务须由作者转换为上述数据。文件不含 ASB 身份，业务版本迁移由游戏处理。
+系统记录与剧情槽共用有序存储服务，使用独立文件命名空间，存于宿主指定的 save-directory；不出现在 saves.list 中。会话退出前已交给存储服务的写入继续提交；未交付请求取消。读档不重放系统写入，也不覆盖系统文件。read 返回的副本是普通会话数据，会随剧情快照恢复；作者在恢复分支重新读取当前系统设置后应用，不能把副本当作跨会话共享代理。数据捕获、重建和队列均使用现有内存/工作预算，文件 IO 在后台线程执行。
+普通运行期 state/node.state 调用原子补充缺失默认字段，下一语句可见。InitSafe 的 story.register、state 及组件状态默认补充先登记候选变更，候选读视图可见拟加入字段而活会话不可见，ModuleSet 提交时才一起生效；失败不修改旧注册表。
 
 ## 七 VM 与会话接口
 

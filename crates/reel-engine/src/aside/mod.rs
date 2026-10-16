@@ -8,9 +8,11 @@ mod activity;
 mod audio;
 pub use activity::ActivityProgress;
 mod callbacks;
+pub mod capture;
 mod game;
 pub use game::GameSettings;
 mod choice;
+pub mod data;
 mod dialogue;
 mod keys;
 mod lists;
@@ -102,7 +104,10 @@ impl From<SessionError> for AdapterError {
 }
 impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Input(message) => f.write_str(message),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 impl std::error::Error for AdapterError {}
@@ -213,6 +218,7 @@ pub struct SessionVm {
     activities: activity::Activities,
     results: results::Results,
     saves: saves::Saves,
+    captures: capture::Captures,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     audio: audio::Audio,
@@ -221,6 +227,7 @@ pub struct SessionVm {
     narrative: Option<narrative::Narrative>,
     skip_input: Option<reel_ui::stage::NodeId>,
     exit_requested: bool,
+    start_requested: Option<source::StoryFunction>,
 }
 
 impl SessionVm {
@@ -275,6 +282,7 @@ impl SessionVm {
             activities: activity::Activities::default(),
             results: results::Results::default(),
             saves: saves::Saves::default(),
+            captures: capture::Captures::default(),
             particles: particles::Particles::default(),
             standard,
             audio: audio::Audio::default(),
@@ -283,6 +291,7 @@ impl SessionVm {
             narrative: None,
             skip_input: None,
             exit_requested: false,
+            start_requested: None,
         })
     }
 
@@ -311,6 +320,12 @@ impl SessionVm {
         self.exit_requested
     }
 
+    /// A validated entry in this program. The host replaces the session before
+    /// executing any more script and reruns the module initializer first.
+    pub fn start_requested(&self) -> Option<source::StoryFunction> {
+        self.start_requested
+    }
+
     /// Format a still-rooted fault's author value without traversing object graphs.
     pub fn format_fault_value(&self, fault: FaultInfo) -> Result<String, AdapterError> {
         use aside_vm::{ObjectKind, ValueTag};
@@ -326,6 +341,15 @@ impl SessionVm {
                 let info = heap.info(value)?;
                 if info.kind == ObjectKind::String {
                     text::read_string(heap, value, self.read_limit)?
+                } else if info.kind == ObjectKind::CoreError {
+                    let error = heap.core_error_info(value)?;
+                    if error.details.tag() == ValueTag::Object
+                        && heap.info(error.details)?.kind == ObjectKind::String
+                    {
+                        text::read_string(heap, error.details, self.read_limit)?
+                    } else {
+                        error.message.into()
+                    }
                 } else {
                     format!("<{:?}>", info.kind)
                 }
@@ -433,12 +457,27 @@ impl SessionVm {
         let p = self.vm.program().package();
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
+            "reel::game::start" => {
+                let value = self.vm.host_arguments(ticket)?[0];
+                let entry = self.vm.unbound_function(value)?;
+                source::validate_entry(self.vm.program(), entry)
+                    .map_err(|_| AdapterError::Input("game.start requires an ordinary function with no captures or required parameters"))?;
+                self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+                self.issued = None;
+                self.start_requested = Some(entry);
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::stage::capture" => {
+                self.dispatch_capture(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::saves::save"
             | "reel::saves::load"
             | "reel::saves::delete"
-            | "reel::saves::list" => {
-                self.dispatch_save(ticket, &symbol)?;
-                Ok(NativeDispatch::Ready { work: 1 })
+            | "reel::saves::list"
+            | "reel::saves::thumbnail" => self.dispatch_save(ticket, &symbol, work),
+            "reel::persistent::read" | "reel::persistent::write" | "reel::persistent::delete" => {
+                self.dispatch_persistent(ticket, &symbol, work)
             }
             "reel::game::exit" => {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
@@ -803,7 +842,7 @@ impl SessionVm {
         budget: SliceBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
-        if self.exit_requested {
+        if self.exit_requested || self.start_requested.is_some() {
             self.live(session)?;
             return Ok(SessionStep::Idle);
         }
@@ -861,10 +900,18 @@ impl SessionVm {
         &mut self,
         session: &Session,
         ticket: HostTicket,
-        kind: aside_vm::executor::FaultKind,
+        error: AdapterError,
     ) -> Result<(), AdapterError> {
         self.check_ticket(session, ticket)?;
-        self.vm.respond_language_error(ticket, kind)?;
+        let Some(kind) = error.native_fault_kind() else {
+            return Err(error);
+        };
+        let details = if kind == FaultKind::Resource {
+            Value::NULL
+        } else {
+            text::alloc_string(self.vm.heap_mut(), &error.to_string(), self.read_limit)?
+        };
+        self.vm.respond_language_error(ticket, kind, details)?;
         self.activities
             .cancel_native(self.vm.heap_mut(), ticket.task)?;
         if let Some(reader) = self.choice_reader.take() {
@@ -873,6 +920,7 @@ impl SessionVm {
         if let Some(reader) = self.dialogue_reader.take() {
             reader.release(self.vm.heap_mut())?;
         }
+        self.saves.capture = None;
         self.issued = None;
         Ok(())
     }
@@ -1179,6 +1227,7 @@ impl SessionVm {
         self.translations.close();
         self.results.clear();
         self.saves.clear();
+        self.captures = capture::Captures::default();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;

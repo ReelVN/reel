@@ -1,0 +1,25 @@
+// System records survive story loading and a new session.
+fn main() {
+    let settings = model(await persistent.read("settings", default: {volume: 0.8}));
+    let state = model({message: "", busy: false});
+    stage.replace(column(x: 40, y: 40, width: 520, gap: 20) {
+        text("System settings", font_size: 28);
+        slider(value: bind(settings.volume), min: 0, max: 1, width: 400);
+        button("Apply", enabled: derive(|| !state.busy), on_click: |event| {
+            state.busy = true;
+            try { await persistent.write("settings", settings); state.message = "Saved"; }
+            catch error { state.message = f"{error}"; }
+            state.busy = false;
+        });
+        button("Save story", on_click: |event| {
+            let request = saves.save("manual/1");
+            await request;
+            if request.restored {
+                let current = await persistent.read("settings", default: {volume: 0.8});
+                settings.volume = current.volume;
+            }
+        });
+        button("Load story", on_click: |event| { await saves.load("manual/1"); });
+        text(value: bind(state.message));
+    });
+}

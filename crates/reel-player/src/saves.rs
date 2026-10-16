@@ -4,6 +4,7 @@ use crate::assets::worker::Worker;
 use reel_core::{budget::QueueLimits, identity::Priority, wake::WakeSignal};
 use reel_engine::aside::{
     AdapterError,
+    data::DataDocument,
     saves::SaveRequest,
     snapshot::{OwnedSessionRestore, SessionCapture, SnapshotBudget},
 };
@@ -13,7 +14,7 @@ use reel_engine::aside::{
 };
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -59,31 +60,23 @@ impl Capture {
     }
 }
 
-/// Storage and device reconstruction are injected independently of the window backend.
+/// Storage is injected independently of the window and audio backend.
 pub struct RuntimeSaves {
     pub(crate) service: SaveService,
-    pub(crate) audio: Box<dyn Fn() -> Box<dyn reel_engine::audio::AudioBackend>>,
     pub(crate) max_snapshot_bytes: u64,
     pub(crate) pending: Option<SaveRequest>,
     pub(crate) restore: Option<OwnedSessionRestore>,
     pub(crate) candidate: Option<Candidate>,
-    pub(crate) retiring: Option<AsideSessionUi>,
     pub(crate) next_epoch: u64,
 }
 impl RuntimeSaves {
-    pub fn new(
-        service: SaveService,
-        max_snapshot_bytes: u64,
-        audio: impl Fn() -> Box<dyn reel_engine::audio::AudioBackend> + 'static,
-    ) -> Self {
+    pub fn new(service: SaveService, max_snapshot_bytes: u64) -> Self {
         Self {
             service,
-            audio: Box::new(audio),
             max_snapshot_bytes,
             pending: None,
             restore: None,
             candidate: None,
-            retiring: None,
             next_epoch: 0,
         }
     }
@@ -91,7 +84,6 @@ impl RuntimeSaves {
         self.pending.is_some()
             || self.restore.is_some()
             || self.candidate.is_some()
-            || self.retiring.is_some()
             || !self.service.is_idle()
     }
 }
@@ -150,10 +142,19 @@ pub type StorageError = Box<dyn std::error::Error + Send + Sync>;
 /// Storage implementations run on the worker. A successful write has published
 /// the whole slot; errors before publication preserve the preceding slot.
 pub trait SaveStorage: Send + Sync + 'static {
-    fn write(&self, slot: SaveSlot, snapshot: &SessionSnapshot) -> Result<(), StorageError>;
+    fn write(
+        &self,
+        slot: SaveSlot,
+        snapshot: &SessionSnapshot,
+        thumbnail: Option<&[u8]>,
+    ) -> Result<(), StorageError>;
+    fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError>;
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError>;
     fn delete(&self, slot: &str) -> Result<(), StorageError>;
     fn list(&self) -> Result<Vec<SaveSlot>, StorageError>;
+    fn write_data(&self, key: &str, data: &DataDocument) -> Result<(), StorageError>;
+    fn read_data(&self, key: &str) -> Result<Option<DataDocument>, StorageError>;
+    fn delete_data(&self, key: &str) -> Result<(), StorageError>;
 }
 
 /// Host-selected storage directory, independent of the game's read-only assets.
@@ -174,6 +175,10 @@ impl DirectorySaves {
         self.root
             .join(format!("{}.save", blake3::hash(slot.as_bytes()).to_hex()))
     }
+    fn data_path(&self, key: &str) -> PathBuf {
+        self.root
+            .join(format!("{}.data", blake3::hash(key.as_bytes()).to_hex()))
+    }
     fn metadata(&self, file: &mut fs::File) -> Result<SaveSlot, StorageError> {
         let mut magic = [0; 8];
         file.read_exact(&mut magic)?;
@@ -191,17 +196,104 @@ impl DirectorySaves {
         if bytes.len() as u64 != len {
             return Err("truncated slot metadata".into());
         }
-        let (slot, tail) = postcard::take_from_bytes(&bytes)?;
+        let ((id, title, saved_at), tail) = postcard::take_from_bytes(&bytes)?;
         if !tail.is_empty() {
             return Err("trailing slot metadata".into());
         }
-        Ok(slot)
+        Ok(SaveSlot {
+            id,
+            title,
+            saved_at,
+            has_thumbnail: self.thumbnail_range(file)?.is_some(),
+        })
+    }
+    // An optional indexed attachment follows the gzip stream. Listing only reads
+    // metadata and this fixed-size footer; loading the snapshot never reads PNG data.
+    fn thumbnail_range(&self, file: &mut fs::File) -> Result<Option<(u64, u64)>, StorageError> {
+        let position = file.stream_position()?;
+        let footer = file.seek(SeekFrom::End(-16))?;
+        let mut index = [0; 16];
+        file.read_exact(&mut index)?;
+        file.seek(SeekFrom::Start(position))?;
+        if &index[8..] != b"REELTHMB" {
+            return Ok(None);
+        }
+        let len = u64::from_le_bytes(index[..8].try_into().unwrap());
+        if len > self.max_snapshot_bytes {
+            return Err("thumbnail exceeds storage budget".into());
+        }
+        let start = footer
+            .checked_sub(len)
+            .filter(|start| *start >= position)
+            .ok_or("invalid thumbnail range")?;
+        Ok(Some((start, len)))
     }
 }
 impl SaveStorage for DirectorySaves {
-    fn write(&self, slot: SaveSlot, snapshot: &SessionSnapshot) -> Result<(), StorageError> {
+    fn write_data(&self, key: &str, data: &DataDocument) -> Result<(), StorageError> {
         fs::create_dir_all(&self.root)?;
-        let metadata = postcard::to_allocvec(&slot)?;
+        let published = reel_storage::publish(&self.data_path(key), true, |file| {
+            file.write_all(b"REELDATA\x01")?;
+            let compressed = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+            let mut writer = LimitedWriter {
+                inner: compressed,
+                remaining: self.max_snapshot_bytes,
+            };
+            data.write_to(&mut writer).map_err(io::Error::other)?;
+            writer.inner.finish()?;
+            Ok(())
+        })?;
+        if let Some(warning) = published.cleanup_warning {
+            eprintln!("{warning}");
+        }
+        Ok(())
+    }
+    fn read_data(&self, key: &str) -> Result<Option<DataDocument>, StorageError> {
+        let mut file = match fs::File::open(self.data_path(key)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut magic = [0; 9];
+        file.read_exact(&mut magic)?;
+        if &magic != b"REELDATA\x01" {
+            return Err("unsupported system record format".into());
+        }
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(file)
+            .take(self.max_snapshot_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > self.max_snapshot_bytes {
+            return Err("system record exceeds storage budget".into());
+        }
+        let data = DataDocument::decode(&bytes)?;
+        if data.retained_bytes() > self.max_snapshot_bytes {
+            return Err("system data exceeds storage budget".into());
+        }
+        Ok(Some(data))
+    }
+    fn delete_data(&self, key: &str) -> Result<(), StorageError> {
+        match fs::remove_file(self.data_path(key)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    fn write(
+        &self,
+        slot: SaveSlot,
+        snapshot: &SessionSnapshot,
+        thumbnail: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
+        if thumbnail.is_some_and(|bytes| !bytes.starts_with(b"\x89PNG\r\n\x1a\n")) {
+            return Err("save thumbnail requires PNG data".into());
+        }
+        let thumbnail = thumbnail.unwrap_or_default();
+        if thumbnail.len() as u64 > self.max_snapshot_bytes {
+            return Err("thumbnail exceeds storage budget".into());
+        }
+        fs::create_dir_all(&self.root)?;
+        let metadata = postcard::to_allocvec(&(&slot.id, &slot.title, slot.saved_at))?;
         let published = reel_storage::publish(&self.path(&slot.id), true, |file| {
             file.write_all(b"REELSLOT")?;
             file.write_all(&(metadata.len() as u64).to_le_bytes())?;
@@ -212,13 +304,31 @@ impl SaveStorage for DirectorySaves {
                 remaining: self.max_snapshot_bytes,
             };
             snapshot.write_to(&mut writer).map_err(io::Error::other)?;
-            compressed.finish()?;
+            let file = compressed.finish()?;
+            if !thumbnail.is_empty() {
+                file.write_all(thumbnail)?;
+                file.write_all(&(thumbnail.len() as u64).to_le_bytes())?;
+                file.write_all(b"REELTHMB")?;
+            }
             Ok(())
         })?;
         if let Some(warning) = published.cleanup_warning {
             eprintln!("{warning}");
         }
         Ok(())
+    }
+    fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let mut file = fs::File::open(self.path(slot))?;
+        if self.metadata(&mut file)?.id != slot {
+            return Err("slot identity mismatch".into());
+        }
+        let Some((start, len)) = self.thumbnail_range(&mut file)? else {
+            return Ok(None);
+        };
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = vec![0; len as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(Some(bytes))
     }
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError> {
         let mut file = fs::File::open(self.path(slot))?;
@@ -266,7 +376,7 @@ struct LimitedWriter<W> {
 impl<W: Write> Write for LimitedWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() as u64 > self.remaining {
-            return Err(io::Error::other("snapshot exceeds storage budget"));
+            return Err(io::Error::other("stored data exceeds storage budget"));
         }
         let n = self.inner.write(bytes)?;
         self.remaining -= n as u64;
@@ -281,17 +391,23 @@ pub enum StorageJob {
     Save {
         slot: String,
         title: String,
+        thumbnail: Option<Arc<DataDocument>>,
         snapshot: Box<SessionSnapshot>,
     },
     Load(String),
     Delete(String),
     List,
+    Thumbnail(String),
+    ReadData(String),
+    WriteData(String, Arc<DataDocument>),
+    DeleteData(String),
 }
 pub enum StorageResult {
     Saved,
     Loaded(Box<SessionSnapshot>),
     Deleted,
     Slots(Vec<SaveSlot>),
+    Data(Option<Arc<DataDocument>>),
 }
 pub struct StorageEvent {
     pub request: SaveRequestId,
@@ -316,6 +432,7 @@ impl SaveService {
                         StorageJob::Save {
                             slot,
                             title,
+                            thumbnail,
                             mut snapshot,
                         } => {
                             snapshot.commit_save(request)?;
@@ -325,8 +442,10 @@ impl SaveService {
                                     id: slot,
                                     title,
                                     saved_at,
+                                    has_thumbnail: thumbnail.is_some(),
                                 },
                                 &snapshot,
+                                thumbnail.as_ref().and_then(|data| data.as_bytes()),
                             )?;
                             StorageResult::Saved
                         }
@@ -338,6 +457,22 @@ impl SaveService {
                             StorageResult::Deleted
                         }
                         StorageJob::List => StorageResult::Slots(storage.list()?),
+                        StorageJob::Thumbnail(slot) => StorageResult::Data(
+                            storage
+                                .thumbnail(&slot)?
+                                .map(|bytes| Arc::new(DataDocument::from_bytes(bytes))),
+                        ),
+                        StorageJob::ReadData(key) => {
+                            StorageResult::Data(storage.read_data(&key)?.map(Arc::new))
+                        }
+                        StorageJob::WriteData(key, data) => {
+                            storage.write_data(&key, &data)?;
+                            StorageResult::Saved
+                        }
+                        StorageJob::DeleteData(key) => {
+                            storage.delete_data(&key)?;
+                            StorageResult::Deleted
+                        }
                     })
                 })()
                 .map_err(|error| error.to_string());

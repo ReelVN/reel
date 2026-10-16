@@ -15,6 +15,7 @@ pub(super) enum Kind {
     Presentation = -1103,
     Particle = -1104,
     Operation = -1105,
+    Capture = -1106,
 }
 #[repr(u32)]
 enum Slot {
@@ -151,6 +152,7 @@ pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
         Some(-1103) => Ok(Kind::Presentation),
         Some(-1104) => Ok(Kind::Particle),
         Some(-1105) => Ok(Kind::Operation),
+        Some(-1106) => Ok(Kind::Capture),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -181,6 +183,9 @@ fn state(heap: &mut Heap, object: Value) -> Result<State, AdapterError> {
     }
     Ok(state)
 }
+pub(super) fn pending(heap: &mut Heap, object: Value) -> Result<bool, AdapterError> {
+    Ok(state(heap, object)? == State::Pending)
+}
 fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, AdapterError> {
     let state = state(heap, object)?;
     let value = heap.host_payload(object, Slot::Value as u32)?;
@@ -207,6 +212,13 @@ fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, Adapte
     })
 }
 impl Results {
+    pub(super) fn create_capture(
+        &mut self,
+        vm: &mut Vm,
+        owner: Value,
+    ) -> Result<Value, AdapterError> {
+        self.create(vm, owner, Kind::Capture)
+    }
     fn create(&mut self, vm: &mut Vm, owner: Value, kind: Kind) -> Result<Value, AdapterError> {
         if self.methods.is_none() {
             let package = vm.program().package();
@@ -571,7 +583,8 @@ impl SessionVm {
             } else {
                 let kind = kind(self.vm.heap(), object)?;
                 if kind != Kind::Completion
-                    && !(kind == Kind::Presentation && symbol == "reel::completion::cancel")
+                    && !(matches!(kind, Kind::Presentation | Kind::Capture)
+                        && symbol == "reel::completion::cancel")
                 {
                     return Err(AdapterError::Input("expected completion"));
                 }

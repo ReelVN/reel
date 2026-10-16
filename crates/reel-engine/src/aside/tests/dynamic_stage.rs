@@ -5,8 +5,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
         match next(vm, session) {
             RunOutcome::HostCall(ticket) => {
                 if let Err(error) = vm.dispatch(session, ticket, "en", 256) {
-                    vm.reject_native(session, ticket, error.native_fault_kind().unwrap())
-                        .unwrap();
+                    vm.reject_native(session, ticket, error).unwrap();
                 }
             }
             other => return other,

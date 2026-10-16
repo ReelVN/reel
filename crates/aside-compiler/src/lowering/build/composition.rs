@@ -98,21 +98,7 @@ impl FunctionBuilder<'_, '_> {
         )?;
         self.release(done)?;
         self.start(body_block)?;
-        if let Some(symbol) = self.pattern_symbol(pattern)? {
-            let binding = self.local(symbol)?.ok_or_else(|| {
-                self.l.b.error(
-                    ErrorKind::InvalidIr,
-                    "for binding must belong to the current frame",
-                )
-            })?;
-            match self.def.bindings[binding.index()].storage {
-                bc::BindingStorage::Cell(_) => {
-                    self.op(bc::Opcode::CellNew, binding.0, 0, 0, node)?
-                }
-                bc::BindingStorage::Value(reg) => self.op(bc::Opcode::Clear, reg.0, 0, 0, node)?,
-            }
-            self.write(symbol, value, true, node)?;
-        }
+        self.bind_value(pattern, value, depth, true)?;
         self.release(value)?;
         self.l.b.push(
             &mut self.loops,
