@@ -186,7 +186,9 @@ impl SessionVm {
             let output = self.vm.host_continuation(ticket)?[0];
             self.vm.heap_mut().end_derived(output)?;
         }
-        self.issued = None;
+        if result.is_ok() {
+            self.issued = None;
+        }
         result
     }
 
