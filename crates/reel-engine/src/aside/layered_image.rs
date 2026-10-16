@@ -66,7 +66,7 @@ impl Work {
 
 fn defaults(heap: &mut Heap) -> Result<Value, HeapError> {
     let fit = heap.alloc_string("contain")?;
-    let values = heap.alloc_array(&[Value::NULL, fit])?;
+    let values = heap.alloc_array(&[Value::NULL, fit, Value::NULL, Value::int(1)])?;
     for property in NodeProperty::PROPERTIES {
         let value = match (property.default)() {
             Const::Null => Value::NULL,
@@ -93,7 +93,8 @@ fn description(
     }
     let count = heap.table_len(part)?;
     heap.observe_read(part, None)?;
-    let mut values = Vec::with_capacity(2 + NodeProperty::PROPERTIES.len());
+    let mut values =
+        Vec::with_capacity(registry::IMAGE_PREFIX.len() + NodeProperty::PROPERTIES.len());
     let mut work = 2 * heap.sequence_len(defaults)?;
     for i in 0..heap.sequence_len(defaults)? {
         values.push(heap.sequence_get(defaults, i)?);
@@ -120,8 +121,9 @@ fn image_field(heap: &Heap, key: Value) -> Result<(usize, u32), AdapterError> {
     let info = heap.info(key)?;
     let mut work = 1;
     if info.kind == ObjectKind::String {
-        for (index, name) in ["source", "fit"]
-            .into_iter()
+        for (index, name) in registry::IMAGE_PREFIX
+            .iter()
+            .copied()
             .chain(NodeProperty::PROPERTIES.iter().map(|p| p.name))
             .enumerate()
         {
@@ -273,7 +275,7 @@ impl SessionVm {
             phase if phase == Phase::Apply as u64 => {
                 if work.index < self.vm.heap().sequence_len(work.descriptions)? {
                     self.apply_image_slot(ticket, &work)?;
-                    cost += (NodeProperty::PROPERTIES.len() + 2) as u32;
+                    cost += (NodeProperty::PROPERTIES.len() + registry::IMAGE_PREFIX.len()) as u32;
                     work.index += 1;
                     self.layered_continue(ticket, &work, Phase::Apply)?;
                 } else {
@@ -309,7 +311,7 @@ impl SessionVm {
             if node.tag() != ValueTag::Null {
                 let property = PropertyId {
                     host: node,
-                    field: 2 + NodeProperty::Visible.index() as u32,
+                    field: (registry::IMAGE_PREFIX.len() + NodeProperty::Visible.index()) as u32,
                 };
                 if self.vm.heap().host_property(property)?.as_bool() != Some(false) {
                     self.vm

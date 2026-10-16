@@ -3,10 +3,12 @@ fn main() {
     let chapters = ["序章", "窗上的光", "下一幕"];
     let caption = " · ".join(chapters);
     let title = "中🙂é";
+    let entered_name = "\u{3000} 空 山 \u{a0}";
     stage.replace(column(x: 32, y: 32, gap: 16) {
         text(caption, font_size: 32);
         text(f"首项：{caption.slice_scalars(0..2)}");
         text(f"{title}：{title.byte_len()} 字节，{title.scalar_count()} 个标量");
+        text(f"玩家名：{entered_name.trim()}");
         if caption.starts_with("序章") && caption.ends_with("下一幕") {
             text("章节顺序正确", color: "#e8d5ac");
         }

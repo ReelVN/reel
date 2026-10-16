@@ -452,22 +452,32 @@ impl Service {
                 Err(error) if error.reason.retryable() => {}
                 Err(error) => return Err(error.reason.message),
             },
-            Phase::Read(len) => match self.io.as_mut().unwrap().read(ReadRequest {
-                resource: load.source.clone(),
-                offset: 0,
-                len,
-                priority: Priority::Visible,
-                scope: Scope::Process,
-                output: self
-                    .input
-                    .reserve(u64::from(len))
-                    .map_err(|e| format!("asset input budget: {}", e.message))?,
-                completion: completion()?,
-            }) {
-                Ok(id) => load.phase = Phase::Reading(id),
-                Err(error) if error.reason.retryable() => {}
-                Err(error) => return Err(error.reason.message),
-            },
+            Phase::Read(len) => {
+                if u64::from(len) > self.options.input_bytes {
+                    return Err(format!(
+                        "asset {:?} requires {len} input bytes; configured capacity is {}",
+                        load.source.key.0, self.options.input_bytes
+                    ));
+                }
+                let Ok(output) = self.input.reserve(u64::from(len)) else {
+                    // Other reads/decoders own the input tickets. Keep this
+                    // request pending until their existing maintenance releases them.
+                    return Ok(());
+                };
+                match self.io.as_mut().unwrap().read(ReadRequest {
+                    resource: load.source.clone(),
+                    offset: 0,
+                    len,
+                    priority: Priority::Visible,
+                    scope: Scope::Process,
+                    output,
+                    completion: completion()?,
+                }) {
+                    Ok(id) => load.phase = Phase::Reading(id),
+                    Err(error) if error.reason.retryable() => {}
+                    Err(error) => return Err(error.reason.message),
+                }
+            }
             Phase::Probe if load.kind == AssetKind::Bytes => {
                 load.phase = Phase::Bytes(
                     ResourceVersion {

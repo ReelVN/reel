@@ -67,7 +67,8 @@ impl Shape {
     }
     fn prefix(self) -> usize {
         match self {
-            Self::Text | Self::Button | Self::Image => 2,
+            Self::Text | Self::Button => 2,
+            Self::Image => registry::IMAGE_PREFIX.len(),
             Self::TextInput => text_input::TextInputField::PROPERTIES.len(),
             Self::Slider => controls::SliderField::PROPERTIES.len(),
             Self::Switch | Self::Checkbox => controls::ToggleField::PROPERTIES.len(),
@@ -117,6 +118,8 @@ impl Shape {
             Self::Image => NodeKind::Image {
                 source: read_source(heap, get(0)?, limit)?,
                 fit: read_fit(heap, get(1)?)?,
+                slice: read_slice(heap, get(2)?)?,
+                slice_scale: nonnegative(get(3)?)?,
                 origin,
             },
             Self::Particles => {
@@ -178,7 +181,8 @@ impl StageBinding {
             ("reel.scroll", Shape::Scroll),
             ("reel.layout", Shape::Stack),
         ] {
-            registry.register_validator(name, 1, shape.validator())?;
+            let version = if matches!(shape, Shape::Image) { 2 } else { 1 };
+            registry.register_validator(name, version, shape.validator())?;
         }
         Ok(())
     }

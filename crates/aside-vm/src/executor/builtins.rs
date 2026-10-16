@@ -34,6 +34,9 @@ pub(super) enum Builtin {
     Join,
     AsciiLowercase,
     AsciiUppercase,
+    Trim,
+    TrimStart,
+    TrimEnd,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -64,6 +67,9 @@ impl Builtin {
             (String, "join") => Some(Self::Join),
             (String, "to_ascii_lowercase") => Some(Self::AsciiLowercase),
             (String, "to_ascii_uppercase") => Some(Self::AsciiUppercase),
+            (String, "trim") => Some(Self::Trim),
+            (String, "trim_start") => Some(Self::TrimStart),
+            (String, "trim_end") => Some(Self::TrimEnd),
             _ => None,
         }
     }
@@ -94,6 +100,9 @@ impl Builtin {
             Builtin::Join,
             Builtin::AsciiLowercase,
             Builtin::AsciiUppercase,
+            Builtin::Trim,
+            Builtin::TrimStart,
+            Builtin::TrimEnd,
         ];
         usize::try_from(id)
             .ok()
@@ -392,7 +401,10 @@ impl Vm {
             | Builtin::EndsWith
             | Builtin::Join
             | Builtin::AsciiLowercase
-            | Builtin::AsciiUppercase => {
+            | Builtin::AsciiUppercase
+            | Builtin::Trim
+            | Builtin::TrimStart
+            | Builtin::TrimEnd => {
                 if let Err(kind) = self.start_text_builtin(s, call) {
                     self.collection_fault(s, kind)?;
                 }

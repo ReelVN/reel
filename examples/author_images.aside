@@ -5,6 +5,8 @@ fn main() {
     stage.replace(column(gap: 16, padding: 24) {
         picture;
         image("assets/panels.png", width: 160, height: 160, fit: "cover");
+        image("assets/panels.png", width: 480, height: 80,
+            slice: [24, 16, 24, 16], slice_scale: 1);
     });
     narrator("The same resource can appear in different frames.");
     picture.source = "assets/sun.jpg";

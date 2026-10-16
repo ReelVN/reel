@@ -3,6 +3,8 @@ use aside_host::PropertySchema;
 pub(super) use aside_host::{NativeContract, NativeParameter};
 use aside_vm::bytecode::{self as bc, BuiltinType, Effects};
 
+pub(super) const IMAGE_PREFIX: &[&str] = &["source", "fit", "slice", "slice_scale"];
+
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "reel::camera" => &["camera_x", "camera_y", "zoom", "camera_rotation"],
@@ -16,7 +18,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::text" => &["value", "on_link"],
         "reel::text_input" => &["value", "on_change", "on_submit"],
         "reel::particles" => super::particles::PREFIX,
-        "reel::image" => &["source", "fit"],
+        "reel::image" => IMAGE_PREFIX,
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
         "reel::toggle" | "reel::checkbox" => &["label", "value", "on_change"],
@@ -201,8 +203,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     } else {
                         BuiltinType::String
                     },
-                    default: if matches!(name, "button" | "input") || field == "on_link" {
+                    default: if matches!(name, "button" | "input")
+                        || matches!(field, "on_link" | "slice")
+                    {
                         Some(bc::Const::Null)
+                    } else if field == "slice_scale" {
+                        Some(bc::Const::Int(1))
                     } else {
                         (field == "fit").then(|| bc::Const::Utf8("contain".into()))
                     },
@@ -246,7 +252,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "slider" {
+            abi_version: if matches!(name, "slider" | "image") {
                 9
             } else if name == "particles" {
                 3

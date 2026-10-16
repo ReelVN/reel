@@ -66,6 +66,8 @@ fn scene(
             NodeKind::Image {
                 source: source.into(),
                 fit: ObjectFit::Contain,
+                slice: None,
+                slice_scale: 1.,
                 origin: Some("camera-tiles.aside:3:9".into()),
             },
             NodeProps {

@@ -35,6 +35,7 @@ pub(crate) struct Images {
     pub(crate) tiles: BTreeMap<String, TileDemand>,
     skipped: BTreeSet<String>,
     wanted: BTreeMap<String, Option<String>>,
+    mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
     displayed: BTreeSet<String>,
     pending: Option<Pending>,
@@ -56,6 +57,7 @@ impl Images {
             tiles: BTreeMap::new(),
             skipped: BTreeSet::new(),
             wanted: BTreeMap::new(),
+            mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
             displayed: BTreeSet::new(),
             pending: None,
@@ -73,16 +75,27 @@ impl Images {
         self.assets.needs_poll()
     }
     pub fn request_stage(&mut self, view: &crate::stage_widget::StageView) {
-        self.encoded = view.encoded_images();
         match view.image_requests() {
-            Ok(wanted) => self.request(wanted),
+            Ok(requests) => {
+                self.encoded = requests.encoded;
+                self.request_mounted(requests.required, requests.mounted);
+            }
             Err(error) => {
+                self.encoded.clear();
                 self.request(BTreeMap::new());
                 self.failure = Some(error);
             }
         }
     }
     pub fn request(&mut self, wanted: BTreeMap<String, Option<String>>) {
+        let mounted = wanted.keys().cloned().collect();
+        self.request_mounted(wanted, mounted);
+    }
+    fn request_mounted(
+        &mut self,
+        wanted: BTreeMap<String, Option<String>>,
+        mounted: BTreeSet<String>,
+    ) {
         if self.closed {
             return;
         }
@@ -96,16 +109,21 @@ impl Images {
             self.assets.cancel(self.pending.take().unwrap().id);
         }
         self.wanted = wanted;
+        self.mounted = mounted;
         self.tiles
             .retain(|_, tile| self.wanted.contains_key(&tile.owner));
         self.skipped.clear();
         self.manifests
             .retain(|source, _| self.wanted.contains_key(source));
         self.failure = None;
+        let loading = self.wanted.keys().any(|source| {
+            !self.loaded.contains_key(source) && !self.manifests.contains_key(source)
+        });
         self.loaded.retain(|source, lease| {
             let retain = self.wanted.contains_key(source)
                 || self.displayed.contains(source)
-                || self.tiles.contains_key(source);
+                || self.tiles.contains_key(source)
+                || (!loading && self.mounted.contains(source));
             if !retain {
                 lease.prohibit_new_leases();
             }
@@ -345,7 +363,7 @@ impl Images {
                 .map(|(source, _)| source.clone()),
         );
         self.loaded.retain(|source, lease| {
-            let retain = self.wanted.contains_key(source) || self.tiles.contains_key(source);
+            let retain = self.mounted.contains(source) || self.tiles.contains_key(source);
             if !retain {
                 lease.prohibit_new_leases();
             }
@@ -358,6 +376,7 @@ impl Images {
             self.assets.cancel(pending.id);
         }
         self.wanted.clear();
+        self.mounted.clear();
         self.tiles.clear();
         self.manifests.clear();
         self.encoded.clear();
