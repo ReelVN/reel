@@ -1,8 +1,13 @@
-//! Read-only state produced by the shared input router, with ordinary bindings.
+//! Read-only input state and callbacks share the existing routed node events.
 use super::*;
 use reel_ui::stage::{InteractionState, NodeInteraction};
 
 pub(super) const FIELDS: [&str; 5] = ["hover", "pressed", "focused", "disabled", "focus_visible"];
+
+pub(super) fn callback_field(interaction_offset: u32) -> u32 {
+    interaction_offset - NodeProperty::PROPERTIES.len() as u32
+        + NodeProperty::OnInteraction.index() as u32
+}
 
 pub(super) fn publish(
     heap: &mut Heap,
@@ -35,6 +40,24 @@ pub(super) fn publish(
 }
 
 impl StageBinding {
+    pub(in crate::aside) fn interaction_callback(
+        &self,
+        heap: &Heap,
+        node: NodeId,
+    ) -> Result<Option<(Value, Value)>, AdapterError> {
+        let Some(binding) = self.handles.get(&node) else {
+            return Ok(None);
+        };
+        let target = heap.import_handle(binding.handle)?;
+        let callback = heap
+            .table_entry(
+                heap.host_fields(target)?,
+                callback_field(binding.interaction_offset),
+            )?
+            .1;
+        Ok((callback.tag() != ValueTag::Null).then_some((target, callback)))
+    }
+
     pub(in crate::aside) fn interaction(
         &mut self,
         heap: &mut Heap,

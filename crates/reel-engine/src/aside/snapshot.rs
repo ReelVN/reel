@@ -130,10 +130,10 @@ impl SessionSnapshot {
         // Read the fixed version prefix before decoding the nested VM. Postcard
         // does not retain custom serde error messages from that deserializer.
         let (version, vm_bytes): (u32, _) = postcard::take_from_bytes(bytes)?;
-        if version != 4 {
+        if version != 5 {
             return Err(SnapshotError::Version {
                 format: "session",
-                expected: 4,
+                expected: 5,
                 actual: version,
             });
         }
@@ -392,7 +392,7 @@ impl SessionCapture<'_> {
         }
         Ok(SessionSnapshot {
             committed_save: None,
-            version: 4,
+            version: 5,
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,

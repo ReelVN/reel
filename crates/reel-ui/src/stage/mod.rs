@@ -10,6 +10,7 @@ pub mod particles;
 
 use crate::input::{ActionPhase, Binding};
 use crate::kurbo::{Affine, Insets, Point, Size, Vec2};
+use crate::peniko::Color;
 use crate::properties::ObjectFit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -196,6 +197,10 @@ pub enum NodeKind {
         slice: Option<Insets>,
         /// Logical border width per source pixel when nine-slice drawing is enabled.
         slice_scale: f64,
+        repeat: [bool; 2],
+        tile_scale: f64,
+        corner_colors: Option<[Color; 4]>,
+        slice_center: bool,
         /// Author constructor location, retained through later source changes.
         origin: Option<String>,
     },
@@ -217,12 +222,33 @@ pub enum NodeKind {
     Stack,
 }
 
+/// Axes filled from the parent's content box after its size has been measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Stretch {
+    #[default]
+    None,
+    X,
+    Y,
+    Both,
+}
+impl Stretch {
+    pub fn axis(self, axis: crate::kurbo::Axis) -> bool {
+        matches!(
+            (self, axis),
+            (Self::Both, _)
+                | (Self::X, crate::kurbo::Axis::Horizontal)
+                | (Self::Y, crate::kurbo::Axis::Vertical)
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeProps {
     pub x: f64,
     pub y: f64,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub stretch: Stretch,
     pub opacity: f64,
     pub visible: bool,
     pub enabled: bool,
@@ -263,6 +289,7 @@ impl Default for NodeProps {
             y: 0.,
             width: None,
             height: None,
+            stretch: Stretch::None,
             opacity: 1.,
             visible: true,
             enabled: true,

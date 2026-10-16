@@ -388,6 +388,113 @@ fn structural_edits_keep_retained_widgets_and_remove_retired_geometry() {
 }
 
 #[test]
+fn stretched_background_follows_content_without_changing_flow_or_scroll_extent() {
+    use reel_ui::stage::Stretch;
+    let mut f = Fixture::new(None);
+    f.edit(f.root, |p| {
+        *p = NodeProps {
+            width: Some(100.),
+            padding: 10.,
+            gap: 7.,
+            ..Default::default()
+        };
+    });
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage.update(f.root, NodeKind::Column, props).unwrap();
+    f.edit(f.red, |p| {
+        *p = NodeProps {
+            width: Some(1000.),
+            height: Some(1000.),
+            stretch: Stretch::Both,
+            background: Some([255, 0, 0, 255]),
+            ..Default::default()
+        };
+    });
+    f.edit(f.blue, |p| {
+        *p = NodeProps {
+            width: Some(60.),
+            height: Some(30.),
+            ..Default::default()
+        };
+    });
+    let tail = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(40.),
+                height: Some(20.),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    f.stage.add(f.root, tail, 2).unwrap();
+    let first = f.record();
+    f.accept(&first);
+    let ids = f.layouts();
+    let root = ids[&f.root].0;
+    let background = ids[&f.red].0;
+    assert_eq!(
+        first.geometry().get(root).unwrap().size,
+        Size::new(100., 77.)
+    );
+    assert_eq!(
+        first.geometry().get(background).unwrap().size,
+        Size::new(80., 57.)
+    );
+    assert_eq!(
+        first
+            .geometry()
+            .get(ids[&tail].0)
+            .unwrap()
+            .window_transform
+            .translation(),
+        Vec2::new(10., 47.)
+    );
+    f.edit(f.blue, |p| p.height = Some(70.));
+    let resized = f.record();
+    f.accept(&resized);
+    assert_eq!(
+        resized.geometry().get(root).unwrap().size,
+        Size::new(100., 117.)
+    );
+    assert_eq!(
+        resized.geometry().get(background).unwrap().size,
+        Size::new(80., 97.)
+    );
+    assert_eq!(f.layouts()[&f.red], (background, ids[&f.red].1 + 1));
+    f.edit(f.root, |p| p.height = Some(80.));
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Scroll {
+                axis: ScrollAxis::Vertical,
+                offset: Vec2::ZERO,
+                follow_end: false,
+                align: reel_ui::widgets::ScrollAlign::Start,
+            },
+            props,
+        )
+        .unwrap();
+    let scrolled = f.record();
+    f.accept(&scrolled);
+    assert_eq!(
+        scrolled.geometry().get(background).unwrap().size,
+        Size::new(80., 60.)
+    );
+    let scene = f
+        .bridge
+        .root()
+        .get_widget(root)
+        .unwrap()
+        .downcast::<SceneWidget>()
+        .unwrap();
+    assert_eq!(scene.scroll.content(), Size::new(80., 97.));
+}
+
+#[test]
 fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
     let font = std::env::var_os("REEL_SESSION_FONT")
         .map(|path| reel_ui::peniko::Blob::new(Arc::new(std::fs::read(path).unwrap())));
@@ -1578,6 +1685,10 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
                 fit: Default::default(),
                 slice: None,
                 slice_scale: 1.,
+                repeat: [false; 2],
+                tile_scale: 1.,
+                corner_colors: None,
+                slice_center: true,
             },
             NodeProps::default(),
             vec![],

@@ -153,9 +153,27 @@ Implemented: text, image, row, column, stack and stage.replace use one shared no
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
+Use the common `stretch: "both"` property to fit a background image to a container sized by its content, without counting text lines or writing measured heights back into script state. `"x"` and `"y"` fill only that axis inside the parent's padding; the default is `"none"`. A stretched axis does not contribute to the parent's measurement and overrides width/height on that axis; x/y and anchors still apply. Stretching along a row/column's flow axis makes the child an overlay without consuming flow space or gaps. In scroll containers, stretching uses the viewport's inner box and does not increase that axis's scroll extent.
+
+```aside
+stack(width: 420) {
+    image("images/panel.png", stretch: "both", slice: 12);
+    column(width: 420, padding: 24, gap: 16) {
+        text("The frame follows wrapped text and buttons.", width: 372);
+        button("Continue", on_click: |event| game.advance());
+    }
+}
+```
+
+Complete example: [author_stretch.aside](../../examples/author_stretch.aside). Supply `fonts/body.ttf` and `images/panel.png`, then run `reel dev examples/author_stretch.aside`. The button changes the content while the background retains its identity and follows the new height.
+
 ### Layered images
 
 An image's `color` multiplies its pixels: `image("assets/panels.png", color: "#ffaaaa")` gives the image a red tint; white preserves it. Both the color's alpha and opacity affect transparency. Ordinary images, tiled large images and individual layer descriptions share this behavior; a container's color does not affect its children. Use bind/derive for hover and other state colors without preparing or uploading separate images.
+
+`image("assets/pattern.png", width: 1280, height: 720, repeat: "both", tile_scale: 1)` repeats a pattern at its original pixel size. repeat accepts none, x, y or both; repeating ignores fit and cannot be combined with slice or a prepared `.reel-image`. tile_scale must be positive. `corner_colors: ["#ffffff", "#ffffff", "#ffaaaa", "#ffaaaa"]` specifies top-left, top-right, bottom-right and bottom-left colors, interpolated bilinearly across the node's content box and multiplied by color. It works with ordinary, nine-slice and prepared images without copying textures.
+
+Complete example: [author_image_patterns.aside](../../examples/author_image_patterns.aside). Provide `fonts/body.ttf` and `images/pattern.png`, then run `reel dev examples/author_image_patterns.aside`; changing the tile scale reuses the same image.
 
 Images do not receive pointer input themselves, so track, thumb and other control skins do not block the underlying control. Place an image inside a button or input to make it clickable or draggable; the container handles mouse and touch input.
 
@@ -269,6 +287,8 @@ The complete [author_dynamic_stage.aside](../../examples/author_dynamic_stage.as
 Use `image(source, fit: "contain", ...)` to place PNG/JPEG files on the stage. Without width/height, an image uses its pixel dimensions as logical dimensions; setting just one preserves its aspect ratio. With both set, contain fits the whole image with empty space, cover fills and crops the box, and stretch fills the box without preserving the ratio. Images also support the common position, visibility, opacity and padding properties. `source` and `fit` can be changed on the original node.
 
 For panels or button backgrounds, use `slice: 24` for nine-slice drawing, or `slice: [24, 16, 24, 16]` for separate left, top, right and bottom insets. Insets use source pixels; `slice_scale`, which defaults to 1, scales the destination border widths. All values must be finite and nonnegative. Nine-slice drawing fills the content box, preserving corner proportions while stretching edges and the center. Oversized source insets or a target too small for the borders shrink all four borders proportionally; zero-area slices are skipped. `slice: null` restores ordinary fit. Both properties support assignment, bindings and layered_image descriptors. Use whole PNG/JPEG images or encoded image Bytes; tiled .reel-image sources do not support nine-slice drawing. All slices share the image without generating or uploading extra pixels.
+
+`slice_center: false` draws only the nine-slice border, leaving its center transparent; the default is true. For example: `image("assets/frame.png", width: 320, height: 180, slice: 10, slice_center: false)`.
 
 ```aside
 fn main() {
@@ -431,6 +451,8 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, cubic in/out/in_out, quadratic quad_in/quad_out/quad_in_out and sine_in/sine_out/sine_in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`. sequence/parallel/repeat are available; scope is not implemented yet.
 
+`tween(viewport, scroll_y: 400, duration: 0.5, easing: "out")` smoothly moves a scroll viewport; `scroll_x` is also supported. The target must be a scroll node, and the content dimensions still constrain the scroll range.
+
 For a sine-shaped movement, choose `sine_in` to accelerate, `sine_out` to decelerate, or `sine_in_out` to start and finish slowly. All reach the exact requested endpoint. These differ from the cubic in/out/in_out curves and the quadratic quad_in/quad_out/quad_in_out curves.
 
 For wall-clock time, import `use std::time::{now, parts, format};`. now() returns integer UTC Unix seconds. parts(timestamp, timezone: null) returns year/month/day/hour/minute/second/weekday/offset_seconds; weekday is Monday 1 through Sunday 7. format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) formats text using strftime patterns. timezone accepts IANA names such as Asia/Shanghai and UTC; omission uses the system zone, or UTC when unavailable. saves.list's saved_at can be passed directly. These calls do not refresh automatically: update a model from a regular task and bind the text. See [author_wall_clock.aside](../../examples/author_wall_clock.aside).
@@ -573,6 +595,17 @@ Use `bind(node.x)` or `bind(node[key])` to capture a stable property location. T
 
 Every node exposes read-only observable `hover`, `pressed`, `focused`, and `disabled` properties. Read them directly or connect them with `bind`; they cannot be assigned or used as writable slider/toggle values. Hover and focus include descendants; pressed includes pointer capture and the button’s own keyboard/controller confirmation hold. Disabled includes ancestor disabling. Cancellation, hiding, disabling, and window focus loss clear ongoing interaction. When a node retires, computations reading it stop updating and keep their last successful value. Removing the last consumer stops its computed appearance updates; shared consumers keep updating, and rebinding a retained reference resumes updates, but cannot restore a retired input. Set `decorated: false` on buttons and toggles to remove the default focus outline and toggle indicator/spacing, then compose the appearance from ordinary children. See [author_control_states.aside](../../examples/author_control_states.aside).
 
+Use `on_interaction` when hover or focus should change application state, such as keeping a gallery item selected after the pointer leaves it. Every node accepts this callback or null, including assignment after construction. The immutable event contains `target`, `hover`, `pressed`, `focused`, `disabled`, and `focus_visible`; its booleans retain that transition's values even if the callback waits. Callbacks run only for actual state changes, after the whole event batch's read-only states are published. Assigning a callback does not send an initial event. Waiting callbacks belong to the node and are cancelled when it retires. Without a callback, no event object or task is allocated; use `bind`/`derive` for appearance alone.
+
+```aside
+let gallery = model({selected: null});
+let card = button("Sketch", on_interaction: |event| {
+    if event.hover || event.focus_visible { gallery.selected = "sketch"; }
+});
+```
+
+[author_control_states.aside](../../examples/author_control_states.aside) combines transient appearance with a selection caption retained after leaving a control. Supply `fonts/body.ttf`, then run `reel dev examples/author_control_states.aside`.
+
 ## 8 Styling and Moving Elements Together
 
 Images using the same resource are shared by the player. The wgpu backend reuses submitted GPU images, so changes to text or hover state do not require uploading the whole interface again. Cached images are released on resource retirement or when space is needed; authors do not manage GPU handles.
@@ -652,6 +685,8 @@ Use `spawn(work, owner: root)` for independent scripted scenes or background gam
 
 Task capacity grows with actual concurrency and is reused; authors do not reserve a task count. Rust hosts can set their own admission quota through `VmLimits.max_tasks`; allocations still count against the heap budget.
 
+Ordinary functions run in the current task and return after their internal waits complete. If `ask()` already uses `await result` and returns bool, call it as `if ask() { ... }`; use another await only when a function returns an awaitable activity or completion. Awaiting a plain value such as bool reports `NotAwaitable` at that line.
+
 See [author_fitted_text.aside](../../examples/author_fitted_text.aside) for a runnable example of resizing, switching text languages and hover outlines.
 
 Forms, sign-in screens, settings and embedded games can return their own results. `completion(owner: root)` creates a one-shot awaitable. A callback submits any value with `.resolve(value)` (null when omitted), and the caller continues through `await` while other input and activities keep running. A component can return its node and result together:
@@ -726,7 +761,7 @@ button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/sl
 
 game.restart(story_id) uses the current session's fixed main-story module set to rerun the story task from a named chapter entry point. It preserves current story variables and ends the previous main-story task and its interaction; the target function is responsible for constructing its own scene. game.start(entry) creates a fresh session, suitable for a new game. saves.load restores the saved position, variables, and scene. Authors use these distinctions to give route buttons clearly defined actions.
 `game.reading()` returns stable read-only observable `auto/paused/delay` state. `game.set_auto(enabled, delay: null)` controls auto-reading; delay is a finite nonnegative number of seconds after the full text has actually been presented, defaults to 2 seconds, and is preserved when omitted. `game.pause_reading(paused)` pauses reveal, automatic advancement and dialogue/choice input; ordinary UI controls can still close a history page. Auto-reading waits for player input at choices and continues afterward. Focus loss, suspension, modal UI, pending resources and active input gestures stop timing; resuming starts a full delay again. State belongs to the session, survives UI replacement, and defaults to manual and unpaused in a new session. Finite scene activities and independent audio have separate controls. Authors choose every control, layout and history-page interaction.
-`game.set_skip(enabled, unread: false)` is implemented. Observe `game.reading().skipping/skip_unread` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue; choices still require player input. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. Rust hosts reuse `ReadProgress` through `Session::new_with_read_progress` and connect `ids/from_ids` to their own persistent storage; new sessions default to empty progress. A changed source module version is conservatively unread.
+`game.set_skip(enabled, unread: false, after_choices: false)` is implemented. Observe `game.reading().skipping/skip_unread/skip_after_choices` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue. after_choices: true preserves skip mode while waiting for the player to choose, then continues under the same read policy. Pause, focus loss and modal UI still cancel this mode. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. Rust hosts reuse `ReadProgress` through `Session::new_with_read_progress` and connect `ids/from_ids` to their own persistent storage; new sessions default to empty progress. A changed source module version is conservatively unread.
 
 Use `game.clear_read_progress()` to reset read progress. The current waiting dialogue group and its lines immediately report `read: false`, and skipping that is limited to read dialogue stops. Future dialogue is unread until normal advancement records it again. History and completed NVL lines retain their presentation; automatic reading and skipping that includes unread dialogue keep their policies. Loading a save also evaluates its waiting dialogue against the current read records. This operation releases the old records and takes time proportional to their capacity. It performs no disk IO and does not delete game saves or `persistent` system data. Rust hosts have the corresponding `Session::clear_read_progress()` method. See the runnable [author_reading.aside](../../examples/author_reading.aside).
 
@@ -1105,6 +1140,8 @@ fn main() {
 `audio.play` reads, decodes and plays in the background, returning an activity immediately. `await` returns `Completed` or `Stopped`; loading and device errors can be caught with `try/catch`. `volume` is a nonnegative linear gain: 1 preserves the source level and 0 mutes it. pause/resume retain position, stop does not restart playback, and repeated waits retain the same result.
 
 Images, fonts and audio share the host's resource input capacity. When concurrent reads temporarily fill it, later reads wait for existing work to release its input. A single file larger than the configured input capacity still fails with its path and byte counts in the diagnostic.
+
+Audio decoding accounts for overlapping old and new storage only during buffer growth and the final transfer to shared storage. Ordinary packet decoding reuses existing PCM capacity. Insufficient memory reports the bytes needed by that decoding stage.
 
 `start` selects the starting position in seconds, and `audio.position(sound)` reads the current content position. Loading returns the requested start, pausing holds the position, and a finished activity retains its final position. With `looping: true`, use `loop_start` and `loop_end` to choose a loop; the default covers the whole track. A start before loop_start plays the introduction first, then wraps from loop_end to loop_start. A start beyond loop_end wraps into the loop. The end is exclusive, and the interval must fit within the source and contain at least one frame. Keep the default loop bounds when looping is disabled.
 

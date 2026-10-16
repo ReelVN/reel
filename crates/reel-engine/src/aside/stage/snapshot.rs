@@ -120,6 +120,10 @@ impl Shape {
                 fit: read_fit(heap, get(1)?)?,
                 slice: read_slice(heap, get(2)?)?,
                 slice_scale: nonnegative(get(3)?)?,
+                repeat: read_image_repeat(heap, get(4)?, get(2)?)?,
+                tile_scale: positive(get(5)?)?,
+                corner_colors: read_corner_colors(heap, get(6)?)?,
+                slice_center: boolean(get(7)?)?,
                 origin,
             },
             Self::Particles => {
@@ -181,7 +185,7 @@ impl StageBinding {
             ("reel.scroll", Shape::Scroll),
             ("reel.layout", Shape::Stack),
         ] {
-            let version = if matches!(shape, Shape::Image) { 2 } else { 1 };
+            let version = if matches!(shape, Shape::Image) { 4 } else { 2 };
             registry.register_validator(name, version, shape.validator())?;
         }
         Ok(())
@@ -241,6 +245,11 @@ impl StageBinding {
             NodeBinding {
                 handle,
                 interaction_offset,
+                interaction_listening: heap
+                    .table_entry(fields, interaction::callback_field(interaction_offset))?
+                    .1
+                    .tag()
+                    != ValueTag::Null,
                 fields_version: heap.info(fields)?.content_version,
                 mask_source,
                 input_source: if matches!(saved.shape, Shape::Input) {

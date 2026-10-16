@@ -98,7 +98,7 @@ fn removing_a_hovered_control_freezes_its_pending_skin_derivations() {
         drive(&mut vm, &mut session, true);
         let control = button(&vm, "dismiss");
         vm.interactions(
-            &session,
+            &mut session,
             &[NodeEvent::Interaction(NodeInteraction {
                 node: control,
                 state: InteractionState {

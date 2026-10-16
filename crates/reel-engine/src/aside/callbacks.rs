@@ -108,16 +108,28 @@ impl SessionVm {
     /// Publish input feedback before dispatching callbacks. A batch uses one stage sync.
     pub fn interactions(
         &mut self,
-        session: &Session,
+        session: &mut Session,
         events: &[reel_ui::stage::NodeEvent],
     ) -> Result<bool, AdapterError> {
         self.live(session)?;
         let pending = self.vm.heap().derived_pending();
         let mut changed = false;
+        let mut callbacks = Vec::new();
         for event in events {
             match event {
                 reel_ui::stage::NodeEvent::Interaction(event) => {
-                    changed |= self.stage.interaction(self.vm.heap_mut(), event)?
+                    if self.stage.interaction(self.vm.heap_mut(), event)? {
+                        changed = true;
+                        if let Some((target, callback)) = self
+                            .stage
+                            .interaction_callback(self.vm.heap(), event.node)?
+                        {
+                            callbacks
+                                .try_reserve(1)
+                                .map_err(|_| AdapterError::Allocation)?;
+                            callbacks.push((event.node, target, callback, event.state));
+                        }
+                    }
                 }
                 reel_ui::stage::NodeEvent::Scroll(event) => {
                     changed |= self.stage.scroll(self.vm.heap_mut(), event)?
@@ -128,6 +140,23 @@ impl SessionVm {
         if changed {
             self.feedback_only = self.reactive_ready && !pending && self.derived_task.is_none();
             self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        }
+        // Each callback sees the complete batch's current node state and its
+        // own immutable transition. No events or tasks are made without a handler.
+        for (node, target, callback, state) in callbacks {
+            let event = super::observable::record(
+                self.vm.heap_mut(),
+                &[
+                    ("target", target),
+                    ("hover", Value::bool(state.hover)),
+                    ("pressed", Value::bool(state.pressed)),
+                    ("focused", Value::bool(state.focused)),
+                    ("disabled", Value::bool(state.disabled)),
+                    ("focus_visible", Value::bool(state.focus_visible)),
+                ],
+                &[],
+            )?;
+            self.start_callback(session, node, callback, event)?;
         }
         Ok(changed)
     }
@@ -449,7 +478,7 @@ impl SessionVm {
             .skip_input
             .is_some_and(|node| self.stage.scene.node(node).is_none())
         {
-            session.set_skip_reading(false, false);
+            session.set_skip_reading(false, false, false);
         }
         if !session.reading().skipping() {
             self.skip_input = None;

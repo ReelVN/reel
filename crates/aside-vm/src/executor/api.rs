@@ -206,6 +206,7 @@ pub enum FaultKind {
     UninitializedField = 21,
     ConstructionFailed = 22,
     PatternMismatch = 23,
+    NotAwaitable = 24,
 }
 pub use crate::{FaultCode, FaultId, FaultInfo, FaultRoot, NewFault};
 #[derive(Debug)]
@@ -372,6 +373,9 @@ impl FaultKind {
         match self {
             Self::Thrown => "explicit throw",
             Self::Type => "type contract failed",
+            Self::NotAwaitable => {
+                "await requires an Awaitable; ordinary function calls already wait for their result"
+            }
             Self::Uninitialized => "read before initialization",
             Self::AlreadyInitialized => "binding already initialized",
             Self::ReadOnly => "read-only binding",

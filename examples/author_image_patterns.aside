@@ -1,0 +1,12 @@
+fn main() {
+    game.configure(title: "Image patterns", width: 720, height: 480,
+        fonts: ["fonts/body.ttf"]);
+    let state = model({large: false});
+    stage.replace(stack(width: 720, height: 480) {
+        image("images/pattern.png", stretch: "both", repeat: "both",
+            tile_scale: derive(|| if state.large { 2 } else { 1 }),
+            corner_colors: ["#ffffff", "#ffbbee", "#443388", "#225577"]);
+        button("Change tile scale", x: 24, y: 24,
+            on_click: |event| { state.large = !state.large; });
+    });
+}

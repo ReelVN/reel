@@ -80,8 +80,14 @@ impl StaticSoundData {
 						} else {
 							frames.capacity()
 						};
+						// Existing capacity is retained twice only while reallocating.
+						let old_capacity = if capacity > frames.capacity() {
+							frames.capacity()
+						} else {
+							0
+						};
 						let peak = capacity
-							.checked_add(frames.capacity())
+							.checked_add(old_capacity)
 							.and_then(|n| n.checked_add(buffer.frames()))
 							.and_then(|n| n.checked_mul(std::mem::size_of::<crate::Frame>()))
 							.ok_or_else(|| std::io::Error::other("PCM size overflow"))?;

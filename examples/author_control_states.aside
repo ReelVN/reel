@@ -16,6 +16,9 @@ fn main() {
         fonts: ["fonts/body.ttf"]);
     let status = text("Choose a control", font_size: 24);
     let start = painted_button("Start", |event| { status.value = "Activated"; });
+    start.on_interaction = |event| {
+        if event.hover || event.focus_visible { status.value = "Start selected"; }
+    };
     let music = toggle(decorated: false, width: 260, height: 64,
         background: "#284860");
     music.add(text("Music", x: 18, y: 18));
@@ -23,6 +26,9 @@ fn main() {
         background: "#70d890", visible: bind(music.value), rotation: 45));
     music.add(stack(y: 59, width: 260, height: 5, background: "#ffd580",
         visible: bind(music.focused)));
+    music.on_interaction = |event| {
+        if event.hover || event.focus_visible { status.value = "Music selected"; }
+    };
     stage.replace(column(gap: 20, padding: 28, width: 960, height: 540) {
         start;
         music;

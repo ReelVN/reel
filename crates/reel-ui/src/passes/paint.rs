@@ -44,7 +44,14 @@ impl LayerCollector {
         }
     }
 
-    fn append(&mut self, scene: &Scene, transform: Affine, owner: WidgetId, image_color: [f32; 4]) {
+    fn append(
+        &mut self,
+        scene: &Scene,
+        transform: Affine,
+        owner: WidgetId,
+        image_color: [f32; 4],
+        image_gradient: Option<crate::frame::ImageColorGradient>,
+    ) {
         let start = self.current_scene.commands().len();
         self.current_scene.append_transformed(scene, transform);
         for (offset, command) in self.current_scene.commands()[start..].iter().enumerate() {
@@ -57,7 +64,12 @@ impl LayerCollector {
                 });
             }
         }
-        self.record_owner(start, owner, image_color);
+        self.record_owner(
+            start,
+            owner,
+            image_color,
+            image_gradient.map(|gradient| gradient.transformed(transform)),
+        );
     }
 
     fn push_image_mask(
@@ -107,11 +119,17 @@ impl LayerCollector {
             effect_transform: transform,
             mask_progress,
         });
-        self.record_owner(command, owner, [1.; 4]);
+        self.record_owner(command, owner, [1.; 4], None);
         true
     }
 
-    fn record_owner(&mut self, start: usize, owner: WidgetId, image_color: [f32; 4]) {
+    fn record_owner(
+        &mut self,
+        start: usize,
+        owner: WidgetId,
+        image_color: [f32; 4],
+        image_gradient: Option<crate::frame::ImageColorGradient>,
+    ) {
         let end = self.current_scene.commands().len();
         if start == end {
             return;
@@ -119,6 +137,7 @@ impl LayerCollector {
         if let Some(last) = self.command_owners.last_mut()
             && last.owner == owner
             && last.image_color == image_color
+            && last.image_gradient == image_gradient
             && last.commands.end == start
         {
             last.commands.end = end;
@@ -127,6 +146,7 @@ impl LayerCollector {
                 commands: start..end,
                 owner,
                 image_color,
+                image_gradient,
             });
         }
     }
@@ -134,7 +154,7 @@ impl LayerCollector {
     fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
         let start = self.current_scene.commands().len();
         draw(&mut self.current_scene);
-        self.record_owner(start, owner, [1.; 4]);
+        self.record_owner(start, owner, [1.; 4], None);
     }
 
     fn paint_window(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
@@ -316,6 +336,7 @@ fn paint_widget(
             content_box_to_layer_transform,
             id,
             state.image_color,
+            state.image_gradient,
         );
 
         if let Some(clip) = state.clip_path {
@@ -338,7 +359,13 @@ fn paint_widget(
                 content_box_to_layer_transform,
             );
         } else {
-            layer_collector.append(scene, content_box_to_layer_transform, id, state.image_color);
+            layer_collector.append(
+                scene,
+                content_box_to_layer_transform,
+                id,
+                state.image_color,
+                state.image_gradient,
+            );
         }
     }
 
@@ -408,6 +435,7 @@ fn paint_widget(
             content_box_to_layer_transform,
             id,
             state.image_color,
+            state.image_gradient,
         );
 
         if global_state.inspector_state.hovered_widget == Some(id) {

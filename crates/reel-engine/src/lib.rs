@@ -752,21 +752,22 @@ impl Session {
             }
         }
         if self.reading.skipping() && !self.reading.skip_unread() {
-            self.reading.set_skip(false, false);
+            self.reading.set_skip(false, false, false);
         }
         Ok(())
     }
 
-    pub fn set_skip_reading(&mut self, enabled: bool, unread: bool) {
-        self.reading.set_skip(enabled, unread);
+    pub fn set_skip_reading(&mut self, enabled: bool, unread: bool, after_choices: bool) {
+        self.reading.set_skip(enabled, unread, after_choices);
         self.check_skip_boundary();
     }
 
     fn check_skip_boundary(&mut self) {
-        if matches!(&self.active, Some(Interaction::Choice(_)))
+        if (matches!(&self.active, Some(Interaction::Choice(_)))
+            && !self.reading.skip_after_choices())
             || matches!(&self.active, Some(Interaction::Dialogue(d)) if !d.previously_read && !self.reading.skip_unread())
         {
-            self.reading.set_skip(false, false);
+            self.reading.set_skip(false, false, false);
         }
     }
 

@@ -21,3 +21,5 @@ features remain opt-in, with ordinary dependencies pinned in the workspace lock.
 Static decoding exposes a PCM reservation/cancellation checkpoint, used by the
 media adapter before buffer growth and final Arc transfer. The same decoder
 continues to serve file and host-provided sources.
+Packet decoding counts the old PCM allocation twice only when it actually
+grows; packets that fit reuse the existing allocation and conversion scratch.

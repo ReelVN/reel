@@ -911,7 +911,7 @@ impl SessionUi {
                 .is_none_or(|previous| previous.input_scope() != scope);
             let modal = scope.1.is_some();
             if modal {
-                self.session.set_skip_reading(false, false);
+                self.session.set_skip_reading(false, false, false);
             }
             if modal != self.reading_modal {
                 self.pause_dialogue();
@@ -1254,7 +1254,7 @@ impl SessionUi {
         if let TextEvent::WindowFocusChange(focused) = &event {
             self.reading_focused = *focused;
             if !focused {
-                self.session.set_skip_reading(false, false);
+                self.session.set_skip_reading(false, false, false);
             }
             self.pause_dialogue();
         }
@@ -1294,7 +1294,7 @@ impl SessionUi {
                     return Err("input sequence exhausted".into());
                 }
                 Ok(_) if advance => {
-                    self.session.set_skip_reading(false, false);
+                    self.session.set_skip_reading(false, false, false);
                     self.session.set_auto_reading(false, None);
                 }
                 _ => {}
@@ -1756,7 +1756,7 @@ mod tests {
             let mut session = session();
             say(&mut session, "Manual interruption");
             if skip {
-                session.set_skip_reading(true, true);
+                session.set_skip_reading(true, true, false);
             } else {
                 session.set_auto_reading(true, Some(std::time::Duration::ZERO));
             }

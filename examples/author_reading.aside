@@ -2,6 +2,7 @@
 let reading = game.reading();
 let dialogue = game.dialogue();
 let choices = game.choice();
+let preferences = model({after_choices: false});
 let mio = character("Mio", id: "mio");
 
 fn history_page() {
@@ -29,7 +30,7 @@ pub fn main() {
     stage.replace(input(width: 1000, height: 720,
         bindings: {skip: [binding("ControlLeft"), binding("RightShoulder")]},
         on_action: |event| {
-            if event.phase == "pressed" { game.set_skip(true); }
+            if event.phase == "pressed" { game.set_skip(true, after_choices: preferences.after_choices); }
             if event.phase == "released" || event.phase == "cancelled" { game.set_skip(false); }
         }) { stack() {
         column(x: 40, y: 420, width: 920, gap: 16) {
@@ -45,12 +46,13 @@ pub fn main() {
             button(on_click: |event| game.set_auto(!reading.auto, delay: 2.0)) {
                 text(value: derive(|| if reading.auto { "Auto: on" } else { "Auto: off" }));
             }
-            button(on_click: |event| game.set_skip(!reading.skipping)) {
+            button(on_click: |event| game.set_skip(!reading.skipping, after_choices: preferences.after_choices)) {
                 text(value: derive(|| if reading.skipping { "Skip: on" } else { "Skip read" }));
             }
             button("History", on_click: |event| game.pause_reading(true));
             button("Reset read progress", on_click: |event| game.clear_read_progress());
         }
+        checkbox("Keep skipping after choices", value: bind(preferences.after_choices), x: 40, y: 80);
         view(history_page);
     } });
     mio("这一次，阅读的节奏由你来定。");

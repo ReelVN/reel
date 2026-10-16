@@ -68,6 +68,10 @@ fn scene(
                 fit: ObjectFit::Contain,
                 slice: None,
                 slice_scale: 1.,
+                repeat: [false; 2],
+                tile_scale: 1.,
+                corner_colors: None,
+                slice_center: true,
                 origin: Some("camera-tiles.aside:3:9".into()),
             },
             NodeProps {

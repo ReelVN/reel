@@ -50,7 +50,10 @@ impl Vm {
         let native = self
             .heap
             .host_await(self.read(*s, value)?)
-            .map_err(heap_fault)?;
+            .map_err(|error| match error {
+                HeapError::TypeMismatch | HeapError::WrongKind => FaultKind::NotAwaitable,
+                other => heap_fault(other),
+            })?;
         let call = s.pc;
         let site = NativeSite {
             owner: s.owner,

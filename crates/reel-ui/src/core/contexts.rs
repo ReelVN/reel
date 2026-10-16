@@ -2382,6 +2382,21 @@ impl PaintCtx<'_> {
             .components;
     }
 
+    /// Bilinear image tint in this widget's content coordinates. Cached paints
+    /// retain the value; child images keep their own tint.
+    pub fn set_image_corner_colors(&mut self, colors: Option<[peniko::Color; 4]>, bounds: Rect) {
+        self.widget_state.image_gradient = colors.map(|colors| crate::frame::ImageColorGradient {
+            colors: colors.map(|color| {
+                color
+                    .convert::<peniko::color::LinearSrgb>()
+                    .premultiply()
+                    .components
+            }),
+            transform: Affine::translate(bounds.origin().to_vec2())
+                * Affine::scale_non_uniform(bounds.width(), bounds.height()),
+        });
+    }
+
     /// Controls how this widget subtree is recorded in the current paint pass.
     ///
     /// The declaration is retained across cached pre/paint/post callbacks.

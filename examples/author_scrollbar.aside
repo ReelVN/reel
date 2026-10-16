@@ -32,5 +32,8 @@ fn main() {
         page;
         scrollbar(page, 370, 240);
         button("Append", y: 260, on_click: |e| page.add(text("New line", height: 40)));
+        button("Back to top", x: 160, y: 260, on_click: |e| {
+            await run(tween(page, scroll_y: 0, duration: 0.5, easing: "out"), owner: page);
+        });
     });
 }

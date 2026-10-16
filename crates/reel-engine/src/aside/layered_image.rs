@@ -66,7 +66,17 @@ impl Work {
 
 fn defaults(heap: &mut Heap) -> Result<Value, HeapError> {
     let fit = heap.alloc_string("contain")?;
-    let values = heap.alloc_array(&[Value::NULL, fit, Value::NULL, Value::int(1)])?;
+    let repeat = heap.alloc_string("none")?;
+    let values = heap.alloc_array(&[
+        Value::NULL,
+        fit,
+        Value::NULL,
+        Value::int(1),
+        repeat,
+        Value::int(1),
+        Value::NULL,
+        Value::bool(true),
+    ])?;
     for property in NodeProperty::PROPERTIES {
         let value = match (property.default)() {
             Const::Null => Value::NULL,

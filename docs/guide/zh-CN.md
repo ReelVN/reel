@@ -153,9 +153,27 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 
 stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。`scroll(height: 360) { ... }` 创建纵向滚动区域；axis 可设为 "horizontal" 或 "both"。滚轮、触摸拖动和键盘/手柄焦点跟随共用正常输入；滚动不会重建文字布局。`follow_end: true` 使已处于末端的 NVL 页跟随新内容，上滚阅读后保留位置。
 
+用共同属性 `stretch: "both"` 让背景图片跟随内容撑开的容器，无需计算文字行数或回写高度。`"x"`、`"y"` 只填满父 padding 内的对应轴，默认 `"none"`。被拉伸轴不参与父尺寸测量，并覆盖该轴的 width/height；x/y、anchor 仍有效。在 row/column 流轴上拉伸时，节点成为覆盖层，不增加位置或 gap；scroll 中按视口内框拉伸，不扩大该轴的滚动范围。
+
+```aside
+stack(width: 420) {
+    image("images/panel.png", stretch: "both", slice: 12);
+    column(width: 420, padding: 24, gap: 16) {
+        text("The frame follows wrapped text and buttons.", width: 372);
+        button("Continue", on_click: |event| game.advance());
+    }
+}
+```
+
+完整示例：[author_stretch.aside](../../examples/author_stretch.aside)。准备 `fonts/body.ttf` 和 `images/panel.png`，运行 `reel dev examples/author_stretch.aside`；按钮切换内容时，背景保持身份并跟随新高度。
+
 ### 分层图片
 
 图片的 `color` 用于乘色：`image("assets/panels.png", color: "#ffaaaa")` 让原图偏红，白色保持原样。透明度同时受颜色 alpha 与 opacity 控制。普通图片、分块大图及每个分层描述使用相同规则；给容器设置 color 不会改变子层。使用 bind/derive 调整悬浮等状态的颜色，无需为每种颜色准备或上传一份图片。
+
+`image("assets/pattern.png", width: 1280, height: 720, repeat: "both", tile_scale: 1)` 以图片原始像素大小平铺。repeat 可选 none、x、y、both；重复时不使用 fit，不能同时指定 slice，也不能使用分块 `.reel-image`。tile_scale 必须为正数。`corner_colors: ["#ffffff", "#ffffff", "#ffaaaa", "#ffaaaa"]` 为左上、右上、右下、左下颜色，在节点内容框内双线性渐变并乘以 color；可与普通、九宫格或分块图片组合，不复制纹理。
+
+完整示例：[author_image_patterns.aside](../../examples/author_image_patterns.aside)。准备 `fonts/body.ttf` 和 `images/pattern.png` 后运行 `reel dev examples/author_image_patterns.aside`；切换纹理比例复用同一张图片。
 
 图片本身不接收指针输入，作为轨道、滑块或其他控件皮肤时不会挡住下方控件。需要图片可点击或拖动时，将它放入 button 或 input，由容器处理鼠标和触摸。
 
@@ -269,6 +287,8 @@ fn main() {
 用 `image(source, fit: "contain", ...)` 将 PNG/JPEG 文件放到舞台。省略 width/height 时，图片的像素尺寸作为逻辑尺寸；只指定一边时保持宽高比。指定两边后，contain 完整显示并留空，cover 填满并裁剪，stretch 拉伸填满。图片也支持共同的位置、可见性、透明度和 padding 属性。可以直接修改原节点的 source 和 fit。
 
 面板、按钮底图等可用 `slice: 24` 开启九宫格，或用 `slice: [24, 16, 24, 16]` 分别指定左、上、右、下边距。边距以源图像像素计，`slice_scale` 默认 1，用于调整目标边宽；数值均须有限且非负。九宫格填满内容框，角保持比例，边和中心拉伸；框过小或源边距超出图片时四边统一按比例收缩，零面积切片不绘制。`slice: null` 恢复普通 fit。两项属性可直接赋值或绑定，也可写入 layered_image 的图层描述。使用完整 PNG/JPEG 或图片 Bytes，分块 .reel-image 不适用于九宫格；多个切片共享图片，不生成或上传额外像素。
+
+`slice_center: false` 让九宫格只绘边框，中心保持透明；默认 true。例如 `image("assets/frame.png", width: 320, height: 180, slice: 10, slice_center: false)`。
 
 ```aside
 fn main() {
@@ -445,6 +465,8 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 已接通；scope 尚未实现。
 
+`tween(viewport, scroll_y: 400, duration: 0.5, easing: "out")` 平滑移动滚动区域；也可使用 `scroll_x`。目标必须是 scroll 节点，滚动范围仍由实际内容尺寸限制。
+
 需要正弦曲线运动时，使用 `sine_in` 从慢到快加速，`sine_out` 从快到慢减速，或 `sine_in_out` 两端慢、中间快。所有曲线都精确到达指定终点；它们与三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 的运动节奏不同。
 
 五次曲线 `quint_in`、`quint_out`、`quint_in_out` 提供更明显的加速与减速；`bounce_out` 在抵达终点时回弹，`bounce_in` 是其反向，`bounce_in_out` 在两端组合回弹。回弹不会越过起终值。用同一个 tween 描述菜单滑入和 Logo 落下，见 [author_activities.aside](../../examples/author_activities.aside)。
@@ -585,6 +607,17 @@ bind 连接可观察属性，属性同时保留原来的读写权限；text 可�
 
 所有节点的 `hover`、`pressed`、`focused`、`disabled` 都可直接读取或用 `bind` 连接。它们由输入系统发布，脚本不可赋值，也不能绑定为 slider/toggle 的可写 value。hover/focused 包含后代；pressed 包含指针捕获与按钮自身的键盘、手柄确认按住；disabled 包含祖先禁用。取消、隐藏、禁用和失焦会清理交互状态。节点退休后，读取该节点的 derive 停止更新并保留最后成功值。移除最后一个消费者会停止其派生外观更新；共享消费者继续更新，重新绑定保留引用会恢复更新，但不能恢复已退休的输入。按钮和开关使用 `decorated: false` 关闭默认焦点框及开关指标/留白，再用普通 children 构成完整外观。实例见 [author_control_states.aside](../../examples/author_control_states.aside)。
 
+悬停或聚焦需要改变业务状态时使用 `on_interaction`，例如鼠标离开后仍保留图库选中项。所有节点都接受这个回调或 null，构造后也可赋值。不可变事件包含 `target`、`hover`、`pressed`、`focused`、`disabled`、`focus_visible`；即使回调等待，其中的布尔值也保留该次变化的值。只有状态实际变化才触发回调，并先发布整批事件的只读状态。注册回调不会发送初始事件。等待中的回调属于节点，节点退休时取消。没有回调时不分配事件对象或任务；纯外观继续使用 `bind`/`derive`。
+
+```aside
+let gallery = model({selected: null});
+let card = button("Sketch", on_interaction: |event| {
+    if event.hover || event.focus_visible { gallery.selected = "sketch"; }
+});
+```
+
+[author_control_states.aside](../../examples/author_control_states.aside) 同时展示瞬时外观和离开后保留的选中提示；准备 `fonts/body.ttf` 后用 `reel dev examples/author_control_states.aside` 运行。
+
 ## 八 风格与共同运动
 
 图片使用相同资源时由播放器共享。wgpu 后端复用已提交的 GPU 图片，界面文字或悬停状态变化不会要求重新上传整套图片；缓存会在资源退休或需要腾出空间时释放，作者无需管理 GPU 句柄。
@@ -663,6 +696,8 @@ mask_progress 和 mask_softness 使用普通 derive/tween。完整示例：[auth
 
 任务容量随实际并发数量增长和复用，不需要作者预先指定任务数。Rust 宿主可用 `VmLimits.max_tasks` 设置自己的准入配额；分配仍计入堆预算。
 
+普通函数在当前任务内调用，内部等待完成后才返回。例如 `ask()` 内部已 `await result` 并返回 bool，调用者直接写 `if ask() { ... }`；只有返回活动或 completion 等可等待对象时才再写 await。对 bool 等普通值使用 await 会在该行报告 `NotAwaitable`。
+
 可运行的缩字、语言切换和悬停描边示例见 [author_fitted_text.aside](../../examples/author_fitted_text.aside)。
 
 表单、登录、设置或小游戏可以返回自己的结果。`completion(owner: root)` 创建一次性可等待对象，回调调用 `.resolve(value)` 提交任意值（省略为 null），主流程通过 `await` 继续；其他输入和活动照常执行。组件可以把节点和结果一起返回：
@@ -737,7 +772,7 @@ button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/sl
 
 game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命名章节入口重新执行剧情任务，保留当前剧情变量，结束旧主剧情任务及其交互；目标函数负责构造自己的画面。game.start(entry) 创建全新会话，适合新游戏。saves.load 恢复保存的位置、变量和画面。作者据此给路线按钮选择含义清楚的操作。
 `game.reading()` 返回稳定的只读可观察 `auto/paused/delay` 状态。`game.set_auto(enabled, delay: null)` 控制自动阅读；delay 为全文实际呈现后等待的有限非负秒数，默认 2 秒，省略时保留原值。`game.pause_reading(paused)` 暂停文字显现、自动推进和对白/选项输入，普通 UI 控件仍可用于关闭回看页。自动阅读在选择处等待玩家操作，之后继续；失焦、挂起、模态界面、待加载资源和正在进行的输入手势均停止计时，恢复后重新等待完整 delay。设置属于会话，更换 UI 保留，新会话默认手动、未暂停。有限演出和独立音频有各自控制，不随阅读暂停。按钮外观、布局、打开/关闭回看页的方式均由作者决定。
-`game.set_skip(enabled, unread: false)` 已实现。`game.reading().skipping/skip_unread` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白，选择仍等待玩家。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。Rust 宿主用 `Session::new_with_read_progress` 复用 `ReadProgress`，通过 `ids/from_ids` 接自己的持久存储；新建会话默认空记录。源码模块版本变化保守视为未读。
+`game.set_skip(enabled, unread: false, after_choices: false)` 已实现。`game.reading().skipping/skip_unread/skip_after_choices` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白；after_choices: true 在选择时保留快进模式，等待玩家选择后继续，仍遵守已读策略。暂停、失焦和模态界面仍会取消该模式。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。Rust 宿主用 `Session::new_with_read_progress` 复用 `ReadProgress`，通过 `ids/from_ids` 接自己的持久存储；新建会话默认空记录。源码模块版本变化保守视为未读。
 按章节跳过 `game.skip_to(story_id)` 仍依赖后续章节注册服务。
 
 重置已读进度使用 `game.clear_read_progress()`。当前等待对白的组与各行 `read` 立即变为 false，仅跳已读的快进停止；之后的对白重新算未读，正常推进后重新登记。历史和已完成 NVL 行保留原有样式，自动阅读与允许跳过未读的策略保持原值。读档时，当前等待对白也按最新已读记录重新判断。此操作释放旧已读记录，耗时随记录容量增长，不读写磁盘，也不删除游戏存档或 `persistent` 系统数据。Rust 宿主提供相同的 `Session::clear_read_progress()`。运行示例见 [author_reading.aside](../../examples/author_reading.aside)。
@@ -1102,6 +1137,8 @@ fn main() {
 `audio.play` 在后台读取、解码并播放，立即返回活动。`await` 返回 `Completed` 或 `Stopped`；加载与设备错误可以 `try/catch`。`volume` 是非负线性增益，1 是原始音量，0 静音。pause/resume 保留播放位置，stop 不重启声音，重复等待保留同一个结果。
 
 图片、字体和音频共用宿主的资源读取容量。并发读取暂时占满容量时，后续读取等待已有任务释放输入；单个文件超过宿主配置的输入容量仍会报错，诊断包含路径和字节数。
+
+音频解码仅在缓冲扩容和最终共享存储转换时计入新旧存储重叠；普通包解码复用已有 PCM 容量。内存预算不足时会报告解码阶段所需字节。
 
 `start` 指定从第几秒起播，`audio.position(sound)` 读取当前内容位置秒数；加载中返回请求起点，暂停时保持，结束后仍可读取最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至音轨结尾。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，边界必须位于资源内并至少包含一帧。未开启 looping 时使用默认循环边界。
 

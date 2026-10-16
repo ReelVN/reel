@@ -125,7 +125,8 @@ pub struct Pipelines {
     pub composite: wgpu::RenderPipeline,
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
-    pub sampler: wgpu::Sampler,
+    pub samplers: [wgpu::Sampler; 4],
+    pub plain_gradient: wgpu::Buffer,
 }
 fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -155,7 +156,20 @@ impl Pipelines {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let paint_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("paint"),
-            entries: &[texture(0), sampler(1)],
+            entries: &[
+                texture(0),
+                sampler(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
         #[cfg(test)]
         counts
@@ -200,19 +214,37 @@ impl Pipelines {
         #[cfg(test)]
         counts
             .samplers
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("linear premultiplied"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
+            .fetch_add(4, std::sync::atomic::Ordering::Relaxed);
+        let samplers = std::array::from_fn(|index| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("linear premultiplied"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                address_mode_u: if index & 1 != 0 {
+                    wgpu::AddressMode::Repeat
+                } else {
+                    wgpu::AddressMode::ClampToEdge
+                },
+                address_mode_v: if index & 2 != 0 {
+                    wgpu::AddressMode::Repeat
+                } else {
+                    wgpu::AddressMode::ClampToEdge
+                },
+                ..Default::default()
+            })
+        });
+        let plain_gradient = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("plain image tint"),
+            contents: &[0u8; 96],
+            usage: wgpu::BufferUsages::UNIFORM,
         });
         Self {
             paint,
             composite,
             paint_layout,
             composite_layout,
-            sampler,
+            samplers,
+            plain_gradient,
         }
     }
     pub(super) fn composite(
@@ -260,7 +292,7 @@ impl Pipelines {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.samplers[0]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
