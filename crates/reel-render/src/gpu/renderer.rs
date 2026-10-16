@@ -205,6 +205,7 @@ impl Renderer {
                 true
             }
         });
+        self.images.retire(&[]);
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
@@ -390,7 +391,6 @@ impl Renderer {
         self.gpu.queue.submit([prepared.encoder.finish()]);
         self.targets
             .publish(prepared.size, prepared.quality, &prepared.targets);
-        self.images.publish(&prepared.images);
         self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
         self.gpu

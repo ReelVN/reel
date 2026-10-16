@@ -4,7 +4,9 @@ use reel_ui::peniko::{
     ImageAlphaType, ImageFormat,
     color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
 };
-use reel_ui::resources::{ColorEncoding, ResourceData, ResourceLease};
+use reel_ui::resources::{
+    ColorEncoding, ResourceData, ResourceLease, ResourceVersion, ResourceWeak,
+};
 use std::sync::LazyLock;
 
 static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
@@ -37,7 +39,11 @@ pub struct Image {
     pub view: wgpu::TextureView,
     pub size: [u32; 2],
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
-    pub(super) source: Option<reel_ui::resources::ResourceLease>,
+    pub(super) source: Option<ImageSource>,
+}
+pub(super) struct ImageSource {
+    pub(super) version: ResourceVersion,
+    pub(super) lease: ResourceWeak,
 }
 pub fn image(
     gpu: &Gpu,

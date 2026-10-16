@@ -7,7 +7,7 @@ use super::{
     resources::{self, Image},
 };
 use reel_core::budget::{BudgetPool, BudgetTicket};
-use reel_ui::resources::{ResourceHandle, ResourceVersion};
+use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceVersion};
 use std::{
     collections::HashMap,
     sync::{
@@ -24,26 +24,38 @@ pub(super) struct ImageCache {
 
 struct Upload {
     done: Arc<AtomicBool>,
-    _images: Vec<Arc<Image>>,
+    copies: Vec<Copy>,
     _staging: Vec<BudgetTicket>,
     _admission: BudgetTicket,
     _storage: Reservation,
 }
+struct Copy {
+    _image: Arc<Image>,
+    source: ResourceLease,
+}
 
 impl ImageCache {
-    pub(super) fn publish(&self, images: &HashMap<ResourceHandle, Arc<Image>>) {
+    fn publish(&self, images: &HashMap<ResourceHandle, Arc<Image>>) {
         let mut cache = self.images.lock().unwrap();
         for (&handle, image) in images {
-            if !image.source.as_ref().unwrap().is_retired() {
+            if !image.source.as_ref().unwrap().lease.is_released() {
                 cache.insert(handle, image.clone());
             }
         }
     }
 
     pub(super) fn retire(&self, versions: &[ResourceVersion]) {
+        let uploads = self.uploads.lock().unwrap();
+        for upload in uploads.iter() {
+            for copy in &upload.copies {
+                if versions.contains(copy.source.version()) {
+                    copy.source.prohibit_new_leases();
+                }
+            }
+        }
         self.images.lock().unwrap().retain(|_, image| {
             let source = image.source.as_ref().unwrap();
-            !source.is_retired() && !versions.contains(source.version())
+            !source.lease.is_released() && !versions.contains(&source.version)
         });
     }
 
@@ -92,7 +104,7 @@ impl ImageCache {
         let storage = reserve(
             &budgets.transient,
             &local.transient,
-            (capacity * (size_of::<Arc<Image>>() + size_of::<BudgetTicket>()) + size_of::<Upload>())
+            (capacity * (size_of::<Copy>() + size_of::<BudgetTicket>()) + size_of::<Upload>())
                 as u64,
             gpu.limits.transient_bytes,
             "image upload metadata",
@@ -130,10 +142,19 @@ impl ImageCache {
             };
             let (mut image, _) = resources::image(gpu, &mut encoder, item.source, item.at, cost)?;
             image.residency = Some(residency);
-            image.source = Some(item.source.clone());
+            // Cache ownership must not pin decoded pixels. Existing frame leases
+            // (including retired versions in a transition) may still reuse this
+            // texture; the upload batch alone retains pixels through completion.
+            image.source = Some(resources::ImageSource {
+                version: item.source.version().clone(),
+                lease: item.source.downgrade(),
+            });
             let image = Arc::new(image);
             images.insert(handle, image.clone());
-            uploaded.push(image);
+            uploaded.push(Copy {
+                _image: image,
+                source: item.source.clone(),
+            });
             staging.push(upload);
         }
         if !uploaded.is_empty() {
@@ -145,7 +166,7 @@ impl ImageCache {
                 .on_submitted_work_done(move || signal.store(true, Ordering::Release));
             uploads.push(Upload {
                 done,
-                _images: uploaded,
+                copies: uploaded,
                 _staging: staging,
                 _admission: admitted,
                 _storage: storage,

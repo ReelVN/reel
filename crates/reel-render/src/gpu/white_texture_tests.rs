@@ -641,10 +641,16 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
     }));
     counts(&renderer, 3);
     let retained = renderer.prepare(&frame).unwrap();
+    let versions: Vec<_> = frame
+        .resources()
+        .leases()
+        .iter()
+        .map(|lease| lease.version().clone())
+        .collect();
     for handle in handles {
         assert!(registry.retire(handle));
     }
-    renderer.retire(&[]);
+    renderer.retire(&versions);
     assert_eq!(renderer.usage().resources, 3 * resident);
     drop(retained);
     empty(&renderer);
@@ -653,7 +659,12 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
 #[test]
 #[ignore = "requires actual graphics adapter"]
 fn cold_upload_progress_with_one_submission_slot() {
-    let (frame, _, _) = image_restore_fixture([4, 4]);
+    let (frame, mut registry, handles) = image_restore_fixture([4, 4]);
+    // Retirement prevents new registry leases, not rendering with the immutable
+    // frame's existing leases. A transition/capture can require exactly this.
+    for handle in handles {
+        assert!(registry.retire(handle));
+    }
     let mut renderer = renderer(super::super::GpuLimits {
         max_inflight: 1,
         ..Default::default()
@@ -674,6 +685,9 @@ fn cold_upload_progress_with_one_submission_slot() {
         .unwrap();
     assert_eq!(renderer.poll().unwrap().len(), 1);
     counts(&renderer, 3);
+    drop(frame);
+    renderer.poll().unwrap();
+    empty(&renderer); // The cache does not own decoded pixels after completion.
 }
 
 #[test]
