@@ -1,6 +1,6 @@
 use super::{
     Gpu, GpuError, Quality,
-    pipeline::Pipelines,
+    pipeline::{CompositeOperation, Pipelines},
     renderer::{Budgets, Reservation, reserve},
     resources,
     scopes::{Kind, Scopes, push_stack},
@@ -40,7 +40,7 @@ struct Scope<'a> {
 struct MaskComposition {
     source: Target,
     opacity: f32,
-    mode: u32,
+    operation: CompositeOperation,
 }
 struct Stream<'a> {
     commands: &'a [FrameCommand],
@@ -109,8 +109,7 @@ impl Context<'_> {
                     &mask.source.view,
                     &finished.view,
                     mask.opacity,
-                    mask.mode,
-                    0.,
+                    mask.operation,
                 )?;
                 self.recycle_target(mask.source)?;
                 self.recycle_target(finished)?;
@@ -188,15 +187,20 @@ impl Context<'_> {
                                 &source.view,
                                 &coverage.view,
                                 group.opacity,
-                                1,
-                                0.,
+                                CompositeOperation::AlphaMask,
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
                             continue;
                         }
                         let clipped = self.target()?;
-                        self.combine(&clipped, &source.view, &coverage.view, 1., 1, 0.)?;
+                        self.combine(
+                            &clipped,
+                            &source.view,
+                            &coverage.view,
+                            1.,
+                            CompositeOperation::AlphaMask,
+                        )?;
                         self.recycle_target(source)?;
                         self.recycle_target(coverage)?;
                         source = clipped;
@@ -213,9 +217,12 @@ impl Context<'_> {
                         current.mask = Some(MaskComposition {
                             source,
                             opacity: group.opacity,
-                            mode: match definition.mode {
-                                MaskMode::Alpha => 1,
-                                MaskMode::Luminance => 2,
+                            operation: match mask.progress {
+                                Some(progress) => CompositeOperation::ImageMask(progress),
+                                None => match definition.mode {
+                                    MaskMode::Alpha => CompositeOperation::AlphaMask,
+                                    MaskMode::Luminance => CompositeOperation::LuminanceMask,
+                                },
                             },
                         });
                         let child =
@@ -227,8 +234,7 @@ impl Context<'_> {
                             &source.view,
                             &source.view,
                             group.opacity,
-                            0,
-                            0.,
+                            CompositeOperation::SourceOver,
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -281,8 +287,7 @@ impl Context<'_> {
         source: &wgpu::TextureView,
         mask: &wgpu::TextureView,
         alpha: f32,
-        mode: u32,
-        progress: f32,
+        operation: CompositeOperation,
     ) -> Result<(), GpuError> {
         if self.scissor.empty() {
             return Ok(());
@@ -297,8 +302,7 @@ impl Context<'_> {
             super::pipeline::CompositeParams {
                 scissor: self.scissor,
                 opacity: alpha,
-                mode,
-                progress,
+                operation,
             },
         );
         Ok(())

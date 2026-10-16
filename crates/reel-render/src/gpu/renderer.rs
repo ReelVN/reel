@@ -1,4 +1,8 @@
-use super::{Gpu, GpuError, Quality, pipeline::PipelineSlots, replay::Context};
+use super::{
+    Gpu, GpuError, Quality,
+    pipeline::{CompositeOperation, PipelineSlots},
+    replay::Context,
+};
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
 use reel_ui::frame::RenderFrame;
 use reel_ui::kurbo::Affine;
@@ -289,7 +293,13 @@ impl Renderer {
         if let Some((second, progress)) = second {
             let b = ctx.stream(second, second.commands(), transform)?;
             let mixed = ctx.target()?;
-            ctx.combine(&mixed, &output.view, &b.view, 1., 3, progress)?;
+            ctx.combine(
+                &mixed,
+                &output.view,
+                &b.view,
+                1.,
+                CompositeOperation::Crossfade(progress),
+            )?;
             output = mixed;
             frames.push(second.clone());
         }

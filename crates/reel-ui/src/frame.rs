@@ -6,7 +6,7 @@ use crate::bridge::{CandidateGuard, CandidateKey, RecordedSource};
 use crate::resources::{ResourceHandle, ResourceSnapshot};
 use crate::{
     app::{PresentedGeometryView, VisualLayerKind},
-    core::WidgetId,
+    core::{MaskProgress, WidgetId},
     imaging::{
         self, Composite, Filter, MaskMode,
         record::{self, Clip, Command, Draw, Geometry, Scene},
@@ -111,6 +111,8 @@ pub struct ExternalDraw {
 pub struct MaskUse {
     pub mask: u32,
     pub transform: Affine,
+    /// Per-use image threshold; absent for ordinary alpha/luminance masks.
+    pub progress: Option<MaskProgress>,
 }
 /// Explicitly conservative. Unknown glyph outlines and flood effects remain unbounded;
 /// a backend clamps these to its output target rather than trusting a layout rectangle.
@@ -932,18 +934,20 @@ impl Building {
                 mask = Some(MaskUse {
                     mask: mask_id,
                     transform: t,
+                    progress: None,
                 });
             } else {
                 mask = Some(MaskUse {
                     mask: mask_id,
                     transform: transform * applied.transform,
+                    progress: None,
                 });
             }
         }
         let c = self.cursors.last().unwrap();
         let layer = &self.source.plan.layers[c.layer];
         let meta = if c.stream.is_some() {
-            Some((c.owner, Affine::IDENTITY))
+            Some((c.owner, Affine::IDENTITY, None))
         } else {
             layer
                 .groups
@@ -953,6 +957,7 @@ impl Building {
                     (
                         layer.groups[i].owner,
                         layer.transform * layer.groups[i].effect_transform,
+                        layer.groups[i].mask_progress,
                     )
                 })
         };
@@ -1399,8 +1404,8 @@ fn make_op(
     scene: &Scene,
     c: &Command,
     t: Affine,
-    meta: Option<(WidgetId, Affine)>,
-    mask: Option<MaskUse>,
+    meta: Option<(WidgetId, Affine, Option<MaskProgress>)>,
+    mut mask: Option<MaskUse>,
     resources: &ResourceSnapshot,
 ) -> Result<(LocalId, FrameOp), BuildErrorKind> {
     Ok(match c {
@@ -1413,7 +1418,17 @@ fn make_op(
         Command::PopContext => (LocalId::None, FrameOp::PopContext),
         Command::PushGroup(id) => {
             let g = scene.group(*id);
-            let (owner, effect) = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
+            let (owner, effect, progress) = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
+            if let Some(progress) = progress {
+                if !progress.progress.is_finite()
+                    || !(0.0..=1.).contains(&progress.progress)
+                    || !progress.softness.is_finite()
+                    || progress.softness < 0.
+                {
+                    return Err(BuildErrorKind::InvalidRecord);
+                }
+                mask.as_mut().ok_or(BuildErrorKind::InvalidRecord)?.progress = Some(progress);
+            }
             if !finite(effect)
                 || !valid_composite(g.composite)
                 || mask.is_some_and(|m| !finite(m.transform))

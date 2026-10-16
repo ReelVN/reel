@@ -1,5 +1,6 @@
 //! Stable Aside host nodes projected into Reel's one shared stage model.
 use std::collections::BTreeMap;
+use std::sync::Arc;
 pub(super) mod camera;
 pub(super) mod controls;
 pub(super) mod input;
@@ -79,6 +80,14 @@ pub(super) enum NodeProperty {
     TextOutline,
     #[aside(name = "text_outline_color", ty = String, default = "#000000", validate = validate_color)]
     TextOutlineColor,
+    #[aside(name = "mask", ty = Any, default = null, validate = validate_mask)]
+    Mask,
+    #[aside(name = "mask_progress", ty = Any, default = 1, validate = validate_mask_progress, animatable)]
+    MaskProgress,
+    #[aside(name = "mask_softness", ty = Any, default = 0.06, validate = validate_nonnegative, animatable)]
+    MaskSoftness,
+    #[aside(name = "mask_invert", ty = Bool, default = false)]
+    MaskInvert,
 }
 
 pub(super) struct StageBinding {
@@ -93,6 +102,7 @@ struct NodeBinding {
     fields_version: u64,
     input_source: Option<HeapHandle>,
     text_source: Option<HeapHandle>,
+    mask_source: Option<HeapHandle>,
     text_listening: bool,
     /// Weak identity stamp only: never dereferenced or treated as a GC root.
     radio_option: Option<Value>,
@@ -269,8 +279,10 @@ impl StageBinding {
             heap.table_store(fields, index as u32, key, *argument)?;
         }
         let shape = snapshot::Shape::from_symbol(symbol);
+        let mask_origin = origin.as_deref().map(Arc::from);
         let kind = shape.project(heap, fields, origin, read_limit)?;
-        let props = read_props(heap, fields, prefix.len(), read_limit)?;
+        let props = read_props(heap, fields, prefix.len(), read_limit, None, mask_origin)?;
+        let mask_source = mask_handle(heap, fields, prefix.len())?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
         if matches!(
@@ -414,6 +426,7 @@ impl StageBinding {
                     None
                 },
                 text_listening: symbol == "reel::text" && args[1].tag() != ValueTag::Null,
+                mask_source,
                 radio_option: (symbol == "reel::radio").then_some(args[0]),
                 input_values,
             },
@@ -552,10 +565,18 @@ impl StageBinding {
                 ),
                 kind => (kind.clone(), 0),
             };
-            let props = read_props(heap, fields, offset, read_limit)?;
-            updates.push((id, kind, props, version));
+            let props = read_props(
+                heap,
+                fields,
+                offset,
+                read_limit,
+                Some((binding.mask_source, &node.props)),
+                node.props.mask_origin.clone(),
+            )?;
+            let mask_source = mask_handle(heap, fields, offset)?;
+            updates.push((id, kind, props, version, mask_source));
         }
-        for (id, kind, props, version) in updates {
+        for (id, kind, props, version, mask_source) in updates {
             if matches!(kind, NodeKind::Radio { .. }) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 self.handles.get_mut(&id).unwrap().radio_option = Some(
@@ -589,7 +610,9 @@ impl StageBinding {
                 }
             }
             self.scene.update(id, kind, props)?;
-            self.handles.get_mut(&id).unwrap().fields_version = version;
+            let binding = self.handles.get_mut(&id).unwrap();
+            binding.fields_version = version;
+            binding.mask_source = mask_source;
         }
         Ok(())
     }
@@ -984,7 +1007,11 @@ fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit,
     }
 }
 
-pub(super) fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+pub(super) fn validate_image_property(
+    heap: &Heap,
+    index: u32,
+    value: Value,
+) -> Result<(), HeapError> {
     match index {
         0 => {
             let info = heap.info(value)?;
@@ -1134,6 +1161,39 @@ fn validate_dimension(_: &Heap, value: Value) -> Result<(), HeapError> {
 fn validate_opacity(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(opacity(value))
 }
+fn mask_progress(value: Value) -> Result<f64, AdapterError> {
+    let value = number(value)?;
+    if !(0. ..=1.).contains(&value) {
+        return Err(AdapterError::Input(
+            "mask_progress must be between zero and one",
+        ));
+    }
+    Ok(value)
+}
+fn validate_mask_progress(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(mask_progress(value))
+}
+fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    if value.tag() == ValueTag::Null {
+        return Ok(());
+    }
+    let info = heap.info(value)?;
+    if info.kind == ObjectKind::String && info.len != 0 {
+        Ok(())
+    } else {
+        Err(HeapError::TypeMismatch)
+    }
+}
+fn mask_handle(heap: &Heap, fields: Value, offset: usize) -> Result<Option<HeapHandle>, HeapError> {
+    let value = heap
+        .table_entry(fields, (offset + NodeProperty::Mask.index()) as u32)?
+        .1;
+    if value.tag() == ValueTag::Null {
+        Ok(None)
+    } else {
+        heap.handle(value).map(Some)
+    }
+}
 fn validate_nonnegative(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(nonnegative(value))
 }
@@ -1198,6 +1258,8 @@ fn read_props(
     fields: Value,
     offset: usize,
     read_limit: usize,
+    previous: Option<(Option<HeapHandle>, &NodeProps)>,
+    mask_origin: Option<Arc<str>>,
 ) -> Result<NodeProps, AdapterError> {
     let get = |property: NodeProperty| -> Result<Value, AdapterError> {
         Ok(heap
@@ -1205,6 +1267,17 @@ fn read_props(
             .1)
     };
     let background = get(NodeProperty::Background)?;
+    let mask = get(NodeProperty::Mask)?;
+    validate_mask(heap, mask)?;
+    let mask = if mask.tag() == ValueTag::Null {
+        None
+    } else if let Some((Some(handle), props)) = previous
+        && handle == heap.handle(mask)?
+    {
+        props.mask.clone()
+    } else {
+        Some(Arc::from(read_text(heap, mask, read_limit)?))
+    };
     Ok(NodeProps {
         x: number(get(NodeProperty::X)?)?,
         y: number(get(NodeProperty::Y)?)?,
@@ -1243,5 +1316,10 @@ fn read_props(
         scale_y: number(get(NodeProperty::ScaleY)?)?,
         anchor_x: number(get(NodeProperty::AnchorX)?)?,
         anchor_y: number(get(NodeProperty::AnchorY)?)?,
+        mask,
+        mask_origin,
+        mask_progress: mask_progress(get(NodeProperty::MaskProgress)?)?,
+        mask_softness: nonnegative(get(NodeProperty::MaskSoftness)?)?,
+        mask_invert: boolean(get(NodeProperty::MaskInvert)?)?,
     })
 }

@@ -610,19 +610,22 @@ scope(body: |s| {
 Adding an offset only to hud shakes only the dialogue UI. It is independent of underlying x/y movement: multiple x/y offsets add together in the parent's coordinate system, leaving the base layout unchanged. Rendering and hit testing both use the composed result. When scope ends, it removes its own offset, leaving the moved base position correct. Rotation and scaling compose in an explicit transform-matrix order and are expressed through separate group nodes; additive x/y offsets do not imply additive rotation.
 
 ## 9 Masks, Effects, and Custom Scene Choreography
-Historical verification (R01 / Issue #25): focused cases cover internal Rust frame records, resource leases, groups, clipping and opacity. R01 did not yet provide a GPU window, and recording consumers do not establish physical-device behavior. This section's author mask/blur effects remain design targets. The basic stage and real window now work together as described in sections 1 and 2. See the [historical verification scope](../../crates/reel-ui/R01-REPORT.md).
+Historical verification (R01 / Issue #25): focused cases cover internal Rust frame records, resource leases, groups, clipping and opacity. R01 did not yet provide a GPU window, and recording consumers do not establish physical-device behavior. The image-mask API below is implemented; blur and custom shaders remain design targets. The basic stage and real window now work together as described in sections 1 and 2. See the [historical verification scope](../../crates/reel-ui/R01-REPORT.md).
 
 Historical verification (R02): the wgpu backend and winit diagnostic window included images, group opacity, clipping and Parley text. Those historical Rust diagnostics do not establish implementation of advanced-effect APIs. PNG/JPEG author images now use the shared stage and player resource loader. Current author source and ASB enter the real story window through dev/run. See [window documentation](../../crates/reel-player/README.md) and [device verification scope](../../crates/reel-render/R02-REPORT.md).
 
-Effect values such as mask and blur belong to the same compositing system. An effect group first composites its children, then applies its effects, with group opacity applied once. Clipping defines a geometric region; an image mask defines degrees of visibility. mask.progress ranges from 0 for fully hidden to 1 for fully visible; softness controls edge width. Grayscale values in a black-and-white mask determine the order of revelation.
+The mask node property applies a grayscale image mask to an entire subtree, sharing normal image loading and save state. mask_progress ranges from 0 for fully hidden to 1 for fully visible; mask_softness controls edge width, with 0 producing a hard edge. Dark regions appear first; mask_invert: true reverses their order. PNG/JPEG masks stretch to the node rectangle, so set width/height to define the covered area.
 ```aside
-let wipe = mask("assets/ink-mask.png", progress: 0, softness: 0.06);
-let reveal = group(effects: [wipe]) {
+let reveal = stack(width: 1280, height: 720,
+    mask: "assets/ink-mask.png", mask_progress: 0, mask_softness: 0.06) {
     image("assets/window-cg.png");
 };
 view.picture.add(reveal);
-await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
+await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
+reveal.mask = null;
 ```
+mask_progress and mask_softness use ordinary derive/tween. See [author_image_mask.aside](../../examples/author_image_mask.aside). Progress 1 bypasses mask compositing; set mask to null when finished to release its resource reference. Masks do not change logical hit geometry; use enabled/visible to control interaction. Masks require whole PNG/JPEG images, not tiled .reel-image sources.
+
 Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
 Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.

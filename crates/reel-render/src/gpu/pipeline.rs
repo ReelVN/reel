@@ -1,4 +1,5 @@
 use super::{Gpu, GpuError, Quality, mesh::Vertex, targets::Target};
+use reel_ui::core::MaskProgress;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -105,11 +106,19 @@ impl Creations {
         .map(|count| count.load(Ordering::Relaxed))
     }
 }
-pub struct CompositeParams {
+#[derive(Clone, Copy)]
+pub(super) enum CompositeOperation {
+    SourceOver,
+    AlphaMask,
+    LuminanceMask,
+    ImageMask(MaskProgress),
+    Crossfade(f32),
+}
+
+pub(super) struct CompositeParams {
     pub scissor: super::targets::Scissor,
     pub opacity: f32,
-    pub mode: u32,
-    pub progress: f32,
+    pub operation: CompositeOperation,
 }
 pub struct Pipelines {
     pub paint: wgpu::RenderPipeline,
@@ -206,7 +215,7 @@ impl Pipelines {
             sampler,
         }
     }
-    pub fn composite(
+    pub(super) fn composite(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -215,11 +224,22 @@ impl Pipelines {
         mask: &wgpu::TextureView,
         params: CompositeParams,
     ) {
+        let (mode, progress, softness): (u32, f32, f32) = match params.operation {
+            CompositeOperation::SourceOver => (0, 0., 0.),
+            CompositeOperation::AlphaMask => (1, 0., 0.),
+            CompositeOperation::LuminanceMask => (2, 0., 0.),
+            CompositeOperation::Crossfade(progress) => (3, progress, 0.),
+            CompositeOperation::ImageMask(mask) => (
+                if mask.invert { 5 } else { 4 },
+                mask.progress,
+                mask.softness,
+            ),
+        };
         let words = [
             params.opacity.to_bits(),
-            params.mode,
-            params.progress.to_bits(),
-            0,
+            mode,
+            progress.to_bits(),
+            softness.to_bits(),
         ];
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),

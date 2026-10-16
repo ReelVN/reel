@@ -13,11 +13,11 @@ use crate::app::{
     VisualLayerPlan,
 };
 use crate::core::{
-    DefaultProperties, PaintCtx, PaintLayerMode, PropertiesRef, PropertyArena, WidgetArenaNode,
-    WidgetId,
+    DefaultProperties, MaskProgress, PaintCtx, PaintImageMask, PaintLayerMode, PropertiesRef,
+    PropertyArena, WidgetArenaNode, WidgetId,
 };
-use crate::imaging::record::{Clip, Command, Geometry, Scene};
-use crate::imaging::{PaintSink, Painter};
+use crate::imaging::record::{AppliedMask, Clip, Command, Geometry, Group, Mask, Scene};
+use crate::imaging::{Composite, MaskMode, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
 
@@ -28,6 +28,7 @@ struct LayerCollector {
     layers: Vec<VisualLayer>,
     current_owner_id: WidgetId,
     transform: Affine,
+    suppress_output: bool,
 }
 
 impl LayerCollector {
@@ -39,6 +40,7 @@ impl LayerCollector {
             layers: Vec::new(),
             current_owner_id: root_id,
             transform,
+            suppress_output: false,
         }
     }
 
@@ -51,10 +53,62 @@ impl LayerCollector {
                     command: start + offset,
                     owner,
                     effect_transform: transform,
+                    mask_progress: None,
                 });
             }
         }
         self.record_owner(start, owner);
+    }
+
+    fn push_image_mask(
+        &mut self,
+        mask: &PaintImageMask,
+        transform: Affine,
+        owner: WidgetId,
+    ) -> bool {
+        if mask.progress == 1. && mask.opacity == 1. {
+            return false;
+        }
+        let mut group = Group {
+            composite: Composite {
+                alpha: mask.opacity,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mask_progress = if mask.progress == 1. {
+            None
+        } else {
+            let mut scene = Scene::new();
+            let image_transform = Affine::translate(mask.bounds.origin().to_vec2())
+                * Affine::scale_non_uniform(
+                    mask.bounds.width() / f64::from(mask.image.width),
+                    mask.bounds.height() / f64::from(mask.image.height),
+                );
+            Painter::new(&mut scene).draw_image(&mask.image, image_transform);
+            let id = self
+                .current_scene
+                .define_mask(Mask::new(MaskMode::Alpha, scene));
+            group.mask = Some(AppliedMask {
+                mask: id,
+                transform,
+            });
+            Some(MaskProgress {
+                progress: mask.progress,
+                softness: mask.softness,
+                invert: mask.invert,
+            })
+        };
+        let command = self.current_scene.commands().len();
+        self.current_scene.push_group(group);
+        self.groups.push(GroupMetadata {
+            command,
+            owner,
+            effect_transform: transform,
+            mask_progress,
+        });
+        self.record_owner(command, owner);
+        true
     }
 
     fn record_owner(&mut self, start: usize, owner: WidgetId) {
@@ -210,7 +264,16 @@ fn paint_widget(
     state.request_post_paint = false;
     state.needs_paint = false;
 
-    let paint_layer_mode = if is_stashed {
+    let previous_suppression = layer_collector.suppress_output;
+    let suppress_output = previous_suppression
+        || is_stashed
+        || state
+            .subtree_image_mask
+            .as_ref()
+            .is_some_and(|mask| mask.progress == 0.);
+    layer_collector.suppress_output = suppress_output;
+
+    let paint_layer_mode = if suppress_output {
         PaintLayerMode::Inline
     } else {
         state.paint_layer_mode
@@ -233,8 +296,12 @@ fn paint_widget(
         border_box_to_layer_transform.pre_translate(state.border_box_translation());
     let has_clip = state.clip_path.is_some();
     let paint_as_external = paint_layer_mode == PaintLayerMode::External;
+    let has_mask_group = !suppress_output
+        && state.subtree_image_mask.as_ref().is_some_and(|mask| {
+            layer_collector.push_image_mask(mask, content_box_to_layer_transform, id)
+        });
 
-    if !is_stashed {
+    if !suppress_output {
         let Some((pre_scene, scene, _)) = &mut scene_cache.get(&id) else {
             debug_panic!(
                 "Error in paint pass: scene should have been cached earlier in this function."
@@ -287,7 +354,7 @@ fn paint_widget(
         parent_state.merge_up(&mut node.item.state);
     });
 
-    if !is_stashed {
+    if !suppress_output {
         if global_state.debug_paint {
             let border_box_to_window = layer_collector.transform * border_box_to_layer_transform;
             layer_collector.paint_window(id, |scene| {
@@ -343,6 +410,10 @@ fn paint_widget(
         }
     }
 
+    if has_mask_group {
+        layer_collector.paint(id, |scene| scene.pop_group());
+    }
+
     if matches!(
         paint_layer_mode,
         PaintLayerMode::IsolatedScene | PaintLayerMode::External
@@ -351,6 +422,7 @@ fn paint_widget(
     }
 
     layer_collector.current_owner_id = previous_owner_id;
+    layer_collector.suppress_output = previous_suppression;
 }
 
 // --- MARK: ROOT
