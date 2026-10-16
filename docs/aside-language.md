@@ -26,6 +26,8 @@ class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元�
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
+Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 2，不改变 Aside/B01。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。
+
 
 Reel 的 `game.start(entry)` 接收无捕获、无必需参数的普通函数值，在新会话重新初始化模块后执行；接受请求后调用者不再继续。它是宿主 native ABI 1，不改变语言函数、B01 或 ASB。
 

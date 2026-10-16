@@ -803,7 +803,7 @@ Author audio connects background resource loading, the real mixer and story wait
 
 `localization.load(locale, source)` reads a UTF-8 Fluent catalog through the asset service. The calling task waits for background IO and parsing. Success replaces that locale's catalog; IO, syntax and duplicate-ID errors can be caught with try/catch and preserve the old catalog. Cancelling the task cancels the load. `localization.set_locale(locale)` selects a language; `localization.locale()` reads the observable language tag.
 
-`tr(id, fallback, params: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
+`tr(source, id: null, params: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
 
 Use `derive(|| tr(...))` for live UI: changing language reevaluates subscribed expressions. Ordinary tr calls, submitted dialogue/choices, input drafts and stored history strings retain their evaluated content. For live chat history or choice presentation, retain IDs, source text and parameters and call tr in the display binding; branch keys remain independent of labels. No special LocalText type is required.
 
@@ -813,11 +813,18 @@ This fragment comes from [localization.aside](../../examples/localization.aside)
 localization.load("en", "locales/en.ftl");
 localization.set_locale("zh-CN");
 let data = model({name: "Mio", count: 2});
-text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data.name})));
+text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
 button("English", on_click: |event| localization.set_locale("en"));
 ```
 
-Automatic content IDs, reel loc extraction/catalog updates and localized asset substitution remain future capabilities.
+Usually write `tr("雨停了。")` directly. Extraction gives identical source text the same ID; moving code or changing indentation preserves it, while editing the text creates a new ID. Use `tr("雨停了。", id: "opening")` to distinguish meanings or retain an original content ID across edits. Omit the parameter table when the source has no parameters.
+
+```sh
+reel loc extract examples/localization.aside --output source.ftl
+reel loc check examples/locales/en.ftl --locale en
+```
+
+Extraction uses normal module resolution and writes a Fluent source catalog with source locations and function context. Literal text is escaped automatically; source text with params is checked as a Fluent template. Dynamic text or IDs are reported with their locations and need a catalog supplied by the content generator. Replacing an existing output requires --overwrite. Maintain translations in separate target-language FTL catalogs; extraction neither guesses changed identities nor overwrites translations. At runtime, load only the catalogs the game uses; parsing and static text preparation happen during loading. Localized asset substitution remains a future capability.
 video is an ordinary node; audio provides tracks, queues, loop regions, filters, and synchronization groups. play returns an awaitable activity, stop leaves it at its current state, and finish is for activities with an endpoint. Tracks and resources are managed by stable identity. Device reconstruction and seek preserve or rebind logical waits; errors have explicit terminal states.
 custom_node can directly register state, measure, record, route, and event implemented in Aside. measure/record are read-only layout/rendering callbacks with execution budgets. route synchronously decides event consumption, capture, and focus, then event runs as an ordinary suspendable task. A minigame node can therefore prevent the same input from advancing the story while still being able to wait for resources in its application callback. New low-level graphics and platform capabilities are registered through native modules.
 Camera, Mesh, Material, and Effect provide perspective stages and programmable effects, with state and resource identities still included in saves. Each backend declares its supported implementations and fallbacks in a capability list. Live2D, system text-to-speech, mobile/Web packaging, and external services are adapter capabilities within the full target scope. Their specific API documentation will provide examples in the same style alongside verified implementations.

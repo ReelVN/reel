@@ -1,12 +1,25 @@
 //! Platform-independent Fluent catalogs. IO and background execution belong to the host.
 use fluent_bundle::{FluentArgs, FluentResource, concurrent::FluentBundle};
-use std::collections::HashMap;
+use fluent_syntax::ast::{Entry, Expression, InlineExpression, Pattern, PatternElement};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 use unic_langid::LanguageIdentifier;
 
 pub struct Catalog {
     source: String,
     locale: LanguageIdentifier,
-    bundle: FluentBundle<FluentResource>,
+    resource: Arc<FluentResource>,
+    bundle: FluentBundle<Arc<FluentResource>>,
+    static_messages: HashMap<Box<str>, StaticText>,
+}
+
+enum StaticText {
+    Source(Range<usize>),
+    Decoded(Box<str>),
+}
+
+/// Content identity shared by runtime calls and authoring tools.
+pub fn message_id(source: &str) -> String {
+    format!("text-{}", blake3::hash(source.as_bytes()).to_hex())
 }
 
 pub fn language_id(locale: &str) -> Result<LanguageIdentifier, String> {
@@ -31,18 +44,37 @@ impl Catalog {
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
+        let resource = Arc::new(resource);
         let mut bundle = FluentBundle::new_concurrent(vec![locale.clone()]);
         bundle
-            .add_resource(resource)
+            .add_resource(Arc::clone(&resource))
             .map_err(|errors| format!("{source}: {errors:?}"))?;
+        let static_messages = resource
+            .entries()
+            .filter_map(|entry| {
+                let Entry::Message(message) = entry else {
+                    return None;
+                };
+                let value = static_text(message.value.as_ref()?, &resource, &bundle)?;
+                Some((message.id.name.into(), value))
+            })
+            .collect();
         Ok(Self {
             locale,
+            resource,
             bundle,
+            static_messages,
             source: source.into(),
         })
     }
 
     fn format(&self, id: &str, args: &FluentArgs<'_>) -> Option<Result<String, String>> {
+        if let Some(value) = self.static_messages.get(id) {
+            return Some(Ok(match value {
+                StaticText::Source(range) => self.resource.source()[range.clone()].into(),
+                StaticText::Decoded(text) => text.to_string(),
+            }));
+        }
         let pattern = self.bundle.get_message(id)?.value()?;
         let mut errors = Vec::new();
         let text = self.bundle.format_pattern(pattern, Some(args), &mut errors);
@@ -54,6 +86,45 @@ impl Catalog {
     }
 }
 
+fn static_text(
+    pattern: &Pattern<&str>,
+    resource: &FluentResource,
+    bundle: &FluentBundle<Arc<FluentResource>>,
+) -> Option<StaticText> {
+    let source_text = match pattern.elements.as_slice() {
+        [PatternElement::TextElement { value }] => Some(*value),
+        [
+            PatternElement::Placeable {
+                expression: Expression::Inline(InlineExpression::StringLiteral { value }),
+            },
+        ] if !value.contains('\\') => Some(*value),
+        _ => None,
+    };
+    if let Some(value) = source_text {
+        // Fluent's AST text borrows this immutable resource. String literals do not
+        // acquire bidi isolation, so an unescaped literal needs no decoded copy.
+        let start = value.as_ptr().addr() - resource.source().as_ptr().addr();
+        return Some(StaticText::Source(start..start + value.len()));
+    }
+    if !pattern.elements.iter().all(|element| {
+        matches!(
+            element,
+            PatternElement::TextElement { .. }
+                | PatternElement::Placeable {
+                    expression: Expression::Inline(InlineExpression::StringLiteral { .. }),
+                }
+        )
+    }) {
+        return None;
+    }
+    let mut errors = Vec::new();
+    let text = bundle.format_pattern(pattern, None, &mut errors);
+    // Preserve formatting failures at the calling tr rather than failing a load.
+    errors
+        .is_empty()
+        .then(|| StaticText::Decoded(text.into_owned().into_boxed_str()))
+}
+
 /// A request is owned by the calling script task until its one terminal result.
 pub trait CatalogLoader {
     fn load(&mut self, locale: &str, source: &str) -> Result<u64, String>;
@@ -63,13 +134,16 @@ pub trait CatalogLoader {
 
 pub struct Localization {
     locale: LanguageIdentifier,
+    base_locale: LanguageIdentifier,
     catalogs: HashMap<LanguageIdentifier, Catalog>,
     templates: HashMap<(LanguageIdentifier, String), Catalog>,
 }
 impl Default for Localization {
     fn default() -> Self {
+        let locale: LanguageIdentifier = "en".parse().unwrap();
         Self {
-            locale: "en".parse().unwrap(),
+            base_locale: locale.clone(),
+            locale,
             catalogs: HashMap::new(),
             templates: HashMap::new(),
         }
@@ -88,6 +162,7 @@ impl Localization {
         if locale == self.locale {
             return false;
         }
+        self.base_locale = LanguageIdentifier::from_parts(locale.language, None, None, &[]);
         self.locale = locale;
         true
     }
@@ -102,8 +177,7 @@ impl Localization {
     ) -> Result<String, String> {
         let empty = FluentArgs::new();
         let parameters = args.unwrap_or(&empty);
-        let base: LanguageIdentifier = self.locale.language.to_string().parse().unwrap();
-        for locale in [&self.locale, &base] {
+        for locale in [&self.locale, &self.base_locale] {
             if let Some(result) = self
                 .catalogs
                 .get(locale)

@@ -3,4 +3,4 @@ messages = { $count ->
     [one] One new message
    *[other] { $count } new messages
     }
-opening = The rain stopped.
+text-7305493ceca4833fbb773b5791edd3d18b5de523174cb3ca699954b0c364cf1a = The rain stopped.

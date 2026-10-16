@@ -8,6 +8,7 @@ pub use input::{InputError, read_source};
 mod artifact;
 pub mod output;
 pub use artifact::{Artifact, build, package_limits_json};
+pub mod localization;
 pub mod prepare_image;
 pub mod project;
 

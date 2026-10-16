@@ -3,10 +3,10 @@ fn main() {
     localization.set_locale("zh-CN");
     let data = model({name: "Mio", count: 2});
     stage.replace(column(gap: 12) {
-        text(value: derive(|| tr("welcome", "你好，{ $name }。", params: {name: data.name})));
-        text(value: derive(|| tr("messages", "{ $count } 条新消息", params: {count: data.count})));
+        text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
+        text(value: derive(|| tr("{ $count } 条新消息", id: "messages", params: {count: data.count})));
         button("中文", on_click: |event| localization.set_locale("zh-CN"));
         button("English", on_click: |event| localization.set_locale("en"));
     });
-    narrator(tr("opening", "雨停了。"));
+    narrator(tr("雨停了。"));
 }
