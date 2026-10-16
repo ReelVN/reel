@@ -155,6 +155,8 @@ stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。
 
 图片的 `color` 用于乘色：`image("assets/panels.png", color: "#ffaaaa")` 让原图偏红，白色保持原样。透明度同时受颜色 alpha 与 opacity 控制。普通图片、分块大图及每个分层描述使用相同规则；给容器设置 color 不会改变子层。使用 bind/derive 调整悬浮等状态的颜色，无需为每种颜色准备或上传一份图片。
 
+图片本身不接收指针输入，作为轨道、滑块或其他控件皮肤时不会挡住下方控件。需要图片可点击或拖动时，将它放入 button 或 input，由容器处理鼠标和触摸。
+
 `layered_image` 将图片描述组合成一个普通舞台节点；模型依赖变化时才重新计算。数组位置是稳定图层槽，按从后向前的顺序叠放；null 隐藏槽内原有图片，缩短数组会退休尾部槽。每份描述可使用 source、位置、尺寸、fit、color、opacity 等图片属性；省略的属性恢复 image 默认值。描述中的 bind/derive 值作为读取依赖。未变化的属性保持不动，图片节点复用，因此切换表情不会重建身体图层。
 
 例如 `layered_image(|| [body, faces[state.face]], width: 320, height: 180)` 用 state.face 选择前景描述，同时共享 body 描述；给 state.face 赋值即可切换表情。
@@ -705,7 +707,7 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。跨版本执行快照迁移尚未实现。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 2，格式 1 的旧剧情存档会明确报告版本不匹配；系统数据 `persistent` 不受影响。跨版本执行快照迁移尚未实现。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

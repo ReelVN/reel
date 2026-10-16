@@ -26,6 +26,8 @@ pub(super) struct Context<'a> {
     pub(super) glyph_cache: &'a super::glyph_cache::GlyphCache,
     pub(super) glyphs: super::glyph_cache::FrameGlyphs,
     pub(super) white: Option<Arc<resources::Image>>,
+    pub(super) target_cache: &'a super::target_cache::TargetCache,
+    pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
     pub(super) available_targets: Vec<Target>,
     pub(super) scissor: Scissor,
 }
@@ -55,14 +57,37 @@ impl Context<'_> {
             target
         } else {
             let cost = target_bytes(self.size, self.quality)?;
-            self.tickets.push(reserve(
+            let local = self
+                .budget_scope
+                .targets
+                .reserve(cost)
+                .map_err(|_| GpuError::Budget {
+                    domain: "targets",
+                    requested: cost,
+                    available: self
+                        .gpu
+                        .limits
+                        .target_bytes
+                        .saturating_sub(self.budget_scope.targets.usage().bytes),
+                })?;
+            let allocation = self.target_cache.get(
+                self.gpu,
+                self.size,
+                self.quality,
+                self.target_allocations.len(),
                 &self.budgets.targets,
-                &self.budget_scope.targets,
                 cost,
-                self.gpu.limits.target_bytes,
-                "targets",
-            )?);
-            Target::new(&self.gpu.device, self.size, self.quality)
+            )?;
+            self.tickets.push(Reservation {
+                _shared: None,
+                _local: local,
+            });
+            let target = allocation.target.clone();
+            let mut allocations = std::mem::take(&mut self.target_allocations);
+            let pushed = push_stack(&mut allocations, allocation, |bytes| self.transient(bytes));
+            self.target_allocations = allocations;
+            pushed?;
+            target
         };
         let _pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear isolated target"),

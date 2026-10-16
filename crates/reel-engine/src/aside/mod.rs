@@ -108,6 +108,7 @@ impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Input(message) => f.write_str(message),
+            Self::Snapshot(error) => write!(f, "{error}"),
             _ => write!(f, "{self:?}"),
         }
     }

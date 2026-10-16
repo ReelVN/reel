@@ -209,6 +209,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     ));
     let warm = renderer.gpu.upload_creations.snapshot();
     let resident = renderer.usage().resources;
+    let target_resident = renderer.usage().targets;
     assert!(resident <= 2 << 20, "atlas residency {resident}");
     let started = Instant::now();
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
@@ -221,7 +222,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
             .unwrap();
         renderer.poll().unwrap();
         assert_eq!(renderer.usage().resources, resident);
-        assert_eq!(renderer.usage().targets, 0);
+        assert_eq!(renderer.usage().targets, target_resident);
     }
     let uploads = renderer.gpu.upload_creations.snapshot();
     // An optional white coverage texture is independent of glyph count.
@@ -252,6 +253,7 @@ fn usage(renderer: &Renderer) -> [u64; 3] {
     [u.targets, u.resources, u.transient]
 }
 fn empty(renderer: &Renderer) {
+    renderer.targets.clear();
     assert_eq!(usage(renderer), [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);
     assert_eq!(renderer.budgets.resources.usage().tickets, 0);
@@ -394,6 +396,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
             .iter()
             .all(|p| p.iter().all(|c| (*c - 1.).abs() < 0.006))
     );
+    renderer.targets.clear();
     assert_eq!(usage(&renderer), [0, 8, 0]);
     let cached = renderer.prepare(&image_only).unwrap();
     counts(&renderer, 3);

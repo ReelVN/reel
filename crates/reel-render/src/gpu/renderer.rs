@@ -29,6 +29,7 @@ pub struct Prepared {
     tickets: Vec<Reservation>,
     images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
     glyphs: super::glyph_cache::FrameGlyphs,
+    targets: Vec<Arc<super::target_cache::Allocation>>,
     budget_scope: Budgets,
     admission: BudgetTicket,
     generation: super::DeviceGeneration,
@@ -53,6 +54,7 @@ struct Inflight {
     _tickets: Vec<Reservation>,
     _images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
     _glyphs: super::glyph_cache::FrameGlyphs,
+    _targets: Vec<Arc<super::target_cache::Allocation>>,
     _admission: BudgetTicket,
 }
 pub struct Renderer {
@@ -66,6 +68,7 @@ pub struct Renderer {
     pipelines: PipelineSlots,
     images: super::image_cache::ImageCache,
     glyphs: super::glyph_cache::GlyphCache,
+    targets: super::target_cache::TargetCache,
 }
 pub(super) struct Budgets {
     pub(super) targets: BudgetPool,
@@ -142,6 +145,7 @@ impl Renderer {
             pipelines: PipelineSlots::default(),
             images: Default::default(),
             glyphs: Default::default(),
+            targets: Default::default(),
         }
     }
     pub(super) fn reserve_readback(
@@ -251,7 +255,7 @@ impl Renderer {
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
         let mut plan = |frame| {
-            super::targets::peak_targets(frame, |bytes| {
+            super::targets::peak_targets(frame, size, |bytes| {
                 tickets.push(reserve(
                     &self.budgets.transient,
                     &budget_scope.transient,
@@ -267,6 +271,7 @@ impl Renderer {
             targets = targets.max(1 + plan(second)?).max(3);
         }
         let quality = self.gpu.quality_for_targets(size, targets)?;
+        self.targets.configure(size, quality, targets);
         let mut ctx = Context {
             gpu: &self.gpu,
             encoder: self.gpu.device.create_command_encoder(&Default::default()),
@@ -281,6 +286,8 @@ impl Renderer {
             glyph_cache: &self.glyphs,
             glyphs: Default::default(),
             white: None,
+            target_cache: &self.targets,
+            target_allocations: Vec::new(),
             available_targets: Vec::new(),
             scissor: super::targets::Scissor::full(size),
         };
@@ -315,6 +322,7 @@ impl Renderer {
             tickets: ctx.tickets,
             images: ctx.images,
             glyphs: ctx.glyphs,
+            targets: ctx.target_allocations,
             budget_scope: ctx.budget_scope,
             admission,
             generation: self.gpu.generation,
@@ -342,6 +350,8 @@ impl Renderer {
         self.next = id.checked_add(1).ok_or(GpuError::IdentityExhausted)?;
         let done = Arc::new(AtomicBool::new(false));
         self.gpu.queue.submit([prepared.encoder.finish()]);
+        self.targets
+            .publish(prepared.size, prepared.quality, &prepared.targets);
         self.images.publish(&prepared.images);
         self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
@@ -356,6 +366,7 @@ impl Renderer {
             _tickets: prepared.tickets,
             _images: prepared.images,
             _glyphs: prepared.glyphs,
+            _targets: prepared.targets,
             _admission: prepared.admission,
         });
         self.gpu.check()?;

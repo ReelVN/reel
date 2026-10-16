@@ -588,9 +588,10 @@ impl AudioBackend for AudioPlayer {
         self.factory = None;
     }
     fn cleanup_pending(&self) -> bool {
+        // Cancelled asset reads belong to the shared service. Waiting for its
+        // global input pool would also wait for the replacement session's work.
         self.closed
             && (!self.worker.is_idle()
-                || self.assets.pending_io()
                 || self.owner.as_ref().is_some_and(|owner| !owner.is_retired())
                 || self.reclaim.as_ref().is_some_and(|reclaim| {
                     let status = reclaim.status();

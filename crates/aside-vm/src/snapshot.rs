@@ -4,7 +4,7 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub(crate) const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 2;
 const MAGIC: &[u8; 8] = b"ASIDSN01";
 
 #[derive(Debug)]
@@ -14,14 +14,34 @@ pub enum SnapshotError {
     Encoding(postcard::Error),
     Invalid(String),
     Busy(&'static str),
-    MissingAdapter { object: u64 },
-    AdapterVersion { name: String, version: u32 },
+    Version {
+        format: &'static str,
+        expected: u32,
+        actual: u32,
+    },
+    MissingAdapter {
+        object: u64,
+    },
+    AdapterVersion {
+        name: String,
+        version: u32,
+    },
     CodeMismatch,
     Limit,
 }
 impl std::fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Version {
+                format,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "unsupported {format} snapshot version {actual} (expected {expected})"
+            ),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 impl std::error::Error for SnapshotError {}
@@ -131,10 +151,15 @@ impl<'de> Deserialize<'de> for VmSnapshot {
         let actual = image.records.iter().try_fold(0u64, |total, record| {
             total.checked_add(record.data.len() as u64)
         });
-        if image.version != VERSION || actual != Some(image.bytes) {
-            return Err(serde::de::Error::custom(
-                "snapshot version or record length",
-            ));
+        if image.version != VERSION {
+            return Err(serde::de::Error::custom(SnapshotError::Version {
+                format: "VM",
+                expected: VERSION,
+                actual: image.version,
+            }));
+        }
+        if actual != Some(image.bytes) {
+            return Err(serde::de::Error::custom("snapshot record length"));
         }
         Ok(Self {
             version: image.version,
@@ -147,6 +172,9 @@ impl<'de> Deserialize<'de> for VmSnapshot {
     }
 }
 impl VmSnapshot {
+    /// Version of the VM records, also checked by embedding snapshot containers.
+    pub const FORMAT_VERSION: u32 = VERSION;
+
     pub fn recorded_bytes(&self) -> u64 {
         self.bytes
     }
@@ -160,8 +188,16 @@ impl VmSnapshot {
         let bytes = bytes
             .strip_prefix(MAGIC)
             .ok_or_else(|| SnapshotError::Invalid("snapshot magic".into()))?;
+        let (version, _): (u32, _) = postcard::take_from_bytes(bytes)?;
+        if version != VERSION {
+            return Err(SnapshotError::Version {
+                format: "VM",
+                expected: VERSION,
+                actual: version,
+            });
+        }
         let (image, tail): (Self, _) = postcard::take_from_bytes(bytes)?;
-        if !tail.is_empty() || image.version != VERSION {
+        if !tail.is_empty() {
             return Err(SnapshotError::Invalid("snapshot format".into()));
         }
         Ok(image)

@@ -3156,7 +3156,10 @@ impl Vm {
                     .map_err(vm_fault)?;
                 let action = if op == Opcode::MemberGet {
                     if host {
-                        TableAction::Get(r(a))
+                        TableAction::GetHost {
+                            object: r(b),
+                            dest: r(a),
+                        }
                     } else {
                         TableAction::MemberGet {
                             dest: r(a),
@@ -3177,11 +3180,19 @@ impl Vm {
             Opcode::IndexGet => {
                 let object = self.read(*s, r(b))?;
                 let index = self.read(*s, r(c))?;
-                let object = if self.is_text(object, ObjectKind::Host) {
-                    self.heap.host_fields(object).map_err(heap_fault)?
-                } else {
-                    object
-                };
+                if self.is_text(object, ObjectKind::Host) {
+                    let fields = self.heap.host_fields(object).map_err(heap_fault)?;
+                    self.start_table(
+                        s,
+                        fields,
+                        index,
+                        TableAction::GetHost {
+                            object: r(b),
+                            dest: r(a),
+                        },
+                    )?;
+                    return Ok(false);
+                }
                 if self.is_text(object, ObjectKind::Table) {
                     self.start_table(s, object, index, TableAction::Get(r(a)))?;
                     return Ok(false);

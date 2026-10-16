@@ -68,6 +68,7 @@ fn counts(renderer: &Renderer, sets: usize) {
     );
 }
 fn empty(renderer: &Renderer) {
+    renderer.targets.clear();
     let usage = renderer.usage();
     assert_eq!([usage.targets, usage.resources, usage.transient], [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);
