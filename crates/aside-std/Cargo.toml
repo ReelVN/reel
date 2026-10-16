@@ -9,6 +9,7 @@ description = "Host-independent standard library for Aside"
 [dependencies]
 aside-host = { path = "../aside-host" }
 fastrand = "=2.5.0"
+jiff = { version = "=0.2.38", features = ["js"] }
 
 [dev-dependencies]
 stats_alloc = "=0.1.10"

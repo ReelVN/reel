@@ -18,6 +18,8 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 
 通用库由独立的 `aside-std` crate 维护，通过 Aside host SDK 向任意宿主提供声明、模块接口和 native 调度。Reel 注册标准库并默认导入其 prelude；舞台、对白、音频和资源仍归 Reel。已有文本、集合操作继续共用 VM 实现，不复制到标准库。
 
+`std::time` 提供 `now()`（UTC Unix 秒整数）、`parts(timestamp, timezone: null)`（year/month/day/hour/minute/second/weekday/offset_seconds 数据表，weekday 为周一 1 至周日 7）及 `format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null)`。timezone 为 IANA 名称，null 使用系统时区；日期换算、夏令时和格式化复用固定版本 Jiff 0.2.38。无法识别系统时区时按 Jiff 的系统时区语义使用 UTC；显式无效时区、时间或格式抛带调用位置的错误。接口不启动计时器、不参与剧情时间或快进；作者按需要用已有活动更新界面。aside-std 保持独立，数据返回 VM 堆；无平台句柄，native ABI 1，B01/ASB 不变。范围为 aside-std、作者示例及双语指南。
+
 首批接口 `std::random(seed: null)` 创建独立随机对象；`int(min, max)` 取左闭右开整数，`float()` 取 [0,1)，`pick(items)` 从非空 array/tuple 返回原元素。复用锁定的 fastrand 2.5.0，同版本下固定种子与相同调用顺序复现同一流；省略种子由库创建新流。状态保存在普通 VM 宿主载荷中，绑定方法保留原对象；每次抽取只读写常数个值，不复制集合或创建堆载荷。非法范围和空集合在推进状态前报错。构造声明宿主效果，抽取声明写入效果，沿现有初始化与纯 derive 边界执行。新增 native ABI 1，B01/ASB 不变；范围为 aside-std、reel-engine、示例和双语指南，不引入平台句柄。
 
 Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点、会话和活动业务留在 Reel；可复用的 Rust native 声明、编译链接、运行时准入和属性 schema 生成归 Aside 扩展层。绑定宏从同一声明产生元数据与调用包装，不复制舞台类型或引入第二套语言实现。
@@ -43,6 +45,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 `game.dialogue().ready` 与 `lines` 中每行的 `ready` 是只读可观察字段，表示正文和包括尾部停顿在内的时序已完成。组字段仅在当前对白有效且所有行均完成时为 true；行在对白结束后保留 true，清页删除对应行。它不包含自动、快进、暂停或窗口焦点策略，作者与 `game.reading()` 组合决定推进光标的显隐和样式。沿已有叙事投影循环更新，不扫描正文、不创建逐帧任务；无新依赖，Aside/B01/ASB/native ABI 不变。范围为 reel-engine、现有作者示例与双语指南。
 
 ### 作者活动与窗口时钟
+
+`tween` 另支持 quint_in/quint_out/quint_in_out 五次曲线和 bounce_in/bounce_out/bounce_in_out 回弹曲线。in 加速、out 减速或在终点回弹、in_out 对称组合；采样位于 [0,1] 且起止精确为 0/1。沿既有活动采样、所有权、取消与快照路径，不分配逐帧脚本对象。范围为 reel-engine 活动采样、作者示例和双语指南；无新增依赖，native ABI、B01/ASB 不变。
 
 `stage.presented(owner: null)` 返回可等待的呈现请求；`await` 在请求之后的舞台投影实际接受呈现后返回 null。派生状态先稳定，字体与图片先完成准备；录制、拒帧和重绘旧帧均不结算请求。多个请求可随同一帧完成，重复等待同一对象共享终态。请求不暂停其他任务、音频或动画，转场组件可先挂载透明的新内容、等待呈现，再开始动画。owner 沿现有活动规则，退休取消未决请求；`.cancel()` 只取消这个请求，等待者取消不取消请求。请求不允许脚本 resolve/reject。无挂载根但显式请求呈现时允许提交空舞台。复用 completion 的 VM 根、订阅及错误路径，帧携带单调请求序号，不为等待保留场景或纹理副本；没有忙等和新线程。Rust 宿主把 `presentation_request()` 固定到稳定投影，在该投影实际接受后调用 `accept_presentation(session, request)`；旧序号不会完成新请求。范围为 reel-engine、reel-player、公开示例和双语指南；新增 native ABI 1，B01/ASB 与其他 native ABI 不变，无新依赖。
 

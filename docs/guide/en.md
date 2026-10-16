@@ -411,6 +411,10 @@ Animation and composed activities are available: `tween(node, x: 320, duration: 
 
 For a sine-shaped movement, choose `sine_in` to accelerate, `sine_out` to decelerate, or `sine_in_out` to start and finish slowly. All reach the exact requested endpoint. These differ from the cubic in/out/in_out curves and the quadratic quad_in/quad_out/quad_in_out curves.
 
+For wall-clock time, import `use std::time::{now, parts, format};`. now() returns integer UTC Unix seconds. parts(timestamp, timezone: null) returns year/month/day/hour/minute/second/weekday/offset_seconds; weekday is Monday 1 through Sunday 7. format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) formats text using strftime patterns. timezone accepts IANA names such as Asia/Shanghai and UTC; omission uses the system zone, or UTC when unavailable. saves.list's saved_at can be passed directly. These calls do not refresh automatically: update a model from a regular task and bind the text. See [author_wall_clock.aside](../../examples/author_wall_clock.aside).
+
+The quintic curves `quint_in`, `quint_out` and `quint_in_out` give stronger acceleration and deceleration. `bounce_out` bounces on arrival, `bounce_in` reverses that motion, and `bounce_in_out` combines both ends. Bounce stays between the starting and ending values. Use the same tween API for a sliding menu or a falling logo; see [author_activities.aside](../../examples/author_activities.aside).
+
 ```aside
 await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
 ```

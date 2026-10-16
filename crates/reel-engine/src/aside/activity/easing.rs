@@ -14,6 +14,12 @@ pub(super) enum Easing {
     SineIn,
     SineOut,
     SineInOut,
+    QuintIn,
+    QuintOut,
+    QuintInOut,
+    BounceIn,
+    BounceOut,
+    BounceInOut,
 }
 
 impl Easing {
@@ -29,9 +35,15 @@ impl Easing {
             "sine_in" => Self::SineIn,
             "sine_out" => Self::SineOut,
             "sine_in_out" => Self::SineInOut,
+            "quint_in" => Self::QuintIn,
+            "quint_out" => Self::QuintOut,
+            "quint_in_out" => Self::QuintInOut,
+            "bounce_in" => Self::BounceIn,
+            "bounce_out" => Self::BounceOut,
+            "bounce_in_out" => Self::BounceInOut,
             _ => {
                 return Err(AdapterError::Input(
-                    "easing requires linear, in, out, in_out, quad_in, quad_out, quad_in_out, sine_in, sine_out or sine_in_out",
+                    "easing requires linear, in/out/in_out, quad_in/out/in_out, sine_in/out/in_out, quint_in/out/in_out or bounce_in/out/in_out",
                 ));
             }
         })
@@ -49,6 +61,12 @@ impl Easing {
             7 => Self::SineIn,
             8 => Self::SineOut,
             9 => Self::SineInOut,
+            10 => Self::QuintIn,
+            11 => Self::QuintOut,
+            12 => Self::QuintInOut,
+            13 => Self::BounceIn,
+            14 => Self::BounceOut,
+            15 => Self::BounceInOut,
             _ => unreachable!("private easing code"),
         }
     }
@@ -71,6 +89,28 @@ impl Easing {
             Self::SineIn => 1. - (t * std::f64::consts::FRAC_PI_2).cos(),
             Self::SineOut => (t * std::f64::consts::FRAC_PI_2).sin(),
             Self::SineInOut => 0.5 - 0.5 * (t * std::f64::consts::PI).cos(),
+            Self::QuintIn => t.powi(5),
+            Self::QuintOut => 1. - (1. - t).powi(5),
+            Self::QuintInOut if t < 0.5 => 16. * t.powi(5),
+            Self::QuintInOut => 1. - (-2. * t + 2.).powi(5) / 2.,
+            Self::BounceIn => 1. - bounce_out(1. - t),
+            Self::BounceOut => bounce_out(t),
+            Self::BounceInOut if t < 0.5 => (1. - bounce_out(1. - 2. * t)) / 2.,
+            Self::BounceInOut => (1. + bounce_out(2. * t - 1.)) / 2.,
         }
     }
+}
+
+fn bounce_out(t: f64) -> f64 {
+    // Four parabolic arcs with successively halved durations and heights.
+    let (center, floor) = if t < 4. / 11. {
+        (0., 0.)
+    } else if t < 8. / 11. {
+        (6. / 11., 3. / 4.)
+    } else if t < 10. / 11. {
+        (9. / 11., 15. / 16.)
+    } else {
+        (21. / 22., 63. / 64.)
+    };
+    (121. / 16.) * (t - center).powi(2) + floor
 }
