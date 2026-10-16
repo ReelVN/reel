@@ -100,10 +100,11 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let emission = emit(snow);
         let mover = run(tween(background, x: 100, duration: 4, easing: "linear"));
         let task = spawn(|| { await run(delay(2)); data.score += 3; done.resolve(9); });
+        let caption = text("score", x: bind(data.score), max_width: 140, align_x: 0.5);
         stage.replace(column() {
             background; snow;
             button("increase", on_click: |e| { data.score += 1; });
-            text("score", x: bind(data.score));
+            caption;
             slider(value: bind(data.score), max: 20);
             checkbox("enabled", value: true);
             camera(width: 400, height: 300) { scroll(height: 100) { text("scroll"); } }
@@ -114,6 +115,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         if picked != "next" || await done != 9 { throw "saved completion or choice"; }
         await task;
         finish(mover); stop(emission);
+        if caption.max_width != 140 || caption.align_x != 0.5 { throw "lost layout constraints"; }
         if entries != 1 || data.score != 5 || background.x != 100 { throw "replayed or lost state"; }
         narrator(f"done {rng.int(0, 1000000)}");
     }

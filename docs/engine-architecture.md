@@ -42,6 +42,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 作者播放器只呈现显式挂载的舞台，不自动创建对白/选择控件或复制内置视图投影。game.configure 移除默认界面开关，native ABI 为 3；game.dialogue()/game.choice() 保持数据与交互服务。Rust 会话诊断的预览由诊断入口显式创建，不参与 Aside 作品设置。
 
+共同节点增加 `max_width/max_height: null` 和 `align_x/align_y: 0`。上限为非负有限逻辑像素，限制自然尺寸和显式尺寸；内容按上限换行，stretch 对应轴仍由父内框决定。对齐值在 [0,1] 内，按父 padding 内剩余空间定位；stack 两轴生效，row/column 只在非流轴生效，scroll 只在非滚动轴生效。x/y 和 anchor 保留独立变换语义。测量与定位复用现有布局遍历，无脚本测量回调、逐帧节点重建或额外资源队列。范围为 reel-ui、reel-engine、reel-player、作者示例及双语指南；节点构造 native ABI 和宿主属性快照适配器各递增一版，tween native ABI 6，Aside/B01 不变，无新依赖。行为检查覆盖内容伸缩、对齐、换行、滚动范围与快照恢复。
+
 ### 批量舞台粒子
 
 `particles(source, rate:60, lifetime:5, seed:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, burst:0, lifetime_spread:0, size_end:null, ...节点属性)` 创建静止的单个舞台节点。配置只读；emit 启动时的 width/height 为发射矩形（缺省为零），共同变换、可见性、透明度与裁剪仍可更新。速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size，lifetime_spread 不超过 lifetime。lifetime 为正有限秒数；rate、size、显式 size_end 与各 spread 为非负有限数，burst 为非负整数，透明度在 [0,1]。每粒寿命在 lifetime±lifetime_spread 内确定性取样，零寿命立即结束；size_end:null 保留每粒随机出生宽度，显式终值使宽度在该粒寿命内线性变化，保留图片宽高比。图片沿共同资源加载与源码诊断路径。粒子 source 必须是完整 PNG/JPEG 精灵；分块 `.reel-image` 只供 image 节点使用，粒子请求在资源边界带构造源码位置明确拒绝。
