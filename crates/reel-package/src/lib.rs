@@ -25,15 +25,15 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_file_bytes: 24 * 1024 * 1024,
-            max_metadata_bytes: 4 * 1024 * 1024,
-            max_sections: 32,
-            max_metadata_records: 65_536,
-            max_source_symbols: 200_000,
+            max_file_bytes: isize::MAX as usize,
+            max_metadata_bytes: isize::MAX as usize,
+            max_sections: u32::MAX as usize,
+            max_metadata_records: u32::MAX as usize,
+            max_source_symbols: u32::MAX,
             max_json_depth: 16,
-            max_json_string_bytes: 4096,
-            max_json_tokens: 1_000_000,
-            max_work: 128 * 1024 * 1024,
+            max_json_string_bytes: u32::MAX as usize,
+            max_json_tokens: u32::MAX as usize,
+            max_work: u64::MAX,
             bytecode: bc::Limits::default(),
         }
     }

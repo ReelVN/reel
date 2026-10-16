@@ -25,7 +25,7 @@ fn particles_source_asb_seed_pause_replacement_and_retirement() {
         let snow = particles("snow.png", rate: 40, lifetime: 5, seed: 42, width: 100, height: 20);
         stage.replace(snow);
         let mut errors = 0;
-        try { particles("snow.png", rate: 0); } catch e { errors += 1; }
+        try { particles("snow.png", rate: -1); } catch e { errors += 1; }
         try { particles("snow.png", size: 1, size_spread: 2); } catch e { errors += 1; }
         try { snow.rate = 2; } catch e { errors += 1; }
         if errors != 3 { throw "configuration"; }
