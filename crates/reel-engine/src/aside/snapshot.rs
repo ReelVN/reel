@@ -19,7 +19,9 @@ fn registry() -> &'static SnapshotRegistry {
             ("reel.result", results::readonly),
             ("reel.audio", audio::readonly),
         ] {
-            registry.register_validator(name, 1, validator).unwrap();
+            registry
+                .register_validator(name, if name == "reel.audio" { 2 } else { 1 }, validator)
+                .unwrap();
         }
         registry
     });
@@ -126,7 +128,7 @@ impl SessionSnapshot {
             .strip_prefix(b"REELSAV1")
             .ok_or_else(|| SnapshotError::Invalid("save format".into()))?;
         let (snapshot, tail): (Self, _) = postcard::take_from_bytes(bytes)?;
-        if snapshot.version != 2 || snapshot.session.is_none() || !tail.is_empty() {
+        if snapshot.version != 3 || snapshot.session.is_none() || !tail.is_empty() {
             return Err(SnapshotError::Invalid(
                 "session snapshot version/body".into(),
             ));
@@ -373,7 +375,7 @@ impl SessionCapture<'_> {
         }
         Ok(SessionSnapshot {
             committed_save: None,
-            version: 2,
+            version: 3,
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,

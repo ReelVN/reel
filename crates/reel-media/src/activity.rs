@@ -51,6 +51,7 @@ pub struct AudioActivityEvent {
     pub epoch: MediaEpoch,
     pub scope: Scope,
     pub terminal: AudioActivityTerminal,
+    pub position_seconds: f64,
 }
 /// Borrowed logical state; no native handle or PCM alias escapes the ledger.
 #[derive(Debug)]
@@ -82,6 +83,15 @@ struct OwnerSlot {
     cancellation_next: usize,
 }
 impl Entry {
+    fn position_seconds(&self) -> f64 {
+        match self.terminal {
+            Some(
+                AudioActivityTerminal::Completed { position_seconds }
+                | AudioActivityTerminal::Stopped { position_seconds },
+            ) => position_seconds,
+            _ => self.playback.position_seconds(),
+        }
+    }
     fn settle(&mut self, terminal: AudioActivityTerminal) -> bool {
         if self.terminal.is_some() {
             return false;
@@ -392,13 +402,7 @@ impl AudioActivityService {
             resource: &e.resource,
             group: e.group,
             volume_db: e.volume_db,
-            position_seconds: match e.terminal {
-                Some(
-                    AudioActivityTerminal::Completed { position_seconds }
-                    | AudioActivityTerminal::Stopped { position_seconds },
-                ) => position_seconds,
-                _ => e.playback.position_seconds(),
-            },
+            position_seconds: e.position_seconds(),
             terminal: e.terminal,
         })
     }
@@ -640,6 +644,7 @@ impl AudioActivityService {
                             epoch: e.epoch,
                             scope: e.scope,
                             terminal,
+                            position_seconds: e.position_seconds(),
                         });
                     }
                 }

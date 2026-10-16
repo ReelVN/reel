@@ -606,7 +606,9 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 ## Reel 音频宿主绑定
 
-Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0)` 与 `audio.volume(activity,value,duration:0)` 使用 ABI v2；新增 `audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 B01，旧音频调用产物需要重新编译。
+Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, loop_start:0, loop_end:null)` 使用 ABI v3，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.position(activity)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 B01，音频调用产物随签名重新编译。
+
+start、loop_start 和非 null 的 loop_end 为有限非负秒；looping:true 使用 [loop_start,loop_end) 循环，null 终点表示资源末尾。start 小于 loop_start 时保留前奏，达到循环终点时取模；looping:false 仅接受默认循环边界。区间顺序在调用处检查，资源长度及帧边界在后台解码后验证，失败通过播放活动传播。position 是即时读取，返回内容位置 float；加载中返回起点，终态保留最后位置，不建立响应式时钟依赖。参数、播放位置与终态遵守 Reel 快照协议，不新增 Aside 语法或音频专用 VM 指令。
 
 分组为 music/voice/effects/ui，group_volume 另接受 master 控制总音量。音量为非负有限线性增益，pan 为 [-1,1]（左到右），时间为非负有限秒。每声、组、总音量相乘。过渡复用 Kira：音量在分贝域插值，声像线性插值，静音端点为 -60 dB；新命令从当前值替换未完成过渡。加载中的音量/声像变更设置首次播放值，fade_in 从实际播放开始。组设置也影响随后播放的声音。
 

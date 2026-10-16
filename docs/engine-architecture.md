@@ -684,11 +684,17 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
 PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/image/row/column/stack、children 组合、属性更新、局部子树编辑和有限动画，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、事件/绑定、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
-## 作者音频活动（play/volume ABI v2，其余 v1）
+## 作者音频活动（play ABI v3、volume ABI v2，其余 v1）
 
 Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎的声道矩阵转换；设备默认多声道格式不再被单/双声道筛选排除。其他后端仅公布其已知有序布局，不根据未知原生声道数量猜测扬声器位置。
 
-`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0)` 立即返回可等待活动，后台完成读取与预解码后开始播放。`volume` 是非负线性增益，0 静音；`audio.volume(activity, value, duration:0)` 更新增益。`pause`、`resume`、`stop` 和 `await` 与演出活动共用作者入口。await 返回 Completed 或 Stopped；读取、解码、输出失败抛出错误，重复等待保留相同终态。Completed 表示混音器消费完内容，不承诺声卡已经播放完。
+`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, loop_start:0, loop_end:null)` 立即返回可等待活动，后台完成读取与预解码后开始播放。`volume` 是非负线性增益，0 静音；`audio.volume(activity, value, duration:0)` 更新增益。`pause`、`resume`、`stop` 和 `await` 与演出活动共用作者入口。await 返回 Completed 或 Stopped；读取、解码、输出失败抛出错误，重复等待保留相同终态。Completed 表示混音器消费完内容，不承诺声卡已经播放完。
+
+start 与循环边界使用有限非负秒。looping:true 时循环区间为 [loop_start, loop_end)，null 终点表示音轨结尾；start 可以小于 loop_start，先播放前奏再进入循环，超过循环终点则按区间取模。looping:false 时只接受默认循环边界，start 达到音轨结尾时无声完成。解码后一次检查循环区间位于资源内、量化后至少一帧，再把起点和区间直接交给 Kira transport，不复制 PCM、不逐帧检查边界。
+
+`audio.position(activity)` 返回最后观察到的内容位置秒数，加载中为请求起点，暂停或输出挂起时保持，循环时回到区间起点；终态保留最后位置而不保留 PCM。它是显式读取，不自动订阅播放时钟；无 IO、解码或完整快照复制。切换同进度音轨可用 `audio.play(next, start: audio.position(current), group:"music", looping:true, fade_in:2)` 与 `audio.stop(current, fade:2)` 组合，淡入从新音轨实际起播时开始。该组合不承诺两个后台加载音轨的采样级同步。
+
+AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前内容位置；音乐按位置和原循环区间恢复，语音重播、瞬时音效不重放仍遵守存档策略。音频活动终态位置进入 VM 宿主载荷。会话快照版本为 3，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 

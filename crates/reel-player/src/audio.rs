@@ -5,7 +5,10 @@ use reel_core::{
     identity::{Priority, ResourceVersion, Scope},
     wake::WakeSignal,
 };
-use reel_engine::audio::{AudioBackend, AudioCommand, AudioId, AudioRequest, AudioResult};
+use reel_engine::audio::{
+    AudioBackend, AudioCommand, AudioCompletion, AudioId, AudioLoopRegion, AudioRequest,
+    AudioResult,
+};
 use reel_media::*;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -35,6 +38,8 @@ struct Decode {
     version: ResourceVersion,
     bytes: Arc<OwnedBytes>,
     ticket: reel_core::budget::BudgetTicket,
+    start: Duration,
+    loop_region: Option<AudioLoopRegion>,
 }
 struct Decoded {
     id: AudioId,
@@ -114,7 +119,12 @@ impl AudioPlayer {
                 |request: Decode, cancelled| Decoded {
                     id: request.id,
                     version: request.version,
-                    sound: DecodedSound::decode(Input(request.bytes), request.ticket, cancelled),
+                    sound: DecodedSound::decode(Input(request.bytes), request.ticket, cancelled)
+                        .and_then(|sound| {
+                            sound
+                                .with_playback(request.start, request.loop_region)
+                                .map_err(|error| error.to_string())
+                        }),
                 },
                 |event| event.sound = Err("audio decode cancelled".into()),
             ),
@@ -264,21 +274,22 @@ fn db(volume: f64) -> f32 {
     }
 }
 impl AudioBackend for AudioPlayer {
+    fn position(&self, id: AudioId) -> Option<Duration> {
+        let entry = self.entries.get(&id)?;
+        if let Phase::Playing(media) = entry.phase {
+            let state = self.service.as_ref()?.snapshot(media)?;
+            Some(Duration::from_secs_f64(state.position_seconds))
+        } else {
+            Some(entry.request.start_position)
+        }
+    }
     fn snapshot(&self, id: AudioId) -> Result<reel_engine::audio::AudioPlayback, String> {
         let entry = self
             .entries
             .get(&id)
             .ok_or("audio activity is no longer retained")?;
         let mut request = entry.request.clone();
-        if let Phase::Playing(media) = entry.phase {
-            let state = self
-                .service
-                .as_ref()
-                .and_then(|s| s.snapshot(media))
-                .ok_or("audio transport missing")?;
-            request.start_position =
-                Duration::try_from_secs_f64(state.position_seconds).map_err(|e| e.to_string())?;
-        }
+        request.start_position = self.position(id).ok_or("audio transport missing")?;
         Ok(reel_engine::audio::AudioPlayback {
             request,
             paused: entry.paused,
@@ -411,7 +422,10 @@ impl AudioBackend for AudioPlayer {
                 && matches!(entry.phase, Phase::Queued)
             {
                 entry.phase = match event.sound {
-                    Ok(sound) => Phase::Ready(event.version, Box::new(sound)),
+                    Ok(sound) => {
+                        entry.request.start_position = sound.start_position();
+                        Phase::Ready(event.version, Box::new(sound))
+                    }
                     Err(error) => Phase::Done(AudioResult::Failed(error)),
                 };
             }
@@ -440,6 +454,8 @@ impl AudioBackend for AudioPlayer {
                                                 version,
                                                 bytes,
                                                 ticket,
+                                                start: entry.request.start_position,
+                                                loop_region: entry.request.loop_region,
                                             },
                                             charge,
                                             Priority::Visible,
@@ -461,14 +477,9 @@ impl AudioBackend for AudioPlayer {
                 else {
                     unreachable!()
                 };
-                let mut sound = *sound;
-                if entry.request.looping {
-                    sound = sound.looping();
-                }
-                sound = sound
+                let sound = (*sound)
                     .with_volume_db(db(entry.request.volume))
                     .with_pan(entry.request.pan as f32)
-                    .with_start_position(entry.request.start_position)
                     .with_fade_in(entry.request.fade_in);
                 let service = self.service.as_mut().unwrap();
                 entry.phase = match service.play(AudioActivityRequest {
@@ -498,6 +509,7 @@ impl AudioBackend for AudioPlayer {
                 if let Some(id) = self.playing.remove(&event.id.0)
                     && let Some(entry) = self.entries.get_mut(&id)
                 {
+                    entry.request.start_position = Duration::from_secs_f64(event.position_seconds);
                     entry.phase = Phase::Done(match event.terminal {
                         AudioActivityTerminal::Completed { .. } => AudioResult::Completed,
                         AudioActivityTerminal::Stopped { .. } => AudioResult::Stopped,
@@ -518,7 +530,7 @@ impl AudioBackend for AudioPlayer {
             self.service = None;
         }
     }
-    fn take_result(&mut self, id: AudioId) -> Option<AudioResult> {
+    fn take_result(&mut self, id: AudioId) -> Option<AudioCompletion> {
         if !self
             .entries
             .get(&id)
@@ -526,10 +538,14 @@ impl AudioBackend for AudioPlayer {
         {
             return None;
         }
-        let Phase::Done(result) = self.entries.remove(&id).unwrap().phase else {
+        let entry = self.entries.remove(&id).unwrap();
+        let Phase::Done(result) = entry.phase else {
             unreachable!()
         };
-        Some(result)
+        Some(AudioCompletion {
+            result,
+            position: entry.request.start_position,
+        })
     }
     fn poll_after(&self) -> Option<Duration> {
         (!self.entries.is_empty()

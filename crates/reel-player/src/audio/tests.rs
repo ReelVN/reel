@@ -94,7 +94,7 @@ fn until(mut step: impl FnMut() -> bool) {
 fn request(looping: bool) -> AudioRequest {
     AudioRequest {
         source: "assets/chime.wav".into(),
-        looping,
+        loop_region: looping.then(AudioLoopRegion::default),
         volume: 1.,
         group: AudioGroup::Effects,
         pan: 0.,
@@ -271,8 +271,8 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
     output.0.borrow_mut().as_mut().unwrap().fail_device();
     let result = loop {
         player.maintain();
-        if let Some(result) = player.take_result(id) {
-            break result;
+        if let Some(completion) = player.take_result(id) {
+            break completion.result;
         }
     };
     assert!(matches!(result, AudioResult::Failed(_)));
@@ -310,7 +310,7 @@ fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
     let mut result = None;
     until(|| {
         player.maintain();
-        result = player.take_result(id);
+        result = player.take_result(id).map(|completion| completion.result);
         result.is_some()
     });
     assert!(matches!(result, Some(AudioResult::Failed(_))));

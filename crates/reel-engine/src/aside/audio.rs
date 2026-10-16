@@ -1,5 +1,8 @@
 use super::{AdapterError, HostTicket, SessionVm, stage, text};
-use crate::audio::{AudioBackend, AudioCommand, AudioGroup, AudioId, AudioRequest, AudioResult};
+use crate::audio::{
+    AudioBackend, AudioCommand, AudioCompletion, AudioGroup, AudioId, AudioLoopRegion,
+    AudioRequest, AudioResult,
+};
 use aside_vm::executor::{Completion, HostResponse, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
@@ -11,12 +14,13 @@ enum Slot {
     Id,
     Result,
     Error,
+    Position,
 }
 struct Live {
     id: AudioId,
     root: RootToken,
     owner: Option<NodeId>,
-    result: Option<AudioResult>,
+    result: Option<AudioCompletion>,
 }
 #[derive(Default)]
 pub(super) struct Audio {
@@ -31,7 +35,7 @@ struct SavedAudio {
     root: RootToken,
     owner: Option<NodeId>,
     playback: Option<crate::audio::AudioPlayback>,
-    result: Option<AudioResult>,
+    result: Option<AudioCompletion>,
 }
 impl Audio {
     pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
@@ -83,11 +87,17 @@ impl Audio {
         let root = map.root(saved.root)?;
         let mut id = AudioId(0);
         if let Some(mut playback) = saved.playback {
-            saved.result = playback.result;
+            saved.result = playback.result.map(|result| AudioCompletion {
+                result,
+                position: playback.request.start_position,
+            });
             if saved.result.is_none()
                 && matches!(playback.request.group, AudioGroup::Effects | AudioGroup::Ui)
             {
-                saved.result = Some(AudioResult::Completed);
+                saved.result = Some(AudioCompletion {
+                    result: AudioResult::Completed,
+                    position: playback.request.start_position,
+                });
             }
             if saved.result.is_none() {
                 if playback.request.group == AudioGroup::Voice {
@@ -231,14 +241,20 @@ impl SessionVm {
                     .owner
                     .is_some_and(|id| self.stage.scene.node(id).is_none())
                 {
+                    let position = backend
+                        .position(live.id)
+                        .ok_or(AdapterError::Input("audio transport missing"))?;
                     backend.cancel(live.id);
-                    live.result = Some(AudioResult::Cancelled);
+                    live.result = Some(AudioCompletion {
+                        result: AudioResult::Cancelled,
+                        position,
+                    });
                 } else {
                     live.result = backend.take_result(live.id);
                 }
             }
-            if let Some(result) = &live.result {
-                let (message, code) = match result {
+            if let Some(completion) = &live.result {
+                let (message, code) = match &completion.result {
                     AudioResult::Completed => ("Completed", 0),
                     AudioResult::Stopped => ("Stopped", 0),
                     AudioResult::Cancelled => ("audio owner retired", 2),
@@ -249,6 +265,11 @@ impl SessionVm {
                 let value = heap.root_value(live.root)?;
                 heap.set_host_payload(value, Slot::Result as u32, message)?;
                 heap.set_host_payload(value, Slot::Error as u32, Value::int(code))?;
+                heap.set_host_payload(
+                    value,
+                    Slot::Position as u32,
+                    Value::float(completion.position.as_secs_f64()),
+                )?;
                 heap.release_root(live.root)?;
                 self.audio.live.swap_remove(self.audio.cursor);
             } else {
@@ -319,6 +340,31 @@ impl SessionVm {
             )?)?;
             let pan = pan(args[5])?;
             let fade_in = duration(args[6])?;
+            let start_position = duration(args[7])?;
+            let loop_start = duration(args[8])?;
+            let loop_end = if args[9].tag() == ValueTag::Null {
+                None
+            } else {
+                Some(duration(args[9])?)
+            };
+            let loop_region = if looping {
+                if loop_end.is_some_and(|end| end <= loop_start) {
+                    return Err(AdapterError::Input(
+                        "audio loop_end must be greater than loop_start",
+                    ));
+                }
+                Some(AudioLoopRegion {
+                    start: loop_start,
+                    end: loop_end,
+                })
+            } else {
+                if !loop_start.is_zero() || loop_end.is_some() {
+                    return Err(AdapterError::Input(
+                        "audio loop bounds require looping: true",
+                    ));
+                }
+                None
+            };
             self.audio
                 .live
                 .try_reserve(1)
@@ -337,7 +383,13 @@ impl SessionVm {
             let fields = heap.alloc_table()?;
             let value = heap.alloc_host(
                 fields,
-                &[Value::int(TAG), Value::NULL, Value::NULL, Value::int(0)],
+                &[
+                    Value::int(TAG),
+                    Value::NULL,
+                    Value::NULL,
+                    Value::int(0),
+                    Value::float(start_position.as_secs_f64()),
+                ],
                 Some(readonly),
             )?;
             let root = heap.add_root(self.root_owner, RootKind::Host, value)?;
@@ -356,12 +408,12 @@ impl SessionVm {
                 .and_then(|backend| {
                     backend.play(AudioRequest {
                         source,
-                        looping,
+                        loop_region,
                         volume,
                         group,
                         pan,
                         fade_in,
-                        start_position: std::time::Duration::ZERO,
+                        start_position,
                     })
                 });
             match admitted {
@@ -389,7 +441,33 @@ impl SessionVm {
             if !is_audio(self.vm.heap(), value) {
                 return Err(AdapterError::Input("expected audio activity"));
             }
-            if symbol == "reel::audio::await" {
+            if symbol == "reel::audio::position" {
+                if response(self.vm.heap(), value)?.is_some() {
+                    let position = self.vm.heap().host_payload(value, Slot::Position as u32)?;
+                    self.vm.respond(ticket, HostResponse::Ready(position))?;
+                } else {
+                    let id = AudioId(
+                        self.vm
+                            .heap()
+                            .host_payload(value, Slot::Id as u32)?
+                            .as_int()
+                            .unwrap() as u64,
+                    );
+                    let position = self
+                        .audio
+                        .backend
+                        .as_ref()
+                        .and_then(|backend| backend.position(id));
+                    if let Some(position) = position {
+                        self.vm.respond(
+                            ticket,
+                            HostResponse::Ready(Value::float(position.as_secs_f64())),
+                        )?;
+                    } else {
+                        self.audio_error(ticket, "audio transport missing")?;
+                    }
+                }
+            } else if symbol == "reel::audio::await" {
                 if let Some(result) = response(self.vm.heap(), value)? {
                     match result {
                         Completion::Ready(value) => {

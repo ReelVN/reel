@@ -473,6 +473,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("group", Some(bc::Const::Utf8("effects".into()))),
                 parameter("pan", Some(bc::Const::Int(0))),
                 parameter("fade_in", Some(bc::Const::Int(0))),
+                parameter("start", Some(bc::Const::Int(0))),
+                parameter("loop_start", Some(bc::Const::Int(0))),
+                parameter("loop_end", Some(bc::Const::Null)),
             ],
             false,
         ),
@@ -511,21 +514,30 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             ],
             false,
         ),
+        ("position", vec![parameter("activity", None)], false),
         ("await", vec![parameter("activity", None)], true),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::audio::{name}"),
-            abi_version: if matches!(name, "play" | "volume") {
-                2
-            } else {
-                1
+            abi_version: match name {
+                "play" => 3,
+                "volume" => 2,
+                _ => 1,
             },
             parameters,
-            result: BuiltinType::Any,
+            result: if name == "position" {
+                BuiltinType::Float
+            } else {
+                BuiltinType::Any
+            },
             effects: Effects(
                 Effects::ALLOCATE
-                    | Effects::WRITE
+                    | if name == "position" {
+                        0
+                    } else {
+                        Effects::WRITE
+                    }
                     | Effects::HOST
                     | if waits { Effects::WAIT } else { 0 },
             ),
