@@ -18,13 +18,14 @@ impl SessionVm {
                 } else {
                     let mut layout = args[1..].to_vec();
                     layout.push(Value::NULL);
+                    let origin = self.stage_origin(ticket);
                     let node = self.stage.dispatch(
                         &mut self.vm,
                         self.root_owner,
                         "reel::column",
                         &layout,
                         self.read_limit,
-                        None,
+                        origin,
                     )?;
                     let output = self.vm.heap_mut().alloc_derived(args[0])?;
                     self.vm.heap_mut().set_derived_state(output, node)?;

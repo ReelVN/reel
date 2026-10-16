@@ -245,6 +245,12 @@ pub struct NodeProps {
     pub scale_y: f64,
     pub anchor_x: f64,
     pub anchor_y: f64,
+    /// Whole-image threshold mask in the node's local layout rectangle.
+    pub mask: Option<Arc<str>>,
+    pub mask_origin: Option<Arc<str>>,
+    pub mask_progress: f64,
+    pub mask_softness: f64,
+    pub mask_invert: bool,
 }
 impl Default for NodeProps {
     fn default() -> Self {
@@ -276,6 +282,11 @@ impl Default for NodeProps {
             scale_y: 1.,
             anchor_x: 0.,
             anchor_y: 0.,
+            mask: None,
+            mask_origin: None,
+            mask_progress: 1.,
+            mask_softness: 0.06,
+            mask_invert: false,
         }
     }
 }

@@ -21,9 +21,9 @@ use tracing::{trace, warn};
 use crate::app::{MutateCallback, RenderRootSignal, RenderRootState};
 use crate::core::{
     AllowRawMut, BrushIndex, ClassSet, ErasedAction, FromDynWidget, LayerType, NewWidget,
-    PaintLayerMode, PropertiesMut, PropertiesRef, PropertyArena, PropertyCache, PropertyStackId,
-    ResizeDirection, Widget, WidgetArenaNode, WidgetId, WidgetMut, WidgetPod, WidgetRef,
-    WidgetState,
+    PaintImageMask, PaintLayerMode, PropertiesMut, PropertiesRef, PropertyArena, PropertyCache,
+    PropertyStackId, ResizeDirection, Widget, WidgetArenaNode, WidgetId, WidgetMut, WidgetPod,
+    WidgetRef, WidgetState,
 };
 use crate::kurbo::{Affine, Axis, Insets, Point, Rect, Size, Vec2};
 use crate::layout::{LayoutSize, LenDef, Length, SizeDef};
@@ -2385,6 +2385,18 @@ impl PaintCtx<'_> {
     pub fn set_external_paint(&mut self, token: u64) {
         self.widget_state.paint_layer_mode = PaintLayerMode::External;
         self.widget_state.external_paint_token = token;
+    }
+
+    /// Apply an image mask to this widget's pre-paint, paint, children and post-paint.
+    ///
+    /// A declaration made during `pre_paint` affects the current frame and remains
+    /// active across cached paints. Pass `None` to remove it. Masking changes only
+    /// the rendered pixels, leaving layout and input geometry intact.
+    pub fn set_subtree_image_mask(&mut self, mask: Option<PaintImageMask>) {
+        match (&mut self.widget_state.subtree_image_mask, mask) {
+            (Some(current), Some(mask)) => **current = mask,
+            (slot, mask) => *slot = mask.map(Box::new),
+        }
     }
 
     /// Whether debug paint is enabled.

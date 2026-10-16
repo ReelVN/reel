@@ -621,19 +621,22 @@ scope(body: |s| {
 只给 hud 加偏移，就只震动对话 UI。它与底层 x/y 移动独立：多个 x/y 偏移在父坐标系相加，基础布局保持原值，绘制与命中共同使用合成结果。scope 结束时移除自己的偏移，移动后的基础位置仍正确。旋转、缩放按变换矩阵的明确顺序组合，另用组节点表达；加性 x/y 不暗含旋转相加。
 
 ## 九 遮罩 特效与自定义演出
-历史验证（R01 / Issue #25）：内部 Rust 帧记录、资源租约、分组、裁剪与透明度已有针对性用例。R01 当时尚无 GPU 窗口，记录型消费者不代表物理设备通过。本节 mask/blur 等作者效果仍是设计目标；当前基础舞台与真实窗口已接通，范围见第一、二节。[历史验证范围](../../crates/reel-ui/R01-REPORT.md)。
+历史验证（R01 / Issue #25）：内部 Rust 帧记录、资源租约、分组、裁剪与透明度已有针对性用例。R01 当时尚无 GPU 窗口，记录型消费者不代表物理设备通过。本节节点图像遮罩已接入作者接口，blur 等效果仍是设计目标；当前基础舞台与真实窗口已接通，范围见第一、二节。[历史验证范围](../../crates/reel-ui/R01-REPORT.md)。
 
 历史验证（R02）：wgpu 后端与 winit 诊断窗口包含图片、分组透明度、裁剪和 Parley 文字；这些历史 Rust 诊断能力不意味着高级效果接口已实现；当前 PNG/JPEG 作者图片使用共同舞台和播放器资源加载器。当前作者源码和 ASB 由 dev/run 进入真实剧情窗口。[窗口说明](../../crates/reel-player/README.md) · [设备验证范围](../../crates/reel-render/R02-REPORT.md)。
 
-mask、blur 等效果值属于同一合成体系。效果组先合成自己的子节点，再应用效果，组透明度作用一次。裁剪用于几何范围；图像遮罩用于可见程度。mask.progress 从 0 到 1 表示由全隐藏到全显示，softness 控制边缘宽度；黑白遮罩的灰度决定显现先后。
+节点的 mask 属性给整个子树应用灰度图像遮罩，沿用普通图片资源加载与存档。mask_progress 从 0 到 1 表示由全隐藏到全显示，mask_softness 控制软边宽度，0 为硬边；较暗区域先显现，mask_invert: true 反转先后顺序。遮罩 PNG/JPEG 按节点矩形拉伸，设置明确的 width/height 即可控制覆盖区域。
 ```aside
-let wipe = mask("assets/ink-mask.png", progress: 0, softness: 0.06);
-let reveal = group(effects: [wipe]) {
+let reveal = stack(width: 1280, height: 720,
+    mask: "assets/ink-mask.png", mask_progress: 0, mask_softness: 0.06) {
     image("assets/window-cg.png");
 };
 view.picture.add(reveal);
-await run(tween(wipe, progress: 1, duration: 1.2), owner: reveal);
+await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
+reveal.mask = null;
 ```
+mask_progress 和 mask_softness 使用普通 derive/tween。完整示例：[author_image_mask.aside](../../examples/author_image_mask.aside)。进度为 1 时跳过遮罩合成；用完可将 mask 设为 null 释放资源引用。遮罩不改变逻辑命中，需要禁用交互时使用 enabled/visible。遮罩需要完整 PNG/JPEG，不接受分块 .reel-image。
+
 效果参数与节点属性采用同一动画规则。更复杂画面可以嵌套 group：背景单独模糊，人物保持清晰，图片按钮仍在最上方；再对整组使用遮罩或镜头变换。所有子节点的前后顺序由树结构决定。
 自定义效果通过版本化 Effect 描述输入图像、参数、输出范围和后端实现。高级作者可以开发宿主扩展，常用效果随后以普通 Aside 函数组合复用。shader 支持属于后端能力，项目检查列出缺少的能力。可移植效果应同时提供简化实现，游戏通过能力查询选择适合的平台版本。
 特效改变的像素与逻辑输入区域分别声明。普通仿射变换与几何裁剪自动映射命中；弯曲、扭曲和任意着色器的交互区域由作者提供逻辑形状或专用映射。为每次点击从 GPU 读回画面会增加延迟，因此基础接口使用可直接计算的区域。

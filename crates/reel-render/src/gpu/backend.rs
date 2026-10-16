@@ -58,6 +58,7 @@ impl RenderBackend for WgpuBackend {
                 RenderEffect::Clips,
                 RenderEffect::AlphaMask,
                 RenderEffect::LuminanceMask,
+                RenderEffect::ImageMaskProgress,
                 RenderEffect::Filters,
             ],
             max_texture_size: max,

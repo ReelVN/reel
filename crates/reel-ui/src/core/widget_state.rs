@@ -7,7 +7,8 @@ use kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
 use tracing::Span;
 
 use crate::core::{
-    ClassSetDiff, PaintLayerMode, PropertyCache, PropertyStackId, WidgetId, WidgetOptions,
+    ClassSetDiff, PaintImageMask, PaintLayerMode, PropertyCache, PropertyStackId, WidgetId,
+    WidgetOptions,
 };
 use crate::layout::MeasurementCache;
 
@@ -209,6 +210,7 @@ pub(crate) struct WidgetState {
     /// How this widget subtree should be represented in the current paint pass.
     pub(crate) paint_layer_mode: PaintLayerMode,
     pub(crate) external_paint_token: u64,
+    pub(crate) subtree_image_mask: Option<Box<PaintImageMask>>,
 
     /// The `accessibility` method must be called on this widget
     pub(crate) request_accessibility: bool,
@@ -334,6 +336,7 @@ impl WidgetState {
             needs_paint: true,
             paint_layer_mode: PaintLayerMode::Inline,
             external_paint_token: 0,
+            subtree_image_mask: None,
             request_accessibility: true,
             needs_accessibility: true,
             request_anim: true,

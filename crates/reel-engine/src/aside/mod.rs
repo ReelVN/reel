@@ -763,17 +763,7 @@ impl SessionVm {
             | "reel::stack"
             | "reel::stage::replace" => {
                 let arguments = self.vm.host_arguments(ticket)?.to_vec();
-                let origin = if matches!(symbol.as_str(), "reel::image" | "reel::particles") {
-                    ticket.location.source.map(|span| {
-                        let source = &p.sources[span.file.index()];
-                        let before = &source.text[..span.start as usize];
-                        let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
-                        let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
-                        format!("{}:{line}:{column}", p.symbols[source.path.index()])
-                    })
-                } else {
-                    None
-                };
+                let origin = self.stage_origin(ticket);
                 let value = self.stage.dispatch(
                     &mut self.vm,
                     self.root_owner,
@@ -790,6 +780,17 @@ impl SessionVm {
             }
             _ => Err(AdapterError::Input("unregistered session native")),
         }
+    }
+
+    fn stage_origin(&self, ticket: HostTicket) -> Option<String> {
+        let p = self.vm.program().package();
+        ticket.location.source.map(|span| {
+            let source = &p.sources[span.file.index()];
+            let before = &source.text[..span.start as usize];
+            let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
+            let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
+            format!("{}:{line}:{column}", p.symbols[source.path.index()])
+        })
     }
 
     fn dispatch_choose(

@@ -166,17 +166,6 @@ impl SessionVm {
         Ok(())
     }
 
-    fn image_origin(&self, ticket: HostTicket) -> Option<String> {
-        let p = self.vm.program().package();
-        ticket.location.source.map(|span| {
-            let source = &p.sources[span.file.index()];
-            let before = &source.text[..span.start as usize];
-            let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
-            let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
-            format!("{}:{line}:{column}", p.symbols[source.path.index()])
-        })
-    }
-
     pub(super) fn dispatch_layered_image(
         &mut self,
         ticket: HostTicket,
@@ -207,13 +196,14 @@ impl SessionVm {
             } else {
                 let mut layout = args[1..].to_vec();
                 layout.push(Value::NULL);
+                let origin = self.stage_origin(ticket);
                 let node = self.stage.dispatch(
                     &mut self.vm,
                     self.root_owner,
                     "reel::stack",
                     &layout,
                     self.read_limit,
-                    None,
+                    origin,
                 )?;
                 let output = self.vm.heap_mut().alloc_derived(args[0])?;
                 let defaults = defaults(self.vm.heap_mut())?;
@@ -331,7 +321,7 @@ impl SessionVm {
             let values = (0..self.vm.heap().sequence_len(args)?)
                 .map(|i| self.vm.heap().sequence_get(args, i))
                 .collect::<Result<Vec<_>, _>>()?;
-            let origin = self.image_origin(ticket);
+            let origin = self.stage_origin(ticket);
             node = self.stage.dispatch(
                 &mut self.vm,
                 self.root_owner,

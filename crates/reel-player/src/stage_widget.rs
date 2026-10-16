@@ -38,6 +38,7 @@ struct SceneNode {
     node: StageNode,
     children: Vec<SceneNode>,
     image: Option<ImageData>,
+    mask_image: Option<ImageData>,
     tiled_size: Option<Size>,
     tiles: Vec<reel_ui::widgets::ImageTile>,
 }
@@ -54,6 +55,7 @@ impl StageView {
                 node,
                 children,
                 image: None,
+                mask_image: None,
                 tiled_size: None,
                 tiles: Vec::new(),
             }
@@ -146,6 +148,18 @@ impl StageView {
                     .entry(source.to_owned())
                     .or_insert_with(|| origin.clone());
             }
+            if let Some(source) = &node.node.props.mask {
+                let origin = node.node.props.mask_origin.as_deref();
+                if source.ends_with(".reel-image") {
+                    return Err(format!(
+                        "{}: mask image {source:?}: masks require a whole PNG or JPEG image; prepared .reel-image sources are supported by image nodes",
+                        origin.unwrap_or("stage")
+                    ));
+                }
+                requests
+                    .entry(source.to_string())
+                    .or_insert_with(|| origin.map(str::to_owned));
+            }
             pending.extend(node.children.iter());
         }
         Ok(requests)
@@ -178,6 +192,12 @@ impl StageView {
                 };
                 node.image = Some(image.clone());
             }
+            if let Some(source) = &node.node.props.mask {
+                let ResourceData::Image { image, .. } = images[source.as_ref()].data() else {
+                    unreachable!()
+                };
+                node.mask_image = Some(image.clone());
+            }
             pending.extend(node.children.iter_mut());
         }
     }
@@ -201,6 +221,17 @@ impl StageView {
                     if resources.insert(source.to_owned()) {
                         self.resources.push(lease.clone());
                     }
+                }
+            }
+            if let Some(source) = &node.node.props.mask
+                && let Some(lease) = images.loaded.get(source.as_ref())
+            {
+                let ResourceData::Image { image, .. } = lease.data() else {
+                    unreachable!()
+                };
+                node.mask_image = Some(image.clone());
+                if resources.insert(source.to_string()) {
+                    self.resources.push(lease.clone());
                 }
             }
             pending.extend(node.children.iter_mut());
@@ -387,6 +418,7 @@ struct SceneWidget {
     image: Option<WidgetPod<Image>>,
     image_size: Size,
     particle_image: Option<ImageData>,
+    mask_image: Option<ImageData>,
     children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
@@ -523,6 +555,7 @@ impl SceneWidget {
             particle_image: matches!(view.node.kind, NodeKind::Particles(_))
                 .then(|| view.image.clone())
                 .flatten(),
+            mask_image: view.mask_image.clone(),
             image: view
                 .image
                 .as_ref()
@@ -565,6 +598,12 @@ impl SceneWidget {
         }
     }
     fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode, feedback: bool) -> bool {
+        if this.widget.mask_image.as_ref().map(|image| image.data.id())
+            != view.mask_image.as_ref().map(|image| image.data.id())
+        {
+            this.widget.mask_image = view.mask_image.clone();
+            this.ctx.request_render();
+        }
         if matches!(view.node.kind, NodeKind::Particles(_)) {
             if this
                 .widget
@@ -1426,11 +1465,23 @@ impl Widget for SceneWidget {
     }
     fn pre_paint(
         &mut self,
-        _: &mut PaintCtx<'_>,
+        ctx: &mut PaintCtx<'_>,
         _: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
-        if self.node.props.opacity != 1. {
+        let mask = self
+            .mask_image
+            .as_ref()
+            .filter(|_| self.node.props.mask_progress < 1.);
+        ctx.set_subtree_image_mask(mask.map(|image| PaintImageMask {
+            image: image.clone(),
+            bounds: self.size.to_rect(),
+            progress: self.node.props.mask_progress as f32,
+            softness: self.node.props.mask_softness.min(f32::MAX as f64) as f32,
+            invert: self.node.props.mask_invert,
+            opacity: self.node.props.opacity as f32,
+        }));
+        if mask.is_none() && self.node.props.opacity != 1. {
             painter.push_group(GroupRef {
                 composite: Composite {
                     alpha: self.node.props.opacity as f32,
@@ -1487,7 +1538,9 @@ impl Widget for SceneWidget {
         _: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
-        if self.node.props.opacity != 1. {
+        if !(self.mask_image.is_some() && self.node.props.mask_progress < 1.)
+            && self.node.props.opacity != 1.
+        {
             painter.pop_group();
         }
     }

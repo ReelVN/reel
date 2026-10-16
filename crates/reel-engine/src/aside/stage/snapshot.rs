@@ -191,11 +191,7 @@ impl StageBinding {
             id: node.id.0,
             handle: self.handles[&node.id].handle,
             shape: Shape::from_kind(&node.kind),
-            origin: match &node.kind {
-                NodeKind::Image { origin, .. } => origin.clone(),
-                NodeKind::Particles(batch) => batch.config.origin.clone(),
-                _ => None,
-            },
+            origin: node.props.mask_origin.as_deref().map(str::to_owned),
         })
     }
     pub(in crate::aside) fn restore_node(
@@ -211,8 +207,10 @@ impl StageBinding {
         };
         let value = heap.import_handle(handle)?;
         let fields = heap.host_fields(value)?;
+        let mask_origin = saved.origin.as_deref().map(Arc::from);
         let kind = saved.shape.project(heap, fields, saved.origin, limit)?;
-        let props = read_props(heap, fields, saved.shape.prefix(), limit)?;
+        let props = read_props(heap, fields, saved.shape.prefix(), limit, None, mask_origin)?;
+        let mask_source = mask_handle(heap, fields, saved.shape.prefix())?;
         let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;
         interaction::publish(
             heap,
@@ -240,6 +238,7 @@ impl StageBinding {
                 handle,
                 interaction_offset,
                 fields_version: heap.info(fields)?.content_version,
+                mask_source,
                 input_source: if matches!(saved.shape, Shape::Input) {
                     input::source_handle(heap, heap.table_entry(fields, 0)?.1)?
                 } else {

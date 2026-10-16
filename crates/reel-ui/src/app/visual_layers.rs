@@ -3,7 +3,7 @@
 
 use kurbo::{Affine, Rect};
 
-use crate::core::WidgetId;
+use crate::core::{MaskProgress, WidgetId};
 use crate::imaging::PaintSink;
 use crate::imaging::record::{Scene, replay_transformed};
 
@@ -25,6 +25,8 @@ pub struct GroupMetadata {
     pub owner: WidgetId,
     /// Effect-local coordinates to layer-local coordinates.
     pub effect_transform: Affine,
+    /// Optional image threshold, separate from the retained mask's scene content.
+    pub mask_progress: Option<MaskProgress>,
 }
 
 /// Snapshot of Masonry's current visual layers in painter order.

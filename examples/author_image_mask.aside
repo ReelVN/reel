@@ -1,0 +1,12 @@
+// Supply assets/ink-mask.png and assets/window-cg.png through the asset root.
+fn main() {
+    game.configure(width: 1280, height: 720);
+    let reveal = stack(width: 1280, height: 720,
+        mask: "assets/ink-mask.png", mask_progress: 0, mask_softness: 0.06) {
+        image("assets/window-cg.png", width: 1280, height: 720);
+    };
+    stage.replace(stack(width: 1280, height: 720, background: "#000000") { reveal; });
+    await stage.presented(owner: reveal);
+    await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
+    reveal.mask = null;
+}
