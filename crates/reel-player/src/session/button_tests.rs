@@ -204,6 +204,84 @@ fn key(state: keyboard::KeyState, key: keyboard::Key) -> TextEvent {
         is_composing: false,
     })
 }
+#[test]
+fn nested_view_centers_content_and_routes_unfocused_control_keys() {
+    let mut runtime = runtime(
+        r#"
+        let data = model({held: false, clicks: 0});
+        fn main() {
+            stage.replace(stack(width: 600, height: 400) {
+                input(stretch: "both", bindings: {skip: [binding("ControlLeft")]},
+                    on_action: |e| { data.held = e.phase == "pressed"; }) {
+                    view(|| button(derive(|| f"{data.held}:{data.clicks}"),
+                        width: 100, height: 40, align_x: 0.5, align_y: 0.5,
+                        on_click: |e| { data.clicks += 1; }), stretch: "both");
+                }
+                input(modal: true, visible: false, width: 600, height: 400);
+            });
+        }
+    "#,
+    );
+    drain(&mut runtime);
+    let (mut bridge, root) = mount(runtime.driver().ui());
+    present(&mut runtime, &mut bridge, root, 1);
+    let mut event = key(
+        keyboard::KeyState::Down,
+        keyboard::Key::Named(keyboard::NamedKey::Control),
+    );
+    let TextEvent::Keyboard(ref mut physical) = event else {
+        unreachable!()
+    };
+    physical.code = keyboard::Code::ControlLeft;
+    runtime
+        .driver_mut()
+        .unwrap()
+        .handle_text(&mut bridge, event)
+        .unwrap();
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(
+        caption(&runtime),
+        "true:0",
+        "a stack wrapper must not hide its input scope"
+    );
+    present(&mut runtime, &mut bridge, root, 2);
+    runtime
+        .driver_mut()
+        .unwrap()
+        .handle_text(&mut bridge, TextEvent::WindowFocusChange(false))
+        .unwrap();
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(
+        caption(&runtime),
+        "false:0",
+        "focus loss releases held actions"
+    );
+    runtime
+        .driver_mut()
+        .unwrap()
+        .handle_text(&mut bridge, TextEvent::WindowFocusChange(true))
+        .unwrap();
+    present(&mut runtime, &mut bridge, root, 3);
+    for kind in ["move", "down", "up"] {
+        runtime
+            .driver_mut()
+            .unwrap()
+            .handle_pointer(&mut bridge, mouse(kind, (300., 200.)))
+            .unwrap();
+    }
+    runtime.wake_input();
+    drain(&mut runtime);
+    assert_eq!(
+        caption(&runtime),
+        "false:1",
+        "view must preserve vertical centering"
+    );
+    runtime.close().unwrap();
+    drain(&mut runtime);
+}
+
 fn caption(runtime: &StoryRuntime) -> String {
     runtime
         .driver()

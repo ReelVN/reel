@@ -1117,14 +1117,16 @@ impl SessionUi {
                 .stage
                 .as_ref()
                 .map_or(0, |view| view.presentation_request);
-            self.input_fallback = bridge.edit_widget(root_id, |mut widget| {
+            let stage_id = bridge.edit_widget(root_id, |mut widget| {
                 let mut widget = widget.downcast::<SessionWidget>();
                 SessionWidget::sync(&mut widget, self);
-                let this = &mut widget;
-                this.ctx
-                    .get_mut(&mut this.widget.stage)
-                    .and_then(|stage| stage.widget.input_fallback())
+                widget.widget.stage.id()
             });
+            self.input_fallback = bridge
+                .root()
+                .get_widget(stage_id)
+                .and_then(|stage| stage.downcast::<StageWidget>())
+                .and_then(|stage| stage.input_fallback(bridge.root()));
             bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
             self.stage_dirty = false;
         }

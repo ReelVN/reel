@@ -180,6 +180,8 @@ Complete example: [author_stretch.aside](../../examples/author_stretch.aside). S
 
 `max_width/max_height` cap a node’s natural or explicit size and default to null. Long text wraps within the available width; short text keeps its content width. Caps include padding; stretch still fills the parent’s inner box on its axes. `align_x/align_y` default to 0 and range from 0 to 1: 0 starts, 0.5 centers, and 1 ends within the parent’s remaining inner space. Both axes apply in a stack, only the cross axis in rows/columns, and only non-scrolling axes in a scroll. They preserve x/y and anchor transform semantics and support bindings and animation. [author_stretch.aside](../../examples/author_stretch.aside) shows a dialog whose dimensions follow its content while its background stretches and its button stays centered.
 
+A view lays out its content as a stack, so both align_x and align_y apply. An input may be nested inside ordinary containers; without focus, the frontmost visible, enabled inner input receives keyboard and gamepad events. Modal panels and focused editors retain priority. Updating game.configure(text_speed:) does not interrupt an active drag. When the window, canvas or parent enlarges text, WGPU generates and caches higher-resolution glyphs for the display scale without changing logical layout.
+
 ### Layered images
 
 An image's `color` multiplies its pixels: `image("assets/panels.png", color: "#ffaaaa")` gives the image a red tint; white preserves it. Both the color's alpha and opacity affect transparency. Ordinary images, tiled large images and individual layer descriptions share this behavior; a container's color does not affect its children. Use bind/derive for hover and other state colors without preparing or uploading separate images.

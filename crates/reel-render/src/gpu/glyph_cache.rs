@@ -26,6 +26,7 @@ pub(super) struct RunKey {
     font: ResourceHandle,
     index: u32,
     size: u32,
+    density: u64,
     hint: bool,
     coords: Vec<i16>,
     transform: Option<[u64; 6]>,
@@ -45,11 +46,12 @@ enum StyleKey {
     },
 }
 impl RunKey {
-    pub fn new(run: &FrameGlyphRun) -> Self {
+    pub fn new(run: &FrameGlyphRun, density: f64) -> Self {
         Self {
             font: run.font,
             index: run.font_index,
             size: run.font_size.to_bits(),
+            density: density.to_bits(),
             hint: run.hint,
             coords: run.normalized_coords.to_vec(),
             transform: run.glyph_transform.map(|t| t.as_coeffs().map(f64::to_bits)),
@@ -173,6 +175,7 @@ impl GlyphCache {
         encoder: &mut wgpu::CommandEncoder,
         frame: &RenderFrame,
         run: &FrameGlyphRun,
+        density: f64,
         index: usize,
         at: RecordLocation,
         budgets: &Budgets,
@@ -189,6 +192,7 @@ impl GlyphCache {
             &mut self.raster.lock().unwrap(),
             frame,
             run,
+            density,
             index,
             at,
             available,
