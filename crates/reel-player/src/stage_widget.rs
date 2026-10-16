@@ -330,7 +330,6 @@ fn image_source(kind: &NodeKind) -> Option<(&str, &Option<String>)> {
 pub(crate) struct StageWidget {
     root: Option<WidgetPod<SceneWidget>>,
     root_id: Option<NodeId>,
-    root_input: bool,
     root_props: reel_ui::stage::NodeProps,
 }
 impl StageWidget {
@@ -375,21 +374,25 @@ impl StageWidget {
         Self {
             root: root.map(|node| WidgetPod::new(SceneWidget::new(node))),
             root_id: root.map(|node| node.node.id),
-            root_input: root.is_some_and(|node| matches!(node.node.kind, NodeKind::Input { .. })),
             root_props: root.map(|node| node.node.props.clone()).unwrap_or_default(),
         }
     }
-    pub fn input_fallback(&self) -> Option<WidgetId> {
-        (self.root_input && self.root_props.visible)
-            .then(|| self.root.as_ref().map(WidgetPod::id))
-            .flatten()
+    pub fn input_fallback(&self, root: &reel_ui::app::RenderRoot) -> Option<WidgetId> {
+        fn visit(root: &reel_ui::app::RenderRoot, id: WidgetId) -> Option<WidgetId> {
+            let node = root.get_widget(id)?.downcast::<SceneWidget>()?;
+            if !node.node.props.visible || !node.node.props.enabled {
+                return None;
+            }
+            node.children
+                .iter()
+                .rev()
+                .find_map(|(_, child)| visit(root, child.id()))
+                .or_else(|| node.input.as_ref().map(|_| id))
+        }
+        visit(root, self.root.as_ref()?.id())
     }
     pub fn sync(this: &mut WidgetMut<'_, Self>, view: &StageView) {
         let id = view.root.as_ref().map(|node| node.node.id);
-        this.widget.root_input = view
-            .root
-            .as_ref()
-            .is_some_and(|node| matches!(node.node.kind, NodeKind::Input { .. }));
         if id != this.widget.root_id {
             if let Some(root) = this.widget.root.take() {
                 this.ctx.remove_child(root);

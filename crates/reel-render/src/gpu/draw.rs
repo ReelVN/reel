@@ -231,7 +231,8 @@ impl Context<'_> {
             .map(|x| x * run.composite.alpha);
         let mut page: Option<Arc<super::glyph_cache::Page>> = None;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
-        let run_key = Arc::new(super::glyph_cache::RunKey::new(run));
+        let density = super::glyph::raster_density(outer * run.transform);
+        let run_key = Arc::new(super::glyph_cache::RunKey::new(run, density));
         for index in 0..run.glyphs.len() {
             let key = super::glyph_cache::Key::new(run_key.clone(), run.glyphs[index].id);
             let glyph = if let Some(glyph) = self.glyphs.entries.get(&key) {
@@ -244,6 +245,7 @@ impl Context<'_> {
                         &mut self.encoder,
                         frame,
                         run,
+                        density,
                         index,
                         at,
                         self.budgets,
@@ -280,9 +282,14 @@ impl Context<'_> {
                 batch = mesh::Mesh::new(self.mesh_allocation());
             }
             page = Some(glyph_page.clone());
-            let x = f64::from(run.glyphs[index].x) + offset[0];
-            let y = f64::from(run.glyphs[index].y) + offset[1];
-            let bounds = Rect::new(x, y, x + f64::from(size[0]), y + f64::from(size[1]));
+            let x = f64::from(run.glyphs[index].x) + offset[0] / density;
+            let y = f64::from(run.glyphs[index].y) + offset[1] / density;
+            let bounds = Rect::new(
+                x,
+                y,
+                x + f64::from(size[0]) / density,
+                y + f64::from(size[1]) / density,
+            );
             let visible = (outer * run.transform)
                 .transform_rect_bbox(bounds)
                 .inflate(1., 1.)

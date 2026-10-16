@@ -531,7 +531,12 @@ impl State {
         else {
             return Ok(false);
         };
-        self.session.as_mut().unwrap().ui_mut()?.clear_presented();
+        let layout_changed = self.game.as_ref().is_none_or(|old| {
+            old.fonts != settings.fonts || old.canvas_size != settings.canvas_size
+        });
+        if layout_changed {
+            self.session.as_mut().unwrap().ui_mut()?.clear_presented();
+        }
         let paths = settings.fonts.clone();
         let assets = self.session.as_ref().unwrap().ui().assets();
         self.font_requests.retain(|path, id| {
@@ -594,7 +599,7 @@ impl State {
                 self.resize(size)?;
             }
         }
-        if let Some(id) = self.canvas_id {
+        if layout_changed && let Some(id) = self.canvas_id {
             self.presentation.bridge.edit_widget(id, |mut widget| {
                 let mut canvas = widget.downcast::<reel_ui::widgets::Canvas>();
                 reel_ui::widgets::Canvas::set_size(&mut canvas, settings.canvas_size);

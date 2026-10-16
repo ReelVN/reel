@@ -81,6 +81,113 @@ fn counts(renderer: &Renderer, uploads: usize) {
 }
 
 #[test]
+#[ignore = "requires REEL_R01_TEST_FONT; CPU only, no graphics adapter"]
+fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
+    use reel_ui::{
+        app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
+        core::*,
+        dpi::PhysicalSize,
+        peniko::Blob,
+        resources::{ResourceData, ResourceRegistry},
+    };
+    let pool = pool();
+    let bytes = std::fs::read(std::env::var("REEL_R01_TEST_FONT").unwrap()).unwrap();
+    let reservation = pool.reserve(bytes.len() as u64).unwrap();
+    let font = Blob::from(bytes);
+    let mut registry = ResourceRegistry::new(1, 65264).unwrap();
+    let handle = registry
+        .register(
+            reel_core::identity::ResourceVersion {
+                key: reel_core::identity::AssetKey("scaled-font".into()),
+                version: reel_core::identity::ContentVersion([1; 32]),
+            },
+            ResourceData::Font(font.clone()),
+            reservation,
+        )
+        .unwrap();
+    let root = RenderRoot::new(
+        NewWidget::new(
+            reel_ui::widgets::Label::new("M")
+                .with_style(StyleProperty::FontSize(24.))
+                .with_outline(Some(TextOutline {
+                    width: 2.,
+                    color: Color::WHITE,
+                })),
+        ),
+        |_| {},
+        RenderRootOptions {
+            default_properties: Arc::new(DefaultProperties::new()),
+            use_system_fonts: false,
+            size_policy: WindowSizePolicy::User,
+            size: PhysicalSize::new(400, 300),
+            scale_factor: 1.,
+            default_font: Some(font),
+        },
+    );
+    let mut bridge = r01_fixture::bridge(root);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&[handle], &pool).unwrap(),
+        &pool,
+    );
+    let mut raster = super::super::glyph::Rasterizer::default();
+    let density = super::super::glyph::raster_density;
+    assert_eq!(density(Affine::translate((123., 42.))), 1.);
+    assert_eq!(density(Affine::scale(1.25)), 2.);
+    assert_eq!(density(Affine::scale(1.75)), 2.);
+    assert_eq!(density(Affine::scale_non_uniform(3., 1.)), 4.);
+    let mut fills = 0;
+    let mut strokes = 0;
+    for command in frame.commands() {
+        let reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) = &command.op
+        else {
+            continue;
+        };
+        let normal = super::super::glyph::rasterize(
+            &mut raster,
+            &frame,
+            run,
+            1.,
+            0,
+            command.origin.at,
+            u64::MAX,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        let enlarged = super::super::glyph::rasterize(
+            &mut raster,
+            &frame,
+            run,
+            2.,
+            0,
+            command.origin.at,
+            u64::MAX,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        for axis in 0..2 {
+            assert!(enlarged.size[axis] > normal.size[axis]);
+            assert!(
+                (f64::from(enlarged.size[axis]) / 2. - f64::from(normal.size[axis])).abs() <= 2.
+            );
+        }
+        assert!((enlarged.x / 2. - normal.x).abs() <= 1.);
+        assert!((enlarged.y / 2. - normal.y).abs() <= 1.);
+        assert!(
+            super::super::glyph_cache::RunKey::new(run, 1.)
+                != super::super::glyph_cache::RunKey::new(run, 2.)
+        );
+        match run.style {
+            reel_ui::peniko::Style::Fill(_) => fills += 1,
+            _ => strokes += 1,
+        }
+    }
+    assert!(fills > 0 && strokes > 0);
+}
+
+#[test]
 #[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
 fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparations() {
     use reel_ui::{
@@ -194,14 +301,14 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     let at = frame.commands()[0].origin.at;
     let mut raster = super::super::glyph::Rasterizer::default();
     assert!(matches!(
-        super::super::glyph::rasterize(&mut raster, &frame, run, 0, at, 1, 8192),
+        super::super::glyph::rasterize(&mut raster, &frame, run, 1., 0, at, 1, 8192),
         Err(GpuError::Budget {
             domain: "glyph raster",
             ..
         })
     ));
     assert!(matches!(
-        super::super::glyph::rasterize(&mut raster, &frame, run, 0, at, u64::MAX, 1),
+        super::super::glyph::rasterize(&mut raster, &frame, run, 1., 0, at, u64::MAX, 1),
         Err(GpuError::Unsupported {
             record: "glyph raster exceeds device texture dimensions",
             ..

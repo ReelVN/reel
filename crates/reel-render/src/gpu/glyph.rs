@@ -20,10 +20,23 @@ pub struct GlyphBitmap {
     pub size: [u32; 2],
     pub alpha: Vec<u8>,
 }
+
+/// Power-of-two densities keep animated transforms on reusable atlas tiers.
+pub(super) fn raster_density(transform: kurbo::Affine) -> f64 {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    let magnification = ((a + d).hypot(b - c) + (a - d).hypot(b + c)) * 0.5;
+    if magnification > 1. {
+        2_f64.powf(magnification.log2().ceil())
+    } else {
+        1.
+    }
+}
+
 pub fn rasterize(
     context: &mut Rasterizer,
     frame: &RenderFrame,
     run: &FrameGlyphRun,
+    density: f64,
     index: usize,
     at: RecordLocation,
     available: u64,
@@ -58,7 +71,7 @@ pub fn rasterize(
     let mut scaler = context
         .scale
         .builder(font)
-        .size(run.font_size)
+        .size(run.font_size * density as f32)
         .hint(run.hint)
         .normalized_coords(run.normalized_coords.iter().copied())
         .build();
@@ -79,11 +92,21 @@ pub fn rasterize(
         return Ok(None);
     }
     if run.font_embolden != kurbo::Vec2::ZERO {
-        outline.embolden(run.font_embolden.x as f32, run.font_embolden.y as f32);
+        outline.embolden(
+            (run.font_embolden.x * density) as f32,
+            (run.font_embolden.y * density) as f32,
+        );
     }
     if let Some(transform) = run.glyph_transform {
         let [a, b, c, d, e, f] = transform.as_coeffs().map(|v| v as f32);
-        outline.transform(&zeno::Transform::new(a, b, c, d, e, f));
+        outline.transform(&zeno::Transform::new(
+            a,
+            b,
+            c,
+            d,
+            e * density as f32,
+            f * density as f32,
+        ));
     }
     if outline
         .points()
@@ -105,11 +128,11 @@ pub fn rasterize(
             dashes = stroke
                 .dash_pattern
                 .iter()
-                .map(|v| *v as f32)
+                .map(|v| (*v * density) as f32)
                 .collect::<Vec<_>>();
-            let width = stroke.width as f32;
+            let width = (stroke.width * density) as f32;
             let miter_limit = stroke.miter_limit as f32;
-            let offset = stroke.dash_offset as f32;
+            let offset = (stroke.dash_offset * density) as f32;
             if !width.is_finite()
                 || width < 0.
                 || !offset.is_finite()
