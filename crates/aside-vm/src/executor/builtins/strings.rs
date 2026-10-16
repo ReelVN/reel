@@ -1,6 +1,8 @@
 //! Immutable text operations retain cursors, never a second whole-string copy.
 use super::*;
 use crate::executor::text::Utf8;
+mod split;
+use split::SplitWork;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(in crate::executor) struct TextWork {
@@ -41,6 +43,7 @@ enum TextMode {
         begin: Option<u32>,
         end: u32,
     },
+    Split(SplitWork),
 }
 
 impl Vm {
@@ -53,6 +56,25 @@ impl Vm {
         let len = self.heap.info(receiver).map_err(heap_fault)?.len;
         let argument = || self.builtin_argument(s, call, 0).map_err(vm_fault);
         let mode = match call.method {
+            Builtin::Split => {
+                let separator = argument()?;
+                if !self.is_text(separator, ObjectKind::String) {
+                    return Err(FaultKind::Type);
+                }
+                if s.effects.0 & Effects::ALLOCATE == 0 {
+                    return Err(FaultKind::Effect);
+                }
+                let result = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                let prefix = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                let roots = self
+                    .heap
+                    .alloc_array(&[result, prefix, Value::NULL])
+                    .map_err(heap_fault)?;
+                self.put(s.env, 2, roots).map_err(vm_fault)?;
+                TextMode::Split(SplitWork::start(
+                    self.heap.info(separator).map_err(heap_fault)?.len,
+                ))
+            }
             Builtin::Trim | Builtin::TrimStart | Builtin::TrimEnd => {
                 if s.effects.0 & Effects::ALLOCATE == 0 {
                     return Err(FaultKind::Effect);
@@ -179,6 +201,7 @@ impl Vm {
     ) -> Result<bool, FaultKind> {
         let receiver = self.value(s.env, 1).map_err(vm_fault)?;
         work.mode = match work.mode {
+            TextMode::Split(state) => return self.split_text_step(s, work, state, meter),
             TextMode::Scan {
                 offset,
                 mut utf8,
