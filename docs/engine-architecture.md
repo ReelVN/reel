@@ -22,9 +22,13 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 
 首批接口 `std::random(seed: null)` 创建独立随机对象；`int(min, max)` 取左闭右开整数，`float()` 取 [0,1)，`pick(items)` 从非空 array/tuple 返回原元素。复用锁定的 fastrand 2.5.0，同版本下固定种子与相同调用顺序复现同一流；省略种子由库创建新流。状态保存在普通 VM 宿主载荷中，绑定方法保留原对象；每次抽取只读写常数个值，不复制集合或创建堆载荷。非法范围和空集合在推进状态前报错。构造声明宿主效果，抽取声明写入效果，沿现有初始化与纯 derive 边界执行。新增 native ABI 1，B01/ASB 不变；范围为 aside-std、reel-engine、示例和双语指南，不引入平台句柄。
 
+`std::math` 提供独立宿主的纯 float64 数学函数：sin/cos/tan/asin/acos/atan、atan2(y,x)、sqrt/hypot(x,y)、pow(base,exponent)、exp/ln/log2/log10、abs/floor/ceil/round，以及 radians/degrees。直接复用 Rust f64 运算，不持有状态、不分配 VM 对象，允许 derive 与初始化调用。三角角度为弧度，round 中点远离零；NaN/Infinity 沿 Aside float 语义返回，不伪造有效数值或隐式限幅；宿主节点继续在自己的属性边界要求有效范围。整数参数按 float64 转换。native ABI 1，无新依赖，Aside/B01 不变；范围仅 aside-std、示例和双语指南。
+
 Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点、会话和活动业务留在 Reel；可复用的 Rust native 声明、编译链接、运行时准入和属性 schema 生成归 Aside 扩展层。绑定宏从同一声明产生元数据与调用包装，不复制舞台类型或引入第二套语言实现。
 
 脚本堆的对象、宿主根和根区间存储按实际需求增长，默认不以固定数量或字节额度限制作品规模；宿主可以显式设置资源配额。GC 与释放队列在对象准入前准备容量，增长保留代际身份与扫描状态；队列、根映射及增长时的新旧存储都进入同一内存计账。执行任务和切片预算独立于这些堆存储额度。
+
+作者编译与 ASB/B01 加载默认仅受格式索引宽度、可寻址内存与实际分配结果约束，不以预设作品字节数、累计记录数、模块数或指令数截断正常作品。Rust 宿主仍可显式设置各阶段 Limits 配额；解码长度、索引、结构与整数溢出检查保留。递归深度及诊断条数继续限制递归实现的栈与错误恢复，不冒充作品容量。此调整不改变 B01/ASB 编码或 VM 指令，范围为 aside-compiler、aside-vm 字节码边界、reel-package 及双语指南；失败诊断区分记录与内存配额并报告实际请求/限制。
 
 组合动作的宿主声明先接通普通可变参数：NativeContract 的 rest 名称和 Rust `#[aside(rest)]` 映射为既有 B01 array rest。sequence/parallel 等库接口使用这条通路，不新增 Reel 专用编译语法或另一套参数收集器。范围和验收见 Aside host SDK 文档；动作组合运行器共用下面的活动合同。
 
@@ -32,11 +36,11 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 
 ### 批量舞台粒子
 
-`particles(source, rate:60, lifetime:5, seed:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, ...节点属性)` 创建静止的单个舞台节点。配置只读；emit 启动时的 width/height 为发射矩形（缺省为零），共同变换、可见性、透明度与裁剪仍可更新。速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size。rate/lifetime 为正有限数，size 与各 spread 为非负有限数，透明度在 [0,1]。图片沿共同资源加载与源码诊断路径。粒子 source 必须是完整 PNG/JPEG 精灵；分块 `.reel-image` 只供 image 节点使用，粒子请求在资源边界带构造源码位置明确拒绝。
+`particles(source, rate:60, lifetime:5, seed:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, burst:0, lifetime_spread:0, size_end:null, ...节点属性)` 创建静止的单个舞台节点。配置只读；emit 启动时的 width/height 为发射矩形（缺省为零），共同变换、可见性、透明度与裁剪仍可更新。速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size，lifetime_spread 不超过 lifetime。lifetime 为正有限秒数；rate、size、显式 size_end 与各 spread 为非负有限数，burst 为非负整数，透明度在 [0,1]。每粒寿命在 lifetime±lifetime_spread 内确定性取样，零寿命立即结束；size_end:null 保留每粒随机出生宽度，显式终值使宽度在该粒寿命内线性变化，保留图片宽高比。图片沿共同资源加载与源码诊断路径。粒子 source 必须是完整 PNG/JPEG 精灵；分块 `.reel-image` 只供 image 节点使用，粒子请求在资源边界带构造源码位置明确拒绝。
 
-`emit(node, duration:null, owner:null)` 启动并返回独立活动；duration 为非负有限的发射秒数，null 连续发射。首粒在 1/rate 秒出生，有限发射在 duration 截止（含该时刻），最后一粒寿命结束后返回 Completed。新 emit 停止该节点的旧活动并从同一种子重新开始。pause/resume 冻结/继续发射与运动；stop 清空画面并返回 Stopped；finish 只接受有限活动，清空并返回 Completed。目标或 owner 退休产生 Cancelled；等待者取消不取消生产者。owner 缺省沿用任务/回调节点，主剧情归会话。终态独立于节点保存，可重复 await，结束后释放目标/owner 根。隐藏不暂停。
+`emit(node, duration:null, owner:null)` 启动并返回独立活动；duration 为非负有限的发射秒数，null 连续发射。burst 粒在启动时刻同时出生，随后每 1/rate 秒出生一粒，有限发射在 duration 截止（含该时刻），最后一粒实际寿命结束后返回 Completed。rate:0 只产生瞬发粒子，是可 finish 的有限活动；rate 与 burst 均为零时立即完成。duration:0 仍产生 burst，有限时段内没有出生粒子时立即完成。新 emit 停止该节点的旧活动并从同一种子重新开始。pause/resume 冻结/继续发射与运动；stop 清空画面并返回 Stopped；finish 只接受有限活动，清空并返回 Completed。目标或 owner 退休产生 Cancelled；等待者取消不取消生产者。owner 缺省沿用任务/回调节点，主剧情归会话。终态独立于节点保存，可重复 await，结束后释放目标/owner 根。隐藏不暂停。
 
-配置和累计逻辑时间形成不可变投影，按出生序号解析位置、匀加速运动、旋转及寿命内线性透明度。固定种子和同一时间得到同一批次，与分帧无关；无需逐粒子节点、任务、回调或每帧数组复制。SplitMix64 的固定混合步骤仅用于按序号取样，算法及顺序由本接口版本固定。模拟/投影存储为每发射器常数空间，按发射器分片推进；绘制为存活粒子线性工作，使用同一图片与既有绘制/资源预算，无作者数量硬上限。大时间跳跃直接跳过已死亡序号。使用现有会话活动时钟，资源等待/宿主暂停沿播放器现有冻结规则。快照恢复仍未实现。GPU 在既有绘制流中把相邻同图片矩形合并为有序 quad 批次，共用顶点/索引上传与纹理绑定；clip/group、非图片绘制和资源变化结束批次，逐图片变换、裁剪来源及 alpha 保留，不新增特效渲染器或帧 ABI。范围为 reel-ui 舞台、reel-engine、reel-player、reel-render、示例及双语指南；新增 native ABI 1，B01/ASB 不变，无新增依赖。
+配置和累计逻辑时间形成不可变投影，按出生序号解析位置、匀加速运动、旋转及寿命内线性尺寸与透明度。固定种子和同一时间得到同一批次，与分帧无关；无需逐粒子节点、任务、回调或每帧数组复制。SplitMix64 的固定混合步骤仅用于按序号取样；出生 x/y、速度 x/y、尺寸、角速度沿原六个取样通道，寿命使用第七通道。瞬发序号从 1 到 burst，后续定时出生沿其后递增，burst:0 保留原序列。模拟/投影为每发射器常数空间；绘制只枚举最大寿命窗口内的候选，再按实际寿命过滤，使用同一图片与既有绘制/资源预算，无作者数量硬上限。有限活动逆序计算实际最大死亡时间，较早出生的最大可能死亡时间不超过已知终点时停止；这项一次性工作按候选纳入维护切片预算，固定寿命终点为常数工作。大时间跳跃直接跳过必然已死序号。使用现有会话活动时钟，资源等待/宿主暂停沿播放器现有冻结规则。快照保存节点配置、发射矩形、累计时间、暂停、归属及尚未完成的终点计算，恢复同一确定性效果；SessionSnapshot 版本 4。GPU 在既有绘制流中把相邻同图片矩形合并为有序 quad 批次，共用顶点/索引上传与纹理绑定；clip/group、非图片绘制和资源变化结束批次，逐图片变换、裁剪来源及 alpha 保留，不新增特效渲染器或帧 ABI。范围为 reel-ui 舞台、reel-engine、reel-player、示例及双语指南；particles native ABI 3、emit ABI 1，B01/ASB 不变，无新增依赖。
 
 ### 对白推进状态
 
@@ -251,6 +255,10 @@ UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88
 内置桌面使用公共 PlatformHost 与 Presentation，其他平台复用同一会话、输入、记录、已接受帧与生命周期。范围为 reel-render 后端合同/既有 WGPU 实现、reel-player 公共呈现、运行时计时与 Winit 适配，以及合同检查、规范和双语指南。复用 reel-core 的时钟合同，保持 Aside、B01/ASB v1 和 native ABI v1；Rust 宿主/渲染接口直接更新，不保留兼容层，无新增依赖。
 
 PlatformHost 的当前必需命令为 request_redraw、set_wake_deadline、before_present、request_exit，时钟沿用 Clock，后台通知沿用 WakeSignal。原生事件由适配器转换后进入共同 UI/会话；窗口创建及原生表面创建仍在组装代码。剪贴板、IME、系统可访问性属于独立可选平台服务，后续实现时给出真实能力与结果；本轮不以空成功实现这些服务。
+
+`window.info()` 返回当前窗口快照：width/height 为客户区逻辑像素，scale_factor 为物理像素倍率，windowed_width/windowed_height 为窗口模式尺寸，fullscreen/vsync 为当前状态，capabilities.resize/fullscreen/vsync 表示实际可修改项，resolutions 为当前显示器去重后的逻辑尺寸列表。列表仅在显示器或 DPI 改变时刷新，不逐帧枚举。`window.configure(width:null,height:null,fullscreen:null,vsync:null,owner:null)` 返回可 await 的活动，完成值为应用后的同结构快照；省略项不修改，尺寸为正有限数，全屏明确为无边框，尺寸只控制窗口模式并在退出全屏时恢复。更改中的窗口拒绝另一项更改为 Busy，不积累请求；不支持的能力在原调用处明确报错。取消等待者不撤回已提交的平台更改，owner 退休取消结果，操作提交前取消可撤销请求。窗口状态不由剧情存档回滚，未完成请求使快照 Busy，完成值可保存。
+
+窗口服务使用 reel-core 中的平台无关数据、engine 请求/结果和 player 的可选 WindowControl 适配；Winit 处理原生尺寸与全屏事件，RenderBackend 的可选 vsync/set_vsync 控制呈现同步，默认适配返回不支持。WGPU 默认 FIFO，关闭同步选择真实支持的 Immediate 或 Mailbox，恢复设备/表面保留同步选择；不因关闭同步添加空闲重绘循环。无窗口宿主 info 返回零尺寸及全 false 能力，configure 不伪成功。尺寸/全屏请求收到平台实际结果后才完成，画布 game.configure 与窗口客户区保持独立。新 native ABI 1，B01/ASB 不变，无新依赖；范围为 reel-core、engine、player、render、作者示例与双语指南。
 
 RenderBackend 保留配置、呈现、完成轮询和挂起责任，使用具体错误类型及统一的拒绝/设备丢失/表面失效分类。呈现通过宿主的 before_present 通知后才交给平台。RenderFrame 已拥有全部 CPU 资源租约；后端可以在同一次提交内上传，独立 upload 是可选预热能力，上传额度为零的后端明确拒绝而不影响普通帧资源。资源生产者通过 ResourceRegistry 退休资源；后端 retire 退休其持有的资源，既有已接受帧租约的重绘仍合法。无持久 GPU 缓存的后端按提交保留和释放帧租约。完成轮询不得丢失超过本次额度的结果，完成通知和呈现接受保持独立。
 
@@ -694,7 +702,7 @@ start 与循环边界使用有限非负秒。looping:true 时循环区间为 [lo
 
 `audio.position(activity)` 返回最后观察到的内容位置秒数，加载中为请求起点，暂停或输出挂起时保持，循环时回到区间起点；终态保留最后位置而不保留 PCM。它是显式读取，不自动订阅播放时钟；无 IO、解码或完整快照复制。切换同进度音轨可用 `audio.play(next, start: audio.position(current), group:"music", looping:true, fade_in:2)` 与 `audio.stop(current, fade:2)` 组合，淡入从新音轨实际起播时开始。该组合不承诺两个后台加载音轨的采样级同步。
 
-AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前内容位置；音乐按位置和原循环区间恢复，语音重播、瞬时音效不重放仍遵守存档策略。音频活动终态位置进入 VM 宿主载荷。会话快照版本为 3，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
+AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前内容位置；音乐按位置和原循环区间恢复，语音重播、瞬时音效不重放仍遵守存档策略。音频活动终态位置进入 VM 宿主载荷。会话快照版本为 4，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 

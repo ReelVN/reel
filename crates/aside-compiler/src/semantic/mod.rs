@@ -26,15 +26,15 @@ pub struct AnalysisLimits {
 impl Default for AnalysisLimits {
     fn default() -> Self {
         Self {
-            max_nodes: 1_000_000,
-            max_symbols: 200_000,
-            max_captures: 200_000,
-            max_work: 16_000_000,
+            max_nodes: u32::MAX as usize,
+            max_symbols: u32::MAX as usize,
+            max_captures: u32::MAX as usize,
+            max_work: usize::MAX,
             max_diagnostics: 128,
             max_depth: 128,
-            max_imports: 10_000,
-            max_modules: 10_000,
-            max_total_source_bytes: 32 * 1024 * 1024,
+            max_imports: u32::MAX as usize,
+            max_modules: u32::MAX as usize,
+            max_total_source_bytes: isize::MAX as usize,
         }
     }
 }

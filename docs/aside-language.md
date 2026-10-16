@@ -10,6 +10,8 @@ CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类�
 
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
+作者编译与 ASB/B01 加载默认仅受格式索引宽度、可寻址内存与实际分配结果约束，不以预设作品字节数、累计记录数、模块数或指令数截断正常作品。Rust 宿主仍可显式设置各阶段 Limits 配额；解码长度、索引、结构与整数溢出检查保留。递归深度及诊断条数继续限制递归实现的栈与错误恢复，不冒充作品容量。此调整不改变 B01/ASB 编码或 VM 指令，范围为 aside-compiler、aside-vm 字节码边界、reel-package 及双语指南；失败诊断区分记录与内存配额并报告实际请求/限制。
+
 ## 一 定位与完成标准
 
 Aside 是以 Rust 实现的完整动态嵌入式语言，Reel 是首个宿主。它承担剧情、业务状态、自定义 UI、组件、回调、异步流程、扩展脚本与工具逻辑；语言、编译器和 VM 不依赖窗口、媒体或特定舞台。工作区使用 aside-vm、aside-compiler，源码扩展名 .aside。本文定义最终目标语义；开发里程碑只记录实现状态，保持全部目标能力。
@@ -85,6 +87,8 @@ let next = || { count += 1; count };
 条件、!、&&、|| 只接受 bool；逻辑运算短路并返回 bool。?? 仅在左值为 null 时计算右值。?.、?[...]、?(...) 只在接收者为 null 时短路，该段及其后同一可选链不求索引/实参；括号结束链传播。非 null 接收者的缺失字段仍报错，不能吞掉 metamethod 的异常。
 
 int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 / 向零截断；任一操作数为 float 则按 float64 运算。% 是与向零除法一致的 remainder，div_euclid/rem_euclid 提供欧几里得规则。数字除零含浮点 ±0 均报错，其余 float 运算允许产生非有限值；宿主属性可另行要求有限值。+ 只接受数值对或字符串对，字符串化使用 str()/插值。
+
+`std::math` 为宿主可安装的纯浮点标准库，复用 Rust f64 数学函数，支持弧度三角函数、atan2、sqrt/hypot、pow、指数/对数、abs/floor/ceil/round 与 radians/degrees。入参允许 int 按 float64 转换；NaN/Infinity 遵循上述浮点值规则。它不引入 VM 指令或 Reel 依赖。
 
 位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，yield，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
 
@@ -620,6 +624,8 @@ Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定
 
 ## Reel 粒子宿主接口
 
-Reel 注册 `particles` 和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。B01/ASB 与语言语法不变。
+Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info()` 返回一次平台状态快照，不创建响应式时钟；`window.configure(width:null,height:null,fullscreen:null,vsync:null,owner:null)` 返回既有 completion 协议的可等待活动，完成时返回实际窗口快照。全屏为无边框，尺寸为窗口客户区逻辑像素，capabilities 表示可修改项；平台边界、取消和存档合同见[引擎架构](engine-architecture.md)。native ABI 1，不增加语言语法或 VM 指令。
+
+Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。burst:0、lifetime_spread:0、size_end:null 是只读构造参数，分别控制起始瞬发数量、寿命半幅、寿命结束宽度；rate:0 允许只瞬发，空发射直接完成。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。B01/ASB 与语言语法不变。
 
 Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 B01/ASB 格式。

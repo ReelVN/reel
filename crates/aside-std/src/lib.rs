@@ -4,6 +4,7 @@
 //! Script values and mutable random state belong to the VM heap, not this adapter.
 #![forbid(unsafe_code)]
 
+mod math;
 mod random;
 mod time;
 
@@ -15,8 +16,8 @@ use aside_host::aside_vm::{
 };
 use aside_host::{Error, NativeBinding, NativeContract, NativeHandler};
 
-fn bindings() -> [NativeBinding<StandardLibrary, NativeError>; 7] {
-    [
+fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
+    let mut bindings = vec![
         random::random::binding(),
         random::int::binding(),
         random::float::binding(),
@@ -24,7 +25,9 @@ fn bindings() -> [NativeBinding<StandardLibrary, NativeError>; 7] {
         time::now::binding(),
         time::parts::binding(),
         time::format::binding(),
-    ]
+    ];
+    bindings.extend(math::bindings());
+    bindings
 }
 
 /// The same trusted ABI declarations are used by the compiler and VM admission.
@@ -59,8 +62,16 @@ pub fn modules() -> Vec<ModuleInterface> {
     modules.push(ModuleInterface {
         canonical_path: "std::time".into(),
         version: "1".into(),
-        exports: bindings()[4..]
+        exports: bindings()[4..7]
             .iter()
+            .map(|binding| binding.contract.external())
+            .collect(),
+    });
+    modules.push(ModuleInterface {
+        canonical_path: "std::math".into(),
+        version: "1".into(),
+        exports: math::bindings()
+            .into_iter()
             .map(|binding| binding.contract.external())
             .collect(),
     });

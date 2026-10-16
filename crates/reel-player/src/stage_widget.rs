@@ -1348,13 +1348,15 @@ impl Widget for SceneWidget {
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
             let insets = batch.frame.map_or(Insets::ZERO, |frame| {
                 let config = &batch.config;
-                let radius = (config.size + config.size_spread)
-                    * (1. + f64::from(image.height) / f64::from(image.width))
-                    * 0.5;
+                let max_size =
+                    (config.size + config.size_spread).max(config.size_end.unwrap_or(0.));
+                let lifetime = config.max_lifetime();
+                let radius =
+                    max_size * (1. + f64::from(image.height) / f64::from(image.width)) * 0.5;
                 let reach: [f64; 2] = std::array::from_fn(|axis| {
                     radius
-                        + (config.velocity[axis].abs() + config.spread[axis]) * config.lifetime
-                        + 0.5 * config.acceleration[axis].abs() * config.lifetime * config.lifetime
+                        + (config.velocity[axis].abs() + config.spread[axis]) * lifetime
+                        + 0.5 * config.acceleration[axis].abs() * lifetime * lifetime
                 });
                 // Birth dimensions belong to emit's snapshot, not the current
                 // layout. Resizing must keep older sprites inside paint bounds.

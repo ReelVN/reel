@@ -46,6 +46,20 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: capabilities(),
     })
     .collect();
+    for (name, fields) in [
+        ("info", &[][..]),
+        ("configure", &["width", "height", "fullscreen", "vsync", "owner"][..]),
+    ] {
+        contracts.push(NativeContract {
+            rest: None, symbol: format!("reel::window::{name}"), abi_version: 1,
+            parameters: fields.iter().map(|field| NativeParameter {
+                name: (*field).into(), ty: BuiltinType::Any, default: Some(bc::Const::Null),
+            }).collect(),
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::HOST | if name == "configure" { Effects::WRITE } else { 0 }),
+            required_capabilities: vec![],
+        });
+    }
     for (symbol, parameters, effects) in [
         (
             "character",
@@ -216,7 +230,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             symbol: format!("reel::{name}"),
             abi_version: if name == "slider" {
                 9
-            } else if matches!(name, "camera" | "particles") {
+            } else if name == "particles" {
+                3
+            } else if name == "camera" {
                 2
             } else if matches!(name, "checkbox" | "radio") {
                 4

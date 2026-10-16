@@ -6,6 +6,8 @@ Design version 1.1 · Development baseline. Implementation status is stated in t
 
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
 
+
+Compilation and ASB loading do not impose default quotas on project size, aggregate records, modules or instruction counts. Format widths and available memory still apply; Rust embedders can set explicit Limits. Capacity diagnostics distinguish record counts from requested memory, so a longer story is not mistaken for invalid syntax.
 ## Reading This Guide
 Reel is currently a development prototype that runs simple interactive scenes; the full creation and distribution workflow is still being built. Start with the [basic scene](../../examples/author_stage.aside), [animation](../../examples/author_activities.aside), or [interactive buttons](../../examples/author_buttons.aside). The [capability table](../README.md#当前状态) states the actual boundaries, and [roadmap #94](https://github.com/jhq223/reel/issues/94) tracks implementation order.
 
@@ -160,6 +162,8 @@ Animate and position the returned node as a group. The selected layers and depen
 ### Random choices
 
 `let rng = random();` creates an independent random stream. `rng.int(0, 10)` returns an integer from 0 through 9, `rng.float()` returns a number in [0, 1), and `rng.pick(items)` returns an original element from a nonempty array or tuple. `random(seed: 42)` reproduces the same call sequence; a saved `let pick = rng.pick` keeps using that stream. Draw in an event or story function and write the result to a model, rather than drawing inside derive. Failed draws do not advance the state. See [author_random.aside](../../examples/author_random.aside).
+
+After `use std::math::{sin, cos};`, use `cos(angle) * speed` and `sin(angle) * speed` for a two-dimensional velocity; angle is in radians. The module also provides tan/asin/acos/atan, atan2(y,x), sqrt/hypot(x,y), pow(base,exponent), exp/ln/log2/log10, abs/floor/ceil/round, and radians/degrees. These pure float64 operations work in derive without allocating script objects. round breaks midpoint ties away from zero; invalid mathematical domains produce NaN and overflow may produce Infinity. See [author_math.aside](../../examples/author_math.aside).
 
 `random` comes from the independent Aside standard library and is imported automatically by Reel; `use std::random;` is also supported. Create streams in main or an event handler; module initialization and derive are effect-restricted. Seeded sequences are reproducible within the same library version.
 
@@ -1110,6 +1114,22 @@ Runnable example: [author_audio.aside](../../examples/author_audio.aside), using
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
 
+### Window and presentation settings
+
+`window.info()` returns the current client area's logical width/height, scale_factor, fullscreen, vsync, windowed_width/windowed_height, capabilities and resolutions. resolutions lists the current display's available sizes converted to logical pixels; these are separate from the stage canvas. Check capabilities.resize/fullscreen/vsync before showing corresponding controls. A host without a window reports all capabilities as false.
+
+```aside
+let mut display = window.info();
+if display.capabilities.resize {
+    display = await window.configure(width: 1280, height: 720);
+}
+if display.capabilities.fullscreen {
+    display = await window.configure(fullscreen: true);
+}
+```
+
+configure preserves omitted fields and returns an activity; await receives the actual state after platform application. fullscreen means borderless fullscreen. Sizes configured during fullscreen are retained for the window after leaving it, without changing the monitor mode. A game can disable window-size selection while fullscreen. `await window.configure(vsync: false)` changes presentation synchronization; idle rendering remains demand-driven. Story saves do not restore window state; store player preferences with persistent. A second change while one is pending reports Busy; disable settings controls during application. game.configure continues to configure the canvas independently.
+
 ### Sprite particles
 
 `particles` creates one stage node for snow, petals or other sprite effects. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. `emit` starts it and returns an activity; configure the birth rectangle with width/height. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
@@ -1124,6 +1144,18 @@ let falling = emit(petals, duration: 10);
 await falling;
 ```
 
-Defaults: rate 60 particles/second, lifetime 5 seconds, seed 0, velocity_x/y 0/80, spread_x/y 20/20, acceleration_x/y 0/0, size 12, size_spread 4, opacity_start/end 1/0, spin 0 and spin_spread 30 degrees/second. Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size. Birth positions are uniform within the width/height captured by emit (omitted dimensions are zero); first birth occurs after 1/rate seconds. Configurations are read-only; ordinary position, rotation, scale, visibility, opacity and clipping remain editable and animatable.
+Defaults: rate 60 particles/second, burst 0, lifetime 5 seconds, lifetime_spread 0, seed 0, velocity_x/y 0/80, spread_x/y 20/20, acceleration_x/y 0/0, size 12, size_spread 4, size_end null, opacity_start/end 1/0, spin 0 and spin_spread 30 degrees/second. Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed lifetime. Each particle uses its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured by emit (omitted dimensions are zero). burst particles appear immediately, then rate adds a particle every 1/rate seconds. Configurations are read-only; ordinary position, rotation, scale, visibility, opacity and clipping remain editable and animatable.
 
-Omit duration to emit continuously. A finite duration includes births exactly at its endpoint and completes after surviving particles die. `pause(falling)` freezes the whole effect, `resume(falling)` continues it, and `stop(falling)` clears particles and returns Stopped from await. `finish(falling)` clears a finite effect and returns Completed; it rejects continuous emission. Calling emit again on the same node stops the previous activity and restarts its seeded sequence. The same seed and elapsed time reproduce the same particles regardless of frame timing. Retiring the node or activity owner cancels emission; hiding it does not pause it. Owner defaults follow other activities; cancelling a waiter leaves emission running. Completed activities retain their result for repeated waits. Particles share the stage image resource and renderer; no script runs for each particle. Save/restore of running effects is not available yet.
+Omit duration to emit continuously. A finite duration includes births exactly at its endpoint and completes when the last particle actually dies. rate:0 creates only the burst and completes naturally; rate:0 with burst:0 completes immediately. duration:0 still emits the burst. `pause(falling)` freezes the whole effect, `resume(falling)` continues it, and `stop(falling)` clears particles and returns Stopped from await. `finish(falling)` clears a finite effect and returns Completed; it rejects continuous emission. Calling emit again on the same node stops the previous activity and restarts its seeded sequence. The same seed and elapsed time reproduce the same particles regardless of frame timing. Retiring the node or activity owner cancels emission; hiding it does not pause it. Owner defaults follow other activities; cancelling a waiter leaves emission running. Completed activities retain their result for repeated waits. Particles share the stage image resource and renderer; no script runs for each particle. Save/restore preserves running effects, their elapsed time and paused state.
+
+Use a burst with varying lifetimes and shrinking widths for a short spray:
+
+```aside
+let spray = particles("assets/petal.png", x: 640, y: 360,
+    rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+    velocity_y: -160, spread_x: 180, spread_y: 100,
+    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+stage.replace(spray);
+await emit(spray);
+spray.remove();
+```

@@ -25,12 +25,12 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_work: 16_777_216,
-            max_capacity_bytes: 64 * 1024 * 1024,
-            max_records: 1_000_000,
-            max_instructions: 200_000,
-            max_blocks: 100_000,
-            max_registers: 65_536,
+            max_work: u64::MAX,
+            max_capacity_bytes: isize::MAX as usize,
+            max_records: u32::MAX as usize,
+            max_instructions: u32::MAX as usize,
+            max_blocks: u32::MAX as usize,
+            max_registers: u32::MAX,
             max_depth: 128,
         }
     }

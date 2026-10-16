@@ -29,10 +29,23 @@ impl Writer {
             .records
             .checked_add(records as u64)
             .ok_or_else(|| Error::new(ErrorKind::Limit, "record overflow"))?;
-        if self.capacity > self.limits.max_allocation_bytes
-            || self.records > self.limits.max_records as u64
-        {
-            return Err(Error::new(ErrorKind::Limit, "capacity/record limit"));
+        if self.capacity > self.limits.max_allocation_bytes {
+            return Err(Error::new(
+                ErrorKind::Limit,
+                format!(
+                    "allocation quota: requested {} bytes, limit {} bytes",
+                    self.capacity, self.limits.max_allocation_bytes
+                ),
+            ));
+        }
+        if self.records > self.limits.max_records as u64 {
+            return Err(Error::new(
+                ErrorKind::Limit,
+                format!(
+                    "record quota: requested {} records, limit {} records",
+                    self.records, self.limits.max_records
+                ),
+            ));
         }
         Ok(())
     }
@@ -105,10 +118,23 @@ impl Reader<'_> {
             .allocation
             .checked_add(bytes)
             .ok_or_else(|| self.error(ErrorKind::Limit, "allocation overflow"))?;
-        if self.records > self.limits.max_records
-            || self.allocation > self.limits.max_allocation_bytes
-        {
-            return Err(self.error(ErrorKind::Limit, "aggregate records/allocation limit"));
+        if self.records > self.limits.max_records {
+            return Err(self.error(
+                ErrorKind::Limit,
+                &format!(
+                    "record quota: requested {} records, limit {} records",
+                    self.records, self.limits.max_records
+                ),
+            ));
+        }
+        if self.allocation > self.limits.max_allocation_bytes {
+            return Err(self.error(
+                ErrorKind::Limit,
+                &format!(
+                    "allocation quota: requested {} bytes, limit {} bytes",
+                    self.allocation, self.limits.max_allocation_bytes
+                ),
+            ));
         }
         Ok(())
     }

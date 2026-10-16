@@ -33,7 +33,7 @@ impl Default for Limits {
         Self {
             // Source locations use u32 byte offsets; there is no smaller author cap.
             max_source_bytes: u32::MAX as usize,
-            max_tokens: 1_000_000,
+            max_tokens: u32::MAX as usize,
             max_depth: 128,
             max_diagnostics: 128,
         }

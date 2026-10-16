@@ -5,7 +5,11 @@ fn main() {
         rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
         velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
         spin_spread: 60);
-    let scene = stack(width: 1280, height: 720, clip: true, background: "#172534") { petals; };
+    let spray = particles("assets/petal.png", x: 640, y: 360,
+        rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+        velocity_y: -160, spread_x: 180, spread_y: 100,
+        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+    let scene = stack(width: 1280, height: 720, clip: true, background: "#172534") { petals; spray; };
     stage.replace(scene);
     await stage.presented(owner: petals);
     let falling = emit(petals, duration: 30);
@@ -13,6 +17,7 @@ fn main() {
         button("Pause", on_click: || pause(falling));
         button("Resume", on_click: || resume(falling));
         button("Stop", on_click: || stop(falling));
+        button("Burst", on_click: || emit(spray));
     });
     await falling;
 }

@@ -6,6 +6,8 @@
 
 [English](en.md) · [文档目录 / Documentation index](../README.md)
 
+
+编译与 ASB 加载默认不设置作品大小、累计记录、模块或指令数量配额；实际格式宽度和可用内存仍适用。嵌入宿主可通过 Rust Limits 显式设定配额。出现容量错误时，诊断会区分记录数和内存请求，避免把较长剧本误报为语法错误。
 ## 阅读这份文档
 当前 Reel 是能运行简单交互场景的开发原型，完整创作与发行链路仍在开发。先从[基本画面](../../examples/author_stage.aside)、[动画](../../examples/author_activities.aside)或[交互按钮](../../examples/author_buttons.aside)开始；[能力表](../README.md#当前状态)列出实际边界，[总清单 #94](https://github.com/jhq223/reel/issues/94)记录后续顺序。
 
@@ -160,6 +162,8 @@ stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。
 ### 随机选择
 
 `let rng = random();` 创建一个独立随机流；`rng.int(0, 10)` 返回 0 到 9 的整数，`rng.float()` 返回大于等于 0、小于 1 的小数，`rng.pick(items)` 从非空数组或 tuple 返回一个原元素。`random(seed: 42)` 可复现同一调用序列，保存 `let pick = rng.pick` 仍使用原随机流。先在事件或剧情中抽取，再把结果写入 model；不要在 derive 中抽取。抽取失败不推进状态。示例见 [author_random.aside](../../examples/author_random.aside)。
+
+`use std::math::{sin, cos};` 后可用 `cos(angle) * speed` 和 `sin(angle) * speed` 计算二维速度；angle 使用弧度。还提供 tan/asin/acos/atan、atan2(y,x)、sqrt/hypot(x,y)、pow(base,exponent)、exp/ln/log2/log10、abs/floor/ceil/round、radians/degrees。它们是可用于 derive 的纯 float64 运算，不创建脚本对象；round 中点远离零，无效数学定义域按浮点规则得到 NaN，溢出可得到 Infinity。示例见 [author_math.aside](../../examples/author_math.aside)。
 
 `random` 来自独立的 Aside 标准库，Reel 自动导入，也支持显式 `use std::random;`。在 main 或事件函数中创建随机流；模块初始化与 derive 沿用现有副作用约束。固定种子的复现范围为同一标准库版本。
 
@@ -1107,6 +1111,22 @@ Windows 播放器向系统提交双声道音频，默认设备配置为多声道
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
 
+### 窗口与呈现设置
+
+`window.info()` 返回当前客户区的逻辑 width/height、scale_factor、fullscreen、vsync、窗口模式的 windowed_width/windowed_height，以及 capabilities 和 resolutions。resolutions 是当前显示器可用尺寸换算为逻辑像素后的列表，不是舞台画布大小。先检查 capabilities.resize/fullscreen/vsync 再显示对应控件；无窗口宿主的能力均为 false。
+
+```aside
+let mut display = window.info();
+if display.capabilities.resize {
+    display = await window.configure(width: 1280, height: 720);
+}
+if display.capabilities.fullscreen {
+    display = await window.configure(fullscreen: true);
+}
+```
+
+configure 省略的项保持原值，返回活动，await 得到平台应用后的实际状态。fullscreen 是无边框全屏；全屏期间设置的尺寸用于退出后的窗口，不改变显示器模式。游戏可在全屏时禁用窗口尺寸选项。关闭垂直同步使用 `await window.configure(vsync: false)`，只改变呈现同步，空闲仍按需重绘。窗口状态不随剧情存档恢复，偏好可由 persistent 保存。另一项窗口更改尚未完成时会报 Busy；禁用正在执行的设置按钮即可。画布仍由 game.configure 独立配置。
+
 ### 图片粒子
 
 `particles` 用一个舞台节点组合落雪、花瓣等图片效果。source 必须是完整 PNG/JPEG 精灵，分块 `.reel-image` 只供 `image` 节点使用；`emit` 启动并返回活动，width/height 指定出生矩形。示例使用你提供的 `assets/petal.png` 和 `fonts/body.ttf`，完整入口见 [author_particles.aside](../../examples/author_particles.aside)。
@@ -1121,6 +1141,18 @@ let falling = emit(petals, duration: 10);
 await falling;
 ```
 
-缺省值：rate 每秒 60 粒，lifetime 5 秒，seed 0，velocity_x/y 为 0/80，spread_x/y 为 20/20，acceleration_x/y 为 0/0，size 12，size_spread 4，opacity_start/end 为 1/0，spin 0、spin_spread 每秒 30 度。spread 表示基值两侧均匀取样的半幅；size 为图片宽度，保留原宽高比，size_spread 不得超过 size。出生位置在 emit 启动时读取的 width/height 内均匀分布（未指定时为零）；首粒在 1/rate 秒出生。配置只读；共同位置、旋转、缩放、可见性、透明度及裁剪仍可更新和动画。
+缺省值：rate 每秒 60 粒，burst 0，lifetime 5 秒，lifetime_spread 0，seed 0，velocity_x/y 为 0/80，spread_x/y 为 20/20，acceleration_x/y 为 0/0，size 12，size_spread 4，size_end null，opacity_start/end 为 1/0，spin 0、spin_spread 每秒 30 度。spread 表示基值两侧均匀取样的半幅；size 为图片宽度，保留原宽高比，size_spread 不得超过 size，lifetime_spread 不得超过 lifetime。每粒寿命按种子独立取样；size_end:null 保留每粒随机出生宽度，非负终值使宽度在该粒寿命内线性变化。出生位置在 emit 启动时读取的 width/height 内均匀分布（未指定时为零）；burst 粒立即出生，随后每 1/rate 秒增加一粒。配置只读；共同位置、旋转、缩放、可见性、透明度及裁剪仍可更新和动画。
 
-省略 duration 持续发射；有限时长包含截止时刻出生的粒子，等待最后一粒死亡后返回 Completed。`pause(falling)` 冻结整个效果，`resume(falling)` 继续，`stop(falling)` 清空粒子并使 await 返回 Stopped。`finish(falling)` 清空有限效果并返回 Completed，持续效果不接受 finish。同一节点再次 emit 停止原活动，从同一种子重新开始；同一种子和累计时间与分帧无关。节点或活动 owner 退休取消发射，隐藏不暂停。缺省 owner 沿用其他活动规则；取消等待者不取消生产者。终态保留以供重复等待。粒子共用舞台图片资源和绘制路径，不逐粒子运行脚本。运行效果的保存/恢复尚未实现。
+省略 duration 持续发射；有限时长包含截止时刻出生的粒子，等待最后一粒实际死亡后返回 Completed。rate:0 只产生瞬发粒子并自然结束；rate:0 且 burst:0 立即完成。duration:0 仍产生 burst。`pause(falling)` 冻结整个效果，`resume(falling)` 继续，`stop(falling)` 清空粒子并使 await 返回 Stopped。`finish(falling)` 清空有限效果并返回 Completed，持续效果不接受 finish。同一节点再次 emit 停止原活动，从同一种子重新开始；同一种子和累计时间与分帧无关。节点或活动 owner 退休取消发射，隐藏不暂停。缺省 owner 沿用其他活动规则；取消等待者不取消生产者。终态保留以供重复等待。粒子共用舞台图片资源和绘制路径，不逐粒子运行脚本。存档恢复保留运行效果、累计时间和暂停状态。
+
+短暂喷射可以组合瞬发、不同寿命和逐渐缩小的宽度：
+
+```aside
+let spray = particles("assets/petal.png", x: 640, y: 360,
+    rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+    velocity_y: -160, spread_x: 180, spread_y: 100,
+    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+stage.replace(spray);
+await emit(spray);
+spray.remove();
+```

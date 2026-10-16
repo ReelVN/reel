@@ -128,7 +128,7 @@ impl SessionSnapshot {
             .strip_prefix(b"REELSAV1")
             .ok_or_else(|| SnapshotError::Invalid("save format".into()))?;
         let (snapshot, tail): (Self, _) = postcard::take_from_bytes(bytes)?;
-        if snapshot.version != 3 || snapshot.session.is_none() || !tail.is_empty() {
+        if snapshot.version != 4 || snapshot.session.is_none() || !tail.is_empty() {
             return Err(SnapshotError::Invalid(
                 "session snapshot version/body".into(),
             ));
@@ -218,6 +218,7 @@ impl SessionVm {
             || self.start_requested.is_some()
             || self.save_results_pending()
             || self.captures.active()
+            || self.window.active()
         {
             return Err(SnapshotError::Busy(
                 "finish native admission and stage maintenance before capture",
@@ -375,7 +376,7 @@ impl SessionCapture<'_> {
         }
         Ok(SessionSnapshot {
             committed_save: None,
-            version: 3,
+            version: 4,
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,
