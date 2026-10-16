@@ -18,6 +18,7 @@ pub use present::SurfacePass;
 mod draw;
 mod image_batch;
 mod image_cache;
+mod image_plan;
 mod replay;
 mod scopes;
 

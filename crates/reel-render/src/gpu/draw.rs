@@ -159,7 +159,7 @@ impl Context<'_> {
                         record: "image reflect",
                     });
                 }
-                let image = self.image_resource(frame, brush.image.resource, at)?;
+                let image = self.image_resource(brush.image.resource, at)?;
                 let bt = brush_transform.unwrap_or(Affine::IDENTITY);
                 if bt.determinant() == 0. {
                     return Err(GpuError::Unsupported {
@@ -197,63 +197,17 @@ impl Context<'_> {
         self.paint_image(target, &mesh, &image.view, repeat, gradient)
     }
     pub(super) fn image_resource(
-        &mut self,
-        frame: &RenderFrame,
+        &self,
         handle: reel_ui::resources::ResourceHandle,
         at: RecordLocation,
     ) -> Result<Arc<resources::Image>, GpuError> {
-        Ok(if let Some(image) = self.images.get(&handle) {
-            image.clone()
-        } else if let Some(image) = self.image_cache.get(handle) {
-            self.tickets.push(super::renderer::Reservation {
-                _shared: None,
-                _local: super::image_cache::reserve_local(
-                    &self.budget_scope.resources,
-                    image.residency.as_ref().unwrap().bytes(),
-                    self.gpu.limits.resource_bytes,
-                )?,
-            });
-            self.images.insert(handle, image.clone());
-            image
-        } else {
-            let lease = frame
-                .resources()
-                .leases()
-                .iter()
-                .find(|r| r.handle() == handle)
-                .ok_or(GpuError::Unsupported {
-                    at,
-                    record: "missing image",
-                })?;
-            let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
-                return Err(GpuError::Unsupported {
-                    at,
-                    record: "image type",
-                });
-            };
-            let cost = resources::upload_cost([image.width, image.height])?;
-            let resident = u64::from(image.width) * u64::from(image.height) * 8;
-            self.glyph_cache.make_room(
-                &self.budgets.resources,
-                cost,
-                self.gpu.limits.resource_bytes,
-            );
-            let (upload, residency) = self.image_cache.reserve_upload(
-                &self.budgets.resources,
-                &self.budget_scope.resources,
-                cost,
-                resident,
-                self.gpu.limits.resource_bytes,
-            )?;
-            self.tickets.push(upload);
-            let (mut image, _) =
-                resources::image(self.gpu, &mut self.encoder, frame, handle, at, cost)?;
-            image.residency = Some(residency);
-            image.source = Some(lease.clone());
-            let image = Arc::new(image);
-            self.images.insert(handle, image.clone());
-            image
-        })
+        self.images
+            .get(&handle)
+            .cloned()
+            .ok_or(GpuError::Unsupported {
+                at,
+                record: "image missing from upload plan",
+            })
     }
     fn glyphs(
         &mut self,

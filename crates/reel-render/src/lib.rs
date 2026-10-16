@@ -158,6 +158,9 @@ pub enum PresentOutcome {
 }
 #[derive(Debug)]
 pub enum RenderEvent<E = RenderError> {
+    /// Internal uploads completed and released temporary capacity. This wakes
+    /// deferred presentation without accepting a frame or changing input geometry.
+    ResourcesAvailable,
     UploadFinished {
         id: UploadId,
         scope: Scope,

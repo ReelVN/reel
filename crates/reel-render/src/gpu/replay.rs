@@ -266,7 +266,6 @@ impl Context<'_> {
                 }
                 FrameOp::Draw(draw) => {
                     let consumed = self.image_batch(
-                        frame,
                         &current.scopes.last().target,
                         &current.commands[current.next - 1..],
                         transform,
