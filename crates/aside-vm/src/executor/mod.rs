@@ -1702,11 +1702,13 @@ impl Vm {
         &mut self,
         ticket: HostTicket,
         kind: FaultKind,
+        details: Value,
     ) -> Result<(), VmError> {
         self.select_task(ticket.task)
             .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
         self.native_fault(&mut n, kind)?;
+        self.put(n.roots, 0, details)?;
         *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
         Ok(())
     }

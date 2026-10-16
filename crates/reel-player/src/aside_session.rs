@@ -527,11 +527,9 @@ impl AsideSessionUi {
                     }
                     Ok(NativeDispatch::Ready { work }) => Ok(StoryProgress::Updated { work }),
                     Err(error) => {
-                        let Some(kind) = error.native_fault_kind() else {
-                            return Err(error.into());
-                        };
-                        self.vm.reject_native(self.ui.session(), ticket, kind)?;
-                        Ok(StoryProgress::NativeFault(error.to_string()))
+                        let message = error.to_string();
+                        self.vm.reject_native(self.ui.session(), ticket, error)?;
+                        Ok(StoryProgress::NativeFault(message))
                     }
                 }
             }

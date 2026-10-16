@@ -41,8 +41,7 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
                     copies += 1;
                 }
                 if let Err(error) = vm.dispatch(session, ticket, "en", if model { 1 } else { 32 }) {
-                    vm.reject_native(session, ticket, error.native_fault_kind().unwrap())
-                        .unwrap();
+                    vm.reject_native(session, ticket, error).unwrap();
                 }
                 if model && collect_copies {
                     collect(vm);

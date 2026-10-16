@@ -103,7 +103,10 @@ impl From<SessionError> for AdapterError {
 }
 impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Input(message) => f.write_str(message),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 impl std::error::Error for AdapterError {}
@@ -335,6 +338,15 @@ impl SessionVm {
                 let info = heap.info(value)?;
                 if info.kind == ObjectKind::String {
                     text::read_string(heap, value, self.read_limit)?
+                } else if info.kind == ObjectKind::CoreError {
+                    let error = heap.core_error_info(value)?;
+                    if error.details.tag() == ValueTag::Object
+                        && heap.info(error.details)?.kind == ObjectKind::String
+                    {
+                        text::read_string(heap, error.details, self.read_limit)?
+                    } else {
+                        error.message.into()
+                    }
                 } else {
                     format!("<{:?}>", info.kind)
                 }
@@ -883,10 +895,18 @@ impl SessionVm {
         &mut self,
         session: &Session,
         ticket: HostTicket,
-        kind: aside_vm::executor::FaultKind,
+        error: AdapterError,
     ) -> Result<(), AdapterError> {
         self.check_ticket(session, ticket)?;
-        self.vm.respond_language_error(ticket, kind)?;
+        let Some(kind) = error.native_fault_kind() else {
+            return Err(error);
+        };
+        let details = if kind == FaultKind::Resource {
+            Value::NULL
+        } else {
+            text::alloc_string(self.vm.heap_mut(), &error.to_string(), self.read_limit)?
+        };
+        self.vm.respond_language_error(ticket, kind, details)?;
         self.activities
             .cancel_native(self.vm.heap_mut(), ticket.task)?;
         if let Some(reader) = self.choice_reader.take() {

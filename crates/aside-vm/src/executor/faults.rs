@@ -387,11 +387,7 @@ impl Vm {
             BuildPhase::ErrorValue => {
                 if !build.seed.author_value && build.seed.kind != FaultKind::Thrown {
                     let code = FaultCode::core(build.seed.kind);
-                    let details = if build.seed.kind == FaultKind::UnhashableKey {
-                        self.value(roots, value_slot)?
-                    } else {
-                        Value::NULL
-                    };
+                    let details = self.value(roots, value_slot)?;
                     match self.heap.alloc_fault_node(
                         ObjectKind::CoreError,
                         FaultData::Error(code),

@@ -324,7 +324,7 @@ impl Vm {
             }
             Err(error) => {
                 self.active.model_copy = None;
-                self.respond_language_error(ticket, heap_fault(error))?;
+                self.respond_language_error(ticket, heap_fault(error), Value::NULL)?;
                 Ok(work)
             }
         }

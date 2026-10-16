@@ -59,7 +59,7 @@ if condition { ... } else { ... }、while condition { ... }、for pattern in val
 
 一般表达式按源码从左到右求值一次；短路、条件和模式有各自明确规则。赋值先计算并保存目标对象与键的值，再计算右值并写入；右值随后重绑原对象或键的名称，不改变已经准备的位置；复合赋值先计算左值位置一次，再读取、求右值、计算和写入。赋值链 a = b = value; 作为一条语句，先从左到右确定所有目标位置，末尾 value 求值一次，再按从内到外的顺序写入。整条链无表达式结果；算术、参数、let 初值等取值位置使用赋值会诊断。每个解构目标按自身的原子准备/提交规则写入，整条链沿用普通副作用规则。求值错误不会自动撤销已经发生的普通副作用；有事务语义的宿主接口另行声明。
 
-当前源码执行支持 `a..b`、`a..=b` 的惰性整数区间，`for` 直接读取迭代结果，不为每轮构造临时 tuple。`range()` 的显式步长接口仍是待实现标准库。字符串插值按书写顺序求值，当前支持 null、bool、int、float 和 string；容器/实例自定义字符串转换另行实现。插值使用同一个分块缓冲区，按字节计费与暂停，完成 UTF-8 验证后直接封存；每轮不复制已构造的前缀。array/tuple/table 的 `len()`、array 的 `append(...values)`/`pop()`、table 的 `has_own(key)` 已接通；方法取值保留原接收者，表自己的同名字段优先，表中的普通闭包不注入接收者。空数组 pop 抛可捕获错误，append 按实参顺序追加并返回原数组。
+当前源码执行支持 `a..b`、`a..=b` 的惰性整数区间，`for` 直接读取迭代结果，不为每轮构造临时 tuple。`range()` 的显式步长接口仍是待实现标准库。字符串插值按书写顺序求值，当前支持 null、bool、int、float、string 和 CoreError 的错误说明；容器/实例自定义字符串转换另行实现。插值使用同一个分块缓冲区，按字节计费与暂停，完成 UTF-8 验证后直接封存；每轮不复制已构造的前缀。array/tuple/table 的 `len()`、array 的 `append(...values)`/`pop()`、table 的 `has_own(key)` 已接通；方法取值保留原接收者，表自己的同名字段优先，表中的普通闭包不注入接收者。空数组 pop 抛可捕获错误，append 按实参顺序追加并返回原数组。
 
 ## 三 值 绑定 相等与数值
 
@@ -528,6 +528,8 @@ catch 绑定原抛值。字符串、整数、null 和对象都保持原有值语
 core.error_info() 返回当前实际执行调用链上最近的活动 catch 的 FaultInfo；没有活动 catch 时返回 null。普通 helper 和同 Task 的 native callback 沿用调用链，新的 async Task 使用自己的上下文。throw; 的词法规则保持不变，helper 需要显式 throw value 或由宿主转发。catch 的活动期从处理器入口开始，到实际离开其范围结束；进入同一区域的 finally 后，该 catch 已退出。挂起的 generator、其他 Task 和已结束 catch 均不参与查询。
 
 FaultInfo 是同一堆中的可追踪只读视图，保存它即可保留完整故障，普通变量释放后随对象图回收。视图公开 value、code、origin、stack 和带种类的 causes；value 所引用的作者对象仍遵守自身可变性。查询依赖当前执行上下文，声明为诊断读取效果，派生纯计算中给出效果诊断。运行时产生的语言错误使用 core.Error 值，含固定 code、message 和只读 details；作者可以抛任意值。Envelope 的稳定 code 来自版本化注册表，作者表中的同名字段保持普通数据。
+
+宿主通过 `Vm::respond_language_error(ticket, kind, details)` 提供原生接口错误的具体原因；details 在原调用帧中保活，再由普通 FaultBuild 纳入 CoreError，沿用故障的预算、取消和快照路径。没有详情时传 null。CoreError 的字符串插值优先显示字符串 details，否则显示对应错误码的固定 message；不遍历任意对象图，也不调用脚本转换方法。
 
 新故障默认关联同一实际调用链中最近活动 catch 的完整故障。native 显式提供 cause 时以它替代这条隐式 catch 关系；finally 替代退出产生的关系另行保留。跨 Task 的原因通过明确的任务/等待传播记录连接。
 

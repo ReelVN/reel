@@ -28,7 +28,7 @@ impl Vm {
                 let value = self.host_callback_value(ticket)?;
                 if let Err(error) = self.heap.commit_derived(output, value) {
                     self.heap.end_derived(output)?;
-                    self.respond_language_error(ticket, heap_fault(error))?;
+                    self.respond_language_error(ticket, heap_fault(error), Value::NULL)?;
                 } else {
                     let reference = if self.host_continuation(ticket)?[1].as_bool() == Some(true) {
                         Value::NULL

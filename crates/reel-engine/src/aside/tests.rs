@@ -743,7 +743,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
                         assert!(matches!(error, AdapterError::Heap(HeapError::RetiredHost)));
                         let kind = error.native_fault_kind().unwrap();
                         assert_eq!(kind, FaultKind::InvalidState);
-                        vm.reject_native(&session, ticket, kind).unwrap();
+                        vm.reject_native(&session, ticket, error).unwrap();
                         continue;
                     }
                 };
