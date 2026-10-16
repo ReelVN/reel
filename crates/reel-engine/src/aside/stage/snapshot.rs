@@ -185,7 +185,7 @@ impl StageBinding {
             ("reel.scroll", Shape::Scroll),
             ("reel.layout", Shape::Stack),
         ] {
-            let version = if matches!(shape, Shape::Image) { 4 } else { 2 };
+            let version = if matches!(shape, Shape::Image) { 5 } else { 3 };
             registry.register_validator(name, version, shape.validator())?;
         }
         Ok(())

@@ -90,6 +90,14 @@ pub(super) enum NodeProperty {
     MaskInvert,
     #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
     Stretch,
+    #[aside(name = "max_width", ty = Any, default = null, validate = validate_dimension, animatable)]
+    MaxWidth,
+    #[aside(name = "max_height", ty = Any, default = null, validate = validate_dimension, animatable)]
+    MaxHeight,
+    #[aside(name = "align_x", ty = Any, default = 0, validate = validate_opacity, animatable)]
+    AlignX,
+    #[aside(name = "align_y", ty = Any, default = 0, validate = validate_opacity, animatable)]
+    AlignY,
     #[aside(name = "on_interaction", ty = Any, default = null, validate = validate_callback)]
     OnInteraction,
 }
@@ -1442,6 +1450,10 @@ fn read_props(
         width: dimension(get(NodeProperty::Width)?)?,
         height: dimension(get(NodeProperty::Height)?)?,
         stretch: stretch(heap, get(NodeProperty::Stretch)?)?,
+        max_width: dimension(get(NodeProperty::MaxWidth)?)?,
+        max_height: dimension(get(NodeProperty::MaxHeight)?)?,
+        align_x: opacity(get(NodeProperty::AlignX)?)?,
+        align_y: opacity(get(NodeProperty::AlignY)?)?,
         opacity: opacity(get(NodeProperty::Opacity)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,

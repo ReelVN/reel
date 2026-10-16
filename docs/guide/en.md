@@ -167,16 +167,18 @@ Stack layers children from back to front in source order; row arranges them hori
 Use the common `stretch: "both"` property to fit a background image to a container sized by its content, without counting text lines or writing measured heights back into script state. `"x"` and `"y"` fill only that axis inside the parent's padding; the default is `"none"`. A stretched axis does not contribute to the parent's measurement and overrides width/height on that axis; x/y and anchors still apply. Stretching along a row/column's flow axis makes the child an overlay without consuming flow space or gaps. In scroll containers, stretching uses the viewport's inner box and does not increase that axis's scroll extent.
 
 ```aside
-stack(width: 420) {
+stack(max_width: 420) {
     image("images/panel.png", stretch: "both", slice: 12);
-    column(width: 420, padding: 24, gap: 16) {
-        text("The frame follows wrapped text and buttons.", width: 372);
-        button("Continue", on_click: |event| game.advance());
+    column(padding: 24, gap: 16) {
+        text("The frame follows wrapped text and buttons.", align_x: 0.5, text_align: "center");
+        button("Continue", align_x: 0.5, on_click: |event| game.advance());
     }
 }
 ```
 
 Complete example: [author_stretch.aside](../../examples/author_stretch.aside). Supply `fonts/body.ttf` and `images/panel.png`, then run `reel dev examples/author_stretch.aside`. The button changes the content while the background retains its identity and follows the new height.
+
+`max_width/max_height` cap a node’s natural or explicit size and default to null. Long text wraps within the available width; short text keeps its content width. Caps include padding; stretch still fills the parent’s inner box on its axes. `align_x/align_y` default to 0 and range from 0 to 1: 0 starts, 0.5 centers, and 1 ends within the parent’s remaining inner space. Both axes apply in a stack, only the cross axis in rows/columns, and only non-scrolling axes in a scroll. They preserve x/y and anchor transform semantics and support bindings and animation. [author_stretch.aside](../../examples/author_stretch.aside) shows a dialog whose dimensions follow its content while its background stretches and its button stays centered.
 
 ### Layered images
 

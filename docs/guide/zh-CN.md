@@ -167,16 +167,18 @@ stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。
 用共同属性 `stretch: "both"` 让背景图片跟随内容撑开的容器，无需计算文字行数或回写高度。`"x"`、`"y"` 只填满父 padding 内的对应轴，默认 `"none"`。被拉伸轴不参与父尺寸测量，并覆盖该轴的 width/height；x/y、anchor 仍有效。在 row/column 流轴上拉伸时，节点成为覆盖层，不增加位置或 gap；scroll 中按视口内框拉伸，不扩大该轴的滚动范围。
 
 ```aside
-stack(width: 420) {
+stack(max_width: 420) {
     image("images/panel.png", stretch: "both", slice: 12);
-    column(width: 420, padding: 24, gap: 16) {
-        text("The frame follows wrapped text and buttons.", width: 372);
-        button("Continue", on_click: |event| game.advance());
+    column(padding: 24, gap: 16) {
+        text("The frame follows wrapped text and buttons.", align_x: 0.5, text_align: "center");
+        button("Continue", align_x: 0.5, on_click: |event| game.advance());
     }
 }
 ```
 
 完整示例：[author_stretch.aside](../../examples/author_stretch.aside)。准备 `fonts/body.ttf` 和 `images/panel.png`，运行 `reel dev examples/author_stretch.aside`；按钮切换内容时，背景保持身份并跟随新高度。
+
+`max_width/max_height` 限制节点的自然或显式尺寸，默认 null；长文本会在可用宽度内换行，短文本仍按内容收缩。上限含 padding，stretch 对应轴仍填满父内框。`align_x/align_y` 默认 0，取 0 到 1：0 为起端，0.5 居中，1 为末端，按父 padding 内的剩余空间定位；stack 两轴生效，row/column 只在非流轴生效，scroll 只在非滚动轴生效。它们不改变 x/y 与 anchor 的变换含义，可绑定或动画。示例 [author_stretch.aside](../../examples/author_stretch.aside) 的弹窗随内容改变宽高，背景伸展、按钮保持居中。
 
 ### 分层图片
 

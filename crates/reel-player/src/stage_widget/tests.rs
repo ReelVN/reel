@@ -388,6 +388,85 @@ fn structural_edits_keep_retained_widgets_and_remove_retired_geometry() {
 }
 
 #[test]
+fn content_caps_and_alignment_follow_parent_space_without_shifting_flow() {
+    let mut f = Fixture::new(None);
+    f.edit(f.root, |p| {
+        *p = NodeProps {
+            max_width: Some(200.),
+            padding: 10.,
+            gap: 7.,
+            ..Default::default()
+        }
+    });
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage.update(f.root, NodeKind::Column, props).unwrap();
+    f.edit(f.red, |p| {
+        *p = NodeProps {
+            width: Some(240.),
+            max_width: Some(180.),
+            height: Some(30.),
+            ..Default::default()
+        }
+    });
+    f.edit(f.blue, |p| {
+        *p = NodeProps {
+            width: Some(60.),
+            height: Some(20.),
+            align_x: 0.5,
+            align_y: 1.,
+            ..Default::default()
+        }
+    });
+    let first = f.record();
+    f.accept(&first);
+    let ids = f.layouts();
+    let geometry = |frame: &RecordedSource, id| frame.geometry().get(ids[&id].0).unwrap().clone();
+    assert_eq!(geometry(&first, f.root).size, Size::new(200., 77.));
+    assert_eq!(geometry(&first, f.red).size, Size::new(180., 30.));
+    assert_eq!(
+        geometry(&first, f.blue).window_transform.translation(),
+        Vec2::new(70., 47.)
+    );
+    // Content shrink changes the parent and re-centers the existing child.
+    f.edit(f.red, |p| p.width = Some(100.));
+    let smaller = f.record();
+    f.accept(&smaller);
+    assert_eq!(geometry(&smaller, f.root).size, Size::new(120., 77.));
+    assert_eq!(
+        geometry(&smaller, f.blue).window_transform.translation(),
+        Vec2::new(30., 47.)
+    );
+    f.edit(f.blue, |p| p.align_x = 1.);
+    let aligned = f.record();
+    f.accept(&aligned);
+    assert_eq!(
+        geometry(&aligned, f.blue).window_transform.translation(),
+        Vec2::new(50., 47.)
+    );
+    assert_eq!(f.layouts()[&f.blue].0, ids[&f.blue].0);
+    // Stack alignment uses both axes; a stretched axis overrides the size cap.
+    f.edit(f.root, |p| {
+        p.width = Some(200.);
+        p.height = Some(120.);
+    });
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage.update(f.root, NodeKind::Stack, props).unwrap();
+    f.edit(f.blue, |p| {
+        p.align_x = 0.5;
+        p.align_y = 0.5;
+        p.max_width = Some(20.);
+        p.stretch = reel_ui::stage::Stretch::X;
+    });
+    let stretched = f.record();
+    f.accept(&stretched);
+    assert_eq!(geometry(&stretched, f.blue).size, Size::new(180., 20.));
+    assert_eq!(
+        geometry(&stretched, f.blue).window_transform.translation(),
+        Vec2::new(10., 50.)
+    );
+}
+
+#[test]
 fn stretched_background_follows_content_without_changing_flow_or_scroll_extent() {
     use reel_ui::stage::Stretch;
     let mut f = Fixture::new(None);
@@ -1299,30 +1378,36 @@ fn authored_text_width_controls_scroll_extent_independently_of_parent_width() {
         )
         .unwrap();
     let mut measured = None;
-    for width in [200., 500., 140.] {
-        f.edit(f.root, |p| p.width = Some(width));
-        let source = f.record();
-        f.accept(&source);
-        let id = f.layouts()[&f.root].0;
-        let root = f
-            .bridge
-            .root()
-            .get_widget(id)
-            .unwrap()
-            .downcast::<SceneWidget>()
-            .unwrap();
-        let height = root.scroll.content().height;
-        assert!(height > 90., "the paragraph must overflow the viewport");
-        assert_eq!(
-            height,
-            *measured.get_or_insert(height),
-            "explicit text width determines every wrapped line"
-        );
-        assert_eq!(
-            root.scroll.offset().y,
-            height - 90.,
-            "end following includes the complete last line"
-        );
+    for capped in [false, true] {
+        f.edit(f.blue, |p| {
+            p.width = if capped { None } else { Some(110.) };
+            p.max_width = capped.then_some(110.);
+        });
+        for width in [200., 500., 140.] {
+            f.edit(f.root, |p| p.width = Some(width));
+            let source = f.record();
+            f.accept(&source);
+            let id = f.layouts()[&f.root].0;
+            let root = f
+                .bridge
+                .root()
+                .get_widget(id)
+                .unwrap()
+                .downcast::<SceneWidget>()
+                .unwrap();
+            let height = root.scroll.content().height;
+            assert!(height > 90., "the paragraph must overflow the viewport");
+            assert_eq!(
+                height,
+                *measured.get_or_insert(height),
+                "explicit text width determines every wrapped line"
+            );
+            assert_eq!(
+                root.scroll.offset().y,
+                height - 90.,
+                "end following includes the complete last line"
+            );
+        }
     }
 }
 

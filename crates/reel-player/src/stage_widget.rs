@@ -894,6 +894,8 @@ impl SceneWidget {
         for ((node, pod), next) in this.widget.children.iter_mut().zip(&view.children) {
             if node.props.visible != next.node.props.visible
                 || node.props.stretch != next.node.props.stretch
+                || node.props.align_x != next.node.props.align_x
+                || node.props.align_y != next.node.props.align_y
             {
                 this.ctx.request_layout();
             }
@@ -923,6 +925,8 @@ impl SceneWidget {
             let new = &view.node.props;
             if old.width != new.width
                 || old.height != new.height
+                || old.max_width != new.max_width
+                || old.max_height != new.max_height
                 || old.stretch != new.stretch
                 || old.gap != new.gap
                 || old.padding != new.padding
@@ -1331,12 +1335,25 @@ impl Widget for SceneWidget {
         cross: Option<Length>,
     ) -> Length {
         let props = &self.node.props;
+        let maximum = if axis == Axis::Horizontal {
+            props.max_width
+        } else {
+            props.max_height
+        };
+        let bounded = |value: f64| maximum.map_or(value, |limit| value.min(limit));
+        let request = match (request, maximum) {
+            (LenReq::FitContent(space), Some(limit)) => {
+                LenReq::FitContent(Length::px(space.get().min(limit)))
+            }
+            (LenReq::MaxContent, Some(limit)) => LenReq::FitContent(Length::px(limit)),
+            _ => request,
+        };
         if let Some(fixed) = if axis == Axis::Horizontal {
             props.width
         } else {
             props.height
         } {
-            return Length::px(fixed);
+            return Length::px(bounded(fixed));
         }
         if matches!(self.node.kind, NodeKind::Scroll { .. })
             && let LenReq::FitContent(space) = request
@@ -1348,19 +1365,26 @@ impl Widget for SceneWidget {
             let other = if props.stretch.axis(axis.cross()) {
                 cross.map(Length::get)
             } else if axis == Axis::Horizontal {
-                props.height
+                props
+                    .height
+                    .map(|height| props.max_height.map_or(height, |max| height.min(max)))
             } else {
-                props.width
+                props
+                    .width
+                    .map(|width| props.max_width.map_or(width, |max| width.min(max)))
             };
             let native = self.image_size.get_coord(axis);
             let length = other.map_or(native, |other| {
                 (other - padding.get()).max(0.) * (native / self.image_size.get_coord(axis.cross()))
             });
-            return Length::px(length + padding.get());
+            return Length::px(bounded(length + padding.get()));
         }
         let available = LenDef::from(request).reduce(padding);
         let cross = if axis == Axis::Vertical && !props.stretch.axis(Axis::Horizontal) {
-            props.width.map(Length::px).or(cross)
+            props
+                .width
+                .map(|width| Length::px(props.max_width.map_or(width, |max| width.min(max))))
+                .or(cross)
         } else {
             cross
         }
@@ -1410,7 +1434,7 @@ impl Widget for SceneWidget {
         if sequential && visible > 1 {
             total += self.node.props.gap * f64::from(visible - 1);
         }
-        Length::px(total + padding.get())
+        Length::px(bounded(total + padding.get()))
     }
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
         #[cfg(test)]
@@ -1519,20 +1543,30 @@ impl Widget for SceneWidget {
             } else {
                 SizeDef::fit(inner)
             };
+            let capped = |axis, maximum: Option<f64>| match (definition.dim(axis), maximum) {
+                (LenDef::Fixed(value), Some(limit)) => {
+                    LenDef::Fixed(Length::px(value.get().min(limit)))
+                }
+                (LenDef::FitContent(value), Some(limit)) => {
+                    LenDef::FitContent(Length::px(value.get().min(limit)))
+                }
+                (LenDef::MaxContent, Some(limit)) => LenDef::FitContent(Length::px(limit)),
+                (value, _) => value,
+            };
             let definition = SizeDef::new(
                 if node.props.stretch.axis(Axis::Horizontal) {
                     LenDef::Fixed(Length::px(inner.width))
                 } else {
-                    definition.dim(Axis::Horizontal)
+                    capped(Axis::Horizontal, node.props.max_width)
                 },
                 if node.props.stretch.axis(Axis::Vertical) {
                     LenDef::Fixed(Length::px(inner.height))
                 } else {
-                    definition.dim(Axis::Vertical)
+                    capped(Axis::Vertical, node.props.max_height)
                 },
             );
             let chosen = ctx.compute_size(child, definition, inner.into());
-            let offset = match self.node.kind {
+            let mut offset = match self.node.kind {
                 NodeKind::Row
                 | NodeKind::Scroll {
                     axis: ScrollAxis::Horizontal,
@@ -1553,6 +1587,18 @@ impl Widget for SceneWidget {
                 }
                 _ => Point::ORIGIN,
             };
+            let (flow_x, flow_y) = match self.node.kind {
+                NodeKind::Row => (true, false),
+                NodeKind::Column => (false, true),
+                NodeKind::Scroll { axis, .. } => (axis.horizontal(), axis.vertical()),
+                _ => (false, false),
+            };
+            if !flow_x {
+                offset.x += (inner.width - chosen.width).max(0.) * node.props.align_x;
+            }
+            if !flow_y {
+                offset.y += (inner.height - chosen.height).max(0.) * node.props.align_y;
+            }
             if !node.props.stretch.axis(Axis::Horizontal) {
                 extent.width = extent.width.max(offset.x + chosen.width);
             }
