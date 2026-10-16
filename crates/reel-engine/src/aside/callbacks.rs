@@ -326,6 +326,7 @@ impl SessionVm {
             || self.particles.has_active()
             || self.audio.active()
             || self.saves.active()
+            || self.captures.active()
             || self.stage.has_handlers()
     }
 

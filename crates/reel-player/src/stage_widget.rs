@@ -150,6 +150,19 @@ impl StageView {
         }
         Ok(requests)
     }
+    pub fn encoded_images(&self) -> BTreeMap<String, std::sync::Arc<[u8]>> {
+        let mut result = BTreeMap::new();
+        let mut pending: Vec<_> = self.root.iter().collect();
+        while let Some(node) = pending.pop() {
+            if let NodeKind::Image { source, .. } = &node.node.kind
+                && let Some(bytes) = source.bytes()
+            {
+                result.insert(source.key().to_owned(), bytes.clone());
+            }
+            pending.extend(node.children.iter());
+        }
+        result
+    }
     pub fn resolve_images(&mut self, images: &BTreeMap<String, ResourceLease>) {
         self.resources = self
             .image_requests()
@@ -221,7 +234,7 @@ impl StageView {
 
 fn image_source(kind: &NodeKind) -> Option<(&str, &Option<String>)> {
     match kind {
-        NodeKind::Image { source, origin, .. } => Some((source, origin)),
+        NodeKind::Image { source, origin, .. } => Some((source.key(), origin)),
         NodeKind::Particles(batch) => Some((&batch.config.source, &batch.config.origin)),
         _ => None,
     }
@@ -247,7 +260,7 @@ impl StageWidget {
                 out.push((
                     this.widget.node.id,
                     crate::images::tiles::ImageGeometry {
-                        source: source.clone(),
+                        source: source.key().to_owned(),
                         widget: image.id(),
                         fit: *fit,
                     },

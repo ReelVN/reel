@@ -110,6 +110,10 @@ key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对
 
 ### 当前作者舞台实现合同
 
+`stage.capture(width: null, height: null, owner: null)` 返回可取消的 Awaitable，完成值为不可变 PNG Bytes。宿主锁定请求被取走时最后实际呈现的帧；没有已呈现帧则拒绝。省略尺寸使用该帧尺寸，只指定一边则保持比例。截图按目标尺寸绘制，不改变舞台、呈现确认或输入几何。截图后端与窗口系统独立；GPU 读回使用完成通知，PNG 编码在工作线程完成，字节及排队工作计入资源预算。节点退休、取消、会话替换和设备丢失终结请求，旧帧资源保留至 GPU 完成；截图处理中不采集执行快照。`image(source:)` 同时接受资源名和 PNG/JPEG Bytes；相同字节对象的普通属性更新复用图像来源。
+
+`saves.save(slot, title: null, thumbnail: null)` 接受 PNG Bytes，与执行快照在同一个槽文件内原子提交。`saves.list()` 只返回元数据及 has_thumbnail；`await saves.thumbnail(slot)` 按需返回 PNG Bytes 或 null。目录存储将 PNG 作为压缩快照后的可选附件，用固定尾索引定位；列表不解压快照或加载图片。缩略图由作者在打开菜单前获取，不自动截图菜单。此变更覆盖 reel-render/reel-player/reel-engine/reel-ui、示例与双语指南，capture/thumbnail native ABI 1、save ABI 2；无新依赖，Aside/B01 不变。Rust 宿主实现 `CaptureBackend` 并驱动 `CaptureService`，在 `StoryRuntime` 显式启用 frame capture；未安装能力或资源不足时请求拒绝。GPU 提交保留资源至完成，取消的 PNG 编码在输出分块处退出。作者示例：[author_capture.aside](../examples/author_capture.aside)。
+
 对白确认按已呈现的交互、揭示状态和输入范围配对，与帧重绘版本分离。推进光标、立绘动画、悬停和控件反馈不会作废同一次按下/松开；换句、揭示完成、替换舞台根或切换模态范围后，旧手势不能确认新内容。键盘、手柄和指针共用此规则，命中仍使用已接受帧的几何。范围为 reel-player 的呈现与输入准入，无新增依赖、轮询或 Aside/ASB 接口变化。
 
 文字 GPU 绘制按字体资源、字体索引、字号、hint、变体坐标和字形 ID 复用字形图集，使用 guillotiere 分配图集矩形；同页连续字形合批，位置和颜色不进入字形缓存键。未提交上传仅在当前 preparation 可见，提交后发布；图集矩形由 prepared/in-flight/cache 共同保活，最后引用释放后才能复用。页面与上传分别计入现有资源预算，压力时回收无使用者缓存，字体退休解除缓存。该修复覆盖 reel-render 及实际 GPU 重复文字检查，B01/ASB 和作者接口不变。

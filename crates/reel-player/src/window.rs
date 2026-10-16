@@ -64,6 +64,7 @@ pub(crate) struct State {
     closing: bool,
     first_frame_pending: bool,
     completions: Vec<RenderEvent<GpuError>>,
+    captures: crate::capture::CaptureService<reel_render::gpu::GpuCapture>,
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
@@ -136,6 +137,7 @@ impl State {
             wake.clone(),
         );
         if let Some(WindowSession::Aside { story: runtime, .. }) = &mut state.session {
+            runtime.set_frame_capture_enabled(true);
             runtime.set_saves(crate::saves::RuntimeSaves::new(service, save_bytes));
             runtime.set_audio_factory(move || {
                 Box::new(crate::audio::AudioPlayer::desktop(
@@ -340,6 +342,16 @@ impl State {
             .and_then(WindowSession::game_settings)
             .cloned();
         let mut state = Self {
+            captures: {
+                let window = window.clone();
+                crate::capture::CaptureService::new(
+                    options.as_ref().map_or_else(
+                        || crate::assets::AssetOptions::default().input_bytes,
+                        |options| options.assets.input_bytes,
+                    ),
+                    reel_core::wake::WakeSignal::new(move || window.request_redraw()),
+                )
+            },
             backend,
             instance,
             host,
@@ -417,12 +429,16 @@ impl State {
         !matches!(self.session, Some(WindowSession::Aside { .. }))
     }
     pub(crate) fn story_deadline(&self) -> Option<Instant> {
+        if self.captures.busy() {
+            return Some(Instant::now() + std::time::Duration::from_millis(8));
+        }
         self.session
             .as_ref()
             .filter(|session| session.needs_tick())
             .and_then(|session| Instant::now().checked_add(session.tick_interval()))
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
+        self.maintain_captures()?;
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -440,6 +456,7 @@ impl State {
         if !self.closing && session.exit_requested() {
             return self.close();
         }
+        self.maintain_captures()?;
         let settings_changed = if self.closing {
             false
         } else {
@@ -455,6 +472,21 @@ impl State {
             session.sync(&mut self.presentation.bridge, self.root_id)?;
             if settings_changed || before != session.ui().projection_stamp() {
                 self.invalidate();
+            }
+        }
+        Ok(())
+    }
+    fn maintain_captures(&mut self) -> Result<(), Error> {
+        if let Some(WindowSession::Aside { story, .. }) = &mut self.session
+            && !story.capturing()
+        {
+            let changed = self.captures.drive(
+                &mut self.backend,
+                story.driver_mut()?.adapter_mut(),
+                self.presentation.accepted_frame.as_ref(),
+            )?;
+            if changed {
+                story.wake_input();
             }
         }
         Ok(())

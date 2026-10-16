@@ -221,13 +221,19 @@ impl StoryRuntime {
             match progress {
                 Ok(false) => return Ok(true),
                 Ok(true) => {
+                    let retained_bytes = capture.bytes;
                     let (mut driver, snapshot) = self.capture.take().unwrap().finish()?;
                     driver.resume_audio();
                     self.driver = Some(driver);
                     self.suspended_ns +=
                         now_ns.saturating_sub(self.capture_started.take().unwrap());
                     let request = saves.pending.as_ref().unwrap();
-                    let SaveOperation::Save { slot, title } = &request.operation else {
+                    let SaveOperation::Save {
+                        slot,
+                        title,
+                        thumbnail,
+                    } = &request.operation
+                    else {
                         unreachable!()
                     };
                     if let Err(rejected) = saves.service.submit(
@@ -235,9 +241,12 @@ impl StoryRuntime {
                         StorageJob::Save {
                             slot: slot.clone(),
                             title: title.clone(),
+                            thumbnail: thumbnail.clone(),
                             snapshot: Box::new(snapshot),
                         },
-                        saves.max_snapshot_bytes,
+                        retained_bytes.saturating_add(
+                            thumbnail.as_ref().map_or(0, |data| data.retained_bytes()),
+                        ),
                     ) {
                         let error = format!("save queue: {:?}", rejected.reason);
                         self.driver
@@ -317,6 +326,7 @@ impl StoryRuntime {
                 SaveOperation::Load { slot } => StorageJob::Load(slot.clone()),
                 SaveOperation::Delete { slot } => StorageJob::Delete(slot.clone()),
                 SaveOperation::List => StorageJob::List,
+                SaveOperation::Thumbnail { slot } => StorageJob::Thumbnail(slot.clone()),
                 SaveOperation::ReadData { key } => StorageJob::ReadData(key.clone()),
                 SaveOperation::WriteData { key, data } => {
                     StorageJob::WriteData(key.clone(), data.clone())

@@ -14,7 +14,7 @@ use reel_engine::aside::{
 };
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -142,7 +142,13 @@ pub type StorageError = Box<dyn std::error::Error + Send + Sync>;
 /// Storage implementations run on the worker. A successful write has published
 /// the whole slot; errors before publication preserve the preceding slot.
 pub trait SaveStorage: Send + Sync + 'static {
-    fn write(&self, slot: SaveSlot, snapshot: &SessionSnapshot) -> Result<(), StorageError>;
+    fn write(
+        &self,
+        slot: SaveSlot,
+        snapshot: &SessionSnapshot,
+        thumbnail: Option<&[u8]>,
+    ) -> Result<(), StorageError>;
+    fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError>;
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError>;
     fn delete(&self, slot: &str) -> Result<(), StorageError>;
     fn list(&self) -> Result<Vec<SaveSlot>, StorageError>;
@@ -190,11 +196,37 @@ impl DirectorySaves {
         if bytes.len() as u64 != len {
             return Err("truncated slot metadata".into());
         }
-        let (slot, tail) = postcard::take_from_bytes(&bytes)?;
+        let ((id, title, saved_at), tail) = postcard::take_from_bytes(&bytes)?;
         if !tail.is_empty() {
             return Err("trailing slot metadata".into());
         }
-        Ok(slot)
+        Ok(SaveSlot {
+            id,
+            title,
+            saved_at,
+            has_thumbnail: self.thumbnail_range(file)?.is_some(),
+        })
+    }
+    // An optional indexed attachment follows the gzip stream. Listing only reads
+    // metadata and this fixed-size footer; loading the snapshot never reads PNG data.
+    fn thumbnail_range(&self, file: &mut fs::File) -> Result<Option<(u64, u64)>, StorageError> {
+        let position = file.stream_position()?;
+        let footer = file.seek(SeekFrom::End(-16))?;
+        let mut index = [0; 16];
+        file.read_exact(&mut index)?;
+        file.seek(SeekFrom::Start(position))?;
+        if &index[8..] != b"REELTHMB" {
+            return Ok(None);
+        }
+        let len = u64::from_le_bytes(index[..8].try_into().unwrap());
+        if len > self.max_snapshot_bytes {
+            return Err("thumbnail exceeds storage budget".into());
+        }
+        let start = footer
+            .checked_sub(len)
+            .filter(|start| *start >= position)
+            .ok_or("invalid thumbnail range")?;
+        Ok(Some((start, len)))
     }
 }
 impl SaveStorage for DirectorySaves {
@@ -247,9 +279,21 @@ impl SaveStorage for DirectorySaves {
             Err(error) => Err(error.into()),
         }
     }
-    fn write(&self, slot: SaveSlot, snapshot: &SessionSnapshot) -> Result<(), StorageError> {
+    fn write(
+        &self,
+        slot: SaveSlot,
+        snapshot: &SessionSnapshot,
+        thumbnail: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
+        if thumbnail.is_some_and(|bytes| !bytes.starts_with(b"\x89PNG\r\n\x1a\n")) {
+            return Err("save thumbnail requires PNG data".into());
+        }
+        let thumbnail = thumbnail.unwrap_or_default();
+        if thumbnail.len() as u64 > self.max_snapshot_bytes {
+            return Err("thumbnail exceeds storage budget".into());
+        }
         fs::create_dir_all(&self.root)?;
-        let metadata = postcard::to_allocvec(&slot)?;
+        let metadata = postcard::to_allocvec(&(&slot.id, &slot.title, slot.saved_at))?;
         let published = reel_storage::publish(&self.path(&slot.id), true, |file| {
             file.write_all(b"REELSLOT")?;
             file.write_all(&(metadata.len() as u64).to_le_bytes())?;
@@ -260,13 +304,31 @@ impl SaveStorage for DirectorySaves {
                 remaining: self.max_snapshot_bytes,
             };
             snapshot.write_to(&mut writer).map_err(io::Error::other)?;
-            compressed.finish()?;
+            let file = compressed.finish()?;
+            if !thumbnail.is_empty() {
+                file.write_all(thumbnail)?;
+                file.write_all(&(thumbnail.len() as u64).to_le_bytes())?;
+                file.write_all(b"REELTHMB")?;
+            }
             Ok(())
         })?;
         if let Some(warning) = published.cleanup_warning {
             eprintln!("{warning}");
         }
         Ok(())
+    }
+    fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let mut file = fs::File::open(self.path(slot))?;
+        if self.metadata(&mut file)?.id != slot {
+            return Err("slot identity mismatch".into());
+        }
+        let Some((start, len)) = self.thumbnail_range(&mut file)? else {
+            return Ok(None);
+        };
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = vec![0; len as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(Some(bytes))
     }
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError> {
         let mut file = fs::File::open(self.path(slot))?;
@@ -329,11 +391,13 @@ pub enum StorageJob {
     Save {
         slot: String,
         title: String,
+        thumbnail: Option<Arc<DataDocument>>,
         snapshot: Box<SessionSnapshot>,
     },
     Load(String),
     Delete(String),
     List,
+    Thumbnail(String),
     ReadData(String),
     WriteData(String, Arc<DataDocument>),
     DeleteData(String),
@@ -368,6 +432,7 @@ impl SaveService {
                         StorageJob::Save {
                             slot,
                             title,
+                            thumbnail,
                             mut snapshot,
                         } => {
                             snapshot.commit_save(request)?;
@@ -377,8 +442,10 @@ impl SaveService {
                                     id: slot,
                                     title,
                                     saved_at,
+                                    has_thumbnail: thumbnail.is_some(),
                                 },
                                 &snapshot,
+                                thumbnail.as_ref().and_then(|data| data.as_bytes()),
                             )?;
                             StorageResult::Saved
                         }
@@ -390,6 +457,11 @@ impl SaveService {
                             StorageResult::Deleted
                         }
                         StorageJob::List => StorageResult::Slots(storage.list()?),
+                        StorageJob::Thumbnail(slot) => StorageResult::Data(
+                            storage
+                                .thumbnail(&slot)?
+                                .map(|bytes| Arc::new(DataDocument::from_bytes(bytes))),
+                        ),
                         StorageJob::ReadData(key) => {
                             StorageResult::Data(storage.read_data(&key)?.map(Arc::new))
                         }

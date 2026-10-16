@@ -48,6 +48,23 @@ pub struct DataDocument {
     payload_bytes: usize,
 }
 impl DataDocument {
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        if let Atom::Object(id) = self.root
+            && let Object::Bytes(bytes) = &self.objects[id as usize]
+        {
+            Some(bytes)
+        } else {
+            None
+        }
+    }
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let payload_bytes = bytes.capacity();
+        Self {
+            root: Atom::Object(0),
+            objects: vec![Object::Bytes(bytes)],
+            payload_bytes,
+        }
+    }
     pub fn retained_bytes(&self) -> u64 {
         (size_of::<Self>() + self.objects.capacity() * size_of::<Object>() + self.payload_bytes)
             as u64

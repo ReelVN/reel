@@ -13,6 +13,7 @@ pub struct StoryRuntime {
     saves: Option<crate::saves::RuntimeSaves>,
     capture: Option<crate::saves::Capture>,
     capture_started: Option<u64>,
+    frame_capture_enabled: bool,
     audio_factory: Option<Box<dyn Fn() -> Box<dyn reel_engine::audio::AudioBackend>>>,
     retiring: Option<AsideSessionUi>,
     starting: Option<reel_engine::aside::source::StoryFunction>,
@@ -35,6 +36,7 @@ impl StoryRuntime {
             saves: None,
             capture: None,
             capture_started: None,
+            frame_capture_enabled: false,
             audio_factory: None,
             retiring: None,
             starting: None,
@@ -70,6 +72,11 @@ impl StoryRuntime {
     pub fn set_saves(&mut self, saves: crate::saves::RuntimeSaves) {
         self.saves = Some(saves);
     }
+    /// Enable only when the host drives CaptureService against its accepted frame.
+    /// Otherwise capture requests fail explicitly instead of waiting for a backend.
+    pub fn set_frame_capture_enabled(&mut self, enabled: bool) {
+        self.frame_capture_enabled = enabled;
+    }
     /// Supply fresh device adapters for new sessions and restored saves.
     /// This is independent of whether the host installs save storage.
     pub fn set_audio_factory(
@@ -96,6 +103,7 @@ impl StoryRuntime {
         (self.suspended_at.is_none() || self.closing)
             && (self.needs_work()
                 || self.driver().adapter().has_save_requests()
+                || self.driver().adapter().has_capture_requests()
                 || self.driver().adapter().audio_poll_after().is_some()
                 || self.driver().adapter().localization_pending()
                 || self.driver().activities_need_time()
@@ -128,6 +136,7 @@ impl StoryRuntime {
 
     fn needs_work(&self) -> bool {
         self.runnable
+            || self.driver().adapter().capture_results_pending()
             || self.collecting
             || self.driver().cleanup_pending()
             || self.driver().activities_pending()
@@ -212,6 +221,16 @@ impl StoryRuntime {
         {
             self.suspended_ns += now_ns.saturating_sub(start);
         }
+        if !self.frame_capture_enabled && self.capture.is_none() {
+            let adapter = self.driver.as_mut().unwrap().adapter_mut();
+            if let Some(request) = adapter.take_capture_request()? {
+                adapter.complete_capture_request(
+                    request.id,
+                    Err("frame capture is not installed by this host".into()),
+                )?;
+                self.runnable = true;
+            }
+        }
         if self.maintain_saves(now_ns, budget)? {
             return Ok(());
         }
@@ -221,6 +240,14 @@ impl StoryRuntime {
         }
         if self.suspended_at.is_some() && !self.closing {
             return Ok(());
+        }
+        if self.driver().adapter().capture_results_pending() {
+            self.driver
+                .as_mut()
+                .unwrap()
+                .adapter_mut()
+                .maintain_capture_results(64)?;
+            self.runnable = true;
         }
         if self.driver.as_mut().unwrap().maintain_audio()?
             | self.driver.as_mut().unwrap().maintain_localization()?

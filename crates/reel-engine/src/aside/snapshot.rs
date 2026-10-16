@@ -215,6 +215,7 @@ impl SessionVm {
             || self.exit_requested
             || self.start_requested.is_some()
             || self.save_results_pending()
+            || self.captures.active()
         {
             return Err(SnapshotError::Busy(
                 "finish native admission and stage maintenance before capture",

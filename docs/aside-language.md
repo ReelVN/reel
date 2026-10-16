@@ -284,6 +284,8 @@ Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四�
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
 
+Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等待和取消协议工作的宿主结果，成功值为普通不可变 Bytes。`image(source:)` 可消费该值，`saves.save(..., thumbnail:)` 可保存它，`saves.thumbnail(slot)` 可按需读回。截图及存储由宿主实现，不增加 Aside 图形类型、平台依赖或 B01 指令；capture/thumbnail ABI 1、save ABI 2。
+
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；B01/ASB 不变。

@@ -17,6 +17,7 @@ pub enum SaveOperation {
     Save {
         slot: String,
         title: String,
+        thumbnail: Option<Arc<data::DataDocument>>,
     },
     Load {
         slot: String,
@@ -25,6 +26,9 @@ pub enum SaveOperation {
         slot: String,
     },
     List,
+    Thumbnail {
+        slot: String,
+    },
     ReadData {
         key: String,
     },
@@ -47,6 +51,7 @@ pub struct SaveSlot {
     pub title: String,
     /// UTC Unix seconds, assigned by storage when committing the slot.
     pub saved_at: u64,
+    pub has_thumbnail: bool,
 }
 pub enum SaveResult {
     Done,
@@ -149,6 +154,7 @@ fn complete(
                         ("id", id),
                         ("title", title),
                         ("saved_at", Value::int(slot.saved_at as i64)),
+                        ("has_thumbnail", Value::bool(slot.has_thumbnail)),
                     ],
                     &[],
                 )?;
@@ -181,8 +187,11 @@ impl SessionVm {
         &mut self,
         ticket: HostTicket,
         symbol: &str,
-    ) -> Result<(), AdapterError> {
+        work: u32,
+    ) -> Result<NativeDispatch, AdapterError> {
         let args = self.vm.host_arguments(ticket)?;
+        let mut charge = None;
+        let mut used = 1;
         let operation = if symbol == "reel::saves::list" {
             SaveOperation::List
         } else {
@@ -197,14 +206,44 @@ impl SessionVm {
                     } else {
                         text::read_string(self.vm.heap(), args[1], self.read_limit)?
                     };
-                    SaveOperation::Save { slot, title }
+                    let thumbnail = if args[2].tag() == ValueTag::Null {
+                        None
+                    } else {
+                        if self.vm.heap().info(args[2])?.kind != aside_vm::ObjectKind::Bytes {
+                            return Err(AdapterError::Input("save thumbnail requires PNG Bytes"));
+                        }
+                        let mut capture = match self.saves.capture.take() {
+                            Some((pending, capture)) => {
+                                debug_assert_eq!(pending, ticket);
+                                capture
+                            }
+                            None => data::Capture::new(self.vm.heap(), args[2])?,
+                        };
+                        let (complete, spent) =
+                            capture.step(self.vm.heap(), work, self.read_limit)?;
+                        used = spent;
+                        if !complete {
+                            self.saves.capture = Some((ticket, capture));
+                            return Ok(NativeDispatch::Decoding { work: used });
+                        }
+                        let (data, reservation) = capture.finish();
+                        charge = Some(reservation);
+                        Some(data)
+                    };
+                    SaveOperation::Save {
+                        slot,
+                        title,
+                        thumbnail,
+                    }
                 }
                 "reel::saves::load" => SaveOperation::Load { slot },
                 "reel::saves::delete" => SaveOperation::Delete { slot },
+                "reel::saves::thumbnail" => SaveOperation::Thumbnail { slot },
                 _ => unreachable!(),
             }
         };
-        self.enqueue_save(ticket, operation, None, None)
+        self.enqueue_save(ticket, operation, None, charge)?;
+        Ok(NativeDispatch::Ready { work: used })
     }
 
     pub(super) fn dispatch_persistent(

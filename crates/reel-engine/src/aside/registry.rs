@@ -391,22 +391,37 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ty: BuiltinType::Any,
         default,
     };
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::stage::capture".into(),
+        abi_version: 1,
+        parameters: vec![
+            parameter("width", Some(bc::Const::Null)),
+            parameter("height", Some(bc::Const::Null)),
+            parameter("owner", Some(bc::Const::Null)),
+        ],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
     for (name, parameters) in [
         (
             "save",
             vec![
                 parameter("slot", None),
                 parameter("title", Some(bc::Const::Null)),
+                parameter("thumbnail", Some(bc::Const::Null)),
             ],
         ),
         ("load", vec![parameter("slot", None)]),
         ("delete", vec![parameter("slot", None)]),
+        ("thumbnail", vec![parameter("slot", None)]),
         ("list", vec![]),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::saves::{name}"),
-            abi_version: 1,
+            abi_version: if name == "save" { 2 } else { 1 },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

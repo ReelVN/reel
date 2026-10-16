@@ -3,7 +3,9 @@
 
 //! Author-owned scene composition, shared by the script host and presentation.
 mod camera;
+mod image;
 pub use camera::CameraView;
+pub use image::ImageSource;
 pub mod particles;
 
 use crate::input::{ActionPhase, Binding};
@@ -188,7 +190,7 @@ pub enum NodeKind {
         revision: u64,
     },
     Image {
-        source: String,
+        source: ImageSource,
         fit: ObjectFit,
         /// Author constructor location, retained through later source changes.
         origin: Option<String>,

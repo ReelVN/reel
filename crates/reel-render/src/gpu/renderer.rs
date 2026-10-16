@@ -15,6 +15,7 @@ pub struct Usage {
     pub transient: u64,
 }
 pub struct Prepared {
+    pub(super) capture: Option<Arc<super::capture::ReadbackStorage>>,
     pub(super) encoder: wgpu::CommandEncoder,
     pub(super) output: wgpu::TextureView,
     pub(super) texture: wgpu::Texture,
@@ -30,6 +31,9 @@ pub struct Prepared {
     owner: Arc<()>,
 }
 impl Prepared {
+    pub(super) fn retain_capture_target(&mut self, reservation: Reservation) {
+        self.tickets.push(reservation);
+    }
     pub fn quality(&self) -> Quality {
         self.quality
     }
@@ -38,6 +42,7 @@ impl Prepared {
     }
 }
 struct Inflight {
+    capture: Option<Arc<super::capture::ReadbackStorage>>,
     id: u64,
     done: Arc<AtomicBool>,
     _frames: Vec<RenderFrame>,
@@ -48,6 +53,7 @@ struct Inflight {
 }
 pub struct Renderer {
     pub(super) gpu: Gpu,
+    pub(super) capture_output: Option<super::SurfacePass>,
     inflight: Vec<Inflight>,
     next: u64,
     budgets: Budgets,
@@ -123,6 +129,7 @@ impl Renderer {
         );
         Self {
             gpu,
+            capture_output: None,
             inflight: Vec::new(),
             next: 1,
             budgets,
@@ -174,10 +181,12 @@ impl Renderer {
         result.map_err(|e| GpuError::Device(e.to_string()))?;
         self.inflight.retain(|s| {
             if limit != 0 && s.done.load(Ordering::Acquire) {
-                completed(
-                    s.id,
-                    s._frames.last().expect("submission owns its output frame"),
-                );
+                if s.capture.is_none() {
+                    completed(
+                        s.id,
+                        s._frames.last().expect("submission owns its output frame"),
+                    );
+                }
                 limit -= 1;
                 false
             } else {
@@ -200,7 +209,14 @@ impl Renderer {
         }
     }
     pub fn prepare(&self, frame: &RenderFrame) -> Result<Prepared, GpuError> {
-        self.prepare_frames(frame, None)
+        self.prepare_frames(frame, None, frame.info().physical_size)
+    }
+    pub(super) fn prepare_capture(
+        &self,
+        frame: &RenderFrame,
+        size: [u32; 2],
+    ) -> Result<Prepared, GpuError> {
+        self.prepare_frames(frame, None, size)
     }
     /// Both immutable input frames stay leased through queue completion. No input acceptance.
     pub fn crossfade(
@@ -216,18 +232,18 @@ impl Renderer {
         {
             return Err(GpuError::InvalidSize);
         }
-        self.prepare_frames(from, Some((to, progress)))
+        self.prepare_frames(from, Some((to, progress)), from.info().physical_size)
     }
     fn prepare_frames(
         &self,
         frame: &RenderFrame,
         second: Option<(&RenderFrame, f32)>,
+        size: [u32; 2],
     ) -> Result<Prepared, GpuError> {
         self.gpu.check()?;
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
         let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
-        let size = frame.info().physical_size;
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
         let mut plan = |frame| {
@@ -279,6 +295,7 @@ impl Renderer {
         }
         self.gpu.check()?;
         Ok(Prepared {
+            capture: None,
             encoder: ctx.encoder,
             output: output.view,
             texture: output.texture,
@@ -322,6 +339,7 @@ impl Renderer {
             .queue
             .on_submitted_work_done(move || signal.store(true, Ordering::Release));
         self.inflight.push(Inflight {
+            capture: prepared.capture,
             id,
             done,
             _frames: prepared.frames,

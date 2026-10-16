@@ -8,6 +8,7 @@ mod activity;
 mod audio;
 pub use activity::ActivityProgress;
 mod callbacks;
+pub mod capture;
 mod game;
 pub use game::GameSettings;
 mod choice;
@@ -217,6 +218,7 @@ pub struct SessionVm {
     activities: activity::Activities,
     results: results::Results,
     saves: saves::Saves,
+    captures: capture::Captures,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     audio: audio::Audio,
@@ -280,6 +282,7 @@ impl SessionVm {
             activities: activity::Activities::default(),
             results: results::Results::default(),
             saves: saves::Saves::default(),
+            captures: capture::Captures::default(),
             particles: particles::Particles::default(),
             standard,
             audio: audio::Audio::default(),
@@ -464,13 +467,15 @@ impl SessionVm {
                 self.start_requested = Some(entry);
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::stage::capture" => {
+                self.dispatch_capture(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::saves::save"
             | "reel::saves::load"
             | "reel::saves::delete"
-            | "reel::saves::list" => {
-                self.dispatch_save(ticket, &symbol)?;
-                Ok(NativeDispatch::Ready { work: 1 })
-            }
+            | "reel::saves::list"
+            | "reel::saves::thumbnail" => self.dispatch_save(ticket, &symbol, work),
             "reel::persistent::read" | "reel::persistent::write" | "reel::persistent::delete" => {
                 self.dispatch_persistent(ticket, &symbol, work)
             }
@@ -1222,6 +1227,7 @@ impl SessionVm {
         self.translations.close();
         self.results.clear();
         self.saves.clear();
+        self.captures = capture::Captures::default();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;

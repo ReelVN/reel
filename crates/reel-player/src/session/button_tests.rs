@@ -123,7 +123,7 @@ fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_wr
     let snapshot = storage.read("slot/一").unwrap();
     let original = snapshot.encode().unwrap();
     let too_small = DirectorySaves::new(&folder, 1);
-    assert!(too_small.write(slots[0].clone(), &snapshot).is_err());
+    assert!(too_small.write(slots[0].clone(), &snapshot, None).is_err());
     assert_eq!(storage.read("slot/一").unwrap().encode().unwrap(), original);
     second.close().unwrap();
     wait(&mut second);

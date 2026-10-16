@@ -173,6 +173,7 @@ pub enum RenderEvent<E = RenderError> {
     },
     DeviceLost(E),
 }
+pub mod capture;
 pub trait RenderBackend {
     type Error: BackendError + 'static;
     fn capabilities(&self) -> RenderCaps;
