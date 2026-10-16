@@ -734,6 +734,29 @@ impl Session {
         &self.read_progress
     }
 
+    /// Forget content-read records while preserving the currently displayed text.
+    /// Completing the waiting group can still register its IDs without allocating.
+    pub fn clear_read_progress(&mut self) -> Result<(), SessionError> {
+        let mut progress = ReadProgress::default();
+        if let Some(Interaction::Dialogue(dialogue)) = &self.active {
+            progress
+                .ids
+                .try_reserve(dialogue.lines.len())
+                .map_err(|_| SessionError::AllocationFailed)?;
+        }
+        self.read_progress = progress;
+        if let Some(Interaction::Dialogue(dialogue)) = &mut self.active {
+            dialogue.previously_read = false;
+            for line in &mut dialogue.lines {
+                line.previously_read = false;
+            }
+        }
+        if self.reading.skipping() && !self.reading.skip_unread() {
+            self.reading.set_skip(false, false);
+        }
+        Ok(())
+    }
+
     pub fn set_skip_reading(&mut self, enabled: bool, unread: bool) {
         self.reading.set_skip(enabled, unread);
         self.check_skip_boundary();

@@ -49,6 +49,7 @@ pub fn main() {
                 text(value: derive(|| if reading.skipping { "Skip: on" } else { "Skip read" }));
             }
             button("History", on_click: |event| game.pause_reading(true));
+            button("Reset read progress", on_click: |event| game.clear_read_progress());
         }
         view(history_page);
     } });

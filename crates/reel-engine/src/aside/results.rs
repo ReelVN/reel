@@ -16,6 +16,7 @@ pub(super) enum Kind {
     Particle = -1104,
     Operation = -1105,
     Capture = -1106,
+    Window = -1107,
 }
 #[repr(u32)]
 enum Slot {
@@ -153,6 +154,7 @@ pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
         Some(-1104) => Ok(Kind::Particle),
         Some(-1105) => Ok(Kind::Operation),
         Some(-1106) => Ok(Kind::Capture),
+        Some(-1107) => Ok(Kind::Window),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -212,6 +214,13 @@ fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, Adapte
     })
 }
 impl Results {
+    pub(super) fn create_window(
+        &mut self,
+        vm: &mut Vm,
+        owner: Value,
+    ) -> Result<Value, AdapterError> {
+        self.create(vm, owner, Kind::Window)
+    }
     pub(super) fn create_capture(
         &mut self,
         vm: &mut Vm,
@@ -583,7 +592,7 @@ impl SessionVm {
             } else {
                 let kind = kind(self.vm.heap(), object)?;
                 if kind != Kind::Completion
-                    && !(matches!(kind, Kind::Presentation | Kind::Capture)
+                    && !(matches!(kind, Kind::Presentation | Kind::Capture | Kind::Window)
                         && symbol == "reel::completion::cancel")
                 {
                     return Err(AdapterError::Input("expected completion"));

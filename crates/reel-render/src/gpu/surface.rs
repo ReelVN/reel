@@ -51,15 +51,30 @@ pub(crate) fn negotiate(
     gpu: &Gpu,
     surface: &wgpu::Surface<'_>,
     size: [u32; 2],
-) -> Result<(wgpu::SurfaceConfiguration, SurfacePass), GpuError> {
-    let config = select(&surface.get_capabilities(&gpu.adapter), size)?;
+    vsync: bool,
+) -> Result<
+    (
+        wgpu::SurfaceConfiguration,
+        SurfacePass,
+        Option<wgpu::PresentMode>,
+    ),
+    GpuError,
+> {
+    let caps = surface.get_capabilities(&gpu.adapter);
+    let mut config = select(&caps, size)?;
+    let unsynchronized = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Mailbox]
+        .into_iter()
+        .find(|mode| caps.present_modes.contains(mode));
+    if !vsync && let Some(mode) = unsynchronized {
+        config.present_mode = mode;
+    }
     gpu.quality([config.width, config.height])?;
     let output = SurfacePass::new(&gpu.device, config.format)?;
     if !size.contains(&0) {
         surface.configure(&gpu.device, &config);
     }
     gpu.check()?;
-    Ok((config, output))
+    Ok((config, output, unsynchronized))
 }
 #[cfg(test)]
 mod tests {

@@ -13,6 +13,7 @@ pub mod request_ids;
 pub mod result;
 pub mod text;
 pub mod wake;
+pub mod window;
 pub mod work;
 
 #[cfg(feature = "test-support")]

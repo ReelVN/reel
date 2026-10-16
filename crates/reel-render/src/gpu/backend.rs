@@ -8,6 +8,8 @@ pub struct WgpuBackend {
     output: Option<SurfacePass>,
     config: Option<wgpu::SurfaceConfiguration>,
     info: Option<SurfaceInfo>,
+    vsync: bool,
+    unsynchronized: Option<wgpu::PresentMode>,
 }
 
 impl WgpuBackend {
@@ -18,10 +20,20 @@ impl WgpuBackend {
             output: None,
             config: None,
             info: None,
+            vsync: true,
+            unsynchronized: None,
         }
     }
     pub fn renderer(&self) -> &Renderer {
         &self.renderer
+    }
+    /// Preserve a user's choice when replacing the device/surface adapter.
+    pub fn with_vsync(mut self, enabled: bool) -> Self {
+        self.vsync = enabled;
+        self
+    }
+    pub fn vsync_enabled(&self) -> bool {
+        self.vsync
     }
     pub fn renderer_mut(&mut self) -> &mut Renderer {
         &mut self.renderer
@@ -43,6 +55,28 @@ impl WgpuBackend {
 
 impl RenderBackend for WgpuBackend {
     type Error = GpuError;
+    fn vsync(&self) -> Option<bool> {
+        self.unsynchronized.map(|_| self.vsync)
+    }
+    fn set_vsync(&mut self, enabled: bool) -> Result<Option<bool>, GpuError> {
+        let Some(mode) = self.unsynchronized else {
+            return Ok(None);
+        };
+        if enabled == self.vsync {
+            return Ok(Some(enabled));
+        }
+        let config = self.config.as_mut().ok_or(GpuError::InvalidSurface)?;
+        let surface = self.surface.as_ref().ok_or(GpuError::InvalidSurface)?;
+        config.present_mode = if enabled {
+            wgpu::PresentMode::Fifo
+        } else {
+            mode
+        };
+        surface.configure(&self.renderer.gpu().device, config);
+        self.renderer.gpu().check()?;
+        self.vsync = enabled;
+        Ok(Some(enabled))
+    }
     fn capabilities(&self) -> RenderCaps {
         let max = self.renderer.gpu().device.limits().max_texture_dimension_2d;
         RenderCaps {
@@ -75,7 +109,10 @@ impl RenderBackend for WgpuBackend {
         self.config = None;
         validate_surface(info)?;
         let surface = self.surface.as_ref().ok_or(GpuError::InvalidSurface)?;
-        let (config, output) = negotiate(self.renderer.gpu(), surface, info.physical_size)?;
+        let (config, output, unsynchronized) =
+            negotiate(self.renderer.gpu(), surface, info.physical_size, self.vsync)?;
+        self.vsync = config.present_mode == wgpu::PresentMode::Fifo;
+        self.unsynchronized = unsynchronized;
         self.config = Some(config);
         self.output = Some(output);
         self.info = Some(info);

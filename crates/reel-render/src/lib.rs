@@ -176,6 +176,14 @@ pub enum RenderEvent<E = RenderError> {
 }
 pub mod capture;
 pub trait RenderBackend {
+    /// Some reports the current setting when this backend can change synchronization.
+    fn vsync(&self) -> Option<bool> {
+        None
+    }
+    /// None means this target does not support changing presentation synchronization.
+    fn set_vsync(&mut self, _enabled: bool) -> Result<Option<bool>, Self::Error> {
+        Ok(None)
+    }
     type Error: BackendError + 'static;
     fn capabilities(&self) -> RenderCaps;
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), Self::Error>;

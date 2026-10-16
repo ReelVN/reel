@@ -210,6 +210,7 @@ impl ApplicationHandler for App {
                 return;
             }
             WindowEvent::Resized(size) => state.resize(size),
+            WindowEvent::Moved(_) => state.monitor_changed(),
             WindowEvent::ScaleFactorChanged { .. } => state.resize(state.window.inner_size()),
             WindowEvent::ModifiersChanged(modifiers) => {
                 state.modifiers = modifiers.state();

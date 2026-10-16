@@ -144,8 +144,9 @@ impl StoryRuntime {
                 if !restore.step(quota)?.complete {
                     return Ok(false);
                 }
-                let (session, vm) = saves.restore.take().unwrap().finish()?;
+                let (session, mut vm) = saves.restore.take().unwrap().finish()?;
                 let live = self.driver.as_ref().unwrap();
+                vm.set_window_info(live.adapter().window_info().clone());
                 saves.candidate = Some(Candidate::new(AsideSessionUi::restored(
                     session,
                     vm,

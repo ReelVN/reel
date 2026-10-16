@@ -71,12 +71,17 @@ impl Session {
         }
         match &mut self.active {
             Some(Interaction::Dialogue(d)) => {
+                self.read_progress
+                    .ids
+                    .try_reserve(d.lines.len())
+                    .map_err(|_| SnapshotError::Heap(aside_vm::HeapError::AllocationFailure))?;
                 d.id.identity = identity;
                 for id in &mut d.current_line_ids {
                     id.interaction_id.identity = identity;
                 }
                 for line in &mut d.lines {
                     line.id.interaction_id.identity = identity;
+                    line.previously_read = self.read_progress.contains(&line.content.id);
                     let text = line.resolved_text();
                     if line.grapheme_boundaries.first() != Some(&0)
                         || line.grapheme_boundaries.last() != Some(&text.len())
@@ -89,6 +94,7 @@ impl Session {
                         return Err(SnapshotError::Invalid("dialogue reveal boundaries".into()));
                     }
                 }
+                d.previously_read = d.lines.iter().all(DialogueLine::previously_read);
             }
             Some(Interaction::Choice(c)) => {
                 c.id.identity = identity;

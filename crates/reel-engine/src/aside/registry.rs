@@ -48,15 +48,33 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     .collect();
     for (name, fields) in [
         ("info", &[][..]),
-        ("configure", &["width", "height", "fullscreen", "vsync", "owner"][..]),
+        (
+            "configure",
+            &["width", "height", "fullscreen", "vsync", "owner"][..],
+        ),
     ] {
         contracts.push(NativeContract {
-            rest: None, symbol: format!("reel::window::{name}"), abi_version: 1,
-            parameters: fields.iter().map(|field| NativeParameter {
-                name: (*field).into(), ty: BuiltinType::Any, default: Some(bc::Const::Null),
-            }).collect(),
+            rest: None,
+            symbol: format!("reel::window::{name}"),
+            abi_version: 1,
+            parameters: fields
+                .iter()
+                .map(|field| NativeParameter {
+                    name: (*field).into(),
+                    ty: BuiltinType::Any,
+                    default: Some(bc::Const::Null),
+                })
+                .collect(),
             result: BuiltinType::Any,
-            effects: Effects(Effects::ALLOCATE | Effects::HOST | if name == "configure" { Effects::WRITE } else { 0 }),
+            effects: Effects(
+                Effects::ALLOCATE
+                    | Effects::HOST
+                    | if name == "configure" {
+                        Effects::WRITE
+                    } else {
+                        0
+                    },
+            ),
             required_capabilities: vec![],
         });
     }
@@ -560,6 +578,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec!["reel.audio".into()],
         });
     }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::game::clear_read_progress".into(),
+        abi_version: 1,
+        parameters: vec![],
+        result: BuiltinType::Null,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec![],
+    });
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::set_auto".into(),
