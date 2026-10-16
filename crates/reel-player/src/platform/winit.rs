@@ -1,5 +1,7 @@
 //! Winit host commands, usable with any RenderBackend.
 use super::PlatformHost;
+#[path = "winit_display.rs"]
+mod display;
 #[path = "winit_text.rs"]
 mod text;
 #[path = "winit_touch.rs"]
@@ -22,15 +24,18 @@ pub struct WinitHost {
     deadline: Option<MonoTime>,
     exiting: bool,
     text: text::TextInputHost,
+    display: display::WindowDisplay,
 }
 impl WinitHost {
     pub fn new(window: Arc<Window>) -> Self {
+        let display = display::WindowDisplay::new(&window);
         Self {
             window,
             origin: Instant::now(),
             deadline: None,
             exiting: false,
             text: text::TextInputHost::default(),
+            display,
         }
     }
     pub fn window(&self) -> &Window {
@@ -55,6 +60,20 @@ impl WinitHost {
                 .map(ControlFlow::WaitUntil)
                 .unwrap_or(ControlFlow::Wait),
         );
+    }
+}
+impl super::WindowControl for WinitHost {
+    fn window_info(&mut self) -> reel_core::window::WindowInfo {
+        self.display.info(&self.window)
+    }
+    fn configure_window(
+        &mut self,
+        configuration: reel_core::window::WindowConfiguration,
+    ) -> Result<bool, String> {
+        self.display.configure(&self.window, configuration)
+    }
+    fn window_resized(&mut self) -> bool {
+        self.display.resized(&self.window)
     }
 }
 impl Clock for WinitHost {

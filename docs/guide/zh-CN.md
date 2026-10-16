@@ -730,6 +730,12 @@ game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命
 `game.set_skip(enabled, unread: false)` 已实现。`game.reading().skipping/skip_unread` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白，选择仍等待玩家。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。Rust 宿主用 `Session::new_with_read_progress` 复用 `ReadProgress`，通过 `ids/from_ids` 接自己的持久存储；新建会话默认空记录。源码模块版本变化保守视为未读。
 按章节跳过 `game.skip_to(story_id)` 仍依赖后续章节注册服务。
 
+重置已读进度使用 `game.clear_read_progress()`。当前等待对白的组与各行 `read` 立即变为 false，仅跳已读的快进停止；之后的对白重新算未读，正常推进后重新登记。历史和已完成 NVL 行保留原有样式，自动阅读与允许跳过未读的策略保持原值。读档时，当前等待对白也按最新已读记录重新判断。此操作释放旧已读记录，耗时随记录容量增长，不读写磁盘，也不删除游戏存档或 `persistent` 系统数据。Rust 宿主提供相同的 `Session::clear_read_progress()`。运行示例见 [author_reading.aside](../../examples/author_reading.aside)。
+
+```aside
+button("Reset read progress", on_click: |event| game.clear_read_progress());
+```
+
 这些服务提供数据与操作，页面外观由作者组合。手动点击或确认对白会执行一次正常显现/推进，并关闭自动阅读和快进；无效输入不改变模式。存读档、历史与阅读控制已实现；路线和章节注册仍待补齐。
 
 ## 十二 游戏变量与组件状态
@@ -1112,6 +1118,8 @@ Windows 播放器向系统提交双声道音频，默认设备配置为多声道
 ```
 
 ### 窗口与呈现设置
+
+使用自己的 `fonts/body.ttf` 运行 [author_window.aside](../../examples/author_window.aside)，资源目录可沿用上面的音频示例。
 
 `window.info()` 返回当前客户区的逻辑 width/height、scale_factor、fullscreen、vsync、窗口模式的 windowed_width/windowed_height，以及 capabilities 和 resolutions。resolutions 是当前显示器可用尺寸换算为逻辑像素后的列表，不是舞台画布大小。先检查 capabilities.resize/fullscreen/vsync 再显示对应控件；无窗口宿主的能力均为 false。
 

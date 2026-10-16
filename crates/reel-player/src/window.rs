@@ -1,4 +1,7 @@
 use crate::diagnostic::Diagnostic;
+#[path = "window_control.rs"]
+mod control;
+use crate::platform::WindowControl;
 use crate::session::{ProjectionStamp, SessionHostDiagnostic};
 use crate::{
     aside_session::AsideSessionUi, shell::StoryWindowOptions, window_session::WindowSession,
@@ -65,6 +68,8 @@ pub(crate) struct State {
     first_frame_pending: bool,
     completions: Vec<RenderEvent<GpuError>>,
     captures: crate::capture::CaptureService<reel_render::gpu::GpuCapture>,
+    window_state: Arc<reel_core::window::WindowInfo>,
+    window_request: Option<reel_engine::aside::window::WindowRequestId>,
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
@@ -138,6 +143,7 @@ impl State {
         );
         if let Some(WindowSession::Aside { story: runtime, .. }) = &mut state.session {
             runtime.set_frame_capture_enabled(true);
+            runtime.set_window_control_enabled(true);
             runtime.set_saves(crate::saves::RuntimeSaves::new(service, save_bytes));
             runtime.set_audio_factory(move || {
                 Box::new(crate::audio::AudioPlayer::desktop(
@@ -390,7 +396,10 @@ impl State {
             closing: false,
             first_frame_pending,
             completions: Vec::new(),
+            window_state: Arc::new(Default::default()),
+            window_request: None,
         };
+        state.publish_window_info()?;
         state.start_gamepads();
 
         Ok(state)
@@ -399,6 +408,11 @@ impl State {
         self.invalidate_surface(size)?;
         if self.backend.surface().is_some() {
             self.backend.configure(self.presentation.surface_info())?;
+        }
+        let complete = self.host.window_resized();
+        self.publish_window_info()?;
+        if complete {
+            self.complete_window_change(Ok(self.window_state.clone()))?;
         }
         self.window.request_redraw();
         Ok(())
@@ -438,6 +452,7 @@ impl State {
             .and_then(|session| Instant::now().checked_add(session.tick_interval()))
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
+        self.maintain_window_requests()?;
         self.maintain_captures()?;
         let Some(session) = &mut self.session else {
             return Ok(());
@@ -462,6 +477,7 @@ impl State {
         } else {
             self.apply_game_settings()?
         };
+        self.maintain_window_requests()?;
         if !self.closing {
             let session = self.session.as_mut().unwrap();
             session.check_fonts()?;
@@ -756,10 +772,11 @@ impl State {
             DeviceGeneration(generation),
             self.backend.renderer().gpu().limits(),
         ))?;
-        let mut backend = WgpuBackend::new(gpu, surface);
+        let mut backend = WgpuBackend::new(gpu, surface).with_vsync(self.backend.vsync_enabled());
         backend.configure(self.presentation.surface_info())?;
         // Retire the old surface and device together, including zero-sized views.
         self.backend = backend;
+        self.publish_window_info()?;
         self.window.request_redraw();
         eprintln!(
             "device recovered generation={generation}, epoch={}",

@@ -38,6 +38,8 @@ impl StoryRuntime {
         .with_assets(old.ui().assets());
         next.adapter_mut()
             .inherit_game_settings(old.adapter().game_settings().clone());
+        next.adapter_mut()
+            .set_window_info(old.adapter().window_info().clone());
         if let Some(factory) = &self.audio_factory {
             next = next.with_audio(factory())?;
         }

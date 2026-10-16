@@ -14,6 +14,7 @@ pub struct StoryRuntime {
     capture: Option<crate::saves::Capture>,
     capture_started: Option<u64>,
     frame_capture_enabled: bool,
+    window_control_enabled: bool,
     audio_factory: Option<Box<dyn Fn() -> Box<dyn reel_engine::audio::AudioBackend>>>,
     retiring: Option<AsideSessionUi>,
     starting: Option<reel_engine::aside::source::StoryFunction>,
@@ -37,6 +38,7 @@ impl StoryRuntime {
             capture: None,
             capture_started: None,
             frame_capture_enabled: false,
+            window_control_enabled: false,
             audio_factory: None,
             retiring: None,
             starting: None,
@@ -77,6 +79,10 @@ impl StoryRuntime {
     pub fn set_frame_capture_enabled(&mut self, enabled: bool) {
         self.frame_capture_enabled = enabled;
     }
+    /// Enable only when the host consumes and completes window requests.
+    pub fn set_window_control_enabled(&mut self, enabled: bool) {
+        self.window_control_enabled = enabled;
+    }
     /// Supply fresh device adapters for new sessions and restored saves.
     /// This is independent of whether the host installs save storage.
     pub fn set_audio_factory(
@@ -104,6 +110,7 @@ impl StoryRuntime {
             && (self.needs_work()
                 || self.driver().adapter().has_save_requests()
                 || self.driver().adapter().has_capture_requests()
+                || self.driver().adapter().has_window_requests()
                 || self.driver().adapter().audio_poll_after().is_some()
                 || self.driver().adapter().localization_pending()
                 || self.driver().activities_need_time()
@@ -227,6 +234,16 @@ impl StoryRuntime {
                 adapter.complete_capture_request(
                     request.id,
                     Err("frame capture is not installed by this host".into()),
+                )?;
+                self.runnable = true;
+            }
+        }
+        if !self.window_control_enabled && self.capture.is_none() {
+            let adapter = self.driver.as_mut().unwrap().adapter_mut();
+            if let Some(request) = adapter.take_window_request()? {
+                adapter.complete_window_request(
+                    request.id,
+                    Err("window control is not installed by this host".into()),
                 )?;
                 self.runnable = true;
             }

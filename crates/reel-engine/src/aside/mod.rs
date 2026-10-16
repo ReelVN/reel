@@ -33,6 +33,7 @@ mod stage;
 mod tests;
 mod text;
 mod views;
+pub mod window;
 
 use crate::{
     ChoiceInput, Completion, CompletionDelivery, CompletionOutcome, DialogueLineInput,
@@ -220,6 +221,7 @@ pub struct SessionVm {
     results: results::Results,
     saves: saves::Saves,
     captures: capture::Captures,
+    window: window::Window,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     audio: audio::Audio,
@@ -284,6 +286,7 @@ impl SessionVm {
             results: results::Results::default(),
             saves: saves::Saves::default(),
             captures: capture::Captures::default(),
+            window: window::Window::default(),
             particles: particles::Particles::default(),
             standard,
             audio: audio::Audio::default(),
@@ -472,6 +475,10 @@ impl SessionVm {
                 self.dispatch_capture(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::window::info" | "reel::window::configure" => {
+                self.dispatch_window(ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::saves::save"
             | "reel::saves::load"
             | "reel::saves::delete"
@@ -548,6 +555,7 @@ impl SessionVm {
             | "reel::game::choice"
             | "reel::game::history"
             | "reel::game::reading"
+            | "reel::game::clear_read_progress"
             | "reel::game::set_auto"
             | "reel::game::set_skip"
             | "reel::game::pause_reading"
@@ -1235,6 +1243,7 @@ impl SessionVm {
         self.results.clear();
         self.saves.clear();
         self.captures = capture::Captures::default();
+        self.window = window::Window::default();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;

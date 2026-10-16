@@ -28,6 +28,7 @@ enum LineField {
     SpeakerId,
     ContentId,
     Ready,
+    Read,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -376,10 +377,22 @@ impl Narrative {
                 publish(
                     heap,
                     row,
+                    LineField::Read as u32,
+                    Value::bool(line.previously_read()),
+                )?;
+                publish(
+                    heap,
+                    row,
                     LineField::Reveal as u32,
                     Value::int(line.reveal().visible_bytes.end as i64),
                 )?;
             }
+            publish(
+                heap,
+                self.dialogue,
+                DialogueField::Read as u32,
+                Value::bool(dialogue.previously_read()),
+            )?;
             publish(
                 heap,
                 self.dialogue,
@@ -435,6 +448,14 @@ impl SessionVm {
             "reel::game::dialogue" => model.dialogue,
             "reel::game::choice" => model.choice,
             "reel::game::reading" => model.reading,
+            "reel::game::clear_read_progress" => {
+                session.clear_read_progress()?;
+                self.activities.set_skipping(session.reading().skipping());
+                if !session.reading().skipping() {
+                    self.skip_input = None;
+                }
+                Value::NULL
+            }
             "reel::game::history" => {
                 if model.history.is_none() {
                     let history = history::History::new(self.vm.heap_mut())?;

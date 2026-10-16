@@ -622,9 +622,11 @@ Reel `camera` 使用普通宿主节点与 children 合成，camera_x/camera_y/zo
 
 Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定 native 方法（ABI 1）；同父级排序、索引验证和身份保留属于 Reel 舞台合同，不新增语法或 B01/ASB 格式。
 
-## Reel 粒子宿主接口
+## Reel 窗口宿主接口
 
 Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info()` 返回一次平台状态快照，不创建响应式时钟；`window.configure(width:null,height:null,fullscreen:null,vsync:null,owner:null)` 返回既有 completion 协议的可等待活动，完成时返回实际窗口快照。全屏为无边框，尺寸为窗口客户区逻辑像素，capabilities 表示可修改项；平台边界、取消和存档合同见[引擎架构](engine-architecture.md)。native ABI 1，不增加语言语法或 VM 指令。
+
+## Reel 粒子宿主接口
 
 Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。burst:0、lifetime_spread:0、size_end:null 是只读构造参数，分别控制起始瞬发数量、寿命半幅、寿命结束宽度；rate:0 允许只瞬发，空发射直接完成。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。B01/ASB 与语言语法不变。
 
