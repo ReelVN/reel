@@ -1,10 +1,10 @@
 use super::{Gpu, GpuError};
-use reel_ui::frame::{RecordLocation, RenderFrame};
+use reel_ui::frame::RecordLocation;
 use reel_ui::peniko::{
     ImageAlphaType, ImageFormat,
     color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
 };
-use reel_ui::resources::{ColorEncoding, ResourceData, ResourceHandle};
+use reel_ui::resources::{ColorEncoding, ResourceData, ResourceLease};
 use std::sync::LazyLock;
 
 static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
@@ -42,20 +42,10 @@ pub struct Image {
 pub fn image(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
-    frame: &RenderFrame,
-    handle: ResourceHandle,
+    lease: &ResourceLease,
     at: RecordLocation,
     available: u64,
 ) -> Result<(Image, u64), GpuError> {
-    let lease = frame
-        .resources()
-        .leases()
-        .iter()
-        .find(|r| r.handle() == handle)
-        .ok_or(GpuError::Unsupported {
-            at,
-            record: "missing image lease",
-        })?;
     let ResourceData::Image { image, encoding } = lease.data() else {
         return Err(GpuError::Unsupported {
             at,
@@ -130,6 +120,7 @@ fn upload_with(
     available: u64,
     mut pixel: impl FnMut(usize) -> [f32; 4],
 ) -> Result<(Image, u64), GpuError> {
+    gpu.check()?;
     let max = gpu.device.limits().max_texture_dimension_2d;
     if size.contains(&0) || size.iter().any(|&n| n > max) {
         return Err(GpuError::InvalidSize);
@@ -171,11 +162,15 @@ fn upload_with(
         usage: wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: true,
     });
+    gpu.check()?;
     {
-        let mut mapped = staging
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("new upload buffer is mapped");
+        let mut mapped = staging.slice(..).get_mapped_range_mut().map_err(|error| {
+            // Prefer the device's original loss/allocation error to a secondary
+            // map failure, so the host can recover the correct device generation.
+            gpu.check()
+                .err()
+                .unwrap_or_else(|| GpuError::Device(error.to_string()))
+        })?;
         for y in 0..size[1] as usize {
             for x in 0..size[0] as usize {
                 let components = pixel(y * size[0] as usize + x)

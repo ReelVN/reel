@@ -386,10 +386,16 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     counts(&renderer, 1); // One image upload; an unused white slot creates nothing.
     assert_eq!(renderer.usage().resources, 264);
     drop(p);
-    empty(&renderer);
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().resources, 8);
     let p = renderer.prepare(&mixed).unwrap();
-    counts(&renderer, 3); // Independent image and shared white, even at the same 1x1 size.
-    assert_eq!(renderer.usage().resources, 528);
+    counts(&renderer, 2); // The submitted image survives cancellation; white remains private.
+    assert_eq!(renderer.usage().resources, 272);
     let pixels = renderer.readback(p).unwrap();
     assert!(
         pixels
@@ -399,7 +405,7 @@ fn white_texture_image_only_and_mixed_resources_are_independent() {
     renderer.targets.clear();
     assert_eq!(usage(&renderer), [0, 8, 0]);
     let cached = renderer.prepare(&image_only).unwrap();
-    counts(&renderer, 3);
+    counts(&renderer, 2);
     assert_eq!(usage(&renderer)[1], 8);
     drop(cached);
     renderer.retire(std::slice::from_ref(lease.version()));
@@ -500,9 +506,13 @@ fn rectangle_clips_share_targets_and_preserve_group_opacity() {
     empty(&renderer);
 }
 
-#[test]
-#[ignore = "requires actual graphics adapter"]
-fn submitted_images_share_residency_under_overlapping_frame_pressure() {
+fn image_restore_fixture(
+    size: [u32; 2],
+) -> (
+    RenderFrame,
+    reel_ui::resources::ResourceRegistry,
+    Vec<reel_ui::resources::ResourceHandle>,
+) {
     use reel_core::{
         budget::OwnedBytes,
         identity::{AssetKey, ContentVersion, ResourceVersion},
@@ -512,11 +522,13 @@ fn submitted_images_share_residency_under_overlapping_frame_pressure() {
         resources::{ColorEncoding, ResourceData, ResourceRegistry},
     };
     let pool = pool();
-    let mut registry = ResourceRegistry::new(2, 65264).unwrap();
+    let mut registry = ResourceRegistry::new(3, 65264).unwrap();
     let mut handles = Vec::new();
     let mut scene = Scene::new();
-    let size = [2048, 1959];
-    for (index, pixel) in [[255, 0, 0, 255], [0, 255, 0, 255]].into_iter().enumerate() {
+    for (index, pixel) in [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]
+        .into_iter()
+        .enumerate()
+    {
         let bytes = pixel.repeat((size[0] * size[1]) as usize);
         let ticket = pool.reserve(bytes.len() as u64).unwrap();
         let handle = registry
@@ -547,56 +559,121 @@ fn submitted_images_share_residency_under_overlapping_frame_pressure() {
         handles.push(handle);
     }
     let frame = frame_with_snapshot(scene, registry.freeze(&handles, &pool).unwrap(), &pool);
+    (frame, registry, handles)
+}
+
+#[test]
+fn image_plan_deduplicates_both_transition_inputs_before_admission() {
+    let (frame, _, handles) = image_restore_fixture([4, 4]);
+    let plan =
+        super::super::image_plan::collect([&frame, &frame].into_iter(), 4096, |_| Ok(())).unwrap();
+    assert_eq!(plan.len(), handles.len());
+    for item in &plan {
+        assert!(handles.contains(&item.source.handle()));
+        assert_eq!(item.resident, 4 * 4 * 8);
+        assert_eq!(item.staging, 4 * 256);
+    }
+    assert!(matches!(
+        super::super::image_plan::collect([&frame].into_iter(), 2, |_| Ok(())),
+        Err(GpuError::InvalidSize)
+    ));
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
+    let size = [1920, 1080];
+    let (frame, mut registry, handles) = image_restore_fixture(size);
+    let resident = u64::from(size[0]) * u64::from(size[1]) * 8;
     let mut renderer = renderer(super::super::GpuLimits {
-        resource_bytes: 128 << 20,
+        resource_bytes: 64 << 20,
         ..Default::default()
     });
-    let first = renderer.prepare(&frame).unwrap();
-    let upload_bytes = 2 * super::super::resources::upload_cost(size).unwrap();
-    assert_eq!(renderer.usage().resources, upload_bytes);
+    assert!(matches!(
+        renderer.prepare(&frame),
+        Err(GpuError::Pressure { .. })
+    ));
+    counts(&renderer, 2);
+    assert_eq!(renderer.usage().resources, 4 * resident);
     assert!(
-        matches!(renderer.prepare(&frame), Err(GpuError::Pressure { .. })),
-        "unsubmitted copies cannot initialize the cache"
+        renderer.has_pending(),
+        "upload progress must wake a frame which was never submitted"
     );
-    counts(&renderer, 2);
-    renderer.submit(first).unwrap();
-    let second = renderer
-        .prepare(&frame)
-        .expect("submitted images can be reused before completion without duplicating uploads");
-    counts(&renderer, 2);
-    assert_eq!(renderer.usage().resources, upload_bytes);
-    drop(second);
+    assert!(matches!(
+        renderer.prepare(&frame),
+        Err(GpuError::Pressure { .. })
+    ));
+    counts(&renderer, 2); // Retrying before completion does not recreate textures.
     renderer
         .gpu
         .device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    renderer.poll().unwrap();
     assert_eq!(
         renderer.usage().resources,
-        2 * u64::from(size[0]) * u64::from(size[1]) * 8
+        4 * resident,
+        "callbacks do not retire accounting"
     );
+    assert!(
+        renderer.poll().unwrap().is_empty(),
+        "uploads have no presentation identity"
+    );
+    assert_eq!(renderer.usage().resources, 2 * resident);
+    let first = renderer.prepare(&frame).unwrap();
+    counts(&renderer, 3);
+    drop(first); // Cancelled rendering retains independently submitted uploads.
+    let second = renderer.prepare(&frame).unwrap();
+    counts(&renderer, 3);
+    renderer.submit(second).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(renderer.poll().unwrap().len(), 1);
+    assert_eq!(renderer.usage().resources, 3 * resident);
     let reused = renderer.prepare(&frame).unwrap();
-    counts(&renderer, 2);
     let pixels = renderer.readback(reused).unwrap();
     assert!(pixels.iter().all(|p| {
         p.iter()
-            .zip([0., 1., 0., 1.])
+            .zip([0., 0., 1., 1.])
             .all(|(a, b)| (*a - b).abs() < 0.006)
     }));
-    // Retirement clears cache ownership but an existing preparation still owns the textures.
+    counts(&renderer, 3);
     let retained = renderer.prepare(&frame).unwrap();
     for handle in handles {
         assert!(registry.retire(handle));
     }
     renderer.retire(&[]);
-    assert!(renderer.usage().resources > 0);
+    assert_eq!(renderer.usage().resources, 3 * resident);
     drop(retained);
     empty(&renderer);
-    eprintln!(
-        "two 2048x1959 menu images: uploads={upload_bytes} bytes, resident={} bytes; overlapping and subsequent frames perform zero new image uploads",
-        2 * u64::from(size[0]) * u64::from(size[1]) * 8
-    );
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn cold_upload_progress_with_one_submission_slot() {
+    let (frame, _, _) = image_restore_fixture([4, 4]);
+    let mut renderer = renderer(super::super::GpuLimits {
+        max_inflight: 1,
+        ..Default::default()
+    });
+    assert!(matches!(renderer.prepare(&frame), Err(GpuError::Busy)));
+    counts(&renderer, 3);
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert!(renderer.poll().unwrap().is_empty());
+    renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(renderer.poll().unwrap().len(), 1);
+    counts(&renderer, 3);
 }
 
 #[test]

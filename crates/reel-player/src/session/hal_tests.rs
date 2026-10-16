@@ -41,6 +41,7 @@ struct Backend {
     inner: RecordingBackend,
     refusal: Option<RenderError>,
     polls: usize,
+    resources_available: bool,
 }
 impl RenderBackend for Backend {
     type Error = RenderError;
@@ -68,10 +69,15 @@ impl RenderBackend for Backend {
     }
     fn poll(&mut self, out: &mut Vec<RenderEvent>, limit: usize) -> Result<(), RenderError> {
         self.polls += 1;
-        self.inner.poll(out, limit)
+        if limit != 0 && std::mem::take(&mut self.resources_available) {
+            out.push(RenderEvent::ResourcesAvailable);
+            self.inner.poll(out, limit - 1)
+        } else {
+            self.inner.poll(out, limit)
+        }
     }
     fn has_pending(&self) -> bool {
-        self.inner.has_pending()
+        self.resources_available || self.inner.has_pending()
     }
     fn suspend(&mut self) {
         self.inner.suspend();
@@ -131,6 +137,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         .unwrap(),
         refusal: None,
         polls: 0,
+        resources_available: false,
     };
     backend.configure(info).unwrap();
     let pool = BudgetPool::new(
@@ -287,6 +294,38 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
             .complete_render(backend.inner.last_submission().unwrap())
     );
     events.clear();
+    view.poll(&mut backend, &mut events, 1).unwrap();
+    let accepted = view.bridge.accepted_key().unwrap().frame_id();
+    view.invalidate();
+    backend.refusal = Some(RenderError::Busy);
+    assert!(
+        render(&mut story, &mut view, &mut backend, &mut host)
+            .refused
+            .is_some()
+    );
+    assert!(!view.needs_redraw());
+    backend.resources_available = true;
+    let presents = host.presents;
+    events.clear();
+    view.poll(&mut backend, &mut events, 0).unwrap();
+    assert!(!view.needs_redraw());
+    view.poll(&mut backend, &mut events, 1).unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [RenderEvent::ResourcesAvailable]
+    ));
+    assert!(view.needs_redraw());
+    assert_eq!(view.bridge.accepted_key().unwrap().frame_id(), accepted);
+    assert_eq!(
+        host.presents, presents,
+        "upload completion does not present or accept input"
+    );
+    assert!(render(&mut story, &mut view, &mut backend, &mut host).accepted);
+    assert!(
+        backend
+            .inner
+            .complete_render(backend.inner.last_submission().unwrap())
+    );
     view.poll(&mut backend, &mut events, 1).unwrap();
     let accepted = view.bridge.accepted_key().unwrap().frame_id();
     view.invalidate();

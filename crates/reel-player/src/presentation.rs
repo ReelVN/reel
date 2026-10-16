@@ -96,11 +96,12 @@ impl Presentation {
         }
         let start = out.len();
         backend.poll(out, limit)?;
-        self.demand.completed(
-            out[start..]
-                .iter()
-                .any(|event| matches!(event, RenderEvent::RenderFinished { .. })),
-        );
+        self.demand.completed(out[start..].iter().any(|event| {
+            matches!(
+                event,
+                RenderEvent::RenderFinished { .. } | RenderEvent::ResourcesAvailable
+            )
+        }));
         Ok(())
     }
     /// Build only when current model work is eligible. Frozen repaint never runs build.

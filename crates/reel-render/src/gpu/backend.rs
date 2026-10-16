@@ -188,12 +188,16 @@ impl RenderBackend for WgpuBackend {
         self.renderer.retire(resources);
     }
     fn poll(&mut self, out: &mut Vec<RenderEvent<GpuError>>, limit: usize) -> Result<(), GpuError> {
-        self.renderer.poll_completed(limit, |id, frame| {
+        let resources_available = self.renderer.poll_completed(limit, |id, frame| {
             out.push(RenderEvent::RenderFinished {
                 id: SubmissionId(id),
                 frame: frame.frame_id(),
             })
-        })
+        })?;
+        if resources_available {
+            out.push(RenderEvent::ResourcesAvailable);
+        }
+        Ok(())
     }
     fn has_pending(&self) -> bool {
         self.renderer.has_pending()

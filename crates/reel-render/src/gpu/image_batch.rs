@@ -2,7 +2,7 @@
 //! This is part of the ordinary ordered renderer, including authored images.
 use super::{GpuError, mesh, replay::Context, targets::Target};
 use reel_ui::{
-    frame::{FrameCommand, FrameDraw, FrameImage, FrameOp, RenderFrame},
+    frame::{FrameCommand, FrameDraw, FrameImage, FrameOp},
     imaging::{Composite, record::Geometry},
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, ImageBrush, ImageQuality},
@@ -46,7 +46,6 @@ impl Context<'_> {
     /// Returns the consumed ordered run; zero asks the existing generic path to draw.
     pub(super) fn image_batch(
         &mut self,
-        frame: &RenderFrame,
         target: &Target,
         commands: &[FrameCommand],
         outer: Affine,
@@ -55,7 +54,7 @@ impl Context<'_> {
             return Ok(0);
         };
         let handle = first.brush.image.resource;
-        let image = self.image_resource(frame, handle, commands[0].origin.at)?;
+        let image = self.image_resource(handle, commands[0].origin.at)?;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         let mut count = 0;
         for command in commands {

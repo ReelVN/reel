@@ -958,6 +958,8 @@ fn main() {
 
 移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。触摸使用公共 PointerEvent；启用 winit 时可复用 TouchInput 转换原生触摸。Rust 游戏与宿主可使用 reel_ui::input::ActionMap 绑定键盘、指针和手柄，读取持续动作值并接收按下、变化、松开和取消；NavigationInput 提供可配置阈值、重复时钟和重映射。独立 gamepad feature 使用 Gilrs 接入桌面设备，不要求 Winit/WGPU。Winit 适配器已转发系统 IME 事件和候选窗位置，系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
 
+图片首次显示或读档恢复时，后端会分批上传并复用已提交的纹理；等待期间保留上一幅完整画面，上传完成不提前改变输入区域。Rust 宿主通过 `RenderEvent::ResourcesAvailable` 唤醒等待的呈现请求；真正超过宿主资源预算仍会明确报错。
+
 ## 模态菜单与焦点
 
 打开存档菜单前，可先用 `let preview = await stage.capture(width: 256, height: 144);` 获取当前已呈现画面的 PNG Bytes。`image(preview)` 可以直接显示它，`await saves.save("slot/1", thumbnail: preview)` 将图片与执行快照一起写入。列表的 `has_thumbnail` 表示该槽是否有预览；用 `await saves.thumbnail("slot/1")` 按需读取。capture 可省略尺寸或只指定一边，支持 owner 和取消；不要求作者操作窗口或 GPU。

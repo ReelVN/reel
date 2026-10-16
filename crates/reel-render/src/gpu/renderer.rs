@@ -174,19 +174,23 @@ impl Renderer {
         Ok(completed)
     }
     pub fn has_pending(&self) -> bool {
-        !self.inflight.is_empty()
+        !self.inflight.is_empty() || self.images.has_pending()
     }
     pub(super) fn poll_completed(
         &mut self,
         mut limit: usize,
         mut completed: impl FnMut(u64, &RenderFrame),
-    ) -> Result<(), GpuError> {
+    ) -> Result<bool, GpuError> {
         self.gpu.check()?;
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
         let result = self.gpu.device.poll(wgpu::PollType::Poll);
         self.gpu.check()?;
         result.map_err(|e| GpuError::Device(e.to_string()))?;
+        let resources_available = limit != 0 && self.images.poll();
+        if resources_available {
+            limit -= 1;
+        }
         self.inflight.retain(|s| {
             if limit != 0 && s.done.load(Ordering::Acquire) {
                 if s.capture.is_none() {
@@ -201,7 +205,7 @@ impl Renderer {
                 true
             }
         });
-        Ok(())
+        Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
         self.images.retire(resources);
@@ -251,7 +255,6 @@ impl Renderer {
         self.gpu.check()?;
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
-        let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
         let mut plan = |frame| {
@@ -271,6 +274,41 @@ impl Renderer {
             targets = targets.max(1 + plan(second)?).max(3);
         }
         let quality = self.gpu.quality_for_targets(size, targets)?;
+        let required = super::image_plan::collect(
+            std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
+            self.gpu.device.limits().max_texture_dimension_2d,
+            |bytes| {
+                tickets.push(reserve(
+                    &self.budgets.transient,
+                    &budget_scope.transient,
+                    bytes,
+                    self.gpu.limits.transient_bytes,
+                    "image plan",
+                )?);
+                Ok(())
+            },
+        )?;
+        let images = self.images.prepare(
+            &self.gpu,
+            &required,
+            &self.budgets,
+            &budget_scope,
+            &self.admission,
+            &self.glyphs,
+        )?;
+        for image in images.values() {
+            tickets.push(Reservation {
+                _shared: None,
+                _local: super::image_cache::reserve_local(
+                    &budget_scope.resources,
+                    image.residency.as_ref().unwrap().bytes(),
+                    self.gpu.limits.resource_bytes,
+                )?,
+            });
+        }
+        // Upload batches own their own admission. Reserving this earlier would
+        // deadlock cold frames on a host configured for one in-flight submission.
+        let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
         self.targets.configure(size, quality, targets);
         let mut ctx = Context {
             gpu: &self.gpu,
@@ -281,7 +319,7 @@ impl Renderer {
             budgets: &self.budgets,
             budget_scope,
             tickets,
-            images: HashMap::new(),
+            images,
             image_cache: &self.images,
             glyph_cache: &self.glyphs,
             glyphs: Default::default(),
