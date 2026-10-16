@@ -44,7 +44,7 @@ impl LayerCollector {
         }
     }
 
-    fn append(&mut self, scene: &Scene, transform: Affine, owner: WidgetId) {
+    fn append(&mut self, scene: &Scene, transform: Affine, owner: WidgetId, image_color: [f32; 4]) {
         let start = self.current_scene.commands().len();
         self.current_scene.append_transformed(scene, transform);
         for (offset, command) in self.current_scene.commands()[start..].iter().enumerate() {
@@ -57,7 +57,7 @@ impl LayerCollector {
                 });
             }
         }
-        self.record_owner(start, owner);
+        self.record_owner(start, owner, image_color);
     }
 
     fn push_image_mask(
@@ -107,17 +107,18 @@ impl LayerCollector {
             effect_transform: transform,
             mask_progress,
         });
-        self.record_owner(command, owner);
+        self.record_owner(command, owner, [1.; 4]);
         true
     }
 
-    fn record_owner(&mut self, start: usize, owner: WidgetId) {
+    fn record_owner(&mut self, start: usize, owner: WidgetId, image_color: [f32; 4]) {
         let end = self.current_scene.commands().len();
         if start == end {
             return;
         }
         if let Some(last) = self.command_owners.last_mut()
             && last.owner == owner
+            && last.image_color == image_color
             && last.commands.end == start
         {
             last.commands.end = end;
@@ -125,6 +126,7 @@ impl LayerCollector {
             self.command_owners.push(CommandOwnerRange {
                 commands: start..end,
                 owner,
+                image_color,
             });
         }
     }
@@ -132,7 +134,7 @@ impl LayerCollector {
     fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
         let start = self.current_scene.commands().len();
         draw(&mut self.current_scene);
-        self.record_owner(start, owner);
+        self.record_owner(start, owner, [1.; 4]);
     }
 
     fn paint_window(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
@@ -309,7 +311,12 @@ fn paint_widget(
             return;
         };
 
-        layer_collector.append(pre_scene, content_box_to_layer_transform, id);
+        layer_collector.append(
+            pre_scene,
+            content_box_to_layer_transform,
+            id,
+            state.image_color,
+        );
 
         if let Some(clip) = state.clip_path {
             // The clip path is stored in border-box space, so need to use that transform.
@@ -331,7 +338,7 @@ fn paint_widget(
                 content_box_to_layer_transform,
             );
         } else {
-            layer_collector.append(scene, content_box_to_layer_transform, id);
+            layer_collector.append(scene, content_box_to_layer_transform, id, state.image_color);
         }
     }
 
@@ -396,7 +403,12 @@ fn paint_widget(
             return;
         };
 
-        layer_collector.append(post_scene, content_box_to_layer_transform, id);
+        layer_collector.append(
+            post_scene,
+            content_box_to_layer_transform,
+            id,
+            state.image_color,
+        );
 
         if global_state.inspector_state.hovered_widget == Some(id) {
             const HOVER_FILL_COLOR: Color = Color::from_rgba8(60, 60, 250, 100);

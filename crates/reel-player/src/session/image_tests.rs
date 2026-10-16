@@ -219,7 +219,7 @@ fn image_pixel_ids(frame: &RenderFrame) -> Vec<u64> {
                     .resources()
                     .leases()
                     .iter()
-                    .find(|lease| lease.handle() == image.image)
+                    .find(|lease| lease.handle() == image.image.resource)
                     .expect("image handle must resolve in this frame's snapshot");
                 let reel_ui::resources::ResourceData::Image { image, .. } = lease.data() else {
                     panic!("image handle resolved to another resource kind")

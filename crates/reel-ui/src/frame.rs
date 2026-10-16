@@ -155,7 +155,15 @@ pub struct FrameGroup {
     pub effect_to_target: Affine,
     pub ink_bounds: InkBounds,
 }
-pub type FrameBrush = Brush<ImageBrush<ResourceHandle>, Gradient>;
+/// One use of shared image pixels. Multiplication is carried by draw vertices,
+/// never by a separate colored texture or an offscreen composition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameImage {
+    pub resource: ResourceHandle,
+    /// Linear premultiplied RGBA multiplier, including its own alpha once.
+    pub color: [f32; 4],
+}
+pub type FrameBrush = Brush<ImageBrush<FrameImage>, Gradient>;
 #[derive(Debug)]
 pub enum FrameDraw {
     Fill {
@@ -963,8 +971,21 @@ impl Building {
         };
         let scene = Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
         let command = &scene.commands()[self.cursors.last().unwrap().position];
-        let (local, op) = make_op(scene, command, transform, meta, mask, &self.resources)
-            .map_err(|kind| self.error(kind))?;
+        let image_color = if c.stream.is_none() {
+            layer.command_owners[c.owner_range].image_color
+        } else {
+            [1.; 4]
+        };
+        let (local, op) = make_op(
+            scene,
+            command,
+            transform,
+            meta,
+            mask,
+            image_color,
+            &self.resources,
+        )
+        .map_err(|kind| self.error(kind))?;
         validate_op(&op).map_err(|kind| self.error(kind))?;
         let ink = initial_ink(&op);
         self.job = Some(CopyJob {
@@ -1160,7 +1181,11 @@ fn valid_clip(c: &Clip) -> bool {
 fn valid_brush(b: &FrameBrush) -> bool {
     match b {
         Brush::Solid(c) => valid_color(c.components),
-        Brush::Image(i) => i.sampler.alpha.is_finite() && (0.0..=1.).contains(&i.sampler.alpha),
+        Brush::Image(i) => {
+            valid_color(i.image.color)
+                && i.sampler.alpha.is_finite()
+                && (0.0..=1.).contains(&i.sampler.alpha)
+        }
         Brush::Gradient(g) => match g.kind {
             peniko::GradientKind::Linear(g) => g.start.is_finite() && g.end.is_finite(),
             peniko::GradientKind::Radial(g) => {
@@ -1350,7 +1375,11 @@ fn empty_stroke(s: &Stroke) -> Stroke {
     stroke.dash_pattern.reserve_exact(s.dash_pattern.len());
     stroke
 }
-fn empty_brush(b: &Brush, resources: &ResourceSnapshot) -> Result<FrameBrush, BuildErrorKind> {
+fn empty_brush(
+    b: &Brush,
+    resources: &ResourceSnapshot,
+    image_color: [f32; 4],
+) -> Result<FrameBrush, BuildErrorKind> {
     Ok(match b {
         Brush::Solid(c) => Brush::Solid(*c),
         Brush::Gradient(g) => {
@@ -1366,11 +1395,14 @@ fn empty_brush(b: &Brush, resources: &ResourceSnapshot) -> Result<FrameBrush, Bu
             Brush::Gradient(gradient)
         }
         Brush::Image(i) => Brush::Image(ImageBrush {
-            image: resources
-                .image(&i.image)
-                .ok_or(BuildErrorKind::MissingResource {
-                    blob_id: i.image.data.id(),
-                })?,
+            image: FrameImage {
+                resource: resources
+                    .image(&i.image)
+                    .ok_or(BuildErrorKind::MissingResource {
+                        blob_id: i.image.data.id(),
+                    })?,
+                color: image_color,
+            },
             sampler: i.sampler,
         }),
     })
@@ -1406,6 +1438,7 @@ fn make_op(
     t: Affine,
     meta: Option<(WidgetId, Affine, Option<MaskProgress>)>,
     mut mask: Option<MaskUse>,
+    image_color: [f32; 4],
     resources: &ResourceSnapshot,
 ) -> Result<(LocalId, FrameOp), BuildErrorKind> {
     Ok(match c {
@@ -1487,7 +1520,7 @@ fn make_op(
                 } => FrameDraw::Fill {
                     transform: t * *transform,
                     fill_rule: *fill_rule,
-                    brush: empty_brush(brush, resources)?,
+                    brush: empty_brush(brush, resources, image_color)?,
                     brush_transform: *brush_transform,
                     shape: empty_geometry(shape),
                     composite: *composite,
@@ -1502,7 +1535,7 @@ fn make_op(
                 } => FrameDraw::Stroke {
                     transform: t * *transform,
                     stroke: empty_stroke(stroke),
-                    brush: empty_brush(brush, resources)?,
+                    brush: empty_brush(brush, resources, image_color)?,
                     brush_transform: *brush_transform,
                     shape: empty_geometry(shape),
                     composite: *composite,
@@ -1526,7 +1559,7 @@ fn make_op(
                         Style::Stroke(s) => Style::Stroke(empty_stroke(s)),
                     },
                     glyphs: Vec::with_capacity(g.glyphs.len()),
-                    brush: empty_brush(&g.brush, resources)?,
+                    brush: empty_brush(&g.brush, resources, image_color)?,
                     composite: g.composite,
                 }),
                 Draw::BlurredRoundedRect(d) => {

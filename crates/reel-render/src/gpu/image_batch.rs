@@ -2,17 +2,16 @@
 //! This is part of the ordinary ordered renderer, including authored images.
 use super::{GpuError, mesh, replay::Context, targets::Target};
 use reel_ui::{
-    frame::{FrameCommand, FrameDraw, FrameOp, RenderFrame},
+    frame::{FrameCommand, FrameDraw, FrameImage, FrameOp, RenderFrame},
     imaging::{Composite, record::Geometry},
     kurbo::{Affine, Rect},
     peniko::{Brush, Extend, ImageBrush, ImageQuality},
-    resources::ResourceHandle,
 };
 
 struct Quad<'a> {
     transform: Affine,
     bounds: Rect,
-    brush: &'a ImageBrush<ResourceHandle>,
+    brush: &'a ImageBrush<FrameImage>,
     brush_transform: Affine,
     alpha: f32,
 }
@@ -55,7 +54,7 @@ impl Context<'_> {
         let Some(first) = commands.first().and_then(quad) else {
             return Ok(0);
         };
-        let handle = first.brush.image;
+        let handle = first.brush.image.resource;
         let image = self.image_resource(frame, handle, commands[0].origin.at)?;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         let mut count = 0;
@@ -63,7 +62,7 @@ impl Context<'_> {
             let Some(quad) = quad(command) else {
                 break;
             };
-            if quad.brush.image != handle {
+            if quad.brush.image.resource != handle {
                 break;
             }
             let at = command.origin.at;
@@ -88,7 +87,14 @@ impl Context<'_> {
                     1. / f64::from(image.size[0]),
                     1. / f64::from(image.size[1]),
                 ) * quad.brush_transform.inverse();
-                batch.image_quad(quad.bounds, transform, uv, self.size, quad.alpha, at)?;
+                batch.image_quad(
+                    quad.bounds,
+                    transform,
+                    uv,
+                    self.size,
+                    quad.brush.image.color.map(|channel| channel * quad.alpha),
+                    at,
+                )?;
             }
             count += 1;
         }

@@ -157,7 +157,7 @@ impl Context<'_> {
                         record: "image repeat/reflect",
                     });
                 }
-                let image = self.image_resource(frame, brush.image, at)?;
+                let image = self.image_resource(frame, brush.image.resource, at)?;
                 let bt = brush_transform.unwrap_or(Affine::IDENTITY);
                 if bt.determinant() == 0. {
                     return Err(GpuError::Unsupported {
@@ -169,7 +169,8 @@ impl Context<'_> {
                     1. / f64::from(image.size[0]),
                     1. / f64::from(image.size[1]),
                 ) * bt.inverse();
-                (image, uv, [composite.alpha * brush.sampler.alpha; 4])
+                let alpha = composite.alpha * brush.sampler.alpha;
+                (image, uv, brush.image.color.map(|channel| channel * alpha))
             }
             Brush::Gradient(_) => {
                 return Err(GpuError::Unsupported {

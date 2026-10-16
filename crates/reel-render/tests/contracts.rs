@@ -159,7 +159,7 @@ fn borrowed_present_retains_old_versions_until_last_lease_and_completion() {
                 ..
             }) = &c.op
             {
-                Some(b.image)
+                Some(b.image.resource)
             } else {
                 None
             }

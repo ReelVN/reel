@@ -14,6 +14,8 @@ pub struct CommandOwnerRange {
     pub commands: std::ops::Range<usize>,
     /// Widget that produced these commands, including ordinary Inline children.
     pub owner: WidgetId,
+    /// Linear premultiplied multiplier for image brushes in this range only.
+    pub image_color: [f32; 4],
 }
 
 /// Reliable provenance captured when a widget's cached paint is appended.

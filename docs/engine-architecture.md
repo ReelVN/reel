@@ -188,6 +188,8 @@ Reel 源码编译入口将当前注册的 reel::prelude 接口放入外围宿主
 
 图片节点合同：`image(source, fit: "contain", ...)` 使用共同节点属性，source 为非空文件路径，fit 为 contain/cover/stretch。source、fit 可直接修改；省略宽高时使用图片固有逻辑尺寸，只指定一边时保持固有宽高比，指定两边时由 fit 决定缩放与裁剪。构造及赋值只更新舞台描述，不执行文件 IO；仅挂载子树请求资源。
 
+image 的既有 color 属性是像素乘色，默认白色；sRGB 颜色先转为线性预乘值，再与图像的线性预乘 RGBA 相乘，color 的 alpha 和节点 opacity 各应用一次。普通图片、分块图片和 layered_image 的各图层描述使用同一规则；容器 color 不继承到子节点。变更 color 只更新绘制颜色，不重新解码、上传或复制纹理，也不增加离屏合成。Image 控件通过 typed PaintCtx 记录每个绘制范围的图像颜色，FrameImage 保留资源句柄和乘数；GPU 通用与矩形批量路径共用已有顶点颜色，同资源不同颜色仍可批量。遮罩定义的采样不受被遮罩内容颜色影响。既有 source/ASB native ABI、NodeProps 与执行快照格式不变，无新依赖；范围为 UI 绘制元数据、帧编译、播放器图片同步和渲染器。
+
 `layered_image(layers, ...共同节点属性)`（ABI 1）将零参数计算函数返回的图层数组组合为普通 stack/image 子树。每项为包含 source 的图片属性表，或表示空槽的 null；数组位置是稳定图层槽，从后向前叠放。依赖变化时重新计算，先校验全部描述，再复用槽内图片节点并仅写入变化的属性；null 隐藏并保留槽，缩短数组退休尾部槽。属性省略时使用 image 默认值，bind/derive 属性值在计算中作为依赖读取。返回节点直接参与舞台布局、动画和所有权；图层描述、依赖与节点引用存入 VM 堆并随现有执行快照恢复，不增加 GPU 合成缓存或新的渲染节点类型。逐槽解析/更新使用 native continuation 并计入工作预算；只在依赖变化时工作，不逐帧重建或合成像素。无新依赖或 B01/存档格式变更。
 
 player 使用锁定 image crate 的 PNG/JPEG 解码器、已有 Image 控件和 ResourceLease。Assets 共用 AssetIo 与 WorkExecutor，默认组装后台 DirectoryIo 和 ImageExecutor；宿主可通过 with_assets 注入自己的适配器。重复 source 共享不可变像素；加载请求随最新舞台更新，过期结果不发布。新舞台所需图片与配置字体全部就绪后整体发布，其间保留上一完整画面并禁用其剧情输入；后台完成唤醒窗口，不通过连续轮询驱动绘制。换源和退休释放缓存所有权，已接受帧的租约按原有提交寿命释放。关闭不等待文件 IO/解码，撤销接收端及请求，后台任务持有的内存预算随退出释放。文件读取和解码不进入绘制热路径，不逐帧复制像素。

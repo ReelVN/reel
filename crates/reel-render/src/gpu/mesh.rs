@@ -120,7 +120,7 @@ impl Mesh {
         transform: Affine,
         uv: Affine,
         size: [u32; 2],
-        alpha: f32,
+        color: [f32; 4],
         at: RecordLocation,
     ) -> Result<(), GpuError> {
         let start = self.vertices.len();
@@ -130,7 +130,7 @@ impl Mesh {
             transform,
             size,
             Some(uv),
-            [alpha; 4],
+            color,
             at,
         )
     }
@@ -466,11 +466,11 @@ mod tests {
             Affine::translate((10., 20.)),
             uv,
             [100, 100],
-            0.25,
+            [0.25; 4],
             at,
         )
         .unwrap();
-        mesh.image_quad(bounds, Affine::scale(2.), uv, [100, 100], 0.75, at)
+        mesh.image_quad(bounds, Affine::scale(2.), uv, [100, 100], [0.75; 4], at)
             .unwrap();
         assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
         assert_eq!(mesh.vertices[0].position, [-0.76, 0.52]);
