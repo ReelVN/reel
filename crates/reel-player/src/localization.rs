@@ -148,10 +148,10 @@ mod tests {
         let script = r#"fn main() {
             localization.load("en", "locales/en.ftl");
             localization.set_locale("en");
-            if tr("opening", "雨停了。") != "The rain stopped." { throw "external catalog"; }
+            if tr("雨停了。", id: "opening") != "The rain stopped." { throw "external catalog"; }
             let mut failed = false;
             try { localization.load("en", "locales/missing.ftl"); } catch error { failed = true; }
-            if !failed || tr("opening", "") != "The rain stopped." { throw "failed load changed catalog"; }
+            if !failed || tr("", id: "opening") != "The rain stopped." { throw "failed load changed catalog"; }
         }"#;
         let driver = AsideSessionUi::from_source(
             Session::new(SessionId(72), Epoch(1)).unwrap(),

@@ -164,6 +164,9 @@ fn failure(json_format: bool, stage: &str, path: Option<&str>, message: &str) ->
 }
 fn run() -> io::Result<u8> {
     let raw: Vec<_> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|arg| arg == "loc") {
+        return localization_command(&raw[1..]);
+    }
     if raw.first().is_some_and(|arg| arg == "prepare-image") {
         return prepare_image_command(&raw[1..]);
     }
@@ -176,6 +179,7 @@ fn run() -> io::Result<u8> {
             && help(&raw[1]))
     {
         write!(io::stdout().lock(), "{HELP}")?;
+        writeln!(io::stdout().lock(), "{LOCALIZATION_HELP}")?;
         return Ok(0);
     }
     if raw.len() == 1 && raw[0] == "--version" {
@@ -317,6 +321,106 @@ fn run() -> io::Result<u8> {
             Ok(0)
         }
         Err(failed) => source_error(parsed.json, path, inputs, failed),
+    }
+}
+
+const LOCALIZATION_HELP: &str = "reel loc extract <source.aside|directory> --output <source.ftl> [--overwrite]\nreel loc check <catalog.ftl> --locale <language-tag>\nExtract follows the entry's imported modules and writes a source catalog. Dynamic calls are reported; translated catalogs are never merged or overwritten implicitly.";
+
+fn localization_command(raw: &[OsString]) -> io::Result<u8> {
+    if raw.is_empty() || raw.iter().any(|arg| arg == "--help" || arg == "-h") {
+        writeln!(io::stdout().lock(), "{LOCALIZATION_HELP}")?;
+        return Ok(0);
+    }
+    let parse = || -> Result<_, String> {
+        let command = raw[0].to_str().ok_or(LOCALIZATION_HELP)?;
+        if command != "extract" && command != "check" {
+            return Err(LOCALIZATION_HELP.into());
+        }
+        let mut source = None;
+        let mut output = None;
+        let mut locale = None;
+        let mut overwrite = false;
+        let mut args = raw[1..].iter();
+        while let Some(arg) = args.next() {
+            if arg == "--output" && output.is_none() {
+                output = Some(PathBuf::from(
+                    args.next().ok_or("--output requires a file path")?,
+                ));
+            } else if arg == "--locale" && locale.is_none() {
+                locale = Some(
+                    args.next()
+                        .and_then(|value| value.to_str())
+                        .ok_or("--locale requires a UTF-8 language tag")?,
+                );
+            } else if arg == "--overwrite" && !overwrite {
+                overwrite = true;
+            } else if arg.to_string_lossy().starts_with('-') || source.is_some() {
+                return Err(format!(
+                    "unexpected argument: {}\n{LOCALIZATION_HELP}",
+                    arg.to_string_lossy()
+                ));
+            } else {
+                source = Some(PathBuf::from(arg));
+            }
+        }
+        if command == "extract" && (output.is_none() || locale.is_some()) {
+            return Err("extract requires --output and does not accept --locale".into());
+        }
+        if command == "check" && (locale.is_none() || output.is_some() || overwrite) {
+            return Err(
+                "check requires --locale and does not accept --output or --overwrite".into(),
+            );
+        }
+        Ok((
+            command,
+            source.ok_or("missing source path")?,
+            output,
+            locale,
+            overwrite,
+        ))
+    };
+    let (command, source, output, locale, overwrite) = match parse() {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            failure(false, "usage", None, &error)?;
+            return Ok(2);
+        }
+    };
+    if command == "check" {
+        return match reel_cli::localization::check(&source, locale.unwrap()) {
+            Ok(()) => {
+                writeln!(io::stdout().lock(), "Catalog checked: {}", source.display())?;
+                Ok(0)
+            }
+            Err(error) => {
+                failure(false, "localization", source.to_str(), &error)?;
+                Ok(1)
+            }
+        };
+    }
+    let output = output.unwrap();
+    match reel_cli::localization::extract(&source, &output, overwrite) {
+        Ok(result) => {
+            writeln!(
+                io::stdout().lock(),
+                "Extracted {} messages from {} calls; skipped {} dynamic calls: {}",
+                result.messages,
+                result.occurrences,
+                result.skipped.len(),
+                output.display()
+            )?;
+            for skipped in result.skipped {
+                writeln!(io::stderr().lock(), "warning[localization]: {skipped}")?;
+            }
+            if let Some(warning) = result.cleanup_warning {
+                writeln!(io::stderr().lock(), "warning: {warning}")?;
+            }
+            Ok(0)
+        }
+        Err(error) => {
+            failure(false, "localization", source.to_str(), &error)?;
+            Ok(1)
+        }
     }
 }
 

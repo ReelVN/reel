@@ -1,5 +1,5 @@
 use super::{AdapterError, HostTicket, SessionVm, observable, text};
-use crate::localization::{CatalogLoader, Localization, language_id};
+use crate::localization::{CatalogLoader, Localization, language_id, message_id};
 use aside_vm::{
     RootKind, RootToken, Value, ValueTag,
     executor::{Completion, HostResponse, WaitId},
@@ -263,8 +263,12 @@ impl SessionVm {
             "reel::tr" => {
                 self.observe_translation()?;
                 let heap = self.vm.heap_mut();
-                let id = text::read_string(heap, args[0], self.read_limit)?;
-                let fallback = text::read_string(heap, args[1], self.read_limit)?;
+                let fallback = text::read_string(heap, args[0], self.read_limit)?;
+                let id = if args[1].tag() == ValueTag::Null {
+                    message_id(&fallback)
+                } else {
+                    text::read_string(heap, args[1], self.read_limit)?
+                };
                 let mut parameters = FluentArgs::new();
                 let has_parameters = args[2].tag() != ValueTag::Null;
                 if has_parameters {

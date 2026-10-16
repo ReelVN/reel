@@ -693,8 +693,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         (
             "reel::tr",
             vec![
-                parameter("id", None),
-                parameter("fallback", None),
+                parameter("source", None),
+                parameter("id", Some(bc::Const::Null)),
                 parameter("params", Some(bc::Const::Null)),
             ],
             Effects::ALLOCATE,
@@ -722,7 +722,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: symbol.into(),
-            abi_version: 1,
+            abi_version: if symbol == "reel::tr" { 2 } else { 1 },
             parameters,
             result,
             effects: Effects(effects),

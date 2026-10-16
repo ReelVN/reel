@@ -48,10 +48,10 @@ fn external_catalogs_react_without_changing_committed_interactions() {
     let code = r#"fn opening() {
         localization.set_locale("zh-CN");
         let data = model({n: 1});
-        let caption = text(value: derive(|| tr("hello", "你好")));
+        let caption = text(value: derive(|| tr("你好", id: "hello")));
         stage.replace(column() {
             caption;
-            text(value: derive(|| tr("count", "{ $n } 条消息", params: {n: data.n})));
+            text(value: derive(|| tr("{ $n } 条消息", id: "count", params: {n: data.n})));
             button("English", on_click: |event| {
                 localization.set_locale("en-US"); data.n = 2;
             });
@@ -63,16 +63,16 @@ fn external_catalogs_react_without_changing_committed_interactions() {
             rejected = error.starts_with("broken.ftl:");
         }
         if !rejected { throw "missing source diagnostic"; }
-        narrator(tr("hello", "你好"));
+        narrator(tr("你好", id: "hello"));
         localization.set_locale("en-US");
-        if tr("hello", "你好") != "Hello" { throw "atomic catalog replacement/base fallback"; }
-        if tr("missing", "literal {0} <~#") != "literal {0} <~#" { throw "literal fallback"; }
-        if tr("count", "", params: {n: 1}) != "One" { throw "plural"; }
-        if !tr("name", "", params: {name: "{ $secret }"}).starts_with("Hello, ") { throw "parameter"; }
+        if tr("你好", id: "hello") != "Hello" { throw "atomic catalog replacement/base fallback"; }
+        if tr("literal {0} <~#", id: "missing") != "literal {0} <~#" { throw "literal fallback"; }
+        if tr("", id: "count", params: {n: 1}) != "One" { throw "plural"; }
+        if !tr("", id: "name", params: {name: "{ $secret }"}).starts_with("Hello, ") { throw "parameter"; }
         let mut missing = false;
-        try { tr("name", ""); } catch error { missing = true; }
+        try { tr("", id: "name"); } catch error { missing = true; }
         if !missing { throw "missing parameter silently accepted"; }
-        let choice = choose([{key: "stable", label: tr("hello", "你好")}]);
+        let choice = choose([{key: "stable", label: tr("你好", id: "hello")}]);
         if choice != "stable" { throw "translated key"; }
     }"#;
     for encoded in [false, true] {
