@@ -14,7 +14,7 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Insets, Rect, Size};
 use crate::layout::{LenReq, Length};
-use crate::peniko::{Color, ImageBrush};
+use crate::peniko::{Color, Extend, ImageBrush};
 use crate::properties::ObjectFit;
 
 // TODO: Make this a configurable option of the widget.
@@ -43,9 +43,13 @@ pub struct Image {
     tiled_size: Size,
     slice: Option<Insets>,
     slice_scale: f64,
+    slice_center: bool,
     decorative: bool,
     alt_text: Option<ArcStr>,
     color: Color,
+    repeat: [bool; 2],
+    tile_scale: f64,
+    corner_colors: Option<[Color; 4]>,
 }
 
 /// One resident tile. The image includes its sampling gutter; `clip` is the
@@ -71,9 +75,13 @@ impl Image {
             tiled_size: Size::ZERO,
             slice: None,
             slice_scale: 1.,
+            slice_center: true,
             decorative: false,
             alt_text: None,
             color: Color::WHITE,
+            repeat: [false; 2],
+            tile_scale: 1.,
+            corner_colors: None,
         }
     }
 
@@ -85,9 +93,13 @@ impl Image {
             tiled_size: size,
             slice: None,
             slice_scale: 1.,
+            slice_center: true,
             decorative: false,
             alt_text: None,
             color: Color::WHITE,
+            repeat: [false; 2],
+            tile_scale: 1.,
+            corner_colors: None,
         }
     }
 
@@ -121,9 +133,24 @@ impl Image {
     /// Stretch a whole image as nine slices, preserving corner proportions.
     /// Insets are source pixels; scale maps border pixels to logical pixels.
     /// Both must be finite and nonnegative. `None` restores ordinary object fit.
-    pub fn with_slice(mut self, slice: Option<Insets>, scale: f64) -> Self {
+    pub fn with_slice(mut self, slice: Option<Insets>, scale: f64, center: bool) -> Self {
         self.slice = slice;
         self.slice_scale = scale;
+        self.slice_center = center;
+        self
+    }
+
+    /// Repeat whole source pixels at a positive logical scale. Corners tint the
+    /// whole content box in top-left, top-right, bottom-right, bottom-left order.
+    pub fn with_pattern(
+        mut self,
+        repeat: [bool; 2],
+        scale: f64,
+        corners: Option<[Color; 4]>,
+    ) -> Self {
+        self.repeat = repeat;
+        self.tile_scale = scale;
+        self.corner_colors = corners;
         self
     }
 
@@ -143,12 +170,44 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    pub fn set_pattern(
+        this: &mut WidgetMut<'_, Self>,
+        repeat: [bool; 2],
+        scale: f64,
+        corners: Option<[Color; 4]>,
+    ) {
+        if this.widget.repeat != repeat
+            || this.widget.tile_scale != scale
+            || this.widget.corner_colors != corners
+        {
+            let layout_changed = this.widget.repeat != repeat
+                || (repeat != [false; 2] && this.widget.tile_scale != scale);
+            this.widget.repeat = repeat;
+            this.widget.tile_scale = scale;
+            this.widget.corner_colors = corners;
+            if layout_changed {
+                this.ctx.request_layout();
+            } else {
+                this.ctx.request_render();
+            }
+        }
+    }
+
     /// Change nine-slice geometry without decoding or copying image pixels.
-    pub fn set_slice(this: &mut WidgetMut<'_, Self>, slice: Option<Insets>, scale: f64) {
-        if this.widget.slice != slice || this.widget.slice_scale != scale {
+    pub fn set_slice(
+        this: &mut WidgetMut<'_, Self>,
+        slice: Option<Insets>,
+        scale: f64,
+        center: bool,
+    ) {
+        if this.widget.slice != slice
+            || this.widget.slice_scale != scale
+            || this.widget.slice_center != center
+        {
             let layout_changed = this.widget.slice.is_some() != slice.is_some();
             this.widget.slice = slice;
             this.widget.slice_scale = scale;
+            this.widget.slice_center = center;
             if layout_changed {
                 this.ctx.request_layout();
             } else {
@@ -252,6 +311,9 @@ impl Image {
         ];
         for y in 0..3 {
             for x in 0..3 {
+                if x == 1 && y == 1 && !self.slice_center {
+                    continue;
+                }
                 let source = Rect::new(source_x[x], source_y[y], source_x[x + 1], source_y[y + 1]);
                 let target = Rect::new(target_x[x], target_y[y], target_x[x + 1], target_y[y + 1]);
                 if source.width() <= 0.
@@ -313,12 +375,17 @@ impl Widget for Image {
         cross_length: Option<Length>,
     ) -> Length {
         let cache = ctx.property_cache();
-        let object_fit = if self.slice.is_some() {
+        let object_fit = if self.slice.is_some() || self.repeat != [false; 2] {
             &ObjectFit::Stretch
         } else {
             props.get::<ObjectFit>(cache)
         };
-        let preferred_size = self.preferred_size();
+        let preferred_size = self.preferred_size()
+            * if self.repeat == [false; 2] {
+                1.
+            } else {
+                self.tile_scale
+            };
 
         object_fit.measure(axis, len_req, cross_length, preferred_size)
     }
@@ -333,6 +400,40 @@ impl Widget for Image {
     ) {
         ctx.set_image_color(self.color);
         let content_box = ctx.content_box();
+        ctx.set_image_corner_colors(self.corner_colors, content_box);
+        if self.repeat != [false; 2] {
+            if let Some(image) = &self.image_data {
+                let mut brush = image.clone();
+                brush.sampler.x_extend = if self.repeat[0] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+                brush.sampler.y_extend = if self.repeat[1] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+                let mut bounds = content_box;
+                if !self.repeat[0] {
+                    bounds.x1 = bounds
+                        .x1
+                        .min(bounds.x0 + image.image.width as f64 * self.tile_scale);
+                }
+                if !self.repeat[1] {
+                    bounds.y1 = bounds
+                        .y1
+                        .min(bounds.y0 + image.image.height as f64 * self.tile_scale);
+                }
+                let transform = Affine::translate(content_box.origin().to_vec2())
+                    * Affine::scale(self.tile_scale);
+                painter
+                    .fill(bounds, &brush)
+                    .brush_transform(Some(transform))
+                    .draw();
+            }
+            return;
+        }
         if let Some(slice) = self.slice {
             self.paint_sliced(painter, content_box, slice);
             return;

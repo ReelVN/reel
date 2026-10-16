@@ -144,9 +144,12 @@ impl DecodedSound {
             if cancelled.load(Ordering::Acquire) {
                 return Err(std::io::Error::other("audio decode cancelled"));
             }
-            ticket
-                .resize(bytes as u64)
-                .map_err(|e| std::io::Error::other(e.message))
+            ticket.resize(bytes as u64).map_err(|e| {
+                std::io::Error::other(format!(
+                    "audio PCM decode needs {bytes} bytes: {}",
+                    e.message
+                ))
+            })
         })
         .map_err(|e| e.to_string())?;
         if data.frames.is_empty() {

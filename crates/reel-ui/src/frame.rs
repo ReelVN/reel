@@ -162,6 +162,19 @@ pub struct FrameImage {
     pub resource: ResourceHandle,
     /// Linear premultiplied RGBA multiplier, including its own alpha once.
     pub color: [f32; 4],
+    pub gradient: Option<ImageColorGradient>,
+}
+/// Four linear premultiplied colors and their unit square in frame coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageColorGradient {
+    pub colors: [[f32; 4]; 4],
+    pub transform: Affine,
+}
+impl ImageColorGradient {
+    pub fn transformed(mut self, transform: Affine) -> Self {
+        self.transform = transform * self.transform;
+        self
+    }
 }
 pub type FrameBrush = Brush<ImageBrush<FrameImage>, Gradient>;
 #[derive(Debug)]
@@ -976,6 +989,13 @@ impl Building {
         } else {
             [1.; 4]
         };
+        let image_gradient = if c.stream.is_none() {
+            layer.command_owners[c.owner_range]
+                .image_gradient
+                .map(|gradient| gradient.transformed(transform))
+        } else {
+            None
+        };
         let (local, op) = make_op(
             scene,
             command,
@@ -983,6 +1003,7 @@ impl Building {
             meta,
             mask,
             image_color,
+            image_gradient,
             &self.resources,
         )
         .map_err(|kind| self.error(kind))?;
@@ -1183,6 +1204,9 @@ fn valid_brush(b: &FrameBrush) -> bool {
         Brush::Solid(c) => valid_color(c.components),
         Brush::Image(i) => {
             valid_color(i.image.color)
+                && i.image.gradient.is_none_or(|gradient| {
+                    gradient.colors.into_iter().all(valid_color) && finite(gradient.transform)
+                })
                 && i.sampler.alpha.is_finite()
                 && (0.0..=1.).contains(&i.sampler.alpha)
         }
@@ -1379,6 +1403,7 @@ fn empty_brush(
     b: &Brush,
     resources: &ResourceSnapshot,
     image_color: [f32; 4],
+    image_gradient: Option<ImageColorGradient>,
 ) -> Result<FrameBrush, BuildErrorKind> {
     Ok(match b {
         Brush::Solid(c) => Brush::Solid(*c),
@@ -1402,6 +1427,7 @@ fn empty_brush(
                         blob_id: i.image.data.id(),
                     })?,
                 color: image_color,
+                gradient: image_gradient,
             },
             sampler: i.sampler,
         }),
@@ -1439,6 +1465,7 @@ fn make_op(
     meta: Option<(WidgetId, Affine, Option<MaskProgress>)>,
     mut mask: Option<MaskUse>,
     image_color: [f32; 4],
+    image_gradient: Option<ImageColorGradient>,
     resources: &ResourceSnapshot,
 ) -> Result<(LocalId, FrameOp), BuildErrorKind> {
     Ok(match c {
@@ -1520,7 +1547,7 @@ fn make_op(
                 } => FrameDraw::Fill {
                     transform: t * *transform,
                     fill_rule: *fill_rule,
-                    brush: empty_brush(brush, resources, image_color)?,
+                    brush: empty_brush(brush, resources, image_color, image_gradient)?,
                     brush_transform: *brush_transform,
                     shape: empty_geometry(shape),
                     composite: *composite,
@@ -1535,7 +1562,7 @@ fn make_op(
                 } => FrameDraw::Stroke {
                     transform: t * *transform,
                     stroke: empty_stroke(stroke),
-                    brush: empty_brush(brush, resources, image_color)?,
+                    brush: empty_brush(brush, resources, image_color, image_gradient)?,
                     brush_transform: *brush_transform,
                     shape: empty_geometry(shape),
                     composite: *composite,
@@ -1559,7 +1586,7 @@ fn make_op(
                         Style::Stroke(s) => Style::Stroke(empty_stroke(s)),
                     },
                     glyphs: Vec::with_capacity(g.glyphs.len()),
-                    brush: empty_brush(&g.brush, resources, image_color)?,
+                    brush: empty_brush(&g.brush, resources, image_color, image_gradient)?,
                     composite: g.composite,
                 }),
                 Draw::BlurredRoundedRect(d) => {

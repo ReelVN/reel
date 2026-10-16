@@ -212,6 +212,7 @@ pub(crate) struct WidgetState {
     pub(crate) external_paint_token: u64,
     pub(crate) subtree_image_mask: Option<Box<PaintImageMask>>,
     pub(crate) image_color: [f32; 4],
+    pub(crate) image_gradient: Option<crate::frame::ImageColorGradient>,
 
     /// The `accessibility` method must be called on this widget
     pub(crate) request_accessibility: bool,
@@ -339,6 +340,7 @@ impl WidgetState {
             external_paint_token: 0,
             subtree_image_mask: None,
             image_color: [1.; 4],
+            image_gradient: None,
             request_accessibility: true,
             needs_accessibility: true,
             request_anim: true,

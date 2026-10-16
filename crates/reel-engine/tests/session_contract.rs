@@ -811,7 +811,7 @@ fn read_progress_is_committed_on_advance_and_reusable_without_display_history() 
     let owner = first.root_owner();
     let id = first.begin_say(owner, &[line("first")], "en").unwrap();
     assert!(!dialogue(&first).previously_read());
-    first.set_skip_reading(true, false);
+    first.set_skip_reading(true, false, false);
     assert!(
         !first.reading().skipping(),
         "unread boundary must stop default skip"
@@ -829,7 +829,7 @@ fn read_progress_is_committed_on_advance_and_reusable_without_display_history() 
     next.begin_say(owner, &[line("same statement")], "en")
         .unwrap();
     assert!(dialogue(&next).previously_read());
-    next.set_skip_reading(true, false);
+    next.set_skip_reading(true, false, false);
     assert!(next.reading().skipping());
     next.pause_reading(true);
     assert!(!next.reading().skipping());

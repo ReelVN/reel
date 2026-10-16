@@ -388,7 +388,7 @@ impl AsideSessionUi {
         let result = (|| {
             if self.state == StoryState::Running {
                 self.vm.sync_reading(self.ui.session())?;
-                if self.vm.interactions(self.ui.session(), &events)? {
+                if self.vm.interactions(self.ui.session_mut(), &events)? {
                     self.ui.set_feedback_stage(self.vm.stage());
                 }
                 let mut changed = false;

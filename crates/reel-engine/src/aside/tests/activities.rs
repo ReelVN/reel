@@ -691,7 +691,7 @@ fn skipping_finishes_story_sequences_with_a_small_budget_without_finishing_ui_or
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(code, encoded);
         models::drive(&mut vm, &mut session, false);
-        session.set_skip_reading(true, true);
+        session.set_skip_reading(true, true, false);
         let progress = advance_clock(&mut vm, &session, 0., 1);
         assert!(
             progress.work < 200,

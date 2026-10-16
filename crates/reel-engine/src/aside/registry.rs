@@ -3,7 +3,16 @@ use aside_host::PropertySchema;
 pub(super) use aside_host::{NativeContract, NativeParameter};
 use aside_vm::bytecode::{self as bc, BuiltinType, Effects};
 
-pub(super) const IMAGE_PREFIX: &[&str] = &["source", "fit", "slice", "slice_scale"];
+pub(super) const IMAGE_PREFIX: &[&str] = &[
+    "source",
+    "fit",
+    "slice",
+    "slice_scale",
+    "repeat",
+    "tile_scale",
+    "corner_colors",
+    "slice_center",
+];
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
@@ -204,11 +213,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                         BuiltinType::String
                     },
                     default: if matches!(name, "button" | "input")
-                        || matches!(field, "on_link" | "slice")
+                        || matches!(field, "on_link" | "slice" | "corner_colors")
                     {
                         Some(bc::Const::Null)
-                    } else if field == "slice_scale" {
+                    } else if matches!(field, "slice_scale" | "tile_scale") {
                         Some(bc::Const::Int(1))
+                    } else if field == "repeat" {
+                        Some(bc::Const::Utf8("none".into()))
+                    } else if field == "slice_center" {
+                        Some(bc::Const::Bool(true))
                     } else {
                         (field == "fit").then(|| bc::Const::Utf8("contain".into()))
                     },
@@ -252,22 +265,24 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if matches!(name, "slider" | "image") {
-                9
-            } else if name == "particles" {
-                3
-            } else if name == "camera" {
-                2
-            } else if matches!(name, "checkbox" | "radio") {
-                4
-            } else if name == "input" {
+            abi_version: if name == "image" {
+                11
+            } else if name == "slider" {
                 10
-            } else if name == "scroll" {
-                6
-            } else if name == "text_input" {
+            } else if name == "particles" {
+                4
+            } else if name == "camera" {
+                3
+            } else if matches!(name, "checkbox" | "radio") {
                 5
+            } else if name == "input" {
+                11
+            } else if name == "scroll" {
+                7
+            } else if name == "text_input" {
+                6
             } else {
-                8
+                9
             },
             parameters,
             result: BuiltinType::Any,
@@ -608,10 +623,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::set_skip".into(),
-        abi_version: 1,
+        abi_version: 2,
         parameters: vec![
             parameter("enabled", None),
             parameter("unread", Some(bc::Const::Bool(false))),
+            parameter("after_choices", Some(bc::Const::Bool(false))),
         ],
         result: BuiltinType::Null,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -634,6 +650,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     );
     tween.extend(
         super::stage::camera::CameraField::PROPERTIES
+            .iter()
+            .filter(|p| p.animatable)
+            .map(|p| parameter(p.name, Some(bc::Const::Null))),
+    );
+    tween.extend(
+        super::stage::scroll::ScrollField::PROPERTIES
             .iter()
             .filter(|p| p.animatable)
             .map(|p| parameter(p.name, Some(bc::Const::Null))),
@@ -708,7 +730,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "tween" { 4 } else { 1 },
+            abi_version: if name == "tween" { 5 } else { 1 },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(

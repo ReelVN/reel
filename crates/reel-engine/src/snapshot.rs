@@ -62,7 +62,7 @@ impl Session {
         self.identity = identity;
         self.read_progress = progress;
         self.last_input_sequence = None;
-        self.reading.set_skip(false, false);
+        self.reading.set_skip(false, false, false);
         for owner in &mut self.owners {
             owner.handle.identity = identity;
         }

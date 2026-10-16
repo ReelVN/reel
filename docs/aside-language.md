@@ -308,6 +308,8 @@ Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 
+Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。共同节点构造 native ABI 各加 1，节点宿主快照适配器 2（image 4），SessionSnapshot 5。
+
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；B01/ASB 不变。
 
 Reel 通过 `spawn(work, owner: null)` 启动零参数脚本工作，返回可 await、可 cancel 的宿主任务；节点所有权和取消遵循引擎的作者活动合同。它复用上述普通调用栈，不改变尚未实现的语言级 async/Future 语义。VM 任务槽按同时活动数量增长并复用，默认没有固定任务数配额；宿主仍可通过 `VmLimits.max_tasks` 显式设限。新任务在宿主准入点扩展、整理执行存储，保留根身份并计入堆预算；不会按最大任务配额预分配全部调用栈。
@@ -316,7 +318,7 @@ async fn 调用立即返回任务 Future，函数体在后续调度片开始；�
 
 Reel 的 sequence/parallel 通过普通位置 rest 参数接收动作，repeat(action, times: null) 通过普通默认参数指定次数；它们返回描述，由 run 创建实现 Awaitable 协议的活动。组合与计时属于 Reel 宿主库，独立 Aside 不增加专用语法或平台依赖。
 
-await 接受 Awaitable，不接受普通标量。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
+await 接受 Awaitable，不接受普通标量。对不可等待值使用 await 报 NotAwaitable（core code 24），定位 await 并提示普通函数调用已经等待其返回值；不隐式接受标量或将其包装为任务。此诊断复用既有故障与源码栈，不增加分配或改变 B01 指令格式。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
 
 Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果；检测直接和间接 adoption 环。需要把 Future 当普通值返回时包在 tuple/对象中。任务 Future 仅由任务返回/失败/终止结算，手工 Future 才能 resolve/reject；重复结算报 AlreadySettled。未观察失败在已给等待者/处理器一个正常调度机会后产生诊断，后续观察更新记录而不重报。结算与通知均不在生产者调用栈内同步重入用户回调。
 
@@ -373,6 +375,8 @@ invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最
 宿主可将一个已准入 native callable 的首参数绑定为接收者，产生普通可调用值。绑定值保留代码版本、模块和接收者身份，受既有 GC 跟踪；保存方法后调用仍使用原接收者。调用直接进入 NativeFrame，首参数预绑定，余下位置/具名/默认参数使用同一个 VM binder，显式重复指定首参数仍报重复绑定。脚本调用、宿主 start_closure 和 CallScript 回调使用相同协议，不建立合成脚本调用栈；诊断定位真实调用者。绑定不改变效果或等待许可，不保存 Rust 对象地址。
 
 Reel 作者事件通过宿主已有 start_closure 创建节点拥有的普通任务，不引入 Aside 事件语法或 UI 依赖。回调接受一个事件对象并共享闭包捕获；可以等待普通宿主 Awaitable。Reel 在任务等待或结束后切换任务；指令预算和同步 native 往返只让出宿主执行，不在同步脚本段内切换其他任务。每个任务保留自己的等待和源码故障，节点退休使用既有硬取消与分片释放。Reel 的 SessionVm::step 返回 SessionStep，将实际 VM 结果、已处理的回调完成 Progress 和无可运行任务 Idle 区分；不会伪造 VM WaitId 表示 UI 空闲。
+
+Reel 共同节点的 `on_interaction` 是默认 null 的普通可写回调属性；节点交互状态实际变化后，宿主先发布整批只读属性，再创建节点任务。不可变事件提供 target、hover、pressed、focused、disabled、focus_visible，该次布尔值在等待后仍保持原值。赋予或替换回调不触发初始事件；没有回调时不创建事件对象或任务。业务选中和演出由此回调修改，derive 保持只读求值；回调、捕获与等待复用既有任务快照和退休规则。
 
 native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。
 

@@ -127,7 +127,7 @@ impl StoryRuntime {
             .unwrap()
             .ui_mut()
             .session_mut()
-            .set_skip_reading(false, false);
+            .set_skip_reading(false, false, false);
         self.driver.as_mut().unwrap().ui_mut().pause_dialogue();
         self.driver.as_mut().unwrap().suspend_audio();
         Ok(())

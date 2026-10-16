@@ -238,6 +238,32 @@ pub(in crate::aside) fn tween(
         heap.array_push(goals, Value::int(index as i64))?;
         heap.array_push(goals, value)?;
     }
+    let camera = stage::camera::CameraField::PROPERTIES
+        .iter()
+        .filter(|p| p.animatable)
+        .count();
+    for ((index, _), &value) in stage::scroll::ScrollField::PROPERTIES
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.animatable)
+        .zip(&args[3 + common + camera..])
+    {
+        if value.tag() == ValueTag::Null {
+            continue;
+        }
+        let id = stage.id(heap, target)?;
+        if !matches!(
+            stage.scene.node(id).unwrap().kind,
+            reel_ui::stage::NodeKind::Scroll { .. }
+        ) {
+            return Err(AdapterError::Input(
+                "scroll animation requires a scroll target",
+            ));
+        }
+        stage::scroll::ScrollField::validate(heap, index as u32, value)?;
+        heap.array_push(goals, Value::int(index as i64))?;
+        heap.array_push(goals, value)?;
+    }
     let fields = heap.alloc_table()?;
     Ok(heap.alloc_host(
         fields,

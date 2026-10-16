@@ -90,7 +90,7 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
         );
     }
     let auto_stats = auto_region.change();
-    ui.session_mut().set_skip_reading(true, true);
+    ui.session_mut().set_skip_reading(true, true, false);
     let skip_region = Region::new(GLOBAL);
     assert!(ui.advance_dialogue(40_000_000_000, 1000.).unwrap());
     let skip_stats = skip_region.change();

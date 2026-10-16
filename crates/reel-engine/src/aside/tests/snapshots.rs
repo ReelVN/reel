@@ -95,7 +95,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let rng = random(seed: 42);
         let first = rng.int(0, 1000000);
         let done = completion();
-        let background = image("scene.png");
+        let background = image("scene.png", stretch: "both");
         let snow = particles("flake.png", rate: 5, lifetime: 2);
         let emission = emit(snow);
         let mover = run(tween(background, x: 100, duration: 4, easing: "linear"));

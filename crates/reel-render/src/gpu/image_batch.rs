@@ -29,8 +29,8 @@ fn quad(command: &FrameCommand) -> Option<Quad<'_>> {
     };
     if composite.blend != Composite::default().blend
         || brush.sampler.quality != ImageQuality::Medium
-        || brush.sampler.x_extend != Extend::Pad
-        || brush.sampler.y_extend != Extend::Pad
+        || brush.sampler.x_extend == Extend::Reflect
+        || brush.sampler.y_extend == Extend::Reflect
     {
         return None;
     }
@@ -62,7 +62,11 @@ impl Context<'_> {
             let Some(quad) = quad(command) else {
                 break;
             };
-            if quad.brush.image.resource != handle {
+            if quad.brush.image.resource != handle
+                || quad.brush.sampler.x_extend != first.brush.sampler.x_extend
+                || quad.brush.sampler.y_extend != first.brush.sampler.y_extend
+                || quad.brush.image.gradient != first.brush.image.gradient
+            {
                 break;
             }
             let at = command.origin.at;
@@ -98,7 +102,20 @@ impl Context<'_> {
             }
             count += 1;
         }
-        self.paint(target, &batch, &image.view)?;
+        self.paint_image(
+            target,
+            &batch,
+            &image.view,
+            [
+                first.brush.sampler.x_extend == Extend::Repeat,
+                first.brush.sampler.y_extend == Extend::Repeat,
+            ],
+            first
+                .brush
+                .image
+                .gradient
+                .map(|gradient| gradient.transformed(outer)),
+        )?;
         Ok(count)
     }
 }

@@ -1,0 +1,14 @@
+fn main() {
+    game.configure(title: "Content-sized frame", width: 720, height: 480,
+        fonts: ["fonts/body.ttf"]);
+    let state = model({expanded: false});
+    stage.replace(stack(x: 360, y: 240, width: 420, anchor_x: 0.5, anchor_y: 0.5) {
+        image("images/panel.png", stretch: "both", slice: 12);
+        column(width: 420, padding: 24, gap: 16) {
+            text(value: derive(|| if state.expanded {
+                "The frame follows wrapped text.\nChanging content keeps the same background and input controls."
+            } else { "The frame follows its content." }), width: 372, font_size: 24);
+            button("Change text", on_click: |event| { state.expanded = !state.expanded; });
+        }
+    });
+}

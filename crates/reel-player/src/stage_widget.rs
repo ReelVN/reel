@@ -178,6 +178,14 @@ impl StageView {
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
+                if matches!(&node.node.kind, NodeKind::Image { repeat, .. } if *repeat != [false; 2])
+                    && source.ends_with(".reel-image")
+                {
+                    return Err(format!(
+                        "{}: repeating image {source:?}: repetition requires a whole PNG or JPEG image",
+                        origin.as_deref().unwrap_or("stage")
+                    ));
+                }
                 requests
                     .entry(source.to_owned())
                     .or_insert_with(|| origin.clone());
@@ -499,6 +507,10 @@ impl SceneWidget {
             fit,
             slice,
             slice_scale,
+            repeat,
+            tile_scale,
+            corner_colors,
+            slice_center,
             ..
         } = &view.node.kind
         else {
@@ -515,7 +527,8 @@ impl SceneWidget {
                 NewWidget::new(
                     image
                         .with_color(color(view.node.props.color))
-                        .with_slice(*slice, *slice_scale),
+                        .with_slice(*slice, *slice_scale, *slice_center)
+                        .with_pattern(*repeat, *tile_scale, *corner_colors),
                 )
                 .with_props(*fit)
                 .to_pod()
@@ -795,6 +808,10 @@ impl SceneWidget {
                     fit,
                     slice,
                     slice_scale,
+                    repeat,
+                    tile_scale,
+                    corner_colors,
+                    slice_center,
                     ..
                 },
             ) = (&mut this.widget.image, &view.node.kind)
@@ -804,7 +821,8 @@ impl SceneWidget {
                 image.insert_prop(*fit);
             }
             // This also clears slicing when a whole image switches to tiles.
-            Image::set_slice(&mut image, *slice, *slice_scale);
+            Image::set_slice(&mut image, *slice, *slice_scale, *slice_center);
+            Image::set_pattern(&mut image, *repeat, *tile_scale, *corner_colors);
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,
@@ -874,7 +892,9 @@ impl SceneWidget {
             this.ctx.children_changed();
         }
         for ((node, pod), next) in this.widget.children.iter_mut().zip(&view.children) {
-            if node.props.visible != next.node.props.visible {
+            if node.props.visible != next.node.props.visible
+                || node.props.stretch != next.node.props.stretch
+            {
                 this.ctx.request_layout();
             }
             if *node != next.node {
@@ -903,6 +923,7 @@ impl SceneWidget {
             let new = &view.node.props;
             if old.width != new.width
                 || old.height != new.height
+                || old.stretch != new.stretch
                 || old.gap != new.gap
                 || old.padding != new.padding
                 || old.font_size != new.font_size
@@ -1324,7 +1345,9 @@ impl Widget for SceneWidget {
         }
         let padding = Length::px(props.padding * 2.);
         if self.image.is_some() {
-            let other = if axis == Axis::Horizontal {
+            let other = if props.stretch.axis(axis.cross()) {
+                cross.map(Length::get)
+            } else if axis == Axis::Horizontal {
                 props.height
             } else {
                 props.width
@@ -1336,7 +1359,7 @@ impl Widget for SceneWidget {
             return Length::px(length + padding.get());
         }
         let available = LenDef::from(request).reduce(padding);
-        let cross = if axis == Axis::Vertical {
+        let cross = if axis == Axis::Vertical && !props.stretch.axis(Axis::Horizontal) {
             props.width.map(Length::px).or(cross)
         } else {
             cross
@@ -1371,7 +1394,7 @@ impl Widget for SceneWidget {
         }
         let mut visible = 0;
         for (node, child) in &mut self.children {
-            if !node.props.visible {
+            if !node.props.visible || node.props.stretch.axis(axis) {
                 continue;
             }
             let length = ctx
@@ -1496,26 +1519,46 @@ impl Widget for SceneWidget {
             } else {
                 SizeDef::fit(inner)
             };
+            let definition = SizeDef::new(
+                if node.props.stretch.axis(Axis::Horizontal) {
+                    LenDef::Fixed(Length::px(inner.width))
+                } else {
+                    definition.dim(Axis::Horizontal)
+                },
+                if node.props.stretch.axis(Axis::Vertical) {
+                    LenDef::Fixed(Length::px(inner.height))
+                } else {
+                    definition.dim(Axis::Vertical)
+                },
+            );
             let chosen = ctx.compute_size(child, definition, inner.into());
             let offset = match self.node.kind {
                 NodeKind::Row
                 | NodeKind::Scroll {
                     axis: ScrollAxis::Horizontal,
                     ..
-                } => {
+                } if !node.props.stretch.axis(Axis::Horizontal) => {
                     let offset = Point::new(cursor, 0.);
                     cursor += chosen.width + self.node.props.gap;
                     offset
                 }
-                NodeKind::Column | NodeKind::Scroll { .. } => {
+                NodeKind::Column
+                | NodeKind::Scroll {
+                    axis: ScrollAxis::Vertical | ScrollAxis::Both,
+                    ..
+                } if !node.props.stretch.axis(Axis::Vertical) => {
                     let offset = Point::new(0., cursor);
                     cursor += chosen.height + self.node.props.gap;
                     offset
                 }
                 _ => Point::ORIGIN,
             };
-            extent.width = extent.width.max(offset.x + chosen.width);
-            extent.height = extent.height.max(offset.y + chosen.height);
+            if !node.props.stretch.axis(Axis::Horizontal) {
+                extent.width = extent.width.max(offset.x + chosen.width);
+            }
+            if !node.props.stretch.axis(Axis::Vertical) {
+                extent.height = extent.height.max(offset.y + chosen.height);
+            }
             ctx.run_layout(child, chosen);
             ctx.place_child(child, Point::new(padding + offset.x, padding + offset.y));
         }

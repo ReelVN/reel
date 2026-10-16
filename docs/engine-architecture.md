@@ -12,6 +12,12 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 
 ## 一 产品范围与实现原则
 
+普通图片提供 `repeat: "none" | "x" | "y" | "both"`（默认 none）和正数 `tile_scale: 1`。重复轴按源像素乘 tile_scale 铺满节点，非重复轴保留一份同尺度图像；重复模式不应用 fit，与 slice 互斥。`.reel-image` 是按视窗驻留的完整大图，重复模式在其资源类型边界明确拒绝。四角 `corner_colors: null | [左上,右上,右下,左下]` 在节点内容框内按线性预乘 RGBA 双线性插值，再乘 color 和节点透明度；普通图、九宫格与分块图共用该坐标域。重复图通过共享 sampler 和单矩形绘制，四角颜色通过常量参数参与原绘制，不复制像素、不增加离屏通道。范围为 reel-ui、reel-render、reel-engine 和 reel-player；image native ABI 11，image 宿主快照适配器 4；无新依赖。
+
+滚动偏移使用同一活动机制：`tween(viewport, scroll_x: 120, scroll_y: 400, duration: 0.5)` 仅接受 scroll 节点，起点来自当前偏移，目标值在布局时按真实内容范围限制。暂停、停止、节点所有权和执行快照沿用普通 tween，不增加脚本逐帧回调；tween native ABI 5。
+
+静态音频解码按实际分配阶段预留峰值：已有 PCM 容量足够时只计现有缓冲与当前包转换暂存；仅扩容阶段计新旧缓冲重叠，最终 Vec→Arc 转换计输入容量和输出长度。不得在每包重复计一份未发生的重分配。PCM 准入诊断包含所需字节。范围为 reel-audio 解码器与 reel-media 接线；不增大默认预算、不改变作者接口或 ABI，无新增依赖。
+
 共享资源读取区分单资源过大与瞬时容量争用：文件超过宿主 input_bytes 容量时报告资源路径和所需/配置字节；并发读取暂时占满输入容量时保留尚未提交的读取，随既有资源维护继续准入，不结算为加载失败。取消可直接撤销未提交读取，无额外文件缓存或同步等待。范围为 reel-player 资源服务；作者接口、ABI、ASB 与依赖保持不变。
 
 作者的数据类使用 Aside 的统一类布局与 GC，Reel 不另建脚本类包装层。实例方法进入普通 VM 调用栈，构造和字段初始化沿用 NoWait 与可让出的执行预算。
@@ -190,7 +196,7 @@ Reel 源码编译入口将当前注册的 reel::prelude 接口放入外围宿主
 
 图片节点合同：`image(source, fit: "contain", ...)` 使用共同节点属性，source 为非空文件路径，fit 为 contain/cover/stretch。source、fit 可直接修改；省略宽高时使用图片固有逻辑尺寸，只指定一边时保持固有宽高比，指定两边时由 fit 决定缩放与裁剪。构造及赋值只更新舞台描述，不执行文件 IO；仅挂载子树请求资源。
 
-`image(..., slice: null, slice_scale: 1)` 可将同一图片作为九宫格面板。slice 为统一边距数值，或按左、上、右、下排列的四项数组/tuple；边距使用源图像像素，slice_scale 将其换算为目标逻辑边宽，两者均为有限非负数。null 使用普通 fit；启用后填满节点内容框，角保持比例，边沿单轴拉伸，中心拉伸。源边距超过图像尺寸时四边统一按比例收缩；目标框不足以容纳边框时再次统一缩小目标边宽，避免重叠，零面积切片跳过。slice、slice_scale 支持直接赋值、bind/derive、layered_image 描述与执行快照。源必须为完整 PNG/JPEG 文件或编码 Bytes，分块 .reel-image 在资源边界带源码位置拒绝。共同舞台保留 Insets 与比例；UI 对同一个 ImageBrush 绘制至多九个矩形，不生成像素、不增加上传或每片离屏裁剪。image native ABI 9、reel.image 宿主属性快照版本 2；Aside/B01 与资源格式不变，无新依赖。
+`image(..., slice: null, slice_scale: 1)` 可将同一图片作为九宫格面板。slice 为统一边距数值，或按左、上、右、下排列的四项数组/tuple；边距使用源图像像素，slice_scale 将其换算为目标逻辑边宽，两者均为有限非负数。null 使用普通 fit；启用后填满节点内容框，角保持比例，边沿单轴拉伸，中心拉伸。`slice_center: false` 跳过中心片，只画八块边框；默认 true，支持直接赋值、绑定、分层图片描述与快照。源边距超过图像尺寸时四边统一按比例收缩；目标框不足以容纳边框时再次统一缩小目标边宽，避免重叠，零面积切片跳过。slice、slice_scale 支持直接赋值、bind/derive、layered_image 描述与执行快照。源必须为完整 PNG/JPEG 文件或编码 Bytes，分块 .reel-image 在资源边界带源码位置拒绝。共同舞台保留 Insets 与比例；UI 对同一个 ImageBrush 绘制至多九个矩形，不生成像素、不增加上传或每片离屏裁剪。image native ABI 11、reel.image 宿主属性快照版本 4；Aside/B01 与资源格式不变，无新依赖。
 
 image 的既有 color 属性是像素乘色，默认白色；sRGB 颜色先转为线性预乘值，再与图像的线性预乘 RGBA 相乘，color 的 alpha 和节点 opacity 各应用一次。普通图片、分块图片和 layered_image 的各图层描述使用同一规则；容器 color 不继承到子节点。变更 color 只更新绘制颜色，不重新解码、上传或复制纹理，也不增加离屏合成。Image 控件通过 typed PaintCtx 记录每个绘制范围的图像颜色，FrameImage 保留资源句柄和乘数；GPU 通用与矩形批量路径共用已有顶点颜色，同资源不同颜色仍可批量。遮罩定义的采样不受被遮罩内容颜色影响。既有 source/ASB native ABI、NodeProps 与执行快照格式不变，无新依赖；范围为 UI 绘制元数据、帧编译、播放器图片同步和渲染器。
 
@@ -209,6 +215,8 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 脚本组合、共享节点和窗口宿主已接通。`reel-ui::stage` 持有唯一的作者节点模型，engine 管理脚本值和会话寿命，player 将同一模型投影到既有控件、呈现桥和渲染器。`text`、`image`、`row`、`column`、`stack` 返回具有稳定身份的未挂载节点；`stage.replace(root)` 挂载新根并结束旧子树。普通函数可返回节点，尾随 children、条件和集合循环按语言的收集规则组合子树。可运行源码为 [author_stage.aside](../examples/author_stage.aside)。当前验证覆盖源码、ASB、VM、实际控件和帧记录生成；Windows 上另使用 AMD Radeon RX 7900 GRE / Vulkan 完成中文作者画面的离屏 GPU 读回。此证据不覆盖原生窗口生命周期和设备热插拔。
 
 节点公开位置 x/y、可选 width/height、opacity、visible、clip、gap、padding、font_size、color 和 background。未指定宽高采用内容布局；位置默认 0，opacity 默认 1，visible 默认 true，clip 默认 false，gap/padding 默认 0，font_size 默认 24，color 默认白色，background 默认透明。row/column 顺序排布，stack 按书写顺序叠放；x/y 是布局位置上的局部偏移。属性赋值修改原节点，既有引用继续指向同一对象。节点身份、属性和子对象引用由真正的宿主对象承载，不能靠复制普通 table 冒充节点。单父关系、节点退休和根对象保活在挂载/会话边界处理。
+
+共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。范围为 reel-ui 共同 NodeProps、reel-engine 绑定和快照、reel-player 布局、作者示例和双语指南；共同节点构造 native ABI 本批各加 1，节点宿主快照适配器为 2（image 为 4），SessionSnapshot 仍为本批版本 5，B01/ASB 无变化、无新增依赖。验收覆盖内容撑高背景、顺序容器覆盖层、滚动范围、动态修改与存档恢复。
 
 节点变换合同：所有基础节点共同提供 rotation、scale_x/scale_y、anchor_x/anchor_y。rotation 使用顺时针角度，默认 0；缩放默认 1，负数翻转，0 可折叠；锚点按节点布局宽高的比例取值，默认左上角 (0,0)，(0.5,0.5) 表示中心。锚点不限制在节点内部。布局位置加 x/y 表示锚点所在的父坐标位置；变换为 T(layout + x/y) × R(rotation) × S(scale_x,scale_y) × T(-anchor × size)。角度、缩放、锚点均要求有限数值；角度不钳制在一圈内。width/height 与容器排布使用变换前尺寸，变换作用于整棵子树、裁剪和呈现几何。奇异变换沿现有几何规则不参与命中；零缩放不退休节点。
 
@@ -393,6 +401,8 @@ StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声�
 
 节点公开只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。仅由交互状态驱动的外观更新保留按钮的在途激活；业务内容变化仍要求接受新画面，新手势不得使用未接受的内容。构造参数 decorated 默认 true，当前节点 native ABI 为 3，B01 不变。
 
+所有舞台节点提供可赋值的 `on_interaction: null | callback`，默认 null，用于悬停选中、聚焦演出等业务变化。复用 NodeEvent::Interaction：仅五个交互状态中至少一项实际改变才产生回调；先发布整批只读状态，再按事件顺序调度节点拥有的普通任务。事件是不可变记录 `{target, hover, pressed, focused, disabled, focus_visible}`，状态值固定为该次变化，target 仍是原节点；回调可等待，节点退休取消任务，隐藏或禁用产生的清理状态仍可交付。注册或更换回调不合成初始事件。未注册的节点不分配事件对象或任务，不逐帧轮询；纯外观仍使用 bind/derive。回调及等待任务进入既有快照对象图。范围为 reel-engine 共同属性/事件调度和 reel-player Session 调用；无新增依赖，复用本批 stretch 的 native ABI、节点宿主快照及 SessionSnapshot 版本。行为核对点为整批可见性、重复状态静默、不可变事件、等待与退休、动态换绑及存档恢复。
+
 节点内容与交互行为分开。图片可以具备按钮行为，容器可以整体变换；按钮外观读取 hover、pressed、focused、disabled 等状态，滑条提供轨道与滑块槽位。作者组件与内建组件使用同一舞台能力，具体调用形式见 DSL 文档。节点移除注销绑定、订阅并取消所属任务与活动；隐藏保留身份，脱离必须由显式所有者接管。visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用子树交互。两者使捕获失效时统一释放捕获；opacity=0 不自动禁用输入。
 仿射变换、裁剪和命中使用同一几何，命中经逆变换计算。非线性视觉变形默认采用作者指定的逻辑命中区，扩展映射另行提供。适配必须验证变换后控件的捕获、焦点与命中一致性。
 便携的 RenderFrame 与绘制命令定义于 reel-ui::frame，帧资源由 reel-ui::resources 管理，基础资源身份定义于 reel-core；UI 从不反向依赖 render。Mesh、Material 等扩展类型按既定功能范围逐步实现。RenderFrame 包含帧号、画布与输出尺寸、资源引用以及有层次的绘制计划。计划保留 BeginGroup、EndGroup、裁剪、组透明度和效果参数。组内绘制连续，子节点排序受组边界约束；跨组覆盖由显式 overlay 容器表达。组透明度对合成结果应用一次，效果外扩计入离屏范围，再遵守对应裁剪语义。
@@ -439,7 +449,7 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 
 历史组提供 `group_id/interaction_id/locale/lines/speaker_name/text`，行提供 `id/speaker_id/speaker_name/content_id/text`。行 ID 与对白模型一致，在同一会话中稳定。历史全文在提交时记录一次；清页和界面替换不删除历史。首次访问按已有历史建立投影，之后只追加新增组，显现更新不扫描历史、不复制全文。数据/控制服务不创建 UI，作者用通用组件组合回看和阅读控件，示例见 [author_reading.aside](../examples/author_reading.aside)。新增 native ABI 1；B01/ASB 格式不变。恢复点、语音重播和已读跳过依赖各自后续服务，不在历史记录内提供占位字段。
 
-`game.set_skip(enabled, unread: false)` 控制快进，`game.reading().skipping/skip_unread` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白，仍不替玩家选择。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。
+`game.set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。set_skip native ABI 为 2，SessionSnapshot 为 5；范围为 reel-engine 阅读状态、宿主接线、示例及双语指南，无新依赖或逐帧分配。复核边界为选择等待/提交、未读、暂停、输入退休和读档清除快进。
 
 实际接受的手动对白推进（指针、键盘、手柄或无障碍确认）执行通常的显现/推进，并关闭自动阅读与快进；过期或未接受的输入不改变模式，内部计时推进不触发此规则。选择确认继续保留自动阅读策略。范围为 reel-player 输入交付与现有行为检查，无新依赖、分配或 ABI 变更。
 

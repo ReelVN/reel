@@ -1,5 +1,5 @@
 use super::{GpuError, mesh, renderer::reserve, replay::Context, resources, targets::Target};
-use reel_ui::frame::{FrameDraw, RecordLocation, RenderFrame};
+use reel_ui::frame::{FrameDraw, ImageColorGradient, RecordLocation, RenderFrame};
 use reel_ui::{
     imaging::record::Clip,
     kurbo::{Affine, Rect},
@@ -135,14 +135,14 @@ impl Context<'_> {
         };
         self.composite_supported(composite, at)?;
         let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
-        let (image, uv, color) = match brush {
+        let (image, uv, color, repeat, gradient) = match brush {
             Brush::Solid(c) => {
                 let color = c
                     .convert::<LinearSrgb>()
                     .premultiply()
                     .components
                     .map(|v| v * composite.alpha);
-                (self.white()?, Affine::IDENTITY, color)
+                (self.white()?, Affine::IDENTITY, color, [false; 2], None)
             }
             Brush::Image(brush) => {
                 if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium {
@@ -151,10 +151,12 @@ impl Context<'_> {
                         record: "non-bilinear image sampling",
                     });
                 }
-                if brush.sampler.x_extend != Extend::Pad || brush.sampler.y_extend != Extend::Pad {
+                if brush.sampler.x_extend == Extend::Reflect
+                    || brush.sampler.y_extend == Extend::Reflect
+                {
                     return Err(GpuError::Unsupported {
                         at,
-                        record: "image repeat/reflect",
+                        record: "image reflect",
                     });
                 }
                 let image = self.image_resource(frame, brush.image.resource, at)?;
@@ -170,7 +172,19 @@ impl Context<'_> {
                     1. / f64::from(image.size[1]),
                 ) * bt.inverse();
                 let alpha = composite.alpha * brush.sampler.alpha;
-                (image, uv, brush.image.color.map(|channel| channel * alpha))
+                (
+                    image,
+                    uv,
+                    brush.image.color.map(|channel| channel * alpha),
+                    [
+                        brush.sampler.x_extend == Extend::Repeat,
+                        brush.sampler.y_extend == Extend::Repeat,
+                    ],
+                    brush
+                        .image
+                        .gradient
+                        .map(|gradient| gradient.transformed(outer)),
+                )
             }
             Brush::Gradient(_) => {
                 return Err(GpuError::Unsupported {
@@ -180,7 +194,7 @@ impl Context<'_> {
             }
         };
         mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
-        self.paint(target, &mesh, &image.view)
+        self.paint_image(target, &mesh, &image.view, repeat, gradient)
     }
     pub(super) fn image_resource(
         &mut self,
@@ -347,7 +361,21 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        if mesh.indices.is_empty() || self.scissor.empty() {
+        self.paint_image(target, mesh, image, [false; 2], None)
+    }
+
+    pub(super) fn paint_image(
+        &mut self,
+        target: &Target,
+        mesh: &mesh::Mesh,
+        image: &wgpu::TextureView,
+        repeat: [bool; 2],
+        gradient: Option<ImageColorGradient>,
+    ) -> Result<(), GpuError> {
+        if mesh.indices.is_empty()
+            || self.scissor.empty()
+            || gradient.is_some_and(|gradient| gradient.transform.determinant() == 0.)
+        {
             return Ok(());
         }
         #[cfg(test)]
@@ -358,7 +386,22 @@ impl Context<'_> {
         self.transient(
             (mesh.vertices.len() * size_of::<mesh::Vertex>() + mesh.indices.len() * 4) as u64,
         )?;
+        if gradient.is_some() {
+            self.transient(96)?;
+        }
         let device = &self.gpu.device;
+        let gradient_buffer = gradient.map(|gradient| {
+            let inverse = gradient.transform.inverse().as_coeffs();
+            let mut values = [[0f32; 4]; 6];
+            values[..4].copy_from_slice(&gradient.colors);
+            values[4] = [inverse[0] as f32, inverse[2] as f32, inverse[4] as f32, 1.];
+            values[5] = [inverse[1] as f32, inverse[3] as f32, inverse[5] as f32, 0.];
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("image corner colors"),
+                contents: bytemuck::cast_slice(&values),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("reel vertices"),
             contents: bytemuck::cast_slice(&mesh.vertices),
@@ -390,7 +433,17 @@ impl Context<'_> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.pipelines.sampler),
+                    resource: wgpu::BindingResource::Sampler(
+                        &self.pipelines.samplers
+                            [usize::from(repeat[0]) + 2 * usize::from(repeat[1])],
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: gradient_buffer
+                        .as_ref()
+                        .unwrap_or(&self.pipelines.plain_gradient)
+                        .as_entire_binding(),
                 },
             ],
         });

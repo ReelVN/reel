@@ -38,6 +38,7 @@ enum Mode {
     Auto,
     Skip {
         unread: bool,
+        after_choices: bool,
     },
 }
 
@@ -66,7 +67,16 @@ impl ReadingState {
         matches!(self.mode, Mode::Skip { .. })
     }
     pub fn skip_unread(self) -> bool {
-        self.mode == Mode::Skip { unread: true }
+        matches!(self.mode, Mode::Skip { unread: true, .. })
+    }
+    pub fn skip_after_choices(self) -> bool {
+        matches!(
+            self.mode,
+            Mode::Skip {
+                after_choices: true,
+                ..
+            }
+        )
     }
     pub fn paused(self) -> bool {
         self.paused
@@ -96,9 +106,12 @@ impl ReadingState {
             self.changed();
         }
     }
-    pub(crate) fn set_skip(&mut self, enabled: bool, unread: bool) {
+    pub(crate) fn set_skip(&mut self, enabled: bool, unread: bool, after_choices: bool) {
         let mode = if enabled && !self.paused {
-            Mode::Skip { unread }
+            Mode::Skip {
+                unread,
+                after_choices,
+            }
         } else if self.skipping() {
             Mode::Manual
         } else {
@@ -115,7 +128,7 @@ impl ReadingState {
             self.changed();
         }
         if paused {
-            self.set_skip(false, false);
+            self.set_skip(false, false, false);
         }
     }
 }

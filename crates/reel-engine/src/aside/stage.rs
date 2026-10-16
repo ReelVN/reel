@@ -88,6 +88,10 @@ pub(super) enum NodeProperty {
     MaskSoftness,
     #[aside(name = "mask_invert", ty = Bool, default = false)]
     MaskInvert,
+    #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
+    Stretch,
+    #[aside(name = "on_interaction", ty = Any, default = null, validate = validate_callback)]
+    OnInteraction,
 }
 
 pub(super) struct StageBinding {
@@ -99,6 +103,7 @@ pub(super) struct StageBinding {
 struct NodeBinding {
     handle: HeapHandle,
     interaction_offset: u32,
+    interaction_listening: bool,
     fields_version: u64,
     input_source: Option<HeapHandle>,
     text_source: Option<HeapHandle>,
@@ -414,6 +419,9 @@ impl StageBinding {
             NodeBinding {
                 handle: heap.handle(value)?,
                 interaction_offset: field_count as u32,
+                interaction_listening: args[prefix.len() + NodeProperty::OnInteraction.index()]
+                    .tag()
+                    != ValueTag::Null,
                 fields_version: heap.info(fields)?.content_version,
                 input_source: if symbol == "reel::input" {
                     input::source_handle(heap, args[0])?
@@ -562,6 +570,14 @@ impl StageBinding {
                         fit: read_fit(heap, heap.table_entry(fields, 1)?.1)?,
                         slice: read_slice(heap, heap.table_entry(fields, 2)?.1)?,
                         slice_scale: nonnegative(heap.table_entry(fields, 3)?.1)?,
+                        repeat: read_image_repeat(
+                            heap,
+                            heap.table_entry(fields, 4)?.1,
+                            heap.table_entry(fields, 2)?.1,
+                        )?,
+                        tile_scale: positive(heap.table_entry(fields, 5)?.1)?,
+                        corner_colors: read_corner_colors(heap, heap.table_entry(fields, 6)?.1)?,
+                        slice_center: boolean(heap.table_entry(fields, 7)?.1)?,
                         origin: origin.clone(),
                     },
                     registry::IMAGE_PREFIX.len(),
@@ -616,6 +632,15 @@ impl StageBinding {
             let binding = self.handles.get_mut(&id).unwrap();
             binding.fields_version = version;
             binding.mask_source = mask_source;
+            let fields = heap.host_fields(heap.import_handle(binding.handle)?)?;
+            binding.interaction_listening = heap
+                .table_entry(
+                    fields,
+                    interaction::callback_field(binding.interaction_offset),
+                )?
+                .1
+                .tag()
+                != ValueTag::Null;
         }
         Ok(())
     }
@@ -803,21 +828,23 @@ impl StageBinding {
         let mut pending: Vec<_> = self.scene.root().into_iter().collect();
         while let Some(id) = pending.pop() {
             let node = self.scene.node(id).unwrap();
-            if match &node.kind {
-                NodeKind::Text(_) => self.handles[&id].text_listening,
-                NodeKind::Slider { .. }
-                | NodeKind::Toggle { .. }
-                | NodeKind::Radio { .. }
-                | NodeKind::TextInput { .. } => true,
-                NodeKind::Button { listening, .. } => *listening,
-                NodeKind::Input {
-                    bindings,
-                    keyboard,
-                    pointer,
-                    ..
-                } => *keyboard || *pointer || !bindings.is_empty(),
-                _ => false,
-            } {
+            if self.handles[&id].interaction_listening
+                || match &node.kind {
+                    NodeKind::Text(_) => self.handles[&id].text_listening,
+                    NodeKind::Slider { .. }
+                    | NodeKind::Toggle { .. }
+                    | NodeKind::Radio { .. }
+                    | NodeKind::TextInput { .. } => true,
+                    NodeKind::Button { listening, .. } => *listening,
+                    NodeKind::Input {
+                        bindings,
+                        keyboard,
+                        pointer,
+                        ..
+                    } => *keyboard || *pointer || !bindings.is_empty(),
+                    _ => false,
+                }
+            {
                 return true;
             }
             pending.extend(node.children.iter().copied());
@@ -1036,6 +1063,68 @@ fn read_slice(heap: &Heap, value: Value) -> Result<Option<reel_ui::kurbo::Insets
     )))
 }
 
+fn read_repeat(heap: &Heap, value: Value) -> Result<[bool; 2], AdapterError> {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 4 {
+        return Err(AdapterError::Input(
+            "image repeat requires none, x, y or both",
+        ));
+    }
+    let mut bytes = [0; 4];
+    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    match &bytes[..info.len as usize] {
+        b"none" => Ok([false, false]),
+        b"x" => Ok([true, false]),
+        b"y" => Ok([false, true]),
+        b"both" => Ok([true, true]),
+        _ => Err(AdapterError::Input(
+            "image repeat requires none, x, y or both",
+        )),
+    }
+}
+
+fn read_image_repeat(heap: &Heap, value: Value, slice: Value) -> Result<[bool; 2], AdapterError> {
+    let repeat = read_repeat(heap, value)?;
+    if repeat != [false; 2] && slice.tag() != ValueTag::Null {
+        return Err(AdapterError::Input(
+            "image repeat and slice are mutually exclusive",
+        ));
+    }
+    Ok(repeat)
+}
+
+fn positive(value: Value) -> Result<f64, AdapterError> {
+    let value = nonnegative(value)?;
+    if value == 0. {
+        return Err(AdapterError::Input("image tile_scale must be positive"));
+    }
+    Ok(value)
+}
+
+fn read_corner_colors(
+    heap: &Heap,
+    value: Value,
+) -> Result<Option<[reel_ui::peniko::Color; 4]>, AdapterError> {
+    if value.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    if !matches!(
+        heap.info(value)?.kind,
+        ObjectKind::Array | ObjectKind::Tuple
+    ) || heap.sequence_len(value)? != 4
+    {
+        return Err(AdapterError::Input(
+            "image corner_colors requires null or [top_left, top_right, bottom_right, bottom_left]",
+        ));
+    }
+    let mut colors = [reel_ui::peniko::Color::WHITE; 4];
+    for (index, output) in colors.iter_mut().enumerate() {
+        let [r, g, b, a] = color(heap, heap.sequence_get(value, index as u32)?)?;
+        *output = reel_ui::peniko::Color::from_rgba8(r, g, b, a);
+    }
+    Ok(Some(colors))
+}
+
 pub(super) fn validate_image_property(
     heap: &Heap,
     index: u32,
@@ -1057,6 +1146,18 @@ pub(super) fn validate_image_property(
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         3 => validate_nonnegative(heap, value),
+        4 => read_repeat(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        5 => positive(value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        6 => read_corner_colors(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        7 => boolean(value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),
     }
 }
@@ -1085,6 +1186,10 @@ fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(),
         0 | 1 => Err(HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - 2, value),
     }
+}
+
+fn validate_callback(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    validate_button_property(heap, 1, value)
 }
 
 pub(super) fn number(value: Value) -> Result<f64, AdapterError> {
@@ -1286,6 +1391,25 @@ fn shrink_text(heap: &Heap, value: Value) -> Result<bool, HeapError> {
 fn validate_text_fit(heap: &Heap, value: Value) -> Result<(), HeapError> {
     shrink_text(heap, value).map(|_| ())
 }
+fn stretch(heap: &Heap, value: Value) -> Result<reel_ui::stage::Stretch, HeapError> {
+    use reel_ui::stage::Stretch;
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 4 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 4];
+    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    match &bytes[..info.len as usize] {
+        b"none" => Ok(Stretch::None),
+        b"x" => Ok(Stretch::X),
+        b"y" => Ok(Stretch::Y),
+        b"both" => Ok(Stretch::Both),
+        _ => Err(HeapError::TypeMismatch),
+    }
+}
+fn validate_stretch(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    stretch(heap, value).map(|_| ())
+}
 fn read_props(
     heap: &Heap,
     fields: Value,
@@ -1300,6 +1424,7 @@ fn read_props(
             .1)
     };
     let background = get(NodeProperty::Background)?;
+    validate_callback(heap, get(NodeProperty::OnInteraction)?)?;
     let mask = get(NodeProperty::Mask)?;
     validate_mask(heap, mask)?;
     let mask = if mask.tag() == ValueTag::Null {
@@ -1316,6 +1441,7 @@ fn read_props(
         y: number(get(NodeProperty::Y)?)?,
         width: dimension(get(NodeProperty::Width)?)?,
         height: dimension(get(NodeProperty::Height)?)?,
+        stretch: stretch(heap, get(NodeProperty::Stretch)?)?,
         opacity: opacity(get(NodeProperty::Opacity)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,

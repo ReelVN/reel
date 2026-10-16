@@ -45,6 +45,7 @@ enum ReadingField {
     Delay,
     Skipping,
     SkipUnread,
+    SkipAfterChoices,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -167,6 +168,7 @@ impl Narrative {
                 ("delay", Value::float(2.)),
                 ("skipping", Value::bool(false)),
                 ("skip_unread", Value::bool(false)),
+                ("skip_after_choices", Value::bool(false)),
             ],
             &[],
         )?;
@@ -197,6 +199,10 @@ impl Narrative {
             (ReadingField::Paused, Value::bool(reading.paused())),
             (ReadingField::Skipping, Value::bool(reading.skipping())),
             (ReadingField::SkipUnread, Value::bool(reading.skip_unread())),
+            (
+                ReadingField::SkipAfterChoices,
+                Value::bool(reading.skip_after_choices()),
+            ),
             (
                 ReadingField::Delay,
                 Value::float(reading.delay().as_secs_f64()),
@@ -495,7 +501,10 @@ impl SessionVm {
                 let unread = args[1]
                     .as_bool()
                     .ok_or(AdapterError::Input("skip unread requires bool"))?;
-                session.set_skip_reading(enabled, unread);
+                let after_choices = args[2]
+                    .as_bool()
+                    .ok_or(AdapterError::Input("skip after_choices requires bool"))?;
+                session.set_skip_reading(enabled, unread, after_choices);
                 self.skip_input = self
                     .tasks
                     .iter()

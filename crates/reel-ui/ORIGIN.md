@@ -36,3 +36,7 @@ source and ASB control flows are covered by `reel-cli/tests/author_controls.rs`.
 Reel's Label paragraph composer adds ranged markup styles, baseline-aligned ruby,
 emphasis dots and owned inline-link actions. Text reveal shares the complete layout;
 interactive-region changes update focus and presented input configuration.
+
+Image painting supports shared-source repetition, optional nine-slice centers and
+node-relative corner tint. Portable frame metadata retains the tint across cached
+painting and transforms without platform handles or copied image pixels.
