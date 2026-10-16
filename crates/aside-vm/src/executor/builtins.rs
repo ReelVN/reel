@@ -38,6 +38,7 @@ pub(super) enum Builtin {
     TrimStart,
     TrimEnd,
     Get,
+    Split,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -67,6 +68,7 @@ impl Builtin {
             (String, "starts_with") => Some(Self::StartsWith),
             (String, "ends_with") => Some(Self::EndsWith),
             (String, "join") => Some(Self::Join),
+            (String, "split") => Some(Self::Split),
             (String, "to_ascii_lowercase") => Some(Self::AsciiLowercase),
             (String, "to_ascii_uppercase") => Some(Self::AsciiUppercase),
             (String, "trim") => Some(Self::Trim),
@@ -106,6 +108,7 @@ impl Builtin {
             Builtin::TrimStart,
             Builtin::TrimEnd,
             Builtin::Get,
+            Builtin::Split,
         ];
         usize::try_from(id)
             .ok()
@@ -122,6 +125,7 @@ impl Builtin {
             Self::Remove => (&["index"], 1),
             Self::Resize => (&["length", "value"], 1),
             Self::Extend | Self::Join => (&["items"], 1),
+            Self::Split => (&["separator"], 1),
             Self::Swap => (&["a", "b"], 2),
             Self::StartsWith => (&["prefix"], 1),
             Self::EndsWith => (&["suffix"], 1),
@@ -342,6 +346,8 @@ impl Vm {
             && (self.heap.info(receiver)?.len as usize).is_multiple_of(VALUE_CHUNK_LEN)
         {
             VALUE_CHUNK_BYTES
+        } else if matches!(call.method, Builtin::Split) {
+            VALUE_CHUNK_BYTES
         } else {
             0
         };
@@ -411,6 +417,7 @@ impl Vm {
             | Builtin::StartsWith
             | Builtin::EndsWith
             | Builtin::Join
+            | Builtin::Split
             | Builtin::AsciiLowercase
             | Builtin::AsciiUppercase
             | Builtin::Trim

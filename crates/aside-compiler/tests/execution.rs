@@ -475,6 +475,45 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         }}"#, text.len(), text.chars().count(), padding+8, padding+slice.len())
     }).collect();
     cases.extend(text_cases.iter().map(|source| (source.as_str(), 42)));
+    let long_separator = format!("{}b", "a".repeat(1030));
+    let repetitive = format!("{}b尾{}b", "a".repeat(4100), "a".repeat(1030));
+    let crossing = format!("{}中文🙂尾中文🙂", "x".repeat(1023));
+    let split_cases: Vec<_> = [
+        ("characters/sayori.chr", "/"),
+        ("/a//b/", "/"),
+        ("aaaaa", "aa"),
+        ("", "/"),
+        ("", ""),
+        ("中🙂é", ""),
+        ("abc", "longer"),
+        (crossing.as_str(), "中文🙂"),
+        (repetitive.as_str(), long_separator.as_str()),
+    ]
+    .into_iter()
+    .map(|(text, separator)| {
+        let expected: Vec<_> = text.split(separator).collect();
+        let checks = expected
+            .iter()
+            .enumerate()
+            .map(|(i, value)| format!("parts[{i}]!={value:?}"))
+            .collect::<Vec<_>>()
+            .join(" || ");
+        format!(
+            r#"fn main() {{
+            let split={text:?}.split;
+            let parts=split(separator:{separator:?});
+            if parts.len()!={} || {checks} {{throw "split result";}}
+            if {separator:?}.join(parts)!={text:?} {{throw "split/join";}}
+            parts.append("mutable result");
+            let mut rejected=false;
+            try {{split(null);}} catch error {{rejected=true;}}
+            if rejected {{42}} else {{0}}
+        }}"#,
+            expected.len()
+        )
+    })
+    .collect();
+    cases.extend(split_cases.iter().map(|source| (source.as_str(), 42)));
     for (source, expected) in cases {
         let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
             .unwrap()

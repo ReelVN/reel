@@ -154,6 +154,8 @@ to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII �
 
 计数、切片和前后缀比较按字节分片；byte_len 为常数成本，scalar 切片单次前向扫描定位后复制。join 只向一个私有缓冲顺序追加，每个输出字节复制一次；空项也按元素计费。来源数组在执行片之间变化报告 ConcurrentModification；失败、取消不发布部分结果。UTF-8 解码与标量迭代复用 Rust 标准库，VM 仅管理分块游标、预算与根，不维护另一套 Unicode 解码规则。
 
+`string.split(separator)` 返回 string array，按完整分隔字符串从左至右非重叠切分，保留开头、末尾和连续分隔产生的空项；空 separator 在 Unicode scalar 边界切分并保留首尾空项，与 Rust str::split 的字符串分隔语义一致。separator 必须是 string，支持具名实参与绑定方法。扫描与结果复制按工作量让出，使用线性匹配，不先复制整段输入；临时匹配状态和已产出的片段由 VM 根持有并参与 GC、取消和执行快照。
+
 所有范围从零开始，端点规则与 Range 一致；字节切片端点必须在 UTF-8 边界，否则报错。UTF-8 解码默认严格，替换非法输入需显式模式。Unicode 库版本属于包兼容元数据。normalize、大小写转换、trim、find/replace、split/join、parse/format 均定义输入单位、边界和错误；默认大小写转换不依赖进程 locale，本地化规则通过显式 locale 参数选择。字素不是字体布局 cluster，Reel reveal 由文本服务将规定揭示单位映射到稳定排版。
 
 TextBuffer 提供 append、insert_bytes/remove_bytes/replace_bytes、对应字素操作、clear 与 to_string。文本编辑不能产生非法 UTF-8；buffer 是共享身份对象，to_string 产生不受后续编辑影响的不可变值。任何内容改动使其既有文本游标失效。缓冲自身不自动可观察，UI 更新经 model 写回或显式可观察包装。

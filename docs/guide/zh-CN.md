@@ -150,6 +150,8 @@ let has_opening = caption.starts_with(prefix: "第二章");
 
 文本可用 byte_len 取得 UTF-8 字节数、scalar_count 取得 Unicode 标量数。slice_bytes 和 slice_scalars 使用显式范围，越界或截断 UTF-8 标量会报错；组合字符和 emoji 可能包含多个标量，标量切片不代表字素切片。starts_with/ends_with 精确匹配前后缀，空字符串总是匹配。`separator.join(items)` 连接字符串数组或 tuple，空集合得到空字符串，其他类型不会自动转成文字。长文本按执行预算推进，连接过程中修改来源数组会报错。完整示例见 [text_operations.aside](../../examples/text_operations.aside)。
 
+`text.split(separator)` 按完整分隔字符串切分并返回字符串数组，保留首尾和连续分隔产生的空项。空分隔字符串按 Unicode 标量切分，仍保留首尾空项。例如 `"/角色//纱世里/".split("/")` 得到 `["", "角色", "", "纱世里", ""]`。扫描和片段复制按执行预算让出，不会先复制整段输入。
+
 to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文等其他文字。例如 "Emily你好".to_ascii_lowercase() 得到 "emily你好"，可用于 ASCII 标识或账号的比较。
 
 `trim()/trim_start()/trim_end()` 移除两端、开头或末尾的 Unicode 空白，保留名字或正文内部的空格。例如 `let player_name = "\u{3000} 空 山 \u{a0}".trim();` 得到 `"空 山"`；全为空白时得到空字符串。参见 [text_operations.aside](../../examples/text_operations.aside)。
