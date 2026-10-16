@@ -9,7 +9,7 @@ pub use image::ImageSource;
 pub mod particles;
 
 use crate::input::{ActionPhase, Binding};
-use crate::kurbo::{Affine, Point, Size, Vec2};
+use crate::kurbo::{Affine, Insets, Point, Size, Vec2};
 use crate::properties::ObjectFit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -192,6 +192,10 @@ pub enum NodeKind {
     Image {
         source: ImageSource,
         fit: ObjectFit,
+        /// Nine-slice borders in source pixels, or ordinary object-fit drawing.
+        slice: Option<Insets>,
+        /// Logical border width per source pixel when nine-slice drawing is enabled.
+        slice_scale: f64,
         /// Author constructor location, retained through later source changes.
         origin: Option<String>,
     },

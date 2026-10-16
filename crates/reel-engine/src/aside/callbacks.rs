@@ -11,6 +11,10 @@ pub(super) struct ScriptTask {
     pub result: Option<RootToken>,
     pub wait: Option<WaitId>,
     pub cancelling: bool,
+    // The not-yet-run VM argument roots this event. Once execution starts its
+    // coordinates are immutable, even if the callback later awaits.
+    #[serde(skip)]
+    pending_move: Option<(Value, Value)>,
 }
 
 impl SessionVm {
@@ -24,6 +28,18 @@ impl SessionVm {
             return Ok(false);
         };
         use reel_ui::stage::PointerPhase;
+        if input.phase == PointerPhase::Moved
+            && let Some(pending) = self.tasks.last()
+            && pending.node == Some(input.node)
+            && !pending.cancelling
+            && let Some((event, handler)) = pending.pending_move
+            && handler.same_bits(callback)
+        {
+            let heap = self.vm.heap_mut();
+            super::observable::publish(heap, event, 1, Value::float(input.position.x))?;
+            super::observable::publish(heap, event, 2, Value::float(input.position.y))?;
+            return Ok(true);
+        }
         let phase = match input.phase {
             PointerPhase::Pressed => "pressed",
             PointerPhase::Moved => "moved",
@@ -42,7 +58,11 @@ impl SessionVm {
             ],
             &[],
         )?;
-        self.start_callback(session, input.node, callback, event)
+        self.start_callback(session, input.node, callback, event)?;
+        if input.phase == PointerPhase::Moved {
+            self.tasks.last_mut().unwrap().pending_move = Some((event, callback));
+        }
+        Ok(true)
     }
     pub fn input_key(
         &mut self,
@@ -288,6 +308,7 @@ impl SessionVm {
             result,
             wait: None,
             cancelling: false,
+            pending_move: None,
         });
         Ok(task)
     }
@@ -361,6 +382,7 @@ impl SessionVm {
     ) -> Result<(), AdapterError> {
         let callback = &mut self.tasks[index];
         if !callback.cancelling {
+            callback.pending_move = None;
             // Spawned result roots remain owned by this task until cleanup. Node
             // and activity roots belong to the session and their explicit nodes.
             if let Some(root) = callback.result {
@@ -503,6 +525,7 @@ impl SessionVm {
         let task = if index == 0 {
             self.task.unwrap()
         } else {
+            self.tasks[index - 1].pending_move = None;
             self.tasks[index - 1].task
         };
         self.feedback_only = false;

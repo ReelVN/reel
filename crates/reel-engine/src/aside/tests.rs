@@ -173,6 +173,7 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
                         source: source_name,
                         fit,
                         origin,
+                        ..
                     } = &node.kind
                     else {
                         unreachable!()

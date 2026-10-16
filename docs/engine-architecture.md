@@ -12,6 +12,8 @@ Reel 面向视觉小说，以统一舞台组合剧情画面、UI、文字和效�
 
 ## 一 产品范围与实现原则
 
+共享资源读取区分单资源过大与瞬时容量争用：文件超过宿主 input_bytes 容量时报告资源路径和所需/配置字节；并发读取暂时占满输入容量时保留尚未提交的读取，随既有资源维护继续准入，不结算为加载失败。取消可直接撤销未提交读取，无额外文件缓存或同步等待。范围为 reel-player 资源服务；作者接口、ABI、ASB 与依赖保持不变。
+
 作者的数据类使用 Aside 的统一类布局与 GC，Reel 不另建脚本类包装层。实例方法进入普通 VM 调用栈，构造和字段初始化沿用 NoWait 与可让出的执行预算。
 
 `model` 的数据图包含已完成构造的类实例；复制实例和字段值，保留别名与环，共享类定义，不重跑构造。后续赋入实例保留原身份并观察其数据字段。实例仍满足原名义类型，继承与绑定方法作用于对应实例。字段沿用原语言 cell，作为同一属性图的端点；bind/derive 与控件回写保留只读和完整类型约束，失败不改变字段或已连接控件。静态字段不成为实例状态；未完成/失败的实例、可执行或资源字段不作为可复制默认数据。源码定位、GC 与复制取消沿现有路径；稳定字段读写不扫描类成员表或创建载荷。范围为 aside-vm、Reel 接入、示例与双语指南，B01/ASB 和 native ABI 不变，无新增依赖。
@@ -98,7 +100,7 @@ VM 任务槽按并发数量增长和复用，执行根在宿主准入点扩容/�
 
 ### 按业务身份复用的作者列表
 
-滚动组合公开 `scroll_x/scroll_y` 可写可绑定位置，以及 `viewport_width/viewport_height/content_width/content_height` 只读可观察尺寸。实际布局将位置钳制到内容范围，滚轮、触摸与焦点跟随回写同一位置；只有改变的数据发布通知。`content_align: "start" | "center" | "end"` 在滚动轴上对齐短内容，默认 start；follow_end 继续保留上滚阅读位置。位置更新只合成，不重新测量文字。`input(on_pointer: callback)` 交付主指针拖动的 `{target,x,y,phase}`，坐标来自已接受呈现的节点局部坐标，phase 为 pressed/moved/released/cancelled；按下捕获，失焦/隐藏/禁用取消，回调归节点所有。作者以普通节点和绑定组合轨道、滑块和箭头，不固定滚动条外观。范围为 reel-ui/reel-engine/reel-player、示例与双语指南；scroll ABI 3、input ABI 7，B01/ASB 不变，无新依赖。验证拖动及模态取消、双向位置绑定、短内容对齐、追加跟随及连续滚动期间布局次数不增长。
+滚动组合公开 `scroll_x/scroll_y` 可写可绑定位置，以及 `viewport_width/viewport_height/content_width/content_height` 只读可观察尺寸。实际布局将位置钳制到内容范围，滚轮、触摸与焦点跟随回写同一位置；只有改变的数据发布通知。`content_align: "start" | "center" | "end"` 在滚动轴上对齐短内容，默认 start；follow_end 继续保留上滚阅读位置。位置更新只合成，不重新测量文字。`input(on_pointer: callback)` 交付主指针拖动的 `{target,x,y,phase}`，坐标来自已接受呈现的节点局部坐标，phase 为 pressed/moved/released/cancelled；按下捕获，失焦/隐藏/禁用取消，回调归节点所有。同一节点、同一处理器连续到达的 moved，在前一个回调尚未开始时合并为最新坐标；已经开始的回调参数保持稳定，pressed/released/cancelled 不合并。参数由 VM 调用帧持有，快照保留最终坐标而不保存合并优化的临时索引。作者以普通节点和绑定组合轨道、滑块和箭头，不固定滚动条外观。范围为 reel-ui/reel-engine/reel-player、示例与双语指南；scroll ABI 3、input ABI 7，B01/ASB 不变，无新依赖。验证拖动及模态取消、双向位置绑定、短内容对齐、追加跟随及连续滚动期间布局次数不增长。
 
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
@@ -188,11 +190,13 @@ Reel 源码编译入口将当前注册的 reel::prelude 接口放入外围宿主
 
 图片节点合同：`image(source, fit: "contain", ...)` 使用共同节点属性，source 为非空文件路径，fit 为 contain/cover/stretch。source、fit 可直接修改；省略宽高时使用图片固有逻辑尺寸，只指定一边时保持固有宽高比，指定两边时由 fit 决定缩放与裁剪。构造及赋值只更新舞台描述，不执行文件 IO；仅挂载子树请求资源。
 
+`image(..., slice: null, slice_scale: 1)` 可将同一图片作为九宫格面板。slice 为统一边距数值，或按左、上、右、下排列的四项数组/tuple；边距使用源图像像素，slice_scale 将其换算为目标逻辑边宽，两者均为有限非负数。null 使用普通 fit；启用后填满节点内容框，角保持比例，边沿单轴拉伸，中心拉伸。源边距超过图像尺寸时四边统一按比例收缩；目标框不足以容纳边框时再次统一缩小目标边宽，避免重叠，零面积切片跳过。slice、slice_scale 支持直接赋值、bind/derive、layered_image 描述与执行快照。源必须为完整 PNG/JPEG 文件或编码 Bytes，分块 .reel-image 在资源边界带源码位置拒绝。共同舞台保留 Insets 与比例；UI 对同一个 ImageBrush 绘制至多九个矩形，不生成像素、不增加上传或每片离屏裁剪。image native ABI 9、reel.image 宿主属性快照版本 2；Aside/B01 与资源格式不变，无新依赖。
+
 image 的既有 color 属性是像素乘色，默认白色；sRGB 颜色先转为线性预乘值，再与图像的线性预乘 RGBA 相乘，color 的 alpha 和节点 opacity 各应用一次。普通图片、分块图片和 layered_image 的各图层描述使用同一规则；容器 color 不继承到子节点。变更 color 只更新绘制颜色，不重新解码、上传或复制纹理，也不增加离屏合成。Image 控件通过 typed PaintCtx 记录每个绘制范围的图像颜色，FrameImage 保留资源句柄和乘数；GPU 通用与矩形批量路径共用已有顶点颜色，同资源不同颜色仍可批量。遮罩定义的采样不受被遮罩内容颜色影响。既有 source/ASB native ABI、NodeProps 与执行快照格式不变，无新依赖；范围为 UI 绘制元数据、帧编译、播放器图片同步和渲染器。
 
 `layered_image(layers, ...共同节点属性)`（ABI 1）将零参数计算函数返回的图层数组组合为普通 stack/image 子树。每项为包含 source 的图片属性表，或表示空槽的 null；数组位置是稳定图层槽，从后向前叠放。依赖变化时重新计算，先校验全部描述，再复用槽内图片节点并仅写入变化的属性；null 隐藏并保留槽，缩短数组退休尾部槽。属性省略时使用 image 默认值，bind/derive 属性值在计算中作为依赖读取。返回节点直接参与舞台布局、动画和所有权；图层描述、依赖与节点引用存入 VM 堆并随现有执行快照恢复，不增加 GPU 合成缓存或新的渲染节点类型。逐槽解析/更新使用 native continuation 并计入工作预算；只在依赖变化时工作，不逐帧重建或合成像素。无新依赖或 B01/存档格式变更。
 
-player 使用锁定 image crate 的 PNG/JPEG 解码器、已有 Image 控件和 ResourceLease。Assets 共用 AssetIo 与 WorkExecutor，默认组装后台 DirectoryIo 和 ImageExecutor；宿主可通过 with_assets 注入自己的适配器。重复 source 共享不可变像素；加载请求随最新舞台更新，过期结果不发布。新舞台所需图片与配置字体全部就绪后整体发布，其间保留上一完整画面并禁用其剧情输入；后台完成唤醒窗口，不通过连续轮询驱动绘制。换源和退休释放缓存所有权，已接受帧的租约按原有提交寿命释放。关闭不等待文件 IO/解码，撤销接收端及请求，后台任务持有的内存预算随退出释放。文件读取和解码不进入绘制热路径，不逐帧复制像素。
+player 使用锁定 image crate 的 PNG/JPEG 解码器、已有 Image 控件和 ResourceLease。Assets 共用 AssetIo 与 WorkExecutor，默认组装后台 DirectoryIo 和 ImageExecutor；宿主可通过 with_assets 注入自己的适配器。重复 source 共享不可变像素；加载请求随最新舞台更新，过期结果不发布。新舞台所需图片与配置字体全部就绪后整体发布，其间保留上一完整画面并禁用其剧情输入；后台完成唤醒窗口，不通过连续轮询驱动绘制。visible=false 的子树不发起图片、粒子贴图或遮罩加载；已加载且仍挂载的隐藏资源可复用，出现未缓存的可见资源需求时先驱逐不属于当前需求和上一已发布画面的缓存。隐藏子控件不保留像素引用，缓存沿原有 resident 预算计账，不另设缓存额度；组件卸载释放缓存所有权，已接受帧的租约按原有提交寿命释放。opacity=0 仍准备资源，便于淡入演出。关闭不等待文件 IO/解码，撤销接收端及请求，后台任务持有的内存预算随退出释放。文件读取和解码不进入绘制热路径，不逐帧复制像素。
 
 资源路径默认相对于 dev 的源码文件或 run 的 ASB 文件所在目录；`--assets <directory>` 显式选择根目录，库宿主通过 AssetOptions 配置，并通过 AsideSessionUi::set_image_waker 安装后台完成通知。同一路径在驻留期间代表同一不可变资源版本，退休后重新挂载会重新读取；不监视磁盘文件变化。加载失败结束本次窗口运行，并报告图片路径和该 image 节点构造位置；它属于异步宿主资源错误，属性类型/fit 错误仍在赋值处同步抛出。嵌入 ASB 的源码位置只用于诊断，不决定运行机器的资源目录。
 
@@ -200,7 +204,7 @@ player 使用锁定 image crate 的 PNG/JPEG 解码器、已有 Image 控件和 
 
 GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用前清空，仍在父组、遮罩或交叉淡化中使用的目标不得回收。预算按实际分配的纹理峰值计费，并保留到 GPU 提交完成，不能在记录完绘制命令时提前退还。同级裁剪与分组不再逐项累积整窗纹理；这一内部变更不改变帧格式、采样质量或默认预算。
 
-图片实现遵循 reel-ui 舞台/资源快照、reel-engine 宿主绑定、reel-player 平台组装与 reel-cli 作者工具的模块边界；保持 B01/ASB v1，宿主 image 使用 ABI v1。图片使用可配置的驻留像素预算与单次解码工作预算，无额外作者节点数量上限；解码器私有暂存由 image 的 limits 约束，不能声称为逐字节引擎预算。验收覆盖源码/ASB 的真实图片帧、PNG/JPEG、固有尺寸/fit、共享与换源退休、加载错误及关闭后迟到结果；成本检查关注解码次数、共享像素、空闲时无加载/轮询与最终预算释放。
+图片实现遵循 reel-ui 舞台/资源快照、reel-engine 宿主绑定、reel-player 平台组装与 reel-cli 作者工具的模块边界；保持 B01/ASB v1，宿主 image 使用 ABI 9。图片使用可配置的驻留像素预算与单次解码工作预算，无额外作者节点数量上限；解码器私有暂存由 image 的 limits 约束，不能声称为逐字节引擎预算。验收覆盖源码/ASB 的真实图片帧、PNG/JPEG、固有尺寸/fit、共享与换源退休、加载错误及关闭后迟到结果；成本检查关注解码次数、共享像素、空闲时无加载/轮询与最终预算释放。
 
 脚本组合、共享节点和窗口宿主已接通。`reel-ui::stage` 持有唯一的作者节点模型，engine 管理脚本值和会话寿命，player 将同一模型投影到既有控件、呈现桥和渲染器。`text`、`image`、`row`、`column`、`stack` 返回具有稳定身份的未挂载节点；`stage.replace(root)` 挂载新根并结束旧子树。普通函数可返回节点，尾随 children、条件和集合循环按语言的收集规则组合子树。可运行源码为 [author_stage.aside](../examples/author_stage.aside)。当前验证覆盖源码、ASB、VM、实际控件和帧记录生成；Windows 上另使用 AMD Radeon RX 7900 GRE / Vulkan 完成中文作者画面的离屏 GPU 读回。此证据不覆盖原生窗口生命周期和设备热插拔。
 

@@ -34,6 +34,13 @@ enum TextMode {
         len: u32,
         version: u64,
     },
+    Trim {
+        offset: u32,
+        utf8: Utf8,
+        bytes: u32,
+        begin: Option<u32>,
+        end: u32,
+    },
 }
 
 impl Vm {
@@ -46,6 +53,18 @@ impl Vm {
         let len = self.heap.info(receiver).map_err(heap_fault)?.len;
         let argument = || self.builtin_argument(s, call, 0).map_err(vm_fault);
         let mode = match call.method {
+            Builtin::Trim | Builtin::TrimStart | Builtin::TrimEnd => {
+                if s.effects.0 & Effects::ALLOCATE == 0 {
+                    return Err(FaultKind::Effect);
+                }
+                TextMode::Trim {
+                    offset: 0,
+                    utf8: Utf8::default(),
+                    bytes: 0,
+                    begin: None,
+                    end: 0,
+                }
+            }
             Builtin::AsciiLowercase | Builtin::AsciiUppercase => TextMode::Copy {
                 offset: 0,
                 end: len,
@@ -321,6 +340,61 @@ impl Vm {
                         separator,
                         len,
                         version,
+                    }
+                }
+            }
+            TextMode::Trim {
+                offset,
+                mut utf8,
+                mut bytes,
+                mut begin,
+                mut end,
+            } => {
+                let segment = self
+                    .heap
+                    .byte_segment(receiver, offset)
+                    .map_err(heap_fault)?;
+                let count = segment.len() as u32;
+                if !meter.take(0, u64::from(count) * 2 + 1, 0) {
+                    return Ok(false);
+                }
+                let start_only = matches!(work.call.method, Builtin::TrimStart);
+                utf8.feed(segment, |text| {
+                    for ch in text.chars() {
+                        let position = bytes;
+                        bytes += ch.len_utf8() as u32;
+                        if !ch.is_whitespace() {
+                            begin.get_or_insert(position);
+                            end = bytes;
+                            if start_only {
+                                break;
+                            }
+                        }
+                    }
+                })?;
+                if count == 0 || start_only && begin.is_some() {
+                    let len = self.heap.info(receiver).map_err(heap_fault)?.len;
+                    let begin = if matches!(work.call.method, Builtin::TrimEnd) {
+                        0
+                    } else {
+                        begin.unwrap_or(len)
+                    };
+                    let end = if start_only || begin == len { len } else { end };
+                    if begin == 0 && end == len {
+                        self.builtin_finish(s, work.call, Ok(receiver))
+                            .map_err(vm_fault)?;
+                        return Ok(true);
+                    }
+                    let buffer = self.heap.alloc_byte_buffer(&[]).map_err(heap_fault)?;
+                    self.put(s.env, 2, buffer).map_err(vm_fault)?;
+                    TextMode::Copy { offset: begin, end }
+                } else {
+                    TextMode::Trim {
+                        offset: offset + count,
+                        utf8,
+                        bytes,
+                        begin,
+                        end,
                     }
                 }
             }

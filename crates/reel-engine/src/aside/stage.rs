@@ -226,7 +226,8 @@ impl StageBinding {
             NodeKind::Radio { .. } => controls::RadioField::PROPERTIES.len() as u32,
             NodeKind::Input { .. } => input::InputField::PROPERTIES.len() as u32,
             NodeKind::Scroll { .. } => scroll::ScrollField::PROPERTIES.len() as u32,
-            NodeKind::Image { .. } | NodeKind::Button { .. } => 2,
+            NodeKind::Image { .. } => registry::IMAGE_PREFIX.len() as u32,
+            NodeKind::Button { .. } => 2,
             _ => 0,
         })
     }
@@ -559,9 +560,11 @@ impl StageBinding {
                             read_source(heap, heap.table_entry(fields, 0)?.1, read_limit)?
                         },
                         fit: read_fit(heap, heap.table_entry(fields, 1)?.1)?,
+                        slice: read_slice(heap, heap.table_entry(fields, 2)?.1)?,
+                        slice_scale: nonnegative(heap.table_entry(fields, 3)?.1)?,
                         origin: origin.clone(),
                     },
-                    2,
+                    registry::IMAGE_PREFIX.len(),
                 ),
                 kind => (kind.clone(), 0),
             };
@@ -1007,6 +1010,32 @@ fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit,
     }
 }
 
+fn read_slice(heap: &Heap, value: Value) -> Result<Option<reel_ui::kurbo::Insets>, AdapterError> {
+    use reel_ui::kurbo::Insets;
+    if value.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    if matches!(value.tag(), ValueTag::Int | ValueTag::Float) {
+        let border = nonnegative(value)?;
+        return Ok(Some(Insets::uniform(border)));
+    }
+    if !matches!(
+        heap.info(value)?.kind,
+        ObjectKind::Array | ObjectKind::Tuple
+    ) || heap.sequence_len(value)? != 4
+    {
+        return Err(AdapterError::Input(
+            "image slice requires null, a nonnegative number, or [left, top, right, bottom]",
+        ));
+    }
+    Ok(Some(Insets::new(
+        nonnegative(heap.sequence_get(value, 0)?)?,
+        nonnegative(heap.sequence_get(value, 1)?)?,
+        nonnegative(heap.sequence_get(value, 2)?)?,
+        nonnegative(heap.sequence_get(value, 3)?)?,
+    )))
+}
+
 pub(super) fn validate_image_property(
     heap: &Heap,
     index: u32,
@@ -1024,7 +1053,11 @@ pub(super) fn validate_image_property(
         1 => read_fit(heap, value)
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
-        _ => validate_layout_property(heap, index - 2, value),
+        2 => read_slice(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        3 => validate_nonnegative(heap, value),
+        _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),
     }
 }
 

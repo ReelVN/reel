@@ -143,6 +143,8 @@ let has_opening = caption.starts_with(prefix: "第二章");
 
 to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文等其他文字。例如 "Emily你好".to_ascii_lowercase() 得到 "emily你好"，可用于 ASCII 标识或账号的比较。
 
+`trim()/trim_start()/trim_end()` 移除两端、开头或末尾的 Unicode 空白，保留名字或正文内部的空格。例如 `let player_name = "\u{3000} 空 山 \u{a0}".trim();` 得到 `"空 山"`；全为空白时得到空字符串。参见 [text_operations.aside](../../examples/text_operations.aside)。
+
 已注册的函数也可以保存和传递，例如 `let say = narrator; say("你好");`，等待行为与直接调用一致；函数缺省参数也可以是 `text` 等构造函数。可以用 `(int,int)` 约束坐标，用 `(int,int)|null` 表达可省略的坐标；`is`、参数、返回值和变量赋值都会检查相应类型，失败赋值保留旧值。完整可运行示例见 [function_values.aside](../../examples/function_values.aside)，使用前面的 `dev` 或 `build` 命令替换输入路径即可。
 
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
@@ -227,7 +229,7 @@ column(gap: 12) {
 
 节点保持原身份、父级和回调所有权。完整示例见 [author_composition.aside](../../examples/author_composition.aside)。
 
-滚动区域的 `scroll_x/scroll_y` 可读写或 bind；布局会把位置限制在实际内容范围。`viewport_width/viewport_height/content_width/content_height` 是只读可观察尺寸，可在 derive 中计算自定义滑块的位置与长度。`content_align: "end"` 让不足一屏的聊天记录从底部排列，`"center"` 居中，默认 `"start"`。`input(on_pointer: ...)` 提供 `{target,x,y,phase}`，x/y 是呈现节点的局部坐标，phase 为 pressed/moved/released/cancelled；鼠标主键或触摸按下后捕获拖动，失焦、隐藏和禁用会取消。回调可等待并归输入节点所有。参见 [自定义滚动条](../../examples/author_scrollbar.aside)。
+滚动区域的 `scroll_x/scroll_y` 可读写或 bind；布局会把位置限制在实际内容范围。`viewport_width/viewport_height/content_width/content_height` 是只读可观察尺寸，可在 derive 中计算自定义滑块的位置与长度。`content_align: "end"` 让不足一屏的聊天记录从底部排列，`"center"` 居中，默认 `"start"`。`input(on_pointer: ...)` 提供 `{target,x,y,phase}`，x/y 是呈现节点的局部坐标，phase 为 pressed/moved/released/cancelled；鼠标主键或触摸按下后捕获拖动，失焦、隐藏和禁用会取消。回调可等待并归输入节点所有。尚未开始的同节点、同处理器连续 moved 会合并为最新坐标，避免鼠标输入积压；已经开始的回调参数保持稳定，按下、释放和取消各自交付。参见 [自定义滚动条](../../examples/author_scrollbar.aside)。
 
 `container.add(child)` 将子树追加到 row、column 或 stack，返回原 child；`index:` 可指定从零开始的插入位置，允许等于当前子节点数，省略或传 null 表示末尾。子树必须尚未挂到舞台且没有父级。重复挂载、成环、向 text/image 添加或位置越界都会报错，原树保持不变。添加和删除保留其他节点及其控件身份，未改变的文字不重新整形。
 
@@ -266,12 +268,16 @@ fn main() {
 
 用 `image(source, fit: "contain", ...)` 将 PNG/JPEG 文件放到舞台。省略 width/height 时，图片的像素尺寸作为逻辑尺寸；只指定一边时保持宽高比。指定两边后，contain 完整显示并留空，cover 填满并裁剪，stretch 拉伸填满。图片也支持共同的位置、可见性、透明度和 padding 属性。可以直接修改原节点的 source 和 fit。
 
+面板、按钮底图等可用 `slice: 24` 开启九宫格，或用 `slice: [24, 16, 24, 16]` 分别指定左、上、右、下边距。边距以源图像像素计，`slice_scale` 默认 1，用于调整目标边宽；数值均须有限且非负。九宫格填满内容框，角保持比例，边和中心拉伸；框过小或源边距超出图片时四边统一按比例收缩，零面积切片不绘制。`slice: null` 恢复普通 fit。两项属性可直接赋值或绑定，也可写入 layered_image 的图层描述。使用完整 PNG/JPEG 或图片 Bytes，分块 .reel-image 不适用于九宫格；多个切片共享图片，不生成或上传额外像素。
+
 ```aside
 fn main() {
     let picture = image("assets/panels.png", width: 320, height: 180);
     stage.replace(column(gap: 16, padding: 24) {
         picture;
         image("assets/panels.png", width: 160, height: 160, fit: "cover");
+        image("assets/panels.png", width: 480, height: 80,
+            slice: [24, 16, 24, 16], slice_scale: 1);
     });
     narrator("The same resource can appear in different frames.");
     picture.source = "assets/sun.jpg";
@@ -282,7 +288,7 @@ fn main() {
 
 完整的 [author_images.aside](../../examples/author_images.aside) 随附所需图片，可用前面的 dev 命令运行。dev 的资源路径相对于源码文件目录，run 相对于 ASB 文件目录；`--assets <directory>` 可另选资源根目录。例如构建到 target/reel-artifacts 后，运行时加 `--assets examples`。构建 ASB 不会复制图片文件。
 
-图片与字体共用资源加载服务，文件读取和图片解码在后台执行，同一路径的图片节点共享像素。新场景所需图片与配置字体全部就绪前保留上一完整画面，并暂停剧情输入；换源也保留旧图片直至新资源就绪。文件缺失或损坏会报告文件路径及 image 构造位置（字体对应 game.configure），并结束本次窗口运行。属性类型错误和非法 fit 可在赋值处捕获。图片挂载时才读取文件，构造未挂载组件不会产生文件 IO；会话内文件热重载尚未实现。
+图片与字体共用资源加载服务，文件读取和图片解码在后台执行，同一路径的图片节点共享像素。新场景所需图片与配置字体全部就绪前保留上一完整画面，并暂停剧情输入；换源也保留旧图片直至新资源就绪。文件缺失或损坏会报告文件路径及 image 构造位置（字体对应 game.configure），并结束本次窗口运行。属性类型错误和非法 fit 可在赋值处捕获。图片挂载并且祖先均可见时才读取文件；构造未挂载组件或 visible=false 子树不会产生图片 IO。已加载的隐藏图片可在仍挂载时复用，有新图片加载需求时让出闲置缓存；卸载组件释放其缓存，上一完整画面与在途帧继续持有各自租约。opacity=0 仍准备图片，可用于资源就绪后淡入。会话内文件热重载尚未实现。
 
 所有基础节点都支持 rotation、scale_x/scale_y 和 anchor_x/anchor_y，容器的变换作用于整个组件。rotation 是顺时针角度，默认 0；scale_x/scale_y 默认 1，负数可翻转，0 折叠画面且不参与命中。anchor_x/anchor_y 按布局宽高取比例，默认 (0,0) 为左上角，(0.5,0.5) 为中心；也可放到组件外。x/y 指定锚点相对容器排布位置的偏移。先围绕锚点缩放，再旋转，再放到该位置；父容器的变换继续作用于结果。宽高和 row/column 排布保持变换前的尺寸。裁剪与呈现几何使用相同变换，属性修改保留原节点；移动、旋转、缩放、锚点和透明度编辑不会重新排版。
 
@@ -1094,6 +1100,8 @@ fn main() {
 ```
 
 `audio.play` 在后台读取、解码并播放，立即返回活动。`await` 返回 `Completed` 或 `Stopped`；加载与设备错误可以 `try/catch`。`volume` 是非负线性增益，1 是原始音量，0 静音。pause/resume 保留播放位置，stop 不重启声音，重复等待保留同一个结果。
+
+图片、字体和音频共用宿主的资源读取容量。并发读取暂时占满容量时，后续读取等待已有任务释放输入；单个文件超过宿主配置的输入容量仍会报错，诊断包含路径和字节数。
 
 `start` 指定从第几秒起播，`audio.position(sound)` 读取当前内容位置秒数；加载中返回请求起点，暂停时保持，结束后仍可读取最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至音轨结尾。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，边界必须位于资源内并至少包含一帧。未开启 looping 时使用默认循环边界。
 

@@ -1576,6 +1576,8 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
                 source: "background.reel-image".into(),
                 origin: Some("snow.aside:2:3".into()),
                 fit: Default::default(),
+                slice: None,
+                slice_scale: 1.,
             },
             NodeProps::default(),
             vec![],

@@ -143,6 +143,8 @@ Use byte_len for the UTF-8 byte length and scalar_count for the Unicode scalar c
 
 to_ascii_lowercase()/to_ascii_uppercase() convert ASCII letters and preserve all other text. For example, "Emily你好".to_ascii_lowercase() returns "emily你好"; use these methods for ASCII identifiers or account-name comparisons.
 
+`trim()/trim_start()/trim_end()` remove Unicode whitespace from both ends, the beginning or the end, preserving spaces inside names or text. For example, `let player_name = "\u{3000} 空 山 \u{a0}".trim();` returns `"空 山"`; whitespace-only input becomes an empty string. See [text_operations.aside](../../examples/text_operations.aside).
+
 Registered functions can be stored and passed as values, for example `let say = narrator; say("你好");`; waiting behaves exactly as in a direct call. A function default can also be a constructor such as `text`. Use `(int,int)` for a coordinate pair and `(int,int)|null` for an optional pair. `is`, parameters, returns and variable assignments check these contracts; a failed assignment preserves the previous value. See the runnable [function_values.aside](../../examples/function_values.aside) example and use its path with the earlier `dev` or `build` commands.
 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
@@ -227,7 +229,7 @@ column(gap: 12) {
 
 Node identity, parentage and callback ownership are preserved. See [author_composition.aside](../../examples/author_composition.aside).
 
-A scroll region exposes writable, bindable `scroll_x/scroll_y`; layout clamps them to the actual content range. Read-only observable `viewport_width/viewport_height/content_width/content_height` can drive custom thumb geometry through derive. `content_align: "end"` places short chat content at the bottom, `"center"` centers it, and the default is `"start"`. `input(on_pointer: ...)` receives `{target,x,y,phase}` in the presented node's local coordinates, with pressed/moved/released/cancelled phases. A primary mouse press or touch captures the drag; focus loss, hiding and disabling cancel it. The callback may wait and belongs to the input node. See the [custom scrollbar](../../examples/author_scrollbar.aside).
+A scroll region exposes writable, bindable `scroll_x/scroll_y`; layout clamps them to the actual content range. Read-only observable `viewport_width/viewport_height/content_width/content_height` can drive custom thumb geometry through derive. `content_align: "end"` places short chat content at the bottom, `"center"` centers it, and the default is `"start"`. `input(on_pointer: ...)` receives `{target,x,y,phase}` in the presented node's local coordinates, with pressed/moved/released/cancelled phases. A primary mouse press or touch captures the drag; focus loss, hiding and disabling cancel it. The callback may wait and belongs to the input node. Consecutive moved events for the same node and handler coalesce to the latest coordinates until execution starts, avoiding an input backlog. Arguments stay stable after execution starts; press, release and cancellation events remain separate. See the [custom scrollbar](../../examples/author_scrollbar.aside).
 
 `container.add(child)` appends a subtree to a row, column or stack and returns the original child. `index:` selects a zero-based insertion position, including the current child count; omitting it or passing null appends. The subtree must have no parent and must not be mounted as the stage root. Duplicate ownership, cycles, adding to text/image or an out-of-range position produce an error and preserve the original tree. Adding and removing preserve other nodes and their widget identities; unchanged text is not reshaped.
 
@@ -266,12 +268,16 @@ The complete [author_dynamic_stage.aside](../../examples/author_dynamic_stage.as
 
 Use `image(source, fit: "contain", ...)` to place PNG/JPEG files on the stage. Without width/height, an image uses its pixel dimensions as logical dimensions; setting just one preserves its aspect ratio. With both set, contain fits the whole image with empty space, cover fills and crops the box, and stretch fills the box without preserving the ratio. Images also support the common position, visibility, opacity and padding properties. `source` and `fit` can be changed on the original node.
 
+For panels or button backgrounds, use `slice: 24` for nine-slice drawing, or `slice: [24, 16, 24, 16]` for separate left, top, right and bottom insets. Insets use source pixels; `slice_scale`, which defaults to 1, scales the destination border widths. All values must be finite and nonnegative. Nine-slice drawing fills the content box, preserving corner proportions while stretching edges and the center. Oversized source insets or a target too small for the borders shrink all four borders proportionally; zero-area slices are skipped. `slice: null` restores ordinary fit. Both properties support assignment, bindings and layered_image descriptors. Use whole PNG/JPEG images or encoded image Bytes; tiled .reel-image sources do not support nine-slice drawing. All slices share the image without generating or uploading extra pixels.
+
 ```aside
 fn main() {
     let picture = image("assets/panels.png", width: 320, height: 180);
     stage.replace(column(gap: 16, padding: 24) {
         picture;
         image("assets/panels.png", width: 160, height: 160, fit: "cover");
+        image("assets/panels.png", width: 480, height: 80,
+            slice: [24, 16, 24, 16], slice_scale: 1);
     });
     narrator("The same resource can appear in different frames.");
     picture.source = "assets/sun.jpg";
@@ -282,7 +288,7 @@ fn main() {
 
 The complete [author_images.aside](../../examples/author_images.aside) includes these image files. Run it with the earlier dev command. Paths are relative to the source file for dev and the ASB file for run; use `--assets <directory>` to select a different resource root. For example, after building into target/reel-artifacts, run with `--assets examples`. Building an ASB does not copy image files.
 
-Images and fonts use the same resource loading service. File reads and image decoding happen in the background, and image nodes using the same path share pixels. The previous complete scene remains visible until all images and configured fonts in the new scene are ready; story input pauses during that preparation. Changing source keeps the previous picture until the replacement is ready. A missing or invalid file reports its path and the image constructor's source location (game.configure for fonts) and ends the window run. Property type errors and an invalid fit are catchable at assignment. Images are loaded when mounted; unmounted component construction does not read files. In-session file hot reload is not implemented.
+Images and fonts use the same resource loading service. File reads and image decoding happen in the background, and image nodes using the same path share pixels. The previous complete scene remains visible until all images and configured fonts in the new scene are ready; story input pauses during that preparation. Changing source keeps the previous picture until the replacement is ready. A missing or invalid file reports its path and the image constructor's source location (game.configure for fonts) and ends the window run. Property type errors and an invalid fit are catchable at assignment. Images load when mounted with visible ancestors; constructing unmounted components or a visible=false subtree does not read image files. Loaded hidden images may be reused while mounted, yielding idle cache storage when new images need loading. Unmounting releases that cache; the previous complete scene and submitted frames retain their own leases. opacity=0 still prepares images for a later fade-in. In-session file hot reload is not implemented.
 
 Every basic node supports rotation, scale_x/scale_y and anchor_x/anchor_y; a container transforms the whole component. Rotation uses clockwise degrees and defaults to 0. Scale defaults to 1; negative values mirror, and zero collapses the picture and excludes it from hit testing. Anchors are fractions of the layout width and height: (0,0) is the default top-left corner and (0.5,0.5) is the center. They may also lie outside the component. The x/y values offset that anchor from the container's layout position. Scale around the anchor, rotate, then place it at that position; the parent's transform applies to the result. Width, height and row/column placement retain their size before transformation. Clips and presented geometry use the same transform. Edits preserve node identity; changing position, rotation, scale, anchor or opacity does not repeat layout.
 
@@ -1097,6 +1103,8 @@ fn main() {
 ```
 
 `audio.play` reads, decodes and plays in the background, returning an activity immediately. `await` returns `Completed` or `Stopped`; loading and device errors can be caught with `try/catch`. `volume` is a nonnegative linear gain: 1 preserves the source level and 0 mutes it. pause/resume retain position, stop does not restart playback, and repeated waits retain the same result.
+
+Images, fonts and audio share the host's resource input capacity. When concurrent reads temporarily fill it, later reads wait for existing work to release its input. A single file larger than the configured input capacity still fails with its path and byte counts in the diagnostic.
 
 `start` selects the starting position in seconds, and `audio.position(sound)` reads the current content position. Loading returns the requested start, pausing holds the position, and a finished activity retains its final position. With `looping: true`, use `loop_start` and `loop_end` to choose a loop; the default covers the whole track. A start before loop_start plays the introduction first, then wraps from loop_end to loop_start. A start beyond loop_end wraps into the loop. The end is exclusive, and the interval must fit within the source and contain at least one frame. Keep the default loop bounds when looping is disabled.
 

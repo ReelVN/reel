@@ -58,6 +58,8 @@ pub(super) fn fixture() -> (
             NodeKind::Image {
                 source: "long.reel-image".into(),
                 fit: ObjectFit::Contain,
+                slice: None,
+                slice_scale: 1.,
                 origin: Some("long.aside:4:17".into()),
             },
             NodeProps::default(),
@@ -284,6 +286,8 @@ fn two_dimensional_shared_sources_use_composed_ancestor_rotation_zoom_and_hidden
                 NodeKind::Image {
                     source: "world.reel-image".into(),
                     fit: ObjectFit::Contain,
+                    slice: None,
+                    slice_scale: 1.,
                     origin: Some("world.aside:8:5".into()),
                 },
                 NodeProps {

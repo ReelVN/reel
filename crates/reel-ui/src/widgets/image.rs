@@ -12,7 +12,7 @@ use crate::core::{
     WidgetMut,
 };
 use crate::imaging::Painter;
-use crate::kurbo::{Affine, Axis, Rect, Size};
+use crate::kurbo::{Affine, Axis, Insets, Rect, Size};
 use crate::layout::{LenReq, Length};
 use crate::peniko::{Color, ImageBrush};
 use crate::properties::ObjectFit;
@@ -41,6 +41,8 @@ pub struct Image {
     image_data: Option<ImageBrush>,
     tiles: Vec<ImageTile>,
     tiled_size: Size,
+    slice: Option<Insets>,
+    slice_scale: f64,
     decorative: bool,
     alt_text: Option<ArcStr>,
     color: Color,
@@ -67,6 +69,8 @@ impl Image {
             image_data: Some(image_data.into()),
             tiles: Vec::new(),
             tiled_size: Size::ZERO,
+            slice: None,
+            slice_scale: 1.,
             decorative: false,
             alt_text: None,
             color: Color::WHITE,
@@ -79,6 +83,8 @@ impl Image {
             image_data: None,
             tiles,
             tiled_size: size,
+            slice: None,
+            slice_scale: 1.,
             decorative: false,
             alt_text: None,
             color: Color::WHITE,
@@ -112,6 +118,15 @@ impl Image {
         self
     }
 
+    /// Stretch a whole image as nine slices, preserving corner proportions.
+    /// Insets are source pixels; scale maps border pixels to logical pixels.
+    /// Both must be finite and nonnegative. `None` restores ordinary object fit.
+    pub fn with_slice(mut self, slice: Option<Insets>, scale: f64) -> Self {
+        self.slice = slice;
+        self.slice_scale = scale;
+        self
+    }
+
     /// Sets the text that will describe the image to screen readers.
     ///
     /// Users are encouraged to set alt text for the image.
@@ -128,6 +143,20 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    /// Change nine-slice geometry without decoding or copying image pixels.
+    pub fn set_slice(this: &mut WidgetMut<'_, Self>, slice: Option<Insets>, scale: f64) {
+        if this.widget.slice != slice || this.widget.slice_scale != scale {
+            let layout_changed = this.widget.slice.is_some() != slice.is_some();
+            this.widget.slice = slice;
+            this.widget.slice_scale = scale;
+            if layout_changed {
+                this.ctx.request_layout();
+            } else {
+                this.ctx.request_render();
+            }
+        }
+    }
+
     /// Update pixel multiplication without decoding, uploading or relaying out the image.
     pub fn set_color(this: &mut WidgetMut<'_, Self>, color: Color) {
         if this.widget.color != color {
@@ -178,6 +207,79 @@ impl Image {
             image_data.image.height as f64 / IMAGE_SCALE,
         )
     }
+
+    fn paint_sliced(&self, painter: &mut Painter<'_>, bounds: Rect, insets: Insets) {
+        let Some(image) = &self.image_data else {
+            return;
+        };
+        let width = f64::from(image.image.width);
+        let height = f64::from(image.image.height);
+        let fit_borders = |width: f64, height: f64, horizontal: f64, vertical: f64| {
+            let mut scale: f64 = 1.;
+            if horizontal > 0. {
+                scale = scale.min(width / horizontal);
+            }
+            if vertical > 0. {
+                scale = scale.min(height / vertical);
+            }
+            scale
+        };
+        let source_scale = fit_borders(width, height, insets.x0 + insets.x1, insets.y0 + insets.y1);
+        let left = insets.x0 * source_scale;
+        let top = insets.y0 * source_scale;
+        let right = insets.x1 * source_scale;
+        let bottom = insets.y1 * source_scale;
+        let target_scale = self.slice_scale
+            * fit_borders(
+                bounds.width(),
+                bounds.height(),
+                (left + right) * self.slice_scale,
+                (top + bottom) * self.slice_scale,
+            );
+        let source_x = [0., left, width - right, width];
+        let source_y = [0., top, height - bottom, height];
+        let target_x = [
+            bounds.x0,
+            bounds.x0 + left * target_scale,
+            bounds.x1 - right * target_scale,
+            bounds.x1,
+        ];
+        let target_y = [
+            bounds.y0,
+            bounds.y0 + top * target_scale,
+            bounds.y1 - bottom * target_scale,
+            bounds.y1,
+        ];
+        for y in 0..3 {
+            for x in 0..3 {
+                let source = Rect::new(source_x[x], source_y[y], source_x[x + 1], source_y[y + 1]);
+                let target = Rect::new(target_x[x], target_y[y], target_x[x + 1], target_y[y + 1]);
+                if source.width() <= 0.
+                    || source.height() <= 0.
+                    || target.width() <= 0.
+                    || target.height() <= 0.
+                {
+                    continue;
+                }
+                let scale_x = target.width() / source.width();
+                let scale_y = target.height() / source.height();
+                let transform = Affine::new([
+                    scale_x,
+                    0.,
+                    0.,
+                    scale_y,
+                    target.x0 - source.x0 * scale_x,
+                    target.y0 - source.y0 * scale_y,
+                ]);
+                // Each rectangle already lies in the content box. Shared brush
+                // identity keeps the same resource; no per-slice clip layer.
+                painter
+                    .fill(target, image)
+                    .brush_transform(Some(transform))
+                    .draw();
+            }
+        }
+    }
 }
 
 impl UsesProperty<ObjectFit> for Image {}
@@ -211,7 +313,11 @@ impl Widget for Image {
         cross_length: Option<Length>,
     ) -> Length {
         let cache = ctx.property_cache();
-        let object_fit = props.get::<ObjectFit>(cache);
+        let object_fit = if self.slice.is_some() {
+            &ObjectFit::Stretch
+        } else {
+            props.get::<ObjectFit>(cache)
+        };
         let preferred_size = self.preferred_size();
 
         object_fit.measure(axis, len_req, cross_length, preferred_size)
@@ -227,6 +333,10 @@ impl Widget for Image {
     ) {
         ctx.set_image_color(self.color);
         let content_box = ctx.content_box();
+        if let Some(slice) = self.slice {
+            self.paint_sliced(painter, content_box, slice);
+            return;
+        }
         let cache = ctx.property_cache();
         let object_fit = props.get::<ObjectFit>(cache);
         // For drawing we want to scale the actual image data lengths, which means

@@ -148,6 +148,8 @@ string 为不可变、有效 UTF-8 文本；相等按精确文本序列，不隐
 
 to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII 字母，保留其他 UTF-8 字节。实现复用 Rust 标准库字节切片转换与现有分片文本缓冲，按字节线性推进并计入工作/分配预算；空字符串也返回字符串。它们不执行 Unicode 或语言环境相关大小写折叠。B01/ASB 不变。
 
+`trim()`、`trim_start()`、`trim_end()` 分别移除两端、开头、末尾连续的 Unicode 空白，空白定义复用 Rust `char::is_whitespace`；不移除正文内部空白、不规范化或转换大小写。方法无参数，返回普通 string；没有需移除的空白时共享原字符串。定位按 UTF-8 字节分片并使用现有解码状态，至多线性扫描；结果只复制保留范围一次，空白全串得到空字符串。游标和未发布结果沿普通 VM 帧的预算、取消和快照路径，不引入宿主调用或新依赖，B01/ASB 不变。
+
 计数、切片和前后缀比较按字节分片；byte_len 为常数成本，scalar 切片单次前向扫描定位后复制。join 只向一个私有缓冲顺序追加，每个输出字节复制一次；空项也按元素计费。来源数组在执行片之间变化报告 ConcurrentModification；失败、取消不发布部分结果。UTF-8 解码与标量迭代复用 Rust 标准库，VM 仅管理分块游标、预算与根，不维护另一套 Unicode 解码规则。
 
 所有范围从零开始，端点规则与 Range 一致；字节切片端点必须在 UTF-8 边界，否则报错。UTF-8 解码默认严格，替换非法输入需显式模式。Unicode 库版本属于包兼容元数据。normalize、大小写转换、trim、find/replace、split/join、parse/format 均定义输入单位、边界和错误；默认大小写转换不依赖进程 locale，本地化规则通过显式 locale 参数选择。字素不是字体布局 cluster，Reel reveal 由文本服务将规定揭示单位映射到稳定排版。
@@ -299,6 +301,8 @@ Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等�
 Reel `layered_image(layers, ...)` 使用普通零参数函数、数组、属性表和 model 依赖描述分层图片，不增加立绘语法或语言内置类型。宿主返回共同舞台节点，图层选择是可快照的普通数据；layers 的计算与 view/list 一样受响应式计算规则约束。接口 ABI 1，Aside 与图形及平台实现继续独立。
 
 Reel image 的既有 color 属性表示图像像素乘色，默认白色；直接赋值与 bind/derive 使用同一舞台属性通路，layered_image 的图层描述同样接受 color。容器 color 不继承到子节点。此行为不新增 Aside 语法、属性槽、native ABI 或存档格式。
+
+Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格。slice 接受非负有限数值，或左、上、右、下四项非负有限数值组成的数组/tuple；边距为源像素，slice_scale 为非负有限目标边宽倍率。null 保持 fit 行为；启用时填满内容框，角保持比例、边与中心拉伸，源尺寸或目标尺寸不足时按统一比例收缩对应边距。完整 PNG/JPEG 路径或编码 Bytes 共用原图片资源，分块 .reel-image 不支持九宫格。slice、slice_scale 与其他图片属性一样支持赋值、bind/derive、layered_image 和快照；不增加语言语法或 VM 图形类型。image ABI 9、reel.image 宿主属性快照版本 2，B01 不变。
 
 宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 2，旧版本明确报告版本不匹配；B01/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
