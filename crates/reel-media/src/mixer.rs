@@ -9,7 +9,7 @@ use reel_audio::{
     backend::{Backend, Renderer},
     info::Info,
     sound::{
-        PlaybackState, Sound, SoundData,
+        EndPosition, PlaybackPosition, PlaybackState, Region, Sound, SoundData,
         static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
     },
     track::{MainTrackBuilder, TrackBuilder, TrackHandle},
@@ -17,6 +17,7 @@ use reel_audio::{
 #[cfg(test)]
 use reel_core::wake::WakeSignal;
 use reel_core::{
+    audio::AudioLoopRegion,
     budget::{BudgetPool, BudgetTicket},
     result::{RejectCode, RejectReason, Rejected},
 };
@@ -175,10 +176,47 @@ impl DecodedSound {
         self.data.settings.fade_in_tween = (!duration.is_zero()).then(|| tween(duration));
         self
     }
-    /// Select the content position before admission, without a first-buffer seek race.
-    pub fn with_start_position(mut self, position: Duration) -> Self {
-        self.data.settings.start_position = position.as_secs_f64().into();
-        self
+    /// Resolve the initial position and loop once after decoding, before admission.
+    /// The transport uses frame indices and retains the same PCM allocation.
+    pub fn with_playback(
+        mut self,
+        start: Duration,
+        loop_region: Option<AudioLoopRegion>,
+    ) -> Result<Self, AudioError> {
+        let frames = self.data.num_frames();
+        let sample_rate = f64::from(self.data.sample_rate);
+        let frame = |time: Duration| (time.as_secs_f64() * sample_rate).round() as usize;
+        let mut start = frame(start);
+        self.data.settings.loop_region = if let Some(region) = loop_region {
+            let from = frame(region.start);
+            let to = region.end.map_or(frames, frame);
+            if from >= to || to > frames {
+                return Err(AudioError::new(
+                    AudioErrorKind::InvalidRequest,
+                    "audio loop must fit within the source and contain at least one frame",
+                ));
+            }
+            if start >= to {
+                start = from + (start - from) % (to - from);
+            }
+            Some(Region {
+                start: PlaybackPosition::Samples(from),
+                end: EndPosition::Custom(PlaybackPosition::Samples(to)),
+            })
+        } else {
+            start = start.min(frames);
+            None
+        };
+        self.data.settings.start_position = PlaybackPosition::Samples(start);
+        Ok(self)
+    }
+    /// The resolved content start, including frame quantization and loop wrapping.
+    pub fn start_position(&self) -> Duration {
+        let seconds = match self.data.settings.start_position {
+            PlaybackPosition::Seconds(seconds) => seconds,
+            PlaybackPosition::Samples(frame) => frame as f64 / f64::from(self.data.sample_rate),
+        };
+        Duration::from_secs_f64(seconds)
     }
     pub(crate) fn volume_db(&self) -> f32 {
         match self.data.settings.volume {

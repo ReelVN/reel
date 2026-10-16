@@ -1,4 +1,13 @@
-//! Platform-independent audio routing shared by hosts and the media adapter.
+//! Platform-independent audio routing and transport shared by hosts and media.
+
+use std::time::Duration;
+
+/// A half-open content interval. An absent end selects the end of the source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AudioLoopRegion {
+    pub start: Duration,
+    pub end: Option<Duration>,
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(usize)]
 pub enum AudioGroup {
