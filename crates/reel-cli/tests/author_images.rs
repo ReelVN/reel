@@ -168,7 +168,7 @@ fn images(frame: &RenderFrame) -> Vec<ImageDraw> {
                 .resources()
                 .leases()
                 .iter()
-                .find(|lease| lease.handle() == brush.image)
+                .find(|lease| lease.handle() == brush.image.resource)
                 .expect("image handle must have a pixel lease");
             let ResourceData::Image { image, encoding } = lease.data() else {
                 panic!("expected image pixels")

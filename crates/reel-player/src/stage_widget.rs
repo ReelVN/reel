@@ -569,7 +569,9 @@ impl SceneWidget {
                     let NodeKind::Image { fit, .. } = view.node.kind else {
                         unreachable!()
                     };
-                    NewWidget::new(image).with_props(fit).to_pod()
+                    NewWidget::new(image.with_color(color(view.node.props.color)))
+                        .with_props(fit)
+                        .to_pod()
                 }),
             image_size: view
                 .image
@@ -683,6 +685,12 @@ impl SceneWidget {
         }
         if this.widget.node.props.modal != view.node.props.modal {
             this.ctx.set_modal(view.node.props.modal);
+        }
+        if this.widget.node.props.color != view.node.props.color
+            && let Some(pod) = &mut this.widget.image
+            && let Some(mut image) = this.ctx.get_mut(pod)
+        {
+            Image::set_color(&mut image, color(view.node.props.color));
         }
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
             && (this.widget.node.kind != view.node.kind

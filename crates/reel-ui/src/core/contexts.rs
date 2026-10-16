@@ -2373,6 +2373,15 @@ impl Drop for RawCtx<'_> {
 
 // --- MARK: DEBUG PAINT
 impl PaintCtx<'_> {
+    /// Multiply image brushes emitted by this widget by a linear premultiplied color.
+    /// The value is retained with cached paints and does not affect children or masks.
+    pub fn set_image_color(&mut self, color: peniko::Color) {
+        self.widget_state.image_color = color
+            .convert::<peniko::color::LinearSrgb>()
+            .premultiply()
+            .components;
+    }
+
     /// Controls how this widget subtree is recorded in the current paint pass.
     ///
     /// The declaration is retained across cached pre/paint/post callbacks.

@@ -153,7 +153,9 @@ Stack layers children from back to front in source order; row arranges them hori
 
 ### Layered images
 
-`layered_image` combines image descriptions into one ordinary stage node. The function runs when its model dependencies change. Array positions are stable slots, ordered from back to front; a null slot hides its previous image, and shortening the array retires trailing slots. Each description accepts image properties, including source, geometry, fit and opacity. Omitted properties reset to image defaults. bind/derive values in descriptions are read dependencies. Unchanged properties retain their values and image nodes are reused, so changing an expression does not rebuild the body.
+An image's `color` multiplies its pixels: `image("assets/panels.png", color: "#ffaaaa")` gives the image a red tint; white preserves it. Both the color's alpha and opacity affect transparency. Ordinary images, tiled large images and individual layer descriptions share this behavior; a container's color does not affect its children. Use bind/derive for hover and other state colors without preparing or uploading separate images.
+
+`layered_image` combines image descriptions into one ordinary stage node. The function runs when its model dependencies change. Array positions are stable slots, ordered from back to front; a null slot hides its previous image, and shortening the array retires trailing slots. Each description accepts image properties, including source, geometry, fit, color and opacity. Omitted properties reset to image defaults. bind/derive values in descriptions are read dependencies. Unchanged properties retain their values and image nodes are reused, so changing an expression does not rebuild the body.
 
 For example, `layered_image(|| [body, faces[state.face]], width: 320, height: 180)` selects a foreground description using state.face while sharing the body description. Assign state.face to change the expression.
 

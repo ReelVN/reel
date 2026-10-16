@@ -153,7 +153,9 @@ stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。
 
 ### 分层图片
 
-`layered_image` 将图片描述组合成一个普通舞台节点；模型依赖变化时才重新计算。数组位置是稳定图层槽，按从后向前的顺序叠放；null 隐藏槽内原有图片，缩短数组会退休尾部槽。每份描述可使用 source、位置、尺寸、fit、opacity 等图片属性；省略的属性恢复 image 默认值。描述中的 bind/derive 值作为读取依赖。未变化的属性保持不动，图片节点复用，因此切换表情不会重建身体图层。
+图片的 `color` 用于乘色：`image("assets/panels.png", color: "#ffaaaa")` 让原图偏红，白色保持原样。透明度同时受颜色 alpha 与 opacity 控制。普通图片、分块大图及每个分层描述使用相同规则；给容器设置 color 不会改变子层。使用 bind/derive 调整悬浮等状态的颜色，无需为每种颜色准备或上传一份图片。
+
+`layered_image` 将图片描述组合成一个普通舞台节点；模型依赖变化时才重新计算。数组位置是稳定图层槽，按从后向前的顺序叠放；null 隐藏槽内原有图片，缩短数组会退休尾部槽。每份描述可使用 source、位置、尺寸、fit、color、opacity 等图片属性；省略的属性恢复 image 默认值。描述中的 bind/derive 值作为读取依赖。未变化的属性保持不动，图片节点复用，因此切换表情不会重建身体图层。
 
 例如 `layered_image(|| [body, faces[state.face]], width: 320, height: 180)` 用 state.face 选择前景描述，同时共享 body 描述；给 state.face 赋值即可切换表情。
 

@@ -14,7 +14,7 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Rect, Size};
 use crate::layout::{LenReq, Length};
-use crate::peniko::ImageBrush;
+use crate::peniko::{Color, ImageBrush};
 use crate::properties::ObjectFit;
 
 // TODO: Make this a configurable option of the widget.
@@ -43,6 +43,7 @@ pub struct Image {
     tiled_size: Size,
     decorative: bool,
     alt_text: Option<ArcStr>,
+    color: Color,
 }
 
 /// One resident tile. The image includes its sampling gutter; `clip` is the
@@ -68,6 +69,7 @@ impl Image {
             tiled_size: Size::ZERO,
             decorative: false,
             alt_text: None,
+            color: Color::WHITE,
         }
     }
 
@@ -79,6 +81,7 @@ impl Image {
             tiled_size: size,
             decorative: false,
             alt_text: None,
+            color: Color::WHITE,
         }
     }
 
@@ -103,6 +106,12 @@ impl Image {
         self
     }
 
+    /// Multiply pixels by this color without changing the shared image resource.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
     /// Sets the text that will describe the image to screen readers.
     ///
     /// Users are encouraged to set alt text for the image.
@@ -119,6 +128,14 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    /// Update pixel multiplication without decoding, uploading or relaying out the image.
+    pub fn set_color(this: &mut WidgetMut<'_, Self>, color: Color) {
+        if this.widget.color != color {
+            this.widget.color = color;
+            this.ctx.request_render();
+        }
+    }
+
     /// Sets new `ImageBrush`.
     #[inline]
     pub fn set_image_data(this: &mut WidgetMut<'_, Self>, image_data: impl Into<ImageBrush>) {
@@ -208,6 +225,7 @@ impl Widget for Image {
         props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
+        ctx.set_image_color(self.color);
         let content_box = ctx.content_box();
         let cache = ctx.property_cache();
         let object_fit = props.get::<ObjectFit>(cache);
