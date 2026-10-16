@@ -871,6 +871,8 @@ For ports and embedding, use PlatformHost, Presentation and StoryRuntime from re
 
 ## Modal menus and focus
 
+Dialogue indicators, portraits and other controls can animate while players confirm with a pointer, touch, keyboard or gamepad. If the dialogue changes, revealing finishes, the stage root is replaced or the modal scope changes after a press, a new press is required so the old gesture cannot confirm new content.
+
 Every shared node has a writable `modal` property, defaulting to false. A visible modal subtree owns input: clicks outside it and unhandled keyboard events cannot advance the story. With multiple modals, the last one in paint order takes input; node composition determines paint order. Hiding or removing the node releases the scope. Setting enabled to false still blocks underlying content.
 
 Opening a menu focuses an eligible control inside it. Tab/Shift-Tab cycle within the menu; closing a nested menu restores the previous scope’s focus, and closing the last menu restores the original control if it remains eligible. The input scope changes when the new frame is actually presented and cancels dragging outside it. Run [author_modal.aside](../../examples/author_modal.aside) with the dev/build/run commands in the first section.
@@ -900,6 +902,8 @@ fn main() {
 ```
 
 ## Named actions and input nodes
+
+Focused controls handle input first; unclaimed input reaches the nearest matching ancestor input node. A menu can bind Escape/gamepad Back and a scene can bind skip without repeating those bindings on every child button. Focus changes cancel held actions. Input stays within the modal scope, and text editors retain keyboard and IME input.
 
 `input` is a shared stage node with stack layout. A root input node receives unclaimed keyboard/gamepad input even before a control gains focus; focused child controls retain priority. It binds keyboard, gamepad and pointer controls to named actions. This example matches [author_input.aside](../../examples/author_input.aside); run it with the dev/build/run commands in the first section. Supply `fonts/body.ttf`, or change the path in main.
 

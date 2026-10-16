@@ -39,16 +39,25 @@ use std::{
 
 type Error = Box<dyn std::error::Error>;
 
-/// An immutable binding to the content recorded in one frame. Hover and capture
-/// paints preserve this revision; changing interaction or reveal increments it.
+/// One recorded frame, with a separate identity for dialogue confirmation.
+/// Animation and control feedback can repaint without replacing dialogue input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProjectionStamp {
     pub(crate) presentation_request: u64,
     dialogue_complete: bool,
     revision: u64,
+    advance_revision: u64,
     button_revision: u64,
     interaction: Option<InteractionId>,
     scroll_bits: u64,
+}
+impl ProjectionStamp {
+    fn same_advance(self, other: Self) -> bool {
+        self.advance_revision == other.advance_revision
+            && self.interaction == other.interaction
+            && self.dialogue_complete == other.dialogue_complete
+            && self.scroll_bits == other.scroll_bits
+    }
 }
 #[derive(Default)]
 struct InputBinding {
@@ -75,7 +84,9 @@ impl InputBinding {
         })
     }
     fn permits(&self, current: ProjectionStamp) -> bool {
-        self.accepted == Some(current) && (self.down == Some(current) || self.non_pointer)
+        self.accepted
+            .is_some_and(|stamp| stamp.same_advance(current))
+            && (self.down.is_some_and(|stamp| stamp.same_advance(current)) || self.non_pointer)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -460,7 +471,11 @@ impl Widget for SessionWidget {
             ActionPhase::Pressed => binding.navigation_down = binding.accepted,
             ActionPhase::Cancelled => binding.navigation_down = None,
             ActionPhase::Released
-                if binding.navigation_down.take() == Some(current) && binding.permits(current) =>
+                if binding
+                    .navigation_down
+                    .take()
+                    .is_some_and(|stamp| stamp.same_advance(current))
+                    && binding.permits(current) =>
             {
                 self.inputs.borrow_mut().get_or_insert(UiInput::Session {
                     owner: self.source_owner,
@@ -822,6 +837,7 @@ impl SessionUi {
             presentation_request: 0,
             dialogue_complete: dialogue_complete(&session),
             revision: 1,
+            advance_revision: 1,
             button_revision: 0,
             interaction: projection.interaction,
             scroll_bits: 0_f64.to_bits(),
@@ -887,7 +903,13 @@ impl SessionUi {
                     .pending_stage
                     .as_ref()
                     .is_none_or(|pending| pending.feedback);
-            let modal = view.has_modal();
+            let scope = view.input_scope();
+            let scope_changed = self
+                .pending_stage
+                .as_ref()
+                .or(self.stage.as_ref())
+                .is_none_or(|previous| previous.input_scope() != scope);
+            let modal = scope.1.is_some();
             if modal {
                 self.session.set_skip_reading(false, false);
             }
@@ -897,7 +919,10 @@ impl SessionUi {
             }
             self.images.request_stage(&view);
             let mut binding = self.binding.borrow_mut();
-            binding.accepted = None;
+            if scope_changed {
+                self.stamp.advance_revision = self.stamp.advance_revision.wrapping_add(1);
+                binding.accepted = None;
+            }
             let buttons = view.button_changes(
                 self.pending_stage.as_ref().or(self.stage.as_ref()),
                 feedback,
@@ -1075,6 +1100,10 @@ impl SessionUi {
         }
         let complete = dialogue_complete(&self.session);
         changed |= complete != self.stamp.dialogue_complete;
+        if changed {
+            self.stamp.advance_revision = self.stamp.advance_revision.wrapping_add(1);
+            self.binding.borrow_mut().accepted = None;
+        }
         if changed || self.stage_dirty {
             self.stamp.dialogue_complete = complete;
             self.stamp.revision = self
