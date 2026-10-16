@@ -15,6 +15,7 @@ mod choice;
 pub mod data;
 mod dialogue;
 mod keys;
+mod layered_image;
 mod lists;
 mod localization;
 mod narrative;
@@ -575,6 +576,10 @@ impl SessionVm {
             "reel::list" => {
                 self.dispatch_list(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::layered_image" => {
+                let work = self.dispatch_layered_image(ticket)?;
+                Ok(NativeDispatch::Ready { work })
             }
             "reel::derive" => {
                 self.vm.respond_derive(ticket)?;

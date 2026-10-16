@@ -149,6 +149,14 @@ Implemented: text, image, row, column, stack and stage.replace use one shared no
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
+### Layered images
+
+`layered_image` combines image descriptions into one ordinary stage node. The function runs when its model dependencies change. Array positions are stable slots, ordered from back to front; a null slot hides its previous image, and shortening the array retires trailing slots. Each description accepts image properties, including source, geometry, fit and opacity. Omitted properties reset to image defaults. bind/derive values in descriptions are read dependencies. Unchanged properties retain their values and image nodes are reused, so changing an expression does not rebuild the body.
+
+For example, `layered_image(|| [body, faces[state.face]], width: 320, height: 180)` selects a foreground description using state.face while sharing the body description. Assign state.face to change the expression.
+
+Animate and position the returned node as a group. The selected layers and dependencies use ordinary execution snapshots. Pose names and costume/expression combinations remain game data; there is no fixed number of layers or poses. No extra raster composition runs each frame. See [author_layered_image.aside](../../examples/author_layered_image.aside); provide fonts/body.ttf as in the other image examples.
+
 ### Random choices
 
 `let rng = random();` creates an independent random stream. `rng.int(0, 10)` returns an integer from 0 through 9, `rng.float()` returns a number in [0, 1), and `rng.pick(items)` returns an original element from a nonempty array or tuple. `random(seed: 42)` reproduces the same call sequence; a saved `let pick = rng.pick` keeps using that stream. Draw in an event or story function and write the result to a model, rather than drawing inside derive. Failed draws do not advance the state. See [author_random.aside](../../examples/author_random.aside).

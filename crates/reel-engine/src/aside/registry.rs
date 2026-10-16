@@ -313,6 +313,16 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         rest: None,
         symbol: "reel::view".into(),
         abi_version: 2,
+        parameters: view_parameters.clone(),
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    view_parameters[0].name = "layers".into();
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::layered_image".into(),
+        abi_version: 1,
         parameters: view_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

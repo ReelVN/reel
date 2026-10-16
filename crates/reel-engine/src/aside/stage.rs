@@ -984,7 +984,7 @@ fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit,
     }
 }
 
-fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+pub(super) fn validate_image_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
     match index {
         0 => {
             let info = heap.info(value)?;

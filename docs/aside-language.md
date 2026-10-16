@@ -288,6 +288,8 @@ Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四�
 
 Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等待和取消协议工作的宿主结果，成功值为普通不可变 Bytes。`image(source:)` 可消费该值，`saves.save(..., thumbnail:)` 可保存它，`saves.thumbnail(slot)` 可按需读回。截图及存储由宿主实现，不增加 Aside 图形类型、平台依赖或 B01 指令；capture/thumbnail ABI 1、save ABI 2。
 
+Reel `layered_image(layers, ...)` 使用普通零参数函数、数组、属性表和 model 依赖描述分层图片，不增加立绘语法或语言内置类型。宿主返回共同舞台节点，图层选择是可快照的普通数据；layers 的计算与 view/list 一样受响应式计算规则约束。接口 ABI 1，Aside 与图形及平台实现继续独立。
+
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；B01/ASB 不变。
