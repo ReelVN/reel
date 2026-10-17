@@ -102,6 +102,15 @@ let wallpaper = settings.get("wallpaper", default: "default.png");
 let language = settings.get("language", default: "zh-CN");
 ```
 
+`array.sort(compare: null)` 稳定原地排序并返回原数组。缺省按数值（可混合 int/float）或字符串排序；记录使用返回负数、零、正数 int 的比较器。同序元素保留原来的顺序。比较器不能等待。排序按 VM 执行预算推进，成功后才提交；异常、取消或来源数组被修改时不发布工作副本。见 [collections.aside](../../examples/collections.aside)。
+
+```aside
+let cuts = [180, 20, 90];
+cuts.sort();
+let captions = [{text: "后景", layer: 2}, {text: "前景", layer: 1}];
+captions.sort(compare: |a, b| a.layer - b.layer);
+```
+
 数组展开 `[...items, last]` 接受数组或 tuple；表展开 `{...base, color: value}` 复制自有字段，后项覆盖前项。展开按书写顺序捕获内容，后面的代码修改来源不会改变已捕获的元素或字段；内部对象仍共享引用。null 不能展开。完整可运行示例见 [collections.aside](../../examples/collections.aside)。
 
 ```aside

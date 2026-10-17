@@ -66,6 +66,10 @@ struct FaultBuild {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ReturnTo {
+    Sort {
+        frame: FrameId,
+        call: Pc,
+    },
     Class {
         frame: FrameId,
         call: Pc,
@@ -91,6 +95,9 @@ enum ReturnTo {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ArgSource {
+    Sort {
+        frame: FrameId,
+    },
     None,
     Await {
         frame: FrameId,
@@ -109,6 +116,7 @@ enum ArgSource {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ScriptPhase {
+    Sort(builtins::SortWork),
     Class(classes::ClassStep),
     Copy {
         source: ArgSource,
@@ -862,7 +870,9 @@ impl Vm {
                         return self.loc(current, current.pc);
                     }
                 }
-                ReturnTo::Register { frame, call, .. } | ReturnTo::Class { frame, call } => {
+                ReturnTo::Register { frame, call, .. }
+                | ReturnTo::Class { frame, call }
+                | ReturnTo::Sort { frame, call } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
                         Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
                         _ => self.loc(current, current.pc),
@@ -1393,6 +1403,7 @@ impl Vm {
                     self.value(n.roots, 2 + self.limits.max_continuation_values + index)?,
                 ))
             }
+            ArgSource::Sort { frame } => self.sort_argument(frame, index),
             ArgSource::Prefix { frame, .. } => {
                 let range = match self.active.frames.data[self.index(frame)?] {
                     Frame::Script(s) => s.bound,
@@ -2478,6 +2489,11 @@ impl Vm {
             }
             ScriptPhase::Builtin(_) => {
                 if !self.builtin_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::Sort(work) => {
+                if !self.sort_step(&mut s, work, m)? {
                     return Ok(false);
                 }
             }
@@ -4132,7 +4148,8 @@ impl Vm {
             }
             ReturnTo::Register { frame, call, .. }
             | ReturnTo::Default { frame, call, .. }
-            | ReturnTo::Class { frame, call } => {
+            | ReturnTo::Class { frame, call }
+            | ReturnTo::Sort { frame, call } => {
                 let i = self.index(frame)?;
                 let Frame::Script(mut parent) = self.active.frames.data[i] else {
                     return Err(VmError::Contract("return target"));
@@ -4159,6 +4176,7 @@ impl Vm {
                     match ret {
                         ReturnTo::Register { reg, .. } => self.put(parent.regs, reg.0, value)?,
                         ReturnTo::Class { .. } => self.put(parent.env, 2, value)?,
+                        ReturnTo::Sort { .. } => self.put(parent.env, 3, value)?,
                         ReturnTo::Default { parameter, .. } => {
                             self.put(parent.bound, parameter, value)?;
                             parent.phase = ScriptPhase::Defaults { parameter };

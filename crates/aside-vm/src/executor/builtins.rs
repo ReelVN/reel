@@ -2,6 +2,8 @@
 use super::*;
 mod bulk;
 pub(super) use bulk::BulkWork;
+mod sort;
+pub(super) use sort::SortWork;
 mod strings;
 pub(super) use strings::TextWork;
 
@@ -39,6 +41,7 @@ pub(super) enum Builtin {
     TrimEnd,
     Get,
     Split,
+    Sort,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -53,6 +56,7 @@ impl Builtin {
             (Array, "insert") => Some(Self::Insert),
             (Array, "remove") => Some(Self::Remove),
             (Array, "resize") => Some(Self::Resize),
+            (Array, "sort") => Some(Self::Sort),
             (Array, "reverse") => Some(Self::Reverse),
             (Array, "extend") => Some(Self::Extend),
             (Array | Table, "clear") => Some(Self::Clear),
@@ -109,6 +113,7 @@ impl Builtin {
             Builtin::TrimEnd,
             Builtin::Get,
             Builtin::Split,
+            Builtin::Sort,
         ];
         usize::try_from(id)
             .ok()
@@ -125,6 +130,7 @@ impl Builtin {
             Self::Remove => (&["index"], 1),
             Self::Resize => (&["length", "value"], 1),
             Self::Extend | Self::Join => (&["items"], 1),
+            Self::Sort => (&["compare"], 0),
             Self::Split => (&["separator"], 1),
             Self::Swap => (&["a", "b"], 2),
             Self::StartsWith => (&["prefix"], 1),
@@ -144,6 +150,7 @@ impl Builtin {
                 | Self::Extend
                 | Self::Clear
                 | Self::Swap
+                | Self::Sort
         )
     }
 }
@@ -341,12 +348,11 @@ impl Vm {
             s.phase = ScriptPhase::Builtin(call);
             return Ok(true);
         }
-        let extra = if matches!(call.method, Builtin::Append)
-            && call.index < call.count
-            && (self.heap.info(receiver)?.len as usize).is_multiple_of(VALUE_CHUNK_LEN)
+        let extra = if matches!(call.method, Builtin::Split)
+            || (matches!(call.method, Builtin::Append)
+                && call.index < call.count
+                && (self.heap.info(receiver)?.len as usize).is_multiple_of(VALUE_CHUNK_LEN))
         {
-            VALUE_CHUNK_BYTES
-        } else if matches!(call.method, Builtin::Split) {
             VALUE_CHUNK_BYTES
         } else {
             0
@@ -355,6 +361,12 @@ impl Vm {
             return Ok(false);
         }
         let result = match call.method {
+            Builtin::Sort => {
+                if let Err(kind) = self.start_sort(s, call) {
+                    self.collection_fault(s, kind)?;
+                }
+                return Ok(true);
+            }
             Builtin::Len | Builtin::ByteLen => {
                 Ok(Value::int(i64::from(self.heap.info(receiver)?.len)))
             }
