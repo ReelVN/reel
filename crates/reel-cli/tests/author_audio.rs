@@ -11,7 +11,7 @@ use reel_engine::{
 use reel_player::{
     aside_session::{AsideSessionUi, StoryState},
     assets::{AssetOptions, Assets},
-    audio::{AudioOptions, AudioPlayer},
+    media::{MediaOptions, MediaPlayer},
     story_runtime::StoryRuntime,
 };
 use std::time::{Duration, Instant};
@@ -34,12 +34,12 @@ fn author_audio_source_and_asb_complete_on_native_output() {
         reel_cli::decode_story(&artifact.bytes).unwrap(),
     ];
     for story in stories {
-        let backend = AudioPlayer::desktop(
+        let backend = MediaPlayer::desktop(
             Assets::directory(AssetOptions {
                 root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
                 ..Default::default()
             }),
-            AudioOptions::default(),
+            MediaOptions::default(),
             reel_core::wake::WakeSignal::new(|| {}),
         );
         let driver = AsideSessionUi::from_compiled(

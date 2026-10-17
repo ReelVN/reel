@@ -290,7 +290,7 @@ impl VideoPlayback {
     pub fn info(&self) -> Option<VideoInfo> {
         self.shared.state.lock().unwrap().info.clone()
     }
-    /// Admit this exactly once through AudioPlayer/KiraMixer. Until admission
+    /// Admit this exactly once through MediaPlayer/KiraMixer. Until admission
     /// the bounded audio queue stalls decode, rather than discarding the track.
     pub fn take_audio(&mut self) -> Option<StreamSoundData> {
         let data = self.shared.state.lock().unwrap().audio.take();
