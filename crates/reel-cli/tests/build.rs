@@ -114,13 +114,26 @@ fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait()
         include_str!("../../../examples/collection_editing.aside"),
         &[(0., 0.); 7],
     );
-    author_example(
+    let text = author_example(
         include_str!("../../../examples/text_operations.aside"),
-        &[(0., 0.); 4],
+        &[(0., 0.); 8],
+    );
+    assert_eq!(
+        text,
+        [
+            "序章 · 窗上的光 · 下一幕",
+            "序章",
+            "窗上的光",
+            "下一幕",
+            "首项：序章",
+            "中🙂é：10 字节，4 个标量",
+            "玩家名：空 山",
+            "章节顺序正确",
+        ]
     );
 }
 
-fn author_example(source: &str, coordinates: &[(f64, f64)]) {
+fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
     use reel_engine::aside::{
         GcBudget, NativeDispatch, RunOutcome, SessionVm, SliceBudget, VmLimits,
     };
@@ -137,6 +150,7 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) {
     let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
     let mut publications = 0;
+    let mut text = Vec::new();
     for entry in [story.initializer, story.entry] {
         vm.start(&session, entry).unwrap();
         let mut returned = false;
@@ -166,8 +180,12 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) {
                         let children = &stage.node(stage.root().unwrap()).unwrap().children;
                         assert_eq!(children.len(), coordinates.len());
                         for (id, expected) in children.iter().zip(coordinates) {
-                            let props = &stage.node(*id).unwrap().props;
+                            let node = stage.node(*id).unwrap();
+                            let props = &node.props;
                             assert_eq!((props.x, props.y), *expected);
+                            if let reel_ui::stage::NodeKind::Text(value) = &node.kind {
+                                text.push(value.plain().to_string());
+                            }
                         }
                         vm.begin_collection().unwrap();
                         while vm.vm().heap().phase() != aside_vm::GcPhase::Idle {
@@ -199,6 +217,7 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) {
     assert_eq!(publications, 1);
     assert_eq!(session.view().history.len(), 1);
     assert!(vm.vm().is_idle());
+    text
 }
 
 #[test]

@@ -2951,6 +2951,7 @@ dependencies = [
  "aside-compiler",
  "aside-vm",
  "codespan-reporting",
+ "fluent-syntax",
  "image",
  "libc",
  "reel-core",
