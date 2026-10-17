@@ -178,10 +178,9 @@ impl Vm {
         };
         let bound = remaining.min(limit);
         let old_len = u64::from(self.heap.info(buffer)?.len);
-        let extra = (old_len + u64::from(bound)).div_ceil(BYTE_CHUNK_LEN as u64)
-            - old_len.div_ceil(BYTE_CHUNK_LEN as u64);
+        let extra = Bytes::growth_bytes(old_len, bound.into());
         let work = u64::from(bound) * 2 + 1 + if is_string { 0 } else { 327 };
-        if !meter.take(0, work, extra * BYTE_CHUNK_BYTES) {
+        if !meter.take(0, work, extra) {
             return Ok(false);
         }
         let scalar = if is_string {

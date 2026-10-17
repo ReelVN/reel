@@ -68,8 +68,11 @@ impl SessionVm {
             }],
             &locale,
         )?;
-        self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
         session.commit_history_record(record);
+        // A script can already hold game.history() and read it immediately
+        // after record returns, before yielding to a frame or another service.
+        self.sync_narrative(session)?;
+        self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
         self.issued = None;
         Ok(())
     }

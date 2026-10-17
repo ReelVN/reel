@@ -1,6 +1,25 @@
 use super::*;
 
 impl Heap {
+    /// Clear a host-owned collection while retaining its identity and metadata.
+    /// The detached payload is reclaimed by incremental GC. Like `array_push`,
+    /// this trusted host operation may update a script-readonly collection.
+    pub fn clear_collection(&mut self, target: Value) -> Result<(), HeapError> {
+        let info = self.info(target)?;
+        if !matches!(info.kind, ObjectKind::Array | ObjectKind::Table) {
+            return Err(HeapError::WrongKind);
+        }
+        if info.len == 0 {
+            return Ok(());
+        }
+        let prepared = if info.kind == ObjectKind::Table {
+            self.alloc_table()?
+        } else {
+            self.alloc_array(&[])?
+        };
+        self.commit_collection(target, prepared)
+    }
+
     /// Commit a private collection work buffer without copying or freeing edges.
     /// The caller roots both objects and checks its recorded content versions.
     /// The old payload remains in `prepared` for incremental reclamation.
@@ -145,8 +164,8 @@ impl Heap {
             return Err(HeapError::OutOfBounds);
         }
         let append = index == values.len;
-        let extra = if append && values.needs_chunk() {
-            VALUE_CHUNK_BYTES
+        let extra = if append {
+            Values::growth_bytes(values.len.into(), 2)
         } else {
             0
         };

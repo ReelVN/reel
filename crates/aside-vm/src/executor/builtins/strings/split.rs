@@ -74,11 +74,7 @@ impl Vm {
                 let prefix = self.heap.get_field(roots, PREFIX).map_err(heap_fault)?;
                 // KMP's prefix table prevents repeated partial matches from
                 // turning long, repetitive inputs into quadratic work.
-                let extra = if (index as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-                    VALUE_CHUNK_BYTES
-                } else {
-                    0
-                };
+                let extra = Values::growth_bytes(index.into(), 1);
                 if !meter.take(0, 4, extra) {
                     return Ok(false);
                 }
@@ -221,13 +217,8 @@ impl Vm {
                     return Ok(true);
                 }
                 let result = self.heap.get_field(roots, RESULT).map_err(heap_fault)?;
-                let extra = if (self.heap.info(result).map_err(heap_fault)?.len as usize)
-                    .is_multiple_of(VALUE_CHUNK_LEN)
-                {
-                    VALUE_CHUNK_BYTES
-                } else {
-                    0
-                };
+                let extra =
+                    Values::growth_bytes(self.heap.info(result).map_err(heap_fault)?.len.into(), 1);
                 if !meter.take(0, 3, extra) {
                     return Ok(false);
                 }

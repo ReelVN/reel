@@ -348,12 +348,10 @@ impl Vm {
             s.phase = ScriptPhase::Builtin(call);
             return Ok(true);
         }
-        let extra = if matches!(call.method, Builtin::Split)
-            || (matches!(call.method, Builtin::Append)
-                && call.index < call.count
-                && (self.heap.info(receiver)?.len as usize).is_multiple_of(VALUE_CHUNK_LEN))
-        {
-            VALUE_CHUNK_BYTES
+        let extra = if matches!(call.method, Builtin::Split) {
+            Values::allocation_bytes(4)
+        } else if matches!(call.method, Builtin::Append) && call.index < call.count {
+            Values::growth_bytes(self.heap.info(receiver)?.len.into(), 1)
         } else {
             0
         };

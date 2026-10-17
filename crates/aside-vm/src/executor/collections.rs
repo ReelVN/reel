@@ -45,9 +45,8 @@ impl Vm {
         let count = (remaining as usize)
             .min(self.limits.heap.max_mutation_bytes as usize)
             .min(BYTE_CHUNK_LEN);
-        let chunks = (u64::from(offset) + count as u64).div_ceil(BYTE_CHUNK_LEN as u64)
-            - u64::from(offset).div_ceil(BYTE_CHUNK_LEN as u64);
-        if !meter.take(0, count as u64 * 2 + 1, chunks * BYTE_CHUNK_BYTES) {
+        let bytes = Bytes::growth_bytes(offset.into(), count as u64);
+        if !meter.take(0, count as u64 * 2 + 1, bytes) {
             return Ok(false);
         }
         self.text_scratch.data.resize(count, 0);
@@ -105,8 +104,8 @@ impl Vm {
         tuple: bool,
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
-        let extra = if index < window.len && (index as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-            VALUE_CHUNK_BYTES
+        let extra = if index < window.len {
+            Values::growth_bytes(index.into(), 1)
         } else {
             0
         };
@@ -397,18 +396,17 @@ impl Vm {
             && work.entry == len
             && !work.matched
             && matches!(work.action, TableAction::MemberGet { symbol, .. } if Builtin::lookup(ObjectKind::Table, &self.program.package().symbols[symbol.index()]).is_some());
-        let extra =
-            if (store && work.matched && matches!(work.action, TableAction::PropertyRef { .. }))
-                || fallback
-                || (store
-                    && !matches!(work.action, TableAction::SetHost { .. })
-                    && !work.matched
-                    && (len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN))
-            {
-                VALUE_CHUNK_BYTES
-            } else {
-                0
-            };
+        let extra = if (store
+            && work.matched
+            && matches!(work.action, TableAction::PropertyRef { .. }))
+            || fallback
+        {
+            Values::allocation_bytes(4)
+        } else if store && !matches!(work.action, TableAction::SetHost { .. }) && !work.matched {
+            Values::growth_bytes(u64::from(len) * 2, 2)
+        } else {
+            0
+        };
         if !meter.take(0, 1, extra) {
             return Ok(false);
         }
@@ -704,8 +702,8 @@ impl Vm {
         meter: &mut Meter,
     ) -> Result<bool, VmError> {
         let len = self.active.equality_cursors.data.len() as u32 - 1;
-        let extra = if index < len && (index as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-            VALUE_CHUNK_BYTES
+        let extra = if index < len {
+            Values::growth_bytes(index.into(), 1)
         } else {
             0
         };

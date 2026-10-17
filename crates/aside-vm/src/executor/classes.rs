@@ -382,19 +382,20 @@ impl Vm {
             .map_or(0, |ty| self.type_checks.extra(ty));
         Ok(extra)
     }
-    pub(super) fn initializer_cost(&self, closure: Value) -> Result<u64, VmError> {
+    pub(super) fn initializer_cost(&self, closure: Value) -> Result<(u64, u64), VmError> {
         let function = self.closure_function(self.heap.get_field(closure, 0)?)?;
         if self.init_symbol != Some(self.program.package().functions[function.index()].name) {
-            return Ok(0);
+            return Ok((0, 0));
         }
         let Some(receiver) = self.script_receiver(closure)? else {
-            return Ok(0);
+            return Ok((0, 0));
         };
         let calls = self.instance_slot(receiver, InstanceSlot::Initializers)?;
         if calls.same_bits(Value::NULL) {
-            return Ok(0);
+            return Ok((0, 0));
         }
-        Ok(u64::from(self.heap.info(calls)?.len) + 3)
+        let len = u64::from(self.heap.info(calls)?.len);
+        Ok((len + 3, Values::growth_bytes(len, 1)))
     }
     pub(super) fn start_class(
         &mut self,
@@ -601,7 +602,68 @@ impl Vm {
             self.instance_slot(root, InstanceSlot::Class)?
         };
         let mut work = 24;
-        let mut bytes = VALUE_CHUNK_BYTES * 4;
+        let class_growth = |slot| -> Result<u64, VmError> {
+            let values = self.class_slot(class, slot)?;
+            Ok(Values::growth_bytes(self.heap.info(values)?.len.into(), 1))
+        };
+        let mut bytes = match step {
+            ClassStep::Build {
+                phase: phase @ (BuildPhase::Members | BuildPhase::Fields),
+                index,
+                ..
+            } => {
+                let slot = if matches!(phase, BuildPhase::Members) {
+                    ClassSlot::Members
+                } else {
+                    ClassSlot::Fields
+                };
+                let base = self.class_slot(class, ClassSlot::Base)?;
+                if !base.same_bits(Value::NULL)
+                    && index < self.heap.info(self.class_slot(base, slot)?)?.len
+                {
+                    class_growth(slot)?
+                } else {
+                    0
+                }
+            }
+            ClassStep::Build {
+                phase: BuildPhase::Types,
+                index,
+                ..
+            } if index < self.program.package().types.len().div_ceil(64) as u32 => {
+                class_growth(ClassSlot::Types)?
+            }
+            ClassStep::Construct {
+                phase: ConstructPhase::Allocate,
+                index,
+                ..
+            } => {
+                if index
+                    < self
+                        .heap
+                        .info(self.class_slot(class, ClassSlot::Fields)?)?
+                        .len
+                {
+                    let fields = self.instance_slot(root, InstanceSlot::Fields)?;
+                    Values::growth_bytes(self.heap.info(fields)?.len.into(), 1)
+                } else {
+                    0
+                }
+            }
+            ClassStep::Construct {
+                phase: ConstructPhase::Fields,
+                ..
+            } => Values::allocation_bytes(3),
+            ClassStep::Construct {
+                phase: ConstructPhase::Init,
+                ..
+            } => {
+                let calls = self.instance_slot(root, InstanceSlot::Initializers)?;
+                Values::allocation_bytes(3)
+                    + Values::growth_bytes(self.heap.info(calls)?.len.into(), 1)
+            }
+            _ => 0,
+        };
         if matches!(
             step,
             ClassStep::Build {
@@ -622,12 +684,41 @@ impl Vm {
                 ClassStep::Build {
                     phase: BuildPhase::OwnFields,
                     ..
-                } => desc.fields.get(index as usize).map(|f| f.captures.len()),
-                _ => desc.methods.get(index as usize).map(|f| f.captures.len()),
+                } => desc.fields.get(index as usize).map(|f| {
+                    (
+                        f.captures.len(),
+                        f.initializer.is_some(),
+                        Some(f.is_static),
+                        f.name,
+                        f.is_static,
+                    )
+                }),
+                _ => desc
+                    .methods
+                    .get(index as usize)
+                    .map(|f| (f.captures.len(), true, None, f.name, f.is_static)),
+            };
+            if let Some((captures, has_closure, field, name, is_static)) = captures {
+                work += captures as u64;
+                if has_closure {
+                    bytes += Values::allocation_bytes(captures as u64 + 3);
+                }
+                bytes += class_growth(ClassSlot::Closures)? + Values::allocation_bytes(5);
+                let member_growth = class_growth(ClassSlot::Members)?;
+                if member_growth != 0 {
+                    let key = i64::from(name.0) * 2 + i64::from(is_static);
+                    work += self.class_member_cost(class)?;
+                    if self.member_find(class, key)?.0.same_bits(Value::NULL) {
+                        bytes += member_growth;
+                    }
+                }
+                if let Some(is_static) = field {
+                    bytes += class_growth(ClassSlot::Statics)?;
+                    if !is_static {
+                        bytes += class_growth(ClassSlot::Fields)?;
+                    }
+                }
             }
-            .unwrap_or(0);
-            work += captures as u64;
-            bytes += (captures as u64 + 3).div_ceil(VALUE_CHUNK_LEN as u64) * VALUE_CHUNK_BYTES;
             work += self.class_member_cost(class)?;
         }
         let call = match step {

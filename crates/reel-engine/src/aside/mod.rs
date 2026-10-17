@@ -559,6 +559,7 @@ impl SessionVm {
             "reel::game::dialogue"
             | "reel::game::choice"
             | "reel::game::history"
+            | "reel::game::clear_history"
             | "reel::game::reading"
             | "reel::game::clear_read_progress"
             | "reel::game::set_auto"

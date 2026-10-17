@@ -454,6 +454,10 @@ impl SessionVm {
             "reel::game::dialogue" => model.dialogue,
             "reel::game::choice" => model.choice,
             "reel::game::reading" => model.reading,
+            "reel::game::clear_history" => {
+                session.clear_history();
+                Value::NULL
+            }
             "reel::game::clear_read_progress" => {
                 session.clear_read_progress()?;
                 self.activities.set_skipping(session.reading().skipping());

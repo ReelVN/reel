@@ -176,11 +176,8 @@ impl Vm {
         } else {
             parameter
         };
-        let bytes = if tail
-            && (self.heap.info(self.value(bound, slot)?)?.len as usize)
-                .is_multiple_of(VALUE_CHUNK_LEN)
-        {
-            VALUE_CHUNK_BYTES
+        let bytes = if tail {
+            Values::growth_bytes(self.heap.info(self.value(bound, slot)?)?.len.into(), 1)
         } else {
             0
         };

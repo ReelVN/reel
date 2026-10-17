@@ -975,21 +975,44 @@ fn forged_odd_packed_destinations_fail_before_any_half_pair_or_allocation() {
 }
 #[test]
 fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
-    for opcode in [Opcode::ArgsPush, Opcode::ArgsNamed, Opcode::ArgsSpread] {
-        let mut vm = load(packed_destination_package(64, opcode));
-        let task = vm
-            .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
-            .unwrap();
-        let packed = reach_packed_append(&mut vm, task, 64);
-        let version = vm.heap().info(packed).unwrap().content_version;
-        for _ in 0..3 {
+    for len in [crate::payload::INLINE_VALUES as u32, 64] {
+        for opcode in [Opcode::ArgsPush, Opcode::ArgsNamed, Opcode::ArgsSpread] {
+            let mut vm = load(packed_destination_package(len, opcode));
+            let task = vm
+                .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+                .unwrap();
+            let packed = reach_packed_append(&mut vm, task, len);
+            let version = vm.heap().info(packed).unwrap().content_version;
+            for _ in 0..3 {
+                let RunOutcome::BudgetYield(usage) = vm
+                    .run_slice(
+                        task,
+                        SliceBudget {
+                            instructions: 1,
+                            work: 3,
+                            allocation_bytes: VALUE_CHUNK_BYTES - 1,
+                            ..SliceBudget::default()
+                        },
+                        || 0,
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(usage.allocation_bytes, 0);
+                assert_eq!(usage.required_allocation, VALUE_CHUNK_BYTES);
+                let info = vm.heap().info(packed).unwrap();
+                assert_eq!(info.len, len);
+                assert_eq!(info.content_version, version);
+                gc(&mut vm);
+            }
             let RunOutcome::BudgetYield(usage) = vm
                 .run_slice(
                     task,
                     SliceBudget {
                         instructions: 1,
-                        work: 3,
-                        allocation_bytes: VALUE_CHUNK_BYTES - 1,
+                        work: 2,
+                        allocation_bytes: VALUE_CHUNK_BYTES,
                         ..SliceBudget::default()
                     },
                     || 0,
@@ -998,35 +1021,14 @@ fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
             else {
                 panic!()
             };
-            assert_eq!(usage.allocation_bytes, 0);
-            assert_eq!(usage.required_allocation, VALUE_CHUNK_BYTES);
-            let info = vm.heap().info(packed).unwrap();
-            assert_eq!(info.len, 64);
-            assert_eq!(info.content_version, version);
-            gc(&mut vm);
+            assert_eq!(usage.allocation_bytes, VALUE_CHUNK_BYTES);
+            assert_eq!(vm.heap().info(packed).unwrap().len, len + 2);
+            assert_eq!(
+                vm.heap().sequence_get(packed, len).unwrap().as_int(),
+                Some(if opcode == Opcode::ArgsNamed { 4 } else { -1 })
+            );
+            assert!(vm.heap().sequence_get(packed, len + 1).is_ok());
         }
-        let RunOutcome::BudgetYield(usage) = vm
-            .run_slice(
-                task,
-                SliceBudget {
-                    instructions: 1,
-                    work: 2,
-                    allocation_bytes: VALUE_CHUNK_BYTES,
-                    ..SliceBudget::default()
-                },
-                || 0,
-            )
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(usage.allocation_bytes, VALUE_CHUNK_BYTES);
-        assert_eq!(vm.heap().info(packed).unwrap().len, 66);
-        assert_eq!(
-            vm.heap().sequence_get(packed, 64).unwrap().as_int(),
-            Some(if opcode == Opcode::ArgsNamed { 4 } else { -1 })
-        );
-        assert!(vm.heap().sequence_get(packed, 65).is_ok());
     }
 }
 #[test]
@@ -1314,7 +1316,7 @@ fn bulk_edit_work_grows_with_elements_and_commit_has_no_payload_allocation() {
             }
         }
         let chunks = vm.heap().stats().chunk_allocations - before;
-        assert_eq!(chunks, 1 + (len as usize).div_ceil(VALUE_CHUNK_LEN) as u64);
+        assert_eq!(chunks, (len as usize).div_ceil(VALUE_CHUNK_LEN) as u64);
         println!("reverse len={len} work={work} chunks={chunks}");
         costs.push(work);
     }
@@ -1762,10 +1764,7 @@ fn text_count_and_join_work_scale_with_bytes_without_copied_prefixes() {
             }
         }
         let chunks = vm.heap().stats().chunk_allocations - before;
-        assert_eq!(
-            chunks,
-            1 + (len as u64 * 10).div_ceil(BYTE_CHUNK_LEN as u64)
-        );
+        assert_eq!(chunks, (len as u64 * 10).div_ceil(BYTE_CHUNK_LEN as u64));
         println!("join bytes={} work={work} chunks={chunks}", len * 10);
         costs.push(work);
     }
@@ -1787,6 +1786,6 @@ fn text_count_and_join_work_scale_with_bytes_without_copied_prefixes() {
             returned(&mut vm, task).as_int(),
             Some(text.chars().count() as i64)
         );
-        assert_eq!(vm.heap().stats().chunk_allocations - before, 1);
+        assert_eq!(vm.heap().stats().chunk_allocations - before, 0);
     }
 }

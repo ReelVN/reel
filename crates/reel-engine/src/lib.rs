@@ -746,6 +746,12 @@ impl Session {
         &self.read_progress
     }
 
+    /// Release all history records and backing storage without changing display,
+    /// input ownership or read progress. Previously saved snapshots are independent.
+    pub fn clear_history(&mut self) {
+        self.history = Vec::new();
+    }
+
     /// Forget content-read records while preserving the currently displayed text.
     /// Completing the waiting group can still register its IDs without allocating.
     pub fn clear_read_progress(&mut self) -> Result<(), SessionError> {

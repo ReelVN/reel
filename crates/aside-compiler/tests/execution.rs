@@ -572,8 +572,8 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if source.contains("for i in 0..1024") {
                 assert_eq!(
                     vm.heap().stats().chunk_allocations - allocations_before,
-                    2,
-                    "range and cursor allocate once; iteration allocates nothing"
+                    0,
+                    "range and cursor fit inline; iteration allocates no payload blocks"
                 );
             }
             if source.contains("let fragment=") {

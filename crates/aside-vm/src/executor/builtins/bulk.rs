@@ -98,9 +98,12 @@ impl Vm {
                 false
             };
         let extra = if !changed && work.index < work.len {
-            VALUE_CHUNK_BYTES
-                * (u64::from((work.index as usize).is_multiple_of(VALUE_CHUNK_LEN))
-                    + u64::from(matches!(work.call.method, Builtin::Entries)))
+            Values::growth_bytes(work.index.into(), 1)
+                + if matches!(work.call.method, Builtin::Entries) {
+                    Values::allocation_bytes(2)
+                } else {
+                    0
+                }
         } else {
             0
         };
