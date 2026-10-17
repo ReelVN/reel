@@ -23,7 +23,8 @@ impl Vm {
             ReturnTo::Delivery => None,
             ReturnTo::Register { frame, call, .. }
             | ReturnTo::Default { frame, call, .. }
-            | ReturnTo::Class { frame, call } => Some((frame, Some(call))),
+            | ReturnTo::Class { frame, call }
+            | ReturnTo::Sort { frame, call } => Some((frame, Some(call))),
             ReturnTo::Native { frame } | ReturnTo::NativeDefault { frame, .. } => {
                 Some((frame, None))
             }
