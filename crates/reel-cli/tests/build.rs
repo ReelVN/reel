@@ -137,7 +137,14 @@ fn release_flag_strips_debug_data_and_is_build_only() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&output.stdout).contains("build-only"));
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["stage"], "usage");
+        assert!(
+            report["diagnostics"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("--release")
+        );
     }
 }
 

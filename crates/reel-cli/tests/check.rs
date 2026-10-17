@@ -112,6 +112,7 @@ fn usage_io_and_invalid_utf8_are_machine_readable() {
         vec!["check", "missing.aside", "--format", "json"],
         vec!["dev", "--format", "json"],
         vec!["check", "--bad", "--format", "json"],
+        vec!["check", "--bad", "--format=json"],
         vec!["check", "input.aside", "extra.aside", "--format", "json"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_reel"))

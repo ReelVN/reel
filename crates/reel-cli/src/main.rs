@@ -1,174 +1,15 @@
-use aside_compiler::SourceMap;
-use aside_compiler::semantic::SourceModule;
+mod commands;
+use aside_compiler::{SourceMap, semantic::SourceModule};
+use clap::Parser;
 use codespan_reporting::{files::SimpleFile, term};
+use commands::{Cli, Command, Localization, SourceCommand};
 use reel_cli::{BuildProfile, build_with_profile, diagnostic_json, package_limits_json};
 use serde_json::{Value, json};
 use std::{
-    ffi::OsString,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
-
-const HELP: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]\nreel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--release] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>] [--save-directory <directory>]\nreel run <file.asb> [--assets <directory>] [--save-directory <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Build defaults to debug with source; --release omits source and instruction mappings. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
-
-struct Args {
-    command: String,
-    source: PathBuf,
-    json: bool,
-    output: Option<PathBuf>,
-    entry: Option<String>,
-    overwrite: bool,
-    profile: BuildProfile,
-    assets: Option<PathBuf>,
-    save_directory: Option<PathBuf>,
-    modules: std::collections::BTreeMap<String, PathBuf>,
-    resources: Vec<reel_cli::distribution::Mount>,
-    text: Vec<reel_cli::distribution::Mount>,
-}
-fn args(raw: &[OsString]) -> Result<Args, String> {
-    if raw.first().is_none_or(|v| {
-        !["check", "build", "export", "dev", "run"]
-            .iter()
-            .any(|name| v == name)
-    }) {
-        return Err("expected check, build, export, dev or run".into());
-    }
-    let (mut source, mut format, mut output, mut entry) = (None, None, None, None);
-    let (mut options, mut overwrite) = (true, false);
-    let mut profile = BuildProfile::Debug;
-    let mut assets = None;
-    let mut save_directory = None;
-    let mut modules = std::collections::BTreeMap::new();
-    let mut resources = Vec::new();
-    let mut text = Vec::new();
-    let mut iter = raw[1..].iter();
-    while let Some(arg) = iter.next() {
-        if options && arg == "--" {
-            options = false;
-        } else if options && arg == "--format" {
-            if format.is_some() {
-                return Err("--format may only be specified once".into());
-            }
-            format = Some(match iter.next().and_then(|v| v.to_str()) {
-                Some("human") => false,
-                Some("json") => true,
-                _ => return Err("--format requires human or json".into()),
-            });
-        } else if options && arg == "--output" {
-            if output.is_some() {
-                return Err("--output may only be specified once".into());
-            }
-            output = Some(PathBuf::from(
-                iter.next().ok_or("--output requires a file path")?,
-            ));
-        } else if options && arg == "--entry" {
-            if entry.is_some() {
-                return Err("--entry may only be specified once".into());
-            }
-            entry = Some(
-                iter.next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("--entry requires a UTF-8 main::name")?
-                    .to_owned(),
-            );
-        } else if options && arg == "--module" {
-            let (alias, path) = iter
-                .next()
-                .and_then(|v| v.to_str())
-                .and_then(|v| v.split_once('='))
-                .ok_or("--module requires alias=directory")?;
-            if modules
-                .insert(alias.to_owned(), PathBuf::from(path))
-                .is_some()
-            {
-                return Err(format!("module alias {alias} was specified twice"));
-            }
-        } else if options && (arg == "--resource" || arg == "--text") {
-            let mount = reel_cli::distribution::Mount::parse(iter.next().and_then(|v| v.to_str())
-                .ok_or("resource mount requires prefix=directory")?)?;
-            if arg == "--resource" { resources.push(mount); } else { text.push(mount); }
-        } else if options && arg == "--assets" {
-            assets = Some(PathBuf::from(
-                iter.next().ok_or("--assets requires a directory")?,
-            ));
-        } else if options && arg == "--save-directory" {
-            save_directory = Some(PathBuf::from(
-                iter.next().ok_or("--save-directory requires a directory")?,
-            ));
-        } else if options && arg == "--release" {
-            if profile == BuildProfile::Release {
-                return Err("--release may only be specified once".into());
-            }
-            profile = BuildProfile::Release;
-        } else if options && arg == "--overwrite" {
-            if overwrite {
-                return Err("--overwrite may only be specified once".into());
-            }
-            overwrite = true;
-        } else if options && arg.to_string_lossy().starts_with('-') {
-            return Err(format!("unknown option: {}", arg.to_string_lossy()));
-        } else if source.replace(PathBuf::from(arg)).is_some() {
-            return Err("expected exactly one source file".into());
-        }
-    }
-    if raw[0] != "build" && raw[0] != "export" && profile == BuildProfile::Release {
-        return Err("--release is a build/export option".into());
-    }
-    if raw[0] != "export" && (!resources.is_empty() || !text.is_empty()) {
-        return Err("--resource and --text are export options".into());
-    }
-    if raw[0] == "check" && (output.is_some() || entry.is_some() || overwrite) {
-        return Err("--output, --entry and --overwrite are build-only options".into());
-    }
-    if raw[0] == "build" && output.is_none() {
-        return Err("build requires an explicit --output <file.asb>".into());
-    }
-    if raw[0] == "export" && output.is_none() {
-        return Err("export requires an explicit --output <directory>".into());
-    }
-    let playing = raw[0] == "dev" || raw[0] == "run";
-    if playing && (output.is_some() || overwrite || format.is_some()) {
-        return Err(
-            "dev/run accept --assets/--save-directory and dev also accepts --entry/--module".into(),
-        );
-    }
-    if raw[0] == "run" && entry.is_some() {
-        return Err("run uses the entry selected when the package was built".into());
-    }
-    if raw[0] == "run" && !modules.is_empty() {
-        return Err("run uses the modules linked into the package".into());
-    }
-    if !playing && (assets.is_some() || save_directory.is_some()) {
-        return Err("--assets and --save-directory are used by dev/run".into());
-    }
-    if let Some(path) = &output
-        && (path.to_str().is_none() || path.extension().is_none_or(|ext| ext != "asb"))
-    {
-        return Err("--output requires a UTF-8 .asb file path".into());
-    }
-    Ok(Args {
-        command: raw[0].to_string_lossy().into_owned(),
-        source: source.ok_or("missing source file")?,
-        json: format.unwrap_or(false),
-        output,
-        entry,
-        overwrite,
-        profile,
-        assets,
-        save_directory,
-        modules,
-        resources,
-        text,
-    })
-}
-fn requested_json(raw: &[OsString]) -> bool {
-    raw.iter()
-        .take_while(|arg| *arg != "--")
-        .collect::<Vec<_>>()
-        .windows(2)
-        .any(|pair| pair[0] == "--format" && pair[1] == "json")
-}
 fn report_json(value: &Value) -> io::Result<()> {
     let mut output = io::stdout().lock();
     serde_json::to_writer(&mut output, value)?;
@@ -190,99 +31,148 @@ fn failure(json_format: bool, stage: &str, path: Option<&str>, message: &str) ->
     }
 }
 fn run() -> io::Result<u8> {
-    let raw: Vec<_> = std::env::args_os().skip(1).collect();
-    if raw.first().is_some_and(|arg| arg == "loc") {
-        return localization_command(&raw[1..]);
-    }
-    if raw.first().is_some_and(|arg| arg == "prepare-image") {
-        return prepare_image_command(&raw[1..]);
-    }
-    let help = |arg: &OsString| arg == "--help" || arg == "-h";
-    if (raw.len() == 1 && help(&raw[0]))
-        || (raw.len() == 2
-            && ["check", "build", "export", "dev", "run"]
-                .iter()
-                .any(|name| raw[0] == *name)
-            && help(&raw[1]))
-    {
-        write!(io::stdout().lock(), "{HELP}")?;
-        writeln!(io::stdout().lock(), "reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory] [--module alias=directory] [--entry main::name] [--overwrite]\nreel run <release.json> [--assets <explicit-loose-overlay>] [--save-directory <directory>]\nreel dev <release.json>\nExport defaults to development with sources and loose assets; --release writes ASB, text and resource packages. Release does not read loose files unless explicitly enabled.")?;
-        writeln!(io::stdout().lock(), "{LOCALIZATION_HELP}")?;
-        return Ok(0);
-    }
-    if raw.len() == 1 && raw[0] == "--version" {
-        writeln!(io::stdout().lock(), "reel {}", env!("CARGO_PKG_VERSION"))?;
-        return Ok(0);
-    }
-    let parsed = match args(&raw) {
-        Ok(args) => args,
-        Err(message) => {
-            failure(requested_json(&raw), "usage", None, &message)?;
-            return Ok(2);
+    let raw: Vec<_> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_from(&raw) {
+        Ok(cli) => cli,
+        Err(error) => {
+            if error.use_stderr() && commands::requested_json(&raw[1..]) {
+                failure(true, "usage", None, &error.to_string())?;
+            } else {
+                error.print()?;
+            }
+            return Ok(error.exit_code() as u8);
         }
     };
-    let Some(path) = parsed.source.to_str() else {
+    match cli.command {
+        Command::Source(command) => source_command(command),
+        Command::Run(args) => run_package(args),
+        Command::Loc(command) => localization_command(command),
+        Command::PrepareImage(args) => prepare_image_command(args),
+    }
+}
+
+fn run_package(args: commands::Run) -> io::Result<u8> {
+    let Some(path) = args.source.to_str() else {
         failure(
-            parsed.json,
+            false,
             "input",
             None,
             "source path must be UTF-8 for diagnostic reporting",
         )?;
         return Ok(2);
     };
-    if parsed.command == "run" {
-        if parsed.source.extension().is_some_and(|extension| extension == "json") {
-            let loaded = match reel_cli::distribution::load(&parsed.source) {
-                Ok(loaded) => loaded,
-                Err(error) => { failure(false, "package", Some(path), &error.to_string())?; return Ok(1); }
-            };
-            return match reel_cli::story_from_package(loaded.package) {
-                Ok(story) => launch(story, Some(loaded.root), Some((loaded.packages, parsed.assets.or(loaded.loose))), parsed.save_directory, path),
-                Err(error) => { failure(false, "package", Some(path), &error.to_string())?; Ok(1) }
-            };
-        }
-        let bytes = match std::fs::read(&parsed.source) {
-            Ok(bytes) => bytes,
+    if args
+        .source
+        .extension()
+        .is_some_and(|extension| extension == "json")
+    {
+        let loaded = match reel_cli::distribution::load(&args.source) {
+            Ok(loaded) => loaded,
             Err(error) => {
-                failure(false, "input", Some(path), &error.to_string())?;
-                return Ok(2);
+                failure(false, "package", Some(path), &error.to_string())?;
+                return Ok(1);
             }
         };
-        return match reel_package::decode(&bytes, reel_package::Limits::default()) {
-            Ok(package) => match reel_cli::story_from_package(package) {
-                Ok(story) => launch(story, parsed.assets, None, parsed.save_directory, path),
-                Err(error) => {
-                    failure(false, "package", Some(path), &error.to_string())?;
-                    Ok(1)
-                }
-            },
+        return match reel_cli::story_from_package(loaded.package) {
+            Ok(story) => launch(
+                story,
+                Some(loaded.root),
+                Some((loaded.packages, args.playback.assets.or(loaded.loose))),
+                args.playback.save_directory,
+                path,
+            ),
             Err(error) => {
                 failure(false, "package", Some(path), &error.to_string())?;
                 Ok(1)
             }
         };
     }
-    let mut project_path = parsed.source.clone();
-    let mut project_modules = parsed.modules.clone();
-    let mut requested_entry = parsed.entry.clone();
-    let mut asset_root = parsed.assets.clone();
-    if parsed.command == "dev" && parsed.source.extension().is_some_and(|extension| extension == "json") {
-        let manifest = match reel_cli::distribution::read_manifest(&parsed.source) {
-            Ok(manifest) => manifest,
-            Err(error) => { failure(false, "project", Some(path), &error.to_string())?; return Ok(1); }
-        };
-        let Some(source) = manifest.source else { failure(false, "project", Some(path), "release export has no source project")?; return Ok(1); };
-        let root = parsed.source.parent().unwrap();
-        project_path = root.join(source.entry);
-        for (alias, directory) in source.modules { project_modules.entry(alias).or_insert_with(|| root.join(directory)); }
-        requested_entry = requested_entry.or(Some(source.function));
-        asset_root = asset_root.or_else(|| manifest.loose.map(|directory| root.join(directory)));
+    let bytes = match std::fs::read(&args.source) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            failure(false, "input", Some(path), &error.to_string())?;
+            return Ok(2);
+        }
+    };
+    let story = reel_package::decode(&bytes, reel_package::Limits::default())
+        .map_err(|error| error.to_string())
+        .and_then(|package| {
+            reel_cli::story_from_package(package).map_err(|error| error.to_string())
+        });
+    match story {
+        Ok(story) => launch(
+            story,
+            args.playback.assets,
+            None,
+            args.playback.save_directory,
+            path,
+        ),
+        Err(error) => {
+            failure(false, "package", Some(path), &error)?;
+            Ok(1)
+        }
     }
-    let loaded = match reel_cli::project::load_with_modules(&project_path, &project_modules) {
+}
+
+fn source_command(command: SourceCommand) -> io::Result<u8> {
+    let json_format = command.format().json();
+    let source = command.project().source.clone();
+    let Some(path) = source.to_str() else {
+        failure(
+            json_format,
+            "input",
+            None,
+            "source path must be UTF-8 for diagnostic reporting",
+        )?;
+        return Ok(2);
+    };
+    let mut modules = match command.project().module_roots() {
+        Ok(modules) => modules,
+        Err(error) => {
+            failure(json_format, "usage", None, &error)?;
+            return Ok(2);
+        }
+    };
+    let mut project_path = source.clone();
+    let mut requested_entry = command.entry().map(str::to_owned);
+    let mut asset_root = None;
+    if let SourceCommand::Dev(args) = &command {
+        asset_root = args.playback.assets.clone();
+        if source
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let manifest = match reel_cli::distribution::read_manifest(&source) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    failure(false, "project", Some(path), &error.to_string())?;
+                    return Ok(1);
+                }
+            };
+            let Some(project) = manifest.source else {
+                failure(
+                    false,
+                    "project",
+                    Some(path),
+                    "release export has no source project",
+                )?;
+                return Ok(1);
+            };
+            let root = source.parent().unwrap();
+            project_path = root.join(project.entry);
+            for (alias, directory) in project.modules {
+                modules.entry(alias).or_insert_with(|| root.join(directory));
+            }
+            requested_entry = requested_entry.or(Some(project.function));
+            asset_root =
+                asset_root.or_else(|| manifest.loose.map(|directory| root.join(directory)));
+        }
+    }
+    let loaded = match reel_cli::project::load_with_modules(&project_path, &modules) {
         Ok(project) => project,
         Err(error) if error.sources.is_empty() => {
             if let Some(input) = error.input_error {
-                if parsed.json {
+                if json_format {
                     report_json(
                         &json!({"schema_version": 1, "status": "error", "source": path, "stage": "input", "executed": false,
                         "diagnostics": [{"code": input.code, "severity": "error", "message": input.message,
@@ -294,303 +184,242 @@ fn run() -> io::Result<u8> {
                 return Ok(input.exit_code);
             }
             failure(
-                parsed.json,
+                json_format,
                 error.failure.stage,
                 Some(path),
                 &error.failure.diagnostics[0].diagnostic.message,
             )?;
             return Ok(2);
         }
-        Err(error) => return source_error(parsed.json, path, &error.sources, error.failure),
+        Err(error) => return source_error(json_format, path, &error.sources, error.failure),
     };
     let inputs = &loaded.sources;
-    let selected_entry = loaded.entry(requested_entry.as_deref());
+    let entry = loaded.entry(requested_entry.as_deref());
     let checked = match loaded.check() {
         Ok(checked) => checked,
-        Err(failed) => return source_error(parsed.json, path, inputs, failed),
+        Err(error) => return source_error(json_format, path, inputs, error),
     };
-    if parsed.command == "dev" {
-        return match reel_cli::into_story(checked, &selected_entry) {
+    match command {
+        SourceCommand::Check(_) => compilation_report(&checked, None, None, json_format, path),
+        SourceCommand::Build(args) => {
+            let artifact = match build_with_profile(&checked, Some(&entry), args.settings.profile())
+            {
+                Ok(artifact) => artifact,
+                Err(error) => return source_error(json_format, path, inputs, error),
+            };
+            let published = match reel_cli::output::write(
+                &args.output,
+                &loaded.input,
+                &artifact.bytes,
+                args.settings.overwrite,
+            ) {
+                Ok(published) => published,
+                Err(error) => {
+                    failure(
+                        json_format,
+                        "output",
+                        args.output.to_str(),
+                        &error.to_string(),
+                    )?;
+                    return Ok(2);
+                }
+            };
+            compilation_report(
+                &checked,
+                Some((&artifact, &args.output)),
+                published.cleanup_warning.as_deref(),
+                json_format,
+                path,
+            )
+        }
+        SourceCommand::Export(args) => {
+            let profile = args.settings.profile();
+            let artifact = match reel_cli::build_export(&checked, &entry, profile) {
+                Ok(artifact) => artifact,
+                Err(error) => return source_error(json_format, path, inputs, error),
+            };
+            let options = reel_cli::distribution::ExportOptions {
+                output: args.output,
+                overwrite: args.settings.overwrite,
+                resources: args.resources,
+                text: args.text,
+                modules,
+                entry,
+            };
+            match reel_cli::distribution::export(&loaded, &artifact, &options) {
+                Ok(result) => {
+                    if json_format {
+                        report_json(
+                            &json!({"status":"exported", "profile":profile.name(), "output":options.output,
+                            "resources":result.files,"payload_bytes":result.bytes,
+                            "text_pool_bytes":artifact.text_pool.as_ref().map_or(0, |pool| pool.as_bytes().len())}),
+                        )?;
+                    } else {
+                        writeln!(
+                            io::stdout().lock(),
+                            "Exported {} ({}; {} resources, {} payload bytes)",
+                            options.output.display(),
+                            profile.name(),
+                            result.files,
+                            result.bytes
+                        )?;
+                    }
+                    Ok(0)
+                }
+                Err(error) => {
+                    failure(
+                        json_format,
+                        "export",
+                        options.output.to_str(),
+                        &error.to_string(),
+                    )?;
+                    Ok(1)
+                }
+            }
+        }
+        SourceCommand::Dev(args) => match reel_cli::into_story(checked, &entry) {
             Ok(story) => launch(
                 story,
-                asset_root.or_else(|| Some(loaded.root.clone())),
+                asset_root.or(Some(loaded.root)),
                 None,
-                parsed.save_directory,
+                args.playback.save_directory,
                 path,
             ),
-            Err(failed) => source_error(false, path, inputs, failed),
-        };
-    }
-    if parsed.command == "export" {
-        let artifact = match reel_cli::build_export(&checked, &selected_entry, parsed.profile) {
-            Ok(artifact) => artifact,
-            Err(error) => return source_error(parsed.json, path, inputs, error),
-        };
-        let options = reel_cli::distribution::ExportOptions {
-            output: parsed.output.unwrap(), overwrite: parsed.overwrite,
-            resources: parsed.resources, text: parsed.text, modules: project_modules,
-            entry: selected_entry,
-        };
-        return match reel_cli::distribution::export(&loaded, &artifact, &options) {
-            Ok(result) => {
-                if parsed.json {
-                    report_json(&json!({"status":"exported", "profile": parsed.profile.name(), "output":options.output, "resources":result.files,"payload_bytes":result.bytes,"text_pool_bytes":artifact.text_pool.as_ref().map_or(0, |pool| pool.as_bytes().len())}))?;
-                } else {
-                    writeln!(io::stdout().lock(), "Exported {} ({}; {} resources, {} payload bytes)", options.output.display(), parsed.profile.name(), result.files, result.bytes)?;
-                }
-                Ok(0)
-            },
-            Err(error) => { failure(parsed.json, "export", options.output.to_str(), &error.to_string())?; Ok(1) }
-        };
-    }
-    let result = (|| {
-        let artifact = if parsed.output.is_some() {
-            Some(build_with_profile(
-                &checked,
-                Some(&selected_entry),
-                parsed.profile,
-            )?)
-        } else {
-            None
-        };
-        Ok((checked, artifact))
-    })();
-    match result {
-        Ok((checked, artifact)) => {
-            let mut cleanup_warning = None;
-            if let (Some(output), Some(artifact)) = (&parsed.output, &artifact) {
-                match reel_cli::output::write(
-                    output,
-                    &loaded.input,
-                    &artifact.bytes,
-                    parsed.overwrite,
-                ) {
-                    Ok(published) => cleanup_warning = published.cleanup_warning,
-                    Err(error) => {
-                        failure(parsed.json, "output", output.to_str(), &error.to_string())?;
-                        return Ok(2);
-                    }
-                }
-            }
-            if parsed.json {
-                report_json(
-                    &json!({"schema_version": 1, "status": if artifact.is_some() { "built" } else { "verified" }, "source": path,
-                    "scope": if artifact.is_some() { "static-compilation-asb-b01-roundtrip" } else { "static-compilation-b01-roundtrip" },
-                    "executed": false, "runtime_admitted": false, "release_package": false, "diagnostics": [], "encoded_bytes": artifact.as_ref().map_or(checked.bytes.len(), |a| a.bytecode_bytes),
-                    "entry": {"kind": "project-initializer", "function_id": checked.compilation.initializer.0},
-                    "modules": checked.modules.iter().map(|m| json!({"module": m.canonical_path, "source_version": m.source_version})).collect::<Vec<_>>(),
-                    "limits": package_limits_json(),
-                    "artifact": artifact.as_ref().map(|a| json!({"path": parsed.output.as_ref().and_then(|p| p.to_str()),
-                        "format": "ASB", "major": 1, "minor": 0, "bytes": a.bytes.len(), "blake3": a.blake3,
-                        "game_entry": a.game_entry, "module_only": a.game_entry.is_none(), "profile": a.profile.name(), "source_included": a.profile == BuildProfile::Debug,
-                        "atomic_visibility": true, "power_loss_durability": "not_promised", "cleanup_warning": cleanup_warning}))}),
-                )?;
-            } else {
-                writeln!(io::stdout().lock(), "{path}: check passed")?;
-                if let Some(artifact) = &artifact {
-                    writeln!(
-                        io::stdout().lock(),
-                        "Built {} ({} bytes, {}). Ready to run.",
-                        parsed.output.as_ref().unwrap().display(),
-                        artifact.bytes.len(),
-                        artifact.profile.name(),
-                    )?;
-                    if let Some(warning) = cleanup_warning {
-                        writeln!(io::stderr().lock(), "warning: {warning}")?;
-                    }
-                }
-            }
-            Ok(0)
-        }
-        Err(failed) => source_error(parsed.json, path, inputs, failed),
+            Err(error) => source_error(false, path, inputs, error),
+        },
     }
 }
 
-const LOCALIZATION_HELP: &str = "reel loc extract <source.aside|directory> (--output <source.ftl> | --output-dir <directory>) [--overwrite]\nreel loc bundle <locale-directory> --output <catalog.ftl> [--overwrite]\nreel loc check <catalog.ftl> --locale <language-tag>\nExtract follows imported modules; directory output mirrors their paths. Maintain translations separately from generated source catalogs. Bundle compiles a language's module catalogs into one FTL outside the source directory.";
-
-fn localization_command(raw: &[OsString]) -> io::Result<u8> {
-    if raw.is_empty() || raw.iter().any(|arg| arg == "--help" || arg == "-h") {
-        writeln!(io::stdout().lock(), "{LOCALIZATION_HELP}")?;
-        return Ok(0);
-    }
-    let parse = || -> Result<_, String> {
-        let command = raw[0].to_str().ok_or(LOCALIZATION_HELP)?;
-        if !matches!(command, "extract" | "bundle" | "check") {
-            return Err(LOCALIZATION_HELP.into());
-        }
-        let mut source = None;
-        let mut output = None;
-        let mut output_directory = false;
-        let mut locale = None;
-        let mut overwrite = false;
-        let mut args = raw[1..].iter();
-        while let Some(arg) = args.next() {
-            if (arg == "--output" || arg == "--output-dir") && output.is_none() {
-                output_directory = arg == "--output-dir";
-                output = Some(PathBuf::from(
-                    args.next().ok_or("output option requires a path")?,
-                ));
-            } else if arg == "--locale" && locale.is_none() {
-                locale = Some(
-                    args.next()
-                        .and_then(|value| value.to_str())
-                        .ok_or("--locale requires a UTF-8 language tag")?,
-                );
-            } else if arg == "--overwrite" && !overwrite {
-                overwrite = true;
-            } else if arg.to_string_lossy().starts_with('-') || source.is_some() {
-                return Err(format!(
-                    "unexpected argument: {}\n{LOCALIZATION_HELP}",
-                    arg.to_string_lossy()
-                ));
-            } else {
-                source = Some(PathBuf::from(arg));
-            }
-        }
-        if command == "extract" && (output.is_none() || locale.is_some()) {
-            return Err(
-                "extract requires --output or --output-dir and does not accept --locale".into(),
-            );
-        }
-        if command == "bundle" && (output.is_none() || output_directory || locale.is_some()) {
-            return Err(
-                "bundle requires --output and does not accept --output-dir or --locale".into(),
-            );
-        }
-        if command == "check" && (locale.is_none() || output.is_some() || overwrite) {
-            return Err(
-                "check requires --locale and does not accept --output or --overwrite".into(),
-            );
-        }
-        Ok((
-            command,
-            source.ok_or("missing source path")?,
-            output,
-            output_directory,
-            locale,
-            overwrite,
-        ))
-    };
-    let (command, source, output, output_directory, locale, overwrite) = match parse() {
-        Ok(arguments) => arguments,
-        Err(error) => {
-            failure(false, "usage", None, &error)?;
-            return Ok(2);
-        }
-    };
-    if command == "check" {
-        return match reel_cli::localization::check(&source, locale.unwrap()) {
-            Ok(()) => {
-                writeln!(io::stdout().lock(), "Catalog checked: {}", source.display())?;
-                Ok(0)
-            }
-            Err(error) => {
-                failure(false, "localization", source.to_str(), &error)?;
-                Ok(1)
-            }
-        };
-    }
-    let output = output.unwrap();
-    if command == "bundle" {
-        return match reel_cli::localization::bundle(&source, &output, overwrite) {
-            Ok(result) => {
-                writeln!(
-                    io::stdout().lock(),
-                    "Bundled {} entries from {} catalogs: {}",
-                    result.entries,
-                    result.files,
-                    output.display()
-                )?;
-                if let Some(warning) = result.cleanup_warning {
-                    writeln!(io::stderr().lock(), "warning: {warning}")?;
-                }
-                Ok(0)
-            }
-            Err(error) => {
-                failure(false, "localization", source.to_str(), &error)?;
-                Ok(1)
-            }
-        };
-    }
-    let extraction = if output_directory {
-        reel_cli::localization::extract_directory(&source, &output, overwrite)
+fn compilation_report(
+    checked: &reel_cli::Checked,
+    built: Option<(&reel_cli::Artifact, &Path)>,
+    cleanup_warning: Option<&str>,
+    json_format: bool,
+    path: &str,
+) -> io::Result<u8> {
+    if json_format {
+        report_json(
+            &json!({"schema_version": 1, "status": if built.is_some() { "built" } else { "verified" }, "source": path,
+            "scope": if built.is_some() { "static-compilation-asb-b01-roundtrip" } else { "static-compilation-b01-roundtrip" },
+            "executed": false, "runtime_admitted": false, "release_package": false, "diagnostics": [],
+            "encoded_bytes": built.map_or(checked.bytes.len(), |(a, _)| a.bytecode_bytes),
+            "entry": {"kind": "project-initializer", "function_id": checked.compilation.initializer.0},
+            "modules": checked.modules.iter().map(|m| json!({"module": m.canonical_path, "source_version": m.source_version})).collect::<Vec<_>>(),
+            "limits": package_limits_json(),
+            "artifact": built.map(|(a, output)| json!({"path": output.to_str(), "format": "ASB", "major": 1, "minor": 0,
+                "bytes": a.bytes.len(), "blake3": a.blake3, "game_entry": a.game_entry, "module_only": a.game_entry.is_none(),
+                "profile": a.profile.name(), "source_included": a.profile == BuildProfile::Debug,
+                "atomic_visibility": true, "power_loss_durability": "not_promised", "cleanup_warning": cleanup_warning}))}),
+        )?;
     } else {
-        reel_cli::localization::extract(&source, &output, overwrite)
-    };
-    match extraction {
-        Ok(result) => {
+        writeln!(io::stdout().lock(), "{path}: check passed")?;
+        if let Some((artifact, output)) = built {
             writeln!(
                 io::stdout().lock(),
-                "Extracted {} messages from {} calls; skipped {} dynamic calls: {}",
-                result.messages,
-                result.occurrences,
-                result.skipped.len(),
-                output.display()
+                "Built {} ({} bytes, {}). Ready to run.",
+                output.display(),
+                artifact.bytes.len(),
+                artifact.profile.name()
             )?;
-            for skipped in result.skipped {
-                writeln!(io::stderr().lock(), "warning[localization]: {skipped}")?;
-            }
-            for stale in result.stale_catalogs {
-                writeln!(
-                    io::stderr().lock(),
-                    "warning[localization]: {}: no current source messages; file left in place, review before bundling",
-                    stale.display()
-                )?;
-            }
-            if let Some(warning) = result.cleanup_warning {
+            if let Some(warning) = cleanup_warning {
                 writeln!(io::stderr().lock(), "warning: {warning}")?;
             }
-            Ok(0)
         }
-        Err(error) => {
-            failure(false, "localization", source.to_str(), &error)?;
-            Ok(1)
+    }
+    Ok(0)
+}
+
+fn localization_command(command: Localization) -> io::Result<u8> {
+    match command {
+        Localization::Check(args) => {
+            match reel_cli::localization::check(&args.source, &args.locale) {
+                Ok(()) => {
+                    writeln!(
+                        io::stdout().lock(),
+                        "Catalog checked: {}",
+                        args.source.display()
+                    )?;
+                    Ok(0)
+                }
+                Err(error) => {
+                    failure(false, "localization", args.source.to_str(), &error)?;
+                    Ok(1)
+                }
+            }
+        }
+        Localization::Bundle(args) => {
+            match reel_cli::localization::bundle(&args.source, &args.output, args.overwrite) {
+                Ok(result) => {
+                    writeln!(
+                        io::stdout().lock(),
+                        "Bundled {} entries from {} catalogs: {}",
+                        result.entries,
+                        result.files,
+                        args.output.display()
+                    )?;
+                    if let Some(warning) = result.cleanup_warning {
+                        writeln!(io::stderr().lock(), "warning: {warning}")?;
+                    }
+                    Ok(0)
+                }
+                Err(error) => {
+                    failure(false, "localization", args.source.to_str(), &error)?;
+                    Ok(1)
+                }
+            }
+        }
+        Localization::Extract(args) => {
+            let (output, extraction) = if let Some(output) = args.destination.output {
+                let result = reel_cli::localization::extract(&args.source, &output, args.overwrite);
+                (output, result)
+            } else {
+                let output = args
+                    .destination
+                    .output_dir
+                    .expect("clap requires one extraction output");
+                let result = reel_cli::localization::extract_directory(
+                    &args.source,
+                    &output,
+                    args.overwrite,
+                );
+                (output, result)
+            };
+            match extraction {
+                Ok(result) => {
+                    writeln!(
+                        io::stdout().lock(),
+                        "Extracted {} messages from {} calls; skipped {} dynamic calls: {}",
+                        result.messages,
+                        result.occurrences,
+                        result.skipped.len(),
+                        output.display()
+                    )?;
+                    for skipped in result.skipped {
+                        writeln!(io::stderr().lock(), "warning[localization]: {skipped}")?;
+                    }
+                    for stale in result.stale_catalogs {
+                        writeln!(
+                            io::stderr().lock(),
+                            "warning[localization]: {}: no current source messages; file left in place, review before bundling",
+                            stale.display()
+                        )?;
+                    }
+                    if let Some(warning) = result.cleanup_warning {
+                        writeln!(io::stderr().lock(), "warning: {warning}")?;
+                    }
+                    Ok(0)
+                }
+                Err(error) => {
+                    failure(false, "localization", args.source.to_str(), &error)?;
+                    Ok(1)
+                }
+            }
         }
     }
 }
 
-fn prepare_image_command(raw: &[OsString]) -> io::Result<u8> {
-    const USAGE: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]";
-    if raw.len() == 1 && (raw[0] == "--help" || raw[0] == "-h") {
-        writeln!(io::stdout().lock(), "{USAGE}")?;
-        return Ok(0);
-    }
-    let parse = || -> Result<_, String> {
-        let mut source = None;
-        let mut output = None;
-        let mut edge = 512;
-        let mut args = raw.iter();
-        while let Some(arg) = args.next() {
-            if arg == "--output" {
-                if output.is_some() {
-                    return Err("duplicate --output".into());
-                }
-                output = Some(PathBuf::from(args.next().ok_or("missing output path")?));
-            } else if arg == "--tile-size" {
-                edge = args
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .ok_or("tile size must be a positive integer")?;
-                if edge == 0 || edge.checked_add(2).is_none() {
-                    return Err("invalid tile size".into());
-                }
-            } else if arg.to_string_lossy().starts_with('-') || source.is_some() {
-                return Err(USAGE.into());
-            } else {
-                source = Some(PathBuf::from(arg));
-            }
-        }
-        Ok((source.ok_or(USAGE)?, output.ok_or(USAGE)?, edge))
-    };
-    let (source, output, edge) = match parse() {
-        Ok(args) => args,
-        Err(error) => {
-            failure(false, "usage", None, &error)?;
-            return Ok(2);
-        }
-    };
-    match reel_cli::prepare_image::prepare(&source, &output, edge) {
+fn prepare_image_command(args: commands::PrepareImage) -> io::Result<u8> {
+    match reel_cli::prepare_image::prepare(&args.source, &args.output, args.tile_size) {
         Ok(manifest) => {
             writeln!(
                 io::stdout().lock(),
@@ -599,17 +428,16 @@ fn prepare_image_command(raw: &[OsString]) -> io::Result<u8> {
                 manifest.height,
                 manifest.levels(),
                 manifest.tile_edge,
-                output.display()
+                args.output.display()
             )?;
             Ok(0)
         }
         Err(error) => {
-            failure(false, "prepare-image", source.to_str(), &error)?;
+            failure(false, "prepare-image", args.source.to_str(), &error)?;
             Ok(1)
         }
     }
 }
-
 fn source_error(
     json_format: bool,
     path: &str,
