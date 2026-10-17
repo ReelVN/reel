@@ -1,6 +1,8 @@
 # Aside VM 与完整语言规范
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
+作者的 Debug/Release 构建只改变随包保存的调试信息，不改变类型、效果、异常、等待或执行检查。默认 Debug 保留完整源码与指令映射；`reel build --release` 删除这些记录，错误仍保留 kind、FunctionId 与 PC。模块、参数、成员等运行符号与字符串常量保持，B01 格式及 VM 快照协议不变；快照身份来自实际产物，Debug 与 Release 不是同一个代码身份。
+
 标准库模块 `std::time` 使用普通 native 调用提供 now、parts 和 format。时间戳为 UTC Unix 秒 int，日期字段是普通 table，格式化结果为 string；时区名称为 string/null。调用声明 HOST 效果，parts/format 另声明 ALLOCATE；不会把现实时间读取放入纯 derive 或创建隐式刷新任务。具体接口见双语作者指南。
 
 显式 tuple 与 union 契约用于 `is`、绑定、共享捕获、参数和返回值；tuple 要求数量及逐项类型一致，union 接受任一分支。检查使用加载时计入容量的显式工作栈，执行前按类型 DAG 的工作上界计费，检查过程不分配临时容器。失败赋值不发布新值。

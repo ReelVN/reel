@@ -68,7 +68,13 @@ cargo build --locked -p reel-cli --features window
 
 Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands provide the same default Reel names, registered native functions and host default arguments as the player.
 
-Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Source paths and positions are stored in the package, so runtime errors still point to the original .aside file. Existing output is replaced only with --overwrite.
+Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Existing output is replaced only with --overwrite.
+
+Build defaults to Debug, retaining complete source and mappings so runtime errors can point to the original .aside file. Add `--release` for publication: the ASB omits source, instruction mappings and declaration locations, reducing its size and resident debug data. Both modes use the same language behavior and runtime checks. Release still reports the error kind, function and instruction position, and retains runtime symbols and text constants. This option is separate from `cargo build --release`, which compiles the Rust player; it does not move story text into an external file. Execution saves belong to the actual ASB, so Debug and Release builds of the same source do not exchange saves.
+
+```powershell
+./target/debug/reel.exe build examples/author_stage.aside --release --output target/reel-artifacts/author-stage-release.asb --overwrite
+```
 
 With window enabled, source and built packages use the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window to exit and finish cleanup; Escape sends Back to the current UI.
 

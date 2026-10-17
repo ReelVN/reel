@@ -1,7 +1,7 @@
 use aside_compiler::SourceMap;
 use aside_compiler::semantic::SourceModule;
 use codespan_reporting::{files::SimpleFile, term};
-use reel_cli::{build, diagnostic_json, package_limits_json};
+use reel_cli::{BuildProfile, build_with_profile, diagnostic_json, package_limits_json};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -10,7 +10,7 @@ use std::{
     process::ExitCode,
 };
 
-const HELP: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]\nreel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>] [--save-directory <directory>]\nreel run <file.asb> [--assets <directory>] [--save-directory <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
+const HELP: &str = "reel prepare-image <original.png|original.jpg> --output <file.reel-image> [--tile-size <pixels>]\nreel check <source.aside|directory> [--module alias=directory] [--format human|json]\nreel build <source.aside|directory> --output <file.asb> [--module alias=directory] [--entry main::name] [--release] [--overwrite] [--format human|json]\nreel dev <source.aside|directory> [--module alias=directory] [--entry main::main] [--assets <directory>] [--save-directory <directory>]\nreel run <file.asb> [--assets <directory>] [--save-directory <directory>]\n\nReel nodes and story services are available without imports in check, build and dev.\nInitialize title, canvas and fonts with game.configure in main. Provide font files explicitly before the first presentation.\nDirectories start at main.aside. Repeat --module to add external source roots.\nDev opens a story from source; run opens a built story without recompiling it.\nDev and build default to main::main; --entry selects another story function. Build defaults to debug with source; --release omits source and instruction mappings. Existing output requires --overwrite.\nWindow commands require: cargo build -p reel-cli --features window\n";
 
 struct Args {
     command: String,
@@ -19,6 +19,7 @@ struct Args {
     output: Option<PathBuf>,
     entry: Option<String>,
     overwrite: bool,
+    profile: BuildProfile,
     assets: Option<PathBuf>,
     save_directory: Option<PathBuf>,
     modules: std::collections::BTreeMap<String, PathBuf>,
@@ -33,6 +34,7 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     }
     let (mut source, mut format, mut output, mut entry) = (None, None, None, None);
     let (mut options, mut overwrite) = (true, false);
+    let mut profile = BuildProfile::Debug;
     let mut assets = None;
     let mut save_directory = None;
     let mut modules = std::collections::BTreeMap::new();
@@ -86,6 +88,11 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
             save_directory = Some(PathBuf::from(
                 iter.next().ok_or("--save-directory requires a directory")?,
             ));
+        } else if options && arg == "--release" {
+            if profile == BuildProfile::Release {
+                return Err("--release may only be specified once".into());
+            }
+            profile = BuildProfile::Release;
         } else if options && arg == "--overwrite" {
             if overwrite {
                 return Err("--overwrite may only be specified once".into());
@@ -96,6 +103,9 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
         } else if source.replace(PathBuf::from(arg)).is_some() {
             return Err("expected exactly one source file".into());
         }
+    }
+    if raw[0] != "build" && profile == BuildProfile::Release {
+        return Err("--release is a build-only option".into());
     }
     if raw[0] == "check" && (output.is_some() || entry.is_some() || overwrite) {
         return Err("--output, --entry and --overwrite are build-only options".into());
@@ -130,6 +140,7 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
         output,
         entry,
         overwrite,
+        profile,
         assets,
         save_directory,
         modules,
@@ -268,7 +279,11 @@ fn run() -> io::Result<u8> {
     }
     let result = (|| {
         let artifact = if parsed.output.is_some() {
-            Some(build(&checked, Some(&selected_entry))?)
+            Some(build_with_profile(
+                &checked,
+                Some(&selected_entry),
+                parsed.profile,
+            )?)
         } else {
             None
         };
@@ -295,13 +310,13 @@ fn run() -> io::Result<u8> {
                 report_json(
                     &json!({"schema_version": 1, "status": if artifact.is_some() { "built" } else { "verified" }, "source": path,
                     "scope": if artifact.is_some() { "static-compilation-asb-b01-roundtrip" } else { "static-compilation-b01-roundtrip" },
-                    "executed": false, "runtime_admitted": false, "release_package": false, "diagnostics": [], "encoded_bytes": checked.bytes.len(),
+                    "executed": false, "runtime_admitted": false, "release_package": false, "diagnostics": [], "encoded_bytes": artifact.as_ref().map_or(checked.bytes.len(), |a| a.bytecode_bytes),
                     "entry": {"kind": "project-initializer", "function_id": checked.compilation.initializer.0},
                     "modules": checked.modules.iter().map(|m| json!({"module": m.canonical_path, "source_version": m.source_version})).collect::<Vec<_>>(),
                     "limits": package_limits_json(),
                     "artifact": artifact.as_ref().map(|a| json!({"path": parsed.output.as_ref().and_then(|p| p.to_str()),
                         "format": "ASB", "major": 1, "minor": 0, "bytes": a.bytes.len(), "blake3": a.blake3,
-                        "game_entry": a.game_entry, "module_only": a.game_entry.is_none(), "source_included": true,
+                        "game_entry": a.game_entry, "module_only": a.game_entry.is_none(), "profile": a.profile.name(), "source_included": a.profile == BuildProfile::Debug,
                         "atomic_visibility": true, "power_loss_durability": "not_promised", "cleanup_warning": cleanup_warning}))}),
                 )?;
             } else {
@@ -309,9 +324,10 @@ fn run() -> io::Result<u8> {
                 if let Some(artifact) = &artifact {
                     writeln!(
                         io::stdout().lock(),
-                        "Built {} ({} bytes). Ready to run.",
+                        "Built {} ({} bytes, {}). Ready to run.",
                         parsed.output.as_ref().unwrap().display(),
                         artifact.bytes.len(),
+                        artifact.profile.name(),
                     )?;
                     if let Some(warning) = cleanup_warning {
                         writeln!(io::stderr().lock(), "warning: {warning}")?;
