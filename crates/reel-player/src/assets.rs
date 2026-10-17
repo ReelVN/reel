@@ -7,11 +7,11 @@ pub use stream::{AssetStream, StreamControl};
 pub(crate) mod tests;
 pub(crate) mod worker;
 pub use decode::ImageExecutor;
-pub use io::DirectoryIo;
+pub use io::{DirectoryIo, PackIo};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, AssetSource, IoId, Priority, ResourceVersion, Scope, WorkId},
-    io::{AssetIo, DescribeRequest, IoEvent, IoPayload, ReadRequest},
+    io::{AssetIo, DescribeRequest, IoError, IoEvent, IoPayload, ReadRequest},
     result::Terminal,
     wake::WakeSignal,
     work::{WorkBudget, WorkEvent, WorkExecutor, WorkRequest, WorkReservations},
@@ -42,6 +42,18 @@ impl Default for AssetOptions {
             resident_bytes: 256 << 20,
             input_bytes: 64 << 20,
             decode_bytes: 256 << 20,
+        }
+    }
+}
+impl AssetOptions {
+    fn queue_limits(&self) -> QueueLimits {
+        QueueLimits {
+            max_requests: 32,
+            max_bytes: self
+                .input_bytes
+                .saturating_add(self.decode_bytes)
+                .saturating_add(self.resident_bytes)
+                .saturating_add(1 << 20),
         }
     }
 }
@@ -97,36 +109,50 @@ struct Service {
 pub struct Assets(Rc<RefCell<Service>>);
 impl Assets {
     pub fn directory(options: AssetOptions) -> Self {
-        let notify: Notify = Arc::new(Mutex::new(Arc::new(|| {})));
-        let callback = notify.clone();
-        let wake = WakeSignal::new(move || {
-            let notify = callback.lock().unwrap().clone();
-            notify();
-        });
-        let limits = QueueLimits {
-            max_requests: 32,
-            max_bytes: options
-                .input_bytes
-                .saturating_add(options.decode_bytes)
-                .saturating_add(options.resident_bytes)
-                .saturating_add(1 << 20),
-        };
-        let io = Box::new(DirectoryIo::new(options.root.clone(), limits, wake.clone()));
-        let executor = Box::new(ImageExecutor::new(limits, wake.clone()));
-        Self::assemble(options, io, executor, wake, notify)
+        let limits = options.queue_limits();
+        let root = options.root.clone();
+        Self::with_adapters(options, |wake| {
+            (
+                Box::new(DirectoryIo::new(root, limits, wake.clone())),
+                Box::new(ImageExecutor::new(limits, wake)),
+            )
+        })
+    }
+    /// Release archives are the sole source unless a loose-file overlay is explicit.
+    pub fn packaged(
+        options: AssetOptions,
+        paths: impl IntoIterator<Item = PathBuf>,
+        overlay: Option<PathBuf>,
+    ) -> Result<Self, IoError> {
+        let limits = options.queue_limits();
+        Self::try_with_adapters(options, |wake| {
+            Ok((
+                Box::new(PackIo::open(paths, overlay, limits, wake.clone())?),
+                Box::new(ImageExecutor::new(limits, wake)),
+            ))
+        })
     }
     pub fn with_adapters(
         options: AssetOptions,
         create: impl FnOnce(WakeSignal) -> (Box<dyn AssetIo>, Box<dyn WorkExecutor>),
     ) -> Self {
+        Self::try_with_adapters(options, |wake| {
+            Ok::<_, std::convert::Infallible>(create(wake))
+        })
+        .unwrap()
+    }
+    fn try_with_adapters<E>(
+        options: AssetOptions,
+        create: impl FnOnce(WakeSignal) -> Result<(Box<dyn AssetIo>, Box<dyn WorkExecutor>), E>,
+    ) -> Result<Self, E> {
         let notify: Notify = Arc::new(Mutex::new(Arc::new(|| {})));
         let callback = notify.clone();
         let wake = WakeSignal::new(move || {
             let notify = callback.lock().unwrap().clone();
             notify();
         });
-        let (io, executor) = create(wake.clone());
-        Self::assemble(options, io, executor, wake, notify)
+        let (io, executor) = create(wake.clone())?;
+        Ok(Self::assemble(options, io, executor, wake, notify))
     }
     fn assemble(
         options: AssetOptions,

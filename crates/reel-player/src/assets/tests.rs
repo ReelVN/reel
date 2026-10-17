@@ -10,6 +10,7 @@ use std::{sync::mpsc, time::Duration};
 
 const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
+mod packed;
 
 // A deterministic in-memory host drives the contract fixture at admission.
 // Image work still uses the production codec adapter, without a filesystem.
@@ -74,12 +75,14 @@ pub(crate) fn memory_assets() -> Assets {
 #[test]
 fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters() {
     let mut versions = Vec::new();
+    let (packaged, _fixture) = packed::packaged_assets(64 << 20);
     for assets in [
         Assets::directory(AssetOptions {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
             ..Default::default()
         }),
         memory_assets(),
+        packaged,
     ] {
         let (send, receive) = mpsc::channel();
         assets.set_waker(Arc::new(move || {
@@ -139,11 +142,13 @@ fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters
         versions[0], versions[1],
         "resource identity must not include storage location"
     );
+    assert_eq!(versions[0], versions[2]);
 }
 
 #[test]
 fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service() {
     use std::io::{Read, Seek, SeekFrom};
+    let (packaged, _fixture) = packed::packaged_assets(1024);
     for assets in [
         Assets::directory(AssetOptions {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
@@ -151,6 +156,7 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
             ..Default::default()
         }),
         memory_assets(),
+        packaged,
     ] {
         let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
         let worker = std::thread::spawn(move || {
