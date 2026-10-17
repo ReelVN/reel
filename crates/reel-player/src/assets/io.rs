@@ -1,8 +1,9 @@
 use super::worker::{Worker, check_completion};
 mod directory;
+mod pack;
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
-    identity::IoId,
+    identity::{AssetSource, ContentVersion, IoId},
     io::*,
     queue::{charge, invalid},
     request_ids::RequestIds,
@@ -10,23 +11,107 @@ use reel_core::{
     wake::WakeSignal,
 };
 use std::{
+    fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
-    sync::{Mutex, atomic::Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::SystemTime,
 };
 
 enum Request {
     Describe(DescribeRequest),
     Read(ReadRequest),
 }
-pub struct DirectoryIo {
+pub struct DirectoryIo(FileIo);
+/// Indexed archives, mounted in declaration order (last matching entry wins).
+pub struct PackIo(FileIo);
+struct FileIo {
     worker: Worker<(IoId, Request), IoEvent>,
     ids: RequestIds<IoId>,
     limits: QueueLimits,
 }
 impl DirectoryIo {
     pub fn new(root: PathBuf, limits: QueueLimits, wake: WakeSignal) -> Self {
-        let files = Mutex::new(directory::Files::new(root, limits.max_requests as usize));
+        Self(FileIo::new(
+            Files::Directory(directory::Files::new(root, limits.max_requests as usize)),
+            limits,
+            wake,
+        ))
+    }
+}
+impl PackIo {
+    /// Mounts only archive indexes. An optional development overlay takes precedence;
+    /// only missing loose files fall through to the selected archive entry.
+    pub fn open(
+        paths: impl IntoIterator<Item = PathBuf>,
+        overlay: Option<PathBuf>,
+        limits: QueueLimits,
+        wake: WakeSignal,
+    ) -> Result<Self, IoError> {
+        let files = pack::Files::open(paths, overlay, limits.max_requests as usize)?;
+        Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
+    }
+}
+enum Files {
+    Directory(directory::Files),
+    Pack(pack::Files),
+}
+impl Files {
+    fn open(
+        &mut self,
+        source: &AssetSource,
+        cancelled: &AtomicBool,
+    ) -> Result<ReadFile<'_>, IoError> {
+        reel_package::archive::validate_path(&source.key.0).map_err(io_error)?;
+        let file = match self {
+            Self::Directory(files) => ReadFile::directory(files.open(source, cancelled)?),
+            Self::Pack(files) => files.entry(source, cancelled)?,
+        };
+        if source
+            .version
+            .is_some_and(|version| version != file.version)
+        {
+            return Err(directory::changed());
+        }
+        Ok(file)
+    }
+}
+struct ReadFile<'a> {
+    file: &'a mut File,
+    offset: u64,
+    length: u64,
+    version: ContentVersion,
+    stamp: Option<SystemTime>,
+}
+impl<'a> ReadFile<'a> {
+    fn directory(file: &'a mut directory::OpenFile) -> Self {
+        Self {
+            file: &mut file.file,
+            offset: 0,
+            length: file.length,
+            version: file.version,
+            stamp: Some(file.modified),
+        }
+    }
+    fn verify(&self) -> Result<(), IoError> {
+        if let Some(modified) = self.stamp
+            && !directory::same(
+                &self.file.metadata().map_err(io_error)?,
+                self.length,
+                modified,
+            )?
+        {
+            return Err(directory::changed());
+        }
+        Ok(())
+    }
+}
+impl FileIo {
+    fn new(files: Files, limits: QueueLimits, wake: WakeSignal) -> Self {
+        let files = Mutex::new(files);
         Self {
             worker: Worker::new(
                 limits,
@@ -60,7 +145,7 @@ impl DirectoryIo {
                                     }
                                     let len = u64::from(r.len).min(file.length - r.offset) as usize;
                                     file.file
-                                        .seek(SeekFrom::Start(r.offset))
+                                        .seek(SeekFrom::Start(file.offset + r.offset))
                                         .map_err(io_error)?;
                                     let mut data = Vec::new();
                                     data.try_reserve_exact(len)
@@ -124,7 +209,7 @@ fn io_error(error: std::io::Error) -> IoError {
     clippy::result_large_err,
     reason = "rejection returns the owning request without allocating"
 )]
-impl AssetIo for DirectoryIo {
+impl AssetIo for FileIo {
     fn capabilities(&self) -> IoCaps {
         IoCaps {
             range_read: true,
@@ -201,7 +286,7 @@ impl AssetIo for DirectoryIo {
     fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
         Err(Rejected {
             request,
-            reason: RejectReason::new(RejectCode::Unsupported, "asset directory is read-only"),
+            reason: RejectReason::new(RejectCode::Unsupported, "asset storage is read-only"),
         })
     }
     fn cancel(&mut self, id: IoId) {
@@ -211,3 +296,37 @@ impl AssetIo for DirectoryIo {
         self.worker.drain(out, limit);
     }
 }
+
+macro_rules! forward_asset_io {
+    ($adapter:ty) => {
+        #[allow(
+            clippy::result_large_err,
+            reason = "rejection returns the owning request without allocating"
+        )]
+        impl AssetIo for $adapter {
+            fn capabilities(&self) -> IoCaps {
+                self.0.capabilities()
+            }
+            fn describe(
+                &mut self,
+                request: DescribeRequest,
+            ) -> Result<IoId, Rejected<DescribeRequest>> {
+                self.0.describe(request)
+            }
+            fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
+                self.0.read(request)
+            }
+            fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
+                self.0.replace_save(request)
+            }
+            fn cancel(&mut self, id: IoId) {
+                self.0.cancel(id);
+            }
+            fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
+                self.0.poll(out, limit);
+            }
+        }
+    };
+}
+forward_asset_io!(DirectoryIo);
+forward_asset_io!(PackIo);

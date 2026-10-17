@@ -3181,6 +3181,7 @@ dependencies = [
  "reel-core",
  "reel-engine",
  "reel-media",
+ "reel-package",
  "reel-render",
  "reel-storage",
  "reel-ui",

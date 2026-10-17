@@ -1,5 +1,6 @@
 //! ASB 1.0 containers for linked source graphs. No compiler, runtime admission or IO.
 //! Integrity hashes are not signatures or host authorization.
+pub mod archive;
 mod codec;
 mod declarations;
 mod metadata;
