@@ -78,10 +78,10 @@ impl DataDocument {
             return Err("trailing system record data".into());
         }
         let check = |atom: Atom| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            if let Atom::Object(id) = atom {
-                if id as usize >= document.objects.len() {
-                    return Err("invalid system data reference".into());
-                }
+            if let Atom::Object(id) = atom
+                && id as usize >= document.objects.len()
+            {
+                return Err("invalid system data reference".into());
             }
             Ok(())
         };

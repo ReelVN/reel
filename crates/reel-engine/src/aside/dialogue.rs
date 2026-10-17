@@ -283,12 +283,12 @@ impl DialogueReader {
                     heap.host_payload(line, 2)?,
                     heap.host_payload(line, 3)?,
                 ];
-                for index in 2..4 {
-                    if index == 3 && values[index].as_bool().is_some() {
+                for (index, value) in values.iter_mut().enumerate().skip(2) {
+                    if index == 3 && value.as_bool().is_some() {
                         continue;
                     }
-                    let (source, rich) = rich_text::source(heap, values[index])?;
-                    values[index] = source;
+                    let (source, rich) = rich_text::source(heap, *value)?;
+                    *value = source;
                     self.rich[index - 2] = rich;
                 }
                 for value in &values[..2] {
