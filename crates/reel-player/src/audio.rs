@@ -6,8 +6,7 @@ use reel_core::{
     wake::WakeSignal,
 };
 use reel_engine::audio::{
-    AudioBackend, AudioCommand, AudioCompletion, AudioId, AudioLoopRegion, AudioRequest,
-    AudioResult,
+    AudioBackend, AudioCommand, AudioCompletion, AudioId, AudioRequest, AudioResult,
 };
 use reel_media::*;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -38,8 +37,6 @@ struct Decode {
     version: ResourceVersion,
     bytes: Arc<OwnedBytes>,
     ticket: reel_core::budget::BudgetTicket,
-    start: Duration,
-    loop_region: Option<AudioLoopRegion>,
 }
 struct Decoded {
     id: AudioId,
@@ -119,12 +116,7 @@ impl AudioPlayer {
                 |request: Decode, cancelled| Decoded {
                     id: request.id,
                     version: request.version,
-                    sound: DecodedSound::decode(Input(request.bytes), request.ticket, cancelled)
-                        .and_then(|sound| {
-                            sound
-                                .with_playback(request.start, request.loop_region)
-                                .map_err(|error| error.to_string())
-                        }),
+                    sound: DecodedSound::decode(Input(request.bytes), request.ticket, cancelled),
                 },
                 |event| event.sound = Err("audio decode cancelled".into()),
             ),
@@ -341,6 +333,18 @@ impl AudioBackend for AudioPlayer {
             return Ok(());
         }
         match command {
+            AudioCommand::Seek(position) => {
+                entry.request.start_position = match &mut entry.phase {
+                    Phase::Ready(_, sound) => sound.seek(position),
+                    Phase::Playing(media) => self
+                        .service
+                        .as_mut()
+                        .unwrap()
+                        .seek(*media, position)
+                        .map_err(|e| e.to_string())?,
+                    _ => position,
+                };
+            }
             AudioCommand::Volume {
                 value: volume,
                 duration,
@@ -421,7 +425,13 @@ impl AudioBackend for AudioPlayer {
             if let Some(entry) = self.entries.get_mut(&event.id)
                 && matches!(entry.phase, Phase::Queued)
             {
-                entry.phase = match event.sound {
+                // Resolve transport settings on the control side: a seek may have
+                // arrived after this decode was queued.
+                entry.phase = match event.sound.and_then(|sound| {
+                    sound
+                        .with_playback(entry.request.start_position, entry.request.loop_region)
+                        .map_err(|error| error.to_string())
+                }) {
                     Ok(sound) => {
                         entry.request.start_position = sound.start_position();
                         Phase::Ready(event.version, Box::new(sound))
@@ -454,8 +464,6 @@ impl AudioBackend for AudioPlayer {
                                                 version,
                                                 bytes,
                                                 ticket,
-                                                start: entry.request.start_position,
-                                                loop_region: entry.request.loop_region,
                                             },
                                             charge,
                                             Priority::Visible,

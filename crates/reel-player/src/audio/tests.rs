@@ -7,6 +7,7 @@ use crate::{
 use reel_engine::{
     Epoch, Session, SessionId,
     aside::{SliceBudget, VmLimits, source},
+    audio::AudioLoopRegion,
 };
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
@@ -115,7 +116,11 @@ fn restored_music_starts_at_saved_content_position_before_output_resumes() {
         first.snapshot(id).unwrap().request.start_position > Duration::from_millis(15)
     });
     first.suspend();
+    first
+        .command(id, AudioCommand::Seek(Duration::from_millis(49)))
+        .unwrap();
     let saved = first.snapshot(id).unwrap();
+    assert_eq!(saved.request.start_position, Duration::from_millis(49));
     assert!(saved.result.is_none());
     let position = saved.request.start_position;
     let (mut restored, restored_output) = rig();
@@ -142,6 +147,125 @@ fn restored_music_starts_at_saved_content_position_before_output_resumes() {
 }
 
 #[test]
+fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
+    let (mut player, output) = rig();
+    let ms = Duration::from_millis;
+    let mut music = request(true);
+    music.group = AudioGroup::Music;
+    music.volume = 0.5;
+    music.pan = -0.5;
+    music.loop_region = Some(AudioLoopRegion {
+        start: ms(20),
+        end: Some(ms(60)),
+    });
+    let id = player.play(music).unwrap();
+    player.command(id, AudioCommand::Pause).unwrap();
+    player.command(id, AudioCommand::Seek(ms(10))).unwrap();
+    assert_eq!(player.position(id), Some(ms(10)));
+    until(|| {
+        player.maintain();
+        matches!(player.entries[&id].phase, Phase::Queued)
+    });
+    // The queued decode must use this newer request when it reaches the control thread.
+    player.command(id, AudioCommand::Seek(ms(95))).unwrap();
+    until(|| {
+        player.maintain();
+        matches!(player.entries[&id].phase, Phase::Ready(..))
+    });
+    assert_eq!(player.position(id), Some(ms(55)));
+    player.command(id, AudioCommand::Seek(ms(5))).unwrap();
+    assert_eq!(
+        player.position(id),
+        Some(ms(5)),
+        "seeking back retains the loop intro"
+    );
+    player.command(id, AudioCommand::Resume).unwrap();
+    player.maintain();
+    let Phase::Playing(media) = player.entries[&id].phase else {
+        panic!("not admitted")
+    };
+    let residency = player.pcm.usage().bytes;
+    assert!(residency > 0);
+    assert!(output.render() > 0.);
+
+    player.command(id, AudioCommand::Pause).unwrap();
+    player.command(id, AudioCommand::Seek(ms(30))).unwrap();
+    let saved = player.snapshot(id).unwrap();
+    assert!(saved.paused);
+    assert_eq!(saved.request.start_position, ms(30));
+    assert_eq!(saved.request.volume, 0.5);
+    assert_eq!(saved.request.pan, -0.5);
+    assert_eq!(saved.request.loop_region.unwrap().start, ms(20));
+    for _ in 0..4 {
+        output.render();
+    }
+    assert_eq!(output.render(), 0.);
+    assert_eq!(player.position(id), Some(ms(30)));
+
+    player.suspend();
+    for position in 0..1000 {
+        player
+            .command(id, AudioCommand::Seek(ms(position)))
+            .unwrap();
+    }
+    assert_eq!(player.position(id), Some(ms(39)));
+    assert_eq!(player.snapshot(id).unwrap().request.start_position, ms(39));
+    assert!(matches!(player.entries[&id].phase, Phase::Playing(current) if current == media));
+    assert_eq!(
+        player.pcm.usage().bytes,
+        residency,
+        "seek must reuse decoded PCM"
+    );
+    player.resume();
+    player.command(id, AudioCommand::Resume).unwrap();
+    until(|| {
+        output.render();
+        player.maintain();
+        player.position(id).unwrap() > ms(39)
+    });
+    assert!(player.take_result(id).is_none());
+    player.command(id, AudioCommand::Stop).unwrap();
+    player.maintain();
+    assert_eq!(player.take_result(id).unwrap().result, AudioResult::Stopped);
+
+    let ending = player.play(request(false)).unwrap();
+    until(|| {
+        player.maintain();
+        matches!(player.entries[&ending].phase, Phase::Playing(_))
+    });
+    player.command(ending, AudioCommand::Pause).unwrap();
+    player
+        .command(ending, AudioCommand::Seek(ms(10_000)))
+        .unwrap();
+    assert_eq!(player.position(ending), Some(ms(250)));
+    for _ in 0..4 {
+        output.render();
+        player.maintain();
+    }
+    assert!(
+        player.take_result(ending).is_none(),
+        "paused end waits for resume"
+    );
+    player.command(ending, AudioCommand::Resume).unwrap();
+    until(|| {
+        output.render();
+        player.maintain();
+        matches!(player.entries[&ending].phase, Phase::Done(_))
+    });
+    player
+        .command(ending, AudioCommand::Seek(Duration::ZERO))
+        .unwrap();
+    let completion = player.take_result(ending).unwrap();
+    assert_eq!(completion.result, AudioResult::Completed);
+    assert_eq!(completion.position, ms(250));
+    player.close();
+    until(|| {
+        player.maintain();
+        !player.cleanup_pending()
+    });
+}
+
+#[test]
 fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirement() {
     let text = r#"fn main() {
         audio.group_volume("music", 0.5);
@@ -151,16 +275,24 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         if await early != "Stopped" || await early != "Stopped" { throw "early stop"; }
         let crossfade = audio.play("assets/chime.wav", group: "music", looping: true, fade_in: 0.01);
         let sound = audio.play("assets/chime.wav", group: "voice");
+        pause(sound);
+        if audio.seek(sound, 0.02) != null || audio.position(sound) != 0.02 { throw "seek result"; }
+        audio.seek(sound, 0.01);
+        if audio.position(sound) != 0.01 { throw "latest seek"; }
+        resume(sound);
         audio.pan(sound, 1, duration: 0.01);
         audio.volume(sound, 0.5, duration: 0.01);
         if await sound != "Completed" || await sound != "Completed" { throw "completion"; }
+        audio.seek(sound, 0);
+        if await sound != "Completed" { throw "seek restarted completed activity"; }
         audio.stop(crossfade, fade: 0.01);
         if await crossfade != "Stopped" { throw "fade completion"; }
         let mut invalid = 0;
         try { audio.group_volume("typo", 1); } catch error { invalid += 1; }
         try { audio.play("assets/chime.wav", pan: 2); } catch error { invalid += 1; }
         try { audio.volume(crossfade, 1, duration: -1); } catch error { invalid += 1; }
-        if invalid != 3 { throw "audio validation"; }
+        try { audio.seek(crossfade, -1); } catch error { invalid += 1; }
+        if invalid != 4 { throw "audio validation"; }
         let music = audio.play("assets/chime.wav", looping: true);
         pause(music); audio.volume(music, 0); resume(music);
         stop(music);

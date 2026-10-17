@@ -544,6 +544,7 @@ impl SessionVm {
             | "reel::audio::await"
             | "reel::audio::group_volume"
             | "reel::audio::pan"
+            | "reel::audio::seek"
             | "reel::audio::position"
             | "reel::audio::stop" => {
                 if symbol == "reel::audio::await" {

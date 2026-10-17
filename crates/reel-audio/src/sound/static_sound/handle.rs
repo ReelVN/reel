@@ -13,6 +13,7 @@ use super::{CommandWriters, sound::Shared};
 pub struct StaticSoundHandle {
 	pub(super) command_writers: CommandWriters,
 	pub(super) shared: Arc<Shared>,
+	pub(super) pending_seek: (u64, f64),
 }
 
 impl StaticSoundHandle {
@@ -23,9 +24,16 @@ impl StaticSoundHandle {
 	}
 
 	/// Returns the current playback position of the sound (in seconds).
+	/// A pending absolute seek reports its target until the output applies it.
 	#[must_use]
 	pub fn position(&self) -> f64 {
-		self.shared.position()
+		if self.pending_seek.0 != self.shared.applied_seek()
+			&& self.state() != PlaybackState::Stopped
+		{
+			self.pending_seek.1
+		} else {
+			self.shared.position()
+		}
 	}
 
 	handle_param_setters! {
@@ -368,7 +376,11 @@ impl StaticSoundHandle {
 
 	/// Sets the playback position to the specified time in seconds.
 	pub fn seek_to(&mut self, position: f64) {
-		self.command_writers.seek_to.write(position)
+		if self.state() == PlaybackState::Stopped {
+			return;
+		}
+		self.pending_seek = (self.pending_seek.0.wrapping_add(1), position);
+		self.command_writers.seek_to.write(self.pending_seek)
 	}
 
 	/// Moves the playback position by the specified amount of time in seconds.

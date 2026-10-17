@@ -798,9 +798,75 @@ fn seek_to() {
 		slice: None,
 	};
 	let (mut sound, mut handle) = data.split();
+	let info = MockInfoBuilder::new().build();
+	sound.process_one(0.5, &info);
 	handle.seek_to(15.0);
+	assert_eq!(handle.position(), 15.0);
+	// The output has consumed the old command, but has not applied it yet.
+	let (sequence, position) = sound.command_readers.seek_to.read().unwrap();
+	handle.seek_to(30.0);
+	sound.apply_seek(sequence, position);
+	assert_eq!(
+		handle.position(),
+		30.0,
+		"old acknowledgement must not hide new seek"
+	);
 	sound.on_start_processing();
-	expect_frame_soon(Frame::from_mono(15.0).panned(Panning::CENTER), &mut sound);
+	assert_eq!(handle.position(), 30.0);
+	assert_eq!(
+		sound.process_one(1.0, &info),
+		Frame::from_mono(30.0).panned(Panning::CENTER)
+	);
+
+	handle.pause(Tween {
+		duration: Duration::ZERO,
+		..Default::default()
+	});
+	handle.seek_to(45.0);
+	sound.on_start_processing();
+	assert_eq!(sound.process_one(1.0, &info), Frame::ZERO);
+	assert_eq!(handle.position(), 45.0);
+	assert_eq!(handle.state(), PlaybackState::Paused);
+	handle.seek_to(50.0);
+	sound.on_start_processing();
+	assert_eq!(sound.process_one(1.0, &info), Frame::ZERO);
+	handle.resume(Tween {
+		duration: Duration::ZERO,
+		..Default::default()
+	});
+	sound.on_start_processing();
+	assert_eq!(
+		sound.process_one(1.0, &info),
+		Frame::from_mono(50.0).panned(Panning::CENTER)
+	);
+
+	handle.pause(Tween {
+		duration: Duration::ZERO,
+		..Default::default()
+	});
+	handle.seek_to(100.0);
+	sound.on_start_processing();
+	assert_eq!(sound.process_one(1.0, &info), Frame::ZERO);
+	assert_eq!(handle.position(), 100.0);
+	assert_eq!(handle.state(), PlaybackState::Paused);
+	handle.seek_to(5.0);
+	sound.on_start_processing();
+	handle.resume(Tween {
+		duration: Duration::ZERO,
+		..Default::default()
+	});
+	sound.on_start_processing();
+	assert_eq!(
+		sound.process_one(1.0, &info),
+		Frame::from_mono(5.0).panned(Panning::CENTER)
+	);
+	handle.seek_to(100.0);
+	sound.on_start_processing();
+	sound.process_one(1.0, &info);
+	assert!(sound.finished());
+	handle.seek_to(0.0);
+	assert_eq!(handle.position(), 100.0);
+	assert!(sound.finished());
 }
 
 /// Tests that a `StaticSound` can seek by an amount of time.

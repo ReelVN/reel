@@ -68,6 +68,7 @@ impl StaticSound {
 			shared: Arc::new(Shared {
 				state: AtomicU8::new(PlaybackState::Playing as u8),
 				position: AtomicU64::new(position.to_bits()),
+				applied_seek: AtomicU64::new(0),
 			}),
 		};
 		// fill the resample buffer with 3 samples so playback can
@@ -113,7 +114,7 @@ impl StaticSound {
 	}
 
 	/// Updates the current frame index by 1 and pushes a new sample to the resampler.
-	fn update_position(&mut self) {
+	fn advance_frame(&mut self) {
 		self.push_frame_to_resampler();
 		if self.is_playing_backwards() {
 			self.transport.decrement_position();
@@ -121,6 +122,10 @@ impl StaticSound {
 			self.transport
 				.increment_position(num_frames(&self.frames, self.slice));
 		}
+	}
+
+	fn update_position(&mut self) {
+		self.advance_frame();
 		if !self.transport.playing && self.resampler.empty() {
 			self.playback_state_manager.mark_as_stopped();
 			self.update_shared_playback_state();
@@ -128,12 +133,17 @@ impl StaticSound {
 	}
 
 	fn seek_to_index(&mut self, index: usize) {
+		if self.playback_state_manager.playback_state() == PlaybackState::Stopped {
+			return;
+		}
 		self.transport
 			.seek_to(index, num_frames(&self.frames, self.slice));
-		// if the sound is playing, push a frame to the resample buffer
-		// to make sure it doesn't get skipped
-		if self.playback_state_manager.playback_state().is_advancing() {
-			self.push_frame_to_resampler();
+		self.resampler = Resampler::new(self.transport.position);
+		self.fractional_position = 0.0;
+		// Discard interpolation history from the old position, including while paused.
+		// Completion remains driven by consumption, after a paused sound resumes.
+		for _ in 0..3 {
+			self.advance_frame();
 		}
 	}
 
@@ -152,7 +162,7 @@ impl StaticSound {
 	}
 
 	fn seek_to(&mut self, position: f64) {
-		let index = (position * self.sample_rate as f64) as usize;
+		let index = (position * self.sample_rate as f64).round() as usize;
 		self.seek_to_index(index);
 	}
 
@@ -177,19 +187,30 @@ impl StaticSound {
 		if let Some(amount) = self.command_readers.seek_by.read() {
 			self.seek_by(amount);
 		}
-		if let Some(position) = self.command_readers.seek_to.read() {
-			self.seek_to(position);
+		if let Some((sequence, position)) = self.command_readers.seek_to.read() {
+			self.apply_seek(sequence, position);
 		}
 	}
-}
+	fn apply_seek(&mut self, sequence: u64, position: f64) {
+		self.seek_to(position);
+		// Publish the applied position before acknowledging this specific request.
+		// A newer control-side seek remains observable until its own acknowledgement.
+		self.publish_position();
+		self.shared.applied_seek.store(sequence, Ordering::Release);
+	}
 
-impl Sound for StaticSound {
-	fn on_start_processing(&mut self) {
+	fn publish_position(&self) {
 		let last_played_frame_position = self.resampler.current_frame_index();
 		self.shared.position.store(
 			(last_played_frame_position as f64 / self.sample_rate as f64).to_bits(),
 			Ordering::SeqCst,
 		);
+	}
+}
+
+impl Sound for StaticSound {
+	fn on_start_processing(&mut self) {
+		self.publish_position();
 		self.read_commands();
 	}
 
@@ -250,9 +271,14 @@ impl Sound for StaticSound {
 pub(super) struct Shared {
 	state: AtomicU8,
 	position: AtomicU64,
+	applied_seek: AtomicU64,
 }
 
 impl Shared {
+	pub fn applied_seek(&self) -> u64 {
+		self.applied_seek.load(Ordering::Acquire)
+	}
+
 	pub fn state(&self) -> PlaybackState {
 		match self.state.load(Ordering::SeqCst) {
 			0 => PlaybackState::Playing,
