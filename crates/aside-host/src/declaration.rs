@@ -2,8 +2,8 @@ use aside_compiler::semantic::{
     CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
 };
 use aside_vm::bytecode::{
-    self as bc, BuiltinType, BytecodePackage, Effects, NativeSupport, Parameter, RuntimeSupport,
-    Signature, SymbolId, TypeDef, TypeId,
+    self as bc, BuiltinType, Effects, NativeSupport, Parameter, RuntimeSupport, Signature,
+    SymbolId, TypeDef, TypeId,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,7 +16,7 @@ impl std::fmt::Display for DeclarationError {
 impl std::error::Error for DeclarationError {}
 /// Host-owned metadata, supplied independently of the package being admitted.
 /// No package Signature/TypeId/FunctionId can be imported as a trust assertion.
-/// Parameter defaults are ordinary B01 default functions generated from these
+/// Parameter defaults are ordinary bytecode default functions generated from these
 /// host-owned constants. Runtime admission resolves the same declarations.
 #[derive(Clone, Debug)]
 pub struct NativeParameter {
@@ -191,10 +191,14 @@ pub fn lower_project(
 /// The VM subsequently checks exact metadata, including mutability/defaults,
 /// effects and required capabilities, against every NativeDef.
 pub fn runtime_support(
-    package: &BytecodePackage,
+    program: &bc::VerifiedProgram,
     contracts: &[NativeContract],
     capabilities: &[String],
 ) -> Result<RuntimeSupport, DeclarationError> {
+    program
+        .require_text_pool()
+        .map_err(|_| DeclarationError("native defaults require a bound text pool"))?;
+    let package = program.package();
     let mut natives = Vec::new();
     for (index, contract) in contracts.iter().enumerate() {
         if contracts[..index]
@@ -239,7 +243,7 @@ pub fn runtime_support(
                     default: parameter
                         .default
                         .as_ref()
-                        .map(|value| default_function(package, contract, index, value))
+                        .map(|value| default_function(program, contract, index, value))
                         .transpose()?,
                 })
             })
@@ -280,11 +284,12 @@ pub fn default_name(contract: &NativeContract, index: usize) -> String {
 }
 
 fn default_function(
-    package: &BytecodePackage,
+    program: &bc::VerifiedProgram,
     contract: &NativeContract,
     index: usize,
     value: &bc::Const,
 ) -> Result<bc::FunctionId, DeclarationError> {
+    let package = program.package();
     let name = default_name(contract, index);
     let (id, function) = package
         .functions
@@ -299,7 +304,15 @@ fn default_function(
         && function.code[0].opcode == bc::Opcode::LoadConst as u16
         && function.code[1] == bc::Instruction::new(bc::Opcode::Return, index as u32, 0, 0)
         && function.code[0].operands[0] == index as u32
-        && package.constants.get(function.code[0].operands[1] as usize) == Some(value);
+        && {
+            let id = bc::ConstId(function.code[0].operands[1]);
+            match (package.constants.get(id.index()), value) {
+                (Some(bc::Const::Utf8(_) | bc::Const::Text { .. }), bc::Const::Utf8(expected)) => {
+                    program.constant_bytes(id) == Some(expected.as_bytes())
+                }
+                (actual, _) => actual == Some(value),
+            }
+        };
     if !valid {
         return Err(DeclarationError("native default differs from registry"));
     }

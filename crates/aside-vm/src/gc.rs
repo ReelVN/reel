@@ -1,4 +1,4 @@
-use crate::payload::{BYTE_CHUNK_BYTES, Payload, VALUE_CHUNK_BYTES};
+use crate::payload::{Payload, VALUE_CHUNK_BYTES};
 use crate::slots::RangeKey;
 use crate::{Heap, HeapError, RootRangeToken, RootRanges};
 
@@ -346,11 +346,12 @@ impl Heap {
                 VALUE_CHUNK_BYTES
             }
             Payload::Bytes(bytes) if !bytes.empty() => {
-                if budget.bytes.saturating_sub(p.bytes) < BYTE_CHUNK_BYTES {
+                let released = bytes.release_bytes();
+                if budget.bytes.saturating_sub(p.bytes) < released {
                     return false;
                 }
                 bytes.drop_first_chunk();
-                BYTE_CHUNK_BYTES
+                released
             }
             _ => {
                 // Empty payload before remove guarantees no recursive/unbounded drop.

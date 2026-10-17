@@ -7,7 +7,10 @@ mod input;
 pub use input::{InputError, read_source};
 mod artifact;
 pub mod output;
-pub use artifact::{Artifact, BuildProfile, build, build_with_profile, package_limits_json};
+pub use artifact::{
+    Artifact, BuildProfile, build, build_export, build_with_profile, package_limits_json,
+};
+pub mod distribution;
 pub mod localization;
 pub mod prepare_image;
 pub mod project;

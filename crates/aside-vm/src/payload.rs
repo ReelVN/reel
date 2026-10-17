@@ -83,10 +83,38 @@ impl Values {
 #[derive(Default)]
 pub(crate) struct Bytes {
     chunks: BTreeMap<u32, Box<[u8; BYTE_CHUNK_LEN]>>,
+    shared: Option<(
+        std::rc::Rc<crate::fault::CodeLease>,
+        crate::bytecode::ConstId,
+    )>,
     pub len: u32,
 }
 
 impl Bytes {
+    pub fn constant(
+        code: std::rc::Rc<crate::fault::CodeLease>,
+        id: crate::bytecode::ConstId,
+    ) -> Self {
+        let len = code.constant_bytes(id).expect("bound byte constant").len() as u32;
+        Self {
+            chunks: BTreeMap::new(),
+            shared: Some((code, id)),
+            len,
+        }
+    }
+    pub fn owned_chunks(&self) -> u64 {
+        self.chunks.len() as u64
+    }
+    pub fn constant_id(&self) -> Option<crate::bytecode::ConstId> {
+        self.shared.as_ref().map(|(_, id)| *id)
+    }
+    pub fn release_bytes(&self) -> u64 {
+        if self.shared.is_some() {
+            0
+        } else {
+            BYTE_CHUNK_BYTES
+        }
+    }
     pub fn extra_chunks(&self, additional: usize) -> u64 {
         let before = (self.len as u64).div_ceil(BYTE_CHUNK_LEN as u64);
         let after = (self.len as u64 + additional as u64).div_ceil(BYTE_CHUNK_LEN as u64);
@@ -113,6 +141,13 @@ impl Bytes {
     }
     pub fn read(&self, offset: u32, output: &mut [u8]) -> usize {
         let count = output.len().min(self.len.saturating_sub(offset) as usize);
+        if let Some((code, id)) = &self.shared {
+            output[..count].copy_from_slice(
+                &code.constant_bytes(*id).expect("bound byte constant")
+                    [offset as usize..offset as usize + count],
+            );
+            return count;
+        }
         let mut n = 0;
         while n < count {
             let pos = offset as usize + n;
@@ -131,16 +166,23 @@ impl Bytes {
         }
         let within = offset as usize % BYTE_CHUNK_LEN;
         let count = (self.len - offset).min((BYTE_CHUNK_LEN - within) as u32) as usize;
+        if let Some((code, id)) = &self.shared {
+            return &code.constant_bytes(*id).expect("bound byte constant")
+                [offset as usize..offset as usize + count];
+        }
         &self.chunks[&(offset / BYTE_CHUNK_LEN as u32)][within..within + count]
     }
     pub fn drop_first_chunk(&mut self) {
+        if self.shared.take().is_some() {
+            return;
+        }
         self.chunks.pop_first();
         if self.chunks.is_empty() {
             self.chunks = BTreeMap::new();
         }
     }
     pub fn empty(&self) -> bool {
-        self.chunks.is_empty()
+        self.shared.is_none() && self.chunks.is_empty()
     }
 }
 

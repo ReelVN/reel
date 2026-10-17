@@ -16,7 +16,7 @@
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；音频已接入作者源码，视频与存读档仍待实现；脚本初始化与多源码工程已接通；资源包与发布清单仍待实现。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；音频已接入作者源码，视频与存读档已接入同一舞台和执行状态；脚本初始化与多源码工程已接通；开发和打包发布使用下面的 export 命令。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -78,11 +78,32 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
-工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；.rpk 与 release.json 属于后续发布链路。
+工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包与可搬移的 release.json 清单。
 
 源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
 
 左结合运算和属性、调用链按书写顺序编译，不按链条长度消耗嵌套额度。括号、代码块和子表达式的真正嵌套仍使用宿主配置的编译资源预算。
+
+### 导出开发工程和发布目录
+
+`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，再执行：
+
+```powershell
+./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+./target/debug/reel.exe run target/reel-artifacts/release/release.json
+./target/debug/reel.exe dev target/reel-artifacts/development/release.json
+```
+
+开发目录包含可修改的 `script/`、散资源、带源码诊断的 `game.asb` 和 `release.json`；可以直接 run，也可以 dev 重新编译。发布目录包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，另外携带对应平台播放器即可分发。复制整个目录后仍使用相同命令，不依赖构建机绝对路径。
+
+`--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--text locales=build/locales` 将已合并的翻译目录放入文本包，脚本仍使用 `localization.load("en", "locales/en.ftl")`。开发导出复制这些文件，发布导出将它们打包。翻译源文件可继续按剧情和 UI 模块组织，先用 `reel loc bundle` 生成运行目录。
+
+资源包默认按 2 GiB 目标体积自动分卷，包头和索引计入体积；可在发布命令添加 `--pack-bytes 1073741824`，改为 1 GiB。分卷沿完整资源边界进行，单个大资源独占一卷；后续文件名为 `resources-002.rpk` 等，清单自动列出，脚本路径无需修改。挂载只读取索引，资源内容按范围读取。
+
+发布时原文常量移入 `game.rtp`，ASB 不携带完整源码。池目前整体驻留，字符串按使用共享引用；不是启动就把所有正文复制成永久 VM 对象。修改译文无需重编代码，但原文池必须与 ASB 对应。图片、音频和视频按资源包索引读取，不整体解包。
+
+发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run release.json --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
 
 ### 已接通的范围、容器与插值
 在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
@@ -1002,7 +1023,7 @@ fn main() {
 
 移植或嵌入时，使用 reel-player 的 PlatformHost、Presentation 和 StoryRuntime，以及 reel-render 的 RenderBackend。单独启用 reel-player/winit 可复用 Winit 宿主而不编入 WGPU；reel-render/wgpu 提供独立的 WGPU 后端。内置播放器也使用这些接口：只有实际呈现的新帧才能更新输入几何，临时资源压力等待提交完成后重试，永久拒绝保留上一帧。应用挂起期间剧情动画暂停，恢复后继续；关闭仍会完成任务清理。作者不需要修改剧本或选择底层图形 API。触摸使用公共 PointerEvent；启用 winit 时可复用 TouchInput 转换原生触摸。Rust 游戏与宿主可使用 reel_ui::input::ActionMap 绑定键盘、指针和手柄，读取持续动作值并接收按下、变化、松开和取消；NavigationInput 提供可配置阈值、重复时钟和重映射。独立 gamepad feature 使用 Gilrs 接入桌面设备，不要求 Winit/WGPU。Winit 适配器已转发系统 IME 事件和候选窗位置，系统可访问性尚未接入。宿主接入与可复现检查见[播放器说明](../../crates/reel-player/README.md)。
 
-图片首次显示或读档恢复时，后端会分批上传并复用已提交的纹理；等待期间保留上一幅完整画面，上传完成不提前改变输入区域。Rust 宿主通过 `RenderEvent::ResourcesAvailable` 唤醒等待的呈现请求；真正超过宿主资源预算仍会明确报错。
+图片首次显示或读档恢复时，后端会按剩余额度分批上传，单张大图也能按行继续上传，并复用已完整提交的纹理；等待期间保留上一幅完整画面，上传完成不提前改变输入区域。Rust 宿主通过 `RenderEvent::ResourcesAvailable` 唤醒等待的呈现请求；真正超过宿主资源预算仍会明确报错。
 
 ## 模态菜单与焦点
 

@@ -37,6 +37,7 @@ impl UploadCreations {
 
 pub struct Image {
     pub view: wgpu::TextureView,
+    pub(super) texture: wgpu::Texture,
     pub size: [u32; 2],
     pub(super) yuv: Option<super::video::Planes>,
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
@@ -46,13 +47,14 @@ pub(super) struct ImageSource {
     pub(super) version: ResourceVersion,
     pub(super) lease: ResourceWeak,
 }
-pub fn image(
+pub(super) fn image_rows(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
     lease: &ResourceLease,
     at: RecordLocation,
-    available: u64,
-) -> Result<(Image, u64), GpuError> {
+    target: &Image,
+    rows: std::ops::Range<u32>,
+) -> Result<(), GpuError> {
     let ResourceData::Image { image, encoding } = lease.data() else {
         return Err(GpuError::Unsupported {
             at,
@@ -65,8 +67,7 @@ pub fn image(
             record: "image format",
         });
     }
-    let size = [image.width, image.height];
-    upload_with(gpu, encoder, size, available, |index| {
+    upload_rows_with(gpu, encoder, target, rows, |index| {
         let rgba = &image.data.data()[index * 4..index * 4 + 4];
         let components = std::array::from_fn(|i| f32::from(rgba[i]) / 255.);
         if rgba[3] == 0 {
@@ -108,6 +109,15 @@ pub fn upload_cost(size: [u32; 2]) -> Result<u64, GpuError> {
         .checked_mul(u64::from(size[1]))
         .ok_or(GpuError::InvalidSize)
 }
+
+pub(super) fn row_bytes(width: u32) -> u64 {
+    (u64::from(width) * 8).div_ceil(256) * 256
+}
+
+/// Choose whole source rows without allocating a full-image staging buffer.
+pub(super) fn rows_per_upload(size: [u32; 2], first: u32, available: u64) -> u32 {
+    (available / row_bytes(size[0])).min(u64::from(size[1] - first)) as u32
+}
 pub fn upload(
     gpu: &Gpu,
     encoder: &mut wgpu::CommandEncoder,
@@ -125,7 +135,7 @@ fn upload_with(
     encoder: &mut wgpu::CommandEncoder,
     size: [u32; 2],
     available: u64,
-    mut pixel: impl FnMut(usize) -> [f32; 4],
+    pixel: impl FnMut(usize) -> [f32; 4],
 ) -> Result<(Image, u64), GpuError> {
     gpu.check()?;
     let max = gpu.device.limits().max_texture_dimension_2d;
@@ -140,7 +150,13 @@ fn upload_with(
             available,
         });
     }
-    let row = (size[0] * 8).div_ceil(256) * 256;
+    let image = create_image(gpu, size)?;
+    upload_rows_with(gpu, encoder, &image, 0..size[1], pixel)?;
+    Ok((image, cost))
+}
+
+pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError> {
+    gpu.check()?;
     #[cfg(test)]
     gpu.upload_creations
         .textures
@@ -159,13 +175,35 @@ fn upload_with(
         usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
+    gpu.check()?;
+    Ok(Image {
+        view: texture.create_view(&Default::default()),
+        texture,
+        size,
+        yuv: None,
+        residency: None,
+        source: None,
+    })
+}
+
+fn upload_rows_with(
+    gpu: &Gpu,
+    encoder: &mut wgpu::CommandEncoder,
+    image: &Image,
+    rows: std::ops::Range<u32>,
+    mut pixel: impl FnMut(usize) -> [f32; 4],
+) -> Result<(), GpuError> {
+    gpu.check()?;
+    let size = image.size;
+    let row = row_bytes(size[0]) as u32;
+    let height = rows.end - rows.start;
     #[cfg(test)]
     gpu.upload_creations
         .staging
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("bounded image upload"),
-        size: u64::from(row) * u64::from(size[1]),
+        size: u64::from(row) * u64::from(height),
         usage: wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: true,
     });
@@ -178,9 +216,9 @@ fn upload_with(
                 .err()
                 .unwrap_or_else(|| GpuError::Device(error.to_string()))
         })?;
-        for y in 0..size[1] as usize {
+        for y in 0..height as usize {
             for x in 0..size[0] as usize {
-                let components = pixel(y * size[0] as usize + x)
+                let components = pixel((y + rows.start as usize) * size[0] as usize + x)
                     .map(|value| half::f16::from_f32(value).to_le_bytes());
                 let start = y * row as usize + x * 8;
                 mapped
@@ -204,21 +242,20 @@ fn upload_with(
             },
         },
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture: &image.texture,
             mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: rows.start,
+                z: 0,
+            },
             aspect: wgpu::TextureAspect::All,
         },
-        texture.size(),
-    );
-    Ok((
-        Image {
-            view: texture.create_view(&Default::default()),
-            size,
-            yuv: None,
-            residency: None,
-            source: None,
+        wgpu::Extent3d {
+            width: size[0],
+            height,
+            depth_or_array_layers: 1,
         },
-        cost,
-    ))
+    );
+    Ok(())
 }

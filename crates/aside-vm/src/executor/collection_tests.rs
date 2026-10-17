@@ -791,20 +791,26 @@ fn table_overwrite_keeps_structure_version_and_traces_new_value_during_mark() {
 }
 
 #[test]
-fn synchronous_tuple_constant_load_respects_the_heap_mutation_bound() {
+fn tuple_constants_larger_than_a_mutation_are_constructed_in_budgeted_steps() {
     let p = package(
         vec![Const::Int(1), Const::Tuple(vec![ConstId(0); 257])],
         vec![op(Opcode::LoadConst, 0, 1, 0), op(Opcode::Return, 0, 0, 0)],
         vec![],
         1,
     );
-    let result = Vm::load(
-        verify(p, Limits::default()).unwrap(),
-        RuntimeSupport::default(),
-        VmLimits::default(),
-        SessionEpoch(81),
+    let mut vm = load(p);
+    assert_eq!(vm.heap().stats().live_objects, 0);
+    let task = vm
+        .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+        .unwrap();
+    let value = returned(&mut vm, task);
+    assert_eq!(vm.heap().info(value).unwrap().kind, ObjectKind::Tuple);
+    assert_eq!(vm.heap().info(value).unwrap().len, 257);
+    assert_eq!(
+        vm.heap().sequence_get(value, 256).unwrap().as_int(),
+        Some(1)
     );
-    assert!(matches!(result, Err(VmError::Limit)));
+    assert_eq!(vm.limits.heap.max_mutation_values, 256);
 }
 
 #[test]

@@ -150,8 +150,10 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
             1.,
             0,
             command.origin.at,
-            u64::MAX,
-            8192,
+            super::super::glyph::RasterLimits {
+                available: u64::MAX,
+                max_dimension: 8192,
+            },
         )
         .unwrap()
         .unwrap();
@@ -162,8 +164,10 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
             2.,
             0,
             command.origin.at,
-            u64::MAX,
-            8192,
+            super::super::glyph::RasterLimits {
+                available: u64::MAX,
+                max_dimension: 8192,
+            },
         )
         .unwrap()
         .unwrap();
@@ -301,14 +305,36 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     let at = frame.commands()[0].origin.at;
     let mut raster = super::super::glyph::Rasterizer::default();
     assert!(matches!(
-        super::super::glyph::rasterize(&mut raster, &frame, run, 1., 0, at, 1, 8192),
+        super::super::glyph::rasterize(
+            &mut raster,
+            &frame,
+            run,
+            1.,
+            0,
+            at,
+            super::super::glyph::RasterLimits {
+                available: 1,
+                max_dimension: 8192
+            }
+        ),
         Err(GpuError::Budget {
             domain: "glyph raster",
             ..
         })
     ));
     assert!(matches!(
-        super::super::glyph::rasterize(&mut raster, &frame, run, 1., 0, at, u64::MAX, 1),
+        super::super::glyph::rasterize(
+            &mut raster,
+            &frame,
+            run,
+            1.,
+            0,
+            at,
+            super::super::glyph::RasterLimits {
+                available: u64::MAX,
+                max_dimension: 1
+            }
+        ),
         Err(GpuError::Unsupported {
             record: "glyph raster exceeds device texture dimensions",
             ..

@@ -37,6 +37,7 @@ enum Layout {
     Values,
     Table,
     Bytes,
+    Constant(crate::bytecode::ConstId),
     Empty,
 }
 #[derive(Serialize, Deserialize)]
@@ -223,7 +224,9 @@ impl GraphCapture {
                 Payload::Fault(fault) => Layout::Fault(fault.data),
                 Payload::Values(_) => Layout::Values,
                 Payload::Table(_) => Layout::Table,
-                Payload::Bytes(_) => Layout::Bytes,
+                Payload::Bytes(bytes) => {
+                    bytes.constant_id().map_or(Layout::Bytes, Layout::Constant)
+                }
                 Payload::Empty => Layout::Empty,
             };
             let validator = if object.host_model_value {
@@ -234,6 +237,7 @@ impl GraphCapture {
                     .map(|v| registry.identify(raw, v))
                     .transpose()?
             };
+            let has_payload = object.payload.len() != 0 && !matches!(layout, Layout::Constant(_));
             out.push(Record::new(
                 RecordKind::Object,
                 raw,
@@ -262,7 +266,7 @@ impl GraphCapture {
                     structure_version: object.structure_version,
                 },
             )?);
-            if object.payload.len() == 0 {
+            if !has_payload {
                 self.object += 1;
             } else {
                 self.offset = Some(0);
@@ -329,6 +333,18 @@ pub(crate) fn allocate(
                     ) =>
                 {
                     Payload::Bytes(Bytes::default())
+                }
+                Layout::Constant(id) => {
+                    use crate::bytecode::Const;
+                    let code = heap.code.as_ref().ok_or_else(|| {
+                        SnapshotError::Invalid("constant without code lease".into())
+                    })?;
+                    match (meta.kind, code.package().constants.get(id.index())) {
+                        (ObjectKind::String, Some(Const::Utf8(_) | Const::Text { .. }))
+                        | (ObjectKind::Bytes, Some(Const::Bytes(_))) => (),
+                        _ => return Err(SnapshotError::Invalid("constant kind/index".into())),
+                    }
+                    Payload::Bytes(Bytes::constant(code.clone(), id))
                 }
                 Layout::Empty if meta.kind == ObjectKind::WeakRef => Payload::Empty,
                 _ => {
@@ -468,7 +484,10 @@ pub(crate) fn connect(
                 let Payload::Bytes(bytes) = &heap.object(key)?.payload else {
                     return Err(HeapError::WrongKind.into());
                 };
-                if bytes.len != record.offset || record.data.len() > BYTE_CHUNK_LEN {
+                if bytes.constant_id().is_some()
+                    || bytes.len != record.offset
+                    || record.data.len() > BYTE_CHUNK_LEN
+                {
                     return Err(SnapshotError::Invalid("byte block offset/length".into()));
                 }
                 let extra = bytes.extra_chunks(record.data.len()) * BYTE_CHUNK_BYTES;

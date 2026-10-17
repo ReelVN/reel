@@ -107,6 +107,7 @@ pub struct Artifact {
     pub game_entry: Option<rp::GameEntry>,
     pub profile: BuildProfile,
     pub bytecode_bytes: usize,
+    pub text_pool: Option<bc::TextPool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -225,6 +226,28 @@ pub fn build_with_profile(
     entry: Option<&str>,
     profile: BuildProfile,
 ) -> Result<Artifact, Failure> {
+    build_inner(checked, entry, profile, false)
+}
+
+pub fn build_export(
+    checked: &Checked,
+    entry: &str,
+    profile: BuildProfile,
+) -> Result<Artifact, Failure> {
+    build_inner(
+        checked,
+        Some(entry),
+        profile,
+        profile == BuildProfile::Release,
+    )
+}
+
+fn build_inner(
+    checked: &Checked,
+    entry: Option<&str>,
+    profile: BuildProfile,
+    external_text: bool,
+) -> Result<Artifact, Failure> {
     let compiled = &checked.compilation;
     let p = compiled.program.package();
     let fail = |detail| {
@@ -236,12 +259,17 @@ pub fn build_with_profile(
         )
     };
     let game_entry = select_entry(checked, entry)?;
-    let release;
+    let mut release;
     let release_bytes;
+    let mut text_pool = None;
     let (p, bytecode) = match profile {
         BuildProfile::Debug => (p, checked.bytes.as_slice()),
         BuildProfile::Release => {
             release = without_debug(p);
+            if external_text {
+                text_pool =
+                    Some(bc::externalize_text(&mut release).map_err(|e| fail(e.to_string()))?);
+            }
             release_bytes =
                 bc::encode(&release, bc::Limits::default()).map_err(|e| fail(e.to_string()))?;
             (&release, release_bytes.as_slice())
@@ -280,6 +308,7 @@ pub fn build_with_profile(
         game_entry,
         profile,
         bytecode_bytes: bytecode.len(),
+        text_pool,
     })
 }
 
@@ -291,6 +320,7 @@ fn without_debug(p: &bc::BytecodePackage) -> bc::BytecodePackage {
         language_version: p.language_version,
         host_abi_version: p.host_abi_version,
         content_version: p.content_version,
+        text_pool: p.text_pool,
         symbols: p.symbols.clone(),
         types: p.types.clone(),
         constants: p.constants.clone(),

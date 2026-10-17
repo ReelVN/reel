@@ -20,6 +20,7 @@ use calls::NativeSite;
 #[cfg(test)]
 mod collection_tests;
 mod collections;
+mod constants;
 mod iterators;
 mod models;
 mod reactive;
@@ -139,6 +140,7 @@ enum ScriptPhase {
         binding: u32,
     },
     Body,
+    Constant(constants::ConstantWork),
     Spread(collections::SpreadCapture),
     TableSpread(collections::TableSpread),
     KeyPath {
@@ -431,6 +433,7 @@ pub struct Vm {
     init_symbol: Option<SymbolId>,
     globals: RootRangeToken,
     constants: RootRangeToken,
+    constant_cache: ChargedVec<Value>,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
@@ -468,6 +471,7 @@ impl Vm {
     ) -> Result<Self, VmError> {
         support.opcodes = SUPPORTED_OPCODES.to_vec();
         program.require_runtime(&support)?;
+        program.require_text_pool()?;
         let p = program.package();
         if limits.max_frames == 0
             || limits.max_unwinds == 0
@@ -527,10 +531,7 @@ impl Vm {
             .filter(|f| matches!(f.kind, FunctionKind::Native(_)))
             .count();
         let module_slots = p.modules.iter().fold(
-            p.constants
-                .len()
-                .checked_add(p.symbols.len())
-                .and_then(|n| n.checked_add(native_count)),
+            p.symbols.len().checked_add(native_count),
             |total, module| total.and_then(|n| n.checked_add(module.globals.len())),
         );
         let module_slots =
@@ -569,6 +570,10 @@ impl Vm {
                 .push(program.native_parameters_need_cells(NativeId(index as u32))?);
         }
         let mut native_values = ChargedVec::new(&usage, native_count)?;
+        // Non-owning full-generation handles: reuse live literals without
+        // making the entire story a permanent GC root.
+        let mut constant_cache = ChargedVec::new(&usage, p.constants.len())?;
+        constant_cache.data.resize(p.constants.len(), Value::NULL);
         let active = TaskState::new(&usage, &mut heap, &mut slots, limits, false)?;
         let mut tasks = ChargedVec::new(&usage, 1)?;
         tasks.data.push(TaskState::new(
@@ -595,43 +600,15 @@ impl Vm {
                 0
             } else {
                 u32::try_from(
-                    p.constants
+                    p.symbols
                         .len()
-                        .checked_add(p.symbols.len())
-                        .and_then(|n| n.checked_add(native_count))
+                        .checked_add(native_count)
                         .ok_or(VmError::Limit)?,
                 )
                 .map_err(|_| VmError::Limit)?
             },
         )?;
         if initialize {
-            for (i, c) in p.constants.iter().enumerate() {
-                let value = match c {
-                    Const::Null => Value::NULL,
-                    Const::Bool(v) => Value::bool(*v),
-                    Const::Int(v) => Value::int(*v),
-                    Const::FloatBits(v) => Value::float(f64::from_bits(*v)),
-                    Const::Utf8(v) => heap.alloc_string(v)?,
-                    Const::Bytes(v) => heap.alloc_bytes(v)?,
-                    Const::Tuple(elements) => {
-                        // Verified constant DAG references only earlier constants. The load
-                        // path has a strict per-constant limit, like UTF-8/byte
-                        // constants. Runtime MakeTuple instead uses resumable steps.
-                        if elements.len() > limits.heap.max_mutation_values as usize {
-                            return Err(VmError::Limit);
-                        }
-                        let tuple = heap.alloc_array(&[])?;
-                        slots.write(&mut heap, at(constants, i as u32), tuple)?;
-                        for element in elements {
-                            let value = slots.read(at(constants, element.0))?;
-                            heap.array_push(tuple, value)?;
-                        }
-                        heap.seal_tuple(tuple)?;
-                        tuple
-                    }
-                };
-                slots.write(&mut heap, at(constants, i as u32), value)?;
-            }
             // Only member operands need a runtime string. Other symbols remain
             // metadata, avoiding an object allocation per unrelated identifier.
             for function in &p.functions {
@@ -641,7 +618,7 @@ impl Vm {
                         Opcode::MemberGet | Opcode::MemberSet
                     ) {
                         let symbol = instruction.operands[2];
-                        let position = p.constants.len() as u32 + symbol;
+                        let position = symbol;
                         if matches!(
                             slots.read(at(constants, position)),
                             Err(HeapError::UninitializedSlot)
@@ -658,8 +635,7 @@ impl Vm {
         // neither allocates nor adds a synthetic author-visible global.
         for (index, function) in p.functions.iter().enumerate() {
             if matches!(function.kind, FunctionKind::Native(_)) {
-                let position =
-                    (p.constants.len() + p.symbols.len() + native_values.data.len()) as u32;
+                let position = (p.symbols.len() + native_values.data.len()) as u32;
                 if initialize {
                     let value = heap.alloc_record(
                         ObjectKind::Closure,
@@ -756,6 +732,7 @@ impl Vm {
 
             globals,
             constants,
+            constant_cache,
             heap,
             limits,
             control_charge,
@@ -2443,6 +2420,11 @@ impl Vm {
                     }
                 }
             }
+            ScriptPhase::Constant(work) => {
+                if !self.constant_step(&mut s, work, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Spread(work) => {
                 if !self.spread_step(&mut s, work, m)? {
                     return Ok(false);
@@ -3164,12 +3146,7 @@ impl Vm {
                 } else {
                     object
                 };
-                let key = self
-                    .value(
-                        self.constants,
-                        self.program.package().constants.len() as u32 + c,
-                    )
-                    .map_err(vm_fault)?;
+                let key = self.value(self.constants, c).map_err(vm_fault)?;
                 let action = if op == Opcode::MemberGet {
                     if host {
                         TableAction::GetHost {
@@ -3240,8 +3217,20 @@ impl Vm {
                 self.sequence_set(object, index, value)?;
             }
             Opcode::LoadConst => {
-                let v = self.slots.read(at(self.constants, b)).map_err(heap_fault)?;
-                self.write(*s, r(a), v)?;
+                if let Some(value) = self.constant_value(ConstId(b)).map_err(heap_fault)? {
+                    self.write(*s, r(a), value)?;
+                } else {
+                    let builder = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                    self.put(s.env, 1, builder).map_err(vm_fault)?;
+                    let parents = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+                    self.put(s.env, 2, parents).map_err(vm_fault)?;
+                    s.phase = ScriptPhase::Constant(constants::ConstantWork {
+                        dest: r(a),
+                        id: ConstId(b),
+                        index: 0,
+                    });
+                    return Ok(false);
+                }
             }
             Opcode::Move => {
                 let v = self.read(*s, r(b))?;

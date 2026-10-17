@@ -1,7 +1,9 @@
 //! ASB 1.0 containers for linked source graphs. No compiler, runtime admission or IO.
 //! Integrity hashes are not signatures or host authorization.
+pub mod archive;
 mod codec;
 mod declarations;
+pub mod distribution;
 mod metadata;
 use aside_vm::bytecode as bc;
 pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, decode, encode};
@@ -82,6 +84,14 @@ pub struct CodePackage {
     metadata: Metadata,
 }
 impl CodePackage {
+    /// Bind the external immutable text storage before runtime admission.
+    pub fn bind_text_pool(mut self, pool: bc::TextPool) -> Result<Self, Error> {
+        self.program = self
+            .program
+            .bind_text_pool(pool)
+            .map_err(|error| Error::new(ErrorKind::Bytecode, error.to_string()))?;
+        Ok(self)
+    }
     pub fn program(&self) -> &bc::VerifiedProgram {
         &self.program
     }

@@ -19,7 +19,7 @@ pub(super) struct OpenFile {
     pub file: File,
     pub length: u64,
     pub version: ContentVersion,
-    modified: SystemTime,
+    pub(super) modified: SystemTime,
     used: u64,
 }
 impl OpenFile {
@@ -102,19 +102,17 @@ impl Files {
         }
         let file = self.open.get_mut(&source.key.0).unwrap();
         file.used = self.sequence;
-        if source
-            .version
-            .is_some_and(|version| version != file.version)
-        {
-            return Err(changed());
-        }
         Ok(file)
     }
 }
-fn same(metadata: &Metadata, length: u64, modified: SystemTime) -> Result<bool, IoError> {
+pub(super) fn same(
+    metadata: &Metadata,
+    length: u64,
+    modified: SystemTime,
+) -> Result<bool, IoError> {
     Ok(metadata.len() == length && metadata.modified().map_err(io_error)? == modified)
 }
-fn changed() -> IoError {
+pub(super) fn changed() -> IoError {
     IoError {
         code: IoErrorCode::VersionUnavailable,
         message: "requested asset version unavailable".into(),

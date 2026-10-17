@@ -27,7 +27,7 @@ indices!(
     Pc
 );
 
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const LANGUAGE_VERSION: u32 = 1;
 pub const HOST_ABI_VERSION: u32 = 1;
 
@@ -37,6 +37,7 @@ pub struct BytecodePackage {
     pub language_version: u32,
     pub host_abi_version: u32,
     pub content_version: u64,
+    pub text_pool: Option<TextPoolDescriptor>,
     pub symbols: Vec<String>,
     pub types: Vec<TypeDef>,
     pub constants: Vec<Const>,
@@ -54,6 +55,7 @@ impl Default for BytecodePackage {
             language_version: LANGUAGE_VERSION,
             host_abi_version: HOST_ABI_VERSION,
             content_version: 1,
+            text_pool: None,
             symbols: Vec::new(),
             types: Vec::new(),
             constants: Vec::new(),
@@ -74,8 +76,17 @@ pub enum Const {
     Int(i64),
     FloatBits(u64),
     Utf8(String),
+    Text { offset: u64, len: u32 },
     Bytes(Vec<u8>),
     Tuple(Vec<ConstId>),
+}
+
+/// Identity of the immutable UTF-8 backing supplied by the host, independently
+/// of its file/container name or the other resources shipped beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextPoolDescriptor {
+    pub byte_len: u64,
+    pub digest: [u8; 32],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BuiltinType {

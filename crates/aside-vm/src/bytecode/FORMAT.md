@@ -1,8 +1,8 @@
-# B01 v1 shared bytecode contract
+# Aside bytecode contract
 
-Frozen source: `1226c6b39dfdbd13eca665accd2ecd95bcb7d5d2:docs/aside-language.md` §22 (and §§3,7–16), with owner clarifications `999a8e3860f97056dc4c7003435014a9da1166e8`, `c18db948554cdc278307617846060fe133922818`, `9cfe5ece49a419c13b7f65992f8b68e46ab4ffac`, `7322292a32a416e6963e5b70162a25fb4e38e54a` and `32054c99d8ba5e174657d844247a25aeb58a9989`. The complete language document from the latter is preserved, including §23's subsequent runtime targets. The initial review draft was `9f36fba`; the following reflects the reviewed implementation. Local base combines D01 `c03226a` and storage `95a7e84`. No dispatcher, frontend, heap or root-range changes.
+The compiler and VM share this format. Only the current encoding is read and written; rebuild artifacts when the encoding changes.
 
-Public data: `BytecodePackage {versions, content_version, symbols, types, constants, signatures, natives, modules, functions, capabilities, sources}`. Separate u32 newtypes: SymbolId, TypeId, ConstId, SignatureId, NativeId, ModuleId, FunctionId, GlobalId, BindingId, CaptureId, DescriptorId, RegionId, SourceId, Reg, Pc. `Const = Null | Bool | Int(i64) | FloatBits(u64) | Utf8(String) | Bytes(Vec<u8>) | Tuple(Vec<ConstId>)`; tuple references point backwards (finite immutable DAG). No Value/HeapId/token/address.
+Public data: `BytecodePackage {versions, content_version, text_pool, symbols, types, constants, signatures, natives, modules, functions, capabilities, sources}`. Separate u32 newtypes: SymbolId, TypeId, ConstId, SignatureId, NativeId, ModuleId, FunctionId, GlobalId, BindingId, CaptureId, DescriptorId, RegionId, SourceId, Reg, Pc. `Const = Null | Bool | Int(i64) | FloatBits(u64) | Utf8(String) | Text {offset: u64, len: u32} | Bytes(Vec<u8>) | Tuple(Vec<ConstId>)`; tuple references point backwards (finite immutable DAG). No Value/HeapId/token/address.
 
 `Signature {parameters: Vec<Parameter>, rest: Option<Parameter>, return_type: TypeId, effects: Effects}`. Parameter carries name, type, mutable (default false), and optional default-expression FunctionId. A default function receives exactly the preceding ordinary parameters, runs on every binding, is Plain with NoWait context and shares exactly the callee closure’s capture layout and definition ModuleInstance. Captures include lexical references in default expressions. Native defaults have no script closure environment. `mut` permits rebinding only and is never an implicit reference parameter. `TypeDef` covers builtins, named module types, tuple, union and function signatures. Native declarations carry symbol, signature, ABI version and required capabilities. Host registration must match all four, and explicitly report the opcodes it executes.
 
@@ -19,7 +19,7 @@ Native defaults retain the no-script-capture rule and exact signature prefix che
 `Instruction {opcode: u16, flags: u16, operands: [u32;3]}` occupies exactly 16 encoded bytes, field-by-field little endian; flags and unused operands zero. PC is an instruction number. One shared `InstructionSpec` records operand kinds, reads/writes, descriptor kind, flow, may_throw and suspension category. Every instruction may BudgetYield at VM safe points. The table below lists only language suspension: `W` external wait, `Y` generator yield, `T` thread suspend, `-` none. Calls are W-capable in ordinary context but execute under the inherited dynamic effect/context boundary; NoWait contexts do not forbid a call that returns synchronously.
 
 The composition increment reserves CallNoWait (0048) and ChildrenPush (005c)
-within B01 v1; execution support is explicit in the opcode capability list.
+in the shared opcode table; execution support is explicit in the opcode capability list.
 CallNoWait inherits the caller restrictions and adds NoWait only for its callee
 chain. ChildrenPush appends one composable Host to an array, ignores null and
 rejects other values. Host public fields are a shared Table, separate from its
@@ -43,7 +43,7 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 
 | Hex | Opcode | operands / typed descriptor | flow | throw | suspend |
 |---|---|---|---|---|---|
-| 0001 | LoadConst | d,k | next | no | - |
+| 0001 | LoadConst | d,k | next | yes | - |
 | 0002 | Move | d,x | next | no | - |
 | 0003 | Clear | d | next (sets uninitialized bitmap) | no | - |
 | 0004 | BindInit | b,x | next (one-time initialization) | yes | - |
@@ -113,20 +113,26 @@ Regions use `[start,end)` protected code, optional `[catch_start,catch_end)` plu
 
 Binary envelope: magic `ASIDBC01`, format/language/host ABI u32, content version u64, actual total byte length u32, section counts; ordered count-prefixed records with explicit tags. Reject unknown versions/tags/flags and unsupported opcode/native/capabilities, including instructions in unreachable code. Configurable package-wide input/record/register/work/allocation limits; strings, including source text, share those budgets and their existing u32 length representation without a separate per-string cap. The default work budget is twice the default byte budget to cover the complete scan and materialization passes; both passes charge the same work counter. Scan full shape and counts before materializing, use checked arithmetic and fallible reservation, then validate all references and control flow. Private VerifiedProgram owns immutable package plus capacity accounting and can only be constructed by validation. Separate format validation and explicit runtime capability validation permit tooling to inspect full language targets without claiming dispatch support.
 
-Decoding, verification and runtime admission independently enforce max_work. Shared signature scans, default capture equality, capability searches and trusted-registry comparisons are charged before the inner work; compressed metadata cannot hide a function × parameter × capture traversal. Uniqueness uses bounded, reserved sorted indices (including exact string sorting for hash collision groups); heap-operation comparison bounds and actual capacities are charged before work/allocation. Opcode support is normalized once. VerifiedProgram retains Limits for later runtime admission. This accounting does not change the v1 wire schema.
+Decoding, verification and runtime admission independently enforce max_work. Shared signature scans, default capture equality, capability searches and trusted-registry comparisons are charged before the inner work; compressed metadata cannot hide a function × parameter × capture traversal. Uniqueness uses bounded, reserved sorted indices (including exact string sorting for hash collision groups); heap-operation comparison bounds and actual capacities are charged before work/allocation. Opcode support is normalized once. VerifiedProgram retains Limits for later runtime admission. This accounting introduces no separate wire records.
 
 Normal cleanup queries use `VerifiedProgram::cleanup_handler(function, original_pc, CleanupDestination::{Return, Leave(target)}, consumed_region)`, returning only Finally HandlerTargets. They share exception_handler's all-block strict ancestor relation. Selection uses the protected/catch block containing original_pc; Leave preserves that block when target remains inside it. Runtime retains the original source/destination across finally execution and advances the consumed cursor after EndFinally. The query adds no wire records.
 
 Shared fixtures in `fixtures.rs` and fixed wire snapshots in `testdata/`: ordinary main → helper → native with one register-window argument (same package for Ready/Pending); mutable cell captured by two closures and outer scope; throw/catch/finally with source spans; default-prefix Cell captured by a returned closure alongside an ordinary call to the same default function. These are hand-authored bytecode, not claimed source compilation or runtime execution.
 
 
+## Shared literal storage
+
+Release exports externalize UTF-8 constants into one immutable text pool. `TextPoolDescriptor` carries the pool byte length and BLAKE3 digest. Text offsets refer to this pool, never process addresses. Static decoding validates ranges; binding validates the descriptor, UTF-8 and character boundaries. Execution requires a bound pool when the descriptor is present. Host default validation borrows constants through VerifiedProgram::constant_bytes and compares their contents, independent of inline or external storage. Aside accepts shared memory and does not perform package or file IO.
+
+String objects are created on use and share either the inline constant or the bound pool. Tuple constants materialize incrementally. A weak constant-handle cache reuses live objects without retaining them after their last ordinary reference is released. `LoadConst` can yield for work and fail allocation; it does not add an author-visible allocation-effect restriction. Snapshots store constant IDs for constant-backed strings and actual bytes for dynamic strings. The current host loads the original pool as a whole; externalizing text does not imply disk paging.
+
 ## Actual wire fields
 
-Header is 68 bytes: ASIDBC01 (8), format/language/host ABI (3×u32), content_version (u64), total bytes (u32), nine section counts (9×u32). Sections, each count-prefixed again, are symbols, types, constants, signatures, natives, modules, functions, capabilities and sources. Header and body counts must agree in the scan before payload allocation. All integers use little endian. Vectors/strings use u32 counts; strings contain strict UTF-8 bytes. bool and Option tags are u8 0/1. Enums use explicit u8 tags from codec.rs, never Rust discriminant layout. Unknown tags are rejected. No padding or alignment bytes.
+Header is 68 bytes: ASIDBC01 (8), format/language/host ABI (3×u32), content_version (u64), total bytes (u32), nine section counts (9×u32). The payload begins with an optional TextPoolDescriptor (u8 presence, then u64 byte_len and 32 digest bytes when present). Sections, each count-prefixed again, are symbols, types, constants, signatures, natives, modules, functions, capabilities and sources. Header and body counts must agree in the scan before payload allocation. All integers use little endian. Vectors/strings use u32 counts; strings contain strict UTF-8 bytes. bool and Option tags are u8 0/1. Enums use explicit u8 tags from codec.rs, never Rust discriminant layout. Unknown tags are rejected. No padding or alignment bytes.
 
 Records use model.rs field order except ModuleDef and FunctionDef: module records start with an additional global count, then path/imports/exports/globals/initializer. Function records start with six counts (captures/bindings/descriptors/code/regions/source_map), register_count, then module/name/kind/signature/context and those six tables. PC range ends may equal code length; instruction targets may not. Empty register windows may begin at register_count.
 
-Constants: 0 Null, 1 Bool, 2 Int64, 3 Float64Bits, 4 Utf8, 5 Bytes, 6 Tuple. Type tags: 0 Builtin, 1 Tuple, 2 Union, 3 Function, 4 Named. FunctionKind: 0 Plain, 1 Async, 2 Generator, 3 Native(u32 NativeId). Context: 0 Ordinary, 1 NoWait, 2 Derived, 3 Init. CaptureKind: 0 Value, 1 Cell. Descriptor tags: 0 Global, 1 Closure, 2 Call, 3 Sequence, 4 Table, 5 Class, 6 Super, 7 Property, 8 Pattern, 9 Spawn, 10 TableSources. BindingInitialization: 0 Explicit, 1 Parameter(u32). Remaining tag numbers are explicit in codec.rs.
+Constants: 0 Null, 1 Bool, 2 Int64, 3 Float64Bits, 4 Utf8, 5 Bytes, 6 Tuple, 7 Text (u64 offset, u32 length). Type tags: 0 Builtin, 1 Tuple, 2 Union, 3 Function, 4 Named. FunctionKind: 0 Plain, 1 Async, 2 Generator, 3 Native(u32 NativeId). Context: 0 Ordinary, 1 NoWait, 2 Derived, 3 Init. CaptureKind: 0 Value, 1 Cell. Descriptor tags: 0 Global, 1 Closure, 2 Call, 3 Sequence, 4 Table, 5 Class, 6 Super, 7 Property, 8 Pattern, 9 Spawn, 10 TableSources. BindingInitialization: 0 Explicit, 1 Parameter(u32). Remaining tag numbers are explicit in codec.rs.
 
 Signature additionally carries optional PropertyBagTail (target parameter, schema capability, writable/animatable requirements). Unknown names in this mode reach the actual target schema after ordinary parameters bind. Class field initializers/methods and pattern defaults carry capture-source mappings, preserving local lexical semantics. Ordinary structural types are backwards-referenced DAGs; a function-type/signature cycle is rejected, while Named types permit recursive class identity.
 
@@ -146,7 +152,7 @@ Use visit_registers_budgeted at untrusted boundaries: it precharges register win
 
 ### Range and interpolation execution
 
-B01 adds `TextNew` (0025: dest), `TextPush` (0026: builder, value),
+The opcode table includes `TextNew` (0025: dest), `TextPush` (0026: builder, value),
 `TextFinish` (0027: dest, builder), `MakeRange` (005d: dest, start, end),
 `MakeRangeInclusive` (005e: dest, start, end) and `IterAdvance`
 (0068: done-dest, iterator, value-dest). Range endpoints are int64 and

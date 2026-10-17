@@ -8,11 +8,13 @@ mod model;
 mod spec;
 #[cfg(test)]
 mod tests;
+mod text_pool;
 mod verify;
 
 pub use codec::{decode, encode};
 pub use model::*;
 pub use spec::*;
+pub use text_pool::{TextPool, externalize_text};
 pub use verify::{
     CleanupDestination, GlobalBinding, HandlerKind, HandlerTarget, PackageStats, VerifiedProgram,
     disassemble, verify,

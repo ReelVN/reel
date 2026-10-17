@@ -9,7 +9,7 @@ use super::{
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::resources::{ResourceData, ResourceHandle, ResourceLease, ResourceVersion};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -20,6 +20,13 @@ use std::{
 pub(super) struct ImageCache {
     images: Mutex<HashMap<ResourceHandle, Arc<Image>>>,
     uploads: Mutex<Vec<Upload>>,
+    partial: Mutex<HashMap<ResourceHandle, Partial>>,
+}
+
+struct Partial {
+    image: Arc<Image>,
+    next_row: u32,
+    _storage: Reservation,
 }
 
 struct Upload {
@@ -32,6 +39,7 @@ struct Upload {
 struct Copy {
     _image: Arc<Image>,
     source: ResourceLease,
+    next_row: Option<u32>,
 }
 
 impl ImageCache {
@@ -53,6 +61,10 @@ impl ImageCache {
                 }
             }
         }
+        self.partial.lock().unwrap().retain(|_, pending| {
+            let source = pending.image.source.as_ref().unwrap();
+            !source.lease.is_released() && !versions.contains(&source.version)
+        });
         self.images.lock().unwrap().retain(|_, image| {
             let source = image.source.as_ref().unwrap();
             // Dead video entries are an allocation pool, still charged to the
@@ -74,6 +86,10 @@ impl ImageCache {
         // Serialize cold preparations, so concurrent callers cannot upload the
         // same texture twice. Queue ordering makes submitted copies reusable.
         let mut uploads = self.uploads.lock().unwrap();
+        let mut partial = self.partial.lock().unwrap();
+        // A new candidate may abandon a large image midway through upload.
+        // Submitted copies retain their own Arc until GPU completion.
+        partial.retain(|handle, _| required.iter().any(|item| item.source.handle() == *handle));
         let mut images = HashMap::with_capacity(required.len());
         {
             let cache = self.images.lock().unwrap();
@@ -92,7 +108,7 @@ impl ImageCache {
                     if images.contains_key(&item.source.handle()) {
                         0
                     } else {
-                        item.staging
+                        item.minimum_staging
                     },
                 )
             }),
@@ -119,7 +135,7 @@ impl ImageCache {
             });
         let mut uploaded = Vec::with_capacity(capacity);
         let mut staging = Vec::with_capacity(capacity);
-        let reserve = |bytes| {
+        let reserve_gpu = |bytes| {
             pool.reserve(bytes).map_err(|_| GpuError::Pressure {
                 domain: "image upload",
                 requested: bytes,
@@ -136,53 +152,133 @@ impl ImageCache {
                 ResourceData::Yuv420(image) => self.recycle_video(image.size()),
                 _ => None,
             };
-            let cost = if recycled.is_some() {
-                item.staging
+            let resident = if recycled.is_some() || partial.contains_key(&handle) {
+                0
             } else {
-                item.resident + item.staging
+                item.resident
             };
-            glyphs.make_room(pool, cost, limit);
-            self.make_room(pool, cost, limit);
-            let reserved = (|| {
+            let minimum = resident + item.minimum_staging;
+            // Prefer a single copy when evictable cache entries provide room;
+            // only the minimum row is an admission requirement.
+            let preferred = resident + item.staging;
+            glyphs.make_room(pool, preferred, limit);
+            self.make_room(pool, preferred, limit);
+            let available = limit.saturating_sub(pool.usage().bytes);
+            if minimum > available {
+                deferred = Some(GpuError::Pressure {
+                    domain: "image upload",
+                    requested: minimum,
+                    available,
+                });
+                break;
+            }
+            if let ResourceData::Image { image: source, .. } = item.source.data() {
+                if let Entry::Vacant(entry) = partial.entry(handle) {
+                    let storage = reserve(
+                        &budgets.transient,
+                        &local.transient,
+                        (size_of::<Partial>() + 4 * size_of::<ResourceHandle>()) as u64,
+                        gpu.limits.transient_bytes,
+                        "partial image upload",
+                    )?;
+                    let residency = reserve_gpu(item.resident)?;
+                    let mut image = resources::create_image(gpu, [source.width, source.height])?;
+                    image.residency = Some(residency);
+                    image.source = Some(resources::ImageSource {
+                        version: item.source.version().clone(),
+                        lease: item.source.downgrade(),
+                    });
+                    entry.insert(Partial {
+                        image: Arc::new(image),
+                        next_row: 0,
+                        _storage: storage,
+                    });
+                }
+                let pending = &partial[&handle];
+                let count = resources::rows_per_upload(
+                    pending.image.size,
+                    pending.next_row,
+                    limit.saturating_sub(pool.usage().bytes),
+                );
+                if count == 0 {
+                    deferred = Some(GpuError::Pressure {
+                        domain: "image upload",
+                        requested: item.minimum_staging,
+                        available: limit.saturating_sub(pool.usage().bytes),
+                    });
+                    break;
+                }
+                let next_row = pending.next_row + count;
+                let upload =
+                    match reserve_gpu(resources::row_bytes(source.width) * u64::from(count)) {
+                        Ok(ticket) => ticket,
+                        Err(error) => {
+                            deferred = Some(error);
+                            break;
+                        }
+                    };
+                resources::image_rows(
+                    gpu,
+                    &mut encoder,
+                    item.source,
+                    item.at,
+                    &pending.image,
+                    pending.next_row..next_row,
+                )?;
+                uploaded.push(Copy {
+                    _image: pending.image.clone(),
+                    source: item.source.clone(),
+                    next_row: Some(next_row),
+                });
+                staging.push(upload);
+                if next_row == source.height {
+                    images.insert(handle, pending.image.clone());
+                } else {
+                    deferred = Some(GpuError::Pressure {
+                        domain: "image upload",
+                        requested: item.minimum_staging,
+                        available: limit.saturating_sub(pool.usage().bytes),
+                    });
+                    break;
+                }
+            } else if let ResourceData::Yuv420(source) = item.source.data() {
                 let residency = if let Some(image) = &mut recycled {
                     image.residency.take().unwrap()
                 } else {
-                    reserve(item.resident)?
+                    reserve_gpu(item.resident)?
                 };
-                Ok((residency, reserve(item.staging)?))
-            })();
-            let (residency, upload) = match reserved {
-                Ok(tickets) => tickets,
-                Err(error) => {
-                    deferred = Some(error);
-                    break;
-                }
-            };
-            let mut image = match item.source.data() {
-                ResourceData::Yuv420(image) => {
-                    super::video::upload(gpu, &mut encoder, image, recycled)?
-                }
-                _ => resources::image(gpu, &mut encoder, item.source, item.at, cost)?.0,
-            };
-            image.residency = Some(residency);
-            // Cache ownership must not pin decoded pixels. Existing frame leases
-            // (including retired versions in a transition) may still reuse this
-            // texture; the upload batch alone retains pixels through completion.
-            image.source = Some(resources::ImageSource {
-                version: item.source.version().clone(),
-                lease: item.source.downgrade(),
-            });
-            let image = Arc::new(image);
-            images.insert(handle, image.clone());
-            uploaded.push(Copy {
-                _image: image,
-                source: item.source.clone(),
-            });
-            staging.push(upload);
+                let upload = reserve_gpu(item.staging)?;
+                let mut image = super::video::upload(gpu, &mut encoder, source, recycled)?;
+                image.residency = Some(residency);
+                image.source = Some(resources::ImageSource {
+                    version: item.source.version().clone(),
+                    lease: item.source.downgrade(),
+                });
+                let image = Arc::new(image);
+                images.insert(handle, image.clone());
+                uploaded.push(Copy {
+                    _image: image,
+                    source: item.source.clone(),
+                    next_row: None,
+                });
+                staging.push(upload);
+            }
         }
         if !uploaded.is_empty() {
             let done = Arc::new(AtomicBool::new(false));
             gpu.queue.submit([encoder.finish()]);
+            // Advance source cursors only after submission. Failed encoding
+            // retries the same rows; no half-uploaded image enters the cache.
+            for copy in &uploaded {
+                if let Some(next_row) = copy.next_row {
+                    let handle = copy.source.handle();
+                    if next_row == copy._image.size[1] {
+                        partial.remove(&handle);
+                    } else {
+                        partial.get_mut(&handle).unwrap().next_row = next_row;
+                    }
+                }
+            }
             self.publish(&images);
             let signal = done.clone();
             gpu.queue

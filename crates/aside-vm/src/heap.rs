@@ -538,7 +538,7 @@ impl Heap {
             Payload::Values(v) | Payload::Table(v) => {
                 (v.len as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64)
             }
-            Payload::Bytes(b) => (b.len as u64).div_ceil(crate::BYTE_CHUNK_LEN as u64),
+            Payload::Bytes(b) => b.owned_chunks(),
             _ => 0,
         };
         self.charge(charged, chunks);
@@ -861,6 +861,15 @@ impl Heap {
     }
     pub fn alloc_string(&mut self, value: &str) -> Result<Value, HeapError> {
         self.allocate_bytes(ObjectKind::String, value.as_bytes())
+    }
+    pub(crate) fn alloc_constant_bytes(
+        &mut self,
+        kind: ObjectKind,
+        code: std::rc::Rc<crate::fault::CodeLease>,
+        id: crate::bytecode::ConstId,
+    ) -> Result<Value, HeapError> {
+        self.ensure_object_slot()?;
+        Ok(self.allocate(kind, Payload::Bytes(Bytes::constant(code, id)), None, 0))
     }
     pub fn alloc_bytes(&mut self, value: &[u8]) -> Result<Value, HeapError> {
         self.allocate_bytes(ObjectKind::Bytes, value)
