@@ -207,6 +207,8 @@ stack(max_width: 420) {
 
 图片本身不接收指针输入，作为轨道、滑块或其他控件皮肤时不会挡住下方控件。需要图片可点击或拖动时，将它放入 button 或 input，由容器处理鼠标和触摸。
 
+Rust 宿主可用 `ImageSource::empty()` 表示尚未到达的画面，再以 `ImageSource::resource(lease)` 更新同一个 image 节点。直接资源保留普通图片的 fit、裁剪、变换、颜色和透明度；同尺寸更新只重绘，不重新布局。`ResourceRegistry::register_yuv420` 接收生产者持有的 8 位 YUV420 平面及 BT.601/709、范围和传递函数，不复制为 RGBA。`release(handle)` 放弃注册表持有权后，已捕获画面仍保留其租约；播放时钟和解码由宿主负责。可运行的 CPU 合同检查：`cargo test -p reel-player --lib decoded_frames_preserve`。
+
 `layered_image` 将图片描述组合成一个普通舞台节点；模型依赖变化时才重新计算。数组位置是稳定图层槽，按从后向前的顺序叠放；null 隐藏槽内原有图片，缩短数组会退休尾部槽。每份描述可使用 source、位置、尺寸、fit、color、opacity 等图片属性；省略的属性恢复 image 默认值。描述中的 bind/derive 值作为读取依赖。未变化的属性保持不动，图片节点复用，因此切换表情不会重建身体图层。
 
 例如 `layered_image(|| [body, faces[state.face]], width: 320, height: 180)` 用 state.face 选择前景描述，同时共享 body 描述；给 state.face 赋值即可切换表情。

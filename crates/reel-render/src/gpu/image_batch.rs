@@ -101,10 +101,10 @@ impl Context<'_> {
             }
             count += 1;
         }
-        self.paint_image(
+        self.paint_resource(
             target,
             &batch,
-            &image.view,
+            &image,
             [
                 first.brush.sampler.x_extend == Extend::Repeat,
                 first.brush.sampler.y_extend == Extend::Repeat,

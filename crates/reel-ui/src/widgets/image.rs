@@ -16,6 +16,7 @@ use crate::kurbo::{Affine, Axis, Insets, Rect, Size};
 use crate::layout::{LenReq, Length};
 use crate::peniko::{Color, Extend, ImageBrush};
 use crate::properties::ObjectFit;
+use crate::resources::{ResourceImageBrush, ResourceLease};
 
 // TODO: Make this a configurable option of the widget.
 /// The scale that the image is native to.
@@ -39,6 +40,7 @@ const IMAGE_SCALE: f64 = 1.0;
 /// You can change the sizing of the image with the [`ObjectFit`] property.
 pub struct Image {
     image_data: Option<ImageBrush>,
+    resource: Option<ResourceLease>,
     tiles: Vec<ImageTile>,
     tiled_size: Size,
     slice: Option<Insets>,
@@ -71,6 +73,7 @@ impl Image {
     pub fn new(image_data: impl Into<ImageBrush>) -> Self {
         Self {
             image_data: Some(image_data.into()),
+            resource: None,
             tiles: Vec::new(),
             tiled_size: Size::ZERO,
             slice: None,
@@ -89,6 +92,7 @@ impl Image {
     pub fn tiled(size: Size, tiles: Vec<ImageTile>) -> Self {
         Self {
             image_data: None,
+            resource: None,
             tiles,
             tiled_size: size,
             slice: None,
@@ -106,8 +110,33 @@ impl Image {
     pub fn set_tiles(this: &mut WidgetMut<'_, Self>, size: Size, tiles: Vec<ImageTile>) {
         let layout_changed = this.widget.image_data.is_some() || this.widget.tiled_size != size;
         this.widget.image_data = None;
+        this.widget.resource = None;
         this.widget.tiles = tiles;
         this.widget.tiled_size = size;
+        if layout_changed {
+            this.ctx.request_layout();
+        } else {
+            this.ctx.request_render();
+        }
+    }
+
+    /// Draw a decoded host resource without manufacturing an RGBA image.
+    pub fn from_resource(lease: ResourceLease) -> Self {
+        let [w, h] = lease.data().image_size().expect("image resource");
+        let mut image = Self::tiled(Size::new(w.into(), h.into()), Vec::new());
+        image.resource = Some(lease);
+        image
+    }
+
+    /// Replacing a same-sized decoded frame invalidates paint, not layout.
+    pub fn set_resource(this: &mut WidgetMut<'_, Self>, lease: ResourceLease) {
+        let [w, h] = lease.data().image_size().expect("image resource");
+        let size = Size::new(w.into(), h.into());
+        let layout_changed = this.widget.preferred_size() != size;
+        this.widget.image_data = None;
+        this.widget.tiles.clear();
+        this.widget.tiled_size = size;
+        this.widget.resource = Some(lease);
         if layout_changed {
             this.ctx.request_layout();
         } else {
@@ -227,9 +256,15 @@ impl Image {
     /// Sets new `ImageBrush`.
     #[inline]
     pub fn set_image_data(this: &mut WidgetMut<'_, Self>, image_data: impl Into<ImageBrush>) {
+        let old_size = this.widget.preferred_size();
         this.widget.image_data = Some(image_data.into());
+        this.widget.resource = None;
         this.widget.tiles.clear();
-        this.ctx.request_layout();
+        if this.widget.preferred_size() != old_size {
+            this.ctx.request_layout();
+        } else {
+            this.ctx.request_render();
+        }
     }
 
     /// Sets whether the image is decorative, meaning it doesn't have meaningful content
@@ -268,11 +303,10 @@ impl Image {
     }
 
     fn paint_sliced(&self, painter: &mut Painter<'_>, bounds: Rect, insets: Insets) {
-        let Some(image) = &self.image_data else {
+        if self.image_data.is_none() && self.resource.is_none() {
             return;
-        };
-        let width = f64::from(image.image.width);
-        let height = f64::from(image.image.height);
+        }
+        let Size { width, height } = self.preferred_size();
         let fit_borders = |width: f64, height: f64, horizontal: f64, vertical: f64| {
             let mut scale: f64 = 1.;
             if horizontal > 0. {
@@ -335,11 +369,35 @@ impl Image {
                 ]);
                 // Each rectangle already lies in the content box. Shared brush
                 // identity keeps the same resource; no per-slice clip layer.
-                painter
-                    .fill(target, image)
-                    .brush_transform(Some(transform))
-                    .draw();
+                self.fill(painter, target, transform);
             }
+        }
+    }
+
+    fn fill(&self, painter: &mut Painter<'_>, bounds: Rect, transform: Affine) {
+        if let Some(image) = &self.image_data {
+            let mut brush = image.clone();
+            if self.repeat != [false; 2] {
+                brush.sampler.x_extend = if self.repeat[0] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+                brush.sampler.y_extend = if self.repeat[1] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+            }
+            painter
+                .fill(bounds, &brush)
+                .brush_transform(Some(transform))
+                .draw();
+        } else {
+            painter
+                .fill(bounds, Color::WHITE)
+                .brush_transform(Some(transform))
+                .draw();
         }
     }
 }
@@ -399,38 +457,41 @@ impl Widget for Image {
         painter: &mut Painter<'_>,
     ) {
         ctx.set_image_color(self.color);
+        ctx.set_image_resource(self.resource.as_ref().map(|lease| ResourceImageBrush {
+            resource: lease.handle(),
+            sampler: crate::peniko::ImageSampler {
+                x_extend: if self.repeat[0] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                },
+                y_extend: if self.repeat[1] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                },
+                ..Default::default()
+            },
+        }));
         let content_box = ctx.content_box();
         ctx.set_image_corner_colors(self.corner_colors, content_box);
         if self.repeat != [false; 2] {
-            if let Some(image) = &self.image_data {
-                let mut brush = image.clone();
-                brush.sampler.x_extend = if self.repeat[0] {
-                    Extend::Repeat
-                } else {
-                    Extend::Pad
-                };
-                brush.sampler.y_extend = if self.repeat[1] {
-                    Extend::Repeat
-                } else {
-                    Extend::Pad
-                };
+            if self.image_data.is_some() || self.resource.is_some() {
+                let image_size = self.preferred_size();
                 let mut bounds = content_box;
                 if !self.repeat[0] {
                     bounds.x1 = bounds
                         .x1
-                        .min(bounds.x0 + image.image.width as f64 * self.tile_scale);
+                        .min(bounds.x0 + image_size.width * self.tile_scale);
                 }
                 if !self.repeat[1] {
                     bounds.y1 = bounds
                         .y1
-                        .min(bounds.y0 + image.image.height as f64 * self.tile_scale);
+                        .min(bounds.y0 + image_size.height * self.tile_scale);
                 }
                 let transform = Affine::translate(content_box.origin().to_vec2())
                     * Affine::scale(self.tile_scale);
-                painter
-                    .fill(bounds, &brush)
-                    .brush_transform(Some(transform))
-                    .draw();
+                self.fill(painter, bounds, transform);
             }
             return;
         }
@@ -448,6 +509,11 @@ impl Widget for Image {
         painter.with_fill_clip(content_box, |painter| {
             if let Some(image) = &self.image_data {
                 painter.draw_image(image, transform);
+            } else if self.resource.is_some() {
+                painter
+                    .fill(image_size.to_rect(), Color::WHITE)
+                    .transform(transform)
+                    .draw();
             } else {
                 for tile in &self.tiles {
                     // Adjacent interiors share rasterization edges on the same

@@ -29,6 +29,7 @@ pub enum ResourceData {
         image: ImageData,
         encoding: ColorEncoding,
     },
+    Yuv420(reel_core::image::Yuv420Image),
     Font(Blob<u8>),
     External {
         token: u64,
@@ -39,7 +40,7 @@ impl ResourceData {
         match self {
             Self::Image { image, .. } => Some(&image.data),
             Self::Font(font) => Some(font),
-            Self::External { .. } => None,
+            Self::External { .. } | Self::Yuv420(_) => None,
         }
     }
     fn same_source(&self, other: &Self) -> bool {
@@ -55,12 +56,23 @@ impl ResourceData {
                 },
             ) => ae == be && same_image(a, b),
             (Self::Font(a), Self::Font(b)) => same_blob(a, b),
+            (Self::Yuv420(a), Self::Yuv420(b)) => a.same_storage(b),
             (Self::External { token: a }, Self::External { token: b }) => a == b,
             _ => false,
         }
     }
     fn bytes(&self) -> usize {
-        self.blob().map_or(0, Blob::len)
+        match self {
+            Self::Yuv420(image) => image.byte_len(),
+            _ => self.blob().map_or(0, Blob::len),
+        }
+    }
+    pub fn image_size(&self) -> Option<[u32; 2]> {
+        match self {
+            Self::Image { image, .. } => Some([image.width, image.height]),
+            Self::Yuv420(image) => Some(image.size()),
+            _ => None,
+        }
     }
 }
 fn same_blob(a: &Blob<u8>, b: &Blob<u8>) -> bool {
@@ -110,6 +122,14 @@ struct Resource {
 }
 #[derive(Clone, Debug)]
 pub struct ResourceLease(Arc<Resource>);
+
+/// An explicit producer resource used as the brush of this widget's recorded
+/// image fills. No encoded pixels or fabricated RGBA image descriptor is needed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResourceImageBrush {
+    pub resource: ResourceHandle,
+    pub sampler: crate::peniko::ImageSampler,
+}
 impl ResourceLease {
     pub fn handle(&self) -> ResourceHandle {
         self.0.handle
@@ -242,6 +262,15 @@ impl ResourceRegistry {
         };
         self.register_inner(version, ResourceData::Image { image, encoding }, None)
     }
+    /// Import producer-accounted planar pixels. The storage Arc retains the
+    /// producer's budget reservation; the registry charges its own descriptors.
+    pub fn register_yuv420(
+        &mut self,
+        version: ResourceVersion,
+        image: reel_core::image::Yuv420Image,
+    ) -> Result<ResourceHandle, ResourceError> {
+        self.register_inner(version, ResourceData::Yuv420(image), None)
+    }
     /// Prepare a complete immutable font file or collection. Glyph runs select
     /// their face independently, sharing these bytes and their allocation ticket.
     pub fn register_font(
@@ -355,6 +384,19 @@ impl ResourceRegistry {
         slot.active = None;
         true
     }
+    /// Release the producer's registration. Existing immutable leases can still
+    /// enter frames, while new acquisitions fail. Unlike retirement this does
+    /// not invalidate a captured stage that has not yet built its frame.
+    pub fn release(&mut self, handle: ResourceHandle) -> bool {
+        let Some(slot) = self.slots.get_mut(handle.slot as usize) else {
+            return false;
+        };
+        if slot.active.as_ref().is_none_or(|r| r.handle() != handle) {
+            return false;
+        }
+        slot.active = None;
+        true
+    }
     /// Freeze only the selected versions before a build can pause or retirement can occur.
     /// Snapshot copies and their capacity are reserved before acquisition/allocation.
     pub fn freeze(
@@ -431,6 +473,11 @@ impl ResourceSnapshot {
             &image.data,
             |data| matches!(data,ResourceData::Image {image:other,..} if same_image(image,other)),
         )
+    }
+    pub(crate) fn contains_image(&self, handle: ResourceHandle) -> bool {
+        self.leases
+            .iter()
+            .any(|lease| lease.handle() == handle && lease.data().image_size().is_some())
     }
     pub(crate) fn font(&self, font: &FontData) -> Option<ResourceHandle> {
         self.matching(

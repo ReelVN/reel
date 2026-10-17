@@ -2373,6 +2373,13 @@ impl Drop for RawCtx<'_> {
 
 // --- MARK: DEBUG PAINT
 impl PaintCtx<'_> {
+    /// Bind this widget's filled image geometry to a decoded resource. The
+    /// recording retains its identity, sampler, transform and tint; the frame
+    /// resource snapshot must retain its lease. Children and masks are separate.
+    pub fn set_image_resource(&mut self, resource: Option<crate::resources::ResourceImageBrush>) {
+        self.widget_state.image_resource = resource;
+    }
+
     /// Multiply image brushes emitted by this widget by a linear premultiplied color.
     /// The value is retained with cached paints and does not affect children or masks.
     pub fn set_image_color(&mut self, color: peniko::Color) {

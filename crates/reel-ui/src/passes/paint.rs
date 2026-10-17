@@ -51,6 +51,7 @@ impl LayerCollector {
         owner: WidgetId,
         image_color: [f32; 4],
         image_gradient: Option<crate::frame::ImageColorGradient>,
+        image_resource: Option<crate::resources::ResourceImageBrush>,
     ) {
         let start = self.current_scene.commands().len();
         self.current_scene.append_transformed(scene, transform);
@@ -69,6 +70,7 @@ impl LayerCollector {
             owner,
             image_color,
             image_gradient.map(|gradient| gradient.transformed(transform)),
+            image_resource,
         );
     }
 
@@ -119,7 +121,7 @@ impl LayerCollector {
             effect_transform: transform,
             mask_progress,
         });
-        self.record_owner(command, owner, [1.; 4], None);
+        self.record_owner(command, owner, [1.; 4], None, None);
         true
     }
 
@@ -129,6 +131,7 @@ impl LayerCollector {
         owner: WidgetId,
         image_color: [f32; 4],
         image_gradient: Option<crate::frame::ImageColorGradient>,
+        image_resource: Option<crate::resources::ResourceImageBrush>,
     ) {
         let end = self.current_scene.commands().len();
         if start == end {
@@ -138,6 +141,7 @@ impl LayerCollector {
             && last.owner == owner
             && last.image_color == image_color
             && last.image_gradient == image_gradient
+            && last.image_resource == image_resource
             && last.commands.end == start
         {
             last.commands.end = end;
@@ -147,6 +151,7 @@ impl LayerCollector {
                 owner,
                 image_color,
                 image_gradient,
+                image_resource,
             });
         }
     }
@@ -154,7 +159,7 @@ impl LayerCollector {
     fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
         let start = self.current_scene.commands().len();
         draw(&mut self.current_scene);
-        self.record_owner(start, owner, [1.; 4], None);
+        self.record_owner(start, owner, [1.; 4], None, None);
     }
 
     fn paint_window(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
@@ -337,6 +342,7 @@ fn paint_widget(
             id,
             state.image_color,
             state.image_gradient,
+            state.image_resource,
         );
 
         if let Some(clip) = state.clip_path {
@@ -365,6 +371,7 @@ fn paint_widget(
                 id,
                 state.image_color,
                 state.image_gradient,
+                state.image_resource,
             );
         }
     }
@@ -436,6 +443,7 @@ fn paint_widget(
             id,
             state.image_color,
             state.image_gradient,
+            state.image_resource,
         );
 
         if global_state.inspector_state.hovered_widget == Some(id) {

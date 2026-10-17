@@ -261,6 +261,8 @@ RenderRootOptions.default_font 是正式默认字体输入，注册其字体族�
 - reel-player：平台适配、窗口与事件循环，组装引擎、渲染和媒体输出。
 - reel-cli：检查、开发运行和构建，调用编译器与播放器库入口。
 依赖方向固定为 ui→core，render→ui/core，media→core，player→ui/render/core；后续 engine→aside-vm/ui/media/core，player→engine，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
+
+动态画面沿用 image 节点、ResourceLease 与普通 FrameImage 绘制。reel-core::image 定义 Yuv420Image、Yuv420Storage 和显式 YuvColor（BT.601/709 矩阵、完整或有限范围、BT.709 或 sRGB 传递函数）；8 位 Y/U/V 平面由生产者 Arc 与预算票据共同保活，UI 不依赖媒体解码器。每张帧资源不可变并拥有独立版本；舞台接受直接资源引用，跳过路径解码。录制的图像资源绑定进入既有绘制命令所有权元数据，保持裁剪、变换、透明度和层序。GPU 直接上传三个 R8 平面并在采样时转成线性 RGB；仅在旧资源与在途/已准备画面均已释放后复用纹理，不通过重写仍被旧画面引用的纹理发布新帧。注册表 release 仅放弃自身持有和新 acquire，允许已有租约进入尚未编译的画面；retire 仍用于显式失效。首帧未到使用 ImageSource::empty，不读取占位路径。帧截止时间、PTS 和播放终态由媒体协调器负责，不进入 UI 的像素协议。范围为 reel-core、reel-ui、reel-render 与 reel-player 舞台投影；无新增依赖、Aside/B01/native ABI 不变。
 维护中的库统一属于工作区 crate，不保留 third_party 或 crates.io patch 层。reel-text 负责文字整形、布局及 ICU 中日分词与复杂文字换行；reel-audio 负责混音、声音与退休数据的移交，设备输出由 reel-media 唯一负责；aside-syntax 负责不可变语法树、源码位置及共享节点所有权。三者分别源自 Parley、Kira、rowan，许可证及简洁来源说明随 crate 保存，后续按 Reel 的职责和接口直接维护，不承担上游目录、版本或补丁同步要求。
 aside-syntax 在所有权层通过原子引用计数取得唯一释放权，并迭代释放深树，覆盖独立节点克隆和跨线程最后引用。其继承的底层指针实现封装在语法树 crate 内；aside-compiler、reel-ui、reel-text 和 reel-audio 的生产代码保持 unsafe_code=forbid。语言仍使用单一递归下降/Pratt parser，长左结合运算和后缀链按显式工作表处理。
 通用库使用锁定的普通依赖，包括 winit、wgpu、image、serde、atomic-write-file、codespan-reporting、Logos 和 lsp-server；文本、集合与数学分别复用 Unicode 库、indexmap、glam，VM 对象槽使用 slotmap。视频默认 ffmpeg-next/ffmpeg-sys-next 与锁定 FFmpeg，资源使用独立 zstd 块、Stored 媒体与 BLAKE3。借用的 UI 控件、布局与呈现几何只维护在 reel-ui；不引入重复的窗口、设备输出或 UI 类型实现。

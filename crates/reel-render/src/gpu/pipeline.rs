@@ -122,6 +122,8 @@ pub(super) struct CompositeParams {
 }
 pub struct Pipelines {
     pub paint: wgpu::RenderPipeline,
+    pub yuv: wgpu::RenderPipeline,
+    pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
@@ -202,6 +204,41 @@ impl Pipelines {
             #[cfg(test)]
             Some(counts),
         );
+        #[cfg(test)]
+        counts
+            .bind_layouts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let uniform = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let yuv_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("planar video"),
+            entries: &[
+                texture(0),
+                sampler(1),
+                uniform(2),
+                texture(3),
+                texture(4),
+                uniform(5),
+            ],
+        });
+        let yuv = pipeline_entry(
+            device,
+            quality,
+            &yuv_layout,
+            include_str!("paint.wgsl"),
+            true,
+            "fragment_yuv",
+            #[cfg(test)]
+            Some(counts),
+        );
         let composite = pipeline(
             device,
             quality,
@@ -240,6 +277,8 @@ impl Pipelines {
         });
         Self {
             paint,
+            yuv,
+            yuv_layout,
             composite,
             paint_layout,
             composite_layout,
@@ -322,6 +361,26 @@ pub fn pipeline(
     mesh: bool,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
+    pipeline_entry(
+        device,
+        quality,
+        layout,
+        code,
+        mesh,
+        "fragment",
+        #[cfg(test)]
+        counts,
+    )
+}
+fn pipeline_entry(
+    device: &wgpu::Device,
+    quality: Quality,
+    layout: &wgpu::BindGroupLayout,
+    code: &str,
+    mesh: bool,
+    fragment: &str,
+    #[cfg(test)] counts: Option<&Creations>,
+) -> wgpu::RenderPipeline {
     #[cfg(test)]
     let code =
         if counts.is_some_and(|c| c.invalid_shader.load(std::sync::atomic::Ordering::Relaxed)) {
@@ -373,7 +432,7 @@ pub fn pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fragment"),
+            entry_point: Some(fragment),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: quality.format,
