@@ -27,6 +27,10 @@ pub fn run_session_host() -> Result<(), Error> {
 /// Native window options. An explicit logical_size overrides the first story canvas.
 pub struct StoryWindowOptions {
     pub assets: crate::assets::AssetOptions,
+    /// Some selects archive resolution; None retains ordinary directory assets.
+    pub asset_packages: Option<Vec<std::path::PathBuf>>,
+    /// Explicit loose overrides for an archive-backed work.
+    pub asset_overlay: Option<std::path::PathBuf>,
     pub media: crate::media::MediaOptions,
     pub title: String,
     pub locale: String,
@@ -40,6 +44,8 @@ impl Default for StoryWindowOptions {
     fn default() -> Self {
         Self {
             assets: Default::default(),
+            asset_packages: None,
+            asset_overlay: None,
             media: Default::default(),
             title: "Reel".into(),
             locale: "en".into(),
@@ -55,9 +61,14 @@ impl Default for StoryWindowOptions {
 /// On close, VM task and root retirement finishes before the native window exits.
 pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<(), Error> {
     let session = Session::new(SessionId(1), Epoch(1))?;
+    let assets = match &options.asset_packages {
+        Some(paths) => crate::assets::Assets::packaged(options.assets.clone(), paths.clone(), options.asset_overlay.clone())
+            .map_err(|error| format!("cannot open resource packages: {error:?}"))?,
+        None => crate::assets::Assets::directory(options.assets.clone()),
+    };
     let driver =
         AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
-            .with_asset_options(options.assets.clone());
+            .with_assets(assets);
     run_mode(Mode::Story(Box::new((driver, options))))
 }
 
@@ -77,8 +88,9 @@ fn run_mode(mode: Mode) -> Result<(), Error> {
             let wake = reel_core::wake::WakeSignal::new(move || {
                 let _ = proxy.send_event(());
             });
+            let assets = driver.ui().assets();
             let driver = driver.with_media(Box::new(crate::media::MediaPlayer::desktop(
-                crate::assets::Assets::directory(options.assets.clone()),
+                assets,
                 options.media.clone(),
                 wake,
             )))?;

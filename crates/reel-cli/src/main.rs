@@ -23,14 +23,16 @@ struct Args {
     assets: Option<PathBuf>,
     save_directory: Option<PathBuf>,
     modules: std::collections::BTreeMap<String, PathBuf>,
+    resources: Vec<reel_cli::distribution::Mount>,
+    text: Vec<reel_cli::distribution::Mount>,
 }
 fn args(raw: &[OsString]) -> Result<Args, String> {
     if raw.first().is_none_or(|v| {
-        !["check", "build", "dev", "run"]
+        !["check", "build", "export", "dev", "run"]
             .iter()
             .any(|name| v == name)
     }) {
-        return Err("expected check, build, dev or run".into());
+        return Err("expected check, build, export, dev or run".into());
     }
     let (mut source, mut format, mut output, mut entry) = (None, None, None, None);
     let (mut options, mut overwrite) = (true, false);
@@ -38,6 +40,8 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
     let mut assets = None;
     let mut save_directory = None;
     let mut modules = std::collections::BTreeMap::new();
+    let mut resources = Vec::new();
+    let mut text = Vec::new();
     let mut iter = raw[1..].iter();
     while let Some(arg) = iter.next() {
         if options && arg == "--" {
@@ -80,6 +84,10 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
             {
                 return Err(format!("module alias {alias} was specified twice"));
             }
+        } else if options && (arg == "--resource" || arg == "--text") {
+            let mount = reel_cli::distribution::Mount::parse(iter.next().and_then(|v| v.to_str())
+                .ok_or("resource mount requires prefix=directory")?)?;
+            if arg == "--resource" { resources.push(mount); } else { text.push(mount); }
         } else if options && arg == "--assets" {
             assets = Some(PathBuf::from(
                 iter.next().ok_or("--assets requires a directory")?,
@@ -104,14 +112,20 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
             return Err("expected exactly one source file".into());
         }
     }
-    if raw[0] != "build" && profile == BuildProfile::Release {
-        return Err("--release is a build-only option".into());
+    if raw[0] != "build" && raw[0] != "export" && profile == BuildProfile::Release {
+        return Err("--release is a build/export option".into());
+    }
+    if raw[0] != "export" && (!resources.is_empty() || !text.is_empty()) {
+        return Err("--resource and --text are export options".into());
     }
     if raw[0] == "check" && (output.is_some() || entry.is_some() || overwrite) {
         return Err("--output, --entry and --overwrite are build-only options".into());
     }
     if raw[0] == "build" && output.is_none() {
         return Err("build requires an explicit --output <file.asb>".into());
+    }
+    if raw[0] == "export" && output.is_none() {
+        return Err("export requires an explicit --output <directory>".into());
     }
     let playing = raw[0] == "dev" || raw[0] == "run";
     if playing && (output.is_some() || overwrite || format.is_some()) {
@@ -144,6 +158,8 @@ fn args(raw: &[OsString]) -> Result<Args, String> {
         assets,
         save_directory,
         modules,
+        resources,
+        text,
     })
 }
 fn requested_json(raw: &[OsString]) -> bool {
@@ -184,12 +200,13 @@ fn run() -> io::Result<u8> {
     let help = |arg: &OsString| arg == "--help" || arg == "-h";
     if (raw.len() == 1 && help(&raw[0]))
         || (raw.len() == 2
-            && ["check", "build", "dev", "run"]
+            && ["check", "build", "export", "dev", "run"]
                 .iter()
                 .any(|name| raw[0] == *name)
             && help(&raw[1]))
     {
         write!(io::stdout().lock(), "{HELP}")?;
+        writeln!(io::stdout().lock(), "reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory] [--module alias=directory] [--entry main::name] [--overwrite]\nreel run <release.json> [--assets <explicit-loose-overlay>] [--save-directory <directory>]\nreel dev <release.json>\nExport defaults to development with sources and loose assets; --release writes ASB, text and resource packages. Release does not read loose files unless explicitly enabled.")?;
         writeln!(io::stdout().lock(), "{LOCALIZATION_HELP}")?;
         return Ok(0);
     }
@@ -214,6 +231,16 @@ fn run() -> io::Result<u8> {
         return Ok(2);
     };
     if parsed.command == "run" {
+        if parsed.source.extension().is_some_and(|extension| extension == "json") {
+            let loaded = match reel_cli::distribution::load(&parsed.source) {
+                Ok(loaded) => loaded,
+                Err(error) => { failure(false, "package", Some(path), &error.to_string())?; return Ok(1); }
+            };
+            return match reel_cli::story_from_package(loaded.package) {
+                Ok(story) => launch(story, Some(loaded.root), Some((loaded.packages, parsed.assets.or(loaded.loose))), parsed.save_directory, path),
+                Err(error) => { failure(false, "package", Some(path), &error.to_string())?; Ok(1) }
+            };
+        }
         let bytes = match std::fs::read(&parsed.source) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -223,7 +250,7 @@ fn run() -> io::Result<u8> {
         };
         return match reel_package::decode(&bytes, reel_package::Limits::default()) {
             Ok(package) => match reel_cli::story_from_package(package) {
-                Ok(story) => launch(story, parsed.assets, parsed.save_directory, path),
+                Ok(story) => launch(story, parsed.assets, None, parsed.save_directory, path),
                 Err(error) => {
                     failure(false, "package", Some(path), &error.to_string())?;
                     Ok(1)
@@ -235,7 +262,23 @@ fn run() -> io::Result<u8> {
             }
         };
     }
-    let loaded = match reel_cli::project::load_with_modules(&parsed.source, &parsed.modules) {
+    let mut project_path = parsed.source.clone();
+    let mut project_modules = parsed.modules.clone();
+    let mut requested_entry = parsed.entry.clone();
+    let mut asset_root = parsed.assets.clone();
+    if parsed.command == "dev" && parsed.source.extension().is_some_and(|extension| extension == "json") {
+        let manifest = match reel_cli::distribution::read_manifest(&parsed.source) {
+            Ok(manifest) => manifest,
+            Err(error) => { failure(false, "project", Some(path), &error.to_string())?; return Ok(1); }
+        };
+        let Some(source) = manifest.source else { failure(false, "project", Some(path), "release export has no source project")?; return Ok(1); };
+        let root = parsed.source.parent().unwrap();
+        project_path = root.join(source.entry);
+        for (alias, directory) in source.modules { project_modules.entry(alias).or_insert_with(|| root.join(directory)); }
+        requested_entry = requested_entry.or(Some(source.function));
+        asset_root = asset_root.or_else(|| manifest.loose.map(|directory| root.join(directory)));
+    }
+    let loaded = match reel_cli::project::load_with_modules(&project_path, &project_modules) {
         Ok(project) => project,
         Err(error) if error.sources.is_empty() => {
             if let Some(input) = error.input_error {
@@ -261,7 +304,7 @@ fn run() -> io::Result<u8> {
         Err(error) => return source_error(parsed.json, path, &error.sources, error.failure),
     };
     let inputs = &loaded.sources;
-    let selected_entry = loaded.entry(parsed.entry.as_deref());
+    let selected_entry = loaded.entry(requested_entry.as_deref());
     let checked = match loaded.check() {
         Ok(checked) => checked,
         Err(failed) => return source_error(parsed.json, path, inputs, failed),
@@ -270,11 +313,34 @@ fn run() -> io::Result<u8> {
         return match reel_cli::into_story(checked, &selected_entry) {
             Ok(story) => launch(
                 story,
-                parsed.assets.or_else(|| Some(loaded.root.clone())),
+                asset_root.or_else(|| Some(loaded.root.clone())),
+                None,
                 parsed.save_directory,
                 path,
             ),
             Err(failed) => source_error(false, path, inputs, failed),
+        };
+    }
+    if parsed.command == "export" {
+        let artifact = match reel_cli::build_export(&checked, &selected_entry, parsed.profile) {
+            Ok(artifact) => artifact,
+            Err(error) => return source_error(parsed.json, path, inputs, error),
+        };
+        let options = reel_cli::distribution::ExportOptions {
+            output: parsed.output.unwrap(), overwrite: parsed.overwrite,
+            resources: parsed.resources, text: parsed.text, modules: project_modules,
+            entry: selected_entry,
+        };
+        return match reel_cli::distribution::export(&loaded, &artifact, &options) {
+            Ok(result) => {
+                if parsed.json {
+                    report_json(&json!({"status":"exported", "profile": parsed.profile.name(), "output":options.output, "resources":result.files,"payload_bytes":result.bytes,"text_pool_bytes":artifact.text_pool.as_ref().map_or(0, |pool| pool.as_bytes().len())}))?;
+                } else {
+                    writeln!(io::stdout().lock(), "Exported {} ({}; {} resources, {} payload bytes)", options.output.display(), parsed.profile.name(), result.files, result.bytes)?;
+                }
+                Ok(0)
+            },
+            Err(error) => { failure(parsed.json, "export", options.output.to_str(), &error.to_string())?; Ok(1) }
         };
     }
     let result = (|| {
@@ -593,6 +659,7 @@ fn source_error(
 fn launch(
     story: reel_engine::aside::source::CompiledStory,
     assets: Option<PathBuf>,
+    packages: Option<(Vec<PathBuf>, Option<PathBuf>)>,
     save_directory: Option<PathBuf>,
     path: &str,
 ) -> io::Result<u8> {
@@ -601,12 +668,16 @@ fn launch(
         let mut options = reel_player::shell::StoryWindowOptions::default();
         options.assets.root =
             assets.unwrap_or_else(|| std::path::Path::new(path).parent().unwrap().to_path_buf());
+        if let Some((packages, overlay)) = packages {
+            options.asset_packages = Some(packages);
+            options.asset_overlay = overlay;
+        }
         options.save_directory = save_directory;
         reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
     };
     #[cfg(not(feature = "window"))]
     let result: Result<(), String> = {
-        let _ = (story, assets, save_directory);
+        let _ = (story, assets, packages, save_directory);
         Err("build the window player with: cargo build -p reel-cli --features window".into())
     };
     match result {
