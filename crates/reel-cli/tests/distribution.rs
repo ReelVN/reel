@@ -36,18 +36,24 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
     let catalogs = root.join("catalogs");
     let resources = root.join("assets");
     for directory in [&source, &library, &catalogs, &resources] { fs::create_dir(directory).unwrap(); }
+    let nested = source.join("nested");
+    let unused = source.join("unused");
+    fs::create_dir(&nested).unwrap();
+    fs::create_dir(&unused).unwrap();
     fs::write(source.join("main.aside"), r#"
         use shared::opening::line;
+        use local::message::opening_id;
         fn main() {
             localization.load("en", "locales/en.ftl");
             localization.set_locale("en");
-            narrator(tr(line(), id: "opening"));
+            narrator(tr(line(), id: opening_id()));
         }
     "#).unwrap();
     fs::write(library.join("opening.aside"), "pub fn line() { \"只在文本池保存的正文。\" }").unwrap();
+    fs::write(nested.join("message.aside"), "pub fn opening_id() { \"opening\" }").unwrap();
     fs::write(catalogs.join("en.ftl"), "opening = Packaged translation.\n").unwrap();
     fs::write(resources.join("sample.bin"), b"range-readable resource").unwrap();
-    let modules = BTreeMap::from([("shared".into(), library)]);
+    let modules = BTreeMap::from([("shared".into(), library), ("local".into(), nested), ("unused".into(), unused)]);
     let loaded = project::load_with_modules(&source, &modules).unwrap_or_else(|e| panic!("{:?}", e.failure));
     let checked = loaded.check().unwrap();
     let mut options = ExportOptions {

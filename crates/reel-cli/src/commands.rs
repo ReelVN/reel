@@ -265,7 +265,7 @@ pub struct PrepareImage {
     #[arg(long, value_name = "FILE.reel-image")]
     pub output: PathBuf,
     /// Interior tile edge in pixels, excluding the two-pixel border.
-    #[arg(long, default_value_t = 512, value_parser = clap::value_parser!(u32).range(1..=u64::from(u32::MAX - 2)))]
+    #[arg(long, default_value_t = 512, value_parser = clap::value_parser!(u32).range(1..=i64::from(u32::MAX - 2)))]
     pub tile_size: u32,
 }
 

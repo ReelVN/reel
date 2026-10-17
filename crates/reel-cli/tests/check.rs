@@ -185,7 +185,7 @@ fn option_terminator_help_and_duplicate_options() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("exactly one")
+            .contains("unexpected argument 'json'")
     );
     let output = Command::new(env!("CARGO_BIN_EXE_reel"))
         .current_dir(&case.dir)
@@ -206,7 +206,7 @@ fn option_terminator_help_and_duplicate_options() {
         report["diagnostics"][0]["message"]
             .as_str()
             .unwrap()
-            .contains("only be specified once")
+            .contains("cannot be used multiple times")
     );
 }
 

@@ -63,20 +63,32 @@ fn collect(root: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) -> io
 
 fn copy(file: &Path, target: &Path) -> io::Result<u64> {
     fs::create_dir_all(target.parent().unwrap())?;
+    if target.exists() { return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("exported source/resource paths overlap: {}", target.display()))); }
     fs::copy(file, target)
 }
 
 fn sources(loaded: &Loaded, options: &ExportOptions, staging: &Path) -> io::Result<SourceProject> {
-    let mut roots = vec![(loaded.root.canonicalize()?, "script".to_owned())];
-    let mut modules = BTreeMap::new();
+    let mut requested = vec![(loaded.root.canonicalize()?, "script".to_owned())];
     for (alias, directory) in &options.modules {
         let root = directory.canonicalize()?;
-        let target = roots.iter().find(|(path, _)| path == &root).map(|(_, name)| name.clone())
-            .unwrap_or_else(|| format!("script/_modules/{alias}"));
+        let target = format!("script/_modules/{alias}");
         relative_path(&target)?;
-        modules.insert(alias.clone(), target.clone());
-        if !roots.iter().any(|(path, _)| path == &root) { roots.push((root, target)); }
+        if !requested.iter().any(|(path, _)| path == &root) { requested.push((root, target)); }
     }
+    requested.sort_by_key(|(path, _)| path.components().count());
+    let mut roots: Vec<(PathBuf, String)> = Vec::new();
+    for (root, preferred) in requested {
+        let target = if let Some((ancestor, prefix)) = roots.iter().rev().find(|(path, _)| root.starts_with(path)) {
+            format!("{prefix}/{}", root.strip_prefix(ancestor).unwrap().to_str()
+                .ok_or_else(|| io::Error::other("module root must be UTF-8"))?.replace('\\', "/"))
+        } else { preferred };
+        roots.push((root, target));
+    }
+    let modules = options.modules.iter().map(|(alias, path)| {
+        let root = path.canonicalize()?;
+        Ok((alias.clone(), roots.iter().find(|(path, _)| path == &root).unwrap().1.clone()))
+    }).collect::<io::Result<BTreeMap<_, _>>>()?;
+    for (_, directory) in &roots { fs::create_dir_all(staging.join(directory))?; }
     // Most specific root wins when libraries live under the project directory.
     roots.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     let mut entry = None;
@@ -123,7 +135,7 @@ pub fn export(loaded: &Loaded, artifact: &Artifact, options: &ExportOptions) -> 
     }
     let candidate = tempfile::Builder::new().prefix(".reel-export-").tempdir_in(&parent)?;
     let staging = candidate.path();
-    let result = (|| {
+    let result: io::Result<Exported> = (|| {
         fs::write(staging.join("game.asb"), &artifact.bytes)?;
         let mut manifest = Distribution { code: "game.asb".into(), text: None, resources: vec![], loose: None, source: None };
         if artifact.profile == BuildProfile::Release {
@@ -154,6 +166,8 @@ pub fn export(loaded: &Loaded, artifact: &Artifact, options: &ExportOptions) -> 
     let backup = tempfile::Builder::new().prefix(".reel-previous-").tempdir_in(&parent)?;
     let old = backup.path().join("export");
     let replacing = output.exists();
+    if replacing && !options.overwrite { return Err(io::Error::new(io::ErrorKind::AlreadyExists, "another export created the output; pass --overwrite to replace it")); }
+    if replacing { read_manifest(&output.join("release.json"))?; }
     if replacing { fs::rename(&output, &old)?; }
     if let Err(error) = fs::rename(staging, &output) {
         if replacing && let Err(restore) = fs::rename(&old, &output) {
