@@ -377,16 +377,18 @@ impl Image {
     fn fill(&self, painter: &mut Painter<'_>, bounds: Rect, transform: Affine) {
         if let Some(image) = &self.image_data {
             let mut brush = image.clone();
-            brush.sampler.x_extend = if self.repeat[0] {
-                Extend::Repeat
-            } else {
-                Extend::Pad
-            };
-            brush.sampler.y_extend = if self.repeat[1] {
-                Extend::Repeat
-            } else {
-                Extend::Pad
-            };
+            if self.repeat != [false; 2] {
+                brush.sampler.x_extend = if self.repeat[0] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+                brush.sampler.y_extend = if self.repeat[1] {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+            }
             painter
                 .fill(bounds, &brush)
                 .brush_transform(Some(transform))
