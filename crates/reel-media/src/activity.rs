@@ -154,6 +154,13 @@ pub struct AudioActivityService {
     wake: WakeSignal,
 }
 impl AudioActivityService {
+    #[cfg(feature = "video")]
+    pub fn play_video_audio(
+        &mut self,
+        sound: crate::video::StreamSoundData,
+    ) -> Result<(), AudioError> {
+        self.mixer.play_video_audio(AudioGroup::Music, sound)
+    }
     /// Failure returns the original mixer, including its untaken fill.
     pub fn new(
         mixer: KiraMixer,

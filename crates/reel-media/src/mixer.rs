@@ -257,6 +257,44 @@ struct BudgetedData {
     budget: Arc<Residency>,
     signal: Arc<RetirementSignal>,
 }
+#[cfg(feature = "video")]
+struct ObservedData<D>(D, Arc<RetirementSignal>);
+#[cfg(feature = "video")]
+struct ObservedSound {
+    sound: Box<dyn Sound>,
+    signal: Arc<RetirementSignal>,
+}
+#[cfg(feature = "video")]
+impl<D: SoundData> SoundData for ObservedData<D> {
+    type Error = D::Error;
+    type Handle = D::Handle;
+    fn into_sound(self) -> Result<(Box<dyn Sound>, D::Handle), D::Error> {
+        let (sound, handle) = self.0.into_sound()?;
+        Ok((
+            Box::new(ObservedSound {
+                sound,
+                signal: self.1,
+            }),
+            handle,
+        ))
+    }
+}
+#[cfg(feature = "video")]
+impl Sound for ObservedSound {
+    fn on_start_processing(&mut self) {
+        self.sound.on_start_processing();
+    }
+    fn process(&mut self, out: &mut [Frame], dt: f64, info: &Info) {
+        self.sound.process(out, dt, info);
+    }
+    fn finished(&self) -> bool {
+        let finished = self.sound.finished();
+        if finished {
+            self.signal.observed.store(true, Ordering::Release);
+        }
+        finished
+    }
+}
 struct BudgetedSound {
     // Rust drops fields in declaration order: native Sound/PCM FIRST, ticket
     // SECOND. The private frame Arc has no externally held Weak references.
@@ -317,6 +355,37 @@ pub struct ReclaimProgress {
     pub needs_maintenance: bool,
 }
 impl KiraMixer {
+    /// Stream PCM shares the same output, buses and off-callback reclamation as
+    /// static sounds. The stream owner handles transport and terminal delivery.
+    #[cfg(feature = "video")]
+    pub fn play_video_audio(
+        &mut self,
+        group: AudioGroup,
+        sound: crate::video::StreamSoundData,
+    ) -> Result<(), AudioError> {
+        let control = self.manager.manager.as_mut().expect("owned manager");
+        if !self.signal.shared.accepting()
+            || control
+                .groups
+                .iter()
+                .map(TrackHandle::num_sounds)
+                .sum::<usize>()
+                >= self.max_sounds
+        {
+            return Err(AudioError::new(
+                AudioErrorKind::InvalidRequest,
+                "audio mixer capacity exhausted",
+            ));
+        }
+        control.groups[group as usize]
+            .play(ObservedData(sound, self.signal.clone()))
+            .map_err(|_| {
+                AudioError::new(
+                    AudioErrorKind::InvalidRequest,
+                    "audio mixer capacity exhausted",
+                )
+            })
+    }
     /// Host-owned service outlives mixers. Generation and two teardown credits
     /// are reserved before Kira construction; old resident generations cause Busy.
     pub fn new(

@@ -1,6 +1,8 @@
 //! Shared author-resource IO and decoding. Adapters own platform work; consumers own waits.
 mod decode;
 mod io;
+mod stream;
+pub use stream::{AssetStream, StreamControl};
 #[cfg(test)]
 pub(crate) mod tests;
 pub(crate) mod worker;
@@ -85,6 +87,7 @@ struct Service {
     options: AssetOptions,
     next: u64,
     loads: BTreeMap<LoadId, Load>,
+    streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
 }
@@ -153,6 +156,7 @@ impl Assets {
             options,
             next: 0,
             loads: BTreeMap::new(),
+            streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
         })))
@@ -174,15 +178,35 @@ impl Assets {
     }
     pub fn needs_poll(&self) -> bool {
         let service = self.0.borrow();
-        (service.io.is_some() && service.wake.is_pending()) || !service.loads.is_empty()
+        (service.io.is_some() && service.wake.is_pending())
+            || !service.loads.is_empty()
+            || service.streams.pending()
     }
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
         service.loads.clear();
+        service.streams.close();
         service.io = None;
         service.executor = None;
         service.io_events.clear();
         service.work_events.clear();
+    }
+    /// Create a decoder-worker reader using this service's adapters and budgets.
+    /// Call AssetStream::open/read/seek only on a worker; maintain stays on the host.
+    pub fn stream(
+        &self,
+        source: impl Into<String>,
+    ) -> Result<(StreamControl, AssetStream), String> {
+        let mut service = self.0.borrow_mut();
+        if service.io.is_none() {
+            return Err("asset service closed".into());
+        }
+        let wake = service.wake.clone();
+        let chunk = service.options.input_bytes.min(64 << 10) as u32;
+        if chunk == 0 {
+            return Err("streaming requires a nonempty resource input budget".into());
+        }
+        Ok(service.streams.create(source.into(), wake, chunk))
     }
     pub fn request(&self, source: impl Into<String>, kind: AssetKind) -> LoadId {
         let mut service = self.0.borrow_mut();
@@ -340,8 +364,11 @@ impl Service {
             .unwrap()
             .drain(&mut self.work_events, 32);
         let more_completions = self.io_events.len() == 32 || self.work_events.len() == 32;
-        for event in self.io_events.drain(..) {
+        for mut event in self.io_events.drain(..) {
             if event.scope != Scope::Process {
+                continue;
+            }
+            if self.streams.deliver(&mut event) {
                 continue;
             }
             let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Describing(id) | Phase::Reading(id) if id == event.id)) else { continue; };
@@ -435,6 +462,11 @@ impl Service {
             }
             self.loads.insert(id, load);
         }
+        self.streams.submit(
+            self.io.as_mut().unwrap().as_mut(),
+            &self.input,
+            &self.completion,
+        );
         if progress.has_work || more_completions {
             self.wake.wake();
         }
@@ -551,6 +583,11 @@ impl Service {
             _ => {}
         }
         Ok(())
+    }
+}
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.streams.close();
     }
 }
 fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {

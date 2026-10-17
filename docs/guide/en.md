@@ -535,14 +535,14 @@ visible=false hides the subtree and removes it from hit testing and focus; enabl
 
 ## 6 Logos, Title Screens, and Local Interaction
 
-Images, finite animation and button on_click callbacks are connected to creator source. Video and game entry switching in this section remain unimplemented; video events still describe the target design.
+Images, finite animation and button on_click callbacks are connected to creator source. The Rust media adapter supports non-fragmented MP4 with progressive 8-bit YUV420 H.264 Baseline video and optional mono/stereo AAC-LC audio, including pause, stop, seek, a shared content clock and background resource retirement. Aside video-node integration is still in progress, so the video-event example below remains a design target; game entry switching is also unimplemented.
 
 The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
 ```aside
 use game::ui::title::title;
 
 fn main() {
-    let logo = video("assets/logo.webm");
+    let logo = video("assets/logo.mp4");
     stage.replace(logo);
     let playback = logo.play();
     logo.on_click(|event| playback.stop());

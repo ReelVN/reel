@@ -81,6 +81,18 @@ pub struct AudioPlayer {
     failure: Option<String>,
 }
 impl AudioPlayer {
+    #[cfg(feature = "video")]
+    pub fn play_video_audio(
+        &mut self,
+        sound: reel_media::video::StreamSoundData,
+    ) -> Result<(), String> {
+        self.initialize()?;
+        self.service
+            .as_mut()
+            .unwrap()
+            .play_video_audio(sound)
+            .map_err(|error| error.to_string())
+    }
     pub fn new(
         assets: Assets,
         options: AudioOptions,

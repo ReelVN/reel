@@ -140,3 +140,55 @@ fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters
         "resource identity must not include storage location"
     );
 }
+
+#[test]
+fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service() {
+    use std::io::{Read, Seek, SeekFrom};
+    for assets in [
+        Assets::directory(AssetOptions {
+            root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+            input_bytes: 1024,
+            ..Default::default()
+        }),
+        memory_assets(),
+    ] {
+        let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
+        let worker = std::thread::spawn(move || {
+            let length = reader.open().unwrap();
+            let mut first = [0; 8];
+            reader.read_exact(&mut first).unwrap();
+            assert_eq!(&first, &PNG[..8]);
+            reader.seek(SeekFrom::End(-11)).unwrap();
+            let mut tail = Vec::new();
+            reader.read_to_end(&mut tail).unwrap();
+            assert_eq!(tail, &PNG[PNG.len() - 11..]);
+            reader.seek(SeekFrom::Start(0)).unwrap();
+            let mut all = Vec::new();
+            reader.read_to_end(&mut all).unwrap();
+            assert_eq!(all, PNG);
+            assert_eq!(length, PNG.len() as u64);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !worker.is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            assets.maintain();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        worker.join().unwrap();
+        drop(control);
+        assets.maintain();
+        assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+        assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
+        let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
+        let waiter = std::thread::spawn(move || reader.open());
+        while !assets.needs_poll() {
+            std::thread::yield_now();
+        }
+        control.cancel();
+        assert_eq!(
+            waiter.join().unwrap().unwrap_err().kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        assets.close();
+    }
+}

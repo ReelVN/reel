@@ -547,14 +547,14 @@ visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面�
 
 ## 六 Logo 标题与局部交互
 
-图片、有限动画与 button 的 on_click 回调已接入作者源码；本节视频和游戏入口切换尚未实现，视频事件示例仍属于设计目标。
+图片、有限动画与 button 的 on_click 回调已接入作者源码。Rust 媒体适配器已支持 MP4 的 H.264 Baseline 渐进式 8-bit YUV420 视频及可选 mono/stereo AAC-LC 音轨，含暂停、停止、seek、音画内容时钟与后台资源释放。当前 Aside 视频节点接线仍在进行，下面的视频事件示例属于设计目标；游戏入口切换也尚未实现。
 
 启动流程仍写普通 fn。媒体 play 返回活动句柄；点击可以通过正常事件停止播放，播放自然结束和主动停止都进入下一行。
 ```aside
 use game::ui::title::title;
 
 fn main() {
-    let logo = video("assets/logo.webm");
+    let logo = video("assets/logo.mp4");
     stage.replace(logo);
     let playback = logo.play();
     logo.on_click(|event| playback.stop());
