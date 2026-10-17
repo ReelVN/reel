@@ -18,22 +18,7 @@ use symphonia::core::{
 pub trait MediaRead: Read + Seek + Send {}
 impl<T: Read + Seek + Send> MediaRead for T {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VideoMatrix {
-    Bt601,
-    Bt709,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VideoTransfer {
-    Bt709,
-    Srgb,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VideoColor {
-    pub matrix: VideoMatrix,
-    pub full_range: bool,
-    pub transfer: VideoTransfer,
-}
+pub use reel_core::image::{YuvColor, YuvMatrix, YuvTransfer};
 /// Top-down packed 8-bit YUV 4:2:0; no decoder-owned pointers escape.
 #[derive(Debug)]
 pub struct VideoFrame {
@@ -42,7 +27,7 @@ pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
     pub planes: [Vec<u8>; 3],
-    pub color: VideoColor,
+    pub color: YuvColor,
 }
 #[derive(Debug)]
 pub struct AudioFrames {
@@ -427,7 +412,7 @@ impl MovieDecoder {
 fn error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
-fn sequence_color(nal: &[u8]) -> Result<VideoColor, String> {
+fn sequence_color(nal: &[u8]) -> Result<YuvColor, String> {
     let sps = SeqParameterSet::from_bits(RefNal::new(nal, &[], true).rbsp_bits())
         .map_err(|e| format!("H.264 SPS: {e:?}"))?;
     if sps.frame_mbs_flags != FrameMbsFlags::Frames
@@ -448,13 +433,13 @@ fn sequence_color(nal: &[u8]) -> Result<VideoColor, String> {
         .and_then(|s| s.colour_description.as_ref())
         .map(|c| c.matrix_coefficients)
     {
-        Some(1) => VideoMatrix::Bt709,
-        Some(5 | 6) => VideoMatrix::Bt601,
+        Some(1) => YuvMatrix::Bt709,
+        Some(5 | 6) => YuvMatrix::Bt601,
         None | Some(2) => {
             if height >= 720 {
-                VideoMatrix::Bt709
+                YuvMatrix::Bt709
             } else {
-                VideoMatrix::Bt601
+                YuvMatrix::Bt601
             }
         }
         Some(matrix) => return Err(format!("unsupported H.264 colour matrix {matrix}")),
@@ -463,15 +448,15 @@ fn sequence_color(nal: &[u8]) -> Result<VideoColor, String> {
         .and_then(|s| s.colour_description.as_ref())
         .map(|c| c.transfer_characteristics)
     {
-        Some(13) => VideoTransfer::Srgb,
-        None | Some(1 | 2 | 6) => VideoTransfer::Bt709,
+        Some(13) => YuvTransfer::Srgb,
+        None | Some(1 | 2 | 6) => YuvTransfer::Bt709,
         Some(transfer) => {
             return Err(format!(
                 "unsupported H.264 transfer characteristic {transfer}"
             ));
         }
     };
-    Ok(VideoColor {
+    Ok(YuvColor {
         matrix,
         transfer,
         full_range: signal.is_some_and(|s| s.video_full_range_flag),
@@ -480,7 +465,7 @@ fn sequence_color(nal: &[u8]) -> Result<VideoColor, String> {
 struct AvcConfig {
     nal_length: usize,
     headers: Vec<u8>,
-    color: VideoColor,
+    color: YuvColor,
 }
 impl AvcConfig {
     fn convert_packet(&mut self, mut data: &[u8], output: &mut Vec<u8>) -> Result<(), String> {

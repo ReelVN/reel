@@ -50,6 +50,11 @@ pub struct ResidentFrame {
     pub frame: VideoFrame,
     _ticket: BudgetTicket,
 }
+impl reel_core::image::Yuv420Storage for ResidentFrame {
+    fn plane(&self, index: usize) -> &[u8] {
+        &self.frame.planes[index]
+    }
+}
 pub type VideoFrameLease = Arc<ResidentFrame>;
 
 // Single writer (PCM), control-side reader. Uses only 32-bit atomics, including
@@ -96,6 +101,7 @@ struct Transport {
     audio_end: AtomicBool,
     audio_drained: AtomicBool,
     clock: Clock,
+    gain: AtomicU32,
 }
 struct State {
     info: Option<VideoInfo>,
@@ -155,6 +161,7 @@ impl Sound for StreamSound {
         }
         let rate = f64::from(self.data.sample_rate);
         let step = dt * rate;
+        let gain = f32::from_bits(transport.gain.load(Ordering::Relaxed));
         let mut position = None;
         'frames: for dest in out {
             if self.current.is_none() {
@@ -186,7 +193,7 @@ impl Sound for StreamSound {
             }
             let current = self.current.unwrap();
             let next = self.data.consumer.peek().map_or(current.frame, |s| s.frame);
-            *dest = current.frame + (next - current.frame) * (self.phase as f32);
+            *dest = (current.frame + (next - current.frame) * (self.phase as f32)) * gain;
             self.phase += step;
             position = Some(current.end - (1. - self.phase.min(1.)) / rate);
         }
@@ -240,6 +247,7 @@ impl VideoPlayback {
                 audio_end: AtomicBool::new(false),
                 audio_drained: AtomicBool::new(false),
                 clock: Clock::new(position),
+                gain: AtomicU32::new(1.0_f32.to_bits()),
             }),
             wake,
         });
@@ -288,6 +296,16 @@ impl VideoPlayback {
     }
     pub fn position(&self) -> Duration {
         Duration::from_secs_f64(self.position)
+    }
+    pub fn set_volume(&self, volume: f64) -> Result<(), String> {
+        if !volume.is_finite() || volume < 0. || volume > f32::MAX as f64 {
+            return Err("video volume must be finite and nonnegative".into());
+        }
+        self.shared
+            .transport
+            .gain
+            .store((volume as f32).to_bits(), Ordering::Relaxed);
+        Ok(())
     }
     pub fn pause(&self, paused: bool) {
         self.shared

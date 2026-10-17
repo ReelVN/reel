@@ -70,7 +70,7 @@ fn seek_decodes_from_idr_and_trims_audio_to_requested_sample() {
 
 #[test]
 fn video_preserves_declared_matrix_range_and_transfer() {
-    use reel_media::video::{VideoMatrix, VideoTransfer};
+    use reel_media::video::{YuvMatrix, YuvTransfer};
     let mut decoder = MovieDecoder::new(Box::new(std::io::Cursor::new(
         include_bytes!("fixtures/baseline-srgb.mp4").as_slice(),
     )))
@@ -79,8 +79,8 @@ fn video_preserves_declared_matrix_range_and_transfer() {
     let Some(DecodedPacket::Video(frame)) = decoder.next_packet().unwrap() else {
         panic!("video expected")
     };
-    assert_eq!(frame.color.matrix, VideoMatrix::Bt709);
-    assert_eq!(frame.color.transfer, VideoTransfer::Srgb);
+    assert_eq!(frame.color.matrix, YuvMatrix::Bt709);
+    assert_eq!(frame.color.transfer, YuvTransfer::Srgb);
     assert!(frame.color.full_range);
 }
 #[test]

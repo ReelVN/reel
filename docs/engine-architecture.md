@@ -474,7 +474,7 @@ wgpu 图片缓存按完整 ResourceHandle 复用已提交的纹理；准备失�
 
 首个适配器的可执行 Rust 接口是 `reel-media::video::VideoPlayback`，由 `video` feature 启用。当前接受非分片 MP4、渐进式 8-bit YUV420 H.264 Baseline 与可选 mono/stereo AAC-LC；容器的连续 edit list 用于去掉 AAC encoder delay/padding，seek 按 sync sample 回退并解码参考帧。SPS/VUI 提供矩阵、范围及传递函数；未指定时采用 limited range、BT.709 transfer，720 行及以上用 BT.709 matrix，其余用 BT.601。明确的其他矩阵/传递函数报告不支持，不默默改色。
 
-`VideoOptions` 的默认队列是 3 个已解码画面和 8192 个音频采样帧，可由宿主配置；另有一个解码中的输出。画面 lease 与 PCM ring 按实际容量持有 `BudgetTicket`，消费者保留的 lease 继续占额度。MP4 索引随 sample table 大小增长，原生解码器的参考帧/内部工作区由解码器管理；队列预算不等同于进程总内存。PCM 回调只消费预分配环并发布内容时钟，不分配、读取文件、取得互斥锁或唤醒任意宿主回调。音轨通过现有 Music 总线和后台回收服务播放；音轨早于视频结束时由会话时间推进尾段。暂停保持位置，stop/cancel 立即撤销供给并唤醒 worker；宿主等待 `worker_finished` 完成后台退休。恢复/seek 新建播放代数，撤销旧 reader；`start/end` 表示精确的源内容区间，end 是开端点。
+`VideoOptions` 的默认队列是 3 个已解码画面和 8192 个音频采样帧，可由宿主配置；另有一个解码中的输出。画面 lease 与 PCM ring 按实际容量持有 `BudgetTicket`，消费者保留的 lease 继续占额度。MP4 索引随 sample table 大小增长，原生解码器的参考帧/内部工作区由解码器管理；队列预算不等同于进程总内存。PCM 回调只消费预分配环并发布内容时钟，不分配、读取文件、取得互斥锁或唤醒任意宿主回调。音轨通过现有 Music 总线和后台回收服务播放；音轨早于视频结束时由会话时间推进尾段。单视频 `set_volume` 与 Music 总线音量相乘，不修改内容时钟。暂停保持位置，stop/cancel 立即撤销供给并唤醒 worker；宿主等待 `worker_finished` 完成后台退休。恢复/seek 新建播放代数，撤销旧 reader；`start/end` 表示精确的源内容区间，end 是开端点。
 
 `Assets::stream` 将 worker 的 Read/Seek 请求转交共享 AssetIo，主控仍调用 Assets::maintain；没有第二条文件读取路径。DirectoryIo 首次 describe 在 IO worker 用 64 KiB scratch 流式计算内容 digest，缓存打开的文件与 digest，后续 range read 不重复扫描；散文件首开成本与文件大小成正比。具有已知内容 digest 的资源包直接提供该版本。取消/服务关闭唤醒挂起的 reader。当前 Rust 解码/音轨契约见 [video_playback.rs](../crates/reel-media/tests/video_playback.rs)；舞台视频节点和 Aside 接线在独立呈现变更中完成，本段不宣称图形设备已经验收。
 
