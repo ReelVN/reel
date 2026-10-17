@@ -102,6 +102,15 @@ let wallpaper = settings.get("wallpaper", default: "default.png");
 let language = settings.get("language", default: "zh-CN");
 ```
 
+`array.sort(compare: null)` stably sorts in place and returns the same array. The default orders numbers (including mixed int/float values) or strings; use a comparator returning a negative, zero or positive int for records. Equal items keep their original order. Comparators cannot wait. Sorting advances within the VM execution budget and commits only after success; an exception, cancellation or modification of the source array leaves the working copy unpublished. See [collections.aside](../../examples/collections.aside).
+
+```aside
+let cuts = [180, 20, 90];
+cuts.sort();
+let captions = [{text: "后景", layer: 2}, {text: "前景", layer: 1}];
+captions.sort(compare: |a, b| a.layer - b.layer);
+```
+
 Array spreading `[...items, last]` accepts arrays or tuples. Table spreading `{...base, color: value}` copies own fields, with later entries taking precedence. Each spread captures in source order: later changes to the source do not alter captured elements or fields, while inner objects remain shared references. Spreading null is an error. See the runnable [collections.aside](../../examples/collections.aside) example.
 
 ```aside

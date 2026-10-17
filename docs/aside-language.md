@@ -102,6 +102,8 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 array 为可变有序序列，索引只接受非负 int，越界报错，不把 float 截断或把负数解释为倒数索引。标准操作包括 len、append、extend、insert、remove、pop、clear、slice、find、稳定 sort、浅 clone 与显式 deep_clone。普通 slice 创建新的外层序列、共享元素引用。
 
+`array.sort(compare: null)` 已实现：稳定升序排序，成功后原子更新原数组并返回它，等序元素保留原有顺序。缺省比较接受 int/float 的精确混合数值顺序或字符串的 UTF-8 字节序；NaN 和无法相互排序的类型报 Type。自定义比较器 `compare(a, b)` 返回负数、零或正数 int，分别表示小于、相等或大于；它沿用普通函数、闭包、绑定方法及 native 调用，处于 NoWait 上下文。排序使用分片归并、线性额外工作空间及 O(n log n) 次比较/元素移动，长字符串比较同样分片。比较器异常、取消或来源数组被修改时不提交工作副本；比较器自身已发生的写入不会回滚。工作游标和正在执行的比较器随 VM 快照恢复，不重放已完成调用。
+
 table 为按插入顺序迭代的动态关联对象；点访问等价于字符串键读取。读取先查自有槽，再沿无环 delegate 链查找，最后按第九节执行缺失钩子。普通 table 的 = 总在自身插入或覆盖槽，不修改 delegate；覆盖不改变原位置，删除再插入移到末尾。remove 删除自有槽；set_existing 要求自有槽存在，define 要求自有槽不存在。raw 操作绕过动态钩子。
 
 has_own 只检查自有槽；has_in_chain 只检查自有与 delegate 链的真实槽，不执行 _get；try_get 执行正常读取并返回 (found, value)。get(key, default: null) 只在缺失时返回缺省，存储的 null 是已找到值。keys/values/entries 明确只枚举自有槽，entries 产生 (key, value) tuple。Map 为 table 的标准库命名别名/构造入口，不建立第二套隐含不同的映射语义。
@@ -312,7 +314,7 @@ Reel image 的既有 color 属性表示图像像素乘色，默认白色；直�
 
 Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格。slice 接受非负有限数值，或左、上、右、下四项非负有限数值组成的数组/tuple；边距为源像素，slice_scale 为非负有限目标边宽倍率。null 保持 fit 行为；启用时填满内容框，角保持比例、边与中心拉伸，源尺寸或目标尺寸不足时按统一比例收缩对应边距。完整 PNG/JPEG 路径或编码 Bytes 共用原图片资源，分块 .reel-image 不支持九宫格。slice、slice_scale 与其他图片属性一样支持赋值、bind/derive、layered_image 和快照；不增加语言语法或 VM 图形类型。image ABI 9、reel.image 宿主属性快照版本 2，B01 不变。
 
-宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 2，旧版本明确报告版本不匹配；B01/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
+宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 3，包含排序及比较器返回续体，旧版本明确报告版本不匹配；B01/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
 

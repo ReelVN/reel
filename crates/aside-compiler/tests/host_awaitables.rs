@@ -372,7 +372,7 @@ fn await_enforces_dynamic_context_and_reuses_storage_for_repeated_settled_result
         };
         assert_eq!(
             vm.delivery_fault(id).unwrap().unwrap().kind,
-            FaultKind::Type
+            FaultKind::NotAwaitable
         );
         vm.discard_delivery(id).unwrap();
     }
