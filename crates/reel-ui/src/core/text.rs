@@ -68,7 +68,28 @@ pub fn render_text(
     hint: bool,
     outline: Option<TextOutline>,
 ) {
-    for line in layout.lines() {
+    render_text_lines(
+        painter,
+        transform,
+        layout,
+        brushes,
+        hint,
+        outline,
+        0..layout.len(),
+    );
+}
+
+pub(crate) fn render_text_lines(
+    painter: &mut Painter<'_, impl PaintSink + ?Sized>,
+    transform: Affine,
+    layout: &Layout<BrushIndex>,
+    brushes: &[Brush],
+    hint: bool,
+    outline: Option<TextOutline>,
+    lines: std::ops::Range<usize>,
+) {
+    for index in lines {
+        let line = layout.get(index).unwrap();
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
@@ -193,7 +214,7 @@ pub fn render_text_revealed(
     visible_bytes: std::ops::Range<usize>,
     outline: Option<TextOutline>,
 ) {
-    render_text_inner(
+    render_text_revealed_lines(
         painter,
         transform,
         layout,
@@ -201,10 +222,15 @@ pub fn render_text_revealed(
         hint,
         visible_bytes,
         outline,
+        0..layout.len(),
     );
 }
 
-fn render_text_inner(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "painting inputs plus independent byte and line visibility"
+)]
+pub(crate) fn render_text_revealed_lines(
     painter: &mut Painter<'_, impl PaintSink + ?Sized>,
     transform: Affine,
     layout: &Layout<BrushIndex>,
@@ -212,8 +238,10 @@ fn render_text_inner(
     hint: bool,
     visible_bytes: std::ops::Range<usize>,
     outline: Option<TextOutline>,
+    lines: std::ops::Range<usize>,
 ) {
-    for line in layout.lines() {
+    for index in lines {
+        let line = layout.get(index).unwrap();
         let mut last_run = None;
         let mut glyph_start = 0;
         let mut visibility: SmallVec<[bool; 64]> = SmallVec::new();

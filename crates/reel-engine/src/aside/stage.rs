@@ -107,6 +107,9 @@ pub(super) struct StageBinding {
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
     methods: [FunctionId; 5],
+    // Schema names are immutable and shared by live nodes. Weak handles let
+    // unused schemas disappear with their last node and require no save roots.
+    property_keys: BTreeMap<&'static str, HeapHandle>,
 }
 struct NodeBinding {
     shape: snapshot::Shape,
@@ -153,7 +156,19 @@ impl StageBinding {
             handles: BTreeMap::new(),
             root: None,
             methods,
+            property_keys: BTreeMap::new(),
         })
+    }
+
+    fn property_key(&mut self, heap: &mut Heap, name: &'static str) -> Result<Value, HeapError> {
+        if let Some(&handle) = self.property_keys.get(name)
+            && let Ok(value) = heap.import_handle(handle)
+        {
+            return Ok(value);
+        }
+        let value = heap.alloc_string(name)?;
+        self.property_keys.insert(name, heap.handle(value)?);
+        Ok(value)
     }
     pub(super) fn replace_view(
         &mut self,
@@ -290,7 +305,7 @@ impl StageBinding {
             } else {
                 NodeProperty::PROPERTIES[index - prefix.len()].name
             };
-            let key = heap.alloc_string(name)?;
+            let key = self.property_key(heap, name)?;
             heap.table_store(fields, index as u32, key, *argument)?;
         }
         let shape = snapshot::Shape::from_symbol(symbol);
@@ -337,7 +352,7 @@ impl StageBinding {
             Some(shape.validator()),
         )?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
-            let key = heap.alloc_string(name)?;
+            let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;
             heap.table_store(
                 fields,
@@ -350,7 +365,7 @@ impl StageBinding {
         let mut extra_fields = interaction::FIELDS.len();
         if symbol == "reel::scroll" {
             for (i, name) in scroll::METRICS.into_iter().enumerate() {
-                let key = heap.alloc_string(name)?;
+                let key = self.property_key(heap, name)?;
                 heap.table_store(
                     fields,
                     (field_count + extra_fields + i) as u32,
@@ -406,7 +421,7 @@ impl StageBinding {
             }
             let method = vm.bind_native(value, function)?;
             let heap = vm.heap_mut();
-            let key = heap.alloc_string(name)?;
+            let key = self.property_key(heap, name)?;
             heap.table_store(fields, (field_count + extra_fields + i) as u32, key, method)?;
         }
         if symbol == "reel::video" {
@@ -427,7 +442,7 @@ impl StageBinding {
                 .ok_or(AdapterError::Input("video play binding missing"))?;
             let method = vm.bind_native(value, play)?;
             let heap = vm.heap_mut();
-            let key = heap.alloc_string("play")?;
+            let key = self.property_key(heap, "play")?;
             heap.table_store(fields, heap.table_len(fields)?, key, method)?;
         }
         let heap = vm.heap_mut();

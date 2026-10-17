@@ -143,13 +143,23 @@ fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
         let mut readonly = false;
         try { original.plain = "changed"; } catch e { readonly = true; }
         if !readonly { throw "mutable rich text"; }
+        readonly = false;
+        try { original.markup = "changed"; } catch e { readonly = true; }
+        if !readonly || rich(original.markup).plain != original.plain {
+            throw "rich markup roundtrip or mutability";
+        }
+        let named = rich("[b]" + rich_escape("A[B]") + ":[/b] " + original.markup);
+        if named.plain != "A[B]: Hello 星 空" { throw "styled composition"; }
         state.value = original;
+        if state.value.markup != original.markup { throw "model lost markup"; }
         let label = text(value: bind(state.value), reveal: bind(d.reveal), line_height: 1.6, text_align: "center",
             on_link: |e| { state.clicked = e.id; state.value = rich("[link=star]Replacement[/link]"); });
         stage.replace(column() { label; text(value: bind(state.clicked)); });
         character("A", id: "a")(original);
         if h[0].text.plain != original.plain || h[0].lines[0].text.plain != original.plain
-            || d.text.plain != original.plain { throw "history lost styles"; }
+            || d.text.plain != original.plain || h[0].text.markup != original.markup {
+            throw "history lost styles";
+        }
         narrator(rich("[size=36][color=#aabbcc]Next[/color][/size]"));
         stage.replace(text(rich("[link=end]Done[/link]"), on_link: |e| {
             e.target.on_link = null; e.target.value = "done";

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::tree_arena::ArenaMut;
-use kurbo::{Affine, Line, Stroke};
+use kurbo::{Affine, Line, Rect, Stroke};
 use peniko::{Color, Fill};
 use tracing::{info_span, trace};
 
@@ -217,6 +217,10 @@ impl LayerCollector {
 }
 
 // --- MARK: PAINT WIDGET
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursive paint pass borrows disjoint tree and cache state"
+)]
 fn paint_widget(
     global_state: &mut RenderRootState,
     default_properties: &DefaultProperties,
@@ -224,6 +228,7 @@ fn paint_widget(
     layer_collector: &mut LayerCollector,
     scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
     border_box_to_layer_transform: Affine,
+    parent_viewport: Rect,
     node: ArenaMut<'_, WidgetArenaNode>,
 ) {
     let mut children = node.children;
@@ -240,6 +245,19 @@ fn paint_widget(
     // but we deliberately avoid doing that to avoid creating zombie flags.
     // (See WidgetState doc.)
     let is_stashed = state.is_stashed;
+
+    let border_box_to_window = layer_collector.transform * border_box_to_layer_transform;
+    let viewport = state.clip_path.map_or(parent_viewport, |clip| {
+        parent_viewport.intersect(border_box_to_window.transform_rect_bbox(clip))
+    });
+    let content_to_window = border_box_to_window.pre_translate(state.border_box_translation());
+    let inverse = content_to_window.inverse();
+    let local_viewport = inverse
+        .is_finite()
+        .then(|| inverse.transform_rect_bbox(viewport));
+    if !is_stashed {
+        state.request_paint |= widget.set_paint_viewport(local_viewport);
+    }
 
     // TODO - Handle damage regions
     // https://github.com/linebender/xilem/issues/789
@@ -390,6 +408,7 @@ fn paint_widget(
             layer_collector,
             scene_cache,
             border_box_to_layer_transform * node.item.state.compose_local_transform(),
+            viewport,
             node.reborrow_mut(),
         );
         parent_state.merge_up(&mut node.item.state);
@@ -540,6 +559,10 @@ fn paint_layer(
         return;
     };
 
+    let size = root
+        .global_state
+        .size
+        .to_logical::<f64>(root.global_state.scale_factor);
     paint_widget(
         &mut root.global_state,
         &root.property_arena.default_properties,
@@ -547,6 +570,7 @@ fn paint_layer(
         layer_collector,
         scene_cache,
         Affine::IDENTITY,
+        Rect::new(0., 0., size.width, size.height),
         layer_node,
     );
 }

@@ -418,6 +418,15 @@ pub trait Widget: AsDynWidget + Any {
         painter: &mut Painter<'_>,
     );
 
+    /// Updates the conservative visible bounds in content coordinates before
+    /// replaying cached paint. `None` means the transform cannot be inverted.
+    ///
+    /// Widgets that omit invisible content can return `true` to record their
+    /// paint again when these bounds change. This does not invalidate layout.
+    fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
+        false
+    }
+
     /// Final paint method, which paints on top of the widget's children.
     ///
     /// This method is not constrained by the clip defined in [`LayoutCtx::set_clip_path`],

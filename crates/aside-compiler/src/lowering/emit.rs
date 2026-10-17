@@ -23,8 +23,10 @@ fn source_run(
 
 pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
     let b = &mut ir.budget;
-    for f in ir.functions.drain(..) {
+    for mut f in ir.functions.drain(..) {
         b.span = f.span;
+        let definition = &ir.package.functions[f.output.index()];
+        direct_destinations(&mut f, definition, b)?;
         let mut pcs = b.filled(f.blocks.len(), None)?;
         let mut boundaries = Vec::new();
         b.reserve(&mut boundaries, f.layout.len() + 1)?;
@@ -126,6 +128,94 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
     Ok(())
 }
 
+/// Lowering creates private temporary registers before copying values into
+/// argument/collection windows. Write directly into the destination when the
+/// source temporary is already empty, so removing its Clear cannot extend a
+/// GC root's lifetime. Stay inside one block, before PC and source-map emission.
+fn direct_destinations(
+    function: &mut Function,
+    definition: &bc::FunctionDef,
+    b: &mut super::budget::Budget,
+) -> Result<(), Box<Error>> {
+    let mut empty = b.filled(definition.register_count as usize, false)?;
+    for block in &mut function.blocks {
+        b.work(empty.len() as u64)?;
+        empty.fill(false);
+        let mut read = 0;
+        let mut write = 0;
+        while read < block.operations.len() {
+            b.work(1)?;
+            let mut instruction = block.operations[read].instruction;
+            let span = block.operations[read].span;
+            b.span = span;
+            let mut consumed = 1;
+            if matches!(
+                bc::instruction_spec(instruction.opcode)
+                    .expect("lowered opcode")
+                    .opcode,
+                bc::Opcode::LoadConst
+                    | bc::Opcode::BindRead
+                    | bc::Opcode::CaptureRead
+                    | bc::Opcode::GlobalRead
+            ) && empty[instruction.operands[0] as usize]
+                && let Some(pair) = block.operations.get(read + 1..read + 3)
+            {
+                let copy = pair[0].instruction;
+                let clear = pair[1].instruction;
+                let source = instruction.operands[0];
+                if copy.opcode == bc::Opcode::Move as u16
+                    && clear.opcode == bc::Opcode::Clear as u16
+                    && copy.operands[1] == source
+                    && clear.operands[0] == source
+                    && copy.operands[0] != source
+                {
+                    instruction.operands[0] = copy.operands[0];
+                    consumed = 3;
+                }
+            }
+            let spec = bc::instruction_spec(instruction.opcode).expect("lowered opcode");
+            spec.visit_registers_budgeted(
+                definition,
+                &instruction,
+                |units| {
+                    b.work(units).map_err(|error| bc::Error {
+                        kind: bc::ErrorKind::Limit,
+                        offset: None,
+                        function: None,
+                        pc: None,
+                        source: None,
+                        detail: error.detail,
+                    })
+                },
+                |register, access| {
+                    if matches!(
+                        access,
+                        bc::Access::Write | bc::Access::ReadWrite | bc::Access::ConditionalWrite
+                    ) {
+                        empty[register.index()] = instruction.opcode == bc::Opcode::Clear as u16;
+                    }
+                },
+            )
+            .map_err(|error| {
+                b.error(
+                    if error.kind == bc::ErrorKind::Limit {
+                        ErrorKind::Limit
+                    } else {
+                        ErrorKind::InvalidIr
+                    },
+                    error.to_string(),
+                )
+            })?;
+            block.operations[write] = Operation { instruction, span };
+            write += 1;
+            read += consumed;
+        }
+        block.operations.truncate(write);
+    }
+    b.release(empty);
+    Ok(())
+}
+
 pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     write(&mut ir)?;
     super::constants::intern(&mut ir.package, &mut ir.budget)?;
@@ -190,5 +280,96 @@ fn range(
             end: bc::Pc(end),
         }),
         _ => Err(b.error(ErrorKind::InvalidIr, "empty/invalid region layout range")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_destinations_require_an_empty_temporary_in_the_same_block() {
+        use bc::Opcode::{Clear, LoadConst, Move};
+        for (code, expected) in [
+            (
+                vec![
+                    (Clear, 0, 0),
+                    (LoadConst, 0, 1),
+                    (Move, 1, 0),
+                    (Clear, 0, 0),
+                ],
+                vec![(Clear, 0, 0), (LoadConst, 1, 1)],
+            ),
+            (
+                vec![(LoadConst, 0, 1), (Move, 1, 0), (Clear, 0, 0)],
+                vec![(LoadConst, 0, 1), (Move, 1, 0), (Clear, 0, 0)],
+            ),
+            (
+                vec![
+                    (Clear, 0, 0),
+                    (LoadConst, 0, 1),
+                    (Move, 0, 0),
+                    (Clear, 0, 0),
+                ],
+                vec![
+                    (Clear, 0, 0),
+                    (LoadConst, 0, 1),
+                    (Move, 0, 0),
+                    (Clear, 0, 0),
+                ],
+            ),
+        ] {
+            let span = crate::TextRange::new(1.into(), 2.into());
+            let mut definition = bc::fixtures::helper_native().functions.remove(0);
+            definition.register_count = 2;
+            let mut function = Function {
+                output: bc::FunctionId(0),
+                origin: Origin::Module,
+                span,
+                blocks: vec![Block {
+                    operations: code
+                        .into_iter()
+                        .map(|(op, a, b)| Operation {
+                            instruction: bc::Instruction::new(op, a, b, 0),
+                            span,
+                        })
+                        .collect(),
+                    terminator: Some((Terminator::Return(bc::Reg(1)), span)),
+                }],
+                layout: vec![BlockId(0)],
+                regions: vec![],
+            };
+            // An earlier block clearing the same register must not establish
+            // availability across an edge or an exception-handler entry.
+            function.blocks.insert(
+                0,
+                Block {
+                    operations: vec![Operation {
+                        instruction: bc::Instruction::new(Clear, 0, 0, 0),
+                        span,
+                    }],
+                    terminator: Some((Terminator::Jump(BlockId(1)), span)),
+                },
+            );
+            let mut budget = super::super::budget::Budget::new(Default::default());
+            direct_destinations(&mut function, &definition, &mut budget).unwrap();
+            assert_eq!(
+                function.blocks[1]
+                    .operations
+                    .iter()
+                    .map(|operation| operation.instruction)
+                    .collect::<Vec<_>>(),
+                expected
+                    .into_iter()
+                    .map(|(op, a, b)| bc::Instruction::new(op, a, b, 0))
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                function.blocks[1]
+                    .operations
+                    .iter()
+                    .all(|operation| operation.span == span)
+            );
+        }
     }
 }

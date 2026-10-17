@@ -1,13 +1,26 @@
-//! Intern immutable text at the package boundary without merging object constants.
+//! Intern text and scalar values without merging identity-bearing object constants.
 use super::{Error, budget::Budget, build};
 use aside_vm::bytecode as bc;
 
 pub(super) fn intern(package: &mut bc::BytecodePackage, b: &mut Budget) -> Result<(), Box<Error>> {
     let mut names = Vec::new();
+    let mut scalars = Vec::new();
     for (index, constant) in package.constants.iter().enumerate() {
         b.work(1)?;
         if let bc::Const::Utf8(value) = constant {
             b.push(&mut names, (value.as_str(), Some(index)))?;
+        } else {
+            let key = match constant {
+                bc::Const::Null => Some((0u8, 0u64)),
+                bc::Const::Bool(value) => Some((1, u64::from(*value))),
+                bc::Const::Int(value) => Some((2, *value as u64)),
+                // Preserve -0 and NaN payloads; constant identity uses exact bits.
+                bc::Const::FloatBits(value) => Some((3, *value)),
+                _ => None,
+            };
+            if let Some(key) = key {
+                b.push(&mut scalars, (key, index))?;
+            }
         }
     }
     build::sort_names(&mut names, b)?;
@@ -29,6 +42,20 @@ pub(super) fn intern(package: &mut bc::BytecodePackage, b: &mut Budget) -> Resul
         start = end;
     }
     b.release(names);
+    b.work(scalars.len() as u64 * (usize::BITS - scalars.len().leading_zeros()) as u64)?;
+    scalars.sort_unstable();
+    let mut previous = None;
+    for (key, index) in &scalars {
+        let first = match previous {
+            Some((old, first)) if old == *key => first,
+            _ => {
+                previous = Some((*key, *index));
+                *index
+            }
+        };
+        representative[*index] = first;
+    }
+    b.release(scalars);
 
     let mut remap = b.filled(package.constants.len(), bc::ConstId(0))?;
     let mut next = 0;

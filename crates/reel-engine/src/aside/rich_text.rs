@@ -38,6 +38,8 @@ pub(super) fn create(heap: &mut Heap, source: Value, chunk: usize) -> Result<Val
     let fields = heap.alloc_table()?;
     let key = heap.alloc_string("plain")?;
     heap.table_store(fields, 0, key, plain)?;
+    let key = heap.alloc_string("markup")?;
+    heap.table_store(fields, 1, key, source)?;
     Ok(heap.alloc_immutable_host(fields, &[Value::int(TAG), source, plain])?)
 }
 pub(super) fn alloc(heap: &mut Heap, value: &Text, chunk: usize) -> Result<Value, AdapterError> {

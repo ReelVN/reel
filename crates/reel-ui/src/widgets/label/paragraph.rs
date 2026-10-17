@@ -1,12 +1,19 @@
 //! One shaped paragraph with ranged styles and baseline-aligned ruby boxes.
 use crate::{
-    core::{BrushIndex, StyleProperty, StyleSet, TextOutline, render_text, render_text_revealed},
+    core::{
+        BrushIndex, StyleProperty, StyleSet, TextOutline, render_text_lines,
+        render_text_revealed_lines,
+    },
     imaging::Painter,
-    kurbo::Affine,
+    kurbo::{Affine, Rect},
     peniko::{Brush, Color},
     reel_text::{self, FontContext, Layout, LayoutContext, PositionedLayoutItem},
 };
 use reel_core::text::{Text, TextStyle};
+use skrifa::{
+    FontRef, MetadataProvider,
+    instance::{LocationRef, Size},
+};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -20,6 +27,9 @@ pub(super) struct Paragraph {
     source: Text,
     emphasis: bool,
     default_color: Option<Brush>,
+    // Prefix maximum bottoms and suffix minimum tops give a conservative
+    // searchable range even when large glyphs or ruby overlap adjacent lines.
+    paint_lines: Vec<(f32, f32)>,
 }
 struct Mapping {
     plain: Range<usize>,
@@ -201,7 +211,121 @@ impl Paragraph {
         }
         builder.build_into(&mut out.layout, &out.text);
         out.layout.break_all_lines(width);
+        out.index_paint_lines();
         out
+    }
+
+    fn index_paint_lines(&mut self) {
+        let mut last_font = None;
+        let mut font_bounds = None;
+        for line in self.layout.lines() {
+            let metrics = line.metrics();
+            let mut top = metrics.min_coord;
+            let mut bottom = metrics.max_coord;
+            for item in line.items() {
+                match item {
+                    PositionedLayoutItem::GlyphRun(glyphs) => {
+                        let run = glyphs.run();
+                        let font = run.font();
+                        let key = (font.data.id(), font.index, run.font_size().to_bits());
+                        if last_font != Some(key) {
+                            last_font = Some(key);
+                            font_bounds = FontRef::from_index(font.data.as_ref(), font.index)
+                                .ok()
+                                .and_then(|font| {
+                                    font.metrics(Size::new(run.font_size()), LocationRef::default())
+                                        .bounds
+                                });
+                        }
+                        if let Some(bounds) = font_bounds {
+                            for glyph in glyphs.glyphs() {
+                                let y = glyphs.baseline() + glyph.y;
+                                top = top.min(y - bounds.y_max);
+                                bottom = bottom.max(y - bounds.y_min);
+                            }
+                        } else {
+                            top = f32::NEG_INFINITY;
+                            bottom = f32::INFINITY;
+                        }
+                        if self.emphasis {
+                            top = top.min(
+                                glyphs.baseline() - run.metrics().ascent - run.font_size() * 0.185,
+                            );
+                        }
+                        let style = glyphs.style();
+                        for (decoration, offset, width) in [
+                            (
+                                &style.underline,
+                                run.metrics().underline_offset,
+                                run.metrics().underline_size,
+                            ),
+                            (
+                                &style.strikethrough,
+                                run.metrics().strikethrough_offset,
+                                run.metrics().strikethrough_size,
+                            ),
+                        ] {
+                            if let Some(decoration) = decoration {
+                                let y = glyphs.baseline() - decoration.offset.unwrap_or(offset);
+                                let width = decoration.size.unwrap_or(width);
+                                top = top.min(y - width.abs());
+                                bottom = bottom.max(y + width.abs());
+                            }
+                        }
+                    }
+                    PositionedLayoutItem::InlineBox(position) => {
+                        let annotation = &self.boxes[position.id as usize];
+                        for (paragraph, y) in [
+                            (&annotation.note, position.y),
+                            (&annotation.base, position.y + annotation.note.height()),
+                        ] {
+                            if let Some(&(first, _)) = paragraph.paint_lines.first() {
+                                top = top.min(y + first);
+                            }
+                            if let Some(&(_, last)) = paragraph.paint_lines.last() {
+                                bottom = bottom.max(y + last);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(&(_, previous)) = self.paint_lines.last() {
+                bottom = bottom.max(previous);
+            }
+            self.paint_lines.push((top, bottom));
+        }
+        let mut top = f32::INFINITY;
+        for bounds in self.paint_lines.iter_mut().rev() {
+            top = top.min(bounds.0);
+            bounds.0 = top;
+        }
+    }
+
+    pub fn visible_lines(
+        &self,
+        viewport: Option<Rect>,
+        transform: Affine,
+        outline: Option<TextOutline>,
+    ) -> Range<usize> {
+        let Some(viewport) = viewport else {
+            return 0..self.layout.len();
+        };
+        if viewport.width() <= 0. || viewport.height() <= 0. {
+            return 0..0;
+        }
+        let inverse = transform.inverse();
+        if !inverse.is_finite() {
+            return 0..self.layout.len();
+        }
+        let viewport = inverse.transform_rect_bbox(viewport);
+        let padding = outline.map_or(0., |outline| outline.width) + 1.;
+        let start = self
+            .paint_lines
+            .partition_point(|&(_, bottom)| f64::from(bottom) < viewport.y0 - padding);
+        let end = self
+            .paint_lines
+            .partition_point(|&(top, _)| f64::from(top) <= viewport.y1 + padding);
+        start..end
     }
     fn append(&mut self, source: &str, range: Range<usize>) {
         if range.is_empty() {
@@ -227,6 +351,10 @@ impl Paragraph {
             0
         }
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursive ruby painting shares style, reveal, and viewport inputs"
+    )]
     pub fn paint(
         &mut self,
         painter: &mut Painter<'_>,
@@ -235,20 +363,23 @@ impl Paragraph {
         hint: bool,
         visible: Range<usize>,
         outline: Option<TextOutline>,
+        viewport: Option<Rect>,
     ) {
         self.brushes[0] = self.default_color.clone().unwrap_or_else(|| color.clone());
         let range = self.position(visible.start)..self.position(visible.end);
+        let lines = self.visible_lines(viewport, transform, outline);
         if range.start == 0 && range.end == self.text.len() {
-            render_text(
+            render_text_lines(
                 painter,
                 transform,
                 &self.layout,
                 &self.brushes,
                 hint,
                 outline,
+                lines.clone(),
             );
         } else {
-            render_text_revealed(
+            render_text_revealed_lines(
                 painter,
                 transform,
                 &self.layout,
@@ -256,11 +387,13 @@ impl Paragraph {
                 hint,
                 range,
                 outline,
+                lines.clone(),
             );
         }
         if self.emphasis {
             let shown = self.position(visible.start)..self.position(visible.end);
-            for line in self.layout.lines() {
+            for index in lines.clone() {
+                let line = self.layout.get(index).unwrap();
                 let mut previous = None;
                 for item in line.items() {
                     let PositionedLayoutItem::GlyphRun(glyphs) = item else {
@@ -312,7 +445,8 @@ impl Paragraph {
                 }
             }
         }
-        for line in self.layout.lines() {
+        for index in lines {
+            let line = self.layout.get(index).unwrap();
             for item in line.items() {
                 let PositionedLayoutItem::InlineBox(position) = item else {
                     continue;
@@ -327,6 +461,7 @@ impl Paragraph {
                     hint,
                     visible.clone(),
                     outline,
+                    None,
                 );
                 if visible.start <= item.range.start && item.range.end <= visible.end {
                     let note_x = position.x + (item.width - item.note.width()) / 2.;
@@ -337,6 +472,7 @@ impl Paragraph {
                         hint,
                         0..usize::MAX,
                         outline,
+                        None,
                     );
                 }
             }
@@ -348,6 +484,7 @@ impl Paragraph {
         transform: Affine,
         range: Range<usize>,
         color: Brush,
+        viewport: Option<Rect>,
     ) {
         use reel_text::{Affinity, Cursor, Selection};
         let start = self.position(range.start);
@@ -367,7 +504,8 @@ impl Paragraph {
                     .draw();
             });
         }
-        for line in self.layout.lines() {
+        for index in self.visible_lines(viewport, transform, None) {
+            let line = self.layout.get(index).unwrap();
             for item in line.items() {
                 let PositionedLayoutItem::InlineBox(p) = item else {
                     continue;
@@ -383,13 +521,24 @@ impl Paragraph {
                             )),
                         range.clone(),
                         color.clone(),
+                        None,
                     );
                 }
             }
         }
     }
     pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
-        for line in self.layout.lines() {
+        for index in self.visible_lines(
+            Some(Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x) + 1.,
+                f64::from(y) + 1.,
+            )),
+            Affine::IDENTITY,
+            None,
+        ) {
+            let line = self.layout.get(index).unwrap();
             for item in line.items() {
                 let PositionedLayoutItem::InlineBox(p) = item else {
                     continue;
@@ -485,5 +634,156 @@ fn apply(
         let index = brushes.len();
         brushes.push(brush(color));
         builder.push(StyleProperty::Brush(BrushIndex(index)), range);
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+    use crate::{
+        imaging::record::{Command, Draw, Scene},
+        peniko::Blob,
+    };
+    use std::time::Instant;
+
+    fn paragraph(text: &Text) -> Paragraph {
+        let bytes =
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap();
+        let mut fonts = FontContext {
+            collection: reel_text::fontique::Collection::new(
+                reel_text::fontique::CollectionOptions {
+                    system_fonts: false,
+                    ..Default::default()
+                },
+            ),
+            source_cache: Default::default(),
+        };
+        let families = fonts.collection.register_fonts(Blob::from(bytes), None);
+        let family = fonts
+            .collection
+            .family_name(families[0].0)
+            .unwrap()
+            .to_owned();
+        let mut styles = StyleSet::new(24.);
+        styles.insert(StyleProperty::FontFamily(
+            reel_text::FontFamily::from(family.as_str()).into_owned(),
+        ));
+        Paragraph::build(
+            &mut fonts,
+            &mut LayoutContext::new(),
+            text,
+            &styles,
+            Some(840.),
+            1.,
+            true,
+        )
+    }
+
+    fn scene(
+        paragraph: &mut Paragraph,
+        viewport: Option<Rect>,
+        transform: Affine,
+        reveal: Range<usize>,
+    ) -> Scene {
+        let mut scene = Scene::new();
+        paragraph.paint(
+            &mut Painter::new(&mut scene),
+            transform,
+            Color::BLACK.into(),
+            true,
+            reveal,
+            Some(TextOutline {
+                width: 3.,
+                color: Color::WHITE,
+            }),
+            viewport,
+        );
+        scene
+    }
+
+    fn glyph_count(scene: &Scene) -> usize {
+        scene
+            .commands()
+            .iter()
+            .map(|command| match command {
+                Command::Draw(id) => match scene.draw_op(*id) {
+                    Draw::GlyphRun(run) => run.glyphs.len(),
+                    _ => 0,
+                },
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; CPU retained-scene cost and rich-text viewport regression"]
+    fn long_paragraph_records_only_visible_lines_without_changing_rich_paint() {
+        let source = Text::parse("[b]Speaker:[/b] [u]office ffi[/u] [s]old[/s] [em]marked[/em] [ruby=reading]base[/ruby] [size=36]Large[/size] [color=#ff3399]color[/color]\n".repeat(2000)).unwrap();
+        let mut paragraph = paragraph(&source);
+        let full = scene(&mut paragraph, None, Affine::IDENTITY, 0..source.len());
+        let total = glyph_count(&full);
+        let center = paragraph.layout.get(1000).unwrap().metrics().baseline as f64;
+        let viewport = Rect::new(0., center - 140., 840., center + 140.);
+        let lines = paragraph.visible_lines(Some(viewport), Affine::IDENTITY, None);
+        assert!(lines.start > 0 && lines.len() < 30);
+        let clipped = scene(
+            &mut paragraph,
+            Some(viewport),
+            Affine::IDENTITY,
+            0..source.len(),
+        );
+        let visible = glyph_count(&clipped);
+        assert!(visible > 0 && visible * 30 < total);
+        for command in clipped.commands() {
+            if let Command::Draw(id) = command {
+                let draw = clipped.draw_op(*id);
+                assert!(
+                    full.commands().iter().any(
+                        |command| matches!(command, Command::Draw(id) if full.draw_op(*id) == draw)
+                    ),
+                    "clipping changed glyph positions, decoration, ruby, or outline"
+                );
+            }
+        }
+        let transform = Affine::translate((30., 20.)) * Affine::rotate(0.03) * Affine::scale(1.25);
+        for reveal in [0..source.len(), source.len() / 4..source.len() * 3 / 4] {
+            let full = scene(&mut paragraph, None, transform, reveal.clone());
+            let bounded = scene(
+                &mut paragraph,
+                Some(Rect::new(-1e9, -1e9, 1e9, 1e9)),
+                transform,
+                reveal,
+            );
+            assert_eq!(
+                full, bounded,
+                "unclipped painting must remain byte-for-byte identical"
+            );
+        }
+        let iterations = 20;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(scene(
+                &mut paragraph,
+                None,
+                Affine::IDENTITY,
+                0..source.len(),
+            ));
+        }
+        let full_time = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(scene(
+                &mut paragraph,
+                Some(viewport),
+                Affine::IDENTITY,
+                0..source.len(),
+            ));
+        }
+        eprintln!(
+            "history paint: {} lines, {total} -> {visible} glyphs, {iterations} full recordings {full_time:?}, visible recordings {:?}; line index {} bytes",
+            paragraph.layout.len(),
+            started.elapsed(),
+            paragraph.paint_lines.len() * std::mem::size_of::<(f32, f32)>()
+        );
     }
 }

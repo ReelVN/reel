@@ -180,7 +180,12 @@ fn table_key_value_order_preserves_duplicate_entries_until_one_make() {
     assert_eq!(pairs.len(), 2);
     for pair in pairs {
         let save = definition(f, pair[0].0, make);
-        let load = definition(f, f.code[save].operands[1], save);
+        let load = if f.code[save].opcode == bc::Opcode::Move as u16 {
+            definition(f, f.code[save].operands[1], save)
+        } else {
+            save
+        };
+        assert_eq!(f.code[load].opcode, bc::Opcode::LoadConst as u16);
         assert_eq!(
             p.constants[f.code[load].operands[1] as usize],
             bc::Const::Utf8("x".into())

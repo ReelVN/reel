@@ -57,7 +57,7 @@ fn source_span(f: &bc::FunctionDef, pc: usize) -> bc::SourceSpan {
 }
 
 #[test]
-fn source_runs_preserve_every_ir_instruction_location() {
+fn source_runs_preserve_computation_and_control_flow_locations() {
     let module = analyzed(
         r#"fn repeat(value = "same") { try { if value == "same" { return value + "same"; } throw value; } finally { let cleanup = "same"; } } let result = repeat();"#,
     );
@@ -74,6 +74,14 @@ fn source_runs_preserve_every_ir_instruction_location() {
                     block
                         .operations
                         .iter()
+                        .filter(|operation| {
+                            !matches!(
+                                bc::instruction_spec(operation.instruction.opcode)
+                                    .unwrap()
+                                    .opcode,
+                                bc::Opcode::Move | bc::Opcode::Clear
+                            )
+                        })
                         .map(|operation| operation.span)
                         .chain(block.terminator.as_ref().map(|(_, span)| *span))
                 })
@@ -91,13 +99,19 @@ fn source_runs_preserve_every_ir_instruction_location() {
             .any(|f| f.source_map.len() < f.code.len())
     );
     for (function, spans) in expected {
-        assert_eq!(
-            compiled.program.package().functions[function.index()]
-                .code
-                .len(),
-            spans.len()
-        );
-        for (pc, expected) in spans.into_iter().enumerate() {
+        let computation: Vec<_> = compiled.program.package().functions[function.index()]
+            .code
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| {
+                !matches!(
+                    bc::instruction_spec(instruction.opcode).unwrap().opcode,
+                    bc::Opcode::Move | bc::Opcode::Clear
+                )
+            })
+            .collect();
+        assert_eq!(computation.len(), spans.len());
+        for ((pc, _), expected) in computation.into_iter().zip(spans) {
             let actual = compiled
                 .program
                 .source_at(function, bc::Pc(pc as u32))
@@ -117,6 +131,36 @@ fn source_runs_preserve_every_ir_instruction_location() {
             .filter(|c| matches!(c, bc::Const::Utf8(s) if s == "same"))
             .count(),
         1
+    );
+}
+
+#[test]
+fn repeated_value_constants_share_slots_without_merging_object_constants() {
+    let compiled = compiled("fn f(){[null,null,true,true,false,false,42,42,1.25,1.25,(1,),(1,)]}");
+    let constants = &compiled.program.package().constants;
+    for expected in [
+        bc::Const::Null,
+        bc::Const::Bool(true),
+        bc::Const::Bool(false),
+        bc::Const::Int(42),
+        bc::Const::FloatBits(1.25f64.to_bits()),
+    ] {
+        assert_eq!(
+            constants
+                .iter()
+                .filter(|constant| **constant == expected)
+                .count(),
+            1
+        );
+    }
+    let function = function(compiled.program.package(), "f");
+    assert_eq!(
+        function
+            .code
+            .iter()
+            .filter(|instruction| instruction.opcode == bc::Opcode::MakeTuple as u16)
+            .count(),
+        2
     );
 }
 fn function<'a>(p: &'a bc::BytecodePackage, name: &str) -> &'a bc::FunctionDef {

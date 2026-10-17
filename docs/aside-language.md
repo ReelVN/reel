@@ -45,6 +45,9 @@ Reel 的 `game.start(entry)` 接收无捕获、无必需参数的普通函数值
 Reel 的对白 history 参数属于普通宿主调用：true 记录原文、false 省略、string/rich 指定替代历史文本。它不改变 Aside 调用与等待语义，不引入另一套日志或 VM 指令。
 
 ## 二 语法与求值顺序
+
+Reel 的不可变 `rich` 宿主值公开只读 `.plain` 和 `.markup`，分别返回正文与原标记字符串；读取复用原有字符串，组合仍使用普通字符串运算，不增加语言语法。
+
 Reel 的 `await stage.presented(owner: null)` 等待请求之后的稳定舞台投影实际呈现并返回 null，复用宿主 Awaitable。也可保存返回对象后等待多次，或调用 `.cancel()`；节点 owner 退休取消未决请求。创建请求只能在普通剧情/回调中执行，初始化与 NoWait/纯派生边界不可绕过。此接口新增 native ABI 1，不改变语言 await、Aside 字节码 或 ASB。
 
 Reel 作者窗口在首个挂载场景的字体、图片准备好后提交首帧；支持隐藏窗口的平台在首帧接受后显示窗口。此行为不改变脚本等待语义或 ASB/native ABI；脚本可先挂载加载界面，再通过原有活动与任务安排后续内容。
