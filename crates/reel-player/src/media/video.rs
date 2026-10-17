@@ -49,10 +49,13 @@ impl Movies {
         }
     }
     pub fn cancel(&mut self, id: MediaId) {
-        if let Some(mut movie) = self.entries.remove(&id)
-            && let Some(playback) = movie.playback.take()
-        {
-            self.retire(playback);
+        if let Some(mut movie) = self.entries.remove(&id) {
+            if let Some(playback) = movie.playback.take() {
+                self.retire(playback);
+            }
+            if let Some(playback) = movie.retiring.take() {
+                self.retire(playback);
+            }
         }
     }
     pub fn close(&mut self) {
@@ -72,6 +75,8 @@ pub(super) struct Movie {
     request: VideoRequest,
     pub paused: bool,
     playback: Option<VideoPlayback>,
+    retiring: Option<VideoPlayback>,
+    pending_seek: bool,
     source: StreamControl,
     result: Option<MediaResult>,
     pub frame: Option<ResourceLease>,
@@ -114,6 +119,18 @@ impl Movie {
     }
 }
 impl MediaPlayer {
+    #[cfg(test)]
+    pub(super) fn decoder_generations(&self) -> usize {
+        self.movies.retiring.len()
+            + self
+                .movies
+                .entries
+                .values()
+                .map(|movie| {
+                    usize::from(movie.playback.is_some()) + usize::from(movie.retiring.is_some())
+                })
+                .sum::<usize>()
+    }
     fn open_movie(
         &self,
         request: &VideoRequest,
@@ -163,6 +180,8 @@ impl MediaPlayer {
                 request,
                 paused: false,
                 playback: Some(playback),
+                retiring: None,
+                pending_seek: false,
                 source,
                 result: None,
                 frame: None,
@@ -191,6 +210,8 @@ impl MediaPlayer {
                 position: state.position,
                 paused: state.paused,
                 playback: Some(playback),
+                retiring: None,
+                pending_seek: false,
                 source,
                 result: None,
                 frame: None,
@@ -227,27 +248,36 @@ impl MediaPlayer {
                 }
             }
             MediaCommand::Seek(position) => {
-                let request = movie.request.clone();
-                let (source, playback) = self
-                    .open_movie(&request, position, false)
-                    .map_err(|e| format!("{}: {e}", request.source))?;
-                let movie = self.movies.entries.get_mut(&id).unwrap();
-                playback.pause(movie.paused || self.suspended);
-                let previous = movie.playback.replace(playback);
-                movie.source = source;
+                if movie
+                    .request
+                    .end_position
+                    .is_some_and(|end| position >= end)
+                {
+                    return Err("video seek must precede the segment end".into());
+                }
+                // Pointer-driven scrubbing can issue many seeks before the next
+                // host tick. Retain only the newest target, and never overlap
+                // decoder generations for one transport.
+                if let Some(mut playback) = movie.playback.take() {
+                    playback.cancel();
+                    movie.retiring = Some(playback);
+                }
                 movie.position = position;
+                movie.pending_seek = true;
                 // The previous displayed frame remains in the stage until the
                 // seek target arrives, without retaining it in this producer.
                 movie.frame = None;
-                if let Some(previous) = previous {
-                    self.movies.retire(previous);
-                }
             }
             MediaCommand::Volume { value, duration } => {
                 if !duration.is_zero() {
                     return Err("video volume envelopes are not installed".into());
                 }
-                movie.playback.as_ref().unwrap().set_volume(value)?;
+                if !value.is_finite() || value < 0. || value > f32::MAX as f64 {
+                    return Err("video volume must be finite and nonnegative".into());
+                }
+                if let Some(playback) = &movie.playback {
+                    playback.set_volume(value)?;
+                }
                 movie.request.volume = value;
             }
             MediaCommand::Pan { .. } | MediaCommand::FadeOut(_) => {
@@ -264,6 +294,26 @@ impl MediaPlayer {
         // audio track and restart a completed loop through ordinary AssetIo.
         let mut entries = std::mem::take(&mut self.movies.entries);
         for movie in entries.values_mut() {
+            if movie
+                .retiring
+                .as_mut()
+                .is_some_and(VideoPlayback::worker_finished)
+            {
+                movie.retiring = None;
+            }
+            if movie.pending_seek && movie.retiring.is_none() && movie.result.is_none() {
+                movie.pending_seek = false;
+                match self.open_movie(&movie.request, movie.position, false) {
+                    Ok((source, playback)) => {
+                        playback.pause(movie.paused || self.suspended);
+                        movie.source = source;
+                        movie.playback = Some(playback);
+                    }
+                    Err(error) => {
+                        movie.failed(error);
+                    }
+                }
+            }
             let Some(playback) = &mut movie.playback else {
                 continue;
             };

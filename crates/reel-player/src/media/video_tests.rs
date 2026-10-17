@@ -47,11 +47,26 @@ fn video_shares_output_restores_paused_transport_and_terminal_poster_without_sou
     assert_eq!(image.size(), [64, 48]);
     assert_eq!(image.plane(0).len(), 64 * 48);
     player.command(id, MediaCommand::Pause).unwrap();
+    for milliseconds in 0..1000 {
+        player
+            .command(id, MediaCommand::Seek(Duration::from_millis(milliseconds)))
+            .unwrap();
+    }
     player
         .command(id, MediaCommand::Seek(Duration::from_millis(625)))
         .unwrap();
+    assert_eq!(
+        player.decoder_generations(),
+        1,
+        "scrubbing retains one retiring decoder and only the latest target"
+    );
+    assert_eq!(player.position(id), Some(Duration::from_millis(625)));
     until(|| {
         player.maintain(Duration::from_millis(2));
+        assert!(
+            player.decoder_generations() <= 1,
+            "seek generations cannot overlap"
+        );
         output.render();
         if let Some(next) = player.take_video_frame(id) {
             frame = Some(next);
@@ -202,6 +217,18 @@ fn video_loop_keeps_segment_origin_and_cancellation_reaps_streams() {
     });
     let pending = player.play_video(movie(false)).unwrap();
     player.cancel(pending);
+    // Admission counts cancelled readers until their decoder threads exit.
+    // A burst of replace/cancel operations cannot bypass the host's capacity.
+    for _ in 0..128 {
+        match player.play_video(movie(false)) {
+            Ok(id) => player.cancel(id),
+            Err(error) => {
+                assert_eq!(error, "media activity capacity exhausted");
+                player.maintain(Duration::ZERO);
+            }
+        }
+        assert!(player.decoder_generations() <= player.options.mixer.max_sounds);
+    }
     player.close();
     until(|| {
         player.maintain(Duration::ZERO);

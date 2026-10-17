@@ -278,7 +278,7 @@ impl MediaPlayer {
     fn active_count(&self) -> usize {
         #[cfg(feature = "video")]
         {
-            self.entries.len() + self.movies.entries.len()
+            self.entries.len() + self.movies.entries.len() + self.movies.retiring.len()
         }
         #[cfg(not(feature = "video"))]
         {
