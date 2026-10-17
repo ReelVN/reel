@@ -21,12 +21,33 @@ struct ImageGradient {
     y: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> gradient: ImageGradient;
-@fragment fn fragment(v: VertexOut) -> @location(0) vec4<f32> {
-    let pixel = textureSample(image, image_sampler, v.uv) * v.color;
+fn tint(v: VertexOut, pixel: vec4<f32>) -> vec4<f32> {
     if gradient.x.w == 0.0 { return pixel; }
     let position = vec3<f32>(v.position.xy, 1.0);
     let x = clamp(dot(gradient.x.xyz, position), 0.0, 1.0);
     let y = clamp(dot(gradient.y.xyz, position), 0.0, 1.0);
     return pixel * mix(mix(gradient.top_left, gradient.top_right, x),
         mix(gradient.bottom_left, gradient.bottom_right, x), y);
+}
+@fragment fn fragment(v: VertexOut) -> @location(0) vec4<f32> {
+    return tint(v, textureSample(image, image_sampler, v.uv) * v.color);
+}
+@group(0) @binding(3) var chroma_u: texture_2d<f32>;
+@group(0) @binding(4) var chroma_v: texture_2d<f32>;
+struct VideoColor {
+    r: vec4<f32>, g: vec4<f32>, b: vec4<f32>, transfer: vec4<f32>,
+}
+@group(0) @binding(5) var<uniform> video_color: VideoColor;
+@fragment fn fragment_yuv(v: VertexOut) -> @location(0) vec4<f32> {
+    let yuv = vec4<f32>(textureSample(image, image_sampler, v.uv).r,
+        textureSample(chroma_u, image_sampler, v.uv).r,
+        textureSample(chroma_v, image_sampler, v.uv).r, 1.0);
+    let rgb = clamp(vec3<f32>(dot(video_color.r, yuv), dot(video_color.g, yuv), dot(video_color.b, yuv)), vec3<f32>(0.0), vec3<f32>(1.0));
+    var linear: vec3<f32>;
+    if video_color.transfer.x == 1.0 {
+        linear = select(pow((rgb + 0.055) / 1.055, vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+    } else {
+        linear = select(pow((rgb + 0.099) / 1.099, vec3<f32>(1.0 / 0.45)), rgb / 4.5, rgb < vec3<f32>(0.081));
+    }
+    return tint(v, vec4<f32>(linear, 1.0) * v.color);
 }

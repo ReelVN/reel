@@ -38,6 +38,7 @@ struct SceneNode {
     node: StageNode,
     children: Vec<SceneNode>,
     image: Option<ImageData>,
+    image_resource: Option<ResourceLease>,
     mask_image: Option<ImageData>,
     tiled_size: Option<Size>,
     tiles: Vec<reel_ui::widgets::ImageTile>,
@@ -45,9 +46,23 @@ struct SceneNode {
 impl SceneNode {
     fn clear_images(&mut self) {
         self.image = None;
+        self.image_resource = None;
         self.mask_image = None;
         self.tiled_size = None;
         self.tiles.clear();
+    }
+    fn image_size(&self) -> Size {
+        self.image_resource
+            .as_ref()
+            .and_then(|r| r.data().image_size())
+            .map(|[w, h]| Size::new(w.into(), h.into()))
+            .or_else(|| {
+                self.image
+                    .as_ref()
+                    .map(|i| Size::new(i.width.into(), i.height.into()))
+            })
+            .or(self.tiled_size)
+            .unwrap_or(Size::ZERO)
     }
 }
 pub(crate) struct ImageRequests {
@@ -68,6 +83,7 @@ impl StageView {
                 node,
                 children,
                 image: None,
+                image_resource: None,
                 mask_image: None,
                 tiled_size: None,
                 tiles: Vec::new(),
@@ -235,6 +251,12 @@ impl StageView {
                     self.resources.push(lease.clone());
                 }
             }
+            if let Some(lease) = image_resource(&node.node.kind) {
+                node.image_resource = Some(lease.clone());
+                if handles.insert(lease.handle()) {
+                    self.resources.push(lease.clone());
+                }
+            }
             if let Some(source) = &node.node.props.mask {
                 let lease = &images[source.as_ref()];
                 let ResourceData::Image { image, .. } = lease.data() else {
@@ -258,6 +280,15 @@ impl StageView {
             if !visible {
                 pending.extend(node.children.iter_mut().map(|child| (child, false)));
                 continue;
+            }
+            if let Some(lease) = image_resource(&node.node.kind) {
+                node.image_resource = Some(lease.clone());
+                let NodeKind::Image { source, .. } = &node.node.kind else {
+                    unreachable!()
+                };
+                if resources.insert(source.key().to_owned()) {
+                    self.resources.push(lease.clone());
+                }
             }
             if let Some((source, _)) = image_source(&node.node.kind) {
                 if let Some(manifest) = images.manifests.get(source) {
@@ -321,9 +352,21 @@ impl StageView {
 
 fn image_source(kind: &NodeKind) -> Option<(&str, &Option<String>)> {
     match kind {
-        NodeKind::Image { source, origin, .. } => Some((source.key(), origin)),
+        NodeKind::Image { source, origin, .. }
+            if !source.is_empty() && source.lease().is_none() =>
+        {
+            Some((source.key(), origin))
+        }
         NodeKind::Particles(batch) => Some((&batch.config.source, &batch.config.origin)),
         _ => None,
+    }
+}
+
+fn image_resource(kind: &NodeKind) -> Option<&ResourceLease> {
+    if let NodeKind::Image { source, .. } = kind {
+        source.lease()
+    } else {
+        None
     }
 }
 
@@ -523,6 +566,11 @@ impl SceneWidget {
             .as_ref()
             .map(|image| Image::new(image.clone()))
             .or_else(|| {
+                view.image_resource
+                    .as_ref()
+                    .map(|lease| Image::from_resource(lease.clone()))
+            })
+            .or_else(|| {
                 view.tiled_size
                     .map(|size| Image::tiled(size, view.tiles.clone()))
             })
@@ -651,12 +699,7 @@ impl SceneWidget {
                 .flatten(),
             mask_image: view.mask_image.clone(),
             image: Self::image_widget(view),
-            image_size: view
-                .image
-                .as_ref()
-                .map(|image| Size::new(image.width.into(), image.height.into()))
-                .or(view.tiled_size)
-                .unwrap_or(Size::ZERO),
+            image_size: view.image_size(),
             children: view
                 .children
                 .iter()
@@ -765,15 +808,10 @@ impl SceneWidget {
             this.ctx.set_modal(view.node.props.modal);
         }
         let has_image = matches!(view.node.kind, NodeKind::Image { .. })
-            && (view.image.is_some() || view.tiled_size.is_some());
+            && (view.image.is_some() || view.image_resource.is_some() || view.tiled_size.is_some());
         if has_image && this.widget.image.is_none() {
             this.widget.image = Self::image_widget(view);
-            this.widget.image_size = view
-                .image
-                .as_ref()
-                .map(|image| Size::new(image.width.into(), image.height.into()))
-                .or(view.tiled_size)
-                .unwrap();
+            this.widget.image_size = view.image_size();
             this.ctx.children_changed();
         } else if !has_image && let Some(image) = this.widget.image.take() {
             this.ctx.remove_child(image);
@@ -790,6 +828,13 @@ impl SceneWidget {
             (&this.widget.node.kind, &view.node.kind),
             (NodeKind::Image { source: old, .. }, NodeKind::Image { source, .. }) if old != source
         );
+        if image_source_changed
+            && let (Some(pod), Some(lease)) = (&mut this.widget.image, &view.image_resource)
+            && let Some(mut image) = this.ctx.get_mut(pod)
+        {
+            Image::set_resource(&mut image, lease.clone());
+            this.widget.image_size = view.image_size();
+        }
         if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
             && (image_source_changed
                 || this.widget.image_size != Size::new(data.width.into(), data.height.into()))

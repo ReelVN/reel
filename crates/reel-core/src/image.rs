@@ -129,3 +129,65 @@ impl YuvColor {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Debug)]
+    struct Planes([Vec<u8>; 3]);
+    impl Yuv420Storage for Planes {
+        fn plane(&self, i: usize) -> &[u8] {
+            &self.0[i]
+        }
+    }
+
+    #[test]
+    fn packed_planes_and_declared_color_matrix_are_validated_without_copying() {
+        let storage = Arc::new(Planes([vec![16; 9], vec![128; 4], vec![128; 4]]));
+        let color = YuvColor {
+            matrix: YuvMatrix::Bt709,
+            full_range: false,
+            transfer: YuvTransfer::Bt709,
+        };
+        let image = Yuv420Image::new([3, 3], color, storage.clone()).unwrap();
+        assert_eq!(image.plane_size(1), [2, 2]);
+        assert_eq!(image.byte_len(), 17);
+        assert_eq!(image.plane(0).as_ptr(), storage.0[0].as_ptr());
+        assert!(image.same_storage(&image.clone()));
+        assert!(matches!(
+            Yuv420Image::new([3, 2], color, storage.clone()),
+            Err(ImageError::PlaneLength)
+        ));
+        assert!(matches!(
+            Yuv420Image::new([0, 2], color, storage),
+            Err(ImageError::Dimensions)
+        ));
+        let convert = |color: YuvColor, yuv: [f32; 3]| {
+            color.rgb_rows().map(|row| {
+                row[0] * yuv[0] / 255. + row[1] * yuv[1] / 255. + row[2] * yuv[2] / 255. + row[3]
+            })
+        };
+        for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709] {
+            for full_range in [false, true] {
+                let color = YuvColor {
+                    matrix,
+                    full_range,
+                    ..color
+                };
+                let [black, white] = if full_range { [0., 255.] } else { [16., 235.] };
+                assert!(
+                    convert(color, [black, 128., 128.])
+                        .into_iter()
+                        .all(|n| n.abs() < 0.000001)
+                );
+                assert!(
+                    convert(color, [white, 128., 128.])
+                        .into_iter()
+                        .all(|n| (n - 1.).abs() < 0.000001)
+                );
+            }
+        }
+        let red = convert(color, [63., 102., 240.]);
+        assert!(red[0] > 0.99 && red[1].abs() < 0.01 && red[2].abs() < 0.01);
+    }
+}

@@ -7,7 +7,7 @@ use super::{
     resources::{self, Image},
 };
 use reel_core::budget::{BudgetPool, BudgetTicket};
-use reel_ui::resources::{ResourceHandle, ResourceLease, ResourceVersion};
+use reel_ui::resources::{ResourceData, ResourceHandle, ResourceLease, ResourceVersion};
 use std::{
     collections::HashMap,
     sync::{
@@ -55,7 +55,10 @@ impl ImageCache {
         }
         self.images.lock().unwrap().retain(|_, image| {
             let source = image.source.as_ref().unwrap();
-            !source.lease.is_released() && !versions.contains(&source.version)
+            // Dead video entries are an allocation pool, still charged to the
+            // same resource budget. Reuse additionally requires no GPU reader.
+            image.yuv.is_some()
+                || (!source.lease.is_released() && !versions.contains(&source.version))
         });
     }
 
@@ -129,10 +132,25 @@ impl ImageCache {
             if images.contains_key(&handle) {
                 continue;
             }
-            let cost = item.resident + item.staging;
+            let mut recycled = match item.source.data() {
+                ResourceData::Yuv420(image) => self.recycle_video(image.size()),
+                _ => None,
+            };
+            let cost = if recycled.is_some() {
+                item.staging
+            } else {
+                item.resident + item.staging
+            };
             glyphs.make_room(pool, cost, limit);
             self.make_room(pool, cost, limit);
-            let reserved = (|| Ok((reserve(item.resident)?, reserve(item.staging)?)))();
+            let reserved = (|| {
+                let residency = if let Some(image) = &mut recycled {
+                    image.residency.take().unwrap()
+                } else {
+                    reserve(item.resident)?
+                };
+                Ok((residency, reserve(item.staging)?))
+            })();
             let (residency, upload) = match reserved {
                 Ok(tickets) => tickets,
                 Err(error) => {
@@ -140,7 +158,12 @@ impl ImageCache {
                     break;
                 }
             };
-            let (mut image, _) = resources::image(gpu, &mut encoder, item.source, item.at, cost)?;
+            let mut image = match item.source.data() {
+                ResourceData::Yuv420(image) => {
+                    super::video::upload(gpu, &mut encoder, image, recycled)?
+                }
+                _ => resources::image(gpu, &mut encoder, item.source, item.at, cost)?.0,
+            };
             image.residency = Some(residency);
             // Cache ownership must not pin decoded pixels. Existing frame leases
             // (including retired versions in a transition) may still reuse this
@@ -183,6 +206,15 @@ impl ImageCache {
         !self.uploads.lock().unwrap().is_empty()
     }
 
+    fn recycle_video(&self, size: [u32; 2]) -> Option<Image> {
+        let mut cache = self.images.lock().unwrap();
+        let handle = *cache
+            .iter()
+            .find(|(_, image)| image.yuv.is_some() && image.size == size && reusable(image))?
+            .0;
+        Arc::try_unwrap(cache.remove(&handle).unwrap()).ok()
+    }
+
     pub(super) fn poll(&self) -> bool {
         let mut uploads = self.uploads.lock().unwrap();
         let before = uploads.len();
@@ -199,6 +231,10 @@ impl ImageCache {
             });
         }
     }
+}
+
+fn reusable(image: &Arc<Image>) -> bool {
+    Arc::strong_count(image) == 1 && image.source.as_ref().is_some_and(|s| s.lease.is_released())
 }
 
 pub(super) fn reserve_local(

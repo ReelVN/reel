@@ -194,7 +194,7 @@ impl Context<'_> {
             }
         };
         mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
-        self.paint_image(target, &mesh, &image.view, repeat, gradient)
+        self.paint_resource(target, &mesh, &image, repeat, gradient)
     }
     pub(super) fn image_resource(
         &self,
@@ -322,16 +322,35 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        self.paint_image(target, mesh, image, [false; 2], None)
+        self.paint_image(target, mesh, image, [false; 2], None, None)
     }
 
-    pub(super) fn paint_image(
+    pub(super) fn paint_resource(
+        &mut self,
+        target: &Target,
+        mesh: &mesh::Mesh,
+        image: &super::resources::Image,
+        repeat: [bool; 2],
+        gradient: Option<ImageColorGradient>,
+    ) -> Result<(), GpuError> {
+        self.paint_image(
+            target,
+            mesh,
+            &image.view,
+            repeat,
+            gradient,
+            image.yuv.as_ref(),
+        )
+    }
+
+    fn paint_image(
         &mut self,
         target: &Target,
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
         repeat: [bool; 2],
         gradient: Option<ImageColorGradient>,
+        yuv: Option<&super::video::Planes>,
     ) -> Result<(), GpuError> {
         if mesh.indices.is_empty()
             || self.scissor.empty()
@@ -384,30 +403,53 @@ impl Context<'_> {
                 .brush_groups
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("reel brush"),
-            layout: &self.pipelines.paint_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(image),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(
-                        &self.pipelines.samplers
-                            [usize::from(repeat[0]) + 2 * usize::from(repeat[1])],
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: gradient_buffer
-                        .as_ref()
-                        .unwrap_or(&self.pipelines.plain_gradient)
-                        .as_entire_binding(),
-                },
-            ],
-        });
+        let sampler = &self.pipelines.samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
+        let gradient = gradient_buffer
+            .as_ref()
+            .unwrap_or(&self.pipelines.plain_gradient);
+        let base = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(image),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: gradient.as_entire_binding(),
+            },
+        ];
+        let group = if let Some(yuv) = yuv {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("video brush"),
+                layout: &self.pipelines.yuv_layout,
+                entries: &[
+                    base[0].clone(),
+                    base[1].clone(),
+                    base[2].clone(),
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&yuv.chroma[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&yuv.chroma[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: yuv.color.as_entire_binding(),
+                    },
+                ],
+            })
+        } else {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("reel brush"),
+                layout: &self.pipelines.paint_layout,
+                entries: &base,
+            })
+        };
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("reel draw"),
             color_attachments: &[Some(target.attachment(false))],
@@ -416,7 +458,11 @@ impl Context<'_> {
             multiview_mask: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(&self.pipelines.paint);
+        pass.set_pipeline(if yuv.is_some() {
+            &self.pipelines.yuv
+        } else {
+            &self.pipelines.paint
+        });
         self.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));

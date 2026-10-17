@@ -38,6 +38,7 @@ impl UploadCreations {
 pub struct Image {
     pub view: wgpu::TextureView,
     pub size: [u32; 2],
+    pub(super) yuv: Option<super::video::Planes>,
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
     pub(super) source: Option<ImageSource>,
 }
@@ -214,6 +215,7 @@ fn upload_with(
         Image {
             view: texture.create_view(&Default::default()),
             size,
+            yuv: None,
             residency: None,
             source: None,
         },

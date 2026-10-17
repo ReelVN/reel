@@ -1833,3 +1833,204 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     assert!(error.contains("whole PNG or JPEG sprite"), "{error}");
     assert_eq!(images.loads, 1, "unsupported request is rejected before IO");
 }
+
+#[test]
+fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_view() {
+    use reel_core::{
+        budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits},
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+        image::{Yuv420Image, Yuv420Storage, YuvColor, YuvMatrix, YuvTransfer},
+    };
+    use reel_ui::{
+        frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
+        peniko::Brush,
+        resources::{ResourceRegistry, ResourceSnapshot},
+        stage::ImageSource,
+    };
+    #[derive(Debug)]
+    struct Pixels {
+        planes: [Vec<u8>; 3],
+        _ticket: BudgetTicket,
+    }
+    impl Yuv420Storage for Pixels {
+        fn plane(&self, i: usize) -> &[u8] {
+            &self.planes[i]
+        }
+    }
+    let pixels = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 4,
+            max_bytes: 24,
+        },
+    );
+    let frames = BudgetPool::new(
+        BudgetCategory::Snapshot,
+        QueueLimits {
+            max_requests: 100,
+            max_bytes: 32 << 20,
+        },
+    );
+    let mut registry = ResourceRegistry::new(4, 64 << 10).unwrap();
+    let kind = |source| NodeKind::Image {
+        source,
+        origin: None,
+        fit: Default::default(),
+        slice: None,
+        slice_scale: 1.,
+        slice_center: true,
+        repeat: [false; 2],
+        tile_scale: 1.,
+        corner_colors: None,
+    };
+    let mut f = Fixture::new(None);
+    let props = f.stage.node(f.red).unwrap().props.clone();
+    let blue = f.stage.node(f.blue).unwrap().props.clone();
+    f.stage.update(f.blue, NodeKind::Stack, blue).unwrap();
+    f.stage
+        .update(f.red, kind(ImageSource::empty()), props.clone())
+        .unwrap();
+    let source = f.record();
+    assert!(!f.ui.images_pending());
+    assert!(
+        StageView::capture(&f.stage)
+            .image_requests()
+            .unwrap()
+            .required
+            .is_empty()
+    );
+    f.accept(&source);
+    drop(source);
+    let mut first = None;
+    let mut stable_layouts = None;
+    let mut current = None;
+    for index in 0..20 {
+        let storage = Arc::new(Pixels {
+            planes: [vec![16 + index; 4], vec![128], vec![128]],
+            _ticket: pixels.reserve(6).unwrap(),
+        });
+        let pointer = storage.planes[0].as_ptr();
+        let image = Yuv420Image::new(
+            [2, 2],
+            YuvColor {
+                matrix: YuvMatrix::Bt709,
+                full_range: false,
+                transfer: YuvTransfer::Bt709,
+            },
+            storage,
+        )
+        .unwrap();
+        let handle = registry
+            .register_yuv420(
+                ResourceVersion {
+                    key: AssetKey("video-frame".into()),
+                    version: ContentVersion([index; 32]),
+                },
+                image,
+            )
+            .unwrap();
+        let lease = registry.acquire(handle).unwrap();
+        f.stage
+            .update(f.red, kind(ImageSource::resource(lease)), props.clone())
+            .unwrap();
+        assert!(
+            StageView::capture(&f.stage)
+                .image_requests()
+                .unwrap()
+                .required
+                .is_empty()
+        );
+        // Releasing producer registration before stage capture must be legal.
+        assert!(registry.release(handle));
+        assert!(registry.acquire(handle).is_err());
+        let source = f.record();
+        f.accept(&source);
+        assert!(!f.ui.images_pending());
+        let snapshot =
+            ResourceSnapshot::capture(f.ui.image_resources().iter().cloned().map(Ok), &frames)
+                .unwrap();
+        let ResourceData::Yuv420(image) = snapshot.leases()[0].data() else {
+            panic!("planar image expected")
+        };
+        assert_eq!(image.plane(0).as_ptr(), pointer);
+        let mut build = FrameBuild::new(
+            source,
+            snapshot,
+            FrameInfo {
+                logical_size: [640., 420.],
+                physical_size: [640, 420],
+            },
+            BuildLimits { max_bytes: 8 << 20 },
+            &frames,
+        )
+        .unwrap();
+        while !build
+            .step(StepBudget {
+                max_commands: 1,
+                max_units: 1024,
+                max_bytes: 64 << 10,
+            })
+            .unwrap()
+            .complete
+        {}
+        let frame = build.finish().unwrap();
+        assert!(
+            frame
+                .commands()
+                .iter()
+                .any(|c| matches!(&c.op, FrameOp::PushClip(_)))
+        );
+        let image = frame
+            .commands()
+            .iter()
+            .find_map(|c| {
+                if let FrameOp::Draw(FrameDraw::Fill {
+                    brush: Brush::Image(image),
+                    transform,
+                    ..
+                }) = &c.op
+                {
+                    Some((image, *transform))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(image.0.image.resource, handle);
+        assert!(
+            image.1.as_coeffs()[1] != 0.,
+            "parent rotation must survive image recording"
+        );
+        if let Some(before) = &stable_layouts {
+            assert_eq!(
+                &f.layouts(),
+                before,
+                "same size frame changes must not relayout"
+            );
+        } else {
+            stable_layouts = Some(f.layouts());
+        }
+        if first.is_none() {
+            first = Some(frame);
+        } else {
+            current = Some(frame);
+        }
+        assert!(
+            pixels.usage().bytes <= 12,
+            "only first retained frame plus current frame own pixels"
+        );
+    }
+    let ResourceData::Yuv420(image) = first.as_ref().unwrap().resources().leases()[0].data() else {
+        panic!()
+    };
+    assert_eq!(
+        image.plane(0),
+        [16; 4],
+        "retained frame must remain unchanged"
+    );
+    drop(current);
+    drop(first);
+    drop(f);
+    drop(registry);
+    assert_eq!(pixels.usage().bytes, 0);
+}

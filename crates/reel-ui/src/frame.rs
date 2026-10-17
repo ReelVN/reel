@@ -1004,6 +1004,11 @@ impl Building {
             mask,
             image_color,
             image_gradient,
+            if c.stream.is_none() {
+                layer.command_owners[c.owner_range].image_resource
+            } else {
+                None
+            },
             &self.resources,
         )
         .map_err(|kind| self.error(kind))?;
@@ -1404,7 +1409,24 @@ fn empty_brush(
     resources: &ResourceSnapshot,
     image_color: [f32; 4],
     image_gradient: Option<ImageColorGradient>,
+    image_resource: Option<crate::resources::ResourceImageBrush>,
 ) -> Result<FrameBrush, BuildErrorKind> {
+    if let Some(binding) = image_resource {
+        if !matches!(b, Brush::Solid(_)) {
+            return Err(BuildErrorKind::InvalidRecord);
+        }
+        if !resources.contains_image(binding.resource) {
+            return Err(BuildErrorKind::InvalidRecord);
+        }
+        return Ok(Brush::Image(ImageBrush {
+            image: FrameImage {
+                resource: binding.resource,
+                color: image_color,
+                gradient: image_gradient,
+            },
+            sampler: binding.sampler,
+        }));
+    }
     Ok(match b {
         Brush::Solid(c) => Brush::Solid(*c),
         Brush::Gradient(g) => {
@@ -1466,6 +1488,7 @@ fn make_op(
     mut mask: Option<MaskUse>,
     image_color: [f32; 4],
     image_gradient: Option<ImageColorGradient>,
+    image_resource: Option<crate::resources::ResourceImageBrush>,
     resources: &ResourceSnapshot,
 ) -> Result<(LocalId, FrameOp), BuildErrorKind> {
     Ok(match c {
@@ -1547,7 +1570,13 @@ fn make_op(
                 } => FrameDraw::Fill {
                     transform: t * *transform,
                     fill_rule: *fill_rule,
-                    brush: empty_brush(brush, resources, image_color, image_gradient)?,
+                    brush: empty_brush(
+                        brush,
+                        resources,
+                        image_color,
+                        image_gradient,
+                        image_resource,
+                    )?,
                     brush_transform: *brush_transform,
                     shape: empty_geometry(shape),
                     composite: *composite,
@@ -1562,7 +1591,13 @@ fn make_op(
                 } => FrameDraw::Stroke {
                     transform: t * *transform,
                     stroke: empty_stroke(stroke),
-                    brush: empty_brush(brush, resources, image_color, image_gradient)?,
+                    brush: empty_brush(
+                        brush,
+                        resources,
+                        image_color,
+                        image_gradient,
+                        image_resource,
+                    )?,
                     brush_transform: *brush_transform,
                     shape: empty_geometry(shape),
                     composite: *composite,
@@ -1586,7 +1621,7 @@ fn make_op(
                         Style::Stroke(s) => Style::Stroke(empty_stroke(s)),
                     },
                     glyphs: Vec::with_capacity(g.glyphs.len()),
-                    brush: empty_brush(&g.brush, resources, image_color, image_gradient)?,
+                    brush: empty_brush(&g.brush, resources, image_color, image_gradient, None)?,
                     composite: g.composite,
                 }),
                 Draw::BlurredRoundedRect(d) => {

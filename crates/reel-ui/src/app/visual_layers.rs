@@ -17,6 +17,7 @@ pub struct CommandOwnerRange {
     /// Linear premultiplied multiplier for image brushes in this range only.
     pub image_color: [f32; 4],
     pub image_gradient: Option<crate::frame::ImageColorGradient>,
+    pub image_resource: Option<crate::resources::ResourceImageBrush>,
 }
 
 /// Reliable provenance captured when a widget's cached paint is appended.

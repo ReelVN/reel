@@ -69,28 +69,37 @@ pub(super) fn collect<'a>(
                     at,
                     record: "missing image lease",
                 })?;
-                let ResourceData::Image { image, .. } = source.data() else {
-                    return Err(GpuError::Unsupported {
-                        at,
-                        record: "non-image resource",
-                    });
+                let (size, resident, staging) = match source.data() {
+                    ResourceData::Image { image, .. } => {
+                        if image.format != ImageFormat::Rgba8 {
+                            return Err(GpuError::Unsupported {
+                                at,
+                                record: "image format",
+                            });
+                        }
+                        let size = [image.width, image.height];
+                        let resident = u64::from(image.width) * u64::from(image.height) * 8;
+                        (size, resident, resources::upload_cost(size)? - resident)
+                    }
+                    ResourceData::Yuv420(image) => {
+                        let (resident, staging) = super::video::costs(image);
+                        (image.size(), resident, staging)
+                    }
+                    _ => {
+                        return Err(GpuError::Unsupported {
+                            at,
+                            record: "non-image resource",
+                        });
+                    }
                 };
-                if image.format != ImageFormat::Rgba8 {
-                    return Err(GpuError::Unsupported {
-                        at,
-                        record: "image format",
-                    });
-                }
-                let size = [image.width, image.height];
                 if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
                     return Err(GpuError::InvalidSize);
                 }
-                let resident = u64::from(image.width) * u64::from(image.height) * 8;
                 required.push(Required {
                     source,
                     at,
                     resident,
-                    staging: resources::upload_cost(size)? - resident,
+                    staging,
                 });
             }
         }
