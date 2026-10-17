@@ -1,5 +1,55 @@
 use super::*;
 
+#[test]
+fn node_property_names_share_storage_without_keeping_retired_schemas_alive() {
+    let source = r#"
+        fn page() { column() { for i in 0..200 { text(f"{i}", x: i); } } }
+        fn opening() {
+            stage.replace(page()); narrator("first");
+            stage.replace(stack()); narrator("empty");
+            stage.replace(page()); narrator("rebuilt");
+        }
+    "#;
+    let (mut session, mut vm) = models::prepared(source, true);
+    let keys = |vm: &SessionVm| {
+        let heap = vm.vm.heap();
+        vm.stage()
+            .nodes()
+            .filter_map(|node| {
+                let reel_ui::stage::NodeKind::Text(text) = &node.kind else {
+                    return None;
+                };
+                assert_eq!(node.props.x, text.parse::<f64>().unwrap());
+                let value = vm.stage.value(heap, node.id).unwrap();
+                let fields = heap.host_fields(value).unwrap();
+                Some(heap.handle(heap.table_entry(fields, 1).unwrap().0).unwrap())
+            })
+            .collect::<Vec<_>>()
+    };
+    models::drive(&mut vm, &mut session, false);
+    collect(&mut vm);
+    let first = keys(&vm);
+    assert_eq!(first.len(), 200);
+    assert!(first.iter().all(|key| *key == first[0]));
+    let advance = |vm: &mut SessionVm, session: &mut Session| {
+        let id = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        models::drive(vm, session, false);
+        collect(vm);
+    };
+    advance(&mut vm, &mut session);
+    assert!(vm.vm.heap().import_handle(first[0]).is_err());
+    advance(&mut vm, &mut session);
+    let rebuilt = keys(&vm);
+    assert_eq!(rebuilt.len(), 200);
+    assert!(rebuilt.iter().all(|key| *key == rebuilt[0]));
+    assert_ne!(first[0], rebuilt[0]);
+}
+
 fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     loop {
         match next(vm, session) {

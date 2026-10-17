@@ -18,7 +18,7 @@ use crate::core::{
     WidgetMut, set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
-use crate::kurbo::{Affine, Axis, Point, Size};
+use crate::kurbo::{Affine, Axis, Point, Rect, Size};
 use crate::layout::{AsUnit, LenReq, Length};
 use crate::properties::{ContentColor, LineBreaking};
 use crate::reel_text::{FontContext, LayoutAccessibility, LayoutContext};
@@ -48,6 +48,8 @@ pub struct Label {
 
     text: Text,
     visible_bytes: Option<std::ops::Range<usize>>,
+    paint_viewport: Option<Rect>,
+    paint_line_range: std::ops::Range<usize>,
     styles: StyleSet,
     text_alignment: TextAlign,
     text_fit: TextFit,
@@ -205,6 +207,8 @@ impl Label {
             active_layout: usize::MAX,
             text: Text::from(text.into()),
             visible_bytes: None,
+            paint_viewport: None,
+            paint_line_range: 0..0,
             styles,
             text_alignment: TextAlign::Start,
             text_fit: TextFit::None,
@@ -917,6 +921,18 @@ impl Widget for Label {
         }
     }
 
+    fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
+        self.paint_viewport = viewport;
+        let range = self.layouts[self.active_layout].layout.visible_lines(
+            viewport,
+            Affine::IDENTITY,
+            self.outline,
+        );
+        let changed = self.paint_line_range != range;
+        self.paint_line_range = range;
+        changed
+    }
+
     fn paint(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -934,6 +950,7 @@ impl Widget for Label {
             self.hint,
             self.visible_bytes.clone().unwrap_or(0..self.text.len()),
             self.outline,
+            self.paint_viewport,
         );
         if let Some(index) = self
             .hovered_link
@@ -949,6 +966,10 @@ impl Widget for Label {
                 Affine::IDENTITY,
                 link.range.clone(),
                 text_color.color.into(),
+                self.paint_viewport.map(|rect| {
+                    let margin = self.outline.map_or(0., |outline| outline.width);
+                    rect.inflate(margin, margin)
+                }),
             );
         }
     }
@@ -1018,6 +1039,87 @@ mod reveal_tests {
         peniko::Blob,
     };
     use std::sync::Arc;
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; CPU scene recording only"]
+    fn moving_long_text_refreshes_visible_glyphs_without_rebuilding_layout() {
+        let font = Blob::from(
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+        );
+        let label = crate::core::NewWidget::new(Label::new("A line of history\n".repeat(2000)))
+            .with_props(LineBreaking::WordWrap);
+        let id = label.id();
+        let mut root = RenderRoot::new(
+            label,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(840, 280),
+                scale_factor: 1.,
+                default_font: Some(font),
+            },
+        );
+        root.redraw();
+        let snapshot = |root: &RenderRoot| {
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            let layout = &label.layouts[label.active_layout].layout;
+            (
+                label.cache_time,
+                label.active_layout,
+                layout.visible_lines(label.paint_viewport, Affine::IDENTITY, None),
+            )
+        };
+        let before = snapshot(&root);
+        assert_eq!(before.2.start, 0);
+        root.edit_widget(id, |mut widget| {
+            widget.set_transform(Affine::translate((0., -10_000.)))
+        });
+        let (plan, _) = root.redraw();
+        let after = snapshot(&root);
+        assert_eq!(
+            (before.0, before.1),
+            (after.0, after.1),
+            "scrolling must reuse shaping"
+        );
+        assert!(
+            after.2.start > before.2.end,
+            "newly exposed lines must replace cached paint"
+        );
+        let glyphs: usize = plan
+            .layers
+            .iter()
+            .map(|layer| match &layer.kind {
+                crate::app::VisualLayerKind::Scene(scene) => scene
+                    .commands()
+                    .iter()
+                    .map(|command| match command {
+                        crate::imaging::record::Command::Draw(id) => match scene.draw_op(*id) {
+                            crate::imaging::record::Draw::GlyphRun(run) => run.glyphs.len(),
+                            _ => 0,
+                        },
+                        _ => 0,
+                    })
+                    .sum(),
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            glyphs > 0 && glyphs < 1000,
+            "frame should contain only visible history lines: {glyphs}"
+        );
+        root.edit_widget(id, |mut widget| {
+            let label = widget.downcast::<Label>();
+            let viewport = label.widget.paint_viewport.unwrap();
+            assert!(
+                !label
+                    .widget
+                    .set_paint_viewport(Some(viewport + crate::kurbo::Vec2::new(20., 0.))),
+                "horizontal motion with the same visible lines must preserve cached paint"
+            );
+        });
+    }
 
     #[test]
     #[ignore = "requires REEL_SESSION_FONT for shaping ruby and styled paragraphs"]

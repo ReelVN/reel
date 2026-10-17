@@ -3367,6 +3367,7 @@ dependencies = [
  "reel-core",
  "reel-text",
  "serde",
+ "skrifa 0.48.0",
  "smallvec",
  "stats_alloc",
  "time",

@@ -498,7 +498,7 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 `game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll.aside)。
 换句时的上滚可封装在普通对白函数中：先等待角色对白，再 `await run(tween(...))` 移出旧文本，之后调用下一句。完整组件见 [author_dialogue_transition.aside](../../examples/author_dialogue_transition.aside)，包含裁剪、角色配色与已读配色；运行前提供 fonts/body.ttf。打字速度用 game.configure(text_speed:) 调整；逐字淡入、弹跳等字形效果尚未接通。
 
-句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。
+句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文，`.markup` 取得原标记字符串，读取均不复制文字。组合历史条目时可用 `rich("[b]姓名：[/b] " + line.text.markup)` 保留样式；普通字符串使用 `rich_escape`。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。可运行示例：[author_rich_text.aside](../../examples/author_rich_text.aside)。
 
 `game.dialogue().ready` 表示当前整组对白的正文和全部时序（包括尾部 pause）已完成；没有当前对白时为 false。`lines` 中每行也有独立的 `ready`，已完成的旧行保留 true。它不受自动、快进或暂停策略改变；例如提示光标使用 `visible: derive(|| dialogue.ready && !reading.auto && !reading.skipping && !reading.paused)`，其中 reading 是 `game.reading()`。光标可用普通 text/image、布局和动画定制，不需要比较正文长度。见 [句内时序示例](../../examples/author_dialogue_timing.aside)。
 
