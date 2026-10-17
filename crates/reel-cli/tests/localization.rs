@@ -68,7 +68,7 @@ pub fn play() { narrator(translated("共享")); narrator(translated("雨停了�
     case.write(
         "ui/menu.aside",
         r#"
-pub fn show() { text(tr("共享")); text(tr("打开 { 文件 }")); }
+pub fn show() { text(tr("共享", locale: "en")); text(tr("打开 { 文件 }")); }
 fn custom() { let tr = |value| value; tr("not a translation"); }
 "#,
     );

@@ -1348,6 +1348,7 @@ impl SessionHostDiagnostic {
         session.begin_say(
             session.root_owner(),
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: Some("host"),
                 speaker_name: "Host",
                 content_id: "host-diagnostic/first",
@@ -1370,6 +1371,7 @@ impl SessionHostDiagnostic {
             match (self.step, completion.outcome()) {
                 (0, CompletionOutcome::Advanced) => {
                     self.ui.session.begin_say(self.ui.session.root_owner(), &[DialogueLineInput {
+                        history: Default::default(),
                         speaker_id: Some("host"), speaker_name: "Host", content_id: "host-diagnostic/second",
                         text: ("The first click reveals the full line. The next click settles this interaction once.").into(),
                     }], "en")?;
@@ -1429,6 +1431,7 @@ mod tests {
             .begin_say(
                 session.root_owner(),
                 &[DialogueLineInput {
+                    history: Default::default(),
                     speaker_id: Some("host"),
                     speaker_name: "Host",
                     content_id: "test/dialogue",
@@ -2037,6 +2040,7 @@ mod tests {
         accept(&mut ui, &mut bridge, 1);
         let text = "A complete long dialogue line. ".repeat(40);
         let line = DialogueLineInput {
+            history: Default::default(),
             speaker_id: None,
             speaker_name: "",
             content_id: "large-group",

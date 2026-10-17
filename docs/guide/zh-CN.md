@@ -426,6 +426,15 @@ narrator、character、say 和 choose 支持顺序等待并继续。`let mio = c
 对白行数、选项数量、单次交互文字和会话历史按内容增长。历史保留整个会话的记录；它不会因达到展示缓存容量而中断剧情或丢弃旧记录。实际内存不足会报告错误。
 
 角色在模块中定义一次。每句对白调用发言者对象，旁白调用 narrator。独立字符串仍是普通字符串。角色调用更新对话数据和历史，并等待当前句完成，普通函数调用沿同一执行顺序继续。
+
+`history` 决定这一句如何记录：默认 true 保存显示全文，false 省略，字符串或 rich 值保存替代文本；角色调用、narrator 和 .line 都支持。它只影响历史，画面、推进与已读判断仍使用原对白。适合故障演出、隐藏旁白和回看时的完整句子；替代文本可照常调用 tr，提交后固定语言。混合行组只记录指定行，整组省略时不生成空历史项。示例见 [author_dialogue.aside](../../examples/author_dialogue.aside)。
+```aside
+mio("……", history: "I remember the rain.");
+narrator("A fleeting thought.", history: false);
+say([mio.line("Noise.", history: false), eri.line("Stay.", history: rich("[b]Stay.[/b]"))]);
+```
+
+只记录后台语音时，调用 `game.record("The train is arriving.", speaker: mio)`；省略 speaker 表示旁白。它立即返回，不改变正文或当前选项、不等待点击，也不标记已读。普通任务和控件回调同样可用；音频由 audio.play 独立控制。记录与其他历史一起保存，作者的历史界面可直接展示。
 ```aside
 use game::ui::room::room_view;
 
@@ -890,7 +899,15 @@ Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换
 
 `localization.load(locale, source)` 从资源目录读取 UTF-8 Fluent 语言包，当前任务等待后台读取和解析完成。成功后替换该语言的目录；读取、语法或重复 ID 错误可用 try/catch 处理，旧目录保留。取消调用任务会取消加载。`localization.set_locale(locale)` 切换语言，`localization.locale()` 返回可观察的语言标记。
 
-`tr(source, id: null, params: null)` 返回当前语言的普通字符串，查找精确语言、基础语言，再回退到原文。未传 params 时原文按字面使用；传入参数表时原文使用 Fluent 模板。译文始终使用 Fluent，参数接受 string/int/float，支持命名参数和复数选择。参数不会作为模板再次解析；缺参数等格式错误可捕获。Fluent 保留双向文本隔离标记，避免不同方向的姓名影响周围文字。
+`tr(source, id: null, params: null, locale: null)` 返回当前语言的普通字符串，查找精确语言、基础语言，再回退到原文。未传 params 时原文按字面使用；传入参数表时原文使用 Fluent 模板。译文始终使用 Fluent，参数接受 string/int/float，支持命名参数和复数选择。参数不会作为模板再次解析；缺参数等格式错误可捕获。Fluent 保留双向文本隔离标记，避免不同方向的姓名影响周围文字。
+
+单次指定 `locale` 可同时取得多种语言，不改变全局语言；例如双语对白把下面两行加入自己的视图，再独立绑定主行的 reveal。未加载或缺少翻译时沿用相同的原文回退。两行共享已加载的目录，不复制语言包。
+```aside
+column(gap: 6) {
+    text(tr("你好。", id: "greeting", locale: "zh-CN"), font_size: 28);
+    text(tr("你好。", id: "greeting", locale: "en"), font_size: 18);
+}
+```
 
 界面使用 `derive(|| tr(...))`，语言改变时只重新计算订阅的表达式；普通 tr 调用、已提交对白/选择、输入草稿与历史字符串保留求值时的内容。需要即时翻译的聊天历史或选择外观，可以保存 ID、原文和参数，在展示绑定中调用 tr；分支 key 始终独立于文案。无需特殊 LocalText 类型。
 

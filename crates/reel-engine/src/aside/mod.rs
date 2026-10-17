@@ -725,6 +725,10 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::say" => self.dispatch_say(session, ticket, locale, work),
+            "reel::game::record" => {
+                self.record_history(session, ticket, locale)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::narrator" => {
                 self.dispatch_narrator(session, ticket, locale)
                     .map(|interaction| NativeDispatch::Published {
@@ -942,7 +946,7 @@ impl SessionVm {
         Ok(())
     }
 
-    /// ABI v1 narrator. Content identity is tied to module/code version and
+    /// Content identity is tied to module/code version and
     /// source byte span (or PC without a source map), never a localization key.
     pub fn dispatch_narrator(
         &mut self,
@@ -957,15 +961,17 @@ impl SessionVm {
             return Err(AdapterError::Input("not narrator"));
         }
         let arguments = self.vm.host_arguments(ticket)?;
-        let [text] = arguments else {
+        let [text, history] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
         };
         let text = rich_text::read(self.vm.heap(), *text, self.read_limit)?;
+        let history = dialogue::HistoryText::read(self.vm.heap(), *history, self.read_limit)?;
         let content_id = self.dialogue_content_id(ticket);
         self.publish_say(
             session,
             ticket,
             &[DialogueLineInput {
+                history: history.input(),
                 speaker_id: None,
                 speaker_name: "",
                 content_id: &content_id,

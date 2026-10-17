@@ -6,6 +6,7 @@ fn session() -> Session {
 
 fn line(text: &str) -> DialogueLineInput<'_> {
     DialogueLineInput {
+        history: Default::default(),
         speaker_id: Some("mio"),
         speaker_name: "Mio",
         content_id: "opening.1",
@@ -70,12 +71,14 @@ fn dialogue_owns_full_content_and_history_as_one_group() {
                 root,
                 &[
                     DialogueLineInput {
+                        history: Default::default(),
                         speaker_id: Some("mio"),
                         speaker_name: &speaker,
                         content_id: &content_id,
                         text: (&text).into(),
                     },
                     DialogueLineInput {
+                        history: Default::default(),
                         speaker_id: Some("eri"),
                         speaker_name: "Eri",
                         content_id: "chapter01.opening.reply",
@@ -389,6 +392,7 @@ fn dialogue_validation_preserves_storage_history_and_generation() {
         Err(SessionError::EmptyLocale)
     );
     let invalid = DialogueLineInput {
+        history: Default::default(),
         content_id: "",
         ..input
     };

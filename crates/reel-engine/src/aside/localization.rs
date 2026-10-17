@@ -286,11 +286,20 @@ impl SessionVm {
                         parameters.set(name, value);
                     }
                 }
-                match self.translations.service.format(
-                    &id,
-                    &fallback,
-                    has_parameters.then_some(&parameters),
-                ) {
+                let locale = if args[3].tag() == ValueTag::Null {
+                    Ok(None)
+                } else {
+                    let name = text::read_string(heap, args[3], self.read_limit)?;
+                    language_id(&name).map(Some)
+                };
+                match locale.and_then(|locale| {
+                    self.translations.service.format_in(
+                        locale.as_ref(),
+                        &id,
+                        &fallback,
+                        has_parameters.then_some(&parameters),
+                    )
+                }) {
                     Ok(value) => Ok(text::alloc_string(
                         self.vm.heap_mut(),
                         &value,
