@@ -4,6 +4,7 @@
 //! Host entry and continuation-resume tickets are distinct, single-use identities.
 use crate::bytecode::*;
 use crate::fault::{CodeLease, FaultData};
+use crate::payload::{Bytes, Values};
 use crate::root_ranges::{ChargedVec, Reservation};
 use crate::*;
 use std::cmp::Ordering;
@@ -2702,7 +2703,7 @@ impl Vm {
                     CallTarget::Register(r) => {
                         let target = self.slots.read(at(s.regs, r.0))?;
                         if self.is_text(target, ObjectKind::Class) {
-                            allocation = VALUE_CHUNK_BYTES * 3;
+                            allocation = Values::allocation_bytes(4);
                             24
                         } else {
                             let cost = self
@@ -2710,8 +2711,9 @@ impl Vm {
                                 .map(|id| self.script_push_cost(id, count))
                                 .unwrap_or(1);
                             if self.is_text(target, ObjectKind::BoundScript) {
-                                allocation = VALUE_CHUNK_BYTES;
-                                cost + self.initializer_cost(target)?
+                                let (work, bytes) = self.initializer_cost(target)?;
+                                allocation = bytes;
+                                cost + work
                             } else {
                                 cost
                             }
@@ -2740,8 +2742,7 @@ impl Vm {
                 } else {
                     (
                         captures.len() as u64 + 1,
-                        ((captures.len() + 3) as u64).div_ceil(VALUE_CHUNK_LEN as u64)
-                            * VALUE_CHUNK_BYTES,
+                        Values::allocation_bytes(captures.len() as u64 + 3),
                     )
                 }
             }
@@ -2763,8 +2764,8 @@ impl Vm {
                 };
                 (1 + extra, 0)
             }
-            Opcode::MakeClass => (24, VALUE_CHUNK_BYTES * 6),
-            Opcode::SuperRef => (4, VALUE_CHUNK_BYTES),
+            Opcode::MakeClass => (24, Values::allocation_bytes(9)),
+            Opcode::SuperRef => (4, Values::allocation_bytes(2)),
             Opcode::PropertyRef => {
                 let object = self.slots.read(at(s.regs, b))?;
                 if object.tag() == ValueTag::Object
@@ -2784,10 +2785,10 @@ impl Vm {
                     };
                     (
                         self.type_checks.symbol_work(bytes) + self.class_member_cost(object)?,
-                        VALUE_CHUNK_BYTES,
+                        Values::allocation_bytes(4),
                     )
                 } else {
-                    (1, VALUE_CHUNK_BYTES)
+                    (1, Values::allocation_bytes(4))
                 }
             }
             Opcode::MemberGet | Opcode::MemberSet => {
@@ -2804,12 +2805,15 @@ impl Vm {
                     } else {
                         0
                     };
-                    return Ok((self.class_member_cost(object)? + extra, VALUE_CHUNK_BYTES));
+                    return Ok((
+                        self.class_member_cost(object)? + extra,
+                        Values::allocation_bytes(3),
+                    ));
                 }
                 (
                     1,
                     if matches!(kind, ObjectKind::Array | ObjectKind::Tuple) {
-                        VALUE_CHUNK_BYTES
+                        Values::allocation_bytes(2)
                     } else {
                         0
                     },
@@ -2820,17 +2824,15 @@ impl Vm {
             Opcode::IterInit
             | Opcode::IterNext
             | Opcode::MakeRange
-            | Opcode::MakeRangeInclusive => (4, VALUE_CHUNK_BYTES),
+            | Opcode::MakeRangeInclusive => (4, Values::allocation_bytes(3)),
             Opcode::ChildrenPush | Opcode::ArrayPush => {
                 let array = self.slots.read(at(s.regs, _a))?;
                 let value = self.slots.read(at(s.regs, b))?;
                 let len = self.heap.info(array)?.len;
                 (
                     1,
-                    if (op == Opcode::ArrayPush || !value.same_bits(Value::NULL))
-                        && (len as usize).is_multiple_of(VALUE_CHUNK_LEN)
-                    {
-                        VALUE_CHUNK_BYTES
+                    if op == Opcode::ArrayPush || !value.same_bits(Value::NULL) {
+                        Values::growth_bytes(len.into(), 1)
                     } else {
                         0
                     },
@@ -2839,14 +2841,7 @@ impl Vm {
             Opcode::ArgsPush | Opcode::ArgsNamed => {
                 let packed = self.slots.read(at(s.regs, _a))?;
                 let len = self.heap.packed_array_len(packed)?;
-                (
-                    2,
-                    if (len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-                        VALUE_CHUNK_BYTES
-                    } else {
-                        0
-                    },
-                )
+                (2, Values::growth_bytes(len.into(), 2))
             }
             _ => (1, 0),
         })

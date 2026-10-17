@@ -535,9 +535,7 @@ impl Heap {
     ) -> Value {
         // All capacity/budget/type validation and initial-edge barriers preceded this.
         let chunks = match &payload {
-            Payload::Values(v) | Payload::Table(v) => {
-                (v.len as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64)
-            }
+            Payload::Values(v) | Payload::Table(v) => v.owned_chunks(),
             Payload::Bytes(b) => b.owned_chunks(),
             _ => 0,
         };
@@ -605,7 +603,7 @@ impl Heap {
                 0,
             ));
         }
-        let chunks = (input.len() as u64).div_ceil(crate::VALUE_CHUNK_LEN as u64);
+        let chunks = Values::chunks_for_len(input.len() as u64);
         self.ensure_bytes(chunks * VALUE_CHUNK_BYTES)?;
         let mut values = Values::default();
         for &v in input {
@@ -853,7 +851,7 @@ impl Heap {
     fn allocate_bytes(&mut self, kind: ObjectKind, input: &[u8]) -> Result<Value, HeapError> {
         u32::try_from(input.len()).map_err(|_| HeapError::OutOfBounds)?;
         self.ensure_object_slot()?;
-        let chunks = (input.len() as u64).div_ceil(crate::BYTE_CHUNK_LEN as u64);
+        let chunks = Bytes::chunks_for_len(input.len() as u64);
         self.ensure_bytes(chunks * BYTE_CHUNK_BYTES)?;
         let mut bytes = Bytes::default();
         bytes.append(input);
@@ -1025,11 +1023,7 @@ impl Heap {
     ) -> Result<(), HeapError> {
         let len = self.packed_array_len(target)?;
         len.checked_add(2).ok_or(HeapError::OutOfBounds)?;
-        let extra = if (len as usize).is_multiple_of(crate::VALUE_CHUNK_LEN) {
-            VALUE_CHUNK_BYTES
-        } else {
-            0
-        };
+        let extra = Values::growth_bytes(len.into(), 2);
         self.ensure_bytes(extra)?;
         self.validate_value(name)?;
         self.validate_value(value)?;

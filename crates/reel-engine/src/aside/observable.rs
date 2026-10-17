@@ -1,15 +1,52 @@
 //! Shared read-only observable records and collections for author services.
 use super::AdapterError;
-use aside_vm::{Heap, PropertyId, Value};
+use aside_vm::{Heap, HeapError, HeapHandle, PropertyId, Value};
+use std::collections::BTreeMap;
+
+/// Static field names are shared by live records, without keeping retired
+/// records or their schemas alive. Restore starts a fresh weak cache.
+#[derive(Default)]
+pub(super) struct SchemaKeys(BTreeMap<&'static str, HeapHandle>);
+
+impl SchemaKeys {
+    pub fn key(&mut self, heap: &mut Heap, name: &'static str) -> Result<Value, HeapError> {
+        if let Some(&handle) = self.0.get(name)
+            && let Ok(value) = heap.import_handle(handle)
+        {
+            return Ok(value);
+        }
+        let value = heap.alloc_string(name)?;
+        self.0.insert(name, heap.handle(value)?);
+        Ok(value)
+    }
+
+    pub fn record(
+        &mut self,
+        heap: &mut Heap,
+        fields: &[(&'static str, Value)],
+        payload: &[Value],
+    ) -> Result<Value, AdapterError> {
+        record_with_keys(heap, fields, payload, |heap, name| self.key(heap, name))
+    }
+}
 
 pub(super) fn record(
     heap: &mut Heap,
-    fields: &[(&str, Value)],
+    fields: &[(&'static str, Value)],
     payload: &[Value],
+) -> Result<Value, AdapterError> {
+    record_with_keys(heap, fields, payload, |heap, name| heap.alloc_string(name))
+}
+
+fn record_with_keys(
+    heap: &mut Heap,
+    fields: &[(&'static str, Value)],
+    payload: &[Value],
+    mut key: impl FnMut(&mut Heap, &'static str) -> Result<Value, HeapError>,
 ) -> Result<Value, AdapterError> {
     let table = heap.alloc_table()?;
     for (i, &(name, value)) in fields.iter().enumerate() {
-        let key = heap.alloc_string(name)?;
+        let key = key(heap, name)?;
         heap.table_store(table, i as u32, key, value)?;
     }
     let value = heap.alloc_host(table, payload, None)?;

@@ -436,9 +436,8 @@ impl Vm {
     ) -> Result<Option<u32>, FaultKind> {
         let count = (range.end - range.start).min(self.text_scratch.data.capacity() as u32);
         let old_len = u64::from(self.heap.info(buffer).map_err(heap_fault)?.len);
-        let chunks = (old_len + u64::from(count)).div_ceil(BYTE_CHUNK_LEN as u64)
-            - old_len.div_ceil(BYTE_CHUNK_LEN as u64);
-        if !meter.take(0, u64::from(count) * 3 + 1, chunks * BYTE_CHUNK_BYTES) {
+        let bytes = Bytes::growth_bytes(old_len, count.into());
+        if !meter.take(0, u64::from(count) * 3 + 1, bytes) {
             return Ok(None);
         }
         self.text_scratch.data.resize(count as usize, 0);

@@ -1,4 +1,4 @@
-use crate::payload::{Payload, VALUE_CHUNK_BYTES};
+use crate::payload::Payload;
 use crate::slots::RangeKey;
 use crate::{Heap, HeapError, RootRangeToken, RootRanges};
 
@@ -339,11 +339,12 @@ impl Heap {
                     p.units += 1;
                     return true;
                 }
-                if budget.bytes.saturating_sub(p.bytes) < VALUE_CHUNK_BYTES {
+                let released = values.release_bytes();
+                if budget.bytes.saturating_sub(p.bytes) < released {
                     return false;
                 }
                 values.drop_first_chunk();
-                VALUE_CHUNK_BYTES
+                released
             }
             Payload::Bytes(bytes) if !bytes.empty() => {
                 let released = bytes.release_bytes();

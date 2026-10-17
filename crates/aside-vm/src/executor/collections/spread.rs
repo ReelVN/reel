@@ -51,11 +51,15 @@ impl Vm {
         let destination = self.heap.info(target)?;
         let changed = destination.content_version != work.destination_version
             || self.heap.info(source)?.content_version != work.version;
-        let extra = if !changed
-            && work.index < work.len
-            && (destination.len as usize).is_multiple_of(VALUE_CHUNK_LEN)
-        {
-            VALUE_CHUNK_BYTES
+        let extra = if !changed && work.index < work.len {
+            Values::growth_bytes(
+                destination.len.into(),
+                if matches!(work.kind, CaptureKind::Elements) {
+                    1
+                } else {
+                    2
+                },
+            )
         } else {
             0
         };
@@ -139,12 +143,8 @@ impl Vm {
         let destination = self.heap.info(target)?;
         let changed = destination.content_version != work.destination_version
             || self.heap.info(source)?.content_version != work.version;
-        let extra = if !changed
-            && work.prefix_len == 0
-            && work.index < work.len
-            && (destination.len as usize * 2).is_multiple_of(VALUE_CHUNK_LEN)
-        {
-            VALUE_CHUNK_BYTES
+        let extra = if !changed && work.prefix_len == 0 && work.index < work.len {
+            Values::growth_bytes(u64::from(destination.len) * 2, 2)
         } else {
             0
         };

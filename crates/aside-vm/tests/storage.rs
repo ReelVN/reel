@@ -561,6 +561,64 @@ fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() 
 }
 
 #[test]
+fn host_clear_preserves_readonly_collection_identity_and_reclaims_detached_chunks() {
+    for table in [false, true] {
+        for phase in [GcPhase::Idle, GcPhase::Mark, GcPhase::Sweep] {
+            let mut h = heap(32);
+            let removed = h.alloc_string(&"x".repeat(129)).unwrap();
+            let collection = if table {
+                let value = h.alloc_table().unwrap();
+                for index in 0..5 {
+                    h.table_store(value, index, Value::int(index.into()), removed)
+                        .unwrap();
+                }
+                value
+            } else {
+                h.alloc_array(&[removed; 9]).unwrap()
+            };
+            let token = root(&mut h, collection);
+            h.observe_readonly_collection(collection).unwrap();
+            let before = h.info(collection).unwrap();
+            if phase != GcPhase::Idle {
+                h.begin_collection().unwrap();
+                reach_phase(&mut h, phase);
+            }
+            let charged = h.stats().payload_bytes;
+            h.clear_collection(collection).unwrap();
+            assert!(h.root_value(token).unwrap().same_bits(collection));
+            assert_eq!(h.info(collection).unwrap().len, 0);
+            assert!(h.collection_is_readonly(collection).unwrap());
+            assert!(h.info(collection).unwrap().content_version > before.content_version);
+            assert_eq!(
+                h.stats().payload_bytes,
+                charged,
+                "release remains incremental"
+            );
+
+            let retained = h.alloc_string("next chapter").unwrap();
+            if table {
+                h.table_store(collection, 0, Value::int(0), retained)
+                    .unwrap();
+            } else {
+                h.array_push(collection, retained).unwrap();
+            }
+            if phase != GcPhase::Idle {
+                finish(&mut h, tiny());
+            }
+            h.begin_collection().unwrap();
+            finish(&mut h, tiny());
+            assert!(matches!(h.info(removed), Err(HeapError::InvalidHandle)));
+            assert!(h.info(retained).is_ok());
+            assert_eq!(h.stats().payload_bytes, 0);
+            assert_eq!(h.stats().live_objects, 2);
+            h.release_root(token).unwrap();
+            collect(&mut h);
+            assert_eq!(h.stats().live_objects, 0);
+        }
+    }
+}
+
+#[test]
 fn deep_chains_and_unrooted_cycles_release_without_recursion_or_gc_allocation() {
     let mut h = heap(12_000);
     let mut chain = Value::NULL;
@@ -632,10 +690,10 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
         ..HeapLimits::default()
     };
     let mut h = Heap::new(SessionEpoch(1), limits).unwrap();
-    h.alloc_array(&[Value::int(1)]).unwrap();
+    h.alloc_array(&[Value::int(1); 64]).unwrap();
     assert_eq!(h.stats().payload_bytes, VALUE_CHUNK_BYTES);
     assert!(matches!(
-        h.alloc_array(&[Value::NULL]),
+        h.alloc_array(&[Value::NULL; 64]),
         Err(HeapError::ResourceLimit { .. })
     ));
     assert_eq!(h.stats().live_objects, 1);
@@ -650,11 +708,11 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
     .unwrap();
     assert!(h.stats().pending_bytes > 0);
     assert!(matches!(
-        h.alloc_array(&[Value::NULL]),
+        h.alloc_array(&[Value::NULL; 64]),
         Err(HeapError::ResourceLimit { .. })
     ));
     finish(&mut h, GcBudget::default());
-    assert!(h.alloc_array(&[Value::NULL]).is_ok());
+    assert!(h.alloc_array(&[Value::NULL; 64]).is_ok());
     let zero = GcBudget {
         roots: 0,
         edges: 0,
@@ -710,10 +768,14 @@ fn input_caps_and_failed_mutations_leave_content_unchanged() {
 fn live_arrays_return_all_payload_allocations_when_the_last_element_is_removed() {
     let mut h = heap(256);
     let info = allocation_counter::measure(|| {
-        for _ in 0..128 {
-            let array = h.alloc_array(&[Value::int(1)]).unwrap();
-            assert_eq!(h.array_pop(array).unwrap().unwrap().as_int(), Some(1));
-            assert_eq!(h.info(array).unwrap().len, 0);
+        for len in [1, 9, 65] {
+            for _ in 0..40 {
+                let array = h.alloc_array(&vec![Value::int(1); len]).unwrap();
+                for _ in 0..len {
+                    assert_eq!(h.array_pop(array).unwrap().unwrap().as_int(), Some(1));
+                }
+                assert_eq!(h.info(array).unwrap().len, 0);
+            }
         }
         assert_eq!(h.stats().payload_bytes, 0);
     });

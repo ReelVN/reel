@@ -1105,7 +1105,14 @@ fn repeated_native_calls_resume_without_frame_pool_allocation_or_range_leak() {
 }
 #[test]
 fn slice_deadline_allocation_and_work_limits_preserve_unexecuted_operation() {
-    let mut v = vm(fixtures::cell_closures());
+    let mut package = fixtures::cell_closures();
+    // A closure with six captures crosses the inline payload boundary.
+    let Descriptor::Closure { captures, .. } = &mut package.functions[0].descriptors[0] else {
+        unreachable!()
+    };
+    captures.resize(6, CaptureSource::Binding(BindingId(0)));
+    package.functions[1].captures.resize(6, CaptureKind::Cell);
+    let mut v = vm(package);
     v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();
     let initial = v.stats();
@@ -1137,6 +1144,7 @@ fn slice_deadline_allocation_and_work_limits_preserve_unexecuted_operation() {
         match out {
             RunOutcome::BudgetYield(u) if u.required_allocation > 0 => {
                 assert_eq!(u.allocation_bytes, 0);
+                assert_eq!(u.required_allocation, VALUE_CHUNK_BYTES);
                 break;
             }
             RunOutcome::BudgetYield(_) => {}
@@ -1619,7 +1627,7 @@ fn frame_continuation_work_pools_and_inline_control_share_one_budget() {
     let id = loop {
         match slice(&mut v) {
             RunOutcome::HostCall(t) => {
-                let state = v.heap_mut().alloc_array(&[Value::int(4)]).unwrap();
+                let state = v.heap_mut().alloc_array(&[Value::int(4); 9]).unwrap();
                 v.respond(
                     t,
                     HostResponse::Continue(Continuation {

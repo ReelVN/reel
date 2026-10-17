@@ -10,6 +10,9 @@ enum HistoryLineField {
 pub(super) struct History {
     pub value: Value,
     groups: usize,
+    first_group: Option<u64>,
+    #[serde(skip)]
+    keys: super::super::observable::SchemaKeys,
 }
 
 pub(super) fn line_id(heap: &mut Heap, id: crate::DialogueLineId) -> Result<Value, AdapterError> {
@@ -25,6 +28,8 @@ impl History {
         Ok(Self {
             value: array(heap)?,
             groups: 0,
+            first_group: None,
+            keys: Default::default(),
         })
     }
 
@@ -36,6 +41,18 @@ impl History {
         dialogue: Value,
         chunk: usize,
     ) -> Result<(), AdapterError> {
+        let first_group = session
+            .view()
+            .history
+            .first()
+            .map(|g| g.interaction_id().generation());
+        // Hosts may clear and append between synchronizations. Length alone
+        // cannot distinguish that case; interaction generations are never reused.
+        if self.groups != 0 && self.first_group != first_group {
+            heap.clear_collection(self.value)?;
+            self.groups = 0;
+        }
+        self.first_group = first_group;
         for group in &session.view().history[self.groups..] {
             let lines = array(heap)?;
             let active = if current == Some(group.interaction_id()) {
@@ -80,7 +97,7 @@ impl History {
                         text::alloc_string(heap, line.content().id(), chunk)?,
                     )
                 };
-                let row = record(
+                let row = self.keys.record(
                     heap,
                     &[
                         ("id", id),
@@ -111,7 +128,7 @@ impl History {
             };
             let locale = text::alloc_string(heap, group.page_locale(), chunk)?;
             let id = Value::int(group.interaction_id().generation() as i64);
-            let row = record(
+            let row = self.keys.record(
                 heap,
                 &[
                     ("group_id", id),

@@ -130,11 +130,8 @@ impl Vm {
         if matches!(work.phase, SortPhase::Compare) {
             return self.sort_compare(s, work, meter);
         }
-        let extra = if matches!(work.phase, SortPhase::Copy)
-            && work.position < work.len * 2
-            && (work.position as usize).is_multiple_of(VALUE_CHUNK_LEN)
-        {
-            VALUE_CHUNK_BYTES
+        let extra = if matches!(work.phase, SortPhase::Copy) && work.position < work.len * 2 {
+            Values::growth_bytes(work.position.into(), 1)
         } else {
             0
         };
@@ -246,13 +243,13 @@ impl Vm {
         if let Some(function) = work.comparator {
             let callback = self.builtin_argument(s, work.call, 0)?;
             let bound = self.is_text(callback, ObjectKind::BoundScript);
-            let cost = self.script_push_cost(function, 2)
-                + if bound {
-                    self.initializer_cost(callback)?
-                } else {
-                    0
-                };
-            if !meter.take(0, cost + 6, if bound { VALUE_CHUNK_BYTES } else { 0 }) {
+            let (initializer_work, bytes) = if bound {
+                self.initializer_cost(callback)?
+            } else {
+                (0, 0)
+            };
+            let cost = self.script_push_cost(function, 2) + initializer_work;
+            if !meter.take(0, cost + 6, bytes) {
                 return Ok(false);
             }
             work.phase = SortPhase::Callback;

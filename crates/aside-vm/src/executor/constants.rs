@@ -64,18 +64,12 @@ impl Vm {
             ) && self.cached_constant(child).is_none()
         });
         let allocation = if nested {
-            ((u64::from(depth) + 3).div_ceil(VALUE_CHUNK_LEN as u64)
-                - u64::from(depth).div_ceil(VALUE_CHUNK_LEN as u64))
-                * VALUE_CHUNK_BYTES
-        } else if next.is_some() && (index as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-            VALUE_CHUNK_BYTES
+            Values::growth_bytes(depth.into(), 3)
+        } else if next.is_some() {
+            Values::growth_bytes(index.into(), 1)
         } else if next.is_none() && depth != 0 {
             let parent = self.heap.get_field(parents, depth - 3)?;
-            if (self.heap.info(parent)?.len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-                VALUE_CHUNK_BYTES
-            } else {
-                0
-            }
+            Values::growth_bytes(self.heap.info(parent)?.len.into(), 1)
         } else {
             0
         };

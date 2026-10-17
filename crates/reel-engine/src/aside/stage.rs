@@ -109,7 +109,7 @@ pub(super) struct StageBinding {
     methods: [FunctionId; 5],
     // Schema names are immutable and shared by live nodes. Weak handles let
     // unused schemas disappear with their last node and require no save roots.
-    property_keys: BTreeMap<&'static str, HeapHandle>,
+    property_keys: super::observable::SchemaKeys,
 }
 struct NodeBinding {
     shape: snapshot::Shape,
@@ -156,19 +156,12 @@ impl StageBinding {
             handles: BTreeMap::new(),
             root: None,
             methods,
-            property_keys: BTreeMap::new(),
+            property_keys: Default::default(),
         })
     }
 
     fn property_key(&mut self, heap: &mut Heap, name: &'static str) -> Result<Value, HeapError> {
-        if let Some(&handle) = self.property_keys.get(name)
-            && let Ok(value) = heap.import_handle(handle)
-        {
-            return Ok(value);
-        }
-        let value = heap.alloc_string(name)?;
-        self.property_keys.insert(name, heap.handle(value)?);
-        Ok(value)
+        self.property_keys.key(heap, name)
     }
     pub(super) fn replace_view(
         &mut self,

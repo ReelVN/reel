@@ -205,6 +205,96 @@ fn cancellation_invalidates_escaped_instance_and_retained_method() {
 }
 
 #[test]
+fn class_payload_charges_match_real_growth_at_inline_and_inheritance_boundaries() {
+    let source = r#"
+        class Fields {
+            let f0 = 0; let f1 = 1; let f2 = 2; let f3 = 3;
+            let f4 = 4; let f5 = 5; let f6 = 6; let f7 = 7;
+        }
+        class FieldsChild: Fields {}
+        class Methods {
+            fn m0(self) { 0 } fn m1(self) { 1 } fn m2(self) { 2 } fn m3(self) { 3 }
+            fn m4(self) { 4 } fn m5(self) { 5 } fn m6(self) { 6 } fn m7(self) { 7 }
+        }
+        class MethodsChild: Methods { fn m0(self) { 35 } }
+        fn main() { FieldsChild().f7 + MethodsChild().m0() }
+    "#;
+    let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let compiled = lowering::compile(
+        &module,
+        &lowering::Linkage::default(),
+        lowering::Options::default(),
+    )
+    .unwrap();
+    let mut package = compiled.program.package().clone();
+    // Eight words put the nominal-type bitset at the same inline boundary.
+    package
+        .types
+        .resize(512, bc::TypeDef::Builtin(bc::BuiltinType::Any));
+    let main = bc::FunctionId(
+        package
+            .functions
+            .iter()
+            .position(|f| package.symbols[f.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let mut vm = Vm::load(
+        bc::verify(package, bc::Limits::default()).unwrap(),
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    let mut charged = 0;
+    for function in [compiled.entry, main] {
+        let task = vm
+            .start(function, &[], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        let mut allocation_bytes = 0;
+        loop {
+            let before = vm.heap().stats().chunk_allocations;
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        allocation_bytes,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            let usage = vm.stats().usage;
+            let actual =
+                (vm.heap().stats().chunk_allocations - before) * aside_vm::VALUE_CHUNK_BYTES;
+            assert_eq!(
+                usage.allocation_bytes, actual,
+                "a phase ending at capacity and an inherited method override do not append"
+            );
+            charged += actual;
+            match outcome {
+                RunOutcome::BudgetYield(usage) => allocation_bytes = usage.required_allocation,
+                RunOutcome::Returned(id) => {
+                    if function == main {
+                        assert_eq!(vm.delivery_value(id).unwrap().as_int(), Some(42));
+                    }
+                    vm.discard_delivery(id).unwrap();
+                    break;
+                }
+                other => panic!("unexpected class outcome: {other:?}"),
+            }
+        }
+    }
+    assert!(
+        charged > 0,
+        "class headers still require real payload chunks"
+    );
+}
+
+#[test]
 fn retained_method_and_typed_field_updates_reuse_storage() {
     let source = "class Counter{let mut value:int=0;fn increment(self){self.value+=1;}}let counter=Counter();let increment=counter.increment;fn main(){for i in 0..10000{increment();}counter.value}";
     let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
@@ -243,8 +333,8 @@ fn retained_method_and_typed_field_updates_reuse_storage() {
     assert_eq!(finish(&mut vm, task, false).as_int(), Some(10000));
     let chunks = vm.heap().stats().chunk_allocations - before;
     assert_eq!(
-        chunks, 2,
-        "only range and iteration cursor allocate payloads"
+        chunks, 0,
+        "range and iteration cursor fit inline; retained calls allocate no payload blocks"
     );
     println!(
         "10000 retained method calls with typed field updates: chunks={chunks}, elapsed={:?}",

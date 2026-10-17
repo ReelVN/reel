@@ -797,6 +797,14 @@ A for loop inside ordinary children constructs current content. `view(|| ...)` r
 
 History, auto-reading and save/load interfaces are implemented; route switching and chapter jumping remain design targets. Authors compose the UI; services do not generate fixed screens.
 
+Call `game.clear_history()` at a chapter boundary when earlier history is no longer needed. It clears the existing observable history array without replacing its identity. Current dialogue, NVL display, advancement, read progress, preferences and saved slots remain unchanged; loading a save restores its recorded history. New group IDs are not reused. Clearing releases the session's references in time proportional to the record count, and VM objects are reclaimed by incremental GC. References or UI caches held by your script still keep their contents alive: retire those views or refresh them from the history array as well. History has no automatic length limit. Rust hosts use `Session::clear_history()`. See [author_reading.aside](../../examples/author_reading.aside).
+
+```aside
+game.dialogue().clear();
+game.clear_history();
+narrator("A new chapter begins.");
+```
+
 `saves.save(slot, title: null, thumbnail: null)`, `saves.load(slot)`, `saves.delete(slot)`, `saves.thumbnail(slot)` and `saves.list()` immediately return awaitable requests with read-only `status` (pending, succeeded, failed) and `error`. Awaiting a failed request throws its error; a successful save has atomically published the complete file. `await saves.list()` returns occupied slot summaries with string id, title, saved_at (UTC Unix seconds) and has_thumbnail, without loading images. Slot names are logical keys. Authors choose pages and empty slots and can use a fixed key such as `"quick"` for quick saves.
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.

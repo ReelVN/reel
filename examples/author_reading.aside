@@ -22,6 +22,8 @@ fn history_page() {
         }
         button("Close history", x: 40, y: 20,
                on_click: |event| game.pause_reading(false));
+        button("Clear history", x: 300, y: 20,
+               on_click: |event| game.clear_history());
     }
 }
 

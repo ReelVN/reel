@@ -677,15 +677,20 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec!["reel.stage".into()],
         });
     }
-    contracts.push(NativeContract {
-        rest: None,
-        symbol: "reel::game::clear_read_progress".into(),
-        abi_version: 1,
-        parameters: vec![],
-        result: BuiltinType::Null,
-        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
-        required_capabilities: vec![],
-    });
+    for symbol in [
+        "reel::game::clear_read_progress",
+        "reel::game::clear_history",
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: symbol.into(),
+            abi_version: 1,
+            parameters: vec![],
+            result: BuiltinType::Null,
+            effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+            required_capabilities: vec![],
+        });
+    }
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::set_auto".into(),
