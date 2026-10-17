@@ -104,7 +104,7 @@ use DescriptorKind as D;
 use OperandKind::Pc;
 use OperandKind::*;
 instructions! {
-    LoadConst = 0x0001 => [WriteReg, Const, Unused], Next, false, None;
+    LoadConst = 0x0001 => [WriteReg, Const, Unused], Next, true, None;
     Move = 0x0002 => [WriteReg, ReadReg, Unused], Next, false, None;
     Clear = 0x0003 => [WriteReg, Unused, Unused], Next, false, None;
     BindInit = 0x0004 => [BindingInit, ReadReg, Unused], Next, true, None;

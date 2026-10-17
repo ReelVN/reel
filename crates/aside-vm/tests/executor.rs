@@ -101,13 +101,13 @@ fn unmatched_branch_reports_a_typed_fault() {
 }
 
 #[test]
-fn module_roots_do_not_consume_the_execution_window_allowance() {
+fn module_roots_and_lazy_literals_do_not_consume_the_execution_window_allowance() {
     let mut p = fixtures::helper_native();
     p.constants.extend((0..9_000).map(Const::Int));
     let last = p.constants.len() as u32 - 1;
     p.functions[0].code[0] = Instruction::new(Opcode::LoadConst, 0, last, 0);
     p.functions[0].code[1] = Instruction::new(Opcode::Move, 1, 0, 0);
-    let static_roots = p.constants.len() + p.symbols.len();
+    let static_roots = p.symbols.len();
     let mut v = vm(p);
     assert_eq!(
         v.stats().slots.capacity as usize,

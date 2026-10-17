@@ -506,6 +506,19 @@ record!(ExceptionRegion {
     catch,
     finally
 });
+impl Wire for TextPoolDescriptor {
+    const MIN: usize = 40;
+    fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        self.byte_len.put(w)?;
+        w.write(&self.digest)
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            byte_len: u64::get(r)?,
+            digest: r.take(32)?.try_into().expect("text pool digest field"),
+        })
+    }
+}
 record!(SourceFile { path, text });
 record!(SourceSpan { file, start, end });
 record!(SourceMapEntry { pc, span });
@@ -538,6 +551,11 @@ impl Wire for Const {
                 6u8.put(w)?;
                 x.put(w)?
             }
+            Self::Text { offset, len } => {
+                7u8.put(w)?;
+                offset.put(w)?;
+                len.put(w)?;
+            }
         }
         Ok(())
     }
@@ -550,6 +568,10 @@ impl Wire for Const {
             4 => Ok(Self::Utf8(Wire::get(r)?)),
             5 => Ok(Self::Bytes(Wire::get(r)?)),
             6 => Ok(Self::Tuple(Wire::get(r)?)),
+            7 => Ok(Self::Text {
+                offset: Wire::get(r)?,
+                len: Wire::get(r)?,
+            }),
             _ => Err(r.error(ErrorKind::Encoding, "constant tag")),
         }
     }
@@ -928,6 +950,7 @@ impl Wire for Instruction {
 }
 impl Wire for BytecodePackage {
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        self.text_pool.put(w)?;
         self.symbols.put(w)?;
         self.types.put(w)?;
         self.constants.put(w)?;
@@ -940,6 +963,7 @@ impl Wire for BytecodePackage {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(Self {
+            text_pool: Wire::get(r)?,
             symbols: r.expected(r.counts[0])?,
             types: r.expected(r.counts[1])?,
             constants: r.expected(r.counts[2])?,

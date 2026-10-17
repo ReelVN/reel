@@ -465,11 +465,11 @@ fn sequential_temporaries_are_reused_and_limits_fail_before_growth() {
 
 #[test]
 fn unsupported_nodes_report_original_range() {
-    let source = "fn f() { let (a,b)=(1,2); }";
+    let source = "fn f() { let [a,b]=[1,2]; }";
     let module = analyzed(source);
     let error = lowering::lower(&module, &Linkage::default(), Options::default()).unwrap_err();
     assert_eq!(error.kind, lowering::ErrorKind::Unsupported);
-    assert_eq!(&source[aside_compiler::byte_range(error.span)], "(a,b)");
+    assert_eq!(&source[aside_compiler::byte_range(error.span)], "[a,b]");
 }
 
 #[test]

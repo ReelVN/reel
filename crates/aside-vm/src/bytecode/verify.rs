@@ -36,7 +36,7 @@ pub enum CleanupDestination {
 }
 /// Construction is restricted to the verifier. Accessors only borrow immutable data.
 #[derive(Clone, Debug)]
-pub struct VerifiedProgram(std::sync::Arc<VerifiedData>);
+pub struct VerifiedProgram(std::sync::Arc<VerifiedData>, Option<TextPool>);
 
 #[derive(Debug)]
 struct VerifiedData {
@@ -92,7 +92,11 @@ impl VerifiedProgram {
         &self.0.package
     }
     pub fn stats(&self) -> PackageStats {
-        self.0.stats
+        let mut stats = self.0.stats;
+        if let Some(pool) = &self.1 {
+            stats.owned_capacity_bytes += pool.capacity_bytes();
+        }
+        stats
     }
     /// Validated canonical native storage, derived once from all default prefixes.
     /// Rest and parameters outside every default prefix are ordinary Value slots.
@@ -142,6 +146,54 @@ impl VerifiedProgram {
     }
     pub fn decode(input: &[u8], limits: Limits) -> Result<Self, Error> {
         verify(decode(input, limits)?, limits)
+    }
+    pub fn decode_with_text_pool(
+        input: &[u8],
+        limits: Limits,
+        pool: TextPool,
+    ) -> Result<Self, Error> {
+        Self::decode(input, limits)?.bind_text_pool(pool)
+    }
+    /// Binds the exact backing identified by the package. This validates every
+    /// span once; normal string reads do not hash or revalidate the pool.
+    pub fn bind_text_pool(mut self, pool: TextPool) -> Result<Self, Error> {
+        check(
+            self.package().text_pool == Some(pool.descriptor()),
+            ErrorKind::Encoding,
+            "text pool identity does not match bytecode",
+        )?;
+        check(
+            self.0
+                .stats
+                .owned_capacity_bytes
+                .checked_add(pool.capacity_bytes())
+                .is_some_and(|n| n <= self.0.limits.max_allocation_bytes),
+            ErrorKind::Limit,
+            "package/text pool allocation limit",
+        )?;
+        for constant in &self.package().constants {
+            if let Const::Text { offset, len } = constant {
+                pool.text(*offset, *len)?;
+            }
+        }
+        self.1 = Some(pool);
+        Ok(self)
+    }
+    pub fn require_text_pool(&self) -> Result<(), Error> {
+        check(
+            self.package().text_pool.is_none() || self.1.is_some(),
+            ErrorKind::Encoding,
+            "bytecode requires an external text pool",
+        )
+    }
+    pub(crate) fn constant_bytes(&self, id: ConstId) -> &[u8] {
+        match &self.package().constants[id.index()] {
+            Const::Utf8(text) => text.as_bytes(),
+            Const::Bytes(bytes) => bytes,
+            Const::Text { offset, len } => &self.1.as_ref().expect("bound text pool").as_bytes()
+                [*offset as usize..*offset as usize + *len as usize],
+            _ => unreachable!("byte constant"),
+        }
     }
     /// Execution loading includes the actual dispatch/native support check.
     pub fn load(input: &[u8], limits: Limits, support: &RuntimeSupport) -> Result<Self, Error> {
@@ -214,7 +266,7 @@ impl VerifiedProgram {
     /// This includes unreachable code: unsupported instructions are never no-ops.
     pub fn require_runtime(&self, support: &RuntimeSupport) -> Result<(), Error> {
         let p = &self.0.package;
-        let mut b = Budget::new(self.0.limits, self.0.stats.owned_capacity_bytes);
+        let mut b = Budget::new(self.0.limits, self.stats().owned_capacity_bytes);
         for c in &p.capabilities {
             if !contains_text(&support.capabilities, &p.symbols[c.index()], &mut b)? {
                 return Err(Error::new(
@@ -295,14 +347,17 @@ impl VerifiedProgram {
 }
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
     let (stats, layouts) = validate_program(&package, limits)?;
-    Ok(VerifiedProgram(std::sync::Arc::new(VerifiedData {
-        identity: super::codec::identity(&package, limits)?,
-        package,
-        stats,
-        limits,
-        native_parameter_cells: layouts.native_parameters,
-        module_bindings: layouts.modules,
-    })))
+    Ok(VerifiedProgram(
+        std::sync::Arc::new(VerifiedData {
+            identity: super::codec::identity(&package, limits)?,
+            package,
+            stats,
+            limits,
+            native_parameter_cells: layouts.native_parameters,
+            module_bindings: layouts.modules,
+        }),
+        None,
+    ))
 }
 struct Budget {
     limits: Limits,
@@ -558,6 +613,21 @@ fn validate_program(
     b.work(encoded as u64)?;
     validate_symbols(p, &mut b)?;
     for (i, c) in p.constants.iter().enumerate() {
+        if let Const::Text { offset, len } = c {
+            let pool = p.text_pool.ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Encoding,
+                    "external text constant has no pool descriptor",
+                )
+            })?;
+            check(
+                offset
+                    .checked_add(u64::from(*len))
+                    .is_some_and(|end| end <= pool.byte_len),
+                ErrorKind::Index,
+                "text constant outside its pool",
+            )?;
+        }
         if let Const::Tuple(ids) = c {
             for id in ids {
                 b.work(1)?;
