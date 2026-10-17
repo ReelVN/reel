@@ -573,22 +573,24 @@ visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面�
 
 ## 六 Logo 标题与局部交互
 
-图片、有限动画与 button 的 on_click 回调已接入作者源码。Rust 媒体适配器已支持 MP4 的 H.264 Baseline 渐进式 8-bit YUV420 视频及可选 mono/stereo AAC-LC 音轨，含暂停、停止、seek、音画内容时钟与后台资源释放。当前 Aside 视频节点接线仍在进行，下面的视频事件示例属于设计目标；游戏入口切换也尚未实现。
+视频已接入共同舞台、媒体活动与存档。默认桌面支持非分片 MP4：渐进式 8-bit YUV420 H.264 Baseline 视频，可附带单声道/双声道 AAC-LC。自定义宿主通过 MediaBackend 接入其他格式或硬件解码；没有安装视频能力时，播放在调用处明确报错。
 
-启动流程仍写普通 fn。媒体 play 返回活动句柄；点击可以通过正常事件停止播放，播放自然结束和主动停止都进入下一行。
+`video(source, ...image 节点属性)` 只创建画面；`movie.play(looping:false, volume:1, start:0, end:null, owner:null)` 返回活动。start/end 为片段起点与排他终点，省略 end 使用视频末尾。重复 play 停止该节点原播放。正常结束与 stop 都继续 await 后的代码；播放失败与节点/owner 退休产生可捕获错误。完整示例见 [author_video.aside](../../examples/author_video.aside)。
+
 ```aside
-use game::ui::title::title;
-
-fn main() {
-    let logo = video("assets/logo.mp4");
-    stage.replace(logo);
-    let playback = logo.play();
-    logo.on_click(|event| playback.stop());
-    await playback;
-    stage.replace(title());
-}
+let movie = video("assets/logo.mp4", width: 1280, height: 720, fit: "contain");
+let playing = movie.play();
+stage.replace(button(width: 1280, height: 720, decorated: false,
+    background: "#000000", on_click: || stop(playing)) {
+    movie;
+});
+await playing;
 ```
-视频为可选能力。纯图片 Logo 用 image 与 run(tween(...)) 表达同样流程。媒体与动画共享活动控制协议。视频节点创建时只创建画面，play 才启动播放；替换节点结束所属播放与事件订阅。
+
+`pause(playing)` / `resume(playing)` / `stop(playing)` 与其他活动一致；`finish(playing)` 完成有限视频，循环视频须 stop。`video.seek(playing, seconds)` 跳到绝对内容时间，`video.position(playing)` 返回当前秒数；视频音轨沿 Music 音量总线。隐藏节点不暂停，可直接组合裁剪、镜头、透明度和其他控件。
+
+存档记录视频路径、区间、当前位置及暂停状态，恢复后继续同一活动；停止/结束后保留的画面也恢复，但不重播声音。像素、解码队列与 GPU 句柄不进入存档。解码在后台进行，有声视频跟随实际消费的音频时钟，静音视频使用会话时间；运行窗口挂起时一起暂停。
+
 剧情中临时加入按钮时，向需要的父节点添加普通 button，然后正常移除。作者决定它遮住哪些内容、是否阻止下面输入、何时消失。一次性按钮使用同一事件和所有权规则。
 ```aside
 let hint = view.hud.add(button("查看照片",
@@ -897,7 +899,7 @@ Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普
 
 Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换；描边和几何裁剪均支持虚线，包括曲线、闭合路径和虚线偏移。全零虚线模式显示为实线，较小的斜接限制使用斜角连接。以上属于现有 Rust 绘制接口能力，Aside 自定义绘制入口仍待接通。
 
-作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。video 与精确音画同步仍属于设计合同。
+作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。视频与同一混音器的内容时钟已接入，见上文视频节点。
 
 `localization.load(locale, source)` 从资源目录读取 UTF-8 Fluent 语言包，当前任务等待后台读取和解析完成。成功后替换该语言的目录；读取、语法或重复 ID 错误可用 try/catch 处理，旧目录保留。取消调用任务会取消加载。`localization.set_locale(locale)` 切换语言，`localization.locale()` 返回可观察的语言标记。
 

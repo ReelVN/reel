@@ -27,7 +27,7 @@ pub fn run_session_host() -> Result<(), Error> {
 /// Native window options. An explicit logical_size overrides the first story canvas.
 pub struct StoryWindowOptions {
     pub assets: crate::assets::AssetOptions,
-    pub audio: crate::audio::AudioOptions,
+    pub media: crate::media::MediaOptions,
     pub title: String,
     pub locale: String,
     pub logical_size: Option<[u32; 2]>,
@@ -40,7 +40,7 @@ impl Default for StoryWindowOptions {
     fn default() -> Self {
         Self {
             assets: Default::default(),
-            audio: Default::default(),
+            media: Default::default(),
             title: "Reel".into(),
             locale: "en".into(),
             logical_size: None,
@@ -77,9 +77,9 @@ fn run_mode(mode: Mode) -> Result<(), Error> {
             let wake = reel_core::wake::WakeSignal::new(move || {
                 let _ = proxy.send_event(());
             });
-            let driver = driver.with_audio(Box::new(crate::audio::AudioPlayer::desktop(
+            let driver = driver.with_media(Box::new(crate::media::MediaPlayer::desktop(
                 crate::assets::Assets::directory(options.assets.clone()),
-                options.audio.clone(),
+                options.media.clone(),
                 wake,
             )))?;
             Mode::Story(Box::new((driver, options)))

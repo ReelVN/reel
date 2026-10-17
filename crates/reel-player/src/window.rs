@@ -123,7 +123,7 @@ impl State {
         };
         let save_bytes = options.save_bytes;
         let assets = driver.ui().assets();
-        let audio = options.audio.clone();
+        let media = options.media.clone();
         let mut state = Self::with_mode(
             event_loop,
             generation,
@@ -145,10 +145,10 @@ impl State {
             runtime.set_frame_capture_enabled(true);
             runtime.set_window_control_enabled(true);
             runtime.set_saves(crate::saves::RuntimeSaves::new(service, save_bytes));
-            runtime.set_audio_factory(move || {
-                Box::new(crate::audio::AudioPlayer::desktop(
+            runtime.set_media_factory(move || {
+                Box::new(crate::media::MediaPlayer::desktop(
                     assets.clone(),
-                    audio.clone(),
+                    media.clone(),
                     wake.clone(),
                 ))
             });

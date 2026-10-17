@@ -273,8 +273,8 @@ mod tests {
         );
         let runtime = StoryRuntime::new(driver)
             .with_saves(RuntimeSaves::new(service, 16 << 20))
-            .with_audio_factory(move || {
-                Box::new(crate::audio::AudioPlayer::new(
+            .with_media_factory(move || {
+                Box::new(crate::media::MediaPlayer::new(
                     crate::assets::Assets::directory(Default::default()),
                     Default::default(),
                     wake.clone(),

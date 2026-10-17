@@ -13,6 +13,7 @@ mod results;
 mod rich_text;
 mod snapshots;
 mod tasks;
+mod video;
 
 const STORY: &str =
     "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";
@@ -242,7 +243,13 @@ fn independent_registration_rejects_package_effect_mutability_abi_and_capability
         let signature = p.natives[0].signature.index();
         match alteration {
             0 => p.signatures[signature].effects = Effects(Effects::HOST),
-            1 => p.signatures[signature].parameters.last_mut().unwrap().mutable = true,
+            1 => {
+                p.signatures[signature]
+                    .parameters
+                    .last_mut()
+                    .unwrap()
+                    .mutable = true
+            }
             2 => p.natives[0].abi_version += 1,
             _ => {
                 p.natives[0].capabilities.clear();

@@ -30,6 +30,8 @@ class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元�
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
+Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, ...)` 创建节点，绑定 `.play(...)` 返回媒体活动，video.seek/position 操作活动。媒体与动画共享 pause/resume/stop/finish 名称，不增加语言语法或另一种异步值。新 video native ABI 1，媒体宿主快照保存逻辑状态而不携带像素或设备，B01 不变。
+
 Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null, locale: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 3，不改变 Aside/B01。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。`reel loc extract --output-dir` 按模块组织原文 FTL，`reel loc bundle` 把同语言的模块译文编成一个运行时 FTL；文件组织不改变消息身份、运行时接口或存档格式。
 
 节点图像遮罩使用普通宿主属性 mask、mask_progress、mask_softness、mask_invert，数值动画和绑定沿用现有属性协议。资源路径与进度进入节点 VM 字段和快照，Aside 不持有 GPU 对象；不增加语言语法或 VM 指令。

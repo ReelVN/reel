@@ -1,28 +1,33 @@
-//! Author audio assembly. IO, decode and PCM each have independent execution lanes.
+//! Session media assembly. Audio and video share one output and resource service.
 use crate::assets::{AssetKind, Assets, LoadId, worker::Worker};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{Priority, ResourceVersion, Scope},
     wake::WakeSignal,
 };
-use reel_engine::audio::{
-    AudioBackend, AudioCommand, AudioCompletion, AudioId, AudioRequest, AudioResult,
+use reel_engine::{
+    audio::AudioRequest,
+    media::{MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaPlayback, MediaResult},
 };
 use reel_media::*;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 #[derive(Clone, Debug)]
-pub struct AudioOptions {
+pub struct MediaOptions {
     pub mixer: MixerLimits,
     pub pcm_bytes: u64,
     pub queue_bytes: u64,
+    #[cfg(feature = "video")]
+    pub video: video::VideoLimits,
 }
-impl Default for AudioOptions {
+impl Default for MediaOptions {
     fn default() -> Self {
         Self {
             mixer: MixerLimits::default(),
             pcm_bytes: 256 << 20,
             queue_bytes: 64 << 20,
+            #[cfg(feature = "video")]
+            video: video::VideoLimits::default(),
         }
     }
 }
@@ -33,13 +38,13 @@ impl AsRef<[u8]> for Input {
     }
 }
 struct Decode {
-    id: AudioId,
+    id: MediaId,
     version: ResourceVersion,
     bytes: Arc<OwnedBytes>,
     ticket: reel_core::budget::BudgetTicket,
 }
 struct Decoded {
-    id: AudioId,
+    id: MediaId,
     version: ResourceVersion,
     sound: Result<DecodedSound, String>,
 }
@@ -47,8 +52,8 @@ enum Phase {
     Loading(LoadId),
     Queued,
     Ready(ResourceVersion, Box<DecodedSound>),
-    Playing(MediaId),
-    Done(AudioResult),
+    Playing(reel_media::MediaId),
+    Done(MediaResult),
 }
 struct Entry {
     request: AudioRequest,
@@ -59,9 +64,9 @@ type OutputFactory = Box<dyn FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, 
 
 /// A session-local backend. A custom host supplies AssetIo through Assets and
 /// any AudioOutput; neither the engine nor this coordinator requires a window.
-pub struct AudioPlayer {
+pub struct MediaPlayer {
     assets: Assets,
-    options: AudioOptions,
+    options: MediaOptions,
     wake: WakeSignal,
     factory: Option<OutputFactory>,
     output: Option<Box<dyn AudioOutput>>,
@@ -69,18 +74,20 @@ pub struct AudioPlayer {
     reclaim: Option<AudioReclaimService>,
     owner: Option<AudioOwner>,
     pcm: BudgetPool,
+    #[cfg(feature = "video")]
+    movies: video::Movies,
     worker: Worker<Decode, Decoded>,
     decoded: Vec<Decoded>,
     events: Vec<AudioActivityEvent>,
-    entries: BTreeMap<AudioId, Entry>,
-    playing: BTreeMap<u64, AudioId>,
-    cursor: Option<AudioId>,
+    entries: BTreeMap<MediaId, Entry>,
+    playing: BTreeMap<u64, MediaId>,
+    cursor: Option<MediaId>,
     next: u64,
     closed: bool,
     suspended: bool,
     failure: Option<String>,
 }
-impl AudioPlayer {
+impl MediaPlayer {
     #[cfg(feature = "video")]
     pub fn play_video_audio(
         &mut self,
@@ -95,7 +102,7 @@ impl AudioPlayer {
     }
     pub fn new(
         assets: Assets,
-        options: AudioOptions,
+        options: MediaOptions,
         wake: WakeSignal,
         create_output: impl FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String> + 'static,
     ) -> Self {
@@ -113,6 +120,8 @@ impl AudioPlayer {
             },
         );
         let mut player = Self {
+            #[cfg(feature = "video")]
+            movies: video::Movies::new(&options.video),
             assets,
             options,
             wake: wake.clone(),
@@ -153,7 +162,7 @@ impl AudioPlayer {
         feature = "audio-output",
         any(target_os = "windows", target_os = "linux", target_os = "macos")
     ))]
-    pub fn desktop(assets: Assets, options: AudioOptions, wake: WakeSignal) -> Self {
+    pub fn desktop(assets: Assets, options: MediaOptions, wake: WakeSignal) -> Self {
         Self::new(assets, options, wake, |wake| {
             CpalOutput::new(wake, reel_core::clock::MonoTime(0))
                 .map(|output| Box::new(output) as Box<dyn AudioOutput>)
@@ -233,7 +242,7 @@ impl AudioPlayer {
                         _ => {}
                     }
                     entry.phase =
-                        Phase::Done(AudioResult::Failed(format!("audio output: {reason:?}")));
+                        Phase::Done(MediaResult::Failed(format!("audio output: {reason:?}")));
                 }
             }
         }
@@ -243,7 +252,7 @@ impl AudioPlayer {
             let _ = output.stop();
         }
     }
-    fn stop_entry(&mut self, id: AudioId, deliver: bool) {
+    fn stop_entry(&mut self, id: MediaId, deliver: bool) {
         if let Some(entry) = self.entries.get_mut(&id) {
             match entry.phase {
                 Phase::Loading(load) => self.assets.cancel(load),
@@ -256,7 +265,7 @@ impl AudioPlayer {
                 _ => {}
             }
             if deliver && !matches!(entry.phase, Phase::Done(_) | Phase::Playing(_)) {
-                entry.phase = Phase::Done(AudioResult::Stopped);
+                entry.phase = Phase::Done(MediaResult::Stopped);
             }
         }
         if !deliver
@@ -264,6 +273,33 @@ impl AudioPlayer {
             && let Phase::Playing(media) = entry.phase
         {
             self.playing.remove(&media.0);
+        }
+    }
+    fn active_count(&self) -> usize {
+        #[cfg(feature = "video")]
+        {
+            self.entries.len() + self.movies.entries.len() + self.movies.retiring.len()
+        }
+        #[cfg(not(feature = "video"))]
+        {
+            self.entries.len()
+        }
+    }
+    fn video_pending(&self) -> bool {
+        #[cfg(feature = "video")]
+        {
+            !self.movies.entries.is_empty() || !self.movies.retiring.is_empty()
+        }
+        #[cfg(not(feature = "video"))]
+        {
+            false
+        }
+    }
+    #[cfg(test)]
+    fn audio_snapshot(&self, id: MediaId) -> Result<reel_engine::audio::AudioPlayback, String> {
+        match self.snapshot(id)? {
+            MediaPlayback::Audio(state) => Ok(state),
+            MediaPlayback::Video(_) => Err("not an audio playback".into()),
         }
     }
     pub fn pcm_usage(&self) -> reel_core::budget::BudgetUsage {
@@ -277,8 +313,27 @@ fn db(volume: f64) -> f32 {
         (20. * volume.log10()) as f32
     }
 }
-impl AudioBackend for AudioPlayer {
-    fn position(&self, id: AudioId) -> Option<Duration> {
+impl MediaBackend for MediaPlayer {
+    #[cfg(feature = "video")]
+    fn play_video(&mut self, request: reel_engine::video::VideoRequest) -> Result<MediaId, String> {
+        self.start_video(request)
+    }
+    #[cfg(feature = "video")]
+    fn restore_video(
+        &mut self,
+        state: reel_engine::video::VideoPlaybackState,
+    ) -> Result<MediaId, String> {
+        self.restore_movie(state)
+    }
+    #[cfg(feature = "video")]
+    fn take_video_frame(&mut self, id: MediaId) -> Option<reel_ui::resources::ResourceLease> {
+        self.movies.entries.get_mut(&id)?.frame.take()
+    }
+    fn position(&self, id: MediaId) -> Option<Duration> {
+        #[cfg(feature = "video")]
+        if let Some(entry) = self.movies.entries.get(&id) {
+            return Some(entry.position());
+        }
         let entry = self.entries.get(&id)?;
         if let Phase::Playing(media) = entry.phase {
             let state = self.service.as_ref()?.snapshot(media)?;
@@ -287,14 +342,18 @@ impl AudioBackend for AudioPlayer {
             Some(entry.request.start_position)
         }
     }
-    fn snapshot(&self, id: AudioId) -> Result<reel_engine::audio::AudioPlayback, String> {
+    fn snapshot(&self, id: MediaId) -> Result<MediaPlayback, String> {
+        #[cfg(feature = "video")]
+        if let Some(entry) = self.movies.entries.get(&id) {
+            return Ok(MediaPlayback::Video(entry.snapshot()));
+        }
         let entry = self
             .entries
             .get(&id)
-            .ok_or("audio activity is no longer retained")?;
+            .ok_or("media activity is no longer retained")?;
         let mut request = entry.request.clone();
         request.start_position = self.position(id).ok_or("audio transport missing")?;
-        Ok(reel_engine::audio::AudioPlayback {
+        Ok(MediaPlayback::Audio(reel_engine::audio::AudioPlayback {
             request,
             paused: entry.paused,
             result: if let Phase::Done(result) = &entry.phase {
@@ -302,9 +361,9 @@ impl AudioBackend for AudioPlayer {
             } else {
                 None
             },
-        })
+        }))
     }
-    fn play(&mut self, request: AudioRequest) -> Result<AudioId, String> {
+    fn play_audio(&mut self, request: AudioRequest) -> Result<MediaId, String> {
         if self.closed {
             return Err("audio session closed".into());
         }
@@ -314,12 +373,12 @@ impl AudioBackend for AudioPlayer {
         if !(-1.0..=1.0).contains(&request.pan) {
             return Err("audio pan must be between -1 and 1".into());
         }
-        if self.entries.len() >= self.options.mixer.max_sounds {
+        if self.active_count() >= self.options.mixer.max_sounds {
             return Err("audio activity capacity exhausted".into());
         }
         self.initialize()?;
         self.next = self.next.checked_add(1).ok_or("audio identity exhausted")?;
-        let id = AudioId(self.next);
+        let id = MediaId(self.next);
         let load = self.assets.request(&request.source, AssetKind::Bytes);
         self.entries.insert(
             id,
@@ -331,9 +390,13 @@ impl AudioBackend for AudioPlayer {
         );
         Ok(id)
     }
-    fn command(&mut self, id: AudioId, command: AudioCommand) -> Result<(), String> {
-        if matches!(command, AudioCommand::Stop)
-            || matches!(command, AudioCommand::FadeOut(duration) if duration.is_zero() || self.entries.get(&id).is_some_and(|e| e.paused || !matches!(e.phase, Phase::Playing(_))))
+    fn command(&mut self, id: MediaId, command: MediaCommand) -> Result<(), String> {
+        #[cfg(feature = "video")]
+        if self.movies.entries.contains_key(&id) {
+            return self.video_command(id, command);
+        }
+        if matches!(command, MediaCommand::Stop)
+            || matches!(command, MediaCommand::FadeOut(duration) if duration.is_zero() || self.entries.get(&id).is_some_and(|e| e.paused || !matches!(e.phase, Phase::Playing(_))))
         {
             self.stop_entry(id, true);
             return Ok(());
@@ -345,7 +408,7 @@ impl AudioBackend for AudioPlayer {
             return Ok(());
         }
         match command {
-            AudioCommand::Seek(position) => {
+            MediaCommand::Seek(position) => {
                 entry.request.start_position = match &mut entry.phase {
                     Phase::Ready(_, sound) => sound.seek(position),
                     Phase::Playing(media) => self
@@ -357,7 +420,7 @@ impl AudioBackend for AudioPlayer {
                     _ => position,
                 };
             }
-            AudioCommand::Volume {
+            MediaCommand::Volume {
                 value: volume,
                 duration,
             } => {
@@ -373,7 +436,7 @@ impl AudioBackend for AudioPlayer {
                 }
                 entry.request.volume = volume;
             }
-            AudioCommand::Pan { value, duration } => {
+            MediaCommand::Pan { value, duration } => {
                 if !(-1.0..=1.0).contains(&value) {
                     return Err("audio pan must be between -1 and 1".into());
                 }
@@ -386,13 +449,13 @@ impl AudioBackend for AudioPlayer {
                 }
                 entry.request.pan = value;
             }
-            AudioCommand::FadeOut(duration) => {
+            MediaCommand::FadeOut(duration) => {
                 if let Phase::Playing(media) = entry.phase {
                     self.service.as_mut().unwrap().fade_out(media, duration);
                 }
             }
-            AudioCommand::Pause | AudioCommand::Resume => {
-                entry.paused = matches!(command, AudioCommand::Pause);
+            MediaCommand::Pause | MediaCommand::Resume => {
+                entry.paused = matches!(command, MediaCommand::Pause);
                 if let Phase::Playing(media) = entry.phase {
                     let service = self.service.as_mut().unwrap();
                     if entry.paused {
@@ -402,7 +465,10 @@ impl AudioBackend for AudioPlayer {
                     }
                 }
             }
-            AudioCommand::Stop => unreachable!(),
+            MediaCommand::Stop => unreachable!(),
+            MediaCommand::Finish => {
+                return Err("finish is available for finite video playback".into());
+            }
         }
         Ok(())
     }
@@ -425,13 +491,19 @@ impl AudioBackend for AudioPlayer {
             .set_group_volume_db(group, db(value), duration)
             .map_err(|e| e.to_string())
     }
-    fn cancel(&mut self, id: AudioId) {
+    fn cancel(&mut self, id: MediaId) {
+        #[cfg(feature = "video")]
+        self.movies.cancel(id);
         self.stop_entry(id, false);
     }
-    fn maintain(&mut self) {
+    fn maintain(&mut self, elapsed: Duration) {
         self.wake.acknowledge();
         self.assets.maintain();
         self.output_failure();
+        #[cfg(feature = "video")]
+        self.maintain_video(elapsed);
+        #[cfg(not(feature = "video"))]
+        let _ = elapsed;
         self.worker.drain(&mut self.decoded, 64);
         for event in self.decoded.drain(..) {
             if let Some(entry) = self.entries.get_mut(&event.id)
@@ -448,7 +520,7 @@ impl AudioBackend for AudioPlayer {
                         entry.request.start_position = sound.start_position();
                         Phase::Ready(event.version, Box::new(sound))
                     }
-                    Err(error) => Phase::Done(AudioResult::Failed(error)),
+                    Err(error) => Phase::Done(MediaResult::Failed(error)),
                 };
             }
         }
@@ -484,11 +556,11 @@ impl AudioBackend for AudioPlayer {
                                 });
                         entry.phase = match result {
                             Ok(()) => Phase::Queued,
-                            Err(e) => Phase::Done(AudioResult::Failed(e)),
+                            Err(e) => Phase::Done(MediaResult::Failed(e)),
                         };
                     }
                     Ok(None) => {}
-                    Err(e) => entry.phase = Phase::Done(AudioResult::Failed(e)),
+                    Err(e) => entry.phase = Phase::Done(MediaResult::Failed(e)),
                 }
             }
             if !entry.paused && matches!(entry.phase, Phase::Ready(_, _)) {
@@ -516,7 +588,7 @@ impl AudioBackend for AudioPlayer {
                     Err(error) if error.reason.retryable() => {
                         Phase::Ready(error.request.resource, Box::new(error.request.sound))
                     }
-                    Err(error) => Phase::Done(AudioResult::Failed(error.reason.message)),
+                    Err(error) => Phase::Done(MediaResult::Failed(error.reason.message)),
                 };
             }
         }
@@ -531,11 +603,11 @@ impl AudioBackend for AudioPlayer {
                 {
                     entry.request.start_position = Duration::from_secs_f64(event.position_seconds);
                     entry.phase = Phase::Done(match event.terminal {
-                        AudioActivityTerminal::Completed { .. } => AudioResult::Completed,
-                        AudioActivityTerminal::Stopped { .. } => AudioResult::Stopped,
-                        AudioActivityTerminal::Cancelled => AudioResult::Cancelled,
+                        AudioActivityTerminal::Completed { .. } => MediaResult::Completed,
+                        AudioActivityTerminal::Stopped { .. } => MediaResult::Stopped,
+                        AudioActivityTerminal::Cancelled => MediaResult::Cancelled,
                         AudioActivityTerminal::Failed(error) => {
-                            AudioResult::Failed(format!("audio output: {error:?}"))
+                            MediaResult::Failed(format!("audio output: {error:?}"))
                         }
                     });
                 }
@@ -550,7 +622,11 @@ impl AudioBackend for AudioPlayer {
             self.service = None;
         }
     }
-    fn take_result(&mut self, id: AudioId) -> Option<AudioCompletion> {
+    fn take_result(&mut self, id: MediaId) -> Option<MediaCompletion> {
+        #[cfg(feature = "video")]
+        if self.movies.entries.contains_key(&id) {
+            return self.movies.take_result(id);
+        }
         if !self
             .entries
             .get(&id)
@@ -562,13 +638,14 @@ impl AudioBackend for AudioPlayer {
         let Phase::Done(result) = entry.phase else {
             unreachable!()
         };
-        Some(AudioCompletion {
+        Some(MediaCompletion {
             result,
             position: entry.request.start_position,
         })
     }
     fn poll_after(&self) -> Option<Duration> {
-        (!self.entries.is_empty()
+        (self.video_pending()
+            || !self.entries.is_empty()
             || self.cleanup_pending()
             || self.service.as_ref().is_some_and(|s| s.occupied() != 0)
             || self.pcm.usage().bytes != 0)
@@ -580,6 +657,10 @@ impl AudioBackend for AudioPlayer {
     }
     fn suspend(&mut self) {
         self.suspended = true;
+        #[cfg(feature = "video")]
+        for entry in self.movies.entries.values() {
+            entry.pause(true);
+        }
         if let Some(output) = &mut self.output {
             let _ = output.suspend();
         }
@@ -587,6 +668,10 @@ impl AudioBackend for AudioPlayer {
     }
     fn resume(&mut self) {
         self.suspended = false;
+        #[cfg(feature = "video")]
+        for entry in self.movies.entries.values() {
+            entry.pause(entry.paused);
+        }
         if let Some(output) = &mut self.output {
             let _ = output.resume();
         }
@@ -597,6 +682,8 @@ impl AudioBackend for AudioPlayer {
             return;
         }
         self.closed = true;
+        #[cfg(feature = "video")]
+        self.movies.close();
         while let Some(&id) = self.entries.keys().next() {
             self.stop_entry(id, false);
         }
@@ -611,7 +698,8 @@ impl AudioBackend for AudioPlayer {
         // Cancelled asset reads belong to the shared service. Waiting for its
         // global input pool would also wait for the replacement session's work.
         self.closed
-            && (!self.worker.is_idle()
+            && (self.video_pending()
+                || !self.worker.is_idle()
                 || self.owner.as_ref().is_some_and(|owner| !owner.is_retired())
                 || self.reclaim.as_ref().is_some_and(|reclaim| {
                     let status = reclaim.status();
@@ -619,7 +707,7 @@ impl AudioBackend for AudioPlayer {
                 }))
     }
 }
-impl Drop for AudioPlayer {
+impl Drop for MediaPlayer {
     fn drop(&mut self) {
         self.close();
     }
@@ -627,3 +715,9 @@ impl Drop for AudioPlayer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "video")]
+pub mod video;
+
+#[cfg(all(test, feature = "video"))]
+mod video_tests;

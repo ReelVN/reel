@@ -3,7 +3,7 @@ use super::*;
 use aside_vm::snapshot::{SnapshotError, SnapshotMap, SnapshotRegistry};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::aside) enum Shape {
     Text,
     TextInput,
@@ -14,6 +14,7 @@ pub(in crate::aside) enum Shape {
     Radio,
     Input,
     Image,
+    Video,
     Particles,
     Camera,
     Scroll,
@@ -34,6 +35,7 @@ impl Shape {
             "reel::radio" => Self::Radio,
             "reel::input" => Self::Input,
             "reel::image" => Self::Image,
+            "reel::video" => Self::Video,
             "reel::particles" => Self::Particles,
             "reel::camera" => Self::Camera,
             "reel::scroll" => Self::Scroll,
@@ -43,32 +45,10 @@ impl Shape {
             _ => unreachable!("registered stage constructor"),
         }
     }
-    fn from_kind(kind: &NodeKind) -> Self {
-        match kind {
-            NodeKind::Text(_) => Self::Text,
-            NodeKind::TextInput { .. } => Self::TextInput,
-            NodeKind::Button { .. } => Self::Button,
-            NodeKind::Slider { .. } => Self::Slider,
-            NodeKind::Toggle {
-                appearance: reel_ui::stage::ToggleAppearance::Switch,
-                ..
-            } => Self::Switch,
-            NodeKind::Toggle { .. } => Self::Checkbox,
-            NodeKind::Radio { .. } => Self::Radio,
-            NodeKind::Input { .. } => Self::Input,
-            NodeKind::Image { .. } => Self::Image,
-            NodeKind::Particles(_) => Self::Particles,
-            NodeKind::Camera(_) => Self::Camera,
-            NodeKind::Scroll { .. } => Self::Scroll,
-            NodeKind::Row => Self::Row,
-            NodeKind::Column => Self::Column,
-            NodeKind::Stack => Self::Stack,
-        }
-    }
     fn prefix(self) -> usize {
         match self {
             Self::Text | Self::Button => 2,
-            Self::Image => registry::IMAGE_PREFIX.len(),
+            Self::Image | Self::Video => registry::IMAGE_PREFIX.len(),
             Self::TextInput => text_input::TextInputField::PROPERTIES.len(),
             Self::Slider => controls::SliderField::PROPERTIES.len(),
             Self::Switch | Self::Checkbox => controls::ToggleField::PROPERTIES.len(),
@@ -115,8 +95,16 @@ impl Shape {
                     pointer: get(3)?.tag() != ValueTag::Null,
                 }
             }
-            Self::Image => NodeKind::Image {
-                source: read_source(heap, get(0)?, limit)?,
+            Self::Image | Self::Video => NodeKind::Image {
+                source: if self == Self::Video {
+                    let source = text::read_string(heap, get(0)?, limit)?;
+                    if source.is_empty() {
+                        return Err(AdapterError::Input("video source must not be empty"));
+                    }
+                    reel_ui::stage::ImageSource::empty()
+                } else {
+                    read_source(heap, get(0)?, limit)?
+                },
                 fit: read_fit(heap, get(1)?)?,
                 slice: read_slice(heap, get(2)?)?,
                 slice_scale: nonnegative(get(3)?)?,
@@ -149,6 +137,13 @@ impl Shape {
             Self::Radio => |h, _, i, v| controls::validate_radio(h, i, v),
             Self::Input => |h, _, i, v| input::validate(h, i, v),
             Self::Image => |h, _, i, v| validate_image_property(h, i, v),
+            Self::Video => |h, _, i, v| {
+                if i == 0 {
+                    Err(HeapError::ReadOnly)
+                } else {
+                    validate_image_property(h, i, v)
+                }
+            },
             Self::Particles => super::super::particles::validate,
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
@@ -180,12 +175,17 @@ impl StageBinding {
             ("reel.radio", Shape::Radio),
             ("reel.input", Shape::Input),
             ("reel.image", Shape::Image),
+            ("reel.video", Shape::Video),
             ("reel.particles", Shape::Particles),
             ("reel.camera", Shape::Camera),
             ("reel.scroll", Shape::Scroll),
             ("reel.layout", Shape::Stack),
         ] {
-            let version = if matches!(shape, Shape::Image) { 5 } else { 3 };
+            let version = match shape {
+                Shape::Video => 1,
+                Shape::Image => 5,
+                _ => 3,
+            };
             registry.register_validator(name, version, shape.validator())?;
         }
         Ok(())
@@ -198,7 +198,7 @@ impl StageBinding {
         self.scene.nodes().map(|node| SavedNode {
             id: node.id.0,
             handle: self.handles[&node.id].handle,
-            shape: Shape::from_kind(&node.kind),
+            shape: self.handles[&node.id].shape,
             origin: node.props.mask_origin.as_deref().map(str::to_owned),
         })
     }
@@ -243,6 +243,7 @@ impl StageBinding {
         self.handles.insert(
             id,
             NodeBinding {
+                shape: saved.shape,
                 handle,
                 interaction_offset,
                 interaction_listening: heap
@@ -257,8 +258,10 @@ impl StageBinding {
                 } else {
                     None
                 },
-                text_source: if matches!(saved.shape, Shape::Text | Shape::TextInput | Shape::Image)
-                {
+                text_source: if matches!(
+                    saved.shape,
+                    Shape::Text | Shape::TextInput | Shape::Image | Shape::Video
+                ) {
                     Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
                 } else {
                     None

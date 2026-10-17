@@ -121,6 +121,24 @@ fn environment() -> (
         .filter(|(_, reference)| reference.module == "reel")
         .map(|(export, _)| export.clone())
         .collect::<Vec<_>>();
+    prelude
+        .iter_mut()
+        .find(|e| e.name == "video")
+        .unwrap()
+        .namespace = Some(NamespaceRef {
+        module: "reel::video".into(),
+        version: "1".into(),
+    });
+    resolver.insert(ModuleInterface {
+        canonical_path: "reel::video".into(),
+        version: "1".into(),
+        exports: exports
+            .iter()
+            .zip(&references)
+            .filter(|(_, r)| r.module == "reel::video")
+            .map(|(e, _)| e.clone())
+            .collect(),
+    });
     let mut stage = ExternalSymbol::dynamic("stage");
     prelude.extend(aside_std::prelude());
     stage.namespace = Some(NamespaceRef {

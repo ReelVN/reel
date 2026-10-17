@@ -272,6 +272,15 @@ UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88
 播放器的 source 能力选择性引入编译器；精简版本只加载字节码。hot-reload 只开启模块替换协议，可接收外部编译产物。编译器、监视器和对照运行时留在开发侧，精简构建检查实际依赖树。[7]
 
 ## 三 平台接口与移植边界
+
+### 视频舞台与媒体活动
+
+本轮范围为 reel-engine 的媒体宿主与 Aside 绑定、reel-player 的单一 MediaPlayer、reel-ui/reel-render 的 YUV 资源投影及双语指南；Aside/B01 不变，新 video native ABI 1，媒体和视频节点使用各自快照适配器，SessionSnapshot 升至 6。依赖沿视频解码基础所固定的 OpenH264、mp4、Symphonia 与 h264-reader。
+
+`video(source, ...image 节点属性)` 创建空的普通图片节点，`.play(looping:false, volume:1, start:0, end:null, owner:null)` 启动并返回可等待活动。一个节点同时一个播放，重播停止前一个；节点或显式 owner 退休取消播放，隐藏不暂停。pause/resume/stop 沿共同活动协议，video.seek/position 使用秒。有限视频支持 finish；循环视频须 stop。停止与自然结束保留最后显示帧，节点退休释放资源。存档只保存路径、播放区间、当前位置、暂停与归属，不序列化已解码帧或设备句柄；读档重开资源并重建首个适用帧。
+
+MediaBackend 统一音频和视频的设备工厂、维护、取消与退休；视频音轨进入同一 Music 总线，有声视频以实际消费的 PCM 为时钟，静音视频使用排除宿主挂起的会话时间。码流分段读取、解码和队列均在后台，显示采用已有舞台图片的资源租约和三平面 YUV 纹理；队列固定容量，旧帧租约持有期间不可覆盖其纹理。不在每帧复制整幅 RGBA 或重新创建纹理。CPU 验证覆盖实际解码、音频时钟、暂停、跳转、结束、取消、舞台退休与快照恢复；设备显示由目标平台另行验收。
+
 ### HAL 与公共呈现（#83）
 
 内置桌面使用公共 PlatformHost 与 Presentation，其他平台复用同一会话、输入、记录、已接受帧与生命周期。范围为 reel-render 后端合同/既有 WGPU 实现、reel-player 公共呈现、运行时计时与 Winit 适配，以及合同检查、规范和双语指南。复用 reel-core 的时钟合同，保持 Aside、B01/ASB v1 和 native ABI v1；Rust 宿主/渲染接口直接更新，不保留兼容层，无新增依赖。
@@ -723,7 +732,7 @@ reel-engine 管理 Session/Epoch/owner、唯一主交互、完整文本与字素
 
 owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
 
-S01 的历史验证范围是 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，当时未执行 Aside 或 VM。后续 Aside 会话适配和作者舞台已接通可信宿主、真实等待及源码/ASB 窗口入口；作者音频已通过 AudioBackend 接入媒体输出，快照恢复仍未接通。
+S01 的历史验证范围是 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，当时未执行 Aside 或 VM。后续 Aside 会话适配和作者舞台已接通可信宿主、真实等待及源码/ASB 窗口入口；作者音视频通过 MediaBackend 接入媒体输出和执行快照恢复。
 
 PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找复杂度和同步常量加载限制见 VM README；owner/RootRange/外部资源的有界退休责任不变。
 
@@ -752,7 +761,7 @@ AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前�
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 
-核心通过 AudioBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式与设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
+核心通过 MediaBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式与设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
 
 ### 混音与音频过渡
 

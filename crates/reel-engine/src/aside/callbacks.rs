@@ -374,7 +374,7 @@ impl SessionVm {
         !self.tasks.is_empty()
             || self.activities.has_active()
             || self.particles.has_active()
-            || self.audio.active()
+            || self.media.active()
             || self.saves.active()
             || self.captures.active()
             || self.stage.has_handlers()
@@ -498,7 +498,7 @@ impl SessionVm {
                 self.cancel_callback(session, index)?;
             }
         }
-        self.maintain_audio()?;
+        self.maintain_media()?;
         self.maintain_localization()?;
         self.activities.maintain(&mut self.vm)?;
         self.maintain_particles(64)?;

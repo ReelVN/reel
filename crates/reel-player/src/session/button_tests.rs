@@ -52,8 +52,8 @@ fn save_slot_survives_player_restart_restores_callbacks_and_preserves_slot_on_wr
         );
         runtime(SOURCE)
             .with_saves(RuntimeSaves::new(service, 16 << 20))
-            .with_audio_factory(move || {
-                Box::new(crate::audio::AudioPlayer::new(
+            .with_media_factory(move || {
+                Box::new(crate::media::MediaPlayer::new(
                     crate::assets::Assets::directory(Default::default()),
                     Default::default(),
                     wake.clone(),

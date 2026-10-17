@@ -187,7 +187,7 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         control.cancel();
         assert_eq!(
             waiter.join().unwrap().unwrap_err().kind(),
-            std::io::ErrorKind::Interrupted
+            std::io::ErrorKind::BrokenPipe
         );
         assets.close();
     }

@@ -5,7 +5,7 @@
 //! wait association and all independently retained result/key roots. It never
 //! interprets bytecode or assumes a table's private storage layout.
 mod activity;
-mod audio;
+mod media;
 pub use activity::ActivityProgress;
 mod callbacks;
 pub mod capture;
@@ -225,7 +225,7 @@ pub struct SessionVm {
     window: window::Window,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
-    audio: audio::Audio,
+    media: media::Media,
     translations: localization::Translations,
     game: std::sync::Arc<GameSettings>,
     narrative: Option<narrative::Narrative>,
@@ -290,7 +290,7 @@ impl SessionVm {
             window: window::Window::default(),
             particles: particles::Particles::default(),
             standard,
-            audio: audio::Audio::default(),
+            media: media::Media::default(),
             translations: localization::Translations::default(),
             game: std::sync::Arc::new(GameSettings::default()),
             narrative: None,
@@ -395,7 +395,7 @@ impl SessionVm {
                 || self.task.is_some()
                 || !self.tasks.is_empty()
                 || self.derived_task.is_some()
-                || self.audio.cleanup_pending())
+                || self.media.cleanup_pending())
     }
 
     /// Advance the session's monotonic logical clock, independently of VM slice
@@ -539,7 +539,10 @@ impl SessionVm {
                 self.dispatch_localization(ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            "reel::audio::play"
+            "reel::video::play"
+            | "reel::video::seek"
+            | "reel::video::position"
+            | "reel::audio::play"
             | "reel::audio::volume"
             | "reel::audio::await"
             | "reel::audio::group_volume"
@@ -550,7 +553,7 @@ impl SessionVm {
                 if symbol == "reel::audio::await" {
                     self.check_wait(session, ticket)?;
                 }
-                self.dispatch_audio(ticket, &symbol)?;
+                self.dispatch_media(ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::game::dialogue"
@@ -679,8 +682,8 @@ impl SessionVm {
                     self.control_particles(ticket, &symbol)?;
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
-                if audio::is_audio(self.vm.heap(), self.vm.host_arguments(ticket)?[0]) {
-                    self.dispatch_audio(ticket, &symbol)?;
+                if media::is_media(self.vm.heap(), self.vm.host_arguments(ticket)?[0]) {
+                    self.dispatch_media(ticket, &symbol)?;
                     return Ok(NativeDispatch::Ready { work: 1 });
                 }
                 let command = match symbol.as_str() {
@@ -770,6 +773,7 @@ impl SessionVm {
             | "reel::button"
             | "reel::input"
             | "reel::image"
+            | "reel::video"
             | "reel::particles"
             | "reel::row"
             | "reel::column"
@@ -1246,7 +1250,7 @@ impl SessionVm {
             }
         }
         self.root_end = self.vm.heap().root_slots();
-        self.audio.close();
+        self.media.close();
         self.translations.close();
         self.results.clear();
         self.saves.clear();
@@ -1260,7 +1264,7 @@ impl SessionVm {
             OwnerRetirementRequirements {
                 root_slots_end: self.root_end as usize,
                 tasks_pending: self.task.is_some() || self.derived_task.is_some(),
-                external_resources_pending: self.audio.cleanup_pending(),
+                external_resources_pending: self.media.cleanup_pending(),
             },
         )?;
         self.revoked = true;
@@ -1292,8 +1296,8 @@ impl SessionVm {
         if !self.revoked {
             return Err(AdapterError::Input("owner not revoked"));
         }
-        self.maintain_audio()?;
-        if !self.audio.cleanup_pending() {
+        self.maintain_media()?;
+        if !self.media.cleanup_pending() {
             session.confirm_owner_resources_released(self.owner)?;
         }
         let before = self.root_cursor;

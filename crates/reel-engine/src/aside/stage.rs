@@ -109,6 +109,7 @@ pub(super) struct StageBinding {
     methods: [FunctionId; 5],
 }
 struct NodeBinding {
+    shape: snapshot::Shape,
     handle: HeapHandle,
     interaction_offset: u32,
     interaction_listening: bool,
@@ -408,6 +409,27 @@ impl StageBinding {
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, (field_count + extra_fields + i) as u32, key, method)?;
         }
+        if symbol == "reel::video" {
+            let p = vm.program().package();
+            let play = p
+                .functions
+                .iter()
+                .enumerate()
+                .find_map(|(i, f)| match f.kind {
+                    FunctionKind::Native(native)
+                        if p.symbols[p.natives[native.index()].symbol.index()]
+                            == "reel::video::play" =>
+                    {
+                        Some(FunctionId(i as u32))
+                    }
+                    _ => None,
+                })
+                .ok_or(AdapterError::Input("video play binding missing"))?;
+            let method = vm.bind_native(value, play)?;
+            let heap = vm.heap_mut();
+            let key = heap.alloc_string("play")?;
+            heap.table_store(fields, heap.table_len(fields)?, key, method)?;
+        }
         let heap = vm.heap_mut();
         let input_values = match &kind {
             NodeKind::Input { bindings, .. } => {
@@ -425,6 +447,7 @@ impl StageBinding {
         self.handles.insert(
             id,
             NodeBinding {
+                shape,
                 handle: heap.handle(value)?,
                 interaction_offset: field_count as u32,
                 interaction_listening: args[prefix.len() + NodeProperty::OnInteraction.index()]
@@ -436,8 +459,10 @@ impl StageBinding {
                 } else {
                     None
                 },
-                text_source: if matches!(symbol, "reel::text" | "reel::text_input" | "reel::image")
-                {
+                text_source: if matches!(
+                    symbol,
+                    "reel::text" | "reel::text_input" | "reel::image" | "reel::video"
+                ) {
                     Some(heap.handle(args[0])?)
                 } else {
                     None
@@ -449,6 +474,31 @@ impl StageBinding {
             },
         );
         Ok(value)
+    }
+
+    pub(super) fn video_id(&self, heap: &Heap, value: Value) -> Result<NodeId, AdapterError> {
+        let id = self.id(heap, value)?;
+        if self.handles[&id].shape != snapshot::Shape::Video {
+            return Err(AdapterError::Input("expected video node"));
+        }
+        Ok(id)
+    }
+    pub(super) fn set_video_frame(
+        &mut self,
+        id: NodeId,
+        frame: reel_ui::resources::ResourceLease,
+    ) -> Result<(), AdapterError> {
+        let node = self
+            .scene
+            .node(id)
+            .ok_or(AdapterError::Input("video node retired"))?;
+        let mut kind = node.kind.clone();
+        if let NodeKind::Image { source, .. } = &mut kind {
+            *source = reel_ui::stage::ImageSource::resource(frame);
+        }
+        let props = node.props.clone();
+        self.scene.update(id, kind, props)?;
+        Ok(())
     }
 
     fn sync_tree(
@@ -568,8 +618,9 @@ impl StageBinding {
                 ),
                 NodeKind::Image { source, origin, .. } => (
                     NodeKind::Image {
-                        source: if binding.text_source
-                            == Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
+                        source: if binding.shape == snapshot::Shape::Video
+                            || binding.text_source
+                                == Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
                         {
                             source.clone()
                         } else {

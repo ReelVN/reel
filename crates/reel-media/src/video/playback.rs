@@ -27,6 +27,8 @@ pub struct VideoOptions {
     /// Exclusive source endpoint, independent of looping. Hosts can queue the
     /// next segment against the same audio consumption clock.
     pub end: Option<Duration>,
+    /// Restore a terminal visual without admitting or decoding its audio track.
+    pub poster: bool,
 }
 impl Default for VideoOptions {
     fn default() -> Self {
@@ -35,6 +37,7 @@ impl Default for VideoOptions {
             queued_audio_frames: 8192,
             start: Duration::ZERO,
             end: None,
+            poster: false,
         }
     }
 }
@@ -227,7 +230,7 @@ impl VideoPlayback {
     ) -> Result<Self, String> {
         if options.queued_video_frames == 0
             || options.queued_audio_frames == 0
-            || options.end.is_some_and(|end| end <= options.start)
+            || (!options.poster && options.end.is_some_and(|end| end <= options.start))
         {
             return Err("video queues must be nonempty and end must follow start".into());
         }
@@ -287,7 +290,7 @@ impl VideoPlayback {
     pub fn info(&self) -> Option<VideoInfo> {
         self.shared.state.lock().unwrap().info.clone()
     }
-    /// Admit this exactly once through AudioPlayer/KiraMixer. Until admission
+    /// Admit this exactly once through MediaPlayer/KiraMixer. Until admission
     /// the bounded audio queue stalls decode, rather than discarding the track.
     pub fn take_audio(&mut self) -> Option<StreamSoundData> {
         let data = self.shared.state.lock().unwrap().audio.take();
@@ -351,7 +354,7 @@ impl VideoPlayback {
         while state
             .frames
             .front()
-            .is_some_and(|frame| frame.frame.pts <= self.position)
+            .is_some_and(|frame| self.options.poster || frame.frame.pts <= self.position)
         {
             frame = state.frames.pop_front();
         }
@@ -408,11 +411,13 @@ fn decode(
     shared: &Shared,
 ) -> Result<(), String> {
     let mut decoder = MovieDecoder::new(source)?;
-    if options.start != Duration::ZERO {
-        decoder.seek(options.start.as_secs_f64())?;
-    }
     if let Some(end) = options.end {
         decoder.set_end(end.as_secs_f64());
+    }
+    if options.poster {
+        decoder.prepare_poster(options.start.as_secs_f64())?;
+    } else if options.start != Duration::ZERO {
+        decoder.seek(options.start.as_secs_f64())?;
     }
     let info = decoder.info().clone();
     let mut audio = if let Some(rate) = info.audio_sample_rate {
@@ -445,6 +450,9 @@ fn decode(
             .reserve(plane_bytes.max(1024 * 8))
             .map_err(|e| e.message)?;
         let Some(packet) = decoder.next_packet()? else {
+            if options.poster {
+                return Err("video contains no picture at the saved position".into());
+            }
             break;
         };
         match packet {
@@ -469,8 +477,14 @@ fn decode(
                     frame,
                     _ticket: scratch,
                 }));
+                if options.poster {
+                    state.terminal = Some(VideoTerminal::Completed);
+                }
                 drop(state);
                 shared.wake.wake();
+                if options.poster {
+                    return Ok(());
+                }
             }
             DecodedPacket::Audio(packet) => {
                 let (producer, _residency, position) = audio.as_mut().unwrap();

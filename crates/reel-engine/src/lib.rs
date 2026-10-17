@@ -11,9 +11,11 @@ use std::{collections::HashSet, ops::Range};
 pub mod aside;
 pub mod audio;
 pub mod localization;
+pub mod media;
 mod reading;
 mod reveal;
 mod snapshot;
+pub mod video;
 pub use reading::{ReadProgress, ReadingState};
 
 pub use reel_core::identity::{Epoch, OwnerId, Scope, SessionId};

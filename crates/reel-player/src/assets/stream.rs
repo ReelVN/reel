@@ -38,6 +38,17 @@ struct Shared {
 #[derive(Clone)]
 pub struct StreamControl(Arc<Shared>);
 impl StreamControl {
+    /// Fixed source identity becomes available after the worker's first describe.
+    pub fn version(&self) -> Option<reel_core::identity::ResourceVersion> {
+        let state = self.0.state.lock().unwrap();
+        state
+            .source
+            .version
+            .map(|version| reel_core::identity::ResourceVersion {
+                key: state.source.key.clone(),
+                version,
+            })
+    }
     pub fn cancel(&self) {
         self.0.state.lock().unwrap().closed = true;
         self.0.ready.notify_all();
@@ -64,7 +75,7 @@ impl AssetStream {
         let mut state = self.shared.state.lock().unwrap();
         if state.closed {
             return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
+                io::ErrorKind::BrokenPipe,
                 "asset stream closed",
             ));
         }
@@ -73,7 +84,7 @@ impl AssetStream {
         loop {
             if state.closed {
                 return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
+                    io::ErrorKind::BrokenPipe,
                     "asset stream closed",
                 ));
             }

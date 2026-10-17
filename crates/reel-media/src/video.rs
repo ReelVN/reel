@@ -281,6 +281,14 @@ impl MovieDecoder {
         }
         self.info.duration = Some(self.info.duration.unwrap_or(seconds).min(seconds));
     }
+    /// Decode only the picture covering a saved transport position. No AAC
+    /// packets or output stream are needed for a stopped/completed poster.
+    pub fn prepare_poster(&mut self, seconds: f64) -> Result<(), String> {
+        self.audio = None;
+        self.info.audio_sample_rate = None;
+        let position = seconds.min((self.cursor.end - 1. / self.cursor.scale).max(0.));
+        self.seek(position)
+    }
     pub fn next_packet(&mut self) -> Result<Option<DecodedPacket>, String> {
         loop {
             if self.cursor.time(&self.format.tracks()[&self.cursor.id]) >= self.cursor.end {

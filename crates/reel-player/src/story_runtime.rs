@@ -15,7 +15,7 @@ pub struct StoryRuntime {
     capture_started: Option<u64>,
     frame_capture_enabled: bool,
     window_control_enabled: bool,
-    audio_factory: Option<Box<dyn Fn() -> Box<dyn reel_engine::audio::AudioBackend>>>,
+    media_factory: Option<Box<dyn Fn() -> Box<dyn reel_engine::media::MediaBackend>>>,
     retiring: Option<AsideSessionUi>,
     starting: Option<reel_engine::aside::source::StoryFunction>,
     runnable: bool,
@@ -39,7 +39,7 @@ impl StoryRuntime {
             capture_started: None,
             frame_capture_enabled: false,
             window_control_enabled: false,
-            audio_factory: None,
+            media_factory: None,
             retiring: None,
             starting: None,
             runnable: true,
@@ -85,17 +85,17 @@ impl StoryRuntime {
     }
     /// Supply fresh device adapters for new sessions and restored saves.
     /// This is independent of whether the host installs save storage.
-    pub fn set_audio_factory(
+    pub fn set_media_factory(
         &mut self,
-        factory: impl Fn() -> Box<dyn reel_engine::audio::AudioBackend> + 'static,
+        factory: impl Fn() -> Box<dyn reel_engine::media::MediaBackend> + 'static,
     ) {
-        self.audio_factory = Some(Box::new(factory));
+        self.media_factory = Some(Box::new(factory));
     }
-    pub fn with_audio_factory(
+    pub fn with_media_factory(
         mut self,
-        factory: impl Fn() -> Box<dyn reel_engine::audio::AudioBackend> + 'static,
+        factory: impl Fn() -> Box<dyn reel_engine::media::MediaBackend> + 'static,
     ) -> Self {
-        self.set_audio_factory(factory);
+        self.set_media_factory(factory);
         self
     }
     pub fn needs_tick(&self) -> bool {
@@ -111,7 +111,7 @@ impl StoryRuntime {
                 || self.driver().adapter().has_save_requests()
                 || self.driver().adapter().has_capture_requests()
                 || self.driver().adapter().has_window_requests()
-                || self.driver().adapter().audio_poll_after().is_some()
+                || self.driver().adapter().media_poll_after().is_some()
                 || self.driver().adapter().localization_pending()
                 || self.driver().activities_need_time()
                 || self.driver().ui().dialogue_needs_time())
@@ -129,11 +129,11 @@ impl StoryRuntime {
             .session_mut()
             .set_skip_reading(false, false, false);
         self.driver.as_mut().unwrap().ui_mut().pause_dialogue();
-        self.driver.as_mut().unwrap().suspend_audio();
+        self.driver.as_mut().unwrap().suspend_media();
         Ok(())
     }
     pub fn resume(&mut self, now_ns: u64) {
-        self.driver.as_mut().unwrap().resume_audio();
+        self.driver.as_mut().unwrap().resume_media();
         if let Some(start) = self.suspended_at.take() {
             self.suspended_ns = self
                 .suspended_ns
@@ -160,13 +160,13 @@ impl StoryRuntime {
         if self.needs_work() {
             return std::time::Duration::from_millis(1);
         }
-        let audio = self.driver().adapter().audio_poll_after();
-        let audio = if self.driver().adapter().localization_pending() {
-            Some(audio.map_or(std::time::Duration::from_millis(10), |t| {
+        let media = self.driver().adapter().media_poll_after();
+        let media = if self.driver().adapter().localization_pending() {
+            Some(media.map_or(std::time::Duration::from_millis(10), |t| {
                 t.min(std::time::Duration::from_millis(10))
             }))
         } else {
-            audio
+            media
         };
         let reveal = self
             .driver()
@@ -181,7 +181,7 @@ impl StoryRuntime {
         } else {
             reveal
         };
-        audio.map_or(interval, |audio| audio.min(interval))
+        media.map_or(interval, |media| media.min(interval))
     }
 
     pub fn wake_input(&mut self) {
@@ -266,7 +266,7 @@ impl StoryRuntime {
                 .maintain_capture_results(64)?;
             self.runnable = true;
         }
-        if self.driver.as_mut().unwrap().maintain_audio()?
+        if self.driver.as_mut().unwrap().maintain_media()?
             | self.driver.as_mut().unwrap().maintain_localization()?
             || (self.driver().adapter().task().is_none()
                 && !self.driver().adapter().has_live_work()

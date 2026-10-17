@@ -12,7 +12,7 @@ use reel_engine::{
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 #[derive(Clone)]
-struct Output(Rc<RefCell<Option<OfflineOutput>>>);
+pub(super) struct Output(Rc<RefCell<Option<OfflineOutput>>>);
 impl AudioOutput for Output {
     fn capabilities(&self) -> AudioCaps {
         self.0.borrow().as_ref().unwrap().capabilities()
@@ -40,7 +40,7 @@ impl AudioOutput for Output {
     }
 }
 impl Output {
-    fn render(&self) -> f32 {
+    pub(super) fn render(&self) -> f32 {
         let mut pcm = [0_f32; 256];
         if let Some(output) = &mut *self.0.borrow_mut() {
             output.render(
@@ -55,15 +55,21 @@ impl Output {
         pcm.iter().map(|n| n.abs()).fold(0., f32::max)
     }
 }
-fn rig() -> (AudioPlayer, Output) {
+fn rig() -> (MediaPlayer, Output) {
+    rig_at(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+        MediaOptions::default(),
+    )
+}
+pub(super) fn rig_at(root: std::path::PathBuf, options: MediaOptions) -> (MediaPlayer, Output) {
     let output = Output(Rc::new(RefCell::new(None)));
     let sink = output.clone();
-    let player = AudioPlayer::new(
+    let player = MediaPlayer::new(
         Assets::directory(AssetOptions {
-            root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+            root,
             ..Default::default()
         }),
-        AudioOptions::default(),
+        options,
         WakeSignal::new(|| {}),
         move |wake| {
             *sink.0.borrow_mut() = Some(
@@ -82,7 +88,8 @@ fn rig() -> (AudioPlayer, Output) {
     );
     (player, output)
 }
-fn until(mut step: impl FnMut() -> bool) {
+#[track_caller]
+pub(super) fn until(mut step: impl FnMut() -> bool) {
     let start = Instant::now();
     while !step() {
         assert!(
@@ -92,7 +99,7 @@ fn until(mut step: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(1));
     }
 }
-fn request(looping: bool) -> AudioRequest {
+pub(super) fn request(looping: bool) -> AudioRequest {
     AudioRequest {
         source: "assets/chime.wav".into(),
         loop_region: looping.then(AudioLoopRegion::default),
@@ -109,39 +116,39 @@ fn restored_music_starts_at_saved_content_position_before_output_resumes() {
     let (mut first, output) = rig();
     let mut music = request(true);
     music.group = AudioGroup::Music;
-    let id = first.play(music).unwrap();
+    let id = first.play_audio(music).unwrap();
     until(|| {
-        first.maintain();
+        first.maintain(Duration::ZERO);
         output.render();
-        first.snapshot(id).unwrap().request.start_position > Duration::from_millis(15)
+        first.audio_snapshot(id).unwrap().request.start_position > Duration::from_millis(15)
     });
     first.suspend();
     first
-        .command(id, AudioCommand::Seek(Duration::from_millis(49)))
+        .command(id, MediaCommand::Seek(Duration::from_millis(49)))
         .unwrap();
-    let saved = first.snapshot(id).unwrap();
+    let saved = first.audio_snapshot(id).unwrap();
     assert_eq!(saved.request.start_position, Duration::from_millis(49));
     assert!(saved.result.is_none());
     let position = saved.request.start_position;
     let (mut restored, restored_output) = rig();
     restored.suspend();
-    let id = restored.play(saved.request).unwrap();
+    let id = restored.play_audio(saved.request).unwrap();
     until(|| {
-        restored.maintain();
+        restored.maintain(Duration::ZERO);
         matches!(restored.entries[&id].phase, Phase::Playing(_))
     });
     assert_eq!(restored_output.render(), 0.);
     restored.resume();
     until(|| {
-        restored.maintain();
+        restored.maintain(Duration::ZERO);
         restored_output.render();
-        restored.snapshot(id).unwrap().request.start_position > position
+        restored.audio_snapshot(id).unwrap().request.start_position > position
     });
     first.close();
     restored.close();
     until(|| {
-        first.maintain();
-        restored.maintain();
+        first.maintain(Duration::ZERO);
+        restored.maintain(Duration::ZERO);
         !first.cleanup_pending() && !restored.cleanup_pending()
     });
 }
@@ -158,29 +165,29 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
         start: ms(20),
         end: Some(ms(60)),
     });
-    let id = player.play(music).unwrap();
-    player.command(id, AudioCommand::Pause).unwrap();
-    player.command(id, AudioCommand::Seek(ms(10))).unwrap();
+    let id = player.play_audio(music).unwrap();
+    player.command(id, MediaCommand::Pause).unwrap();
+    player.command(id, MediaCommand::Seek(ms(10))).unwrap();
     assert_eq!(player.position(id), Some(ms(10)));
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         matches!(player.entries[&id].phase, Phase::Queued)
     });
     // The queued decode must use this newer request when it reaches the control thread.
-    player.command(id, AudioCommand::Seek(ms(95))).unwrap();
+    player.command(id, MediaCommand::Seek(ms(95))).unwrap();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         matches!(player.entries[&id].phase, Phase::Ready(..))
     });
     assert_eq!(player.position(id), Some(ms(55)));
-    player.command(id, AudioCommand::Seek(ms(5))).unwrap();
+    player.command(id, MediaCommand::Seek(ms(5))).unwrap();
     assert_eq!(
         player.position(id),
         Some(ms(5)),
         "seeking back retains the loop intro"
     );
-    player.command(id, AudioCommand::Resume).unwrap();
-    player.maintain();
+    player.command(id, MediaCommand::Resume).unwrap();
+    player.maintain(Duration::ZERO);
     let Phase::Playing(media) = player.entries[&id].phase else {
         panic!("not admitted")
     };
@@ -188,9 +195,9 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     assert!(residency > 0);
     assert!(output.render() > 0.);
 
-    player.command(id, AudioCommand::Pause).unwrap();
-    player.command(id, AudioCommand::Seek(ms(30))).unwrap();
-    let saved = player.snapshot(id).unwrap();
+    player.command(id, MediaCommand::Pause).unwrap();
+    player.command(id, MediaCommand::Seek(ms(30))).unwrap();
+    let saved = player.audio_snapshot(id).unwrap();
     assert!(saved.paused);
     assert_eq!(saved.request.start_position, ms(30));
     assert_eq!(saved.request.volume, 0.5);
@@ -205,11 +212,14 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     player.suspend();
     for position in 0..1000 {
         player
-            .command(id, AudioCommand::Seek(ms(position)))
+            .command(id, MediaCommand::Seek(ms(position)))
             .unwrap();
     }
     assert_eq!(player.position(id), Some(ms(39)));
-    assert_eq!(player.snapshot(id).unwrap().request.start_position, ms(39));
+    assert_eq!(
+        player.audio_snapshot(id).unwrap().request.start_position,
+        ms(39)
+    );
     assert!(matches!(player.entries[&id].phase, Phase::Playing(current) if current == media));
     assert_eq!(
         player.pcm.usage().bytes,
@@ -217,50 +227,50 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
         "seek must reuse decoded PCM"
     );
     player.resume();
-    player.command(id, AudioCommand::Resume).unwrap();
+    player.command(id, MediaCommand::Resume).unwrap();
     until(|| {
         output.render();
-        player.maintain();
+        player.maintain(Duration::ZERO);
         player.position(id).unwrap() > ms(39)
     });
     assert!(player.take_result(id).is_none());
-    player.command(id, AudioCommand::Stop).unwrap();
-    player.maintain();
-    assert_eq!(player.take_result(id).unwrap().result, AudioResult::Stopped);
+    player.command(id, MediaCommand::Stop).unwrap();
+    player.maintain(Duration::ZERO);
+    assert_eq!(player.take_result(id).unwrap().result, MediaResult::Stopped);
 
-    let ending = player.play(request(false)).unwrap();
+    let ending = player.play_audio(request(false)).unwrap();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         matches!(player.entries[&ending].phase, Phase::Playing(_))
     });
-    player.command(ending, AudioCommand::Pause).unwrap();
+    player.command(ending, MediaCommand::Pause).unwrap();
     player
-        .command(ending, AudioCommand::Seek(ms(10_000)))
+        .command(ending, MediaCommand::Seek(ms(10_000)))
         .unwrap();
     assert_eq!(player.position(ending), Some(ms(250)));
     for _ in 0..4 {
         output.render();
-        player.maintain();
+        player.maintain(Duration::ZERO);
     }
     assert!(
         player.take_result(ending).is_none(),
         "paused end waits for resume"
     );
-    player.command(ending, AudioCommand::Resume).unwrap();
+    player.command(ending, MediaCommand::Resume).unwrap();
     until(|| {
         output.render();
-        player.maintain();
+        player.maintain(Duration::ZERO);
         matches!(player.entries[&ending].phase, Phase::Done(_))
     });
     player
-        .command(ending, AudioCommand::Seek(Duration::ZERO))
+        .command(ending, MediaCommand::Seek(Duration::ZERO))
         .unwrap();
     let completion = player.take_result(ending).unwrap();
-    assert_eq!(completion.result, AudioResult::Completed);
+    assert_eq!(completion.result, MediaResult::Completed);
     assert_eq!(completion.position, ms(250));
     player.close();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         !player.cleanup_pending()
     });
 }
@@ -324,7 +334,7 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
             VmLimits::default(),
         )
         .unwrap()
-        .with_audio(Box::new(backend))
+        .with_media(Box::new(backend))
         .unwrap();
         let mut runtime = StoryRuntime::new(driver);
         let mut peak = 0_f32;
@@ -354,24 +364,24 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
 #[test]
 fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure() {
     let (mut player, output) = rig();
-    let id = player.play(request(true)).unwrap();
+    let id = player.play_audio(request(true)).unwrap();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         output.render() > 0.1
     });
-    player.command(id, AudioCommand::Pause).unwrap();
+    player.command(id, MediaCommand::Pause).unwrap();
     // Flush the renderer's already-generated block; paused playback remains live.
     for _ in 0..4 {
         output.render();
     }
     assert_eq!(output.render(), 0.);
     assert!(player.take_result(id).is_none());
-    player.command(id, AudioCommand::Resume).unwrap();
+    player.command(id, MediaCommand::Resume).unwrap();
     until(|| output.render() > 0.1);
     player
         .command(
             id,
-            AudioCommand::Volume {
+            MediaCommand::Volume {
                 value: 0.,
                 duration: Duration::ZERO,
             },
@@ -384,7 +394,7 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
     player
         .command(
             id,
-            AudioCommand::Volume {
+            MediaCommand::Volume {
                 value: 1.,
                 duration: Duration::ZERO,
             },
@@ -395,23 +405,23 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
     let before = output.clock_observation().generated_frames;
     for _ in 0..20 {
         assert_eq!(output.render(), 0.);
-        player.maintain();
+        player.maintain(Duration::ZERO);
     }
     assert_eq!(output.clock_observation().generated_frames, before);
     player.resume();
     until(|| output.render() > 0.1);
     output.0.borrow_mut().as_mut().unwrap().fail_device();
     let result = loop {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         if let Some(completion) = player.take_result(id) {
             break completion.result;
         }
     };
-    assert!(matches!(result, AudioResult::Failed(_)));
+    assert!(matches!(result, MediaResult::Failed(_)));
     assert!(player.take_result(id).is_none());
     player.close();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         !player.cleanup_pending()
     });
     assert_eq!(player.pcm_usage().bytes, 0);
@@ -421,11 +431,11 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
 #[test]
 fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
     let (mut player, output) = rig();
-    let id = player.play(request(false)).unwrap();
+    let id = player.play_audio(request(false)).unwrap();
     player.cancel(id);
     player.close();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         !player.cleanup_pending()
     });
     assert_eq!(player.pcm_usage().bytes, 0);
@@ -438,17 +448,17 @@ fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
             max_bytes: 64,
         },
     );
-    let id = player.play(request(false)).unwrap();
+    let id = player.play_audio(request(false)).unwrap();
     let mut result = None;
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         result = player.take_result(id).map(|completion| completion.result);
         result.is_some()
     });
-    assert!(matches!(result, Some(AudioResult::Failed(_))));
+    assert!(matches!(result, Some(MediaResult::Failed(_))));
     player.close();
     until(|| {
-        player.maintain();
+        player.maintain(Duration::ZERO);
         !player.cleanup_pending()
     });
     assert_eq!(player.pcm_usage().bytes, 0);

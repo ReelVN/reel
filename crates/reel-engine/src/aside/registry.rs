@@ -27,7 +27,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::text" => &["value", "on_link"],
         "reel::text_input" => &["value", "on_change", "on_submit"],
         "reel::particles" => super::particles::PREFIX,
-        "reel::image" => IMAGE_PREFIX,
+        "reel::image" | "reel::video" => IMAGE_PREFIX,
         "reel::button" => &["label", "on_click"],
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
         "reel::toggle" | "reel::checkbox" => &["label", "value", "on_change"],
@@ -157,6 +157,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         "text",
         "text_input",
         "image",
+        "video",
         "particles",
         "row",
         "column",
@@ -277,7 +278,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "image" {
+            abi_version: if name == "video" {
+                1
+            } else if name == "image" {
                 12
             } else if name == "slider" {
                 11
@@ -636,6 +639,42 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     | if waits { Effects::WAIT } else { 0 },
             ),
             required_capabilities: vec!["reel.audio".into()],
+        });
+    }
+    for (name, parameters) in [
+        (
+            "play",
+            vec![
+                parameter("node", None),
+                parameter("looping", Some(bc::Const::Bool(false))),
+                parameter("volume", Some(bc::Const::Int(1))),
+                parameter("start", Some(bc::Const::Int(0))),
+                parameter("end", Some(bc::Const::Null)),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+        ),
+        (
+            "seek",
+            vec![parameter("activity", None), parameter("seconds", None)],
+        ),
+        ("position", vec![parameter("activity", None)]),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::video::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(
+                Effects::ALLOCATE
+                    | Effects::HOST
+                    | if name == "position" {
+                        0
+                    } else {
+                        Effects::WRITE
+                    },
+            ),
+            required_capabilities: vec!["reel.stage".into()],
         });
     }
     contracts.push(NativeContract {

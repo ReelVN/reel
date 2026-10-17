@@ -16,7 +16,7 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; audio is connected to creator source; video and save/load remain planned. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; audio is connected to creator source; video and save/load are connected to the same stage and execution state. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
@@ -561,22 +561,24 @@ visible=false hides the subtree and removes it from hit testing and focus; enabl
 
 ## 6 Logos, Title Screens, and Local Interaction
 
-Images, finite animation and button on_click callbacks are connected to creator source. The Rust media adapter supports non-fragmented MP4 with progressive 8-bit YUV420 H.264 Baseline video and optional mono/stereo AAC-LC audio, including pause, stop, seek, a shared content clock and background resource retirement. Aside video-node integration is still in progress, so the video-event example below remains a design target; game entry switching is also unimplemented.
+Video is connected to the shared stage, media activities and execution saves. The default desktop backend supports non-fragmented MP4 with progressive 8-bit YUV420 H.264 Baseline video and optional mono/stereo AAC-LC. Custom hosts can supply other formats or hardware decoding through MediaBackend; playback reports a source-located error when video support is unavailable.
 
-The startup flow is still an ordinary fn. Media play returns an activity handle. A normal click event can stop playback, and both natural completion and an explicit stop continue to the next line.
+`video(source, ...image node properties)` creates only the visual node; `movie.play(looping:false, volume:1, start:0, end:null, owner:null)` returns an activity. start/end specify the segment start and exclusive end; null uses the movie end. Playing again stops the node's previous playback. Natural completion and stop both continue after await; failure and node/owner retirement raise catchable errors. See the complete [author_video.aside](../../examples/author_video.aside) example.
+
 ```aside
-use game::ui::title::title;
-
-fn main() {
-    let logo = video("assets/logo.mp4");
-    stage.replace(logo);
-    let playback = logo.play();
-    logo.on_click(|event| playback.stop());
-    await playback;
-    stage.replace(title());
-}
+let movie = video("assets/logo.mp4", width: 1280, height: 720, fit: "contain");
+let playing = movie.play();
+stage.replace(button(width: 1280, height: 720, decorated: false,
+    background: "#000000", on_click: || stop(playing)) {
+    movie;
+});
+await playing;
 ```
-Video is an optional capability. A static-image logo uses image and run(tween(...)) to express the same flow. Media and animation share the activity control protocol. Creating a video node only creates its visual representation; play starts playback. Replacing the node ends its playback and event subscriptions.
+
+`pause(playing)` / `resume(playing)` / `stop(playing)` share the activity protocol. `finish(playing)` completes a finite video; stop a looping video. `video.seek(playing, seconds)` seeks to absolute content time and `video.position(playing)` returns the current seconds. Its audio uses the Music volume bus. Hiding the node does not pause it; combine ordinary clipping, cameras, opacity and controls.
+
+Saves record the path, segment, position and paused state and resume the same activity. A stopped/completed node's retained picture also restores without replaying audio. Pixels, decoder queues and GPU handles are not serialized. Decoding runs in the background; audible video follows consumed PCM and silent video follows session time. Both pause during host suspension.
+
 To add a temporary button during a story, add an ordinary button to the desired parent node and remove it normally afterward. The author decides which content it covers, whether it blocks input underneath, and when it disappears. One-off buttons use the same event and ownership rules.
 ```aside
 let hint = view.hud.add(button("查看照片",
@@ -894,7 +896,7 @@ Developers extending script interfaces from Rust can refer to the [Aside host SD
 
 Rust extensions can also declare variadic positional arguments with `#[aside(rest)]`. Authors call them with ordinary arguments or `...items`; each call receives a fresh outer array while its elements retain their normal shared identity. Defaults and bound methods use the same rules. This facility is independent of Reel and does not by itself enable action combinators.
 
-Basic text uses real text layout; external catalogs and reactive language switching are implemented. Inline rich text is implemented; video and Aside custom drawing remain future capabilities.
+Basic text uses real text layout; external catalogs and reactive language switching are implemented. Inline rich text and video nodes are implemented; Aside custom drawing remains a future capability.
 
 Rust custom drawing shares linear-premultiplied color conversion for solid colors, text and images. Both strokes and geometric clips support dashes, including curves, closed paths and dash offsets. An all-zero dash pattern draws a solid line; small miter limits use bevel joins. These capabilities belong to the existing Rust drawing interface; the Aside custom drawing entry point is still pending.
 
