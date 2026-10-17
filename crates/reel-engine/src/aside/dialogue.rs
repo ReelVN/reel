@@ -1,6 +1,6 @@
 //! Character values and grouped ADV dialogue use the existing session wait.
 use super::{AdapterError, NativeDispatch, SessionVm, rich_text, text};
-use crate::{DialogueLineInput, Session};
+use crate::{DialogueLineInput, HistoryInput, Session};
 use aside_vm::bytecode::{FunctionId, FunctionKind};
 use aside_vm::executor::{HostResponse, HostTicket};
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
@@ -16,7 +16,64 @@ fn character_values(heap: &Heap, value: Value) -> Result<[Value; 2], AdapterErro
     Ok([heap.host_payload(value, 0)?, heap.host_payload(value, 1)?])
 }
 
+pub(super) enum HistoryText {
+    Display,
+    Omit,
+    Text(reel_core::text::Text),
+}
+impl HistoryText {
+    pub(super) fn read(heap: &Heap, value: Value, chunk: usize) -> Result<Self, AdapterError> {
+        Ok(match value.as_bool() {
+            Some(true) => Self::Display,
+            Some(false) => Self::Omit,
+            None => Self::Text(rich_text::read(heap, value, chunk)?),
+        })
+    }
+    pub(super) fn input(&self) -> HistoryInput<'_> {
+        match self {
+            Self::Display => HistoryInput::Display,
+            Self::Omit => HistoryInput::Omit,
+            Self::Text(text) => HistoryInput::Text(text.into()),
+        }
+    }
+}
+
 impl SessionVm {
+    pub(super) fn record_history(
+        &mut self,
+        session: &mut Session,
+        ticket: HostTicket,
+        locale: &str,
+    ) -> Result<(), AdapterError> {
+        let args = self.vm.host_arguments(ticket)?;
+        let text = rich_text::read(self.vm.heap(), args[0], self.read_limit)?;
+        let speaker = if args[1].tag() == ValueTag::Null {
+            None
+        } else {
+            let [id, name] = character_values(self.vm.heap(), args[1])?;
+            Some((
+                text::read_string(self.vm.heap(), id, self.read_limit)?,
+                text::read_string(self.vm.heap(), name, self.read_limit)?,
+            ))
+        };
+        let locale = self.locale().unwrap_or_else(|| locale.into());
+        let content_id = self.dialogue_content_id(ticket);
+        let record = session.prepare_history_record(
+            &[DialogueLineInput {
+                speaker_id: speaker.as_ref().map(|s| s.0.as_str()),
+                speaker_name: speaker.as_ref().map_or("", |s| s.1.as_str()),
+                content_id: &content_id,
+                text: (&text).into(),
+                history: HistoryInput::Display,
+            }],
+            &locale,
+        )?;
+        self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+        session.commit_history_record(record);
+        self.issued = None;
+        Ok(())
+    }
+
     pub(super) fn character(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
         let args = self.vm.host_arguments(ticket)?;
         let name = args[0];
@@ -69,9 +126,13 @@ impl SessionVm {
         let [id, name] = character_values(self.vm.heap(), args[0])?;
         let text = args[1];
         rich_text::source(self.vm.heap(), text)?;
+        let history = args[2];
+        if history.as_bool().is_none() {
+            rich_text::source(self.vm.heap(), history)?;
+        }
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
-        let value = heap.alloc_host(fields, &[id, name, text], Some(immutable))?;
+        let value = heap.alloc_host(fields, &[id, name, text, history], Some(immutable))?;
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         self.issued = None;
         Ok(())
@@ -89,11 +150,13 @@ impl SessionVm {
         let read = |value| text::read_string(self.vm.heap(), value, self.read_limit);
         let (id, name) = (read(id)?, read(name)?);
         let text = rich_text::read(self.vm.heap(), args[1], self.read_limit)?;
+        let history = HistoryText::read(self.vm.heap(), args[2], self.read_limit)?;
         let content_id = self.dialogue_content_id(ticket);
         let interaction = self.publish_say(
             session,
             ticket,
             &[DialogueLineInput {
+                history: history.input(),
                 speaker_id: Some(&id),
                 speaker_name: &name,
                 content_id: &content_id,
@@ -136,6 +199,7 @@ impl SessionVm {
                     .iter()
                     .zip(&ids)
                     .map(|(row, id)| DialogueLineInput {
+                        history: row.3.input(),
                         speaker_id: Some(&row.0),
                         speaker_name: &row.1,
                         text: (&row.2).into(),
@@ -160,12 +224,12 @@ pub(super) struct DialogueReader {
     count: u32,
     root: RootToken,
     roots: Value,
-    current: Option<[Value; 3]>,
+    current: Option<[Value; 4]>,
     field: usize,
     bytes: Vec<u8>,
-    row: [String; 3],
-    rows: Vec<(String, String, reel_core::text::Text)>,
-    rich: bool,
+    row: [String; 4],
+    rows: Vec<(String, String, reel_core::text::Text, HistoryText)>,
+    rich: [bool; 2],
 }
 impl DialogueReader {
     fn new(heap: &mut Heap, array: Value, owner: RootOwner) -> Result<Self, AdapterError> {
@@ -189,7 +253,7 @@ impl DialogueReader {
             bytes: Vec::new(),
             row: Default::default(),
             rows: Vec::new(),
-            rich: false,
+            rich: [false; 2],
         })
     }
     fn step(
@@ -208,7 +272,7 @@ impl DialogueReader {
         while work < budget && self.rows.len() < self.count as usize {
             if self.current.is_none() {
                 let line = heap.sequence_get(self.array, self.rows.len() as u32)?;
-                if heap.host_payload_len(line)? != 3 {
+                if heap.host_payload_len(line)? != 4 {
                     return Err(AdapterError::Input(
                         "say expects character.line(text) values",
                     ));
@@ -217,12 +281,18 @@ impl DialogueReader {
                     heap.host_payload(line, 0)?,
                     heap.host_payload(line, 1)?,
                     heap.host_payload(line, 2)?,
+                    heap.host_payload(line, 3)?,
                 ];
-                let (source, rich) = rich_text::source(heap, values[2])?;
-                values[2] = source;
-                self.rich = rich;
-                for value in values {
-                    if heap.info(value)?.kind != ObjectKind::String {
+                for index in 2..4 {
+                    if index == 3 && values[index].as_bool().is_some() {
+                        continue;
+                    }
+                    let (source, rich) = rich_text::source(heap, values[index])?;
+                    values[index] = source;
+                    self.rich[index - 2] = rich;
+                }
+                for value in &values[..2] {
+                    if heap.info(*value)?.kind != ObjectKind::String {
                         return Err(AdapterError::Input("invalid dialogue line"));
                     }
                 }
@@ -232,7 +302,11 @@ impl DialogueReader {
                 continue;
             }
             let value = self.current.unwrap()[self.field];
-            let len = heap.info(value)?.len as usize;
+            let len = if value.as_bool().is_some() {
+                0
+            } else {
+                heap.info(value)?.len as usize
+            };
             if self.bytes.len() < len {
                 let mut bytes = [0; 256];
                 let count = (len - self.bytes.len())
@@ -250,13 +324,18 @@ impl DialogueReader {
                     .map_err(|_| AdapterError::Input("invalid UTF-8 string"))?;
                 self.field += 1;
                 work += 1;
-                if self.field == 3 {
+                if self.field == 4 {
                     self.rows
                         .try_reserve(1)
                         .map_err(|_| AdapterError::Allocation)?;
-                    let [id, name, text] = std::mem::take(&mut self.row);
+                    let [id, name, text, history] = std::mem::take(&mut self.row);
+                    let history = match value.as_bool() {
+                        Some(true) => HistoryText::Display,
+                        Some(false) => HistoryText::Omit,
+                        None => HistoryText::Text(rich_text::decode(history, self.rich[1])?),
+                    };
                     self.rows
-                        .push((id, name, rich_text::decode(text, self.rich)?));
+                        .push((id, name, rich_text::decode(text, self.rich[0])?, history));
                     self.current = None;
                     self.field = 0;
                 }

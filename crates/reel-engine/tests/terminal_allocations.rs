@@ -16,6 +16,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
         .begin_say(
             root,
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: Some("mio"),
                 speaker_name: "Mio",
                 content_id: "opening",
@@ -51,6 +52,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
         .begin_say(
             cancelled_root,
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "cancel",
@@ -72,6 +74,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
         .begin_say(
             timed_root,
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "timed",

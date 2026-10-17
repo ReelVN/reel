@@ -20,6 +20,7 @@ fn begin_dialogue(session: &mut Session) -> InteractionId {
         .begin_say(
             session.root_owner(),
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "retirement",

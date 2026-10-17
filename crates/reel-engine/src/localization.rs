@@ -175,9 +175,24 @@ impl Localization {
         fallback: &str,
         args: Option<&FluentArgs<'_>>,
     ) -> Result<String, String> {
+        self.format_in(None, id, fallback, args)
+    }
+
+    /// Format in one language without changing the selected UI language.
+    pub fn format_in(
+        &mut self,
+        locale: Option<&LanguageIdentifier>,
+        id: &str,
+        fallback: &str,
+        args: Option<&FluentArgs<'_>>,
+    ) -> Result<String, String> {
+        let base =
+            locale.map(|locale| LanguageIdentifier::from_parts(locale.language, None, None, &[]));
+        let selected = locale.unwrap_or(&self.locale);
+        let base = base.as_ref().unwrap_or(&self.base_locale);
         let empty = FluentArgs::new();
         let parameters = args.unwrap_or(&empty);
-        for locale in [&self.locale, &self.base_locale] {
+        for locale in [selected, base] {
             if let Some(result) = self
                 .catalogs
                 .get(locale)
@@ -189,10 +204,10 @@ impl Localization {
         if args.is_none() {
             return Ok(fallback.into());
         }
-        let key = (self.locale.clone(), fallback.into());
+        let key = (selected.clone(), fallback.into());
         if !self.templates.contains_key(&key) {
             let source = format!("fallback = {}", fallback.replace('\n', "\n    "));
-            let catalog = Catalog::parse(&self.locale.to_string(), id, source)?;
+            let catalog = Catalog::parse(&selected.to_string(), id, source)?;
             self.templates.insert(key.clone(), catalog);
         }
         self.templates[&key]

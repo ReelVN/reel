@@ -21,6 +21,7 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
         .begin_say(
             session.root_owner(),
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: Some("mio"),
                 speaker_name: "Mio",
                 content_id: "cost",

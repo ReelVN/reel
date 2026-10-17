@@ -20,7 +20,15 @@ fn registry() -> &'static SnapshotRegistry {
             ("reel.audio", audio::readonly),
         ] {
             registry
-                .register_validator(name, if name == "reel.audio" { 2 } else { 1 }, validator)
+                .register_validator(
+                    name,
+                    if matches!(name, "reel.audio" | "reel.character") {
+                        2
+                    } else {
+                        1
+                    },
+                    validator,
+                )
                 .unwrap();
         }
         registry

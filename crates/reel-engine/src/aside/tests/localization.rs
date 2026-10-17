@@ -49,8 +49,13 @@ fn external_catalogs_react_without_changing_committed_interactions() {
         localization.set_locale("zh-CN");
         let data = model({n: 1});
         let caption = text(value: derive(|| tr("你好", id: "hello")));
+        let bilingual = column {
+            text(tr("你好", id: "hello", locale: "zh-CN"));
+            text(value: derive(|| tr("你好", id: "hello", locale: "en-US")));
+        };
         stage.replace(column() {
             caption;
+            bilingual;
             text(value: derive(|| tr("{ $n } 条消息", id: "count", params: {n: data.n})));
             button("English", on_click: |event| {
                 localization.set_locale("en-US"); data.n = 2;
@@ -58,6 +63,15 @@ fn external_catalogs_react_without_changing_committed_interactions() {
             button("Chinese", on_click: |event| localization.set_locale("zh-CN"));
         });
         localization.load("en", "valid.ftl");
+        if localization.locale() != "zh-CN"
+           || tr("你好", id: "hello", locale: "en-US") != "Hello"
+           || tr("原文", id: "missing", locale: "en") != "原文"
+           || tr("", id: "count", params: {n: 1}, locale: "en") != "One" {
+            throw "per-call language changed global selection or lookup";
+        }
+        let mut invalid_locale = false;
+        try { tr("你好", locale: "not a locale"); } catch error { invalid_locale = true; }
+        if !invalid_locale || localization.locale() != "zh-CN" { throw "locale validation"; }
         let mut rejected = false;
         try { localization.load("en", "broken.ftl"); } catch error {
             rejected = error.starts_with("broken.ftl:");
@@ -104,6 +118,11 @@ fn external_catalogs_react_without_changing_committed_interactions() {
         assert_eq!(
             vm.stage().node(caption).unwrap().kind,
             NodeKind::Text("你好".into())
+        );
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("Hello".into()))
         );
         assert_eq!(click(&mut vm, &mut session, "English"), english);
         for _ in 0..2 {

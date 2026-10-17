@@ -165,13 +165,14 @@ fn collect(input: &Path) -> Result<SourceCatalog, String> {
             }
             let call = NodeId(index as u32);
             let mut reference = context.reference(call);
-            let arguments = match context.arguments(arguments, &["source", "id", "params"]) {
-                Ok(arguments) => arguments,
-                Err(reason) => {
-                    skipped.push(format!("{reference}: {reason}"));
-                    continue;
-                }
-            };
+            let arguments =
+                match context.arguments(arguments, &["source", "id", "params", "locale"]) {
+                    Ok(arguments) => arguments,
+                    Err(reason) => {
+                        skipped.push(format!("{reference}: {reason}"));
+                        continue;
+                    }
+                };
             let Some(original) = arguments[0].and_then(|value| context.string(value)) else {
                 skipped.push(format!(
                     "{reference}: dynamic source text; use a static tr source at its declaration"

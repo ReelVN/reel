@@ -43,22 +43,32 @@ impl History {
             } else {
                 None
             };
-            for (i, line) in group.lines().iter().enumerate() {
+            for line in group.lines() {
                 let (id, name, text, speaker, content) = if let Some(active) = active {
-                    let row = heap.sequence_get(active, i as u32)?;
+                    let row = heap.sequence_get(active, line.id().index() as u32)?;
                     let get = |field: LineField| {
                         heap.host_property(PropertyId {
                             host: row,
                             field: field as u32,
                         })
                     };
-                    (
+                    let values = (
                         get(LineField::Id)?,
                         get(LineField::SpeakerName)?,
                         get(LineField::Text)?,
                         get(LineField::SpeakerId)?,
                         get(LineField::ContentId)?,
-                    )
+                    );
+                    let Some(InteractionView::Dialogue(display)) = session.view().interaction
+                    else {
+                        unreachable!("active history group belongs to the displayed dialogue")
+                    };
+                    let text = if display.lines()[line.id().index()].content() == line.content() {
+                        values.2
+                    } else {
+                        super::super::rich_text::alloc(heap, line.content().styled(), chunk)?
+                    };
+                    (values.0, values.1, text, values.3, values.4)
                 } else {
                     (
                         line_id(heap, line.id())?,

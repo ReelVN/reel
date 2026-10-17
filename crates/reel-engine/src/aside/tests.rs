@@ -4,6 +4,7 @@ use crate::{Epoch, InputAction, OwnerLifecycle, SessionId};
 use aside_vm::bytecode as bc;
 mod activities;
 mod buttons;
+mod dialogue_history;
 mod dynamic_stage;
 mod localization;
 mod models;
@@ -241,7 +242,7 @@ fn independent_registration_rejects_package_effect_mutability_abi_and_capability
         let signature = p.natives[0].signature.index();
         match alteration {
             0 => p.signatures[signature].effects = Effects(Effects::HOST),
-            1 => p.signatures[signature].parameters[0].mutable = true,
+            1 => p.signatures[signature].parameters.last_mut().unwrap().mutable = true,
             2 => p.natives[0].abi_version += 1,
             _ => {
                 p.natives[0].capabilities.clear();
@@ -420,6 +421,7 @@ fn staged_history_can_be_discarded_without_spending_identity() {
     let mut s = session();
     let owner = s.root_owner();
     let line = DialogueLineInput {
+        history: Default::default(),
         speaker_id: None,
         speaker_name: "",
         content_id: "source:1",
@@ -446,6 +448,7 @@ fn failed_pending_response_rolls_back_history_and_releases_new_key_roots() {
         s.begin_say(
             owner,
             &[DialogueLineInput {
+                history: Default::default(),
                 speaker_id: None,
                 speaker_name: "",
                 content_id: "source",

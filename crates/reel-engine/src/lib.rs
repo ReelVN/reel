@@ -111,6 +111,16 @@ pub struct DialogueLineInput<'a> {
     pub speaker_name: &'a str,
     pub content_id: &'a str,
     pub text: TextInput<'a>,
+    pub history: HistoryInput<'a>,
+}
+
+/// History content is chosen at submission; display and read identity stay unchanged.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum HistoryInput<'a> {
+    #[default]
+    Display,
+    Omit,
+    Text(TextInput<'a>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1118,12 +1128,21 @@ impl Session {
                 timing: Default::default(),
             });
             current_line_ids.push(line_id);
-            history_lines.push(HistoryLine {
-                id: line_id,
-                speaker_id: copy_optional_text(line.speaker_id)?,
-                speaker_name: copy_text(line.speaker_name)?,
-                content,
-            });
+            let history_content = match line.history {
+                HistoryInput::Display => Some(content),
+                HistoryInput::Omit => None,
+                HistoryInput::Text(text) => {
+                    Some(copy_content(&DialogueLineInput { text, ..*line })?)
+                }
+            };
+            if let Some(content) = history_content {
+                history_lines.push(HistoryLine {
+                    id: line_id,
+                    speaker_id: copy_optional_text(line.speaker_id)?,
+                    speaker_name: copy_text(line.speaker_name)?,
+                    content,
+                });
+            }
         }
         self.read_progress
             .ids
@@ -1150,9 +1169,78 @@ impl Session {
         // Everything fallible is complete. Both publications use reserved storage.
         self.active = Some(Interaction::Dialogue(dialogue));
         self.check_skip_boundary();
-        self.history.push(history);
+        // Preserve the Rust empty-group operation, but omit groups whose authored
+        // lines explicitly opted out of history.
+        if !history.lines.is_empty() || lines.is_empty() {
+            self.history.push(history);
+        }
         self.next_interaction = id.generation.checked_add(1);
         Ok(id)
+    }
+
+    /// Append history without changing the active dialogue, choices or read progress.
+    pub fn record_history(
+        &mut self,
+        lines: &[DialogueLineInput<'_>],
+        locale: &str,
+    ) -> Result<(), SessionError> {
+        let group = self.prepare_history_record(lines, locale)?;
+        self.commit_history_record(group);
+        Ok(())
+    }
+
+    fn prepare_history_record(
+        &mut self,
+        lines: &[DialogueLineInput<'_>],
+        locale: &str,
+    ) -> Result<HistoryGroup, SessionError> {
+        self.ensure_running()?;
+        if locale.is_empty() {
+            return Err(SessionError::EmptyLocale);
+        }
+        let id = InteractionId {
+            identity: self.identity,
+            generation: self
+                .next_interaction
+                .ok_or(SessionError::IdentityExhausted)?,
+        };
+        let mut records = reserved_vec(lines.len())?;
+        for (index, line) in lines.iter().enumerate() {
+            if line.content_id.is_empty() {
+                return Err(SessionError::EmptyContentId);
+            }
+            let text = match line.history {
+                HistoryInput::Display => line.text,
+                HistoryInput::Omit => continue,
+                HistoryInput::Text(text) => text,
+            };
+            records.push(HistoryLine {
+                id: DialogueLineId {
+                    interaction_id: id,
+                    index,
+                },
+                speaker_id: copy_optional_text(line.speaker_id)?,
+                speaker_name: copy_text(line.speaker_name)?,
+                content: copy_content(&DialogueLineInput { text, ..*line })?,
+            });
+        }
+        let group = HistoryGroup {
+            group_id: HistoryGroupId(id),
+            interaction_id: id,
+            lines: records,
+            page_locale: copy_text(locale)?,
+        };
+        self.history
+            .try_reserve(1)
+            .map_err(|_| SessionError::AllocationFailed)?;
+        Ok(group)
+    }
+
+    fn commit_history_record(&mut self, group: HistoryGroup) {
+        if !group.lines.is_empty() {
+            self.next_interaction = group.interaction_id.generation.checked_add(1);
+            self.history.push(group);
+        }
     }
 
     /// Copy option rows, preserving order and returning their original business keys.

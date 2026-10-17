@@ -9,4 +9,8 @@ fn main() {
     say([mio.line("一二三"), eri.line("四五")]);
     game.configure(text_speed: 0);
     narrator("The conversation stays in history.");
+    mio("……", history: "I remember the rain.");
+    game.record("The train is arriving.", speaker: mio);
+    narrator("A fleeting thought.", history: false);
+    say([mio.line("Noise.", history: false), eri.line("Stay.", history: rich("[b]Stay.[/b]"))]);
 }

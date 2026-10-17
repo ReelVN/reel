@@ -417,6 +417,15 @@ Bindable dialogue, custom ADV/NVL and choice views are available in [author_narr
 Dialogue lines, choices, interaction text and session history grow with the content. History preserves the whole session; reaching a display cache capacity does not interrupt the story or discard earlier records. Actual allocation failure is reported.
 
 Define each character once in a module. Each line of dialogue calls the speaker object; narration calls narrator. A standalone string is still just a string. A character call updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
+
+The `history` argument controls recording: true (the default) keeps the displayed text, false omits the line, and a string or rich value supplies replacement history text. Character calls, narrator and .line share this option. Display, advancement and read tracking still use the original dialogue. This supports glitch effects, unrecorded thoughts and complete sentences in the log. Replacement text can use tr; its language is fixed at submission. Mixed groups keep only recorded lines; an entirely omitted group adds no empty history item. See [author_dialogue.aside](../../examples/author_dialogue.aside).
+```aside
+mio("……", history: "I remember the rain.");
+narrator("A fleeting thought.", history: false);
+say([mio.line("Noise.", history: false), eri.line("Stay.", history: rich("[b]Stay.[/b]"))]);
+```
+
+For background voice with a history entry only, call `game.record("The train is arriving.", speaker: mio)`; omitting speaker records narration. It returns immediately without changing dialogue or choices, waiting for a click, or marking text read. Ordinary tasks and control callbacks can use it too; audio.play controls the audio independently. These entries share the existing history and save data, so the same history UI displays them.
 ```aside
 use game::ui::room::room_view;
 
@@ -882,7 +891,15 @@ Author audio connects background resource loading, the real mixer and story wait
 
 `localization.load(locale, source)` reads a UTF-8 Fluent catalog through the asset service. The calling task waits for background IO and parsing. Success replaces that locale's catalog; IO, syntax and duplicate-ID errors can be caught with try/catch and preserve the old catalog. Cancelling the task cancels the load. `localization.set_locale(locale)` selects a language; `localization.locale()` reads the observable language tag.
 
-`tr(source, id: null, params: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
+`tr(source, id: null, params: null, locale: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
+
+A per-call `locale` lets one view retrieve several languages without changing the global selection. For bilingual dialogue, include both lines in your view and bind reveal independently on the main line. Missing catalogs or translations use the same source fallback. Both calls share loaded catalogs rather than copying a language pack.
+```aside
+column(gap: 6) {
+    text(tr("你好。", id: "greeting", locale: "zh-CN"), font_size: 28);
+    text(tr("你好。", id: "greeting", locale: "en"), font_size: 18);
+}
+```
 
 Use `derive(|| tr(...))` for live UI: changing language reevaluates subscribed expressions. Ordinary tr calls, submitted dialogue/choices, input drafts and stored history strings retain their evaluated content. For live chat history or choice presentation, retain IDs, source text and parameters and call tr in the display binding; branch keys remain independent of labels. No special LocalText type is required.
 

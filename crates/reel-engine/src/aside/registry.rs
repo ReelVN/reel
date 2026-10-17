@@ -46,12 +46,22 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     .map(|(name, parameter, input, result)| NativeContract {
         rest: None,
         symbol: format!("reel::{name}"),
-        abi_version: if name == "narrator" { 2 } else { 1 },
-        parameters: vec![NativeParameter {
-            name: parameter.into(),
-            ty: input,
-            default: None,
-        }],
+        abi_version: if name == "narrator" { 3 } else { 1 },
+        parameters: {
+            let mut parameters = vec![NativeParameter {
+                name: parameter.into(),
+                ty: input,
+                default: None,
+            }];
+            if name == "narrator" {
+                parameters.push(NativeParameter {
+                    name: "history".into(),
+                    ty: BuiltinType::Any,
+                    default: Some(bc::Const::Bool(true)),
+                });
+            }
+            parameters
+        },
         result,
         effects: Effects::ALL,
         required_capabilities: capabilities(),
@@ -103,6 +113,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![
                 ("character", BuiltinType::Any, None),
                 ("text", BuiltinType::Any, None),
+                ("history", BuiltinType::Any, Some(bc::Const::Bool(true))),
             ],
             Effects::ALLOCATE,
         ),
@@ -111,6 +122,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![
                 ("character", BuiltinType::Any, None),
                 ("text", BuiltinType::Any, None),
+                ("history", BuiltinType::Any, Some(bc::Const::Bool(true))),
             ],
             Effects::ALL.0,
         ),
@@ -124,7 +136,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{symbol}"),
             abi_version: if symbol.starts_with("character::") {
-                2
+                3
             } else {
                 1
             },
@@ -334,6 +346,26 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec![],
         });
     }
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::game::record".into(),
+        abi_version: 1,
+        parameters: vec![
+            NativeParameter {
+                name: "text".into(),
+                ty: BuiltinType::Any,
+                default: None,
+            },
+            NativeParameter {
+                name: "speaker".into(),
+                ty: BuiltinType::Any,
+                default: Some(bc::Const::Null),
+            },
+        ],
+        result: BuiltinType::Null,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: capabilities(),
+    });
     let mut view_parameters = vec![NativeParameter {
         name: "build".into(),
         ty: BuiltinType::Any,
@@ -786,6 +818,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("source", None),
                 parameter("id", Some(bc::Const::Null)),
                 parameter("params", Some(bc::Const::Null)),
+                parameter("locale", Some(bc::Const::Null)),
             ],
             Effects::ALLOCATE,
             BuiltinType::String,
@@ -812,7 +845,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: symbol.into(),
-            abi_version: if symbol == "reel::tr" { 2 } else { 1 },
+            abi_version: if symbol == "reel::tr" { 3 } else { 1 },
             parameters,
             result,
             effects: Effects(effects),
