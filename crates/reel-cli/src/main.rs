@@ -245,6 +245,9 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 text: args.text,
                 modules,
                 entry,
+                pack_bytes: args
+                    .pack_bytes
+                    .unwrap_or(std::num::NonZeroU64::new(2 << 30).unwrap()),
             };
             match reel_cli::distribution::export(&loaded, &artifact, &options) {
                 Ok(result) => {

@@ -16,6 +16,7 @@ use reel_player::{
 use std::{
     collections::BTreeMap,
     fs::{self, File},
+    io::{Read, Seek, SeekFrom},
     path::Path,
     time::{Duration, Instant},
 };
@@ -98,6 +99,8 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
     .unwrap();
     fs::write(catalogs.join("en.ftl"), "opening = Packaged translation.\n").unwrap();
     fs::write(resources.join("sample.bin"), b"range-readable resource").unwrap();
+    fs::write(resources.join("00-small.bin"), [1; 17]).unwrap();
+    fs::write(resources.join("01-large.bin"), [2; 1024]).unwrap();
     let modules = BTreeMap::from([
         ("shared".into(), library),
         ("local".into(), nested),
@@ -110,10 +113,11 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         output: root.join("development"),
         overwrite: false,
         entry: loaded.entry(None),
+        pack_bytes: std::num::NonZeroU64::new(128).unwrap(),
         modules,
         resources: vec![Mount {
             prefix: "assets".into(),
-            directory: resources,
+            directory: resources.clone(),
         }],
         text: vec![Mount {
             prefix: "locales".into(),
@@ -147,6 +151,33 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
             assert!(!relocated.join("script").exists());
             assert!(!relocated.join("locales").exists());
             assert!(!relocated.join("assets").exists());
+            assert_eq!(
+                manifest.resources,
+                ["resources.rpk", "resources-002.rpk", "resources-003.rpk"]
+            );
+            for name in &manifest.resources {
+                let mut file = File::open(relocated.join(name)).unwrap();
+                let index = ArchiveIndex::read(&mut file).unwrap();
+                assert_eq!(index.entries().len(), 1);
+                for entry in index.entries() {
+                    if entry.length > options.pack_bytes.get() {
+                        assert_eq!(entry.path, "assets/01-large.bin");
+                    } else {
+                        assert!(file.metadata().unwrap().len() <= options.pack_bytes.get());
+                    }
+                    file.seek(SeekFrom::Start(entry.offset)).unwrap();
+                    let mut content = vec![];
+                    (&mut file)
+                        .take(entry.length)
+                        .read_to_end(&mut content)
+                        .unwrap();
+                    assert_eq!(
+                        content,
+                        fs::read(resources.join(entry.path.strip_prefix("assets/").unwrap()))
+                            .unwrap()
+                    );
+                }
+            }
             let decoded = distribution::load(&relocated.join("release.json")).unwrap();
             let program = decoded.package.program();
             assert!(program.package().sources.is_empty());
@@ -211,7 +242,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
             "Packaged translation."
         );
     }
-    let archive = root.join("relocated-release/resources.rpk");
+    let archive = root.join("relocated-release/resources-003.rpk");
     let index = ArchiveIndex::read(&mut File::open(archive).unwrap()).unwrap();
     assert_eq!(index.get("assets/sample.bin").unwrap().length, 23);
 }

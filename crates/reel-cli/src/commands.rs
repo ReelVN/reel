@@ -182,6 +182,9 @@ pub struct Export {
     /// Package translation catalogs under their logical prefix; repeat as needed.
     #[arg(long, value_name = "PREFIX=DIRECTORY", value_parser = Mount::parse)]
     pub text: Vec<Mount>,
+    /// Target resource volume size including index; defaults to 2147483648 (2 GiB).
+    #[arg(long, value_name = "BYTES", requires = "release")]
+    pub pack_bytes: Option<std::num::NonZeroU64>,
     #[arg(long, value_enum, default_value = "human")]
     pub format: Format,
 }

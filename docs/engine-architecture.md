@@ -545,7 +545,7 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 `reel build <project> --output <file.asb>` 生成可独立加载的代码包。默认 Debug 保留完整源码、指令源码映射和声明位置；`--release` 剥离这些调试数据，保留运行时符号、结构与实际使用的常量。两者共用编译、验证与执行语义。Release 故障报告错误类型、函数与指令位置，不伪造源码行列。执行快照核对实际代码身份，不跨不同产物迁移。
 
-`reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug ASB、已导入的源码模块、散资源和相对路径的源码配置；`reel dev <release.json>` 可继续编译源码。发布导出包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，不复制源码或散资源。两者均可 `reel run <release.json>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
+`reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug ASB、已导入的源码模块、散资源和相对路径的源码配置；`reel dev <release.json>` 可继续编译源码。发布导出包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，不复制源码或散资源。资源按逻辑路径排序，以完整资源为边界分卷；默认目标为 2 GiB（含包头和索引），发布参数 `--pack-bytes <非零字节数>` 可调整。第一卷为 `resources.rpk`，后续为 `resources-002.rpk` 等，由清单按顺序挂载。单个资源超过目标时独占一卷，不切断图片或媒体范围、不限制资源总量。两者均可 `reel run <release.json>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
 
 发布清单只保存相对路径：code、可空 text、按覆盖顺序排列的 resources、可空 loose、可空 source。source 保存入口源码、模块根与函数名。加载先验证清单路径与代码，再绑定文本池；图片、字体、翻译和媒体统一交给 AssetIo。发布默认 loose 为 null，不探测附近散文件；显式 `run --assets <directory>` 开启覆盖。散文件只在 NotFound 时回退包，包按声明顺序后者覆盖前者。资源内容版本由实际选中的条目决定。
 

@@ -119,6 +119,7 @@ impl ArchiveIndex {
 pub struct ArchiveWriter<W> {
     output: W,
     index: ArchiveIndex,
+    index_bytes: u64,
 }
 impl<W: Write + Seek> ArchiveWriter<W> {
     pub fn new(mut output: W, kind: ArchiveKind) -> io::Result<Self> {
@@ -128,11 +129,24 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         output.write_all(&[0; HEADER_LEN as usize])?;
         Ok(Self {
             output,
+            index_bytes: 0,
             index: ArchiveIndex {
                 kind,
                 entries: BTreeMap::new(),
             },
         })
+    }
+    pub fn is_empty(&self) -> bool {
+        self.index.entries.is_empty()
+    }
+    /// Final size including the index if this complete resource is appended.
+    pub fn encoded_len_after(&mut self, path: &str, length: u64) -> io::Result<u64> {
+        self.output
+            .stream_position()?
+            .checked_add(self.index_bytes)
+            .and_then(|n| n.checked_add(ENTRY_FIXED_LEN + path.len() as u64))
+            .and_then(|n| n.checked_add(length))
+            .ok_or_else(|| invalid("archive exceeds format width"))
     }
     pub fn add(&mut self, path: &str, input: &mut impl Read) -> io::Result<&Entry> {
         validate_path(path)?;
@@ -164,6 +178,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             length,
             version: *hash.finalize().as_bytes(),
         };
+        self.index_bytes += ENTRY_FIXED_LEN + path.len() as u64;
         self.index.entries.insert(path.into(), entry);
         Ok(self.index.entries.get(path).unwrap())
     }

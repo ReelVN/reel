@@ -9,6 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
+    num::NonZeroU64,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -41,6 +42,32 @@ pub struct ExportOptions {
     pub text: Vec<Mount>,
     pub modules: BTreeMap<String, PathBuf>,
     pub entry: String,
+    pub pack_bytes: NonZeroU64,
+}
+
+fn resource_volumes(
+    files: &BTreeMap<String, PathBuf>,
+    staging: &Path,
+    target: u64,
+) -> io::Result<Vec<String>> {
+    let mut names = vec!["resources.rpk".to_owned()];
+    let mut writer = ArchiveWriter::new(
+        File::create(staging.join(&names[0]))?,
+        ArchiveKind::Resources,
+    )?;
+    for (name, path) in files {
+        let mut file = File::open(path)?;
+        if !writer.is_empty() && writer.encoded_len_after(name, file.metadata()?.len())? > target {
+            writer.finish()?.sync_all()?;
+            let volume = format!("resources-{:03}.rpk", names.len() + 1);
+            writer =
+                ArchiveWriter::new(File::create(staging.join(&volume))?, ArchiveKind::Resources)?;
+            names.push(volume);
+        }
+        writer.add(name, &mut file)?;
+    }
+    writer.finish()?.sync_all()?;
+    Ok(names)
 }
 
 pub struct Exported {
@@ -266,15 +293,7 @@ pub fn export(
             }
             writer.finish()?.sync_all()?;
             manifest.text = Some("game.rtp".into());
-            let mut writer = ArchiveWriter::new(
-                File::create(staging.join("resources.rpk"))?,
-                ArchiveKind::Resources,
-            )?;
-            for (name, file) in &resources {
-                writer.add(name, &mut File::open(file)?)?;
-            }
-            writer.finish()?.sync_all()?;
-            manifest.resources.push("resources.rpk".into());
+            manifest.resources = resource_volumes(&resources, staging, options.pack_bytes.get())?;
         } else {
             for (name, file) in resources.iter().chain(text.iter()) {
                 copy(file, &staging.join(name))?;
