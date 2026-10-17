@@ -1,24 +1,26 @@
 //! Source-first localization tools sharing the author compiler and Fluent runtime.
 use aside_compiler::{
-    SourceMap, SyntaxKind,
+    SourceMap, SourcePosition, SyntaxKind,
     hir::{AnalyzedModule, FieldKey, Form, HirKind, NodeId, SymbolId},
 };
 use aside_vm::bytecode as bc;
+use fluent_syntax::{ast::Entry, parser};
 use reel_engine::{
     aside::source,
     localization::{Catalog, message_id},
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,
-    io::Write as _,
-    path::Path,
+    io::{self, Write as _},
+    path::{Path, PathBuf},
 };
 
 pub struct Extraction {
     pub messages: usize,
     pub occurrences: usize,
     pub skipped: Vec<String>,
+    pub stale_catalogs: Vec<PathBuf>,
     pub cleanup_warning: Option<String>,
 }
 
@@ -27,7 +29,17 @@ struct Message {
     source: String,
     template: bool,
     references: Vec<String>,
+    module: PathBuf,
 }
+
+struct SourceCatalog {
+    messages: Vec<Message>,
+    occurrences: usize,
+    skipped: Vec<String>,
+}
+
+const GENERATED_HEADER: &str =
+    "## Generated source catalog. Translate a separate locale catalog.\n";
 
 /// Parse the same complete catalog that the player installs, without running a story.
 pub fn check(path: &Path, locale: &str) -> Result<(), String> {
@@ -38,6 +50,61 @@ pub fn check(path: &Path, locale: &str) -> Result<(), String> {
 
 /// Extract only statically identified calls; dynamic calls are reported individually.
 pub fn extract(input: &Path, output: &Path, overwrite: bool) -> Result<Extraction, String> {
+    let catalog = collect(input)?;
+    let text = render(catalog.messages.iter())?;
+    let target = output_path(output)?;
+    let published =
+        reel_storage::publish(&target, overwrite, |file| file.write_all(text.as_bytes()))
+            .map_err(|error| format!("{}: {error}", target.display()))?;
+    Ok(catalog.result(published.cleanup_warning))
+}
+
+/// Mirror imported module paths without making those paths part of message identity.
+pub fn extract_directory(
+    input: &Path,
+    output: &Path,
+    overwrite: bool,
+) -> Result<Extraction, String> {
+    let catalog = collect(input)?;
+    let mut modules: BTreeMap<&Path, Vec<&Message>> = BTreeMap::new();
+    for message in &catalog.messages {
+        modules.entry(&message.module).or_default().push(message);
+    }
+    // Validate all patterns before touching outputs, including template fragments.
+    let rendered = modules
+        .into_iter()
+        .map(|(module, messages)| Ok((module.with_extension("ftl"), render(messages.into_iter())?)))
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    std::fs::create_dir_all(output).map_err(|error| format!("{}: {error}", output.display()))?;
+    let output = output.canonicalize().map_err(|error| error.to_string())?;
+    let old_files = catalog_files(&output)?;
+    if !overwrite {
+        for path in rendered.keys().map(|path| output.join(path)) {
+            if path.exists() {
+                return Err(format!(
+                    "{}: source catalog already exists; use --overwrite",
+                    path.display()
+                ));
+            }
+        }
+    }
+    let mut warnings = Vec::new();
+    for (module, text) in &rendered {
+        let target = output_path(&output.join(module))?;
+        let published =
+            reel_storage::publish(&target, overwrite, |file| file.write_all(text.as_bytes()))
+                .map_err(|error| format!("{}: {error}", target.display()))?;
+        warnings.extend(published.cleanup_warning);
+    }
+    let mut result = catalog.result((!warnings.is_empty()).then(|| warnings.join("\n")));
+    result.stale_catalogs = old_files
+        .into_iter()
+        .filter(|path| !rendered.contains_key(path.strip_prefix(&output).unwrap()))
+        .collect();
+    Ok(result)
+}
+
+fn collect(input: &Path) -> Result<SourceCatalog, String> {
     let loaded = crate::project::load(input)
         .map_err(|error| describe_failure(&error.failure, &error.sources))?;
     let compiled = source::compile_project(&loaded.sources, &loaded.aliases, 1)
@@ -62,7 +129,16 @@ pub fn extract(input: &Path, output: &Path, overwrite: bool) -> Result<Extractio
         }
     }
     let mut modules = compiled.modules.iter().collect::<Vec<_>>();
-    modules.sort_by_key(|module| module.source_path());
+    // The entry's source_path may be absolute, while imports are project-relative.
+    // Normalize both before choosing the deterministic owner of a shared message.
+    let module_path = |module: &AnalyzedModule| {
+        if module.canonical_path() == "main" {
+            PathBuf::from(loaded.input.file_name().expect("project entry filename"))
+        } else {
+            PathBuf::from(module.source_path())
+        }
+    };
+    modules.sort_by_key(|module| module_path(module));
     let mut messages: Vec<Message> = Vec::new();
     let mut identities: HashMap<String, usize> = HashMap::new();
     let mut skipped = Vec::new();
@@ -138,15 +214,35 @@ pub fn extract(input: &Path, output: &Path, overwrite: bool) -> Result<Extractio
                     source: original.into(),
                     template,
                     references: vec![reference],
+                    module: module_path(module),
                 });
             }
             occurrences += 1;
         }
     }
-    let mut text = String::from(
-        "## Generated source catalog. Translate a separate locale catalog.\n## IDs without an explicit id follow the exact source text; source edits create a new ID.\n\n",
-    );
-    for message in &messages {
+    Ok(SourceCatalog {
+        messages,
+        occurrences,
+        skipped,
+    })
+}
+
+impl SourceCatalog {
+    fn result(self, cleanup_warning: Option<String>) -> Extraction {
+        Extraction {
+            messages: self.messages.len(),
+            occurrences: self.occurrences,
+            skipped: self.skipped,
+            stale_catalogs: Vec::new(),
+            cleanup_warning,
+        }
+    }
+}
+
+fn render<'a>(messages: impl Iterator<Item = &'a Message>) -> Result<String, String> {
+    let mut text = String::from(GENERATED_HEADER);
+    text.push_str("## IDs without an explicit id follow the exact source text; source edits create a new ID.\n\n");
+    for message in messages {
         for reference in &message.references {
             writeln!(text, "# {reference}").unwrap();
         }
@@ -170,22 +266,26 @@ pub fn extract(input: &Path, output: &Path, overwrite: bool) -> Result<Extractio
         text.push_str(&entry);
         text.push('\n');
     }
-    Catalog::parse("und", &output.to_string_lossy(), text.clone())?;
-    let name = output.file_name().ok_or("output filename is missing")?;
-    let parent = output
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let target = parent
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", parent.display()))?
-        .join(name);
+    Ok(text)
+}
+
+fn output_path(output: &Path) -> Result<PathBuf, String> {
     if output
         .extension()
         .is_none_or(|extension| extension != "ftl")
     {
         return Err("localization output must be an explicit .ftl file".into());
     }
+    let name = output.file_name().ok_or("output filename is missing")?;
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    let target = parent
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", parent.display()))?
+        .join(name);
     if let Ok(metadata) = std::fs::symlink_metadata(&target)
         && !metadata.is_file()
     {
@@ -194,15 +294,106 @@ pub fn extract(input: &Path, output: &Path, overwrite: bool) -> Result<Extractio
             target.display()
         ));
     }
-    let published =
-        reel_storage::publish(&target, overwrite, |file| file.write_all(text.as_bytes()))
-            .map_err(|error| format!("{}: {error}", target.display()))?;
-    Ok(Extraction {
-        messages: messages.len(),
-        occurrences,
-        skipped,
+    Ok(target)
+}
+
+fn catalog_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    fn visit(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                visit(&entry.path(), files)?;
+            } else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "ftl") {
+                files.push(entry.path());
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    visit(directory, &mut files).map_err(|error| format!("{}: {error}", directory.display()))?;
+    files.sort();
+    Ok(files)
+}
+
+pub struct Bundle {
+    pub files: usize,
+    pub entries: usize,
+    pub cleanup_warning: Option<String>,
+}
+
+/// Validate and stream a language's module catalogs into one atomic build artifact.
+pub fn bundle(input: &Path, output: &Path, overwrite: bool) -> Result<Bundle, String> {
+    let input = input
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", input.display()))?;
+    let output = output_path(output)?;
+    if output.starts_with(&input) {
+        return Err("bundled output must be outside the source catalog directory".into());
+    }
+    let files = catalog_files(&input)?;
+    if files.is_empty() {
+        return Err(format!("{}: no .ftl catalogs found", input.display()));
+    }
+    let mut identities = HashMap::<String, (usize, SourcePosition)>::new();
+    let published = reel_storage::publish(&output, overwrite, |file| {
+        for (file_index, path) in files.iter().enumerate() {
+            let text = std::fs::read_to_string(path)
+                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
+            let positions = SourceMap::new(&text);
+            let resource = parser::parse_runtime(text.as_str()).map_err(|(_, errors)| {
+                io::Error::other(
+                    errors
+                        .iter()
+                        .map(|error| {
+                            format!(
+                                "{}: {error}",
+                                location(path, positions.position(error.pos.start).unwrap())
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            })?;
+            for entry in &resource.body {
+                // Fluent uses one shared namespace for messages and terms.
+                let id = match entry {
+                    Entry::Message(message) => message.id.name,
+                    Entry::Term(term) => term.id.name,
+                    _ => continue,
+                };
+                let offset = id.as_ptr().addr() - text.as_ptr().addr();
+                let position = positions.position(offset).unwrap();
+                if let Some(&(first_file, first_position)) = identities.get(id) {
+                    let declaration = location(path, position);
+                    let first = location(&files[first_file], first_position);
+                    return Err(io::Error::other(format!(
+                        "{declaration}: duplicate Fluent id {id:?}\nfirst declaration: {first}"
+                    )));
+                }
+                identities.insert(id.into(), (file_index, position));
+            }
+            // A blank line prevents the next file from continuing a comment/pattern.
+            file.write_all(text.as_bytes())?;
+            file.write_all(b"\n\n")?;
+        }
+        Ok(())
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(Bundle {
+        files: files.len(),
+        entries: identities.len(),
         cleanup_warning: published.cleanup_warning,
     })
+}
+
+fn location(path: &Path, position: SourcePosition) -> String {
+    format!(
+        "{}:{}:{}",
+        path.display(),
+        position.line + 1,
+        position.scalar_column + 1
+    )
 }
 
 /// Preserve prose and paragraph breaks, quoting only syntax and significant

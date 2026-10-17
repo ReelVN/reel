@@ -879,10 +879,10 @@ Rust 自定义绘制层的实色、文字和图像共用线性预乘颜色转换
 
 界面使用 `derive(|| tr(...))`，语言改变时只重新计算订阅的表达式；普通 tr 调用、已提交对白/选择、输入草稿与历史字符串保留求值时的内容。需要即时翻译的聊天历史或选择外观，可以保存 ID、原文和参数，在展示绑定中调用 tr；分支 key 始终独立于文案。无需特殊 LocalText 类型。
 
-以下片段来自 [localization.aside](../../examples/localization.aside)，英文语言包为 [en.ftl](../../examples/locales/en.ftl)。运行时以 examples 为资源根目录，并在宿主或 game.configure 中提供字体。
+以下片段来自 [localization.aside](../../examples/localization.aside)，英文译文位于 [locales/en](../../examples/locales/en/)。按下方命令合并后，运行时以 target/reel-artifacts/localization 为资源根目录，并在宿主或 game.configure 中提供字体。
 
 ```aside
-localization.load("en", "locales/en.ftl");
+localization.load("en", "en.ftl");
 localization.set_locale("zh-CN");
 let data = model({name: "Mio", count: 2});
 text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
@@ -893,10 +893,14 @@ button("English", on_click: |event| localization.set_locale("en"));
 
 ```sh
 reel loc extract examples/localization.aside --output source.ftl
-reel loc check examples/locales/en.ftl --locale en
+reel loc extract examples/localization.aside --output-dir source-catalog
+reel loc bundle examples/locales/en --output target/reel-artifacts/localization/en.ftl
+reel loc check target/reel-artifacts/localization/en.ftl --locale en
 ```
 
-提取使用正常模块解析，输出附带源码位置与函数上下文的 Fluent 原文目录；普通正文自动转义，带 params 的原文作为 Fluent 模板检查。动态文字或 ID 会报告位置，需由内容生成器提供目录。已有输出须加 --overwrite 才能替换；译文在独立的目标语言 FTL 中维护，工具不会猜测原文改动或覆盖译文。运行时只加载游戏使用的语言包，解析和静态文字准备在加载时完成。翻译资源替代仍属后续能力。
+提取跟随导入模块，包含源码位置与函数上下文。`--output-dir` 镜像模块路径，例如 story/day_one.aside 对应 story/day_one.ftl。相同 ID 只写入按相对路径排序最早的模块，保留所有调用位置。普通正文自动转义，带 params 的原文作为 Fluent 模板检查。动态文字或 ID 会报告位置，需由内容生成器提供目录。`--overwrite` 显式替换指定输出。目录模式保留其他文件，并逐一报告本次无归属的旧 FTL；合并前检查并移除，或提取到新的目录。手工译文与生成的原文目录分开维护，提取不隐式合并或改写译文。
+
+每种语言在独立目录中按剧情和 UI 组织，例如 locales/en/story/day_one.ftl 和 locales/en/ui/settings.ftl；公共术语可放在 common.ftl。`loc bundle` 按相对路径顺序合并为源目录之外的普通 FTL；作者只维护模块文件，发行语言包在构建时生成。跨文件引用照常使用，重复消息/术语 ID 与语法错误定位到原文件行列，失败保留旧产物；替换已有合并文件需加 `--overwrite`。移动译文文件不改变身份，运行时仍为每种语言加载一个目录，只加载游戏使用的语言。解析和静态文字准备在加载时完成，每次翻译不扫描文件。翻译资源替代仍属后续能力。
 video 是普通节点，audio 提供音轨、队列、循环区间、滤镜与同步组。play 返回可等待活动，stop 停在当前状态，finish 用于有终点的活动。轨道与资源由稳定身份管理，设备重建和 seek 保留或重新绑定逻辑等待；错误有明确终态。
 custom_node 可以直接注册 Aside 的 state、measure、record、route 和 event。measure/record 是受预算的只读布局/绘制回调；route 同步决定消费、捕获与焦点，然后 event 作为普通可暂停任务执行。这样小游戏节点能够阻止同次输入推进剧情，也能在业务回调中等待资源。新的底层图形/平台能力通过 native 模块注册。
 Camera、Mesh、Material 和 Effect 提供透视舞台与可编程效果，状态和资源身份仍进入保存。不同后端用能力清单说明所支持的实现与后备。Live2D、系统朗读、移动/Web 打包和外部服务属于完整目标的适配能力，具体 API 文档随已验证实现提供同一风格的使用示例。

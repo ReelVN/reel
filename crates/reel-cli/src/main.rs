@@ -324,7 +324,7 @@ fn run() -> io::Result<u8> {
     }
 }
 
-const LOCALIZATION_HELP: &str = "reel loc extract <source.aside|directory> --output <source.ftl> [--overwrite]\nreel loc check <catalog.ftl> --locale <language-tag>\nExtract follows the entry's imported modules and writes a source catalog. Dynamic calls are reported; translated catalogs are never merged or overwritten implicitly.";
+const LOCALIZATION_HELP: &str = "reel loc extract <source.aside|directory> (--output <source.ftl> | --output-dir <directory>) [--overwrite]\nreel loc bundle <locale-directory> --output <catalog.ftl> [--overwrite]\nreel loc check <catalog.ftl> --locale <language-tag>\nExtract follows imported modules; directory output mirrors their paths. Maintain translations separately from generated source catalogs. Bundle compiles a language's module catalogs into one FTL outside the source directory.";
 
 fn localization_command(raw: &[OsString]) -> io::Result<u8> {
     if raw.is_empty() || raw.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -333,18 +333,20 @@ fn localization_command(raw: &[OsString]) -> io::Result<u8> {
     }
     let parse = || -> Result<_, String> {
         let command = raw[0].to_str().ok_or(LOCALIZATION_HELP)?;
-        if command != "extract" && command != "check" {
+        if !matches!(command, "extract" | "bundle" | "check") {
             return Err(LOCALIZATION_HELP.into());
         }
         let mut source = None;
         let mut output = None;
+        let mut output_directory = false;
         let mut locale = None;
         let mut overwrite = false;
         let mut args = raw[1..].iter();
         while let Some(arg) = args.next() {
-            if arg == "--output" && output.is_none() {
+            if (arg == "--output" || arg == "--output-dir") && output.is_none() {
+                output_directory = arg == "--output-dir";
                 output = Some(PathBuf::from(
-                    args.next().ok_or("--output requires a file path")?,
+                    args.next().ok_or("output option requires a path")?,
                 ));
             } else if arg == "--locale" && locale.is_none() {
                 locale = Some(
@@ -364,7 +366,14 @@ fn localization_command(raw: &[OsString]) -> io::Result<u8> {
             }
         }
         if command == "extract" && (output.is_none() || locale.is_some()) {
-            return Err("extract requires --output and does not accept --locale".into());
+            return Err(
+                "extract requires --output or --output-dir and does not accept --locale".into(),
+            );
+        }
+        if command == "bundle" && (output.is_none() || output_directory || locale.is_some()) {
+            return Err(
+                "bundle requires --output and does not accept --output-dir or --locale".into(),
+            );
         }
         if command == "check" && (locale.is_none() || output.is_some() || overwrite) {
             return Err(
@@ -375,11 +384,12 @@ fn localization_command(raw: &[OsString]) -> io::Result<u8> {
             command,
             source.ok_or("missing source path")?,
             output,
+            output_directory,
             locale,
             overwrite,
         ))
     };
-    let (command, source, output, locale, overwrite) = match parse() {
+    let (command, source, output, output_directory, locale, overwrite) = match parse() {
         Ok(arguments) => arguments,
         Err(error) => {
             failure(false, "usage", None, &error)?;
@@ -399,7 +409,33 @@ fn localization_command(raw: &[OsString]) -> io::Result<u8> {
         };
     }
     let output = output.unwrap();
-    match reel_cli::localization::extract(&source, &output, overwrite) {
+    if command == "bundle" {
+        return match reel_cli::localization::bundle(&source, &output, overwrite) {
+            Ok(result) => {
+                writeln!(
+                    io::stdout().lock(),
+                    "Bundled {} entries from {} catalogs: {}",
+                    result.entries,
+                    result.files,
+                    output.display()
+                )?;
+                if let Some(warning) = result.cleanup_warning {
+                    writeln!(io::stderr().lock(), "warning: {warning}")?;
+                }
+                Ok(0)
+            }
+            Err(error) => {
+                failure(false, "localization", source.to_str(), &error)?;
+                Ok(1)
+            }
+        };
+    }
+    let extraction = if output_directory {
+        reel_cli::localization::extract_directory(&source, &output, overwrite)
+    } else {
+        reel_cli::localization::extract(&source, &output, overwrite)
+    };
+    match extraction {
         Ok(result) => {
             writeln!(
                 io::stdout().lock(),
@@ -411,6 +447,13 @@ fn localization_command(raw: &[OsString]) -> io::Result<u8> {
             )?;
             for skipped in result.skipped {
                 writeln!(io::stderr().lock(), "warning[localization]: {skipped}")?;
+            }
+            for stale in result.stale_catalogs {
+                writeln!(
+                    io::stderr().lock(),
+                    "warning[localization]: {}: no current source messages; file left in place, review before bundling",
+                    stale.display()
+                )?;
             }
             if let Some(warning) = result.cleanup_warning {
                 writeln!(io::stderr().lock(), "warning: {warning}")?;
