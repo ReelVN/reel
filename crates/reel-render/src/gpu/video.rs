@@ -64,6 +64,7 @@ pub(super) fn upload(
         });
         Image {
             view: textures[0].create_view(&Default::default()),
+            texture: textures[0].clone(),
             size,
             yuv: Some(Planes {
                 textures,
