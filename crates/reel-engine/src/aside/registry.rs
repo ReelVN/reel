@@ -278,7 +278,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "video" { 1 } else if name == "image" {
+            abi_version: if name == "video" {
+                1
+            } else if name == "image" {
                 12
             } else if name == "slider" {
                 11
@@ -640,11 +642,40 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         });
     }
     for (name, parameters) in [
-        ("play", vec![parameter("node", None), parameter("looping", Some(bc::Const::Bool(false))), parameter("volume", Some(bc::Const::Int(1))), parameter("start", Some(bc::Const::Int(0))), parameter("end", Some(bc::Const::Null)), parameter("owner", Some(bc::Const::Null))]),
-        ("seek", vec![parameter("activity", None), parameter("seconds", None)]),
+        (
+            "play",
+            vec![
+                parameter("node", None),
+                parameter("looping", Some(bc::Const::Bool(false))),
+                parameter("volume", Some(bc::Const::Int(1))),
+                parameter("start", Some(bc::Const::Int(0))),
+                parameter("end", Some(bc::Const::Null)),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+        ),
+        (
+            "seek",
+            vec![parameter("activity", None), parameter("seconds", None)],
+        ),
         ("position", vec![parameter("activity", None)]),
     ] {
-        contracts.push(NativeContract { rest: None, symbol: format!("reel::video::{name}"), abi_version: 1, parameters, result: BuiltinType::Any, effects: Effects(Effects::ALLOCATE | Effects::HOST | if name == "position" { 0 } else { Effects::WRITE }), required_capabilities: vec!["reel.stage".into()] });
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::video::{name}"),
+            abi_version: 1,
+            parameters,
+            result: BuiltinType::Any,
+            effects: Effects(
+                Effects::ALLOCATE
+                    | Effects::HOST
+                    | if name == "position" {
+                        0
+                    } else {
+                        Effects::WRITE
+                    },
+            ),
+            required_capabilities: vec!["reel.stage".into()],
+        });
     }
     contracts.push(NativeContract {
         rest: None,

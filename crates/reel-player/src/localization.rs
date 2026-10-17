@@ -21,7 +21,7 @@ enum Pending {
         source: String,
     },
     Parsing,
-    Done(Result<Catalog, String>),
+    Done(Result<Box<Catalog>, String>),
 }
 pub struct AssetCatalogLoader {
     assets: Assets,
@@ -76,7 +76,7 @@ impl CatalogLoader for AssetCatalogLoader {
         self.worker.drain(&mut self.events, 32);
         for event in self.events.drain(..) {
             if let Some(pending) = self.pending.get_mut(&event.id) {
-                *pending = Pending::Done(event.result);
+                *pending = Pending::Done(event.result.map(Box::new));
             }
         }
         let pending = self.pending.get_mut(&id)?;
@@ -108,7 +108,7 @@ impl CatalogLoader for AssetCatalogLoader {
             let Pending::Done(result) = self.pending.remove(&id).unwrap() else {
                 unreachable!()
             };
-            Some(result)
+            Some(result.map(|catalog| *catalog))
         } else {
             None
         }

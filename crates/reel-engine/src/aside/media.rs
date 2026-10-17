@@ -1,6 +1,8 @@
 use super::{AdapterError, HostTicket, SessionVm, stage, text};
 use crate::audio::{AudioGroup, AudioLoopRegion, AudioRequest};
-use crate::media::{MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaResult, MediaPlayback};
+use crate::media::{
+    MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaPlayback, MediaResult,
+};
 use aside_vm::executor::{Completion, HostResponse, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
@@ -36,9 +38,15 @@ pub(super) struct Media {
     poster_cursor: usize,
 }
 
-struct Poster { saved: SavedPoster, pending: Option<MediaId> }
+struct Poster {
+    saved: SavedPoster,
+    pending: Option<MediaId>,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
-struct SavedPoster { target: NodeId, playback: crate::video::VideoPlaybackState }
+struct SavedPoster {
+    target: NodeId,
+    playback: crate::video::VideoPlaybackState,
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedMedia {
@@ -77,7 +85,12 @@ impl Media {
                         },
                     )
                 })
-                .chain(self.posters.iter().filter(|p| !self.live.iter().any(|l| l.target == Some(p.saved.target))).map(|p| Record::new(Part::VideoPoster, &p.saved)))
+                .chain(
+                    self.posters
+                        .iter()
+                        .filter(|p| !self.live.iter().any(|l| l.target == Some(p.saved.target)))
+                        .map(|p| Record::new(Part::VideoPoster, &p.saved)),
+                )
                 .chain(
                     self.waits
                         .iter()
@@ -98,8 +111,16 @@ impl Media {
         }
         if matches!(record.part, super::snapshot::Part::VideoPoster) {
             let saved: SavedPoster = record.read()?;
-            let id = self.backend.as_mut().ok_or(AdapterError::Input("restoring video requires a backend"))?.restore_video(saved.playback.clone()).map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
-            self.posters.push(Poster { saved, pending: Some(id) });
+            let id = self
+                .backend
+                .as_mut()
+                .ok_or(AdapterError::Input("restoring video requires a backend"))?
+                .restore_video(saved.playback.clone())
+                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+            self.posters.push(Poster {
+                saved,
+                pending: Some(id),
+            });
             return Ok(());
         }
         let mut saved: SavedMedia = record.read()?;
@@ -110,23 +131,44 @@ impl Media {
             match playback {
                 MediaPlayback::Audio(mut playback) => {
                     saved.result = playback.result.map(|result| MediaCompletion {
-                        result, position: playback.request.start_position,
+                        result,
+                        position: playback.request.start_position,
                     });
-                    if saved.result.is_none() && matches!(playback.request.group, AudioGroup::Effects | AudioGroup::Ui) {
-                        saved.result = Some(MediaCompletion { result: MediaResult::Completed, position: playback.request.start_position });
+                    if saved.result.is_none()
+                        && matches!(playback.request.group, AudioGroup::Effects | AudioGroup::Ui)
+                    {
+                        saved.result = Some(MediaCompletion {
+                            result: MediaResult::Completed,
+                            position: playback.request.start_position,
+                        });
                     }
                     if saved.result.is_none() {
-                        if playback.request.group == AudioGroup::Voice { playback.request.start_position = std::time::Duration::ZERO; }
+                        if playback.request.group == AudioGroup::Voice {
+                            playback.request.start_position = std::time::Duration::ZERO;
+                        }
                         playback.request.fade_in = std::time::Duration::ZERO;
-                        let backend = self.backend.as_mut().ok_or(AdapterError::Input("restoring media requires a backend"))?;
-                        id = backend.play_audio(playback.request).map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
-                        if playback.paused { backend.command(id, MediaCommand::Pause).map_err(aside_vm::snapshot::SnapshotError::Invalid)?; }
+                        let backend = self
+                            .backend
+                            .as_mut()
+                            .ok_or(AdapterError::Input("restoring media requires a backend"))?;
+                        id = backend
+                            .play_audio(playback.request)
+                            .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+                        if playback.paused {
+                            backend
+                                .command(id, MediaCommand::Pause)
+                                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+                        }
                     }
                 }
                 MediaPlayback::Video(playback) => {
                     video = Some(playback.request.clone());
-                    id = self.backend.as_mut().ok_or(AdapterError::Input("restoring media requires a backend"))?.restore_video(playback).map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
-
+                    id = self
+                        .backend
+                        .as_mut()
+                        .ok_or(AdapterError::Input("restoring media requires a backend"))?
+                        .restore_video(playback)
+                        .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
                 }
             }
         }
@@ -243,7 +285,9 @@ impl SessionVm {
         let now = self.logical_time();
         let elapsed = std::time::Duration::from_secs_f64((now - self.media.last_time).max(0.));
         self.media.last_time = now;
-        if let Some(backend) = &mut self.media.backend { backend.maintain(elapsed); }
+        if let Some(backend) = &mut self.media.backend {
+            backend.maintain(elapsed);
+        }
         let mut changed = false;
         for _ in 0..self.media.live.len().min(64) {
             if self.media.cursor >= self.media.live.len() {
@@ -259,7 +303,9 @@ impl SessionVm {
                 if live
                     .owner
                     .is_some_and(|id| self.stage.scene.node(id).is_none())
-                    || live.target.is_some_and(|id| self.stage.scene.node(id).is_none())
+                    || live
+                        .target
+                        .is_some_and(|id| self.stage.scene.node(id).is_none())
                 {
                     let position = backend
                         .position(live.id)
@@ -281,14 +327,35 @@ impl SessionVm {
                 }
             }
             if let Some(completion) = &live.result {
-                if live.has_frame && matches!(completion.result, MediaResult::Completed | MediaResult::Stopped)
+                if live.has_frame
+                    && matches!(
+                        completion.result,
+                        MediaResult::Completed | MediaResult::Stopped
+                    )
                     && let (Some(target), Some(request)) = (live.target, live.video.as_ref())
                 {
-                    let saved = SavedPoster { target, playback: crate::video::VideoPlaybackState {
-                        request: request.clone(), position: completion.position, paused: true, result: Some(completion.result.clone()),
-                    }};
-                    if let Some(poster) = self.media.posters.iter_mut().find(|p| p.saved.target == target) { poster.saved = saved; }
-                    else { self.media.posters.push(Poster { saved, pending: None }); }
+                    let saved = SavedPoster {
+                        target,
+                        playback: crate::video::VideoPlaybackState {
+                            request: request.clone(),
+                            position: completion.position,
+                            paused: true,
+                            result: Some(completion.result.clone()),
+                        },
+                    };
+                    if let Some(poster) = self
+                        .media
+                        .posters
+                        .iter_mut()
+                        .find(|p| p.saved.target == target)
+                    {
+                        poster.saved = saved;
+                    } else {
+                        self.media.posters.push(Poster {
+                            saved,
+                            pending: None,
+                        });
+                    }
                 }
                 let (message, code) = match &completion.result {
                     MediaResult::Completed => ("Completed", 0),
@@ -315,10 +382,14 @@ impl SessionVm {
             }
         }
         for _ in 0..self.media.posters.len().min(64) {
-            if self.media.poster_cursor >= self.media.posters.len() { self.media.poster_cursor = 0; }
+            if self.media.poster_cursor >= self.media.posters.len() {
+                self.media.poster_cursor = 0;
+            }
             let poster = &mut self.media.posters[self.media.poster_cursor];
             if self.stage.scene.node(poster.saved.target).is_none() {
-                if let Some(id) = poster.pending { self.media.backend.as_mut().unwrap().cancel(id); }
+                if let Some(id) = poster.pending {
+                    self.media.backend.as_mut().unwrap().cancel(id);
+                }
                 self.media.posters.swap_remove(self.media.poster_cursor);
                 continue;
             }
@@ -330,7 +401,9 @@ impl SessionVm {
                 }
                 if let Some(completion) = backend.take_result(id) {
                     poster.pending = None;
-                    if let MediaResult::Failed(error) = completion.result { return Err(aside_vm::snapshot::SnapshotError::Invalid(error).into()); }
+                    if let MediaResult::Failed(error) = completion.result {
+                        return Err(aside_vm::snapshot::SnapshotError::Invalid(error).into());
+                    }
                 }
             }
             self.media.poster_cursor += 1;
@@ -424,20 +497,71 @@ impl SessionVm {
                 }
                 None
             };
-            let request = AudioRequest { source, loop_region, volume, group, pan, fade_in, start_position };
-            self.start_media(ticket, MediaPlayback::Audio(crate::audio::AudioPlayback { request, paused: false, result: None }), owner, None, Value::NULL)?;
+            let request = AudioRequest {
+                source,
+                loop_region,
+                volume,
+                group,
+                pan,
+                fade_in,
+                start_position,
+            };
+            self.start_media(
+                ticket,
+                MediaPlayback::Audio(crate::audio::AudioPlayback {
+                    request,
+                    paused: false,
+                    result: None,
+                }),
+                owner,
+                None,
+                Value::NULL,
+            )?;
         } else if symbol == "reel::video::play" {
             let target = self.stage.video_id(self.vm.heap(), args[0])?;
             let fields = self.vm.heap().host_fields(args[0])?;
-            let source = text::read_string(self.vm.heap(), self.vm.heap().table_entry(fields, 0)?.1, self.read_limit)?;
-            let looping = args[1].as_bool().ok_or(AdapterError::Input("looping must be bool"))?;
+            let source = text::read_string(
+                self.vm.heap(),
+                self.vm.heap().table_entry(fields, 0)?.1,
+                self.read_limit,
+            )?;
+            let looping = args[1]
+                .as_bool()
+                .ok_or(AdapterError::Input("looping must be bool"))?;
             let volume = volume(args[2])?;
             let start_position = duration(args[3])?;
-            let end_position = if args[4].tag() == ValueTag::Null { None } else { Some(duration(args[4])?) };
-            if end_position.is_some_and(|end| end <= start_position) { return Err(AdapterError::Input("video end must follow start")); }
-            let owner = if args[5].tag() == ValueTag::Null { None } else { Some(self.stage.id(self.vm.heap(), args[5])?) };
-            let request = crate::video::VideoRequest { source, looping, volume, start_position, end_position };
-            self.start_media(ticket, MediaPlayback::Video(crate::video::VideoPlaybackState { position: start_position, request, paused: false, result: None }), owner, Some(target), args[0])?;
+            let end_position = if args[4].tag() == ValueTag::Null {
+                None
+            } else {
+                Some(duration(args[4])?)
+            };
+            if end_position.is_some_and(|end| end <= start_position) {
+                return Err(AdapterError::Input("video end must follow start"));
+            }
+            let owner = if args[5].tag() == ValueTag::Null {
+                None
+            } else {
+                Some(self.stage.id(self.vm.heap(), args[5])?)
+            };
+            let request = crate::video::VideoRequest {
+                source,
+                looping,
+                volume,
+                start_position,
+                end_position,
+            };
+            self.start_media(
+                ticket,
+                MediaPlayback::Video(crate::video::VideoPlaybackState {
+                    position: start_position,
+                    request,
+                    paused: false,
+                    result: None,
+                }),
+                owner,
+                Some(target),
+                args[0],
+            )?;
         } else {
             let value = args[0];
             if !is_media(self.vm.heap(), value) {
@@ -491,7 +615,9 @@ impl SessionVm {
                 }
             } else {
                 let command = match symbol {
-                    "reel::audio::seek" | "reel::video::seek" => MediaCommand::Seek(duration(args[1])?),
+                    "reel::audio::seek" | "reel::video::seek" => {
+                        MediaCommand::Seek(duration(args[1])?)
+                    }
                     "reel::stop" => MediaCommand::Stop,
                     "reel::pause" => MediaCommand::Pause,
                     "reel::resume" => MediaCommand::Resume,
@@ -536,38 +662,111 @@ impl SessionVm {
         self.issued = None;
         Ok(())
     }
-    fn start_media(&mut self, ticket: HostTicket, playback: MediaPlayback, owner: Option<NodeId>, target: Option<NodeId>, target_value: Value) -> Result<(), AdapterError> {
-        self.media.live.try_reserve(1).map_err(|_| AdapterError::Allocation)?;
-        let native = self.vm.program().package().natives.iter().position(|n| self.vm.program().package().symbols[n.symbol.index()] == "reel::audio::await").ok_or(AdapterError::Input("media await binding missing"))?;
-        let start = match &playback { MediaPlayback::Audio(p) => p.request.start_position, MediaPlayback::Video(p) => p.request.start_position };
-        let owner_value = owner.map(|id| self.stage.value(self.vm.heap(), id)).transpose()?.unwrap_or(Value::NULL);
+    fn start_media(
+        &mut self,
+        ticket: HostTicket,
+        playback: MediaPlayback,
+        owner: Option<NodeId>,
+        target: Option<NodeId>,
+        target_value: Value,
+    ) -> Result<(), AdapterError> {
+        self.media
+            .live
+            .try_reserve(1)
+            .map_err(|_| AdapterError::Allocation)?;
+        let native = self
+            .vm
+            .program()
+            .package()
+            .natives
+            .iter()
+            .position(|n| {
+                self.vm.program().package().symbols[n.symbol.index()] == "reel::audio::await"
+            })
+            .ok_or(AdapterError::Input("media await binding missing"))?;
+        let start = match &playback {
+            MediaPlayback::Audio(p) => p.request.start_position,
+            MediaPlayback::Video(p) => p.request.start_position,
+        };
+        let owner_value = owner
+            .map(|id| self.stage.value(self.vm.heap(), id))
+            .transpose()?
+            .unwrap_or(Value::NULL);
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
-        let value = heap.alloc_host(fields, &[Value::int(TAG), Value::NULL, Value::NULL, Value::int(0), Value::float(start.as_secs_f64()), target_value, owner_value], Some(readonly))?;
+        let value = heap.alloc_host(
+            fields,
+            &[
+                Value::int(TAG),
+                Value::NULL,
+                Value::NULL,
+                Value::int(0),
+                Value::float(start.as_secs_f64()),
+                target_value,
+                owner_value,
+            ],
+            Some(readonly),
+        )?;
         let root = heap.add_root(self.root_owner, RootKind::Host, value)?;
-        if let Err(error) = self.vm.bind_awaitable(value, aside_vm::bytecode::NativeId(native as u32)) { self.vm.heap_mut().release_root(root)?; return Err(error.into()); }
-        let video = match &playback { MediaPlayback::Video(p) => Some(p.request.clone()), _ => None };
-        let admitted = self.media.backend.as_mut().ok_or_else(|| "media output is not installed".to_string()).and_then(|backend| {
-            if let Some(target) = target {
-                for poster in &mut self.media.posters {
-                    if poster.saved.target == target && let Some(id) = poster.pending.take() { backend.cancel(id); }
-                }
-                for live in &mut self.media.live {
-                    if live.target == Some(target) && live.result.is_none() {
-                        backend.command(live.id, MediaCommand::Stop)?;
-                        live.target = None;
+        if let Err(error) = self
+            .vm
+            .bind_awaitable(value, aside_vm::bytecode::NativeId(native as u32))
+        {
+            self.vm.heap_mut().release_root(root)?;
+            return Err(error.into());
+        }
+        let video = match &playback {
+            MediaPlayback::Video(p) => Some(p.request.clone()),
+            _ => None,
+        };
+        let admitted = self
+            .media
+            .backend
+            .as_mut()
+            .ok_or_else(|| "media output is not installed".to_string())
+            .and_then(|backend| {
+                if let Some(target) = target {
+                    for poster in &mut self.media.posters {
+                        if poster.saved.target == target
+                            && let Some(id) = poster.pending.take()
+                        {
+                            backend.cancel(id);
+                        }
+                    }
+                    for live in &mut self.media.live {
+                        if live.target == Some(target) && live.result.is_none() {
+                            backend.command(live.id, MediaCommand::Stop)?;
+                            live.target = None;
+                        }
                     }
                 }
-            }
-            match playback { MediaPlayback::Audio(p) => backend.play_audio(p.request), MediaPlayback::Video(p) => backend.play_video(p.request) }
-        });
+                match playback {
+                    MediaPlayback::Audio(p) => backend.play_audio(p.request),
+                    MediaPlayback::Video(p) => backend.play_video(p.request),
+                }
+            });
         match admitted {
             Ok(id) => {
-                self.vm.heap_mut().set_host_payload(value, Slot::Id as u32, Value::int(id.0 as i64))?;
-                self.media.live.push(Live { id, root, owner, target, result: None, video, has_frame: false });
+                self.vm.heap_mut().set_host_payload(
+                    value,
+                    Slot::Id as u32,
+                    Value::int(id.0 as i64),
+                )?;
+                self.media.live.push(Live {
+                    id,
+                    root,
+                    owner,
+                    target,
+                    result: None,
+                    video,
+                    has_frame: false,
+                });
                 self.vm.respond(ticket, HostResponse::Ready(value))?;
             }
-            Err(error) => { self.vm.heap_mut().release_root(root)?; self.media_error(ticket, &error)?; }
+            Err(error) => {
+                self.vm.heap_mut().release_root(root)?;
+                self.media_error(ticket, &error)?;
+            }
         }
         Ok(())
     }
@@ -586,7 +785,7 @@ impl SessionVm {
 }
 impl Media {
     pub fn active(&self) -> bool {
-        !self.live.is_empty()
+        !self.live.is_empty() || self.posters.iter().any(|poster| poster.pending.is_some())
     }
     pub fn cleanup_pending(&self) -> bool {
         self.backend.as_ref().is_some_and(|b| b.cleanup_pending())

@@ -1,19 +1,37 @@
 //! Host-owned audio and video transport. Native devices remain in adapters.
-use crate::{audio::{AudioGroup, AudioPlayback, AudioRequest}, video::{VideoPlaybackState, VideoRequest}};
+use crate::{
+    audio::{AudioGroup, AudioPlayback, AudioRequest},
+    video::{VideoPlaybackState, VideoRequest},
+};
 use reel_ui::resources::ResourceLease;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MediaId(pub u64);
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum MediaResult { Completed, Stopped, Cancelled, Failed(String) }
+pub enum MediaResult {
+    Completed,
+    Stopped,
+    Cancelled,
+    Failed(String),
+}
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MediaCompletion { pub result: MediaResult, pub position: Duration }
+pub struct MediaCompletion {
+    pub result: MediaResult,
+    pub position: Duration,
+}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum MediaPlayback { Audio(AudioPlayback), Video(VideoPlaybackState) }
+pub enum MediaPlayback {
+    Audio(AudioPlayback),
+    Video(VideoPlaybackState),
+}
 #[derive(Clone, Copy, Debug)]
 pub enum MediaCommand {
-    Seek(Duration), Stop, Pause, Resume, Finish,
+    Seek(Duration),
+    Stop,
+    Pause,
+    Resume,
+    Finish,
     Volume { value: f64, duration: Duration },
     Pan { value: f64, duration: Duration },
     FadeOut(Duration),
@@ -32,9 +50,16 @@ pub trait MediaBackend {
     fn snapshot(&self, id: MediaId) -> Result<MediaPlayback, String>;
     fn position(&self, id: MediaId) -> Option<Duration>;
     fn command(&mut self, id: MediaId, command: MediaCommand) -> Result<(), String>;
-    fn take_video_frame(&mut self, _id: MediaId) -> Option<ResourceLease> { None }
+    fn take_video_frame(&mut self, _id: MediaId) -> Option<ResourceLease> {
+        None
+    }
     /// None selects master; videos use the same music bus as other media.
-    fn group_volume(&mut self, group: Option<AudioGroup>, value: f64, duration: Duration) -> Result<(), String>;
+    fn group_volume(
+        &mut self,
+        group: Option<AudioGroup>,
+        value: f64,
+        duration: Duration,
+    ) -> Result<(), String>;
     fn cancel(&mut self, id: MediaId);
     /// Elapsed session time excludes host suspension. Audio uses the mixer clock.
     fn maintain(&mut self, elapsed: Duration);

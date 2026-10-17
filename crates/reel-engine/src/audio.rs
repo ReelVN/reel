@@ -1,6 +1,6 @@
 //! Portable audio request and playback state.
-pub use reel_core::audio::{AudioGroup, AudioLoopRegion};
 use crate::media::MediaResult;
+pub use reel_core::audio::{AudioGroup, AudioLoopRegion};
 use std::time::Duration;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

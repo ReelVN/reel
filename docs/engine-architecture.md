@@ -273,13 +273,14 @@ UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88
 
 ## 三 平台接口与移植边界
 
-### 视频舞台接入合同（实施中）
+### 视频舞台与媒体活动
 
-本轮范围为 reel-engine 的媒体宿主与 Aside 绑定、reel-player 的单一 MediaPlayer、reel-ui/reel-render 的 YUV 资源投影及双语指南；Aside/B01 不变，新 video native ABI 1，媒体和视频节点使用各自快照适配器，SessionSnapshot 升至 5。依赖沿视频解码基础所固定的 OpenH264、mp4、Symphonia 与 h264-reader。
+本轮范围为 reel-engine 的媒体宿主与 Aside 绑定、reel-player 的单一 MediaPlayer、reel-ui/reel-render 的 YUV 资源投影及双语指南；Aside/B01 不变，新 video native ABI 1，媒体和视频节点使用各自快照适配器，SessionSnapshot 升至 6。依赖沿视频解码基础所固定的 OpenH264、mp4、Symphonia 与 h264-reader。
 
 `video(source, ...image 节点属性)` 创建空的普通图片节点，`.play(looping:false, volume:1, start:0, end:null, owner:null)` 启动并返回可等待活动。一个节点同时一个播放，重播停止前一个；节点或显式 owner 退休取消播放，隐藏不暂停。pause/resume/stop 沿共同活动协议，video.seek/position 使用秒。有限视频支持 finish；循环视频须 stop。停止与自然结束保留最后显示帧，节点退休释放资源。存档只保存路径、播放区间、当前位置、暂停与归属，不序列化已解码帧或设备句柄；读档重开资源并重建首个适用帧。
 
 MediaBackend 统一音频和视频的设备工厂、维护、取消与退休；视频音轨进入同一 Music 总线，有声视频以实际消费的 PCM 为时钟，静音视频使用排除宿主挂起的会话时间。码流分段读取、解码和队列均在后台，显示采用已有舞台图片的资源租约和三平面 YUV 纹理；队列固定容量，旧帧租约持有期间不可覆盖其纹理。不在每帧复制整幅 RGBA 或重新创建纹理。CPU 验证覆盖实际解码、音频时钟、暂停、跳转、结束、取消、舞台退休与快照恢复；设备显示由目标平台另行验收。
+
 ### HAL 与公共呈现（#83）
 
 内置桌面使用公共 PlatformHost 与 Presentation，其他平台复用同一会话、输入、记录、已接受帧与生命周期。范围为 reel-render 后端合同/既有 WGPU 实现、reel-player 公共呈现、运行时计时与 Winit 适配，以及合同检查、规范和双语指南。复用 reel-core 的时钟合同，保持 Aside、B01/ASB v1 和 native ABI v1；Rust 宿主/渲染接口直接更新，不保留兼容层，无新增依赖。

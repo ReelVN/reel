@@ -98,9 +98,13 @@ impl Shape {
             Self::Image | Self::Video => NodeKind::Image {
                 source: if self == Self::Video {
                     let source = text::read_string(heap, get(0)?, limit)?;
-                    if source.is_empty() { return Err(AdapterError::Input("video source must not be empty")); }
+                    if source.is_empty() {
+                        return Err(AdapterError::Input("video source must not be empty"));
+                    }
                     reel_ui::stage::ImageSource::empty()
-                } else { read_source(heap, get(0)?, limit)? },
+                } else {
+                    read_source(heap, get(0)?, limit)?
+                },
                 fit: read_fit(heap, get(1)?)?,
                 slice: read_slice(heap, get(2)?)?,
                 slice_scale: nonnegative(get(3)?)?,
@@ -133,7 +137,13 @@ impl Shape {
             Self::Radio => |h, _, i, v| controls::validate_radio(h, i, v),
             Self::Input => |h, _, i, v| input::validate(h, i, v),
             Self::Image => |h, _, i, v| validate_image_property(h, i, v),
-            Self::Video => |h, _, i, v| if i == 0 { Err(HeapError::ReadOnly) } else { validate_image_property(h, i, v) },
+            Self::Video => |h, _, i, v| {
+                if i == 0 {
+                    Err(HeapError::ReadOnly)
+                } else {
+                    validate_image_property(h, i, v)
+                }
+            },
             Self::Particles => super::super::particles::validate,
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
@@ -171,7 +181,11 @@ impl StageBinding {
             ("reel.scroll", Shape::Scroll),
             ("reel.layout", Shape::Stack),
         ] {
-            let version = match shape { Shape::Video => 1, Shape::Image => 5, _ => 3 };
+            let version = match shape {
+                Shape::Video => 1,
+                Shape::Image => 5,
+                _ => 3,
+            };
             registry.register_validator(name, version, shape.validator())?;
         }
         Ok(())
@@ -244,8 +258,10 @@ impl StageBinding {
                 } else {
                     None
                 },
-                text_source: if matches!(saved.shape, Shape::Text | Shape::TextInput | Shape::Image | Shape::Video)
-                {
+                text_source: if matches!(
+                    saved.shape,
+                    Shape::Text | Shape::TextInput | Shape::Image | Shape::Video
+                ) {
                     Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
                 } else {
                     None
