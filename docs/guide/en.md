@@ -16,7 +16,7 @@ Authors work with three basic concepts: functions organize reusable content, nod
 
 Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
 
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; audio is connected to creator source; video and save/load are connected to the same stage and execution state. Script initialization and projects with multiple source modules are available; asset packaging and release manifests remain future work. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
+Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; audio is connected to creator source; video and save/load are connected to the same stage and execution state. Script initialization and projects with multiple source modules are available; development and packaged release exports use the commands below. Later examples using these capabilities describe the target design rather than currently runnable examples. See the [current implementation status](../README.md#当前状态) for the broader boundary.
 
 Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
 
@@ -78,11 +78,30 @@ Build defaults to Debug, retaining complete source and mappings so runtime error
 
 With window enabled, source and built packages use the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window to exit and finish cleanup; Escape sends Back to the current UI.
 
-Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; .rpk and release.json belong to the later distribution pipeline.
+Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; export additionally creates resource packages and a relocatable release.json manifest.
 
 Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
 
 Left-associated operations and member or call chains compile in source order without consuming nesting allowance for each link. Actual nesting through parentheses, blocks and subexpressions uses the host's configured compiler resource budget.
+
+### Exporting Development and Release Directories
+
+`reel export` builds code and organizes its resources together. It exports a development project by default; `--release` creates a release directory. Prepare the font as shown above, then run:
+
+```powershell
+./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+./target/debug/reel.exe run target/reel-artifacts/release/release.json
+./target/debug/reel.exe dev target/reel-artifacts/development/release.json
+```
+
+Development output contains editable `script/` files, loose resources, `game.asb` with source diagnostics, and `release.json`. Use run directly or dev to recompile the copied sources. Release output contains `game.asb`, `game.rtp`, `resources.rpk`, and `release.json`; distribute these with the player for the target platform. Moving the complete directory does not require paths from the build machine.
+
+Each `--resource prefix=directory` maps a directory to its logical script path. Use `--text locales=build/locales` to put bundled translation catalogs in the text package; scripts still call `localization.load("en", "locales/en.ftl")`. Development copies these files; release packages them. Translators can maintain source catalogs beside their story and UI modules and use `reel loc bundle` to produce runtime catalogs first.
+
+Release export moves original string constants into `game.rtp` and excludes complete source from the ASB. The pool currently remains resident, with strings sharing its bytes when used; startup does not copy every passage into permanent VM objects. Translations can change without recompiling code, while the original text pool must match its ASB. Images, audio and video use indexed resource reads without extracting the entire archive.
+
+Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run release.json --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output must be outside the input source and resource directories.
 
 ### Available Ranges, Collections and Interpolation
 Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get` and `len`. Interpolation currently accepts strings, numbers, booleans and null.

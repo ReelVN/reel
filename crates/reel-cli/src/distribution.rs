@@ -6,6 +6,7 @@ use std::{collections::{BTreeMap, BTreeSet}, fs::{self, File}, io::{self, Read, 
 
 pub const TEXT_POOL_ENTRY: &str = "__reel/text.pool";
 
+#[derive(Clone, Debug)]
 pub struct Mount {
     pub prefix: String,
     pub directory: PathBuf,
@@ -120,8 +121,8 @@ pub fn export(loaded: &Loaded, artifact: &Artifact, options: &ExportOptions) -> 
     for name in resources.keys().chain(text.keys()) {
         if !names.insert(name) { return Err(io::Error::other(format!("text and resources both define {name}"))); }
     }
-    let staging = parent.join(format!(".{}.export-{}", name.to_string_lossy(), std::process::id()));
-    fs::create_dir(&staging)?;
+    let candidate = tempfile::Builder::new().prefix(".reel-export-").tempdir_in(&parent)?;
+    let staging = candidate.path();
     let result = (|| {
         fs::write(staging.join("game.asb"), &artifact.bytes)?;
         let mut manifest = Distribution { code: "game.asb".into(), text: None, resources: vec![], loose: None, source: None };
@@ -147,19 +148,22 @@ pub fn export(loaded: &Loaded, artifact: &Artifact, options: &ExportOptions) -> 
             + artifact.text_pool.as_ref().map_or(0, |p| p.as_bytes().len() as u64);
         Ok(Exported { files: resources.len() + text.len(), bytes })
     })();
-    if result.is_err() { let _ = fs::remove_dir_all(&staging); return result; }
+    let result = result?;
     // Build every file before touching the previous export. Both renames stay
     // on the same filesystem; rollback keeps the old output if publication fails.
-    let old = parent.join(format!(".{}.previous-{}", name.to_string_lossy(), std::process::id()));
+    let backup = tempfile::Builder::new().prefix(".reel-previous-").tempdir_in(&parent)?;
+    let old = backup.path().join("export");
     let replacing = output.exists();
     if replacing { fs::rename(&output, &old)?; }
-    if let Err(error) = fs::rename(&staging, &output) {
-        if replacing { let _ = fs::rename(&old, &output); }
-        let _ = fs::remove_dir_all(&staging);
+    if let Err(error) = fs::rename(staging, &output) {
+        if replacing && let Err(restore) = fs::rename(&old, &output) {
+            let retained = backup.keep();
+            return Err(io::Error::other(format!("{error}; restoring previous export failed: {restore}; previous export retained at {}", retained.join("export").display())));
+        }
         return Err(error);
     }
-    if replacing { fs::remove_dir_all(old)?; }
-    result
+    backup.close()?;
+    Ok(result)
 }
 
 pub fn read_manifest(path: &Path) -> io::Result<Distribution> {

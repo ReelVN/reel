@@ -1,18 +1,21 @@
 # Aside VM 与完整语言规范
+
+字节码文本存储：发布宿主可把 Utf8 常量外置为 Text{offset,len}，包内 TextPoolDescriptor 保存共享 UTF-8 池长度与摘要。验证器静态检查描述与范围；宿主通过 VerifiedProgram::bind_text_pool 绑定正文后才允许 VM 加载。Aside 不承担文件或资源包 IO。内嵌与外置字符串均在 LoadConst 时创建共享视图，弱常量句柄只复用仍存活对象；未使用正文不分配 GC 字符串对象。tuple 常量构造可按执行预算让出，保持值相等语义，不暴露对象身份。存档中的常量引用恢复到同一程序正文，动态字符串保存实际内容。仅支持当前字节码和快照格式，不保留旧格式兼容路径。
+
 设计版本 1.1 · 开发基线，接口实现状态见正文。
 
-作者的 Debug/Release 构建只改变随包保存的调试信息，不改变类型、效果、异常、等待或执行检查。默认 Debug 保留完整源码与指令映射；`reel build --release` 删除这些记录，错误仍保留 kind、FunctionId 与 PC。模块、参数、成员等运行符号与字符串常量保持，B01 格式及 VM 快照协议不变；快照身份来自实际产物，Debug 与 Release 不是同一个代码身份。
+作者的 Debug/Release 构建只改变随包保存的调试信息，不改变类型、效果、异常、等待或执行检查。默认 Debug 保留完整源码与指令映射；`reel build --release` 删除这些记录，错误仍保留 kind、FunctionId 与 PC。模块、参数、成员等运行符号与字符串常量保持，Aside 字节码 格式及 VM 快照协议不变；快照身份来自实际产物，Debug 与 Release 不是同一个代码身份。
 
 标准库模块 `std::time` 使用普通 native 调用提供 now、parts 和 format。时间戳为 UTC Unix 秒 int，日期字段是普通 table，格式化结果为 string；时区名称为 string/null。调用声明 HOST 效果，parts/format 另声明 ALLOCATE；不会把现实时间读取放入纯 derive 或创建隐式刷新任务。具体接口见双语作者指南。
 
 显式 tuple 与 union 契约用于 `is`、绑定、共享捕获、参数和返回值；tuple 要求数量及逐项类型一致，union 接受任一分支。检查使用加载时计入容量的显式工作栈，执行前按类型 DAG 的工作上界计费，检查过程不分配临时容器。失败赋值不发布新值。
 CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类型)，独立宿主 Cell 保存 None 并服从自身的 builtin 契约；不会把宿主 Cell 的占位索引误当成当前包的类型。
 
-已链接的 native 函数可以作为普通函数值保存、传递、返回和可选调用，也可以交给宿主的 CallScript 回调入口。B01 FunctionKind 新增 Native(NativeId)，编码为 tag 3 后接 u32 注册索引；签名必须与注册一致，不携带脚本指令、寄存器、绑定、捕获或异常区域，源码映射可在 PC 0 保存取值位置。普通调用、宿主启动和 CallScript 都直接建立同一种 NativeFrame，完整参数只绑定一次；缺省闭包与可变参数共享原来的 Cell，不经过脚本转发帧。aside-host 为每个合同预置一个 Native FunctionDef，供宿主绑定方法；编译器复用已有定义，仅在缺失且实际取值时新建。VM 在模块常量根区持有稳定函数值，MakeClosure 读取该常量而不分配对象，也不要求 ALLOCATE 效果。不添加作者全局变量。实际脚本调用处优先作为故障来源；宿主直接启动该函数值时使用定义中的取值位置（若有）。
+已链接的 native 函数可以作为普通函数值保存、传递、返回和可选调用，也可以交给宿主的 CallScript 回调入口。Aside 字节码 FunctionKind 新增 Native(NativeId)，编码为 tag 3 后接 u32 注册索引；签名必须与注册一致，不携带脚本指令、寄存器、绑定、捕获或异常区域，源码映射可在 PC 0 保存取值位置。普通调用、宿主启动和 CallScript 都直接建立同一种 NativeFrame，完整参数只绑定一次；缺省闭包与可变参数共享原来的 Cell，不经过脚本转发帧。aside-host 为每个合同预置一个 Native FunctionDef，供宿主绑定方法；编译器复用已有定义，仅在缺失且实际取值时新建。VM 在模块常量根区持有稳定函数值，MakeClosure 读取该常量而不分配对象，也不要求 ALLOCATE 效果。不添加作者全局变量。实际脚本调用处优先作为故障来源；宿主直接启动该函数值时使用定义中的取值位置（若有）。
 
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
-作者编译与 ASB/B01 加载默认仅受格式索引宽度、可寻址内存与实际分配结果约束，不以预设作品字节数、累计记录数、模块数或指令数截断正常作品。Rust 宿主仍可显式设置各阶段 Limits 配额；解码长度、索引、结构与整数溢出检查保留。递归深度及诊断条数继续限制递归实现的栈与错误恢复，不冒充作品容量。此调整不改变 B01/ASB 编码或 VM 指令，范围为 aside-compiler、aside-vm 字节码边界、reel-package 及双语指南；失败诊断区分记录与内存配额并报告实际请求/限制。
+作者编译与 ASB/Aside 字节码 加载默认仅受格式索引宽度、可寻址内存与实际分配结果约束，不以预设作品字节数、累计记录数、模块数或指令数截断正常作品。Rust 宿主仍可显式设置各阶段 Limits 配额；解码长度、索引、结构与整数溢出检查保留。递归深度及诊断条数继续限制递归实现的栈与错误恢复，不冒充作品容量。此调整不改变 Aside 字节码/ASB 编码或 VM 指令，范围为 aside-compiler、aside-vm 字节码边界、reel-package 及双语指南；失败诊断区分记录与内存配额并报告实际请求/限制。
 
 ## 一 定位与完成标准
 
@@ -24,25 +27,25 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 完成条件同时覆盖语言、标准库、扩展契约、调试工具和 Reel 作者场景。只运行一段剧情、只解析全部语法或只通过旧语言测试，都不算完整 Aside。
 
-实现状态（L04–L09 / V03）：源码解析、语义、IR、B01 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、tuple/array/table 与集合展开、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
+实现状态（L04–L09 / V03）：源码解析、语义、IR、Aside 字节码 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、tuple/array/table 与集合展开、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
 class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元方法 callable、完整模式与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
-Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, ...)` 创建节点，绑定 `.play(...)` 返回媒体活动，video.seek/position 操作活动。媒体与动画共享 pause/resume/stop/finish 名称，不增加语言语法或另一种异步值。新 video native ABI 1，媒体宿主快照保存逻辑状态而不携带像素或设备，B01 不变。
+Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, ...)` 创建节点，绑定 `.play(...)` 返回媒体活动，video.seek/position 操作活动。媒体与动画共享 pause/resume/stop/finish 名称，不增加语言语法或另一种异步值。新 video native ABI 1，媒体宿主快照保存逻辑状态而不携带像素或设备，Aside 字节码 不变。
 
-Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null, locale: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 3，不改变 Aside/B01。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。`reel loc extract --output-dir` 按模块组织原文 FTL，`reel loc bundle` 把同语言的模块译文编成一个运行时 FTL；文件组织不改变消息身份、运行时接口或存档格式。
+Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null, locale: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 3，不改变 Aside/Aside 字节码。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。`reel loc extract --output-dir` 按模块组织原文 FTL，`reel loc bundle` 把同语言的模块译文编成一个运行时 FTL；文件组织不改变消息身份、运行时接口或存档格式。
 
 节点图像遮罩使用普通宿主属性 mask、mask_progress、mask_softness、mask_invert，数值动画和绑定沿用现有属性协议。资源路径与进度进入节点 VM 字段和快照，Aside 不持有 GPU 对象；不增加语言语法或 VM 指令。
 
 
-Reel 的 `game.start(entry)` 接收无捕获、无必需参数的普通函数值，在新会话重新初始化模块后执行；接受请求后调用者不再继续。它是宿主 native ABI 1，不改变语言函数、B01 或 ASB。
+Reel 的 `game.start(entry)` 接收无捕获、无必需参数的普通函数值，在新会话重新初始化模块后执行；接受请求后调用者不再继续。它是宿主 native ABI 1，不改变语言函数、Aside 字节码 或 ASB。
 
 Reel 的对白 history 参数属于普通宿主调用：true 记录原文、false 省略、string/rich 指定替代历史文本。它不改变 Aside 调用与等待语义，不引入另一套日志或 VM 指令。
 
 ## 二 语法与求值顺序
-Reel 的 `await stage.presented(owner: null)` 等待请求之后的稳定舞台投影实际呈现并返回 null，复用宿主 Awaitable。也可保存返回对象后等待多次，或调用 `.cancel()`；节点 owner 退休取消未决请求。创建请求只能在普通剧情/回调中执行，初始化与 NoWait/纯派生边界不可绕过。此接口新增 native ABI 1，不改变语言 await、B01 或 ASB。
+Reel 的 `await stage.presented(owner: null)` 等待请求之后的稳定舞台投影实际呈现并返回 null，复用宿主 Awaitable。也可保存返回对象后等待多次，或调用 `.cancel()`；节点 owner 退休取消未决请求。创建请求只能在普通剧情/回调中执行，初始化与 NoWait/纯派生边界不可绕过。此接口新增 native ABI 1，不改变语言 await、Aside 字节码 或 ASB。
 
 Reel 作者窗口在首个挂载场景的字体、图片准备好后提交首帧；支持隐藏窗口的平台在首帧接受后显示窗口。此行为不改变脚本等待语义或 ASB/native ABI；脚本可先挂载加载界面，再通过原有活动与任务安排后续内容。
 
@@ -150,15 +153,15 @@ array/tuple 的 `slice(range)` 使用非负索引，保留原容器种类和元�
 
 ## 六 Unicode 文本和可变缓冲
 
-Reel 的 `game.exit()` 是 native ABI 1 的宿主退出请求：接收后不再运行脚本，任务与资源按宿主关闭协议清理。Aside VM 不引入平台退出操作，B01/ASB 编码不变。
+Reel 的 `game.exit()` 是 native ABI 1 的宿主退出请求：接收后不再运行脚本，任务与资源按宿主关闭协议清理。Aside VM 不引入平台退出操作，Aside 字节码/ASB 编码不变。
 
 string 为不可变、有效 UTF-8 文本；相等按精确文本序列，不隐式规范化。API 明确区分 byte_len、scalar_count、grapheme_count、bytes()、scalars()、codepoints() 与 graphemes()：bytes 为字节，scalars 为单 Unicode 标量 string，codepoints 为整数，graphemes 为字素 string。普通 string 不提供含糊的 s[i]；使用显式视图或 slice_bytes/slice_scalars/slice_graphemes。
 
 文本基础方法：`byte_len()` 返回 UTF-8 字节数；`scalar_count()` 返回 Unicode 标量数，组合字符与 ZWJ 序列按各自标量计数。`slice_bytes(range)` 和 `slice_scalars(range)` 返回不可变 string，使用非负、从零开始的范围，不截断越界输入；倒置范围或非法 UTF-8 字节边界报 OutOfBounds。`starts_with(prefix)`、`ends_with(suffix)` 精确比较文本，空前后缀总是匹配，不做规范化。`separator.join(items)` 接受 string 的 array/tuple，只在相邻项之间插入 separator；空输入返回空 string，非 string 项报 Type，不隐式格式化。这些方法支持声明的具名参数。字素方法仍是后续能力，不能将标量数冒充显示字符数。
 
-to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII 字母，保留其他 UTF-8 字节。实现复用 Rust 标准库字节切片转换与现有分片文本缓冲，按字节线性推进并计入工作/分配预算；空字符串也返回字符串。它们不执行 Unicode 或语言环境相关大小写折叠。B01/ASB 不变。
+to_ascii_lowercase()/to_ascii_uppercase() 返回新字符串，仅转换 ASCII 字母，保留其他 UTF-8 字节。实现复用 Rust 标准库字节切片转换与现有分片文本缓冲，按字节线性推进并计入工作/分配预算；空字符串也返回字符串。它们不执行 Unicode 或语言环境相关大小写折叠。Aside 字节码/ASB 不变。
 
-`trim()`、`trim_start()`、`trim_end()` 分别移除两端、开头、末尾连续的 Unicode 空白，空白定义复用 Rust `char::is_whitespace`；不移除正文内部空白、不规范化或转换大小写。方法无参数，返回普通 string；没有需移除的空白时共享原字符串。定位按 UTF-8 字节分片并使用现有解码状态，至多线性扫描；结果只复制保留范围一次，空白全串得到空字符串。游标和未发布结果沿普通 VM 帧的预算、取消和快照路径，不引入宿主调用或新依赖，B01/ASB 不变。
+`trim()`、`trim_start()`、`trim_end()` 分别移除两端、开头、末尾连续的 Unicode 空白，空白定义复用 Rust `char::is_whitespace`；不移除正文内部空白、不规范化或转换大小写。方法无参数，返回普通 string；没有需移除的空白时共享原字符串。定位按 UTF-8 字节分片并使用现有解码状态，至多线性扫描；结果只复制保留范围一次，空白全串得到空字符串。游标和未发布结果沿普通 VM 帧的预算、取消和快照路径，不引入宿主调用或新依赖，Aside 字节码/ASB 不变。
 
 计数、切片和前后缀比较按字节分片；byte_len 为常数成本，scalar 切片单次前向扫描定位后复制。join 只向一个私有缓冲顺序追加，每个输出字节复制一次；空项也按元素计费。来源数组在执行片之间变化报告 ConcurrentModification；失败、取消不发布部分结果。UTF-8 解码与标量迭代复用 Rust 标准库，VM 仅管理分块游标、预算与根，不维护另一套 Unicode 解码规则。
 
@@ -194,7 +197,7 @@ match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，�
 
 ## 八 函数 调用与类
 
-类执行使用 B01 `Class` 描述及共享调用栈；声明身份记录为模块、名称和内容版本。类布局在创建时建立，实例只保存自己的字段槽。构造、字段初始化和布局建立服从执行预算，字段值及绑定方法的接收者由同一 GC 追踪。类调用、方法和普通函数共用参数名、缺省、类型与效果检查。
+类执行使用 Aside 字节码 `Class` 描述及共享调用栈；声明身份记录为模块、名称和内容版本。类布局在创建时建立，实例只保存自己的字段槽。构造、字段初始化和布局建立服从执行预算，字段值及绑定方法的接收者由同一 GC 追踪。类调用、方法和普通函数共用参数名、缺省、类型与效果检查。
 
 块内 fn 声明先建立只读函数绑定，允许自递归和互相递归；捕获普通 let 的初始化状态仍受检查，不得把未初始化值视为 null。命名参数适用于脚本闭包和 native，使用同一签名描述与绑定器。位置参数在命名参数前；fn f(a,b=1,...rest) 支持每次调用新建外层 array 接收尾部位置参数，没有剩余项时也新建空 array。rest 注解约束整个 array 绑定，不隐含逐元素约束；确定与 array 不相容的注解给出诊断。rest 名称不能以具名实参供给，也不能被 PropertyBagTail 静默接收为同名属性；其他普通尾袋属性保持原合同。
 
@@ -226,7 +229,7 @@ use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view;
 
 入口源码所在目录是源码根；工程目录默认启动 main.aside 的 main。game:: 后的模块段对应目录和 .aside 文件，名称须合法标识符。外部源码根可由工具的 --module 别名=目录 参数提供，同一实际文件只建立一个模块环境。main/game/reel/std 保留；reel 与 std 由宿主注册，不搜索同名源码目录。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
 
-当前普通函数与值模块已贯通多源码分析、B01 和 VM。文件提供方按真实导入发现源码，模块别名归一到固定声明身份；同一文件只产生一份环境。导入读取与重导出共享原 cell，B01 的模块绑定编号依次包含自有全局和导入，验证时解析并缓存实际 cell 索引。物理来源独立保存在 SourceFile.path，运行故障保留对应文件与表达式范围。
+当前普通函数与值模块已贯通多源码分析、Aside 字节码 和 VM。文件提供方按真实导入发现源码，模块别名归一到固定声明身份；同一文件只产生一份环境。导入读取与重导出共享原 cell，Aside 字节码 的模块绑定编号依次包含自有全局和导入，验证时解析并缓存实际 cell 索引。物理来源独立保存在 SourceFile.path，运行故障保留对应文件与表达式范围。
 
 先链接模块强连通分量的函数/类型符号。SCC 凝聚图按依赖先于使用者的拓扑顺序初始化；同一 SCC 内及互不依赖的并列 SCC 用规范化模块路径稳定排序，再执行顶层表达式。链接不执行 class 字段初始化、extends 求值或任意表达式；未创建完成的 class 不可实例化。读取未初始化绑定报带实际链路的 ModuleInitializationCycle；可链接的函数互相引用不被 import 图的环一概禁止。模块初始化不得外部等待。
 
@@ -239,7 +242,7 @@ use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view;
 type_of、is、signature、members、own_fields 提供一致反射。签名包含参数名、顺序、缺省是否存在、变参、返回契约和效果，不因反射而执行缺省表达式。native 与脚本类型遵循同一描述。反射不泄露原生地址、任意私有环境、恢复 PC 的写权限或绕过字段/schema 的写入口。
 
 ## 十一 children 与可观察绑定
-当前实现增量贯通尾随 children、array/tuple 的 `for` 与可组合宿主对象。宿主通过通用的 composable 标记声明可收集对象；Aside 不依赖 Reel 类型或平台库。宿主对象有保持身份的公开字段表和私有载荷，成员读取/赋值访问同一字段表，私有载荷仅由宿主访问。公开字段参与 GC，私有载荷中的值同样可追踪。children 收集沿用本节 Node/null 规则，并保持 NoWait 边界；普通 helper 不继承调用者的收集器。for 的每轮词法绑定独立，array 结构变化遵循集合迭代规则。新增字节码行为直接进入当前 B01 实现与执行能力表，不引入旧实现兼容路径。
+当前实现增量贯通尾随 children、array/tuple 的 `for` 与可组合宿主对象。宿主通过通用的 composable 标记声明可收集对象；Aside 不依赖 Reel 类型或平台库。宿主对象有保持身份的公开字段表和私有载荷，成员读取/赋值访问同一字段表，私有载荷仅由宿主访问。公开字段参与 GC，私有载荷中的值同样可追踪。children 收集沿用本节 Node/null 规则，并保持 NoWait 边界；普通 helper 不继承调用者的收集器。for 的每轮词法绑定独立，array 结构变化遵循集合迭代规则。新增字节码行为直接进入当前 Aside 字节码 实现与执行能力表，不引入旧实现兼容路径。
 
 
 尾随 children 块是通用调用语法：立即计算名为 children 的 array 参数，不是隐式闭包、不按帧重跑。块内独立表达式语句产生 Node 时按顺序收集，分号不取消收集；块末 Node 只收集一次。null 忽略，其他值报错。let 初始化与赋值不收集；if/for/while/match/普通语句块继承词法收集位置，控制流整体不再次收集末值。嵌套尾随块建立独立收集器，被调用函数不继承调用者收集器。显式 children 与尾随块不能共存，事件回调必须命名传入。
@@ -264,7 +267,7 @@ bind(model.volume) 是编译器识别的可观察属性位置表达式，生成 
 宿主属性绑定的执行合同：`bind(node.x)` 与 `bind(node[key])` 固定接收者和键；引用保留该位置的读取及写入权限。节点构造参数或属性赋值接受引用时建立连接，之后写入普通值沿连接写穿。`unbind(bind(node.x))` 断开该位置的连接，返回并保留当前值。连接成环、不可观察位置、失效来源和只读写入均报错。变更先验证受影响属性的完整候选值，再一次提交；校验失败不改变任何值或连接。显式销毁来源时，现有连接冻结最后有效值并断开；已有引用再使用时报告来源已销毁。来源只通过显式退休销毁，普通 GC 保留仍被引用的来源。动画按最终来源取得写入权，重绑定或解绑使依赖旧连接的活动停止。
 
 
-节点公开只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。构造参数 decorated 默认 true，当前节点 native ABI 为 3，B01 不变。
+节点公开只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。构造参数 decorated 默认 true，当前节点 native ABI 为 3，Aside 字节码 不变。
 
 `model(defaults)` 由 Reel 提供，复制当前支持的纯数据图，保留内部共享引用和环。返回的 table 仍支持普通索引、追加字段和集合方法，其字段可以 bind；嵌套 table 及后来赋入的数据对象保持同一观察身份。clear 删除字段时，旧连接冻结最后值，旧引用失效；重新增加同名字段需重新 bind。默认图不接受闭包、任务、节点等宿主资源；宿主通过 alloc_immutable_host 声明的不可变数据值（如 rich）按身份共享，其内部图的不可变性由宿主保证。复制按 VM 原生 continuation 预算推进，失败或取消不发布半成品。
 
@@ -286,7 +289,7 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `game.set_skip(enabled, unread: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。播放器接受手动对白推进后关闭这两种模式；内部自动推进及无效输入不触发此切换。
 
-Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去掉标记后的正文；rich_escape(text) 为显式富文本插值转义左方括号。它们不改变 Aside 字符串、插值或类型系统。text.value、narrator、角色调用与 character.line 接受 string 或此宿主值，bind/derive 保留通常语义；game.dialogue 和 game.history 的 text 字段保留提交值的样式。`text(..., on_link: callback)` 交付只读 `{target, id}` 事件，回调归文字节点所有。富文本也可携带句内速度、停顿与自动续句标记，由共享对白播放器解释，不增加 VM 指令。标记、排版和输入语义见架构规范与创作者指南。rich/rich_escape ABI 1，narrator/character.speak/character.line ABI 2；增加 text_align/line_height 后节点构造 ABI 为 input 6、scroll/text_input/list/view 2、其余 5，tween ABI 2。B01 编码不变。
+Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去掉标记后的正文；rich_escape(text) 为显式富文本插值转义左方括号。它们不改变 Aside 字符串、插值或类型系统。text.value、narrator、角色调用与 character.line 接受 string 或此宿主值，bind/derive 保留通常语义；game.dialogue 和 game.history 的 text 字段保留提交值的样式。`text(..., on_link: callback)` 交付只读 `{target, id}` 事件，回调归文字节点所有。富文本也可携带句内速度、停顿与自动续句标记，由共享对白播放器解释，不增加 VM 指令。标记、排版和输入语义见架构规范与创作者指南。rich/rich_escape ABI 1，narrator/character.speak/character.line ABI 2；增加 text_align/line_height 后节点构造 ABI 为 input 6、scroll/text_input/list/view 2、其余 5，tween ABI 2。Aside 字节码 编码不变。
 
 图片的 GPU 驻留与上传复用由渲染后端管理；相同资源身份的图片在已提交后可跨帧共享，脚本不需要预热缓存或重复加载。该实现不改变 image 的语言接口或 native ABI。
 
@@ -296,33 +299,33 @@ Reel 节点构造把 children 候选归一化为显式提供的完整组件根�
 
 text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。富文本事件链接悬停/聚焦下划线仅重绘。均沿既有宿主属性与输入合同，不新增 Aside 语法或 ABI。
 
-Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 B01/ASB 编码。
+Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
 
-Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 B01/ASB 变化。
+Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 Aside 字节码/ASB 变化。
 
-独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。首批 `random(seed: null)` 及其 int/float/pick 绑定方法使用普通 native 调用和共享身份，随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式；在主函数或事件中创建并保存随机流。没有新增语言语法、VM 指令或 B01/ASB 编码，Aside 不依赖 Reel。
+独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。首批 `random(seed: null)` 及其 int/float/pick 绑定方法使用普通 native 调用和共享身份，随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式；在主函数或事件中创建并保存随机流。没有新增语言语法、VM 指令或 Aside 字节码/ASB 编码，Aside 不依赖 Reel。
 
 `model(defaults)` 接受已完成构造的实例及其数据图。复制保留类身份、字段契约、内部别名与环，不执行构造或复制类定义；方法读取复制后的接收者。`bind(instance.field)` 解析可观察实例的现有字段 cell；只读字段提供单向引用，可写字段支持双向回写，派生读取记录同一字段依赖。后续替换字段中的对象保留赋入身份并观察其数据子图。所有写入沿共享属性事务验证完整的字段类型和连接控件约束，失败保持原值。正在构造或失败的实例不能进入 model；静态字段和方法闭包不复制进实例数据。
 
-Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，B01/ASB 不变。
+Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，Aside 字节码/ASB 不变。
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
 
-Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等待和取消协议工作的宿主结果，成功值为普通不可变 Bytes。`image(source:)` 可消费该值，`saves.save(..., thumbnail:)` 可保存它，`saves.thumbnail(slot)` 可按需读回。截图及存储由宿主实现，不增加 Aside 图形类型、平台依赖或 B01 指令；capture/thumbnail ABI 1、save ABI 2。
+Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等待和取消协议工作的宿主结果，成功值为普通不可变 Bytes。`image(source:)` 可消费该值，`saves.save(..., thumbnail:)` 可保存它，`saves.thumbnail(slot)` 可按需读回。截图及存储由宿主实现，不增加 Aside 图形类型、平台依赖或 Aside 字节码 指令；capture/thumbnail ABI 1、save ABI 2。
 
 Reel `layered_image(layers, ...)` 使用普通零参数函数、数组、属性表和 model 依赖描述分层图片，不增加立绘语法或语言内置类型。宿主返回共同舞台节点，图层选择是可快照的普通数据；layers 的计算与 view/list 一样受响应式计算规则约束。接口 ABI 1，Aside 与图形及平台实现继续独立。
 
 Reel image 的既有 color 属性表示图像像素乘色，默认白色；直接赋值与 bind/derive 使用同一舞台属性通路，layered_image 的图层描述同样接受 color。容器 color 不继承到子节点。此行为不新增 Aside 语法、属性槽、native ABI 或存档格式。
 
-Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格。slice 接受非负有限数值，或左、上、右、下四项非负有限数值组成的数组/tuple；边距为源像素，slice_scale 为非负有限目标边宽倍率。null 保持 fit 行为；启用时填满内容框，角保持比例、边与中心拉伸，源尺寸或目标尺寸不足时按统一比例收缩对应边距。完整 PNG/JPEG 路径或编码 Bytes 共用原图片资源，分块 .reel-image 不支持九宫格。slice、slice_scale 与其他图片属性一样支持赋值、bind/derive、layered_image 和快照；不增加语言语法或 VM 图形类型。image ABI 9、reel.image 宿主属性快照版本 2，B01 不变。
+Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格。slice 接受非负有限数值，或左、上、右、下四项非负有限数值组成的数组/tuple；边距为源像素，slice_scale 为非负有限目标边宽倍率。null 保持 fit 行为；启用时填满内容框，角保持比例、边与中心拉伸，源尺寸或目标尺寸不足时按统一比例收缩对应边距。完整 PNG/JPEG 路径或编码 Bytes 共用原图片资源，分块 .reel-image 不支持九宫格。slice、slice_scale 与其他图片属性一样支持赋值、bind/derive、layered_image 和快照；不增加语言语法或 VM 图形类型。image ABI 9、reel.image 宿主属性快照版本 2，Aside 字节码 不变。
 
-宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 3，包含排序及比较器返回续体，旧版本明确报告版本不匹配；B01/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
+宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 3，包含排序及比较器返回续体，旧版本明确报告版本不匹配；Aside 字节码/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
-Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，B01/ASB 不变。
+Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，Aside 字节码/ASB 不变。
 
 Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。共同节点构造 native ABI 各加 1，节点宿主快照适配器 2（image 4），SessionSnapshot 5。
 
-节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；B01/ASB 不变。
+节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；Aside 字节码/ASB 不变。
 
 Reel 通过 `spawn(work, owner: null)` 启动零参数脚本工作，返回可 await、可 cancel 的宿主任务；节点所有权和取消遵循引擎的作者活动合同。它复用上述普通调用栈，不改变尚未实现的语言级 async/Future 语义。VM 任务槽按同时活动数量增长并复用，默认没有固定任务数配额；宿主仍可通过 `VmLimits.max_tasks` 显式设限。新任务在宿主准入点扩展、整理执行存储，保留根身份并计入堆预算；不会按最大任务配额预分配全部调用栈。
 
@@ -330,7 +333,7 @@ async fn 调用立即返回任务 Future，函数体在后续调度片开始；�
 
 Reel 的 sequence/parallel 通过普通位置 rest 参数接收动作，repeat(action, times: null) 通过普通默认参数指定次数；它们返回描述，由 run 创建实现 Awaitable 协议的活动。组合与计时属于 Reel 宿主库，独立 Aside 不增加专用语法或平台依赖。
 
-await 接受 Awaitable，不接受普通标量。对不可等待值使用 await 报 NotAwaitable（core code 24），定位 await 并提示普通函数调用已经等待其返回值；不隐式接受标量或将其包装为任务。此诊断复用既有故障与源码栈，不增加分配或改变 B01 指令格式。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
+await 接受 Awaitable，不接受普通标量。对不可等待值使用 await 报 NotAwaitable（core code 24），定位 await 并提示普通函数调用已经等待其返回值；不隐式接受标量或将其包装为任务。此诊断复用既有故障与源码栈，不增加分配或改变 Aside 字节码 指令格式。Future、Reel Activity 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
 
 Future.resolve(Future) 采用 adoption，async 返回 Future 同样继承结果；检测直接和间接 adoption 环。需要把 Future 当普通值返回时包在 tuple/对象中。任务 Future 仅由任务返回/失败/终止结算，手工 Future 才能 resolve/reject；重复结算报 AlreadySettled。未观察失败在已给等待者/处理器一个正常调度机会后产生诊断，后续观察更新记录而不重报。结算与通知均不在生产者调用栈内同步重入用户回调。
 
@@ -443,7 +446,7 @@ slotmap 的完整版本仍有回绕边界。封装删除时，在完整代数耗
 
 ## 十八 快照 恢复与版本
 
-快照 v1 使用独立于 B01 的带版本记录流；对象、根区间、帧和 payload 块分别记录，引用保留完整代际键并在隔离恢复时重新映射。捕获器借用被冻结的 VM，按工作额度推进；只遍历强可达图，弱边不参与追踪。标量记录使用 pinned Serde/Postcard 编码，长值按既有堆块拆分；后台接收无运行时句柄的字节记录。不持久化分配器容量、空槽或 GC 扫描状态。恢复重新走堆和帧存储的计账入口；宿主验证函数由版本化注册名重接，不记录地址。接口与实现范围为 aside-vm 快照和后续 Reel 会话适配，ASB/native ABI 不变；代码和资源的归属仍由宿主匹配，VM 不访问文件或设备。
+快照 v1 使用独立于 Aside 字节码 的带版本记录流；对象、根区间、帧和 payload 块分别记录，引用保留完整代际键并在隔离恢复时重新映射。捕获器借用被冻结的 VM，按工作额度推进；只遍历强可达图，弱边不参与追踪。标量记录使用 pinned Serde/Postcard 编码，长值按既有堆块拆分；后台接收无运行时句柄的字节记录。不持久化分配器容量、空槽或 GC 扫描状态。恢复重新走堆和帧存储的计账入口；宿主验证函数由版本化注册名重接，不记录地址。接口与实现范围为 aside-vm 快照和后续 Reel 会话适配，ASB/native ABI 不变；代码和资源的归属仍由宿主匹配，VM 不访问文件或设备。
 
 已验证字节码通过不可变共享所有权复用于读档候选，无需复制或再次验证整个代码包；每个 VM 仍按完整代码成本执行自身配额检查。VM 保存完整可恢复执行状态和对象图，宿主协调请求、舞台/资源屏障及原子磁盘提交。snapshot_begin 在安全点固定根和逻辑状态，snapshot_step 按对象/边/字节预算复制到独立区；业务写入暂停，后台结果排队，长字符串/缓冲/容器也分块。绑定派生与写回在捕获中暂停，非持久原生控件反馈可继续。
 
@@ -461,13 +464,13 @@ Reel 宿主的 `persistent.read/write/delete` 是独立系统数据服务，不�
 
 ## 十九 编译包 构建与工具
 
-Rust 扩展接入合同见 [Aside host SDK](aside-host.md)。共享宿主声明是编译签名、B01 默认参数与运行时准入的单一来源；绑定宏只生成声明及 Rust 调用包装，复用语言的参数绑定、NativeFrame、等待和 GC 协议。Aside 不依赖 Reel。
+Rust 扩展接入合同见 [Aside host SDK](aside-host.md)。共享宿主声明是编译签名、Aside 字节码 默认参数与运行时准入的单一来源；绑定宏只生成声明及 Rust 调用包装，复用语言的参数绑定、NativeFrame、等待和 GC 协议。Aside 不依赖 Reel。
 
-Rust 扩展现可声明可变参数：`#[aside(rest)]` 对应普通 array rest，接收剩余位置实参，支持位置展开。每次调用有独立的外层数组，元素按正常值语义共享；没有剩余参数时仍得到新空数组。rest 必须是最后一个脚本参数，不带默认值，也不能按 rest 名称传入。固定参数的具名/默认值、绑定接收者、函数值、宿主入口和 CallScript 共用原有绑定器；包装不复制参数到 Rust 集合。NativeContract.rest 在源码链接与运行时准入使用同一名称及 Array 类型，包声明不一致则拒绝加载；B01/ASB v1 与 native ABI v1 不变。
+Rust 扩展现可声明可变参数：`#[aside(rest)]` 对应普通 array rest，接收剩余位置实参，支持位置展开。每次调用有独立的外层数组，元素按正常值语义共享；没有剩余参数时仍得到新空数组。rest 必须是最后一个脚本参数，不带默认值，也不能按 rest 名称传入。固定参数的具名/默认值、绑定接收者、函数值、宿主入口和 CallScript 共用原有绑定器；包装不复制参数到 Rust 集合。NativeContract.rest 在源码链接与运行时准入使用同一名称及 Array 类型，包声明不一致则拒绝加载；Aside 字节码/ASB v1 与 native ABI v1 不变。
 
 编译器输出版本化模块包：语言/包/宿主 ABI 版本、导入导出、签名、指令、常量、源码映射、能力与元数据。磁盘数字宽度、端序和编码固定，加载内存布局可不同。执行前验证解码、索引/寄存器/跳转、声明额度、native 符号及能力；恶意包不可导致越界、无界解码或巨量预分配。
 
-作者源码没有独立的 8 MiB 读取门槛，B01 的源码、字符串常量与符号也没有 1 MiB 单项门槛。源码位置与各字符串长度仍须可由既有 u32 表示，编译和 B01/ASB 编解码继续执行各自的整体内存、字节与工作预算。B01 默认工作预算由整体字节预算的两倍推导，覆盖完整包的预扫描与物化两遍读取；两遍工作累计计费，调用者仍可显式配置预算。SourceFile.text 与其他字符串统一沿既有长度前缀解码，格式不变；源码路径及内容在 check/build/dev/run 中使用相同规则保留。
+作者源码没有独立的 8 MiB 读取门槛，Aside 字节码 的源码、字符串常量与符号也没有 1 MiB 单项门槛。源码位置与各字符串长度仍须可由既有 u32 表示，编译和 Aside 字节码/ASB 编解码继续执行各自的整体内存、字节与工作预算。Aside 字节码 默认工作预算由整体字节预算的两倍推导，覆盖完整包的预扫描与物化两遍读取；两遍工作累计计费，调用者仍可显式配置预算。SourceFile.text 与其他字符串统一沿既有长度前缀解码，格式不变；源码路径及内容在 check/build/dev/run 中使用相同规则保留。
 
 源码的平坦运算与后缀访问链按顺序处理，不把 CST 的左结合树高作为额外的 128 项语义限制。投影、分析和 lowering 使用显式链工作表，保留从左到右求值、短路、接收者一次求值、children 收集和源码位置。真正递归的括号、块与子表达式仍使用既有编译资源预算，默认深度为 128，宿主显式配置的预算不再被隐式压低到 128；该深度衡量编译器嵌套语法，不等于画面节点层数。lowering 分开节点调度与具体操作，错误以 Box<Error> 返回，保留完整源码位置与预算统计，仅失败时分配错误载体。不能让无关分支的巨大局部栈帧使正常嵌套组件在默认主线程栈上崩溃。不可变语法树由独立的 aside-syntax crate 持有，最后引用通过原子操作认领后迭代释放子树，长链不依赖宿主调用栈析构。
 
@@ -544,7 +547,7 @@ Ready 先发布结果再提交返回槽并进入后继；Pending 保存等待描
 绑定描述保存类型、可变性和初始化约束，共享 cell 写入遵守同一契约。Match 的输出仅在匹配成功时初始化。MemberGet 对类方法形成绑定接收者，表中的普通闭包保持普通函数。
 调用展开的参数容器为当前调用私有。array 的分片浅捕获从开始至完成检查完整内容版本，包括元素覆盖、增删和重排；变化则以 ConcurrentModification 失败且不调用目标。tuple 外层不可变。捕获完成后，源容器后续修改不使已捕获外层序列失效；内部对象修改仍通过共享引用可见。游标、版本、部分捕获和待释放存储均计入容量与根，失败沿既有异常清理释放；不得把 BudgetYield 当作外部等待或丢失中间状态。
 
-集合展开采用相同的分片浅捕获规则。`[...source]` 接受 array/tuple，`{...source}` 接受 table；null 或其他类型在展开位置报 Type。每个展开在其源码位置捕获完成，再执行后项表达式。表的显式键和值仍全部先求值，再按书写顺序构造并验证键；非法展开源则立即失败。后项覆盖已有键时保留键首次出现的顺序。构造结果在整条表达式完成后才发布，异常或取消释放未完成的容器。B01 使用 ArrayPush/ArraySpread 和有序 TableSources 描述符；TableSpread 复制已验证自有槽，空目标直接线性复制，合并到非空目标仅比较目标原有条目，不重复扫描本次已追加的源条目。每片工作及实际分配计入既有预算，不另设集合长度上限。
+集合展开采用相同的分片浅捕获规则。`[...source]` 接受 array/tuple，`{...source}` 接受 table；null 或其他类型在展开位置报 Type。每个展开在其源码位置捕获完成，再执行后项表达式。表的显式键和值仍全部先求值，再按书写顺序构造并验证键；非法展开源则立即失败。后项覆盖已有键时保留键首次出现的顺序。构造结果在整条表达式完成后才发布，异常或取消释放未完成的容器。Aside 字节码 使用 ArrayPush/ArraySpread 和有序 TableSources 描述符；TableSpread 复制已验证自有槽，空目标直接线性复制，合并到非空目标仅比较目标原有条目，不重复扫描本次已追加的源条目。每片工作及实际分配计入既有预算，不另设集合长度上限。
 
 赋值位置与实参保持源码求值顺序。全部实际参数完成求值后才按签名绑定；有序参数容器保留重复名称，最终绑定阶段报告冲突。无展开普通调用使用连续参数窗口；展开在其源码位置捕获元素，随后参数的副作用不能反向改变先前展开。可变捕获使用共享 cell，每轮循环的绑定独立；不会保存可移动窗口的地址作为 upvalue。
 
@@ -624,7 +627,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
 
-集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 B01 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。运行、GC、异常和取消合同已通过 Windows 原生 debug/release 验证。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
+集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 Aside 字节码 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。运行、GC、异常和取消合同已通过 Windows 原生 debug/release 验证。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
 
 
 ### 宿主属性的同步验证
@@ -634,7 +637,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 ## Reel 音频宿主绑定
 
-Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, loop_start:0, loop_end:null)` 使用 ABI v3，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.seek(activity,seconds)`、`audio.position(activity)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 B01，音频调用产物随签名重新编译。
+Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, loop_start:0, loop_end:null)` 使用 ABI v3，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.seek(activity,seconds)`、`audio.position(activity)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 Aside 字节码，音频调用产物随签名重新编译。
 
 start、loop_start 和非 null 的 loop_end 为有限非负秒；looping:true 使用 [loop_start,loop_end) 循环，null 终点表示资源末尾。start 小于 loop_start 时保留前奏，达到循环终点时取模；looping:false 仅接受默认循环边界。区间顺序在调用处检查，资源长度及帧边界在后台解码后验证，失败通过播放活动传播。position 是即时读取，返回内容位置 float；加载中返回起点，终态保留最后位置，不建立响应式时钟依赖。参数、播放位置与终态遵守 Reel 快照协议，不新增 Aside 语法或音频专用 VM 指令。
 
@@ -644,9 +647,9 @@ start、loop_start 和非 null 的 loop_end 为有限非负秒；looping:true �
 
 播放活动通过标准 native awaitable 协议接入 await；pause/resume/stop 仍由 Reel 按活动类型分派。audio.stop 的淡出使用音频消费时钟，真正停止后才返回 Stopped；尚未开始或已暂停的声音立即停止。音量/声像控制返回原活动，group_volume 返回 null。暂停保留播放位置，音量/声像包络继续按混音时钟推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即完成停止。owner 取消与关闭立即终止。读取与设备错误通过同一 host completion 传播到原始 await 位置。活动是只读宿主值，终态保存在 VM 堆内，活跃生产者保留宿主根；取消消费者仅撤销等待，owner 退休才取消生产者。
 
-Reel `camera` 使用普通宿主节点与 children 合成，camera_x/camera_y/zoom/camera_rotation 为可写、可绑定和可动画数值属性；camera native ABI 1，tween ABI 3。此接口不增加 Aside 语法、VM 每帧回调或平台依赖，B01/ASB 不变。
+Reel `camera` 使用普通宿主节点与 children 合成，camera_x/camera_y/zoom/camera_rotation 为可写、可绑定和可动画数值属性；camera native ABI 1，tween ABI 3。此接口不增加 Aside 语法、VM 每帧回调或平台依赖，Aside 字节码/ASB 不变。
 
-Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定 native 方法（ABI 1）；同父级排序、索引验证和身份保留属于 Reel 舞台合同，不新增语法或 B01/ASB 格式。
+Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定 native 方法（ABI 1）；同父级排序、索引验证和身份保留属于 Reel 舞台合同，不新增语法或 Aside 字节码/ASB 格式。
 
 ## Reel 窗口宿主接口
 
@@ -654,6 +657,6 @@ Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info(
 
 ## Reel 粒子宿主接口
 
-Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。burst:0、lifetime_spread:0、size_end:null 是只读构造参数，分别控制起始瞬发数量、寿命半幅、寿命结束宽度；rate:0 允许只瞬发，空发射直接完成。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。B01/ASB 与语言语法不变。
+Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。burst:0、lifetime_spread:0、size_end:null 是只读构造参数，分别控制起始瞬发数量、寿命半幅、寿命结束宽度；rate:0 允许只瞬发，空发射直接完成。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。Aside 字节码/ASB 与语言语法不变。
 
-Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 B01/ASB 格式。
+Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 Aside 字节码/ASB 格式。

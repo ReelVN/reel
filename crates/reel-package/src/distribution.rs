@@ -1,6 +1,6 @@
 //! Relocatable build output. Paths are relative to the manifest directory.
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::{Component, Path}};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,12 +36,5 @@ impl Distribution {
 }
 
 pub fn relative_path(path: &str) -> std::io::Result<()> {
-    if path.is_empty() || path.contains(['\\', ':', '\0'])
-        || Path::new(path).components().any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-        || path.split('/').any(|part| part == ".." || part.is_empty())
-    {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
-            format!("expected a relative package path: {path}")));
-    }
-    Ok(())
+    if path == "." { Ok(()) } else { crate::archive::validate_path(path) }
 }
