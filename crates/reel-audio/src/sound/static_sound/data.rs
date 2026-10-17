@@ -417,6 +417,7 @@ impl StaticSoundData {
 		(
 			sound,
 			StaticSoundHandle {
+				pending_seek: (0, 0.0),
 				command_writers,
 				shared,
 			},

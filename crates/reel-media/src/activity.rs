@@ -6,7 +6,7 @@
 //! wakes through the existing non-RT reclaimer. Never call these methods on PCM.
 //!
 //! IDs are unique within one service lifetime; the host supplies a fresh epoch
-//! when replacing a service. No seek/reload or hardware-completion claim is made.
+//! when replacing a service. Positions describe content, not hardware presentation.
 use crate::retirement::{ActivityState, DescriptorRelease, OwnerState, PhysicalRelease};
 use std::sync::{Arc, Weak, atomic::Ordering};
 use std::time::Duration;
@@ -453,6 +453,10 @@ impl AudioActivityService {
     }
     pub fn set_pan(&mut self, id: MediaId, pan: f32, duration: Duration) -> Result<(), AudioError> {
         self.live_mut(id)?.playback.set_pan(pan, duration)
+    }
+    /// Keep the activity identity and terminal wait while changing content position.
+    pub fn seek(&mut self, id: MediaId, position: Duration) -> Result<Duration, AudioError> {
+        Ok(self.live_mut(id)?.playback.seek(position))
     }
     fn live_mut(&mut self, id: MediaId) -> Result<&mut Entry, AudioError> {
         if self.failed.is_some() {

@@ -96,12 +96,18 @@ fn seek_loop_wrapping() {
 	transport.seek_to(7, 10);
 	assert_eq!(transport.position, 4);
 	transport.seek_to(0, 10);
-	assert_eq!(transport.position, 3);
+	assert_eq!(transport.position, 0);
+	transport.seek_to(usize::MAX, 10);
+	assert_eq!(transport.position, 2 + (usize::MAX - 2) % 3);
 }
 
 #[test]
 fn seek_out_of_bounds() {
 	let mut transport = Transport::new(5, None, false, 1, 10);
-	transport.seek_to(10, 10);
+	transport.seek_to(100, 10);
+	assert_eq!(transport.position, 10);
 	assert!(!transport.playing);
+	transport.seek_to(3, 10);
+	assert_eq!(transport.position, 3);
+	assert!(transport.playing);
 }

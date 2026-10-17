@@ -12,8 +12,9 @@ pub enum PlaybackPosition {
 }
 
 impl PlaybackPosition {
+	/// Resolve seconds to the nearest source frame, or retain an explicit frame index.
 	#[must_use]
-	pub(crate) fn into_samples(self, sample_rate: u32) -> usize {
+	pub fn into_samples(self, sample_rate: u32) -> usize {
 		match self {
 			PlaybackPosition::Seconds(seconds) => (seconds * sample_rate as f64).round() as usize,
 			PlaybackPosition::Samples(samples) => samples,

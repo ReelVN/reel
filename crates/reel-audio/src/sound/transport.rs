@@ -88,19 +88,13 @@ impl Transport {
 
 	pub fn seek_to(&mut self, mut position: usize, num_frames: usize) {
 		if let Some((loop_start, loop_end)) = self.loop_region {
-			if position > self.position {
-				while position >= loop_end {
-					position -= loop_end - loop_start;
-				}
-			} else {
-				while position < loop_start {
-					position += loop_end - loop_start;
-				}
+			if position >= loop_end {
+				position = loop_start + (position - loop_start) % (loop_end - loop_start);
 			}
+		} else {
+			position = position.min(num_frames);
 		}
 		self.position = position;
-		if self.position >= num_frames {
-			self.playing = false;
-		}
+		self.playing = position < num_frames;
 	}
 }

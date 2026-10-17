@@ -189,7 +189,6 @@ impl DecodedSound {
         let frames = self.data.num_frames();
         let sample_rate = f64::from(self.data.sample_rate);
         let frame = |time: Duration| (time.as_secs_f64() * sample_rate).round() as usize;
-        let mut start = frame(start);
         self.data.settings.loop_region = if let Some(region) = loop_region {
             let from = frame(region.start);
             let to = region.end.map_or(frames, frame);
@@ -199,19 +198,22 @@ impl DecodedSound {
                     "audio loop must fit within the source and contain at least one frame",
                 ));
             }
-            if start >= to {
-                start = from + (start - from) % (to - from);
-            }
             Some(Region {
                 start: PlaybackPosition::Samples(from),
                 end: EndPosition::Custom(PlaybackPosition::Samples(to)),
             })
         } else {
-            start = start.min(frames);
             None
         };
-        self.data.settings.start_position = PlaybackPosition::Samples(start);
+        self.seek(start);
         Ok(self)
+    }
+    /// Update a decoded sound before admission without copying or decoding PCM.
+    pub fn seek(&mut self, position: Duration) -> Duration {
+        let bounds = PlaybackBounds::new(&self.data);
+        let frame = bounds.frame(position);
+        self.data.settings.start_position = PlaybackPosition::Samples(frame);
+        bounds.time(frame)
     }
     /// The resolved content start, including frame quantization and loop wrapping.
     pub fn start_position(&self) -> Duration {
@@ -503,6 +505,7 @@ impl KiraMixer {
         let Ok(chunk) = producer.write_chunk_uninit(1) else {
             return Err(reject(sound));
         };
+        let bounds = PlaybackBounds::new(&sound.data);
         let data = BudgetedData {
             data: sound.data.clone(),
             budget: sound.budget.clone(),
@@ -524,19 +527,62 @@ impl KiraMixer {
                     &signal,
                 )));
                 signal.shared.notify();
-                Ok(Playback { handle })
+                Ok(Playback { handle, bounds })
             }
             Err(_) => Err(reject(sound)),
         }
     }
 }
+/// Small transport metadata; never retains a second PCM allocation.
+struct PlaybackBounds {
+    sample_rate: u32,
+    frames: usize,
+    loop_region: Option<(usize, usize)>,
+}
+impl PlaybackBounds {
+    fn new(data: &StaticSoundData) -> Self {
+        Self {
+            sample_rate: data.sample_rate,
+            frames: data.num_frames(),
+            loop_region: data.settings.loop_region.map(|region| {
+                let from = region.start.into_samples(data.sample_rate);
+                let to = match region.end {
+                    EndPosition::EndOfAudio => data.num_frames(),
+                    EndPosition::Custom(end) => end.into_samples(data.sample_rate),
+                };
+                (from, to)
+            }),
+        }
+    }
+    fn frame(&self, position: Duration) -> usize {
+        let frame = (position.as_secs_f64() * f64::from(self.sample_rate)).round() as usize;
+        match self.loop_region {
+            Some((from, to)) if frame >= to => from + (frame - from) % (to - from),
+            Some(_) => frame,
+            None => frame.min(self.frames),
+        }
+    }
+    fn time(&self, frame: usize) -> Duration {
+        Duration::from_secs_f64(frame as f64 / f64::from(self.sample_rate))
+    }
+}
 /// Control wrapper; state/position describe content consumption, not device presentation.
 pub struct Playback {
     handle: StaticSoundHandle,
+    bounds: PlaybackBounds,
 }
 impl Playback {
     pub fn position_seconds(&self) -> f64 {
         self.handle.position()
+    }
+    /// Seek the existing transport through a coalesced command slot.
+    pub fn seek(&mut self, position: Duration) -> Duration {
+        if self.is_stopped() {
+            return Duration::from_secs_f64(self.position_seconds());
+        }
+        let position = self.bounds.time(self.bounds.frame(position));
+        self.handle.seek_to(position.as_secs_f64());
+        position
     }
     pub fn is_stopped(&self) -> bool {
         self.handle.state() == PlaybackState::Stopped

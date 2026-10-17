@@ -50,5 +50,5 @@ command_writers_and_readers! {
 	resume: (StartTime, Tween),
 	stop: Tween,
 	seek_by: f64,
-	seek_to: f64,
+	seek_to: (u64, f64),
 }

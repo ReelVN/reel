@@ -34,6 +34,7 @@ pub struct AudioPlayback {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum AudioCommand {
+    Seek(Duration),
     Stop,
     Pause,
     Resume,
@@ -47,7 +48,7 @@ pub trait AudioBackend {
     fn play(&mut self, request: AudioRequest) -> Result<AudioId, String>;
     /// Owned logical state; no PCM, device handles or mixer ownership cross the boundary.
     fn snapshot(&self, id: AudioId) -> Result<AudioPlayback, String>;
-    /// Last observed content position, without copying the playback request.
+    /// Current content position or latest pending seek target, without copying the request.
     fn position(&self, id: AudioId) -> Option<Duration>;
     fn command(&mut self, id: AudioId, command: AudioCommand) -> Result<(), String>;
     /// None selects the master bus. Applies to existing and future sounds.

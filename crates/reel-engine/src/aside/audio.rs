@@ -489,6 +489,7 @@ impl SessionVm {
                 }
             } else {
                 let command = match symbol {
+                    "reel::audio::seek" => AudioCommand::Seek(duration(args[1])?),
                     "reel::stop" => AudioCommand::Stop,
                     "reel::pause" => AudioCommand::Pause,
                     "reel::resume" => AudioCommand::Resume,
@@ -521,7 +522,12 @@ impl SessionVm {
                         return Ok(());
                     }
                 }
-                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                let result = if symbol == "reel::audio::seek" {
+                    Value::NULL
+                } else {
+                    value
+                };
+                self.vm.respond(ticket, HostResponse::Ready(result))?;
             }
         }
         self.issued = None;

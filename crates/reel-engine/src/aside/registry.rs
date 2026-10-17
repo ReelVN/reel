@@ -569,6 +569,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             ],
             false,
         ),
+        (
+            "seek",
+            vec![parameter("activity", None), parameter("seconds", None)],
+            false,
+        ),
         ("position", vec![parameter("activity", None)], false),
         ("await", vec![parameter("activity", None)], true),
     ] {
@@ -583,6 +588,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             parameters,
             result: if name == "position" {
                 BuiltinType::Float
+            } else if name == "seek" {
+                BuiltinType::Null
             } else {
                 BuiltinType::Any
             },

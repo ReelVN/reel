@@ -1162,6 +1162,8 @@ Audio decoding accounts for overlapping old and new storage only during buffer g
 
 `start` selects the starting position in seconds, and `audio.position(sound)` reads the current content position. Loading returns the requested start, pausing holds the position, and a finished activity retains its final position. With `looping: true`, use `loop_start` and `loop_end` to choose a loop; the default covers the whole track. A start before loop_start plays the introduction first, then wraps from loop_end to loop_start. A start beyond loop_end wraps into the loop. The end is exclusive, and the interval must fit within the source and contain at least one frame. Keep the default loop bounds when looping is disabled.
 
+`audio.seek(sound, seconds)` seeks the same sound and returns null; do not await the call. The position is in finite nonnegative seconds. Paused sounds stay paused; playing sounds continue with their gain and loop settings unchanged. During loading, seeking changes the starting position. Non-looping positions beyond the end clamp to the end and complete naturally; paused sounds complete after resuming. Looping uses the same rules as start. Consecutive seeks keep the latest target, which `audio.position` and an immediate save observe until the mixer applies it and reports actual progress. Finished activities do not restart; `await sound` still waits for the original playback result.
+
 Combine these calls to switch music at the same content position. Fade-in starts once the new track finishes loading and begins playback:
 ```aside
 let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
@@ -1177,7 +1179,7 @@ By default, sound belongs to the current callback node, or to the session in the
 
 The Windows player submits stereo audio to the system, including when the default output device uses multiple channels.
 
-WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Starting positions, loop regions and save restoration are connected; streaming long tracks and seeking during playback remain part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
+WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Starting positions, loop regions, seeking during playback and save restoration are connected; streaming long tracks remains part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
 
 Runnable example: [author_audio.aside](../../examples/author_audio.aside), using examples as the asset root and the same font configuration as other author examples. Its chime.wav is an original short sine tone supplied by this repository.
 

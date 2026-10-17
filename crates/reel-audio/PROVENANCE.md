@@ -23,3 +23,7 @@ media adapter before buffer growth and final Arc transfer. The same decoder
 continues to serve file and host-provided sources.
 Packet decoding counts the old PCM allocation twice only when it actually
 grows; packets that fit reuse the existing allocation and conversion scratch.
+
+Static sound seeks publish their pending position until the output confirms that
+request, discard the old interpolation history and keep pause/terminal state.
+Absolute loop seeks preserve the intro and wrap in constant time at the loop end.
