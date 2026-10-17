@@ -476,7 +476,14 @@ wgpu 图片缓存按完整 ResourceHandle 复用已提交的纹理；准备失�
 物理像素边界对齐的轴向矩形裁剪使用相交的 GPU scissor，不创建离屏目标；旋转、分数像素边界和任意形状继续走覆盖率合成，保留抗锯齿。目标预算规划与重放使用相同判定，透明组和遮罩继续保持隔离合成语义。
 默认音频用 Kira 适配音乐、语音、音效与 UI 分组；各目标输出桥接单独验证。脚本发送控制，实时供给不得执行文件读取和 VM 工作。控制队列有界，连续音量更新可以合并；播放补给拥有独立工作容量与队列额度，图像解码不得耗尽它。短音效预解码，长音轨采用流式策略。[9]
 预分配回调路径、锁竞争、声道与采样率协商必须实测。Windows 8 声道设备配置列为重点用例。控制队列为停止、设备关闭与音轨释放预留独立容量；播放请求进入普通有界队列，满载时返回带原请求的 Busy。音量按音轨合并为最新值。停止请求按音轨幂等合并，关闭状态优先于新播放，保证回调线程始终有界且主线程获得明确结果。具体容量由目标配置给出，满载场景进入契约验证。
-视频采用 reel-media 内的 FFmpeg 适配器，复用 ffmpeg-next 的流式 IO 接口连接 AssetIo；包装库和原生 FFmpeg 作为固定、验证过的组合发布。音频帧交给 Kira，视频帧按 PTS 送渲染器，音频可用时以音频逻辑时钟为主，否则使用会话时钟。解码、seek、队列和上传有独立预算与媒体代数；落后帧按播放策略丢弃，结束只结算一次。透明视频支持配套遮罩轨或 side-mask 布局，和普通节点一样进入合成。各平台分别验证静态/动态链接、编码许可及硬件解码；video feature 控制是否装入这项完整能力。
+视频通过可替换的 reel-media 解码适配器连接 AssetIo。首个软件适配器选用固定版本 OpenH264 0.9.9、mp4 0.14.0、h264-reader 0.9.0 与 Symphonia 0.6.1，处理 MP4 中 H.264 Baseline 与可选单声道/双声道 AAC；不引入生产 FFmpeg 依赖。Baseline 无 B 帧，按容器 PTS 展示；当前适配器拒绝需要重排序的 profile，媒体架构仍保留独立 PTS/DTS。平台硬件解码器可沿同一输出契约扩展。音轨通过有界 PCM 队列进入现有混音器，视频使用有界帧队列与可复用纹理；不得预解码整片或逐帧创建 PNG 资源。音频可用时以实际消费的有效 PCM 内容时间为主，欠载不推进内容时钟；无音轨时使用会话时钟。暂停、seek、取消、EOF 排空与所有权退休共享媒体身份和唯一终态；seek 更换代数，旧帧只释放。解码线程可等待独立 IO 队列及背压，主线程和音频供给不得等待或执行 IO。当前 CPAL 无可信硬件呈现时钟，内容同步不能称为设备采样精确同步。透明遮罩、平台硬解和其他编解码组合分别实现和验收。
+
+首个适配器的可执行 Rust 接口是 `reel-media::video::VideoPlayback`，由 `video` feature 启用。当前接受非分片 MP4、渐进式 8-bit YUV420 H.264 Baseline 与可选 mono/stereo AAC-LC；容器的连续 edit list 用于去掉 AAC encoder delay/padding，seek 按 sync sample 回退并解码参考帧。SPS/VUI 提供矩阵、范围及传递函数；未指定时采用 limited range、BT.709 transfer，720 行及以上用 BT.709 matrix，其余用 BT.601。明确的其他矩阵/传递函数报告不支持，不默默改色。
+
+`VideoOptions` 的默认队列是 3 个已解码画面和 8192 个音频采样帧，可由宿主配置；另有一个解码中的输出。画面 lease 与 PCM ring 按实际容量持有 `BudgetTicket`，消费者保留的 lease 继续占额度。MP4 索引随 sample table 大小增长，原生解码器的参考帧/内部工作区由解码器管理；队列预算不等同于进程总内存。PCM 回调只消费预分配环并发布内容时钟，不分配、读取文件、取得互斥锁或唤醒任意宿主回调。音轨通过现有 Music 总线和后台回收服务播放；音轨早于视频结束时由会话时间推进尾段。单视频 `set_volume` 与 Music 总线音量相乘，不修改内容时钟。暂停保持位置，stop/cancel 立即撤销供给并唤醒 worker；宿主等待 `worker_finished` 完成后台退休。恢复/seek 新建播放代数，撤销旧 reader；`start/end` 表示精确的源内容区间，end 是开端点。
+
+`Assets::stream` 将 worker 的 Read/Seek 请求转交共享 AssetIo，主控仍调用 Assets::maintain；没有第二条文件读取路径。DirectoryIo 首次 describe 在 IO worker 用 64 KiB scratch 流式计算内容 digest，缓存打开的文件与 digest，后续 range read 不重复扫描；散文件首开成本与文件大小成正比。具有已知内容 digest 的资源包直接提供该版本。取消/服务关闭唤醒挂起的 reader。当前 Rust 解码/音轨契约见 [video_playback.rs](../crates/reel-media/tests/video_playback.rs)；舞台视频节点和 Aside 接线在独立呈现变更中完成，本段不宣称图形设备已经验收。
+
 
 ## 九 存档与回滚
 

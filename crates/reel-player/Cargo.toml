@@ -9,6 +9,7 @@ publish = false
 default = []
 winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
+video = ["reel-media/video"]
 audio-output = ["reel-media/cpal-output"]
 window = ["audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 

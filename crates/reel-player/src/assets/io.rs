@@ -1,14 +1,19 @@
 use super::worker::{Worker, check_completion};
+mod directory;
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
-    identity::{ContentVersion, IoId},
+    identity::IoId,
     io::*,
     queue::{charge, invalid},
     request_ids::RequestIds,
     result::{RejectCode, RejectReason, Rejected, Terminal},
     wake::WakeSignal,
 };
-use std::{io::Read, path::PathBuf, sync::atomic::Ordering};
+use std::{
+    io::{Read, Seek, SeekFrom},
+    path::PathBuf,
+    sync::{Mutex, atomic::Ordering},
+};
 
 enum Request {
     Describe(DescribeRequest),
@@ -21,70 +26,66 @@ pub struct DirectoryIo {
 }
 impl DirectoryIo {
     pub fn new(root: PathBuf, limits: QueueLimits, wake: WakeSignal) -> Self {
+        let files = Mutex::new(directory::Files::new(root, limits.max_requests as usize));
         Self {
             worker: Worker::new(
                 limits,
                 wake,
                 move |(id, request), cancelled| {
-                    let (scope, completion, result) = match request {
-                        Request::Describe(r) => {
-                            let result = std::fs::metadata(root.join(&r.resource.key.0))
-                                .map(|m| {
-                                    IoPayload::Described(AssetInfo {
-                                        length: Some(m.len()),
-                                        range_read: false,
-                                        seekable: false,
-                                        version: None,
-                                        media_type: None,
-                                    })
-                                })
-                                .map_err(io_error);
-                            (r.scope, r.completion, result)
-                        }
-                        Request::Read(r) => {
-                            let scope = r.scope;
-                            let completion = r.completion;
-                            let result = (|| {
-                                let mut file = std::fs::File::open(root.join(&r.resource.key.0))
-                                    .map_err(io_error)?;
-                                let length = file.metadata().map_err(io_error)?.len();
-                                if length != u64::from(r.len) {
-                                    return Err(failure("asset size changed before reading"));
-                                }
-                                let mut data = Vec::new();
-                                data.try_reserve_exact(r.len as usize)
-                                    .map_err(|e| failure(e.to_string()))?;
-                                data.resize(r.len as usize, 0);
-                                for chunk in data.chunks_mut(64 << 10) {
-                                    if cancelled.load(Ordering::Acquire) {
-                                        return Err(failure("read cancelled"));
+                    let (scope, completion, result) =
+                        match request {
+                            Request::Describe(r) => {
+                                let result =
+                                    files.lock().unwrap().open(&r.resource, cancelled).map(
+                                        |file| {
+                                            IoPayload::Described(AssetInfo {
+                                                length: Some(file.length),
+                                                range_read: true,
+                                                seekable: true,
+                                                version: Some(file.version),
+                                                media_type: None,
+                                            })
+                                        },
+                                    );
+                                (r.scope, r.completion, result)
+                            }
+                            Request::Read(r) => {
+                                let scope = r.scope;
+                                let completion = r.completion;
+                                let result = (|| {
+                                    let mut files = files.lock().unwrap();
+                                    let file = files.open(&r.resource, cancelled)?;
+                                    if r.offset > file.length {
+                                        return Err(failure("asset read starts after EOF"));
                                     }
-                                    file.read_exact(chunk).map_err(io_error)?;
-                                }
-                                if file.read(&mut [0]).map_err(io_error)? != 0 {
-                                    return Err(failure("asset grew during reading"));
-                                }
-                                let version = ContentVersion(*blake3::hash(&data).as_bytes());
-                                if r.resource
-                                    .version
-                                    .is_some_and(|expected| expected != version)
-                                {
-                                    return Err(IoError {
-                                        code: IoErrorCode::VersionUnavailable,
-                                        message: "requested asset version unavailable".into(),
-                                    });
-                                }
-                                let bytes = OwnedBytes::new(data, r.output)
-                                    .map_err(|e| failure(e.reason.message))?;
-                                Ok(IoPayload::Read(ReadResult {
-                                    bytes,
-                                    eof: true,
-                                    version,
-                                }))
-                            })();
-                            (scope, completion, result)
-                        }
-                    };
+                                    let len = u64::from(r.len).min(file.length - r.offset) as usize;
+                                    file.file
+                                        .seek(SeekFrom::Start(r.offset))
+                                        .map_err(io_error)?;
+                                    let mut data = Vec::new();
+                                    data.try_reserve_exact(len)
+                                        .map_err(|e| failure(e.to_string()))?;
+                                    data.resize(len, 0);
+                                    for chunk in data.chunks_mut(64 << 10) {
+                                        if cancelled.load(Ordering::Acquire) {
+                                            return Err(failure("read cancelled"));
+                                        }
+                                        file.file.read_exact(chunk).map_err(io_error)?;
+                                    }
+                                    file.verify()?;
+                                    let version = file.version;
+                                    let eof = r.offset + len as u64 == file.length;
+                                    let bytes = OwnedBytes::new(data, r.output)
+                                        .map_err(|e| failure(e.reason.message))?;
+                                    Ok(IoPayload::Read(ReadResult {
+                                        bytes,
+                                        eof,
+                                        version,
+                                    }))
+                                })();
+                                (scope, completion, result)
+                            }
+                        };
                     IoEvent {
                         id,
                         scope,
@@ -126,7 +127,7 @@ fn io_error(error: std::io::Error) -> IoError {
 impl AssetIo for DirectoryIo {
     fn capabilities(&self) -> IoCaps {
         IoCaps {
-            range_read: false,
+            range_read: true,
             read_queue: self.limits,
             save_queue: QueueLimits {
                 max_requests: 0,
@@ -163,15 +164,6 @@ impl AssetIo for DirectoryIo {
         })
     }
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
-        if request.offset != 0 {
-            return Err(Rejected {
-                request,
-                reason: RejectReason::new(
-                    RejectCode::Unsupported,
-                    "directory IO accepts complete bounded reads",
-                ),
-            });
-        }
         let checks = check_completion(&request.completion).and_then(|_| {
             if !matches!(
                 request.output.category(),

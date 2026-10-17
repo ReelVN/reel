@@ -18,6 +18,9 @@ pub use mixer::{
 pub use output::{OfflineOutput, UnderrunSignal, bounded_pcm_queue};
 pub use pcm::DeviceSample;
 
+#[cfg(feature = "video")]
+pub mod video;
+
 #[cfg(all(
     feature = "cpal-output",
     any(target_os = "linux", target_os = "windows", target_os = "macos")

@@ -6,6 +6,7 @@ pub mod audio;
 pub mod budget;
 pub mod clock;
 pub mod identity;
+pub mod image;
 pub mod io;
 pub mod prepared_image;
 pub mod queue;
