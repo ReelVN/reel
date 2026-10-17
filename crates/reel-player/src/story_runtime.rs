@@ -396,7 +396,17 @@ impl StoryRuntime {
                     let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
                     format!("{}:{line}:{column}", package.symbols[source.path.index()],)
                 } else {
-                    format!("{:?}", fault.location)
+                    let package = self.driver().adapter().vm().program().package();
+                    let id = fault.location.code.function;
+                    let function = &package.functions[id.index()];
+                    let module = &package.modules[function.module.index()];
+                    format!(
+                        "{}::{} [function {}, pc {}]",
+                        package.symbols[module.path.index()],
+                        package.symbols[function.name.index()],
+                        id.0,
+                        fault.location.pc.0,
+                    )
                 };
                 let value = self.driver().adapter().format_fault_value(fault)?;
                 return Err(format!("{location}: story fault {:?}: {value}", fault.kind).into());

@@ -320,12 +320,17 @@ fn rehashed_metadata_cannot_redirect_entry_or_lie_about_cross_references() {
     let original = artifact("let x = 1; fn main(a = 2) { a }", Some("main::main")).bytes;
     let initial: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
     for (pointer, value) in [
-        ("/schema_version", serde_json::json!(4)),
+        ("/schema_version", serde_json::json!(5)),
         ("/bytecode_blake3", serde_json::json!("wrong")),
         ("/modules/0/module_id", serde_json::json!(u32::MAX)),
         ("/modules/0/canonical_path", serde_json::json!("foreign")),
-        ("/modules/0/source_blake3", serde_json::json!("wrong")),
-        ("/modules/0/source_span/end", serde_json::json!(u32::MAX)),
+        ("/modules/0/debug/source_blake3", serde_json::json!("wrong")),
+        ("/modules/0/debug", serde_json::Value::Null),
+        ("/modules/0/debug/declaration_spans", serde_json::json!([])),
+        (
+            "/modules/0/debug/source_span/end",
+            serde_json::json!(u32::MAX),
+        ),
         ("/initializer/function_id", serde_json::json!(u32::MAX)),
         ("/game_entry/function_id", serde_json::json!(u32::MAX)),
         ("/game_entry/declaration_index", serde_json::json!(u32::MAX)),
@@ -502,8 +507,7 @@ fn unicode_span_boundaries_and_all_mapping_keys_are_checked() {
     let original = artifact("fn 中文(a = 1) { a }", Some("main::中文")).bytes;
     let initial: serde_json::Value = serde_json::from_slice(section(&original, 1)).unwrap();
     let mut broken_span = initial.clone();
-    broken_span["modules"][0]["declarations"][0]["declaration_span"]["start"] =
-        serde_json::json!(4);
+    broken_span["modules"][0]["debug"]["declaration_spans"][0]["start"] = serde_json::json!(4);
     assert!(
         rp::decode(
             &repack(&original, &serde_json::to_vec(&broken_span).unwrap()),

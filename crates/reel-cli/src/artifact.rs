@@ -23,6 +23,7 @@ pub(crate) fn module_metadata(
     let m = &compiled.metadata;
     let globals: BTreeMap<_, _> = m.globals.iter().map(|g| (g.source, g.global)).collect();
     let mut declarations = Vec::new();
+    let mut declaration_spans = Vec::new();
     for (source_function, function) in module.functions().iter().enumerate() {
         let Some(symbol_id) = module.facts()[function.node.0 as usize].symbol else {
             continue;
@@ -47,16 +48,19 @@ pub(crate) fn module_metadata(
             source_function_id: source_function as u32,
             global_id: global.0,
             function_id: output.output.0,
-            declaration_span: span(symbol.declaration),
         });
+        declaration_spans.push(span(symbol.declaration));
     }
     Ok(rp::ModuleMetadata {
         module_id: compiled.module.0,
         canonical_path: m.canonical_path.clone(),
         source_version: m.source_version.clone(),
-        source_blake3: rp::digest(program.sources[compiled.source.index()].text.as_bytes()),
-        source_id: compiled.source.0,
-        source_span: span(m.source_span),
+        debug: Some(rp::ModuleDebug {
+            source_blake3: rp::digest(program.sources[compiled.source.index()].text.as_bytes()),
+            source_id: compiled.source.0,
+            source_span: span(m.source_span),
+            declaration_spans,
+        }),
         symbol_count: m.symbol_count,
         initializer: rp::Initializer {
             module_id: compiled.module.0,
@@ -101,6 +105,23 @@ pub struct Artifact {
     pub bytes: Vec<u8>,
     pub blake3: String,
     pub game_entry: Option<rp::GameEntry>,
+    pub profile: BuildProfile,
+    pub bytecode_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BuildProfile {
+    #[default]
+    Debug,
+    Release,
+}
+impl BuildProfile {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
 }
 
 pub(crate) fn select_entry(
@@ -137,7 +158,7 @@ pub(crate) fn select_entry(
         })?;
     let at = |module: &rp::ModuleMetadata, range, message| {
         let mut failed = fail(range, message);
-        let source = &p.sources[module.source_id as usize];
+        let source = &p.sources[module.debug.as_ref().expect("checked source").source_id as usize];
         failed.diagnostics[0].source = Some(p.symbols[source.path.index()].clone());
         failed
     };
@@ -172,8 +193,11 @@ pub(crate) fn select_entry(
                 })
             })
     };
-    let (owner, index, declaration) = found.ok_or_else(|| at(module, text_range(module.source_span),
-        format!("story entry {name} was not found; define fn {short}() or select another function with --entry")))?;
+    let (owner, index, declaration) = found.ok_or_else(|| {
+        let debug = module.debug.as_ref().expect("checked source");
+        at(module, text_range(debug.source_span),
+            format!("story entry {name} was not found; define fn {short}() or select another function with --entry"))
+    })?;
     let function = &p.functions[declaration.function_id as usize];
     let signature = &p.signatures[function.signature.index()];
     if function.kind != bc::FunctionKind::Plain
@@ -181,7 +205,8 @@ pub(crate) fn select_entry(
         || !function.captures.is_empty()
         || signature.parameters.iter().any(|p| p.default.is_none())
     {
-        return Err(at(owner, text_range(declaration.declaration_span),
+        let debug = owner.debug.as_ref().expect("checked source");
+        return Err(at(owner, text_range(debug.declaration_spans[index]),
             "story entry must be an Ordinary module-level function with no required parameters or captured variables".into()));
     }
     Ok(Some(rp::GameEntry {
@@ -192,6 +217,14 @@ pub(crate) fn select_entry(
 }
 
 pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure> {
+    build_with_profile(checked, entry, BuildProfile::Debug)
+}
+
+pub fn build_with_profile(
+    checked: &Checked,
+    entry: Option<&str>,
+    profile: BuildProfile,
+) -> Result<Artifact, Failure> {
     let compiled = &checked.compilation;
     let p = compiled.program.package();
     let fail = |detail| {
@@ -203,14 +236,31 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
         )
     };
     let game_entry = select_entry(checked, entry)?;
+    let release;
+    let release_bytes;
+    let (p, bytecode) = match profile {
+        BuildProfile::Debug => (p, checked.bytes.as_slice()),
+        BuildProfile::Release => {
+            release = without_debug(p);
+            release_bytes =
+                bc::encode(&release, bc::Limits::default()).map_err(|e| fail(e.to_string()))?;
+            (&release, release_bytes.as_slice())
+        }
+    };
+    let mut modules = checked.modules.clone();
+    if profile == BuildProfile::Release {
+        for module in &mut modules {
+            module.debug = None;
+        }
+    }
     let metadata = rp::Metadata {
-        schema_version: 3,
-        bytecode_blake3: rp::digest(&checked.bytes),
+        schema_version: 4,
+        bytecode_blake3: rp::digest(bytecode),
         language_version: p.language_version,
         bytecode_version: p.format_version,
         host_abi_version: p.host_abi_version,
         content_version: p.content_version,
-        modules: checked.modules.clone(),
+        modules,
         initialization_order: compiled.initialization_order.iter().map(|m| m.0).collect(),
         initializer: rp::Initializer {
             module_id: p.functions[compiled.initializer.index()].module.0,
@@ -219,7 +269,7 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
         game_entry: game_entry.clone(),
     };
     let limits = rp::Limits::default();
-    let bytes = rp::encode(&checked.bytes, &metadata, limits).map_err(|e| fail(e.to_string()))?;
+    let bytes = rp::encode(bytecode, &metadata, limits).map_err(|e| fail(e.to_string()))?;
     let verified = rp::decode(&bytes, limits).map_err(|e| fail(e.to_string()))?;
     if verified.metadata() != &metadata || verified.program().package() != p {
         return Err(fail("ASB round trip changed program/metadata".into()));
@@ -228,7 +278,46 @@ pub fn build(checked: &Checked, entry: Option<&str>) -> Result<Artifact, Failure
         blake3: rp::digest(&bytes),
         bytes,
         game_entry,
+        profile,
+        bytecode_bytes: bytecode.len(),
     })
+}
+
+fn without_debug(p: &bc::BytecodePackage) -> bc::BytecodePackage {
+    // Do not clone full sources or per-instruction mappings merely to discard
+    // them: large projects can hold substantially more debug data than code.
+    bc::BytecodePackage {
+        format_version: p.format_version,
+        language_version: p.language_version,
+        host_abi_version: p.host_abi_version,
+        content_version: p.content_version,
+        symbols: p.symbols.clone(),
+        types: p.types.clone(),
+        constants: p.constants.clone(),
+        signatures: p.signatures.clone(),
+        natives: p.natives.clone(),
+        modules: p.modules.clone(),
+        functions: p
+            .functions
+            .iter()
+            .map(|f| bc::FunctionDef {
+                module: f.module,
+                name: f.name,
+                kind: f.kind,
+                signature: f.signature,
+                context: f.context,
+                captures: f.captures.clone(),
+                register_count: f.register_count,
+                bindings: f.bindings.clone(),
+                descriptors: f.descriptors.clone(),
+                code: f.code.clone(),
+                regions: f.regions.clone(),
+                source_map: Vec::new(),
+            })
+            .collect(),
+        capabilities: p.capabilities.clone(),
+        sources: Vec::new(),
+    }
 }
 
 pub fn package_limits_json() -> Value {

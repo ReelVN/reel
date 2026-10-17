@@ -68,7 +68,13 @@ cargo build --locked -p reel-cli --features window
 
 check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者提供与播放器相同的默认 Reel 名称、已注册 native 与宿主默认参数。
 
-dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。源码路径与位置保存在包内，运行错误仍指向原来的 .aside 文件。已有输出只在指定 --overwrite 时替换。
+dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。已有输出只在指定 --overwrite 时替换。
+
+build 默认使用 Debug，完整源码与映射保存在包内，运行错误能指向原来的 .aside 文件。发布时加 `--release`，只生成去除源码、指令映射和声明位置的 ASB，减少文件体积及加载后驻留的调试数据。两种模式的语言行为和运行检查相同；Release 仍报告错误类型、函数和指令位置，保留执行需要的符号与文本常量。这个开关与编译 Rust 播放器的 `cargo build --release` 分开；不会把剧情文本移到外部文件。现有执行存档对应实际 ASB，同一源码的 Debug 与 Release 存档不互换。
+
+```powershell
+./target/debug/reel.exe build examples/author_stage.aside --release --output target/reel-artifacts/author-stage-release.asb --overwrite
+```
 
 启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 

@@ -71,6 +71,8 @@ fn builds_default_and_explicit_private_entry_reproducibly() {
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "built");
     assert_eq!(report["artifact"]["module_only"], false);
+    assert_eq!(report["artifact"]["profile"], "debug");
+    assert_eq!(report["artifact"]["source_included"], true);
     assert!(report["artifact"]["game_entry"].is_object());
     assert_eq!(report["executed"], false);
     assert_eq!(report["artifact"]["power_loss_durability"], "not_promised");
@@ -98,6 +100,45 @@ fn builds_default_and_explicit_private_entry_reproducibly() {
     assert!(output.status.success());
     assert_eq!(case.bytes(), bytes);
     case.assert_no_staging();
+}
+
+#[test]
+fn release_flag_strips_debug_data_and_is_build_only() {
+    let case = Case::new("// private author note\nfn main() { \"正文不能删除\" }");
+    let output = case.run(&["--release"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["artifact"]["profile"], "release");
+    assert_eq!(report["artifact"]["source_included"], false);
+    let story = reel_cli::decode_story(&case.bytes()).unwrap();
+    assert!(story.program.package().sources.is_empty());
+    assert!(
+        story
+            .program
+            .package()
+            .functions
+            .iter()
+            .all(|f| f.source_map.is_empty())
+    );
+    assert_eq!(report["encoded_bytes"], story.program.stats().encoded_bytes);
+    assert!(
+        !case
+            .bytes()
+            .windows(b"private author note".len())
+            .any(|bytes| bytes == b"private author note")
+    );
+    for command in ["check", "dev", "run"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_reel"))
+            .args([command, "input.aside", "--release", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("build-only"));
+    }
 }
 
 #[test]

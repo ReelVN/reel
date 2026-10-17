@@ -30,7 +30,7 @@ impl Metadata {
         use ErrorKind::Metadata as Invalid;
         let p = program.package();
         require(
-            self.schema_version == 3,
+            self.schema_version == 4,
             ErrorKind::Version,
             "unsupported metadata schema",
         )?;
@@ -51,7 +51,13 @@ impl Metadata {
         let records = self
             .modules
             .iter()
-            .map(|m| m.functions.len() + m.bindings.len() + m.globals.len() + m.declarations.len())
+            .map(|m| {
+                m.functions.len()
+                    + m.bindings.len()
+                    + m.globals.len()
+                    + m.declarations.len()
+                    + m.debug.as_ref().map_or(0, |d| d.declaration_spans.len())
+            })
             .sum::<usize>();
         let symbols = self
             .modules
@@ -79,16 +85,22 @@ impl Metadata {
         }
         for module in &self.modules {
             require(
-                (module.module_id as usize) < p.modules.len()
-                    && (module.source_id as usize) < p.sources.len(),
+                (module.module_id as usize) < p.modules.len(),
                 Invalid,
-                "source module or source file is missing",
+                "code module is missing",
             )?;
             require(
-                ids.insert(module.module_id) && sources.insert(module.source_id),
+                ids.insert(module.module_id),
                 Invalid,
-                "duplicate source module/file metadata",
+                "duplicate code module metadata",
             )?;
+            if let Some(debug) = &module.debug {
+                require(
+                    (debug.source_id as usize) < p.sources.len() && sources.insert(debug.source_id),
+                    Invalid,
+                    "missing or duplicate source file metadata",
+                )?;
+            }
             module.validate(
                 program,
                 limits,
@@ -96,6 +108,11 @@ impl Metadata {
                 &functions[module.module_id as usize],
             )?;
         }
+        require(
+            sources.len() == p.sources.len(),
+            Invalid,
+            "source files are not covered by debug metadata",
+        )?;
         require(
             !ids.is_empty()
                 && self.initialization_order.len() == ids.len()
@@ -215,15 +232,26 @@ pub struct ModuleMetadata {
     pub module_id: u32,
     pub canonical_path: String,
     pub source_version: String,
-    pub source_blake3: String,
-    pub source_id: u32,
-    pub source_span: Span,
+    #[serde(deserialize_with = "required_option")]
+    pub debug: Option<ModuleDebug>,
     pub symbol_count: u32,
     pub initializer: Initializer,
     pub functions: Vec<FunctionMetadata>,
     pub bindings: Vec<BindingIdentity>,
     pub globals: Vec<GlobalIdentity>,
     pub declarations: Vec<Declaration>,
+}
+
+/// Optional author locations. Runtime declaration and binding identities stay
+/// in ModuleMetadata and are validated with or without this record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleDebug {
+    pub source_id: u32,
+    pub source_blake3: String,
+    pub source_span: Span,
+    /// Same order as ModuleMetadata::declarations.
+    pub declaration_spans: Vec<Span>,
 }
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -286,7 +314,6 @@ pub struct Declaration {
     pub source_function_id: u32,
     pub global_id: u32,
     pub function_id: u32,
-    pub declaration_span: Span,
 }
 
 impl ModuleMetadata {
@@ -304,6 +331,7 @@ impl ModuleMetadata {
             self.bindings.len(),
             self.globals.len(),
             self.declarations.len(),
+            self.debug.as_ref().map_or(0, |d| d.declaration_spans.len()),
         ]
         .into_iter()
         .try_fold(0usize, |sum, len| sum.checked_add(len))
@@ -337,23 +365,38 @@ impl ModuleMetadata {
             .ok_or_else(|| Error::new(Limit, "metadata work overflow"))?;
         budget.charge(work)?;
         let module = &p.modules[self.module_id as usize];
-        let source = &p.sources[self.source_id as usize];
-        budget.charge(source.text.len())?;
         require(
             p.symbols[module.path.index()] == self.canonical_path,
             Invalid,
             "module path mismatch",
         )?;
         require(
-            self.source_blake3 == digest(source.text.as_bytes()) && !self.source_version.is_empty(),
+            !self.source_version.is_empty(),
             Invalid,
-            "source content/version mismatch",
+            "source version is empty",
         )?;
-        require(
-            self.source_span.start == 0 && self.source_span.end as usize == source.text.len(),
-            Invalid,
-            "module source span mismatch",
-        )?;
+        if let Some(debug) = &self.debug {
+            let source = &p.sources[debug.source_id as usize];
+            budget.charge(source.text.len() + debug.declaration_spans.len())?;
+            require(
+                debug.source_blake3 == digest(source.text.as_bytes()),
+                Invalid,
+                "source content mismatch",
+            )?;
+            require(
+                debug.source_span.start == 0 && debug.source_span.end as usize == source.text.len(),
+                Invalid,
+                "module source span mismatch",
+            )?;
+            require(
+                debug.declaration_spans.len() == self.declarations.len(),
+                Invalid,
+                "debug locations do not cover declarations",
+            )?;
+            for &span in &debug.declaration_spans {
+                validate_span(span, &source.text)?;
+            }
+        }
         require(
             self.initializer.module_id == self.module_id
                 && module.initializer == Some(bc::FunctionId(self.initializer.function_id)),
@@ -494,7 +537,6 @@ impl ModuleMetadata {
                 Invalid,
                 "declaration/B01 name mismatch or duplicate declaration",
             )?;
-            validate_span(d.declaration_span, &source.text)?;
         }
         Ok(())
     }

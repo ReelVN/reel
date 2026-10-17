@@ -87,7 +87,7 @@ VM 任务槽按并发数量增长和复用，执行根在宿主准入点扩容/�
 
 此接口属于 Reel 的宿主 Awaitable，复用 Aside NativeFrame、WaitId、错误传播与任务取消；新增 native ABI 1，B01/ASB 不变，不增加依赖。结果、owner 和任意返回值在 VM 堆中追踪，终态释放 owner；服务只保存尚未交付的等待订阅，取消等待者不取消结果。订阅按登记顺序分批维护，每步最多检查 64 项，一轮完成后才调度脚本，避免结算顺序随切片变化。空闲不启动计时轮询，未被引用且未被等待的结果可直接 GC。验证范围为 reel-engine、公开组件示例、双语指南与本地移植烟测，覆盖源码/ASB、表单及子游戏返回值、失败、节点退休、多个消费者和 GC。
 
-工程直接从 main.aside 启动。main 中的 `game.configure(title: null, width: null, height: null, fonts: null, text_speed: null)` 更新会话的呈现设置；省略项保留当前设置，参数按普通 Aside 表达式求值。设置以不可变值发布给宿主，宿主只在值身份变化时应用。画布采用 contain 变换并共用绘制/输入几何；未设置画布时沿用视口。设置首个画布维度时，另一维默认 1920×1080 的对应值。fonts 接受一个字体文件或非空有序数组；作品须在首次呈现前显式配置字体，缺少字体时报错。节点 font 使用已提供字体中的字体族/回退列表，system-ui 指向配置的默认列表。文件相对资源根解析并共享计量后的数据，字体回退和文字整形复用 Fontique/Parley；作者播放器关闭系统字体发现。平台窗口句柄始终留在适配器。ASB 1.0 元数据 schema 3 只保存代码图与入口，运行设置由脚本执行产生。
+工程直接从 main.aside 启动。main 中的 `game.configure(title: null, width: null, height: null, fonts: null, text_speed: null)` 更新会话的呈现设置；省略项保留当前设置，参数按普通 Aside 表达式求值。设置以不可变值发布给宿主，宿主只在值身份变化时应用。画布采用 contain 变换并共用绘制/输入几何；未设置画布时沿用视口。设置首个画布维度时，另一维默认 1920×1080 的对应值。fonts 接受一个字体文件或非空有序数组；作品须在首次呈现前显式配置字体，缺少字体时报错。节点 font 使用已提供字体中的字体族/回退列表，system-ui 指向配置的默认列表。文件相对资源根解析并共享计量后的数据，字体回退和文字整形复用 Fontique/Parley；作者播放器关闭系统字体发现。平台窗口句柄始终留在适配器。ASB 1.0 元数据 schema 4 只保存代码图与入口，运行设置由脚本执行产生。
 
 `sequence(...actions)`、`parallel(...actions)` 与 `repeat(action, times: null)` 产生不可变、可复用的描述。空组合与零次重复无写入地立即完成；持续循环要求单轮时长大于零，包含无限分支的组合在 finish 修改状态前报错。run 在接管前完整校验并行分支的写集合，顺序段到激活时才读取起值与取得属性。暂停、停止、失败、目标或 owner 退休均按整个根活动结算。
 
@@ -516,7 +516,9 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 工具：reel check/dev/build/loc/test 提供诊断、资源检查、调试与构建。节点、样式、属性绑定、资源、活动及任务可检查；工具模式的表达式默认纯读。测试驱动输入、截图及行为结果可自动对照，演出编辑辅助输出可维护源码。语言 LSP 与 debugger 使用同一签名和源映射元数据。
 
 ## 十二 字节码与资源分包发布
-ASB 1.0 的模块元数据使用 schema_version=3：保存全部源码模块、各自来源/声明/绑定、完整初始化顺序、实际启动函数；B01 与 native ABI 保持 v1。导入和重导出共享原绑定，运行时使用一次验证后缓存的模块索引，不扫描模块表。源码文件与模块身份分开保存，构建产物直接执行已链接的完整模块图。
+ASB 1.0 的模块元数据使用 schema_version=4：保存全部代码模块、声明/绑定、完整初始化顺序、实际启动函数；各模块的源码描述独立为可空 debug 记录。B01 与 native ABI 保持不变。导入和重导出共享原绑定，运行时使用一次验证后缓存的模块索引，不扫描模块表。源码文件与模块身份分开保存，构建产物直接执行已链接的完整模块图。
+
+作者构建默认为 Debug；`reel build --release` 生成不含完整源码、指令源码映射和声明位置的 ASB。两种模式共用编译、验证和执行语义，Release 保留实际使用的字符串常量、模块/函数/参数等符号及结构验证元数据。运行错误仍包含错误类型和函数/指令位置，不伪造源码行列。快照仍核对实际 B01 身份，同一源码的 Debug/Release 产物不互换执行快照。剥离在构建时完成，加载与执行没有额外模式分支；Release 构建不复制源码和源码映射到输出包。范围为 reel-cli、reel-package、播放器诊断和双语指南，无新增依赖；CPU 检查覆盖两种构建的内容、体积、执行/故障、包验证及同产物快照恢复。本接口不将剧情文本外置；独立调试文件尚未提供。
 
 发布产物分为字节码包 .asb 与资源包 .rpk，随目标平台播放器和 release.json 清单发布。一个游戏可以有多个代码模块包与多个资源分包；脚本修订和图片/音频更新独立构建。此分层借鉴 YU-RIS 的脚本二进制与资源归档组织，格式由 Reel 自行定义。
 .asb 保存入口、模块/函数/导入导出、常量、稳定内容与恢复标识、语言/字节码/宿主 ABI 版本和所需能力。源码映射可作为独立调试包，去掉源码后仍运行完整字节码语义。.rpk 保存 AssetKey、内容版本、目录索引、块表、编码/压缩信息和数据；索引与 offset/len 使用固定宽度，range read 支持流式音视频。已压缩媒体可原样储存，通用数据按独立 zstd frame 压缩，避免为一个 seek 解压整包。
@@ -527,11 +529,11 @@ ASB 1.0 的模块元数据使用 schema_version=3：保存全部源码模块、�
 
 所有整数小端、偏移为文件绝对字节位置。固定头 72 字节：magic[8]=REELASB 加零字节、major:u16=1、minor:u16=0、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。索引项固定 56 字节：kind:u32、flags:u32、offset:u64、len:u64、blake3[32]。v1 必需且唯一的区段为 kind=1 的既有 B01 字节流和 kind=2 的版本化 UTF-8 JSON 元数据；未定义的必需语义拒绝，已知 flags 外的位不默许。读入先检查总长度、索引长度可整除记录宽度、数量/字节/工作预算，以及 checked offset+len、区段重复和与头/索引的重叠，再验证摘要及内容。不会用磁盘长度直接进行无界分配。摘要检测完整性，不证明来源或授予宿主能力。
 
-schema_version=3 元数据保存全部源码模块的规范路径、源码版本/摘要/范围、source symbol 范围和函数/绑定/global 映射，以及工程初始化顺序、initializer、可空 game_entry。记录使用稳定 DTO 与精确整数。函数映射包含作者函数；编译器生成的默认 thunk 和 initializer 由已验证 B01 保存。读取端交叉验证模块/函数归属、范围、映射键唯一性、源码 UTF-8 边界及精确 B01 摘要；源槽与效果摘要和 B01 验证、可信 native 注册、运行期效果检查各有明确职责。JSON 输入受字节、深度、字符串/记录和工作量预算约束，重复字段拒绝。
+schema_version=4 元数据保存全部代码模块的规范路径、源码版本、source symbol 范围和函数/绑定/global 映射，以及工程初始化顺序、initializer、可空 game_entry。模块的可空 debug 记录保存 source_id、源码摘要、完整范围及与 declarations 一一对应的声明位置；Release 的 debug 为 null，B01 sources 和每个 source_map 为空。记录使用稳定 DTO 与精确整数。函数映射包含作者函数；编译器生成的默认 thunk 和 initializer 由已验证 B01 保存。读取端交叉验证模块/函数归属、范围、映射键唯一性、存在的源码 UTF-8 边界及精确 B01 摘要；源槽与效果摘要和 B01 验证、可信 native 注册、运行期效果检查各有明确职责。JSON 输入受字节、深度、字符串/记录和工作量预算约束，重复字段拒绝。
 
 ProjectCompilation.initializer 调用完整源码图的模块初始化器。build/dev 默认选择 main::main；--entry 可选择其他普通模块级、无捕获、无必需实参的函数，私有函数同样可作启动入口。具名函数经 HIR 输出映射到 link-time global 与 B01 FunctionId，重导出入口解析到原声明。缺少有效入口时在对应源码位置报错；底层容器 API 可显式生成 game_entry=null 的模块产物。reader 验证实际入口为 Ordinary，并核对初始化器与完整顺序。消费者完成工程 initializer 后启动入口；CLI 编译与验证只构建产物。源码模块、固定版本依赖和已注册 Reel native 通过同一个链接程序执行。
 
-命令为 reel check <source> [--format human|json] 与 reel build <source> --output <file.asb> [--entry main::name] [--overwrite] [--format human|json]。build 在目标同目录完成唯一暂存文件，编码与验证成功后以原子不覆盖操作发布；只有显式 --overwrite 允许原子替换。先检查 exists 再 rename 不构成不覆盖保证；失败保留已有目标且只清理本次暂存。原子可见与断电持久性分别说明，不能把普通成功当持久存档承诺。
+命令为 reel check <source> [--format human|json] 与 reel build <source> --output <file.asb> [--release] [--entry main::name] [--overwrite] [--format human|json]。build 在目标同目录完成唯一暂存文件，编码与验证成功后以原子不覆盖操作发布；只有显式 --overwrite 允许原子替换。先检查 exists 再 rename 不构成不覆盖保证；失败保留已有目标且只清理本次暂存。原子可见与断电持久性分别说明，不能把普通成功当持久存档承诺。
 
 静态检查读取上限目前为 8 MiB，后续编译/B01 仍各自执行更紧的预算；例如当前 B01 源码字符串限制为 1 MiB。诊断 JSON 保留字节范围及零起始 byte/scalar/UTF-16 坐标，人读输出用实际路径及可读位置。逻辑模块标识（如 main）与物理源码路径独立；B01 SourceFile.path 保存调用方提供的源码路径，dev 与 ASB run 的故障使用包内来源和源码定位，不把逻辑模块名当文件名。完整 .asb 的 BLAKE3 用于产物身份；占位 source_version="source" 或 content_version=1 不代表唯一内容。当前 B01 包含源码与映射，不能称作已剥离源码的发行包。.rpk 与 release.json 仍待实现；源码及 .asb 已接入真实剧情窗口，物理 GPU 的验证范围另行记录。
 
