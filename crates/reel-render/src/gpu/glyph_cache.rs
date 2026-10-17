@@ -195,8 +195,10 @@ impl GlyphCache {
             density,
             index,
             at,
-            available,
-            max.saturating_sub(2),
+            glyph::RasterLimits {
+                available,
+                max_dimension: max.saturating_sub(2),
+            },
         )?
         else {
             let source = frame

@@ -62,8 +62,12 @@ impl Default for StoryWindowOptions {
 pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<(), Error> {
     let session = Session::new(SessionId(1), Epoch(1))?;
     let assets = match &options.asset_packages {
-        Some(paths) => crate::assets::Assets::packaged(options.assets.clone(), paths.clone(), options.asset_overlay.clone())
-            .map_err(|error| format!("cannot open resource packages: {error:?}"))?,
+        Some(paths) => crate::assets::Assets::packaged(
+            options.assets.clone(),
+            paths.clone(),
+            options.asset_overlay.clone(),
+        )
+        .map_err(|error| format!("cannot open resource packages: {error:?}"))?,
         None => crate::assets::Assets::directory(options.assets.clone()),
     };
     let driver =

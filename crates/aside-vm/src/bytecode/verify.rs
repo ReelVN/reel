@@ -186,14 +186,17 @@ impl VerifiedProgram {
             "bytecode requires an external text pool",
         )
     }
-    pub(crate) fn constant_bytes(&self, id: ConstId) -> &[u8] {
-        match &self.package().constants[id.index()] {
+    /// Borrow an inline or bound byte/string constant without copying it.
+    /// Returns None for other constant kinds or an unbound external text pool.
+    pub fn constant_bytes(&self, id: ConstId) -> Option<&[u8]> {
+        Some(match self.package().constants.get(id.index())? {
             Const::Utf8(text) => text.as_bytes(),
             Const::Bytes(bytes) => bytes,
-            Const::Text { offset, len } => &self.1.as_ref().expect("bound text pool").as_bytes()
-                [*offset as usize..*offset as usize + *len as usize],
-            _ => unreachable!("byte constant"),
-        }
+            Const::Text { offset, len } => {
+                &self.1.as_ref()?.as_bytes()[*offset as usize..*offset as usize + *len as usize]
+            }
+            _ => return None,
+        })
     }
     /// Execution loading includes the actual dispatch/native support check.
     pub fn load(input: &[u8], limits: Limits, support: &RuntimeSupport) -> Result<Self, Error> {

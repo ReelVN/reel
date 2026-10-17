@@ -120,12 +120,10 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         aside_host::lower(&module, &contracts, &capabilities, Default::default()).unwrap();
     let encoded = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
-    let support =
-        aside_host::runtime_support(program.package(), &contracts, &capabilities).unwrap();
+    let support = aside_host::runtime_support(&program, &contracts, &capabilities).unwrap();
     let mut wrong_rest = contracts.to_vec();
     wrong_rest[3].rest = None;
-    let wrong_support =
-        aside_host::runtime_support(program.package(), &wrong_rest, &capabilities).unwrap();
+    let wrong_support = aside_host::runtime_support(&program, &wrong_rest, &capabilities).unwrap();
     assert!(
         Vm::load(
             bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap(),
@@ -196,5 +194,5 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     assert!(Field::validate(vm.heap(), 2, id).is_err());
     let mut changed = contracts.to_vec();
     changed[0].parameters[1].default = Some(bc::Const::Int(99));
-    assert!(aside_host::runtime_support(vm.program().package(), &changed, &capabilities).is_err());
+    assert!(aside_host::runtime_support(vm.program(), &changed, &capabilities).is_err());
 }

@@ -293,7 +293,7 @@ impl SessionVm {
         catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     ) -> Result<SessionRestore<'a>, AdapterError> {
         let support = aside_host::runtime_support(
-            program.package(),
+            &program,
             &registry::contracts(),
             &registry::capabilities(),
         )?;

@@ -143,7 +143,7 @@ fn exercise_callable(callable: bool) {
         decorate: function("sample::decorate"),
         callable,
     };
-    let support = aside_host::runtime_support(program.package(), &contracts, &[]).unwrap();
+    let support = aside_host::runtime_support(&program, &contracts, &[]).unwrap();
     let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
     let receiver = vm.heap_mut().alloc_string("entry").unwrap();
     let entry_method = make_callable(&mut vm, receiver, host.decorate, callable).unwrap();

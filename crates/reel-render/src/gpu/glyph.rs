@@ -21,6 +21,11 @@ pub struct GlyphBitmap {
     pub alpha: Vec<u8>,
 }
 
+pub struct RasterLimits {
+    pub available: u64,
+    pub max_dimension: u32,
+}
+
 /// Power-of-two densities keep animated transforms on reusable atlas tiers.
 pub(super) fn raster_density(transform: kurbo::Affine) -> f64 {
     let [a, b, c, d, _, _] = transform.as_coeffs();
@@ -39,8 +44,10 @@ pub fn rasterize(
     density: f64,
     index: usize,
     at: RecordLocation,
-    available: u64,
-    max_dimension: u32,
+    RasterLimits {
+        available,
+        max_dimension,
+    }: RasterLimits,
 ) -> Result<Option<GlyphBitmap>, GpuError> {
     let resource = frame
         .resources()

@@ -122,7 +122,7 @@ Shared fixtures in `fixtures.rs` and fixed wire snapshots in `testdata/`: ordina
 
 ## Shared literal storage
 
-Release exports externalize UTF-8 constants into one immutable text pool. `TextPoolDescriptor` carries the pool byte length and BLAKE3 digest. Text offsets refer to this pool, never process addresses. Static decoding validates ranges; binding validates the descriptor, UTF-8 and character boundaries. Execution requires a bound pool when the descriptor is present. Aside accepts shared memory and does not perform package or file IO.
+Release exports externalize UTF-8 constants into one immutable text pool. `TextPoolDescriptor` carries the pool byte length and BLAKE3 digest. Text offsets refer to this pool, never process addresses. Static decoding validates ranges; binding validates the descriptor, UTF-8 and character boundaries. Execution requires a bound pool when the descriptor is present. Host default validation borrows constants through VerifiedProgram::constant_bytes and compares their contents, independent of inline or external storage. Aside accepts shared memory and does not perform package or file IO.
 
 String objects are created on use and share either the inline constant or the bound pool. Tuple constants materialize incrementally. A weak constant-handle cache reuses live objects without retaining them after their last ordinary reference is released. `LoadConst` can yield for work and fail allocation; it does not add an author-visible allocation-effect restriction. Snapshots store constant IDs for constant-backed strings and actual bytes for dynamic strings. The current host loads the original pool as a whole; externalizing text does not imply disk paging.
 

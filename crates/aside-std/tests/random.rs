@@ -124,7 +124,7 @@ fn independent_library_preserves_streams_methods_and_faults_across_bytecode_and_
         let forbidden = function("forbidden");
         let invalid = function("invalid");
         let resume = function("resume");
-        let support = aside_host::runtime_support(program.package(), &contracts, &[]).unwrap();
+        let support = aside_host::runtime_support(&program, &contracts, &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let task = vm

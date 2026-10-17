@@ -234,7 +234,12 @@ pub fn build_export(
     entry: &str,
     profile: BuildProfile,
 ) -> Result<Artifact, Failure> {
-    build_inner(checked, Some(entry), profile, profile == BuildProfile::Release)
+    build_inner(
+        checked,
+        Some(entry),
+        profile,
+        profile == BuildProfile::Release,
+    )
 }
 
 fn build_inner(
@@ -262,7 +267,8 @@ fn build_inner(
         BuildProfile::Release => {
             release = without_debug(p);
             if external_text {
-                text_pool = Some(bc::externalize_text(&mut release).map_err(|e| fail(e.to_string()))?);
+                text_pool =
+                    Some(bc::externalize_text(&mut release).map_err(|e| fail(e.to_string()))?);
             }
             release_bytes =
                 bc::encode(&release, bc::Limits::default()).map_err(|e| fail(e.to_string()))?;

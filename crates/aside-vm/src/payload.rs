@@ -95,7 +95,7 @@ impl Bytes {
         code: std::rc::Rc<crate::fault::CodeLease>,
         id: crate::bytecode::ConstId,
     ) -> Self {
-        let len = code.constant_bytes(id).len() as u32;
+        let len = code.constant_bytes(id).expect("bound byte constant").len() as u32;
         Self {
             chunks: BTreeMap::new(),
             shared: Some((code, id)),
@@ -143,7 +143,8 @@ impl Bytes {
         let count = output.len().min(self.len.saturating_sub(offset) as usize);
         if let Some((code, id)) = &self.shared {
             output[..count].copy_from_slice(
-                &code.constant_bytes(*id)[offset as usize..offset as usize + count],
+                &code.constant_bytes(*id).expect("bound byte constant")
+                    [offset as usize..offset as usize + count],
             );
             return count;
         }
@@ -166,7 +167,8 @@ impl Bytes {
         let within = offset as usize % BYTE_CHUNK_LEN;
         let count = (self.len - offset).min((BYTE_CHUNK_LEN - within) as u32) as usize;
         if let Some((code, id)) = &self.shared {
-            return &code.constant_bytes(*id)[offset as usize..offset as usize + count];
+            return &code.constant_bytes(*id).expect("bound byte constant")
+                [offset as usize..offset as usize + count];
         }
         &self.chunks[&(offset / BYTE_CHUNK_LEN as u32)][within..within + count]
     }

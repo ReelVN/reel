@@ -129,7 +129,7 @@ fn every_bilingual_author_scene_parses_in_its_actual_context() {
             if source.contains("() {") || source.contains("gap: 12) {") {
                 assert!(
                     root.descendants()
-                        .any(|n| n.kind() == K::Children || n.kind() == K::FnDecl),
+                        .any(|n| matches!(n.kind(), K::Children | K::FnDecl | K::ForStmt)),
                     "body missing in {name}"
                 );
             }

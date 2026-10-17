@@ -27,7 +27,11 @@ impl Distribution {
             .chain(self.text.iter())
             .chain(self.resources.iter())
             .chain(self.loose.iter())
-            .chain(self.source.iter().flat_map(|s| std::iter::once(&s.entry).chain(s.modules.values())))
+            .chain(
+                self.source
+                    .iter()
+                    .flat_map(|s| std::iter::once(&s.entry).chain(s.modules.values())),
+            )
         {
             relative_path(path)?;
         }
@@ -36,5 +40,9 @@ impl Distribution {
 }
 
 pub fn relative_path(path: &str) -> std::io::Result<()> {
-    if path == "." { Ok(()) } else { crate::archive::validate_path(path) }
+    if path == "." {
+        Ok(())
+    } else {
+        crate::archive::validate_path(path)
+    }
 }
