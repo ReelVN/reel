@@ -146,12 +146,12 @@ mod tests {
     #[test]
     fn localization_resource_wait_wakes_runtime_and_then_becomes_idle() {
         let script = r#"fn main() {
-            localization.load("en", "locales/en.ftl");
+            localization.load("en", "locales/en/story.ftl");
             localization.set_locale("en");
-            if tr("雨停了。", id: "opening") != "The rain stopped." { throw "external catalog"; }
+            if tr("雨停了。") != "The rain stopped." { throw "external catalog"; }
             let mut failed = false;
             try { localization.load("en", "locales/missing.ftl"); } catch error { failed = true; }
-            if !failed || tr("", id: "opening") != "The rain stopped." { throw "failed load changed catalog"; }
+            if !failed || tr("雨停了。") != "The rain stopped." { throw "failed load changed catalog"; }
         }"#;
         let driver = AsideSessionUi::from_source(
             Session::new(SessionId(72), Epoch(1)).unwrap(),

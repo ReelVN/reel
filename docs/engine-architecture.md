@@ -732,7 +732,7 @@ reel-engine 管理 Session/Epoch/owner、唯一主交互、完整文本与字素
 
 owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
 
-S01 的历史验证范围是 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，当时未执行 Aside 或 VM。后续 Aside 会话适配和作者舞台已接通可信宿主、真实等待及源码/ASB 窗口入口；作者音频已通过 AudioBackend 接入媒体输出，快照恢复仍未接通。
+S01 的历史验证范围是 Rust 模型、真实 UI/window、字体遮罩和软件 GPU 读回，当时未执行 Aside 或 VM。后续 Aside 会话适配和作者舞台已接通可信宿主、真实等待及源码/ASB 窗口入口；作者音视频通过 MediaBackend 接入媒体输出和执行快照恢复。
 
 PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找复杂度和同步常量加载限制见 VM README；owner/RootRange/外部资源的有界退休责任不变。
 
@@ -761,7 +761,7 @@ AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前�
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 
-核心通过 AudioBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式与设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
+核心通过 MediaBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式与设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
 
 ### 混音与音频过渡
 
