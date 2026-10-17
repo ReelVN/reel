@@ -10,7 +10,7 @@ impl StoryRuntime {
     pub(super) fn interrupt_capture(&mut self) -> Result<(), Error> {
         if let Some(capture) = self.capture.take() {
             let mut driver = capture.cancel();
-            driver.resume_audio();
+            driver.resume_media();
             let request = self.saves.as_mut().unwrap().pending.take().unwrap();
             self.driver = Some(driver);
             self.driver
@@ -97,7 +97,7 @@ impl StoryRuntime {
                         driver.adapter().vm().limits(),
                         identity,
                         driver.ui().session().read_progress().clone(),
-                        self.audio_factory.as_ref().map(|factory| factory()),
+                        self.media_factory.as_ref().map(|factory| factory()),
                         Some(Box::new(crate::localization::AssetCatalogLoader::new(
                             driver.ui().assets(),
                         ))),
@@ -178,7 +178,7 @@ impl StoryRuntime {
                 self.suspended_ns = now_ns;
                 candidate.ui_mut().adopt_presentation();
                 if self.suspended_at.is_none() {
-                    candidate.resume_audio();
+                    candidate.resume_media();
                 } else {
                     self.suspended_at = Some(now_ns);
                 }
@@ -224,7 +224,7 @@ impl StoryRuntime {
                 Ok(true) => {
                     let retained_bytes = capture.bytes;
                     let (mut driver, snapshot) = self.capture.take().unwrap().finish()?;
-                    driver.resume_audio();
+                    driver.resume_media();
                     self.driver = Some(driver);
                     self.suspended_ns +=
                         now_ns.saturating_sub(self.capture_started.take().unwrap());
@@ -262,7 +262,7 @@ impl StoryRuntime {
                 }
                 Err(error) => {
                     let mut driver = self.capture.take().unwrap().cancel();
-                    driver.resume_audio();
+                    driver.resume_media();
                     let request = saves.pending.take().unwrap();
                     self.driver = Some(driver);
                     self.driver
@@ -298,7 +298,7 @@ impl StoryRuntime {
                 return Ok(false);
             }
             let mut driver = self.driver.take().unwrap();
-            driver.suspend_audio();
+            driver.suspend_media();
             match Capture::new(driver) {
                 Ok(capture) => {
                     self.capture = Some(capture);
@@ -306,7 +306,7 @@ impl StoryRuntime {
                     return Ok(true);
                 }
                 Err((mut driver, error)) => {
-                    driver.resume_audio();
+                    driver.resume_media();
                     self.driver = Some(driver);
                     if !matches!(error, AdapterError::Snapshot(SnapshotError::Busy(_))) {
                         self.driver

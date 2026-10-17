@@ -355,6 +355,18 @@ pub struct ReclaimProgress {
     pub needs_maintenance: bool,
 }
 impl KiraMixer {
+    #[cfg(feature = "video")]
+    pub fn can_play_video_audio(&self) -> bool {
+        self.signal.shared.accepting()
+            && self.manager.manager.as_ref().is_some_and(|control| {
+                control
+                    .groups
+                    .iter()
+                    .map(TrackHandle::num_sounds)
+                    .sum::<usize>()
+                    < self.max_sounds
+            })
+    }
     /// Stream PCM shares the same output, buses and off-callback reclamation as
     /// static sounds. The stream owner handles transport and terminal delivery.
     #[cfg(feature = "video")]

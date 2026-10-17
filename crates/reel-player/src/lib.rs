@@ -14,11 +14,11 @@ mod window_session;
 
 pub mod aside_session;
 pub mod assets;
-pub mod audio;
 pub mod capture;
 pub mod fonts;
 mod images;
 pub mod localization;
+pub mod media;
 pub mod saves;
 pub mod session;
 mod stage_widget;

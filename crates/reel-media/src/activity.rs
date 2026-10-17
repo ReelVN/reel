@@ -155,6 +155,10 @@ pub struct AudioActivityService {
 }
 impl AudioActivityService {
     #[cfg(feature = "video")]
+    pub fn can_play_video_audio(&self) -> bool {
+        self.failed.is_none() && self.mixer.can_play_video_audio()
+    }
+    #[cfg(feature = "video")]
     pub fn play_video_audio(
         &mut self,
         sound: crate::video::StreamSoundData,

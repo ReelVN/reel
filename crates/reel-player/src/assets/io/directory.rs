@@ -88,15 +88,15 @@ impl Files {
                 used: self.sequence,
             };
             file.verify()?;
-            if self.open.len() >= self.capacity && !self.open.contains_key(&source.key.0) {
-                if let Some(oldest) = self
+            if self.open.len() >= self.capacity
+                && !self.open.contains_key(&source.key.0)
+                && let Some(oldest) = self
                     .open
                     .iter()
                     .min_by_key(|(_, v)| v.used)
                     .map(|(k, _)| k.clone())
-                {
-                    self.open.remove(&oldest);
-                }
+            {
+                self.open.remove(&oldest);
             }
             self.open.insert(source.key.0.clone(), file);
         }

@@ -125,7 +125,7 @@ impl AsideSessionUi {
         self.awaiting_stage = true;
     }
     pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
-        self.vm.maintain_audio()?;
+        self.vm.maintain_media()?;
         self.vm.maintain_localization()?;
         if self.vm.localization_pending() {
             return Ok(false);
@@ -191,24 +191,24 @@ impl AsideSessionUi {
             host_failure: None,
         })
     }
-    pub fn with_audio(
+    pub fn with_media(
         mut self,
-        backend: Box<dyn reel_engine::audio::AudioBackend>,
+        backend: Box<dyn reel_engine::media::MediaBackend>,
     ) -> Result<Self, Error> {
-        self.vm.set_audio(backend)?;
+        self.vm.set_media(backend)?;
         Ok(self)
     }
-    pub fn maintain_audio(&mut self) -> Result<bool, Error> {
-        Ok(self.vm.maintain_audio()?)
+    pub fn maintain_media(&mut self) -> Result<bool, Error> {
+        Ok(self.vm.maintain_media()?)
     }
     pub fn maintain_localization(&mut self) -> Result<bool, Error> {
         Ok(self.vm.maintain_localization()?)
     }
-    pub fn suspend_audio(&mut self) {
-        self.vm.suspend_audio();
+    pub fn suspend_media(&mut self) {
+        self.vm.suspend_media();
     }
-    pub fn resume_audio(&mut self) {
-        self.vm.resume_audio();
+    pub fn resume_media(&mut self) {
+        self.vm.resume_media();
     }
     pub fn state(&self) -> StoryState {
         self.state

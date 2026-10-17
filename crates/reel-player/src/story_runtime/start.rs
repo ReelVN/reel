@@ -40,13 +40,13 @@ impl StoryRuntime {
             .inherit_game_settings(old.adapter().game_settings().clone());
         next.adapter_mut()
             .set_window_info(old.adapter().window_info().clone());
-        if let Some(factory) = &self.audio_factory {
-            next = next.with_audio(factory())?;
+        if let Some(factory) = &self.media_factory {
+            next = next.with_media(factory())?;
         }
         next.await_initial_stage();
         next.ui_mut().adopt_presentation();
         if self.suspended_at.is_some() {
-            next.suspend_audio();
+            next.suspend_media();
             self.suspended_at = Some(now_ns);
         }
         self.driver.as_mut().unwrap().cancel()?;
