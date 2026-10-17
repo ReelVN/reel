@@ -17,12 +17,12 @@ fn registry() -> &'static SnapshotRegistry {
             ),
             ("reel.activity", activity::readonly),
             ("reel.result", results::readonly),
-            ("reel.audio", audio::readonly),
+            ("reel.media", media::readonly),
         ] {
             registry
                 .register_validator(
                     name,
-                    if matches!(name, "reel.audio" | "reel.character") {
+                    if matches!(name, "reel.media" | "reel.character") {
                         2
                     } else {
                         1
@@ -65,8 +65,9 @@ pub(super) enum Part {
     Presentation,
     Particles,
     Particle,
-    Audio,
-    AudioWait,
+    Media,
+    MediaWait,
+    VideoPoster,
     Translations,
     Catalog,
     StageRoot,
@@ -138,7 +139,7 @@ impl SessionSnapshot {
         // Read the fixed version prefix before decoding the nested VM. Postcard
         // does not retain custom serde error messages from that deserializer.
         let (version, vm_bytes): (u32, _) = postcard::take_from_bytes(bytes)?;
-        if version != 5 {
+        if version != 6 {
             return Err(SnapshotError::Version {
                 format: "session",
                 expected: 5,
@@ -212,7 +213,7 @@ impl SessionVm {
             self.activities.snapshot_records(),
             self.results.snapshot_records(),
             self.saves.snapshot_records(),
-            self.audio.snapshot_records(),
+            self.media.snapshot_records(),
             self.translations.snapshot_records(),
             Box::new(once_with(|| {
                 Record::new(Part::StageRoot, &self.stage.snapshot_root())
@@ -268,7 +269,7 @@ impl SessionVm {
         limits: VmLimits,
         identity: SessionIdentity,
         progress: crate::ReadProgress,
-        audio: Option<Box<dyn crate::audio::AudioBackend>>,
+        media: Option<Box<dyn crate::media::MediaBackend>>,
         catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     ) -> Result<SessionRestore<'a>, AdapterError> {
         let session = image
@@ -276,7 +277,7 @@ impl SessionVm {
             .take()
             .ok_or(AdapterError::Input("snapshot already consumed"))?;
         Self::restore_session(
-            image, session, program, limits, identity, progress, audio, catalogs,
+            image, session, program, limits, identity, progress, media, catalogs,
         )
     }
 
@@ -288,7 +289,7 @@ impl SessionVm {
         limits: VmLimits,
         identity: SessionIdentity,
         progress: crate::ReadProgress,
-        audio: Option<Box<dyn crate::audio::AudioBackend>>,
+        media: Option<Box<dyn crate::media::MediaBackend>>,
         catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     ) -> Result<SessionRestore<'a>, AdapterError> {
         let support = aside_host::runtime_support(
@@ -317,7 +318,7 @@ impl SessionVm {
             child: 0,
             child_index: 0,
             stage_root: None,
-            audio,
+            media,
             catalogs,
             limits,
             complete: false,
@@ -343,7 +344,7 @@ impl OwnedSessionRestore {
         limits: VmLimits,
         identity: SessionIdentity,
         progress: crate::ReadProgress,
-        audio: Option<Box<dyn crate::audio::AudioBackend>>,
+        media: Option<Box<dyn crate::media::MediaBackend>>,
         catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     ) -> Result<Self, AdapterError> {
         let session = image
@@ -352,7 +353,7 @@ impl OwnedSessionRestore {
             .ok_or(AdapterError::Input("snapshot already consumed"))?;
         Ok(Self(RestoreCell::try_new(image, |image| {
             SessionVm::restore_session(
-                image, session, program, limits, identity, progress, audio, catalogs,
+                image, session, program, limits, identity, progress, media, catalogs,
             )
             .map(Some)
         })?))
@@ -400,7 +401,7 @@ impl SessionCapture<'_> {
         }
         Ok(SessionSnapshot {
             committed_save: None,
-            version: 5,
+            version: 6,
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,
@@ -420,7 +421,7 @@ pub struct SessionRestore<'a> {
     child: usize,
     child_index: u32,
     stage_root: Option<RootToken>,
-    audio: Option<Box<dyn crate::audio::AudioBackend>>,
+    media: Option<Box<dyn crate::media::MediaBackend>>,
     catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     limits: VmLimits,
     complete: bool,
@@ -441,9 +442,9 @@ impl SessionRestore<'_> {
                         self.limits,
                     )?);
                     let runtime = self.candidate.as_mut().unwrap();
-                    if let Some(audio) = self.audio.take() {
-                        runtime.set_audio(audio)?;
-                        runtime.suspend_audio();
+                    if let Some(audio) = self.media.take() {
+                        runtime.set_media(audio)?;
+                        runtime.suspend_media();
                     }
                     if let Some(loader) = self.catalogs.take() {
                         runtime.set_catalog_loader(loader)?;
@@ -538,9 +539,9 @@ impl SessionRestore<'_> {
                             &mut runtime.stage.scene,
                         )?;
                     }
-                    Part::Audio | Part::AudioWait => {
+                    Part::Media | Part::MediaWait | Part::VideoPoster => {
                         runtime
-                            .audio
+                            .media
                             .restore_record(record, map, runtime.vm.heap_mut())?;
                     }
                     Part::Translations | Part::Catalog => {

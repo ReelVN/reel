@@ -49,7 +49,7 @@ fn author_audio_source_and_asb_complete_on_native_output() {
             VmLimits::default(),
         )
         .unwrap()
-        .with_audio(Box::new(backend))
+        .with_media(Box::new(backend))
         .unwrap();
         let mut runtime = StoryRuntime::new(driver);
         let start = Instant::now();

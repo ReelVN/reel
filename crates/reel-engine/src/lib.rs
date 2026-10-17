@@ -11,6 +11,8 @@ use std::{collections::HashSet, ops::Range};
 pub mod aside;
 pub mod audio;
 pub mod localization;
+pub mod media;
+pub mod video;
 mod reading;
 mod reveal;
 mod snapshot;
