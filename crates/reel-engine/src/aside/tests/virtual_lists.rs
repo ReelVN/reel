@@ -116,6 +116,7 @@ fn feedback(vm: &mut SessionVm, session: &mut Session, y: f64, width: f64, retai
         unreachable!()
     };
     let scroll = NodeScroll {
+        input: false,
         node: event.scroll,
         requested: event.requested,
         offset: event.offset,
@@ -432,6 +433,7 @@ fn virtual_list_derived_factory_snapshot_keeps_old_projection_and_latest_request
         &mut session,
         &[
             NodeEvent::Scroll(NodeScroll {
+                input: false,
                 node: scroll,
                 requested: request.requested,
                 offset: request.offset,
@@ -768,3 +770,5 @@ fn virtual_list_first_window_cost_against_full_materialization() {
         }
     }
 }
+
+mod scroll_to;

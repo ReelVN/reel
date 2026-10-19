@@ -11,6 +11,8 @@ use crate::input::{ActionPhase, NavigationAction, NavigationEvent};
 
 #[derive(Clone, Copy)]
 pub(crate) struct DeferredNavigation {
+    serial: u64,
+    revision: u64,
     owner: WidgetId,
     anchor: Option<WidgetId>,
     index: usize,
@@ -18,11 +20,25 @@ pub(crate) struct DeferredNavigation {
     direction: Option<NavigationAction>,
 }
 
-fn request_virtual(root: &mut RenderRoot, request: DeferredNavigation) {
+fn request_virtual(root: &mut RenderRoot, mut request: DeferredNavigation) {
+    root.global_state.virtual_navigation_serial += 1;
+    request.serial = root.global_state.virtual_navigation_serial;
+    request.revision = root
+        .widget_arena
+        .get_node(request.owner)
+        .item
+        .widget
+        .virtual_children()
+        .unwrap()
+        .revision;
     cancel(root);
     root.global_state.deferred_navigation = Some(request);
     run_single_update_pass(root, Some(request.owner), |widget, ctx, props| {
-        widget.request_virtual_child(ctx, props, Some((request.index, request.forward)));
+        widget.request_virtual_child(
+            ctx,
+            props,
+            Some((request.serial, request.index, request.forward)),
+        );
     });
 }
 
@@ -171,6 +187,8 @@ pub(crate) fn defer_virtual(
             request_virtual(
                 root,
                 DeferredNavigation {
+                    serial: 0,
+                    revision: 0,
                     owner,
                     anchor: None,
                     index,
@@ -225,6 +243,8 @@ pub(crate) fn defer_virtual(
                     request_virtual(
                         root,
                         DeferredNavigation {
+                            serial: 0,
+                            revision: 0,
                             owner,
                             anchor: Some(anchor),
                             index: next,
@@ -264,10 +284,7 @@ pub(crate) fn resume_virtual(root: &mut RenderRoot) {
     let Some(list) = node.item.widget.virtual_children() else {
         return;
     };
-    if request.index >= list.total {
-        cancel_virtual(root);
-        return;
-    }
+
     if let GeometryView::Presented(view) = view
         && view
             .and_then(|view| view.get(request.owner))
@@ -276,9 +293,19 @@ pub(crate) fn resume_virtual(root: &mut RenderRoot) {
     {
         return;
     }
-    if list.target != Some((request.index, request.forward)) {
+    let Some((serial, resolved, forward)) = list.target else {
+        if list.revision != request.revision {
+            cancel_virtual(root);
+        }
+        return;
+    };
+    if serial != request.serial || forward != request.forward {
         return;
     }
+    if !list.target_ready {
+        return;
+    }
+    request.index = resolved;
     let total = list.total;
     let Some(row) = list
         .children

@@ -829,6 +829,9 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 长菜单、历史和图库可使用虚拟列表 `list(..., virtual:true)`，放在有限高度纵向 scroll 内，作为唯一的流式内容。它只保留窗口附近的行；离开后组件会退休，回来时重新构造，长期状态应保存在 model 中。正在编辑或拖动的行保留到交互结束。来源先过滤不显示的项，build 必须返回有正自然高度的节点；list 使用自然高度，不设置 height/max_height、纵向 stretch 或自身位置/旋转/缩放/锚点，整体变换可放在外层 scroll。行内仍可组合普通文字、图片、控件和自定义外观。不同高度由布局自动测量，滚动保留阅读锚点并支持跨窗口键盘/手柄导航；尚未测量的内容使用估计高度，所以自定义滚动条的 content_height 会逐步修正。它减少组件和排版成本，全文与来源数据仍保留。多列图库可以先把每一排照片组织为稳定 key 的条目，再在 build 中返回普通 row 组合；整排一起测量和退休，照片的长期状态仍放在 model 中。列数改变或重新分组后，新行按新 key 构造，这不提供二维网格虚拟化。可交互的千项菜单见 [author_list.aside](../../examples/author_list.aside)：支持变高说明、展开状态、过滤、重排、键盘和手柄选择。运行 `reel dev examples/author_list.aside --assets target/reel-artifacts/author-assets`，先按示例准备 fonts/body.ttf。
 
+按 key 定位：`let row = await items.scroll_to(key, align: "nearest")` 先构造和测量目标附近的行，在实际呈现后返回该行节点。align 可选 start、center、end、nearest，默认只做必要滚动。重排仍跟随同一 key；过滤掉目标、移除列表或新的滚动/定位会取消旧请求，可用 try/catch 处理。返回节点仍遵循普通离屏退休规则，持久状态保存在 model。
+等待期间改变视口尺寸会重新校准目标；自动夹取滚动范围不会取消请求。来源重算后，会等待新位置的实际呈现再返回。
+
 ## 十一 存档 历史 路线与跳过
 
 历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
@@ -845,7 +848,7 @@ narrator("A new chapter begins.");
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 5，会话快照格式为 8；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 5，会话快照格式为 9；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

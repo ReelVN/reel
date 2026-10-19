@@ -589,6 +589,10 @@ impl SessionVm {
                 self.dispatch_result(session, ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::list::scroll_to" => {
+                self.dispatch_list_scroll_to(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::list" => {
                 self.dispatch_list(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })

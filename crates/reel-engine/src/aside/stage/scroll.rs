@@ -88,19 +88,20 @@ impl StageBinding {
         &mut self,
         heap: &mut Heap,
         event: &NodeScroll,
-    ) -> Result<bool, AdapterError> {
+    ) -> Result<(bool, bool), AdapterError> {
         let Some(binding) = self.handles.get(&event.node) else {
-            return Ok(false);
+            return Ok((false, false));
         };
         if !matches!(
             self.scene.node(event.node).map(|n| &n.kind),
             Some(NodeKind::Scroll { .. })
         ) {
-            return Ok(false);
+            return Ok((false, false));
         }
         let host = heap.import_handle(binding.handle)?;
         let offset_fields = [ScrollField::X.index() as u32, ScrollField::Y.index() as u32];
         let mut changed = false;
+        let mut accepted_y = false;
         for ((field, requested), actual) in offset_fields
             .into_iter()
             .zip([event.requested.x, event.requested.y])
@@ -108,8 +109,11 @@ impl StageBinding {
         {
             let property = PropertyId { host, field };
             let current = number(heap.host_property(property)?)?;
+            if field == ScrollField::Y.index() as u32 {
+                accepted_y = event.input || current == requested;
+            }
             // A newer script write wins over feedback from the previous projection.
-            if current == requested && current != actual {
+            if (event.input || current == requested) && current != actual {
                 heap.write_host_property(property, Value::float(actual), true)?;
                 changed = true;
             }
@@ -133,6 +137,6 @@ impl StageBinding {
                 changed = true;
             }
         }
-        Ok(changed)
+        Ok((changed, accepted_y))
     }
 }

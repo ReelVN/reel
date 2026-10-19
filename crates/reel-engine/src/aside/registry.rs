@@ -394,7 +394,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::list".into(),
-        abi_version: 7,
+        abi_version: 8,
         parameters: list_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -788,6 +788,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         (
             "completion",
             vec![parameter("owner", Some(bc::Const::Null))],
+            false,
+        ),
+        (
+            "list::scroll_to",
+            vec![
+                parameter("list", None),
+                parameter("key", None),
+                parameter("align", Some(bc::Const::Utf8("nearest".into()))),
+            ],
             false,
         ),
         ("completion::await", vec![parameter("result", None)], true),

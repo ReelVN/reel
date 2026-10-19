@@ -34,8 +34,15 @@ pub fn main() {
         inventory.items.append({id: i, label: f"Collection item {i}", count: i % 7 + 1, expanded: false});
         i += 1;
     }
+    let items = list(visible_items, key: |item| item.id, virtual: true, build: item_view, gap: 16);
     stage.replace(column(x: 40, y: 30, width: 900, gap: 20) {
         row(gap: 16) {
+            button("Item 998", on_click: |e| {
+                try {
+                    await items.scroll_to(998, align: "center");
+                    inventory.selected = "Positioned at item 998";
+                } catch error { inventory.selected = "Positioning cancelled"; }
+            });
             button("Reverse", on_click: |e| inventory.items.reverse());
             button("Even IDs / all", on_click: |e| { inventory.even_only = !inventory.even_only; });
             button("Replace letter", on_click: |e| {
@@ -50,7 +57,7 @@ pub fn main() {
             });
         }
         scroll(width: 880, height: 360) {
-            list(visible_items, key: |item| item.id, virtual: true, build: item_view, gap: 16);
+            items;
         }
         text(value: derive(|| f"Last selection: {inventory.selected}"));
         text("Tab / arrow keys move between items; Enter selects and expands. Filter, reverse, or scroll away and back to keep each item's state.", width: 880);

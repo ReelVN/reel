@@ -108,7 +108,7 @@ pub struct SessionSnapshot {
     committed_save: Option<saves::SaveRequestId>,
 }
 impl SessionSnapshot {
-    const FORMAT_VERSION: u32 = 8;
+    const FORMAT_VERSION: u32 = 9;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -569,6 +569,7 @@ impl SessionRestore<'_> {
                             record.read()?,
                             runtime.read_limit,
                         )? {
+                            runtime.restore_virtual_presentation(node)?;
                             self.children.push(node);
                         }
                     }

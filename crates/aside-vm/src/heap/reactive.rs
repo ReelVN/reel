@@ -497,6 +497,79 @@ impl Heap {
         !self.reactive_queue.is_empty() || self.reactive_capture.is_some()
     }
 
+    /// Check committed dependencies without running or dequeuing observers.
+    /// `evaluating` covers a scheduler's claimed output before begin_derived.
+    /// The reusable, accounted workspace visits each dependency once; callers
+    /// should use this at a publication boundary, not poll every derived value.
+    pub fn derived_is_current(
+        &mut self,
+        output: Value,
+        evaluating: Option<Value>,
+    ) -> Result<bool, HeapError> {
+        self.property_work.clear();
+        self.work_push(PropertyId {
+            host: output,
+            field: u32::MAX,
+        })?;
+        let mut cursor = 0;
+        while cursor < self.property_work.len() {
+            let mut current = self.property_work[cursor];
+            cursor += 1;
+            if current.field != u32::MAX {
+                current = self.property_source(current)?.0;
+            }
+            let object = self.object(self.key(current.host)?)?;
+            if !object.derived {
+                continue;
+            }
+            if object.derived_dirty
+                || evaluating.is_some_and(|v| v.same_bits(current.host))
+                || self
+                    .host_payload(current.host, DerivedSlot::Candidate as u32)?
+                    .tag()
+                    != crate::ValueTag::Null
+            {
+                return Ok(false);
+            }
+            // An untracked component factory also owns an unfinished capture.
+            let mut active = self.reactive_capture;
+            while let Some(value) = active {
+                if value.same_bits(current.host) {
+                    return Ok(false);
+                }
+                let parent = self.host_payload(value, DerivedSlot::Parent as u32)?;
+                active = (parent.tag() != crate::ValueTag::Null).then_some(parent);
+            }
+            let dependencies = self.host_payload(current.host, DerivedSlot::Dependencies as u32)?;
+            if dependencies.tag() == crate::ValueTag::Null {
+                continue;
+            }
+            for i in (0..self.sequence_len(dependencies)?).step_by(2) {
+                let mut next = PropertyId {
+                    host: self.sequence_get(dependencies, i)?,
+                    field: self.sequence_get(dependencies, i + 1)?.as_int().unwrap() as u32,
+                };
+                if next.field != u32::MAX {
+                    next = self.property_source(next)?.0;
+                }
+                // Plain model/collection writes already mark their direct
+                // observer dirty. Only derived ancestors need further visits.
+                if !self.object(self.key(next.host)?)?.derived {
+                    continue;
+                }
+                next.field = u32::MAX;
+                if !self
+                    .property_work
+                    .iter()
+                    .any(|p| p.host.same_bits(next.host) && p.field == next.field)
+                {
+                    self.work_push(next)?;
+                }
+            }
+        }
+        Ok(true)
+    }
+
     pub fn next_derived(&mut self) -> Result<Option<Value>, HeapError> {
         while let Some(key) = self.reactive_queue.pop_front() {
             let Some(object) = self.objects.get_mut(key) else {
@@ -520,6 +593,45 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derived_freshness_follows_only_its_inputs_without_consuming_dirty_work() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let source = heap.alloc_array(&[]).unwrap();
+        heap.observe_readonly_collection(source).unwrap();
+        let upstream = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(upstream).unwrap();
+        heap.observe_read(source, None).unwrap();
+        heap.commit_derived(upstream, Value::int(1)).unwrap();
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(upstream, Some(0)).unwrap();
+        heap.commit_derived(output, Value::int(1)).unwrap();
+        let unrelated = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(unrelated).unwrap();
+        heap.commit_derived(unrelated, Value::NULL).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+        heap.invalidate_reactive(source, None).unwrap();
+        assert!(!heap.derived_is_current(output, None).unwrap());
+        assert!(heap.derived_is_current(unrelated, None).unwrap());
+        assert!(heap.next_derived().unwrap().unwrap().same_bits(upstream));
+        assert!(!heap.derived_is_current(output, Some(upstream)).unwrap());
+        heap.begin_derived(upstream).unwrap();
+        assert!(!heap.derived_is_current(output, None).unwrap());
+        heap.observe_read(source, None).unwrap();
+        heap.commit_derived(upstream, Value::int(1)).unwrap();
+        assert!(!heap.derived_is_current(output, None).unwrap());
+        assert!(heap.next_derived().unwrap().unwrap().same_bits(output));
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(upstream, Some(0)).unwrap();
+        heap.commit_derived(output, Value::int(1)).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+        assert!(heap.next_derived().unwrap().is_none());
+        heap.begin_untracked(output).unwrap();
+        assert!(!heap.derived_is_current(output, None).unwrap());
+        heap.end_derived(output).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+    }
 
     fn collect(heap: &mut Heap) {
         heap.begin_collection().unwrap();

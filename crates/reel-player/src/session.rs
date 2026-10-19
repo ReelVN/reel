@@ -534,13 +534,14 @@ impl Widget for SessionWidget {
                 }
                 NodeEvent::VirtualList(state) => {
                     let mut events = self.events.borrow_mut();
-                    if let Some(NodeEvent::VirtualList(previous)) = events.iter_mut().find(|event| {
+                    if let Some(index) = events.iter().position(|event| {
                         matches!(event, NodeEvent::VirtualList(previous) if previous.node == state.node)
                     }) {
-                        *previous = state.clone();
-                    } else {
-                        events.push(NodeEvent::VirtualList(state.clone()));
+                        events.remove(index);
                     }
+                    // The latest window follows its matching Scroll offset, even
+                    // when several compose passes are coalesced in one batch.
+                    events.push(NodeEvent::VirtualList(state.clone()));
                 }
                 NodeEvent::Pointer(input)
                     if matches!(

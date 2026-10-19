@@ -17,11 +17,11 @@
 | --- | --- | --- |
 | Aside / VM | 多文件、类型、类与继承、静态成员、可观察状态、宿主等待、任务与取消、执行快照、轻量标准库；GC 按分配压力调度。[语言执行范围](../crates/aside-compiler/LOWERING.md) | 结构模式、原生 async/generator 执行、剩余有价值的 Quirrel 用例与整体运行成本。[#65](https://github.com/jhq223/reel/issues/65) |
 | 剧情 | 自定义 ADV/NVL、选择、历史、自动/快进、已读记录、本地化和全新剧情入口。[阅读服务](../examples/author_reading.aside) · [作者剧情界面](../examples/author_narrative.aside) | 完整游戏流程中菜单、演出、取消和恢复的连续验证；全文和翻译目录仍整体驻留。 |
-| 舞台 / UI | 函数组件、响应式绑定、动态 keyed list、变高虚拟列表、自绘控件、文本输入与 IME、滚动、布局和富文本。[列表](../examples/author_list.aside) · [控件外观](../examples/author_control_states.aside) · [换行](../examples/author_text_wrap.aside) | dropdown、多行编辑、单选组键盘交互、程序化列表定位与接受帧几何查询；继续用复杂组件打磨写法。[#63](https://github.com/jhq223/reel/issues/63) |
+| 舞台 / UI | 函数组件、响应式绑定、动态 keyed list、变高虚拟列表及按 key 定位、自绘控件、文本输入与 IME、滚动、布局和富文本。[列表](../examples/author_list.aside) · [控件外观](../examples/author_control_states.aside) · [换行](../examples/author_text_wrap.aside) | dropdown、多行编辑、单选组键盘交互与接受帧几何查询；继续用复杂组件打磨写法。[#63](https://github.com/jhq223/reel/issues/63) |
 | 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、可观察时钟、属性接管、owner 退休与活动快照。[组合动作](../examples/author_activities.aside) | 通用演出作用域、取消恢复及更多转场组合。[#88](https://github.com/jhq223/reel/issues/88) |
 | 渲染 / 效果 | 共同舞台、分层图像、2D 相机、大图分块、粒子、图像遮罩、子树反相与 WGPU 绘制；输入使用已呈现几何。[反相](../examples/author_invert.aside) | 更多滤镜、转场、自定义效果和完整 2D 创作 API。[#92](https://github.com/jhq223/reel/issues/92) |
 | 工程 / 资源 | check/build/dev/run/export；开发与发布分离、外部文本池、资源分卷、后台读取与资源计账。[发布命令](guide/zh-CN.md#当前可用的检查构建与运行) | 长内容加载成本、编辑工具与跨平台发行验收。 |
-| 音频 / 视频 | 音频播放、分组、循环区间、定位、音量/声像与淡变；H.264/AAC 视频节点使用共同舞台。[音频](../examples/author_audio.aside) | 长音轨流式、设备恢复和实机音画同步。[#67](https://github.com/jhq223/reel/issues/67) |
+| 音频 / 视频 | 音频播放、片段队列、分组、循环区间、定位、音量/声像与淡变；H.264/AAC 视频节点使用共同舞台。[音频](../examples/author_audio.aside) · [音频队列](../examples/author_audio_queue.aside) | 长音轨流式、资源复用、设备恢复和实机音画同步。[#67](https://github.com/jhq223/reel/issues/67) |
 | 保存 / 恢复 | VM 执行、剧情、节点和活动快照；独立系统数据、缩略图、分片捕获与后台写盘。[存档](../examples/author_saves.aside) · [系统数据](../examples/author_persistent.aside) | 复杂同包恢复可靠性、暂停与峰值内存。要求匹配代码和格式，不提供旧包/旧档兼容。[#91](https://github.com/jhq223/reel/issues/91) |
 | 输入 / 嵌入游戏 | 键鼠、触摸和手柄公共输入；命名动作、模拟值、重映射、焦点导航；小游戏与对白共用节点、结果、时钟和存档。[开关谜题](../examples/author_embedded_puzzle.aside) | 连续 2D 游戏所需能力仍需补齐；示例不代表已有完整物理、碰撞或固定步进 API。[#101](https://github.com/jhq223/reel/issues/101) |
 | 平台 | 平台、呈现、运行时和资源 HAL；Winit 与 WGPU 可独立启用。[宿主接入](../crates/reel-player/README.md) | 实体设备、设备恢复、原生 IME/可访问性及跨平台验收。[#93](https://github.com/jhq223/reel/issues/93) |
