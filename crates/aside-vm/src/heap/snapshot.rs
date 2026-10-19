@@ -35,6 +35,7 @@ enum Layout {
     Cell(crate::CellContract, bool),
     Fault(crate::fault::FaultData),
     Values,
+    Dependencies,
     Table,
     Bytes,
     Constant(crate::bytecode::ConstId),
@@ -227,6 +228,7 @@ impl GraphCapture {
                 Payload::Cell(cell) => Layout::Cell(cell.contract, cell.value.is_some()),
                 Payload::Fault(fault) => Layout::Fault(fault.data),
                 Payload::Values(_) => Layout::Values,
+                Payload::Dependencies(_) => Layout::Dependencies,
                 Payload::Table(_) => Layout::Table,
                 Payload::Bytes(bytes) => {
                     bytes.constant_id().map_or(Layout::Bytes, Layout::Constant)
@@ -346,6 +348,12 @@ pub(crate) fn allocate(
                     })
                 }
                 Layout::Values if meta.kind.values() => Payload::Values(Values::default()),
+                Layout::Dependencies
+                    if meta.kind == ObjectKind::Dependencies && meta.len % 2 == 0 =>
+                {
+                    heap.ensure_bytes(crate::dependencies::BASE_BYTES)?;
+                    Payload::Dependencies(Box::default())
+                }
                 Layout::Table if meta.kind == ObjectKind::Table => {
                     Payload::Table(Values::default())
                 }
@@ -388,7 +396,12 @@ pub(crate) fn allocate(
                     .map(|(name, version)| registry.resolve(name, *version))
                     .transpose()?
             };
-            let value = heap.allocate(meta.kind, payload, None, 0);
+            let charged = if matches!(payload, Payload::Dependencies(_)) {
+                crate::dependencies::BASE_BYTES
+            } else {
+                0
+            };
+            let value = heap.allocate(meta.kind, payload, None, charged);
             let key = heap.key(value)?;
             heap.objects.get_mut(key).unwrap().host_validator = validator;
             map.objects.insert(record.key, value);
@@ -540,15 +553,23 @@ pub(crate) fn connect(
                         Payload::Values(v) | Payload::Table(v) if v.len == offset => {
                             u64::from(v.needs_chunk()) * VALUE_CHUNK_BYTES
                         }
+                        Payload::Dependencies(d) if d.values.len == offset => {
+                            d.restore_bytes(value)?
+                        }
                         Payload::Cell(cell) if offset == 0 && cell.value.is_none() => 0,
                         Payload::Fault(_) if offset < 3 => 0,
                         _ => return Err(SnapshotError::Invalid("value block offset".into())),
                     };
                     heap.ensure_bytes(extra)?;
-                    heap.charge(extra, u64::from(extra != 0));
+                    let chunks = match &heap.object(key)?.payload {
+                        Payload::Dependencies(d) => u64::from(d.values.needs_chunk()),
+                        _ => u64::from(extra != 0),
+                    };
+                    heap.charge(extra, chunks);
                     let obj = heap.objects.get_mut(key).unwrap();
                     match &mut obj.payload {
                         Payload::Values(v) | Payload::Table(v) => v.push(value),
+                        Payload::Dependencies(d) => d.restore_push(value),
                         Payload::Cell(cell) => cell.value = Some(value),
                         Payload::Fault(fault) => fault.edges[offset as usize] = value,
                         _ => unreachable!(),

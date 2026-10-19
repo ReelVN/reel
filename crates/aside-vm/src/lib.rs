@@ -3,6 +3,7 @@
 pub mod bytecode;
 mod cell;
 mod class;
+mod dependencies;
 pub mod executor;
 mod fault;
 mod frame_slots;
