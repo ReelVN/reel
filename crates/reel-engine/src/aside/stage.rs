@@ -94,6 +94,10 @@ pub(super) enum NodeProperty {
     MaskSoftness,
     #[aside(name = "mask_invert", ty = Bool, default = false)]
     MaskInvert,
+    #[aside(name = "mask_x", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    MaskX,
+    #[aside(name = "mask_y", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    MaskY,
     #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
     Stretch,
     #[aside(name = "max_width", ty = Any, default = null, validate = validate_dimension, animatable)]
@@ -1526,6 +1530,18 @@ fn mask_progress(value: Value) -> Result<f64, AdapterError> {
     }
     Ok(value)
 }
+fn mask_offset(value: Value) -> Result<f64, AdapterError> {
+    let value = number(value)?;
+    if !(value as f32).is_finite() {
+        return Err(AdapterError::Input(
+            "mask offset must be representable as finite f32",
+        ));
+    }
+    Ok(value)
+}
+fn validate_mask_offset(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(mask_offset(value))
+}
 fn validate_mask_progress(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(mask_progress(value))
 }
@@ -1537,7 +1553,7 @@ fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> {
     if info.kind == ObjectKind::String && info.len != 0 {
         Ok(())
     } else {
-        Err(HeapError::TypeMismatch)
+        super::masks::validate(heap, value)
     }
 }
 fn mask_handle(heap: &Heap, fields: Value, offset: usize) -> Result<Option<HeapHandle>, HeapError> {
@@ -1652,7 +1668,7 @@ fn read_props(
     {
         props.mask.clone()
     } else {
-        Some(Arc::from(read_text(heap, mask, read_limit)?))
+        Some(super::masks::project(heap, mask, read_limit)?)
     };
     Ok(NodeProps {
         x: number(get(NodeProperty::X)?)?,
@@ -1705,5 +1721,7 @@ fn read_props(
         mask_progress: mask_progress(get(NodeProperty::MaskProgress)?)?,
         mask_softness: nonnegative(get(NodeProperty::MaskSoftness)?)?,
         mask_invert: boolean(get(NodeProperty::MaskInvert)?)?,
+        mask_x: mask_offset(get(NodeProperty::MaskX)?)?,
+        mask_y: mask_offset(get(NodeProperty::MaskY)?)?,
     })
 }

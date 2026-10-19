@@ -72,7 +72,7 @@ struct SceneNode {
 struct SceneImages {
     image: Option<ImageData>,
     image_resource: Option<ResourceLease>,
-    mask_image: Option<ImageData>,
+    mask_images: Arc<[ImageData]>,
     tiled_size: Option<Size>,
     tiles: Vec<reel_ui::widgets::ImageTile>,
 }
@@ -81,8 +81,11 @@ impl PartialEq for SceneImages {
         self.image.as_ref().map(|i| i.data.id()) == other.image.as_ref().map(|i| i.data.id())
             && self.image_resource.as_ref().map(ResourceLease::handle)
                 == other.image_resource.as_ref().map(ResourceLease::handle)
-            && self.mask_image.as_ref().map(|i| i.data.id())
-                == other.mask_image.as_ref().map(|i| i.data.id())
+            && self
+                .mask_images
+                .iter()
+                .map(|i| i.data.id())
+                .eq(other.mask_images.iter().map(|i| i.data.id()))
             && self.tiled_size == other.tiled_size
             && self.tiles.len() == other.tiles.len()
             && self
@@ -217,7 +220,7 @@ impl StageView {
                 images.tiles.clear();
             }
             if node.props.mask.is_none() {
-                images.mask_image = None;
+                images.mask_images = Arc::from([]);
             }
             Arc::new(SceneNode {
                 node,
@@ -320,8 +323,8 @@ impl StageView {
             if let Some((source, _)) = image_source(&node.node.kind) {
                 mounted.insert(source.to_owned());
             }
-            if let Some(source) = &node.node.props.mask {
-                mounted.insert(source.to_string());
+            if let Some(mask) = &node.node.props.mask {
+                mounted.extend(mask.sources().iter().map(|source| source.to_string()));
             }
             if !visible {
                 continue;
@@ -360,7 +363,7 @@ impl StageView {
             {
                 encoded.insert(source.key().to_owned(), bytes.clone());
             }
-            if let Some(source) = &node.node.props.mask {
+            for source in node.node.props.mask.iter().flat_map(|mask| mask.sources()) {
                 let origin = node.node.props.mask_origin.as_deref();
                 if source.ends_with(".reel-image") {
                     return Err(format!(
@@ -403,15 +406,21 @@ impl StageView {
                     self.resources.push(lease.clone());
                 }
             }
-            if let Some(source) = &node.node.props.mask {
-                let lease = &images[source.as_ref()];
-                let ResourceData::Image { image, .. } = lease.data() else {
-                    unreachable!()
-                };
-                resolved.mask_image = Some(image.clone());
-                if handles.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
-                }
+            if let Some(mask) = &node.node.props.mask {
+                resolved.mask_images = mask
+                    .sources()
+                    .iter()
+                    .map(|source| {
+                        let lease = &images[source.as_ref()];
+                        let ResourceData::Image { image, .. } = lease.data() else {
+                            unreachable!()
+                        };
+                        if handles.insert(lease.handle()) {
+                            self.resources.push(lease.clone());
+                        }
+                        image.clone()
+                    })
+                    .collect();
             }
             resolved
         });
@@ -444,16 +453,21 @@ impl StageView {
                     }
                 }
             }
-            if let Some(source) = &node.node.props.mask
-                && let Some(lease) = images.loaded.get(source.as_ref())
-            {
-                let ResourceData::Image { image, .. } = lease.data() else {
-                    unreachable!()
-                };
-                resolved.mask_image = Some(image.clone());
-                if resources.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
-                }
+            if let Some(mask) = &node.node.props.mask {
+                resolved.mask_images = mask
+                    .sources()
+                    .iter()
+                    .filter_map(|source| {
+                        let lease = images.loaded.get(source.as_ref())?;
+                        let ResourceData::Image { image, .. } = lease.data() else {
+                            unreachable!()
+                        };
+                        if resources.insert(lease.handle()) {
+                            self.resources.push(lease.clone());
+                        }
+                        Some(image.clone())
+                    })
+                    .collect();
             }
             resolved
         });
@@ -771,7 +785,7 @@ struct SceneWidget {
     image: Option<WidgetPod<Image>>,
     image_size: Size,
     particle_image: Option<ImageData>,
-    mask_image: Option<ImageData>,
+    mask_images: Arc<[ImageData]>,
     children: Vec<(Arc<SceneProperties>, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
@@ -968,7 +982,7 @@ impl SceneWidget {
             particle_image: matches!(view.node.kind, NodeKind::Particles(_))
                 .then(|| view.images.image.clone())
                 .flatten(),
-            mask_image: view.images.mask_image.clone(),
+            mask_images: view.images.mask_images.clone(),
             image: Self::image_widget(view),
             image_size: view.image_size(),
             children: view
@@ -1008,10 +1022,14 @@ impl SceneWidget {
         {
             this.widget.syncs += 1;
         }
-        if this.widget.mask_image.as_ref().map(|image| image.data.id())
-            != view.images.mask_image.as_ref().map(|image| image.data.id())
+        if !this
+            .widget
+            .mask_images
+            .iter()
+            .map(|image| image.data.id())
+            .eq(view.images.mask_images.iter().map(|image| image.data.id()))
         {
-            this.widget.mask_image = view.images.mask_image.clone();
+            this.widget.mask_images = view.images.mask_images.clone();
             this.ctx.request_render();
         }
         if matches!(view.node.kind, NodeKind::Particles(_)) {
@@ -2232,19 +2250,26 @@ impl Widget for SceneWidget {
     }
     fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {
         let mask = self
-            .mask_image
+            .node
+            .props
+            .mask
             .as_ref()
-            .filter(|_| self.node.props.mask_progress < 1.);
+            .filter(|mask| !mask.is_image_threshold() || self.node.props.mask_progress < 1.);
         ctx.set_subtree_composite(
             self.node.props.opacity as f32,
             self.node.props.invert as f32,
             self.node.props.blend,
-            mask.map(|image| PaintImageMask {
-                image: image.clone(),
+            mask.map(|program| PaintImageMask {
+                program: program.clone(),
+                images: self.mask_images.clone(),
                 bounds: self.size.to_rect(),
-                progress: self.node.props.mask_progress as f32,
-                softness: self.node.props.mask_softness.min(f32::MAX as f64) as f32,
-                invert: self.node.props.mask_invert,
+                parameters: [
+                    self.node.props.mask_progress as f32,
+                    self.node.props.mask_softness.min(f32::MAX as f64) as f32,
+                    self.node.props.mask_x as f32,
+                    self.node.props.mask_y as f32,
+                    f32::from(self.node.props.mask_invert),
+                ],
             }),
         );
     }
