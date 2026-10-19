@@ -65,7 +65,6 @@ fn virtual_fixture_with_font(
                     node: row,
                     index: 0,
                     offset: 0.,
-                    height: None,
                 }]),
                 navigation: None,
             }),
@@ -316,13 +315,11 @@ fn virtual_list_navigation_waits_for_accepted_rows_and_cancels_old_confirmation(
                 node: first,
                 index: 0,
                 offset: 0.,
-                height: None,
             },
             VirtualRow {
                 node: second,
                 index: 1,
                 offset: 42.,
-                height: None,
             },
         ]);
         view.navigation = Some(VirtualListNavigation {
@@ -490,7 +487,6 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
                 node: child,
                 index,
                 offset: index as f64 * 42.,
-                height: None,
             });
             view.rows = rows.into();
             view.revision += 1;
@@ -2776,45 +2772,4 @@ impl std::ops::Deref for TestFrame {
     }
 }
 
-#[test]
-fn virtual_list_declared_height_overrides_row_constraints_and_late_content_size() {
-    use reel_ui::stage::Stretch;
-    let (mut f, list, row) = virtual_fixture(100);
-    let NodeKind::VirtualList(mut projection) = f.stage.node(list).unwrap().kind.clone() else {
-        unreachable!()
-    };
-    Arc::make_mut(&mut projection.rows)[0].height = Some(80.);
-    let list_props = f.stage.node(list).unwrap().props.clone();
-    f.stage
-        .update(list, NodeKind::VirtualList(projection), list_props)
-        .unwrap();
-    for natural_height in [12., 200., 1000.] {
-        let kind = f.stage.node(row).unwrap().kind.clone();
-        let mut props = f.stage.node(row).unwrap().props.clone();
-        props.height = Some(natural_height);
-        props.max_height = Some(10.);
-        props.stretch = Stretch::Y;
-        f.stage.update(row, kind, props).unwrap();
-        let recorded = f.record();
-        f.accept(&recorded);
-        let event = f.ui.take_events().into_iter().find_map(|e| match e {
-            NodeEvent::VirtualList(e) => Some(e),
-            _ => None,
-        });
-        if let Some(event) = event {
-            assert_eq!(
-                event.measurements.as_ref(),
-                &[VirtualRowMeasurement {
-                    node: row,
-                    height: 80.
-                }]
-            );
-        }
-        let widget = f.layouts()[&row].0;
-        let row_widget = f.bridge.root().get_widget(widget).unwrap();
-        assert_eq!(
-            row_widget.downcast::<SceneWidget>().unwrap().size.height,
-            80.
-        );
-    }
-}
+mod natural_height;

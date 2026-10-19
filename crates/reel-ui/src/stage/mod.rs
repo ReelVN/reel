@@ -97,8 +97,6 @@ pub struct VirtualRow {
     pub node: NodeId,
     pub index: usize,
     pub offset: f64,
-    /// Declared layout height; None leaves natural measurement in control.
-    pub height: Option<f64>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualListNavigation {

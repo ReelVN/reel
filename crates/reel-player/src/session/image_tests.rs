@@ -123,7 +123,10 @@ fn frame_with_info(
             max_bytes: 32 << 20,
         },
     );
-    let (source, receipt) = driver.record(bridge, root, FrameId(id)).unwrap();
+    let (source, receipt) = driver
+        .record(bridge, root, FrameId(id))
+        .unwrap()
+        .expect("settled frame");
     let key = source.key();
 
     let resources =

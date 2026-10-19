@@ -103,9 +103,7 @@ fn event(vm: &SessionVm, y: f64, width: f64, retained: &[NodeId]) -> NodeVirtual
             .iter()
             .map(|r| VirtualRowMeasurement {
                 node: r.node,
-                height: r
-                    .height
-                    .unwrap_or_else(|| vm.stage().node(r.node).unwrap().props.height.unwrap()),
+                height: vm.stage().node(r.node).unwrap().props.height.unwrap(),
             })
             .collect(),
         retained: retained.into(),
@@ -775,4 +773,4 @@ fn virtual_list_first_window_cost_against_full_materialization() {
 
 mod scroll_to;
 
-mod row_height;
+mod natural_height;

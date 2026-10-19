@@ -710,6 +710,47 @@ struct VirtualListState {
     retained: Vec<NodeId>,
     children: Vec<VirtualChild>,
     navigation: Option<VirtualListNavigation>,
+    placement_pending: bool,
+    viewport_start: f64,
+    placement: Vec<(NodeId, f64)>,
+}
+impl VirtualListState {
+    // Keep one projected row fixed while packing its contiguous logical segment
+    // with this layout's real measurements. This also runs for a distant jump:
+    // the first painted window never exposes estimated gaps/overlapping rows.
+    fn place_measured(&mut self, view: &reel_ui::stage::VirtualListView, gap: f64) {
+        if !self.placement_pending {
+            return;
+        }
+        self.placement_pending = false;
+        self.placement.clear();
+        self.placement
+            .extend(view.rows.iter().map(|row| (row.node, row.offset)));
+        let height = |i: usize| {
+            self.measurements
+                .iter()
+                .find(|m| m.node == view.rows[i].node)
+                .expect("every mounted row was measured")
+                .height
+        };
+        let mut start = 0;
+        while start < view.rows.len() {
+            let mut end = start + 1;
+            while end < view.rows.len() && view.rows[end].index == view.rows[end - 1].index + 1 {
+                end += 1;
+            }
+            let anchor = (start..end)
+                .rfind(|&i| view.rows[i].offset <= self.viewport_start)
+                .unwrap_or(start);
+            for i in anchor + 1..end {
+                self.placement[i].1 = self.placement[i - 1].1 + height(i - 1) + gap;
+            }
+            for i in (start..anchor).rev() {
+                self.placement[i].1 = self.placement[i + 1].1 - height(i) - gap;
+            }
+            start = end;
+        }
+    }
 }
 
 struct SceneWidget {
@@ -1951,6 +1992,7 @@ impl Widget for SceneWidget {
         let mut measurements = Vec::new();
         if let Some(state) = &mut self.virtual_list {
             state.children.clear();
+            state.placement_pending = true;
         }
         for (node, child) in &mut self.children {
             ctx.set_stashed(child, !node.props.visible);
@@ -1969,7 +2011,6 @@ impl Widget for SceneWidget {
                     .find(|row| row.node == node.id)
                     .expect("virtual projection contains every mounted child")
             });
-            let declared_height = virtual_row.and_then(|row| row.height);
             let definition = if virtual_list.is_some() {
                 SizeDef::new(LenDef::Fixed(Length::px(inner.width)), LenDef::MaxContent)
             } else if let NodeKind::Scroll { axis, .. } = self.node.kind {
@@ -2004,9 +2045,7 @@ impl Widget for SceneWidget {
                 } else {
                     capped(Axis::Horizontal, node.props.max_width)
                 },
-                if let Some(height) = declared_height {
-                    LenDef::Fixed(Length::px(height))
-                } else if node.props.stretch.axis(Axis::Vertical) {
+                if node.props.stretch.axis(Axis::Vertical) {
                     LenDef::Fixed(Length::px(inner.height))
                 } else {
                     capped(Axis::Vertical, node.props.max_height)
@@ -2069,7 +2108,11 @@ impl Widget for SceneWidget {
                 extent.height = extent.height.max(offset.y + chosen.height);
             }
             ctx.run_layout(child, chosen);
-            ctx.place_child(child, Point::new(padding + offset.x, padding + offset.y));
+            // Virtual offsets remain subpixel until composition. Rounding a large
+            // prefix before subtracting the corrected scroll offset creates a
+            // visible 1px jump even when their mathematical difference is fixed.
+            let layout_y = if virtual_row.is_some() { 0. } else { offset.y };
+            ctx.place_child(child, Point::new(padding + offset.x, padding + layout_y));
         }
         if let Some(state) = &mut self.virtual_list {
             if state.measurements.as_ref() != measurements.as_slice() {
@@ -2134,6 +2177,7 @@ impl Widget for SceneWidget {
                     .map(|old| old.retained.clone())
                     .unwrap_or_else(|| Arc::from(state.retained.as_slice()));
                 let start = -translation.y - node.props.padding;
+                state.viewport_start = start;
                 let feedback = NodeVirtualList {
                     node: node.id,
                     scroll: self.node.id,
@@ -2154,6 +2198,12 @@ impl Widget for SceneWidget {
                 }
             }
         }
+        if let NodeKind::VirtualList(view) = &self.node.kind {
+            self.virtual_list
+                .as_mut()
+                .unwrap()
+                .place_measured(view, self.node.props.gap);
+        }
         let view = if let NodeKind::Camera(camera) = self.node.kind {
             camera.transform(Size::new(
                 (self.size.width - self.node.props.padding * 2.).max(0.),
@@ -2165,7 +2215,12 @@ impl Widget for SceneWidget {
         for (node, child) in &mut self.children {
             let transform = view * node.props.transform(ctx.child_size(child));
             ctx.set_child_transform(child, transform);
-            ctx.set_child_scroll_translation(child, translation);
+            let row_offset = self
+                .virtual_list
+                .as_ref()
+                .and_then(|state| state.placement.iter().find(|(id, _)| *id == node.id))
+                .map_or(0., |(_, y)| *y);
+            ctx.set_child_scroll_translation(child, translation + Vec2::new(0., row_offset));
         }
     }
     fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {

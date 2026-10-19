@@ -1517,13 +1517,19 @@ mod tests {
         .unwrap();
         let (mut bridge, root) = mount(driver.ui());
         // Recording the mounted initial tree has no sync-registration prerequisite.
-        let (initial, receipt) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
+        let (initial, receipt) = driver
+            .record(&mut bridge, root, FrameId(1))
+            .unwrap()
+            .expect("settled frame");
         assert_eq!(receipt.stamp.presentation_request, 0);
         assert_eq!(receipt.key.frame_id(), initial.key().frame_id());
         driver.await_initial_stage();
         assert!(driver.adapter().stage().root().is_none());
         driver.sync(&mut bridge, root).unwrap(); // Must take awaiting_stage's early return.
-        let (source, receipt) = driver.record(&mut bridge, root, FrameId(2)).unwrap();
+        let (source, receipt) = driver
+            .record(&mut bridge, root, FrameId(2))
+            .unwrap()
+            .expect("settled frame");
         assert_eq!(receipt.stamp.presentation_request, 0);
         assert_eq!(
             bridge.resolve(PresentationNotice::new(
@@ -1600,7 +1606,10 @@ mod tests {
             resources: (&ResourceRegistry, &[ResourceHandle]),
         ) -> Vec<(WidgetId, String)> {
             driver.sync(bridge, root).unwrap();
-            let (source, receipt) = driver.record(bridge, root, FrameId(frame)).unwrap();
+            let (source, receipt) = driver
+                .record(bridge, root, FrameId(frame))
+                .unwrap()
+                .expect("settled frame");
             let key = source.key();
 
             let pool = BudgetPool::new(
