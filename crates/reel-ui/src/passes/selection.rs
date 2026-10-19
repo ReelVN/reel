@@ -132,12 +132,37 @@ pub(super) fn select(root: &mut RenderRoot, id: WidgetId, group: SelectionGroupI
     }
 }
 
-pub(super) fn wrap(root: &mut RenderRoot, group: SelectionGroupId, forward: bool) {
-    if let Some(anchor) = root.global_state.focused_widget {
-        let (_, wrap) = next(root, anchor, group, forward);
-        if let Some(id) = wrap {
-            select(root, id, group);
+pub(super) fn finish_virtual(
+    root: &mut RenderRoot,
+    owner: WidgetId,
+    group: SelectionGroupId,
+    forward: bool,
+    direction: NavigationAction,
+) {
+    let Some(anchor) = root.global_state.focused_widget else {
+        return;
+    };
+    let (_, wrap) = next(root, anchor, group, forward);
+    let mut after = None;
+    members(root, group, |id, _| {
+        if !root.is_descendant(id, owner)
+            && super::navigation::follows_in_tree(root, owner, id) == forward
+            && (after.is_none() || !forward)
+        {
+            after = Some(id);
         }
+    });
+    if let Some(candidate) = after.or(wrap)
+        && !super::navigation::defer_group_entry(
+            root,
+            candidate,
+            group,
+            forward,
+            direction,
+            after.is_none(),
+        )
+    {
+        select(root, candidate, group);
     }
 }
 
@@ -153,8 +178,17 @@ pub(super) fn navigate(root: &mut RenderRoot, direction: NavigationAction) -> bo
     // A mounted group boundary can still be the middle of a virtual list.
     if super::navigation::defer_virtual(root, next, forward, Some(direction)) {
         super::navigation::select_deferred_member(root, group.id);
-    } else if let Some(next) = next.or(wrap) {
-        select(root, next, group.id);
+    } else if let Some(candidate) = next.or(wrap)
+        && !super::navigation::defer_group_entry(
+            root,
+            candidate,
+            group.id,
+            forward,
+            direction,
+            next.is_none(),
+        )
+    {
+        select(root, candidate, group.id);
     }
     true
 }

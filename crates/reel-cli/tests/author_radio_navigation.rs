@@ -299,3 +299,133 @@ fn virtual_radio_tab_does_not_build_rows_and_direction_resumes_after_acceptance(
         }
     }
 }
+
+#[test]
+fn virtual_radio_wraps_at_logical_ends_without_building_intermediate_rows() {
+    use keyboard::NamedKey::*;
+    let source = r#"
+    fn main(){
+        let items=[];for i in 0..10000 {items.append(i);}
+        let state=model({selected:0,changes:0,ready:false});
+        let rows=list(||items,key:|item|item,virtual:true,build:|row|
+            radio(row.value,f"item {row.value}",value:bind(state.selected),width:180,height:40,
+                on_change:||{state.changes+=1;}));
+        let jump=button("Last",width:120,height:30,y:180,on_click:||{
+            await rows.scroll_to(9999,align:"end");state.selected=9999;state.ready=true;
+        });
+        stage.replace(stack{scroll(width:220,height:120){rows;}jump;
+            text(derive(||f"state:{state.selected}:{state.changes}:{state.ready}"),y:340);
+            text(derive(||if jump.focused {"focus:jump"} else {"focus:list"}),y:380);
+        });narrator("ready");
+    }"#;
+    for mut d in drivers(source) {
+        let (mut b, root) = bridge(&d);
+        let mut frame = 0;
+        let flush = |d: &mut AsideSessionUi, b: &mut PresentationBridge, frame: &mut u64| {
+            for _ in 0..12 {
+                *frame += 1;
+                present(d, b, root, *frame);
+                settle(d);
+            }
+        };
+        flush(&mut d, &mut b, &mut frame);
+        let initial = d.adapter().stage().next_identity().unwrap();
+        click_at(&mut d, &mut b, 60., 195.);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:9999:0:true");
+        press(&mut d, &mut b, Tab, false);
+        assert_eq!(text(&d, "focus:"), "focus:list");
+        press(&mut d, &mut b, ArrowDown, false);
+        assert_eq!(
+            text(&d, "state:"),
+            "state:9999:0:true",
+            "wrap waits for the opposite accepted window"
+        );
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:0:1:true");
+        press(&mut d, &mut b, ArrowUp, false);
+        assert_eq!(text(&d, "state:"), "state:0:1:true");
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:9999:2:true");
+        assert!(
+            d.adapter().stage().next_identity().unwrap().0 - initial.0 < 80,
+            "only endpoint windows are constructed"
+        );
+        assert!(d.adapter().stage().nodes().count() < 40);
+        press(&mut d, &mut b, ArrowDown, false);
+        press(&mut d, &mut b, Tab, false);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(
+            text(&d, "state:"),
+            "state:9999:2:true",
+            "leaving cancels an opposite-end request"
+        );
+        assert_eq!(text(&d, "focus:"), "focus:jump");
+    }
+}
+
+#[test]
+fn radio_group_crosses_distinct_virtual_lists_at_their_logical_ends() {
+    use keyboard::NamedKey::*;
+    let source = r#"
+    fn main(){
+        let left_items=[];let right_items=[];
+        for i in 0..1000 {left_items.append(i);right_items.append(i+1000);}
+        let state=model({selected:0,changes:0});
+        let make=|row|radio(row.value,f"item {row.value}",value:bind(state.selected),width:180,height:40,
+            on_change:||{state.changes+=1;});
+        let left=list(||left_items,key:|item|item,virtual:true,build:make);
+        let right=list(||right_items,key:|item|item,virtual:true,build:make);
+        let prepare=button("Prepare",width:120,height:30,y:180,on_click:||{
+            await right.scroll_to(1500);await left.scroll_to(999,align:"end");state.selected=999;
+        });
+        let last=button("Last",width:120,height:30,y:220,on_click:||{
+            await right.scroll_to(1999,align:"end");state.selected=1999;
+        });
+        stage.replace(stack{
+            scroll(width:220,height:120){left;}
+            scroll(x:250,width:220,height:120){right;}
+            prepare;last;text(derive(||f"state:{state.selected}:{state.changes}"),y:340);
+        });narrator("ready");
+    }"#;
+    for mut d in drivers(source) {
+        let (mut b, root) = bridge(&d);
+        let mut frame = 0;
+        let flush = |d: &mut AsideSessionUi, b: &mut PresentationBridge, frame: &mut u64| {
+            for _ in 0..16 {
+                *frame += 1;
+                present(d, b, root, *frame);
+                settle(d);
+            }
+        };
+        flush(&mut d, &mut b, &mut frame);
+        let initial = d.adapter().stage().next_identity().unwrap().0;
+        click_at(&mut d, &mut b, 60., 195.);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:999:0");
+        press(&mut d, &mut b, Tab, true);
+        press(&mut d, &mut b, ArrowDown, false);
+        assert_eq!(text(&d, "state:"), "state:999:0");
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(
+            text(&d, "state:"),
+            "state:1000:1",
+            "enter the next list at its logical first row"
+        );
+        press(&mut d, &mut b, ArrowUp, false);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:999:2");
+        click_at(&mut d, &mut b, 60., 235.);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:1999:2");
+        press(&mut d, &mut b, Tab, false);
+        press(&mut d, &mut b, ArrowDown, false);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:0:3", "wrap across both lists");
+        press(&mut d, &mut b, ArrowUp, false);
+        flush(&mut d, &mut b, &mut frame);
+        assert_eq!(text(&d, "state:"), "state:1999:4");
+        assert!(d.adapter().stage().next_identity().unwrap().0 - initial < 150);
+        assert!(d.adapter().stage().nodes().count() < 60);
+    }
+}

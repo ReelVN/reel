@@ -57,7 +57,7 @@ pub(crate) fn cancel_virtual(root: &mut RenderRoot) {
     }
 }
 
-fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> bool {
+pub(super) fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> bool {
     if root.is_descendant(candidate, anchor) {
         return true;
     }
@@ -83,6 +83,64 @@ fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> 
         current = parent;
     }
     false
+}
+
+/// A group's logical boundary is not the first/last row of the mounted window.
+/// Entering another list or wrapping requests its actual endpoint through the
+/// same measured, accepted-frame navigation protocol as an ordinary row edge.
+pub(super) fn defer_group_entry(
+    root: &mut RenderRoot,
+    candidate: WidgetId,
+    group: SelectionGroupId,
+    forward: bool,
+    direction: NavigationAction,
+    wrapping: bool,
+) -> bool {
+    let anchor = root.global_state.focused_widget;
+    let mut row = candidate;
+    let mut target = None;
+    while let Some(owner) = root.widget_arena.parent_of(row) {
+        if let Some(list) = root
+            .widget_arena
+            .get_node(owner)
+            .item
+            .widget
+            .virtual_children()
+            && (wrapping || anchor.is_none_or(|anchor| !root.is_descendant(anchor, owner)))
+        {
+            if let crate::app::InputGeometrySource::Presented(view) =
+                &root.global_state.input_geometry_source
+                && view
+                    .as_ref()
+                    .and_then(|view| view.get(owner))
+                    .and_then(|record| record.virtual_revision)
+                    != Some(list.revision)
+            {
+                return true;
+            }
+            if list.total > 0 {
+                target = Some((owner, if forward { 0 } else { list.total - 1 }));
+            }
+        }
+        row = owner;
+    }
+    let Some((owner, index)) = target else {
+        return false;
+    };
+    request_virtual(
+        root,
+        DeferredNavigation {
+            serial: 0,
+            revision: 0,
+            owner,
+            anchor,
+            index,
+            forward,
+            direction: Some(direction),
+            selection: Some(group),
+        },
+    );
+    true
 }
 
 fn entry_gap(
@@ -361,7 +419,13 @@ pub(crate) fn resume_virtual(root: &mut RenderRoot) {
     } else {
         cancel_virtual(root);
         if let Some(group) = request.selection {
-            super::selection::wrap(root, group, request.forward);
+            super::selection::finish_virtual(
+                root,
+                request.owner,
+                group,
+                request.forward,
+                request.direction.expect("group navigation has a direction"),
+            );
             return;
         }
         root.global_state.next_focused_widget = match request.direction {

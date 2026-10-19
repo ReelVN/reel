@@ -1154,7 +1154,7 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 ## 数值控件与设置页
 
-`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。组内导航：Tab/Shift-Tab 整组只停一次，进入选中的可用项，否则首项；组在 Tab 顺序中的位置取其第一个可用节点；方向键和手柄方向按节点顺序直接选择前后项，跳过禁用/隐藏项并在边界循环。虚拟列表先滚动挂载下一逻辑行，接受画面后才选择，不在当前窗口提前循环。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。确认键、鼠标或触摸也可选择；重复选择不触发 on_change。脚本改值不会抢焦点。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
+`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。组内导航：Tab/Shift-Tab 整组只停一次，进入选中的可用项，否则首项；组在 Tab 顺序中的位置取其第一个可用节点；方向键和手柄方向按节点顺序直接选择前后项，跳过禁用/隐藏项并在边界循环。虚拟列表先滚动挂载下一逻辑行，接受画面后才选择，不在当前窗口提前循环。到组末尾后回到逻辑首项，反向亦然；跨虚拟列表时进入另一列表的逻辑端点，只构造需要的窗口。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。确认键、鼠标或触摸也可选择；重复选择不触发 on_change。脚本改值不会抢焦点。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
 
 ```aside
 let settings = model({sound: true, language: "zh-CN"});
