@@ -187,9 +187,10 @@ impl StageBinding {
             ("reel.layout", Shape::Stack),
         ] {
             let version = match shape {
-                Shape::Video => 4,
-                Shape::Image => 8,
-                _ => 6,
+                Shape::Video => 5,
+                Shape::Image => 9,
+                Shape::Particles => 8,
+                _ => 7,
             };
             registry.register_validator(name, version, shape.validator())?;
         }
@@ -221,11 +222,12 @@ impl StageBinding {
         let value = heap.import_handle(handle)?;
         let fields = heap.host_fields(value)?;
         let mask_origin = saved.origin.as_deref().map(Arc::from);
-        let kind = if saved.shape == Shape::VirtualList {
+        let mut kind = if saved.shape == Shape::VirtualList {
             NodeKind::VirtualList(super::super::lists::virtualized::project(heap, value)?)
         } else {
             saved.shape.project(heap, fields, saved.origin, limit)?
         };
+        controls::project_group(heap, value, &mut kind)?;
         let props = read_props(heap, fields, saved.shape.prefix(), limit, None, mask_origin)?;
         let mask_source = mask_handle(heap, fields, saved.shape.prefix())?;
         let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;

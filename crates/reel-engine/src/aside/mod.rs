@@ -26,6 +26,7 @@ mod registry;
 mod results;
 mod scopes;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
+mod masks;
 mod rich_text;
 pub mod saves;
 pub mod snapshot;
@@ -496,6 +497,13 @@ impl SessionVm {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
                 self.issued = None;
                 self.exit_requested = true;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            name if name.starts_with("reel::mask::") => {
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let value = masks::create(self.vm.heap_mut(), &name[12..], &args, self.read_limit)?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::rich" => {

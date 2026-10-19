@@ -94,6 +94,10 @@ pub(super) enum NodeProperty {
     MaskSoftness,
     #[aside(name = "mask_invert", ty = Bool, default = false)]
     MaskInvert,
+    #[aside(name = "mask_x", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    MaskX,
+    #[aside(name = "mask_y", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    MaskY,
     #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
     Stretch,
     #[aside(name = "max_width", ty = Any, default = null, validate = validate_dimension, animatable)]
@@ -347,7 +351,7 @@ impl StageBinding {
         }
         let shape = snapshot::Shape::from_symbol(symbol);
         let mask_origin = origin.as_deref().map(Arc::from);
-        let kind = shape.project(heap, fields, origin, read_limit)?;
+        let mut kind = shape.project(heap, fields, origin, read_limit)?;
         let props = read_props(heap, fields, prefix.len(), read_limit, None, mask_origin)?;
         let mask_source = mask_handle(heap, fields, prefix.len())?;
         let mut children = Vec::new();
@@ -379,16 +383,20 @@ impl StageBinding {
             }
         }
         let id = self.scene.next_identity()?;
-        let value = heap.alloc_composable_host(
-            fields,
-            &[
-                Value::int(id.0 as i64),
-                references,
-                Value::NULL,
-                Value::NULL,
-            ],
-            Some(shape.validator()),
-        )?;
+        let payload = [
+            Value::int(id.0 as i64),
+            references,
+            Value::NULL,
+            Value::NULL,
+            Value::int(0),
+        ];
+        let payload_len = if shape == snapshot::Shape::Particles {
+            5
+        } else {
+            4
+        };
+        let value =
+            heap.alloc_composable_host(fields, &payload[..payload_len], Some(shape.validator()))?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;
@@ -490,6 +498,7 @@ impl StageBinding {
             }
             _ => BTreeMap::new(),
         };
+        controls::project_group(heap, value, &mut kind)?;
         self.scene.create(kind, props, children)?;
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
@@ -605,7 +614,7 @@ impl StageBinding {
             if version == binding.fields_version {
                 continue;
             }
-            let (kind, offset) = match &node.kind {
+            let (mut kind, offset) = match &node.kind {
                 NodeKind::VirtualList(_) => (
                     NodeKind::VirtualList(super::lists::virtualized::project(heap, value)?),
                     0,
@@ -730,6 +739,7 @@ impl StageBinding {
                 ),
                 kind => (kind.clone(), 0),
             };
+            controls::project_group(heap, value, &mut kind)?;
             let props = read_props(
                 heap,
                 fields,
@@ -1525,6 +1535,18 @@ fn mask_progress(value: Value) -> Result<f64, AdapterError> {
     }
     Ok(value)
 }
+fn mask_offset(value: Value) -> Result<f64, AdapterError> {
+    let value = number(value)?;
+    if !(value as f32).is_finite() {
+        return Err(AdapterError::Input(
+            "mask offset must be representable as finite f32",
+        ));
+    }
+    Ok(value)
+}
+fn validate_mask_offset(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(mask_offset(value))
+}
 fn validate_mask_progress(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(mask_progress(value))
 }
@@ -1536,7 +1558,7 @@ fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> {
     if info.kind == ObjectKind::String && info.len != 0 {
         Ok(())
     } else {
-        Err(HeapError::TypeMismatch)
+        super::masks::validate(heap, value)
     }
 }
 fn mask_handle(heap: &Heap, fields: Value, offset: usize) -> Result<Option<HeapHandle>, HeapError> {
@@ -1651,7 +1673,7 @@ fn read_props(
     {
         props.mask.clone()
     } else {
-        Some(Arc::from(read_text(heap, mask, read_limit)?))
+        Some(super::masks::project(heap, mask, read_limit)?)
     };
     Ok(NodeProps {
         x: number(get(NodeProperty::X)?)?,
@@ -1704,5 +1726,7 @@ fn read_props(
         mask_progress: mask_progress(get(NodeProperty::MaskProgress)?)?,
         mask_softness: nonnegative(get(NodeProperty::MaskSoftness)?)?,
         mask_invert: boolean(get(NodeProperty::MaskInvert)?)?,
+        mask_x: mask_offset(get(NodeProperty::MaskX)?)?,
+        mask_y: mask_offset(get(NodeProperty::MaskY)?)?,
     })
 }

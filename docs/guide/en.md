@@ -414,8 +414,6 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 
 The four camera properties work with assignment, bind/derive and tween, including normal cancellation and ownership. Put HUD siblings outside the camera to keep them fixed; nested cameras are ordinary components. Motion preserves text layout and loaded images. Drawing and pointer coordinates share the accepted frame's transforms and clips. See the complete [author_camera.aside](../../examples/author_camera.aside), which needs only `fonts/body.ttf`; run it using section 1's dev/build/run commands. This is a two-dimensional camera; perspective projection is not implemented.
 
-
-
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside
@@ -750,6 +748,19 @@ reveal.mask = null;
 ```
 mask_progress and mask_softness use ordinary derive/tween. See [author_image_mask.aside](../../examples/author_image_mask.aside). Progress 1 bypasses mask compositing; set mask to null when finished to release its resource reference. Masks do not change logical hit geometry; use enabled/visible to control interaction. Masks require whole PNG/JPEG images, not tiled .reel-image sources.
 
+`mask.alpha` samples an image's alpha; `mask.gray` samples its encoded sRGB gray. Compose samples with `mask.add`, `subtract`, `multiply`, `pow`, `clamp` and `smoothstep`. Sampling accepts `x`, `y`, `scale_x`, `scale_y` and `repeat` (`"none"`, `"x"`, `"y"`, `"both"`); coordinates are normalized to the masked node, so they follow its transforms. Use `mask.param("x")` and `mask.param("y")` to read the animatable `mask_x` and `mask_y` properties, or `"progress"` and `"softness"` for their existing properties.
+
+```aside
+let edge = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
+    stack(width: 640, height: 360, background: "#2d8aab");
+};
+stage.replace(reveal);
+await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+```
+
+`pow` clamps its base to zero and accepts a finite nonnegative constant power; `0^0` is 1. `clamp` takes ordered constant bounds. `smoothstep` supports reversed edges; equal edges become a hard step at that value. The final result is clamped to 0..1. A composed expression remains active at `mask_progress: 1`. Its structure and image resources are reused during parameter animation. Run [author_composed_mask.aside](../../examples/author_composed_mask.aside) for a moving reveal made from two included alpha images.
+
 The `invert` node property inverts the composited subtree. It ranges from 0 (the default) to 1 for full inversion, with intermediate values blending in sRGB. Alpha is preserved. Put dialogue and menus in sibling nodes to keep them independent of the inverted scene. Direct assignment, derive, tween, and save restoration use the ordinary property protocol.
 
 ```aside
@@ -862,7 +873,7 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 13. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 15. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 
@@ -1170,7 +1181,7 @@ Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `
 
 ## Value controls and settings
 
-`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Arrow keys, controller directions and Tab move focus; confirm, mouse or touch selects. Selecting the current value does not call on_change. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
+`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Tab/Shift-Tab visits each group once, landing on the selected available item or its first item. The first available member determines the group’s position in the Tab order. Arrow keys and controller directions select the previous/next item in node order, skipping hidden or disabled items and wrapping at the boundary. A virtual list first mounts the next logical row and accepts its frame before selection; navigation does not wrap prematurely inside the current window. At the group end it returns to the logical first item, and conversely in reverse. Crossing virtual lists enters the other list at its logical endpoint and constructs only the required window. Leaving a group with Tab does not construct virtual rows to search for an exit. Use direction keys to visit options across windows. Confirm, mouse or touch also selects. Selecting the current value does not call on_change. Programmatic changes do not move focus. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
 
 ```aside
 let settings = model({sound: true, language: "zh-CN"});
@@ -1282,7 +1293,7 @@ fn main() {
 Runnable example: [author_audio_queue.aside](../../examples/author_audio_queue.aside) uses bundled clips for intro → loop → outro and continuous narration. Replace the clip paths with your own audio.
 
 ```aside
-let music = audio.play("assets/intro.ogg", group: "music");
+let mut music = audio.play("assets/intro.ogg", group: "music");
 audio.queue(music, "assets/loop.ogg", looping: true);
 narrator("Continue to leave the loop after this pass.");
 audio.queue(music, "assets/outro.ogg");
@@ -1351,31 +1362,38 @@ configure preserves omitted fields and returns an activity; await receives the a
 
 ### Sprite particles
 
-`particles` creates one stage node for snow, petals or other sprite effects. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. `emit` starts it and returns an activity; configure the birth rectangle with width/height. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
+`particles(source, seed:0, ...node properties)` creates one stage node with a shared sprite and coordinate space. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. Each `emit` appends a batch and returns its own activity. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
 
 ```aside
-let petals = particles("assets/petal.png", width: 1280, height: 20,
-    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
-    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
-    spin_spread: 60);
+let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
 stage.replace(petals);
-let falling = emit(petals, duration: 10);
+let falling = emit(petals, burst: 0, rate: 80, duration: 10,
+    lifetime: 8, velocity_y: 90, velocity_x: 15, spread_x: 30,
+    size: 18, size_spread: 6, spin_spread: 60);
 await falling;
 ```
 
-Defaults: rate 60 particles/second, burst 0, lifetime 5 seconds, lifetime_spread 0, seed 0, velocity_x/y 0/80, spread_x/y 20/20, acceleration_x/y 0/0, size 12, size_spread 4, size_end null, opacity_start/end 1/0, spin 0 and spin_spread 30 degrees/second. Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed lifetime. Each particle uses its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured by emit (omitted dimensions are zero). burst particles appear immediately, then rate adds a particle every 1/rate seconds. Configurations are read-only; ordinary position, rotation, scale, visibility, opacity and clipping remain editable and animatable.
+`emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` describes this batch. The default emits one particle immediately. Set burst to zero for a stream whose first particle is born after 1/rate seconds. duration null keeps a positive-rate stream emitting; a finite duration includes births at its endpoint. rate zero emits only the burst, even with duration null. duration zero still emits the burst. The activity completes when its last particle actually dies.
 
-Omit duration to emit continuously. A finite duration includes births exactly at its endpoint and completes when the last particle actually dies. rate:0 creates only the burst and completes naturally; rate:0 with burst:0 completes immediately. duration:0 still emits the burst. `pause(falling)` freezes the whole effect, `resume(falling)` continues it, and `stop(falling)` clears particles and returns Stopped from await. `finish(falling)` clears a finite effect and returns Completed; it rejects continuous emission. Calling emit again on the same node stops the previous activity and restarts its seeded sequence. The same seed and elapsed time reproduce the same particles regardless of frame timing. Retiring the node or activity owner cancels emission; hiding it does not pause it. Owner defaults follow other activities; cancelling a waiter leaves emission running. Completed activities retain their result for repeated waits. Particles share the stage image resource and renderer; no script runs for each particle. Save/restore preserves running effects, their elapsed time and paused state.
+Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed the positive lifetime. Each particle has its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured from the node by each emit (omitted dimensions are zero). The batch x/y is the rectangle origin in node-local coordinates; both accept positive or negative finite numbers and are fixed at emission. Moving the node still moves every batch; use emit x/y to add effects at different positions on the same node. Velocity uses logical pixels/second, acceleration pixels/second² and spin degrees/second. Source and seed are read-only; the node's position, rotation, scale, visibility, opacity and clipping still affect every batch.
 
-Use a burst with varying lifetimes and shrinking widths for a short spray:
+`pause(falling)` freezes only that batch's births and motion, `resume(falling)` continues it, and `stop(falling)` clears that batch and returns Stopped from await. `finish(falling)` clears a finite batch and returns Completed; it rejects continuous emission. Calling emit again leaves previous batches running. The node seed, successful emission order and elapsed time reproduce the same particles regardless of frame timing; successive emissions use different samples. Retiring the node cancels all its batches; retiring an owner or scope cancels its batches. Hiding does not pause. Cancelling a waiter leaves emission running. Terminal results can be awaited again. Save/restore retains each batch's configuration, time, pause and owner, plus the next emission sequence. No script runs for each particle.
+
+This overlapping spray emits twice on the same node. Common styles can be ordinary functions around emit:
 
 ```aside
-let spray = particles("assets/petal.png", x: 640, y: 360,
-    rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
-    velocity_y: -160, spread_x: 180, spread_y: 100,
-    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+let spray = particles("assets/petal.png", x: 640, y: 360, seed: 42);
 stage.replace(spray);
-await emit(spray);
+fn burst() {
+    emit(spray, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+        velocity_y: -160, spread_x: 180, spread_y: 100,
+        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
+}
+let first = burst();
+await run(delay(0.2));
+let second = burst();
+await first;
+await second;
 spray.remove();
 ```
 

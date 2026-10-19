@@ -283,25 +283,25 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             abi_version: if name == "cursor" {
                 1
             } else if name == "video" {
-                4
+                5
             } else if name == "image" {
-                15
+                16
             } else if name == "slider" {
-                14
-            } else if name == "particles" {
-                8
-            } else if name == "camera" {
-                7
-            } else if matches!(name, "checkbox" | "radio") {
-                9
-            } else if name == "input" {
                 15
-            } else if name == "scroll" {
-                11
-            } else if name == "text_input" {
+            } else if name == "particles" {
                 10
+            } else if name == "camera" {
+                8
+            } else if matches!(name, "checkbox" | "radio") {
+                10
+            } else if name == "input" {
+                16
+            } else if name == "scroll" {
+                12
+            } else if name == "text_input" {
+                11
             } else {
-                13
+                14
             },
             parameters,
             result: BuiltinType::Any,
@@ -974,21 +974,14 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::emit".into(),
-        abi_version: 1,
-        parameters: ["node", "duration", "owner"]
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| NativeParameter {
-                name: name.into(),
-                ty: BuiltinType::Any,
-                default: (i != 0).then_some(bc::Const::Null),
-            })
-            .collect(),
+        abi_version: 2,
+        parameters: super::particles::emission_parameters(),
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.extend(aside_std::contracts());
+    contracts.extend(super::masks::contracts());
     contracts
 }
 

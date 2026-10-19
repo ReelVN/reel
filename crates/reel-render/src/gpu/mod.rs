@@ -3,6 +3,7 @@ mod device;
 mod target_cache;
 mod targets;
 pub use device::{DeviceGeneration, DeviceLoss, Gpu, GpuError, GpuLimits, Quality, SurfaceFailure};
+mod mask;
 mod mesh;
 mod pipeline;
 mod renderer;

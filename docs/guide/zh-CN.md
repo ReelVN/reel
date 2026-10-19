@@ -414,8 +414,6 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 
 四个取景属性支持赋值、bind/derive 和 tween，沿用活动的取消和所有权规则。把 HUD 作为相机外的兄弟节点即可保持固定；相机也能嵌套组合。移动不会重新排版文字或重新加载图片；绘制与指针坐标共用已接受帧的变换和裁剪。完整的 [author_camera.aside](../../examples/author_camera.aside) 仅需提供 `fonts/body.ttf`，沿用第一节 dev/build/run 命令。这里是二维相机，尚未实现透视投影。
 
-
-
 画面的节点、绘制记录和嵌套层级随实际内容增长。输入路径在新画面发布前扩容，已有按下、拖动和释放继续对应正确的节点。实际内存预算与 GPU 纹理尺寸由运行宿主和设备管理。
 以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 game:: 模块和自定义对话视图。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。
 ```aside
@@ -761,6 +759,19 @@ reveal.mask = null;
 ```
 mask_progress 和 mask_softness 使用普通 derive/tween。完整示例：[author_image_mask.aside](../../examples/author_image_mask.aside)。进度为 1 时跳过遮罩合成；用完可将 mask 设为 null 释放资源引用。遮罩不改变逻辑命中，需要禁用交互时使用 enabled/visible。遮罩需要完整 PNG/JPEG，不接受分块 .reel-image。
 
+`mask.alpha` 采样图片 alpha，`mask.gray` 采样编码 sRGB 灰度。用 `mask.add`、`subtract`、`multiply`、`pow`、`clamp` 和 `smoothstep` 组合采样值。采样接受 `x`、`y`、`scale_x`、`scale_y` 及 `repeat`（`"none"`、`"x"`、`"y"`、`"both"`）；坐标按蒙版节点归一化，随节点变换。`mask.param("x")` 和 `mask.param("y")` 读取可动画的 `mask_x`、`mask_y`，`"progress"` 和 `"softness"` 读取已有对应属性。
+
+```aside
+let edge = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
+    stack(width: 640, height: 360, background: "#2d8aab");
+};
+stage.replace(reveal);
+await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+```
+
+`pow` 先把底数夹到零，指数是有限非负常数，`0^0` 为 1。`clamp` 接受有序常量边界。`smoothstep` 支持倒序边界，相等边界则在该值产生硬阶跃。最终结果夹到 0..1。组合表达式在 `mask_progress: 1` 时仍然生效；参数动画复用表达式结构和图片资源。[author_composed_mask.aside](../../examples/author_composed_mask.aside) 使用随附的两张 alpha 图片展示移动显现效果。
+
 节点 `invert` 将整个子树的合成画面反色，范围 0..1，默认 0；1 完全反色，中间值渐变。颜色按 sRGB 反转，透明度保持不变；对白和菜单放在同级节点即可独立于反色场景。可以直接赋值、derive 或 tween，参数随存档恢复。
 
 ```aside
@@ -873,7 +884,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 13；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 15；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1167,7 +1178,7 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 ## 数值控件与设置页
 
-`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。方向键、手柄方向和 Tab 移动焦点，确认键、鼠标或触摸选择；重复选择不触发 on_change。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
+`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。组内导航：Tab/Shift-Tab 整组只停一次，进入选中的可用项，否则首项；组在 Tab 顺序中的位置取其第一个可用节点；方向键和手柄方向按节点顺序直接选择前后项，跳过禁用/隐藏项并在边界循环。虚拟列表先滚动挂载下一逻辑行，接受画面后才选择，不在当前窗口提前循环。到组末尾后回到逻辑首项，反向亦然；跨虚拟列表时进入另一列表的逻辑端点，只构造需要的窗口。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。确认键、鼠标或触摸也可选择；重复选择不触发 on_change。脚本改值不会抢焦点。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
 
 ```aside
 let settings = model({sound: true, language: "zh-CN"});
@@ -1279,7 +1290,7 @@ fn main() {
 可运行示例：[author_audio_queue.aside](../../examples/author_audio_queue.aside) 用内置音频演示 intro → loop → outro 与连续语音片段；创作时把路径换成自己的素材。
 
 ```aside
-let music = audio.play("assets/intro.ogg", group: "music");
+let mut music = audio.play("assets/intro.ogg", group: "music");
 audio.queue(music, "assets/loop.ogg", looping: true);
 narrator("Continue to leave the loop after this pass.");
 audio.queue(music, "assets/outro.ogg");
@@ -1348,31 +1359,38 @@ configure 省略的项保持原值，返回活动，await 得到平台应用后�
 
 ### 图片粒子
 
-`particles` 用一个舞台节点组合落雪、花瓣等图片效果。source 必须是完整 PNG/JPEG 精灵，分块 `.reel-image` 只供 `image` 节点使用；`emit` 启动并返回活动，width/height 指定出生矩形。示例使用你提供的 `assets/petal.png` 和 `fonts/body.ttf`，完整入口见 [author_particles.aside](../../examples/author_particles.aside)。
+`particles(source, seed:0, ...节点属性)` 创建一个共享精灵与坐标空间的舞台节点。source 必须是完整 PNG/JPEG 精灵；预处理的 `.reel-image` 只供 image 使用。每次 `emit` 追加一个批次并返回独立活动。示例需要自行提供 `assets/petal.png` 和 `fonts/body.ttf`，完整示例见 [author_particles.aside](../../examples/author_particles.aside)。
 
 ```aside
-let petals = particles("assets/petal.png", width: 1280, height: 20,
-    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
-    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
-    spin_spread: 60);
+let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
 stage.replace(petals);
-let falling = emit(petals, duration: 10);
+let falling = emit(petals, burst: 0, rate: 80, duration: 10,
+    lifetime: 8, velocity_y: 90, velocity_x: 15, spread_x: 30,
+    size: 18, size_spread: 6, spin_spread: 60);
 await falling;
 ```
 
-缺省值：rate 每秒 60 粒，burst 0，lifetime 5 秒，lifetime_spread 0，seed 0，velocity_x/y 为 0/80，spread_x/y 为 20/20，acceleration_x/y 为 0/0，size 12，size_spread 4，size_end null，opacity_start/end 为 1/0，spin 0、spin_spread 每秒 30 度。spread 表示基值两侧均匀取样的半幅；size 为图片宽度，保留原宽高比，size_spread 不得超过 size，lifetime_spread 不得超过 lifetime。每粒寿命按种子独立取样；size_end:null 保留每粒随机出生宽度，非负终值使宽度在该粒寿命内线性变化。出生位置在 emit 启动时读取的 width/height 内均匀分布（未指定时为零）；burst 粒立即出生，随后每 1/rate 秒增加一粒。配置只读；共同位置、旋转、缩放、可见性、透明度及裁剪仍可更新和动画。
+`emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` 描述本批粒子。默认立即发射一粒。burst 为零时，定时流的第一粒在 1/rate 秒后出生。duration 为 null 时，正 rate 持续发射；有限 duration 包含截止时刻的出生。rate 为零只产生瞬发粒子，即使 duration 为 null。duration 为零仍发射 burst。最后一粒实际死亡后，活动完成。
 
-省略 duration 持续发射；有限时长包含截止时刻出生的粒子，等待最后一粒实际死亡后返回 Completed。rate:0 只产生瞬发粒子并自然结束；rate:0 且 burst:0 立即完成。duration:0 仍产生 burst。`pause(falling)` 冻结整个效果，`resume(falling)` 继续，`stop(falling)` 清空粒子并使 await 返回 Stopped。`finish(falling)` 清空有限效果并返回 Completed，持续效果不接受 finish。同一节点再次 emit 停止原活动，从同一种子重新开始；同一种子和累计时间与分帧无关。节点或活动 owner 退休取消发射，隐藏不暂停。缺省 owner 沿用其他活动规则；取消等待者不取消生产者。终态保留以供重复等待。粒子共用舞台图片资源和绘制路径，不逐粒子运行脚本。存档恢复保留运行效果、累计时间和暂停状态。
+spread 是围绕基值的均匀半幅；size 是保留图片宽高比的宽度。size_spread 不超过 size，lifetime_spread 不超过正数 lifetime，每粒分别确定性取样寿命。size_end 为 null 时保留随机出生宽度，非负终值则在该粒寿命内线性插值。每次 emit 捕获节点 width/height 作为均匀出生矩形尺寸，缺省为零。本批 x/y 指定节点本地坐标中的矩形原点，接受正负有限数并在发射时固定。修改节点 x/y 仍移动全部批次；用 emit 的 x/y 可在同一节点的不同位置追加效果。速度单位是逻辑像素/秒，加速度为像素/秒²，spin 为度/秒。source 和 seed 只读；节点的位置、旋转、缩放、可见性、透明度和裁剪仍同时作用于全部批次。
 
-短暂喷射可以组合瞬发、不同寿命和逐渐缩小的宽度：
+`pause(falling)` 只冻结本批的出生与运动，`resume(falling)` 继续，`stop(falling)` 清除本批并使 await 返回 Stopped。`finish(falling)` 清除有限批次并返回 Completed，连续发射不可 finish。再次 emit 保留旧批次。相同节点种子、成功发射顺序和累计时间产生相同粒子，不依赖分帧；连续发射使用不同随机样本。节点退休取消全部批次，owner 或作用域退休取消归属它的批次。隐藏不暂停；取消等待者不取消生产者；终态可重复 await。存读档保留各批的配置、时间、暂停与归属，以及下一发射序号，不执行逐粒脚本。
+
+以下喷射在同一节点上重叠两批。通用风格可用普通函数封装 emit：
 
 ```aside
-let spray = particles("assets/petal.png", x: 640, y: 360,
-    rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
-    velocity_y: -160, spread_x: 180, spread_y: 100,
-    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+let spray = particles("assets/petal.png", x: 640, y: 360, seed: 42);
 stage.replace(spray);
-await emit(spray);
+fn burst() {
+    emit(spray, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+        velocity_y: -160, spread_x: 180, spread_y: 100,
+        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
+}
+let first = burst();
+await run(delay(0.2));
+let second = burst();
+await first;
+await second;
 spray.remove();
 ```
 

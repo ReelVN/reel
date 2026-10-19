@@ -58,7 +58,7 @@ pub enum RenderEffect {
     Clips,
     AlphaMask,
     LuminanceMask,
-    ImageMaskProgress,
+    ImageMask,
     Filters,
     External,
 }
@@ -507,7 +507,7 @@ impl RenderBackend for RecordingBackend {
                 RenderEffect::Clips,
                 RenderEffect::AlphaMask,
                 RenderEffect::LuminanceMask,
-                RenderEffect::ImageMaskProgress,
+                RenderEffect::ImageMask,
                 RenderEffect::Filters,
                 RenderEffect::External,
             ],

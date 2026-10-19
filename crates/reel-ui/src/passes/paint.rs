@@ -13,11 +13,11 @@ use crate::app::{
     VisualLayerPlan,
 };
 use crate::core::{
-    DefaultProperties, MaskProgress, PaintCtx, PaintImageMask, PaintLayerMode, PropertiesRef,
-    PropertyArena, WidgetArenaNode, WidgetId,
+    DefaultProperties, PaintCtx, PaintImageMask, PaintLayerMode, PropertiesRef, PropertyArena,
+    WidgetArenaNode, WidgetId,
 };
-use crate::imaging::record::{AppliedMask, Clip, Command, Geometry, Group, Mask, Scene};
-use crate::imaging::{Composite, MaskMode, PaintSink, Painter};
+use crate::imaging::record::{Clip, Command, Geometry, Group, Scene};
+use crate::imaging::{Composite, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
 
@@ -61,7 +61,7 @@ impl LayerCollector {
                     command: start + offset,
                     owner,
                     effect_transform: transform,
-                    mask_progress: None,
+                    image_mask: None,
                     invert: 0.,
                 });
             }
@@ -84,45 +84,24 @@ impl LayerCollector {
         transform: Affine,
         owner: WidgetId,
     ) -> bool {
-        let mask = mask.filter(|mask| mask.progress < 1.);
+        let mask = mask.filter(|mask| !mask.is_identity());
         if mask.is_none() && opacity == 1. && invert == 0. && blend == Default::default() {
             return false;
         }
-        let mut group = Group {
+        let group = Group {
             composite: Composite {
                 alpha: opacity,
                 blend,
             },
             ..Default::default()
         };
-        let mask_progress = mask.map(|mask| {
-            let mut scene = Scene::new();
-            let image_transform = Affine::translate(mask.bounds.origin().to_vec2())
-                * Affine::scale_non_uniform(
-                    mask.bounds.width() / f64::from(mask.image.width),
-                    mask.bounds.height() / f64::from(mask.image.height),
-                );
-            Painter::new(&mut scene).draw_image(&mask.image, image_transform);
-            let id = self
-                .current_scene
-                .define_mask(Mask::new(MaskMode::Alpha, scene));
-            group.mask = Some(AppliedMask {
-                mask: id,
-                transform,
-            });
-            MaskProgress {
-                progress: mask.progress,
-                softness: mask.softness,
-                invert: mask.invert,
-            }
-        });
         let command = self.current_scene.commands().len();
         self.current_scene.push_group(group);
         self.groups.push(GroupMetadata {
             command,
             owner,
             effect_transform: transform,
-            mask_progress,
+            image_mask: mask.cloned(),
             invert,
         });
         self.record_owner(command, owner, [1.; 4], None, None);
@@ -339,7 +318,7 @@ fn paint_widget(
         || state
             .subtree_image_mask
             .as_ref()
-            .is_some_and(|mask| mask.progress == 0.);
+            .is_some_and(|mask| mask.hides_all());
     layer_collector.suppress_output = suppress_output;
 
     let paint_layer_mode = if suppress_output {

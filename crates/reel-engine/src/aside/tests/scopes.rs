@@ -424,10 +424,10 @@ fn effect_scope_cancels_story_wait_and_allows_following_dialogue() {
 #[test]
 fn effect_scope_cancels_particles_clock_and_presentation_requests() {
     let code = r#"fn opening() {
-        let snow=particles("flake.png",rate:10,lifetime:1); stage.replace(snow);
+        let snow=particles("flake.png"); stage.replace(snow);
         let handles={particles:null,clock:null,presented:null,geometry:null};
         scope(body: || {
-            handles.particles=emit(snow);
+            handles.particles=emit(snow,burst:0,rate:10,lifetime:1);
             handles.clock=clock(interval:1);
             handles.presented=stage.presented();
             handles.geometry=stage.geometry(snow);

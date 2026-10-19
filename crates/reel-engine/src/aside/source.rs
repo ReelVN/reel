@@ -168,7 +168,7 @@ fn environment() -> (
         version: "1".into(),
     });
     prelude.push(localization);
-    for name in ["saves", "persistent", "window"] {
+    for name in ["saves", "persistent", "window", "mask"] {
         let module = format!("reel::{name}");
         let mut namespace = ExternalSymbol::dynamic(name);
         namespace.namespace = Some(NamespaceRef {

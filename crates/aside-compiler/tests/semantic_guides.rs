@@ -1,13 +1,19 @@
 use aside_compiler::{semantic::*, *};
 const ZH: &str = include_str!("../../../docs/guide/zh-CN.md");
 const EN: &str = include_str!("../../../docs/guide/en.md");
-const BLOCKS: &[usize] = &[
-    2, 3, 4, 5, 6, 15, 17, 18, 19, 22, 26, 27, 28, 29, 30, 32, 33, 36, 40, 42,
-];
+#[path = "support/guide_scenes.rs"]
+mod scenes;
+use scenes::{SCENES, snippets};
 // These names are the documented reel::prelude symbols, not names harvested
 // from unresolved diagnostics. Their dynamic members remain runtime contracts.
 const PRELUDE: &[&str] = &[
     "audio",
+    "rich",
+    "camera",
+    "view",
+    "window",
+    "particles",
+    "emit",
     "pause",
     "resume",
     "stop",
@@ -59,86 +65,15 @@ const PRELUDE: &[&str] = &[
     "localization",
     "tr",
 ];
-// Actual surrounding author scope described in the prose for each fragment.
-const CONTEXT: &[(usize, &[&str])] = &[
-    (4, &["mode"]),
-    (19, &["panel"]),
-    (2, &["text"]),
-    (3, &["text"]),
-    (12, &["column"]),
-    (13, &["show_cg"]),
-    (14, &["column", "text", "bind", "derive", "view", "scroll"]),
-    (15, &["mio", "character", "say"]),
-    (16, &["story"]),
-    (17, &["view", "parallel", "tween", "run"]),
-    (18, &["view", "mio", "repeat", "sequence", "tween", "run"]),
-    (20, &["scope", "image", "game"]),
-    (22, &["view", "mio", "photo_panel", "button"]),
-    (
-        23,
-        &[
-            "switcher", "page", "text", "slider", "bind", "settings", "image", "column", "row",
-            "button",
-        ],
-    ),
-    (24, &["button", "image", "derive"]),
-    (25, &["button", "image", "text", "game", "opening"]),
-    (
-        26,
-        &[
-            "group",
-            "image",
-            "dialogue_view",
-            "game",
-            "stage",
-            "run",
-            "tween",
-        ],
-    ),
-    (27, &["view", "repeat", "sequence", "tween", "scope"]),
-    (28, &["view", "mask", "group", "image", "run", "tween"]),
-    (
-        30,
-        &[
-            "view",
-            "column",
-            "bind",
-            "button",
-            "text",
-            "choose",
-            "by_window",
-            "by_door",
-        ],
-    ),
-    (31, &["saves", "button"]),
-    (32, &["model", "slider", "toggle", "text", "bind"]),
-    (33, &["state", "persistent", "set"]),
-    (34, &["column", "button"]),
-    (35, &["parallel", "tween"]),
-];
-fn snippets(doc: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = None;
-    for line in doc.lines() {
-        if line == "```aside" {
-            current = Some(String::new());
-        } else if line == "```" {
-            if let Some(s) = current.take() {
-                result.push(s);
-            }
-        } else if let Some(s) = &mut current {
-            s.push_str(line);
-            s.push('\n');
-        }
-    }
-    result
-}
 #[test]
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
     let en = snippets(EN);
-    assert_eq!(zh.len(), 45);
-    assert_eq!(zh, en);
+    assert_eq!(zh.len(), SCENES.len());
+    assert_eq!(
+        zh.iter().map(|(_, code)| code).collect::<Vec<_>>(),
+        en.iter().map(|(_, code)| code).collect::<Vec<_>>()
+    );
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {
         canonical_path: "reel::prelude".into(),
@@ -160,9 +95,11 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
             exports: vec![ExternalSymbol::dynamic(name)],
         });
     }
-    for (i, (chinese, english)) in zh.iter().zip(&en).enumerate() {
+    let mut errors = Vec::new();
+    for (i, ((_, chinese), (_, english))) in zh.iter().zip(&en).enumerate() {
+        let (name, entry) = SCENES[i];
         for (edition, source) in [("zh-CN", chinese), ("en", english)] {
-            let block = BLOCKS.contains(&i);
+            let block = entry == EntryPoint::Block;
             let options = AnalysisOptions {
                 module: format!("guide::{edition}::{i}"),
                 version: "guide-design-1.1".into(),
@@ -176,20 +113,13 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
                     .iter()
                     .map(|&name| ExternalSymbol::dynamic(name))
                     .collect(),
-                enclosing: CONTEXT
+                enclosing: scenes::enclosing(name)
                     .iter()
-                    .find(|(scene, _)| *scene == i)
-                    .map(|(_, names)| {
-                        names
-                            .iter()
-                            .filter(|n| !PRELUDE.contains(n))
-                            .map(|&n| EnclosingBinding {
-                                symbol: ExternalSymbol::dynamic(n),
-                                mutable: false,
-                            })
-                            .collect()
+                    .map(|&binding| EnclosingBinding {
+                        symbol: ExternalSymbol::dynamic(binding),
+                        mutable: scenes::mutable(name, binding),
                     })
-                    .unwrap_or_default(),
+                    .collect(),
                 ..Default::default()
             };
             let parsed = parse_with_options(
@@ -210,12 +140,14 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
                 parsed.diagnostics()
             );
             let result = analyze(&parsed, &options, &mut resolver);
-            assert!(
-                result.is_ok(),
-                "scene {i} analysis: {:?}",
-                result.diagnostics
-            );
-            if i == 27 {
+            if !result.is_ok() {
+                errors.push(format!(
+                    "{edition} scene {i} {name}: {:?}",
+                    result.diagnostics
+                ));
+                continue;
+            }
+            if name == "scoped choreography in story" {
                 let module = result.module().unwrap();
                 assert!(
                     module
@@ -230,4 +162,5 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
             }
         }
     }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
 }

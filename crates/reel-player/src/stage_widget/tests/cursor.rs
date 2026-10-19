@@ -98,6 +98,7 @@ fn cursor_leave_touch_override_visibility_and_retirement_follow_current_ownershi
     assert_eq!(hidden.plan().layers.last().unwrap().widget_id,f.layouts()[&empty].0);
     drop(hidden);
     f.edit(empty,|props|props.visible=false);
+    let configured=f.record();f.accept(&configured);drop(configured);
     let fallback=f.record();f.accept(&fallback);
     assert_eq!(fallback.plan().layers.last().unwrap().widget_id,f.layouts()[&cursor].0);
     drop(fallback);

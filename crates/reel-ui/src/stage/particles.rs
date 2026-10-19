@@ -1,14 +1,16 @@
 // Copyright 2026 Reel contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Analytic sprite batches. A published frame holds constant storage; expired
-//! births are skipped directly, including after a large logical-clock jump.
+//! Analytic emission batches sharing one sprite and coordinate space. Clock
+//! updates reuse immutable batch storage; old views retain their budget lease.
+use reel_core::{
+    budget::{BudgetPool, BudgetTicket},
+    result::{RejectCode, RejectReason},
+};
 use std::{ops::RangeInclusive, sync::Arc};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleConfig {
-    pub source: String,
-    pub origin: Option<String>,
     pub rate: f64,
     pub burst: u64,
     pub lifetime: f64,
@@ -27,15 +29,110 @@ pub struct ParticleConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleFrame {
+    pub origin: [f64; 2],
     pub elapsed: f64,
     pub duration: Option<f64>,
     pub extent: [f64; 2],
 }
 
+/// One immutable emission; elapsed time is based on the shared node clock.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ParticleEmission {
+    pub sequence: u64,
+    pub config: ParticleConfig,
+    pub frame: ParticleFrame,
+    pub started: f64,
+    pub paused: bool,
+}
+impl ParticleEmission {
+    pub fn frame_at(&self, time: f64) -> ParticleFrame {
+        ParticleFrame {
+            elapsed: self.frame.elapsed + if self.paused { 0. } else { time - self.started },
+            ..self.frame
+        }
+    }
+    pub fn samples(&self, time: f64) -> impl Iterator<Item = Sprite> + '_ {
+        let frame = self.frame_at(time);
+        self.config.live_range(frame).filter_map(move |index| {
+            let birth = self.config.birth_time(index);
+            let lifetime = self.config.lifetime_at(index);
+            (frame.elapsed < birth + lifetime).then(|| {
+                self.config
+                    .sample_at(frame, index, (frame.elapsed - birth).max(0.), lifetime)
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BatchStorage {
+    // Data drops before the reservation, including when the last view is on
+    // another thread or outlives its originating VM.
+    entries: Vec<ParticleEmission>,
+    _ticket: BudgetTicket,
+}
+#[derive(Clone, Debug, Default)]
+pub struct ParticleBatches(Option<Arc<BatchStorage>>);
+impl PartialEq for ParticleBatches {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+impl std::ops::Deref for ParticleBatches {
+    type Target = [ParticleEmission];
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().map_or(&[], |storage| &storage.entries)
+    }
+}
+impl ParticleBatches {
+    pub fn try_new(
+        pool: &BudgetPool,
+        count: usize,
+        entries: impl IntoIterator<Item = ParticleEmission>,
+    ) -> Result<Self, RejectReason> {
+        if count == 0 {
+            return Ok(Self::default());
+        }
+        let overhead = size_of::<BatchStorage>() + 2 * size_of::<usize>();
+        let bytes = count
+            .checked_mul(size_of::<ParticleEmission>())
+            .and_then(|n| n.checked_add(overhead))
+            .ok_or_else(|| {
+                RejectReason::new(RejectCode::OutOfMemory, "particle projection size")
+            })?;
+        let mut ticket = pool.reserve(bytes as u64)?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(count).map_err(|_| {
+            RejectReason::new(RejectCode::OutOfMemory, "particle projection allocation")
+        })?;
+        ticket.resize((data.capacity() * size_of::<ParticleEmission>() + overhead) as u64)?;
+        data.extend(entries);
+        assert_eq!(data.len(), count, "trusted particle projection length");
+        Ok(Self(Some(Arc::new(BatchStorage {
+            entries: data,
+            _ticket: ticket,
+        }))))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
-pub struct ParticleBatch {
-    pub config: Arc<ParticleConfig>,
-    pub frame: Option<ParticleFrame>,
+pub struct ParticleNode {
+    pub source: String,
+    pub origin: Option<String>,
+    pub seed: u64,
+    pub batches: ParticleBatches,
+    pub time: f64,
+}
+impl ParticleNode {
+    pub fn samples(&self) -> impl Iterator<Item = Sprite> + '_ {
+        self.batches
+            .iter()
+            .flat_map(|batch| batch.samples(self.time))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,23 +143,6 @@ pub struct Sprite {
     pub rotation: f64,
 }
 
-impl ParticleBatch {
-    pub fn samples(&self) -> impl Iterator<Item = Sprite> + '_ {
-        let frame = self.frame;
-        let range = frame
-            .map(|f| self.config.live_range(f))
-            .unwrap_or(RangeInclusive::new(1, 0));
-        range.filter_map(move |index| {
-            let frame = frame.unwrap();
-            let birth = self.config.birth_time(index);
-            let lifetime = self.config.lifetime_at(index);
-            (frame.elapsed < birth + lifetime).then(|| {
-                self.config
-                    .sample_at(frame, index, (frame.elapsed - birth).max(0.), lifetime)
-            })
-        })
-    }
-}
 impl ParticleConfig {
     pub fn live_range(&self, frame: ParticleFrame) -> RangeInclusive<u64> {
         let last_time = frame.duration.unwrap_or(frame.elapsed).min(frame.elapsed);
@@ -134,7 +214,8 @@ impl ParticleConfig {
         let size = self.size + (2. * random(4) - 1.) * self.size_spread;
         Sprite {
             position: std::array::from_fn(|axis| {
-                random(axis as u64) * frame.extent[axis]
+                frame.origin[axis]
+                    + random(axis as u64) * frame.extent[axis]
                     + (self.velocity[axis]
                         + (2. * random(axis as u64 + 2) - 1.) * self.spread[axis])
                         * age
@@ -153,8 +234,6 @@ mod tests {
     #[test]
     fn particle_birth_boundaries_seed_and_analytic_motion() {
         let config = ParticleConfig {
-            source: "sprite.png".into(),
-            origin: None,
             rate: 4.,
             burst: 0,
             lifetime: 2.,
@@ -171,6 +250,7 @@ mod tests {
             spin_spread: 0.,
         };
         let mut frame = ParticleFrame {
+            origin: [0., 0.],
             elapsed: 0.,
             duration: Some(1.),
             extent: [0., 0.],
@@ -190,6 +270,10 @@ mod tests {
                 rotation: 30.
             }
         );
+        frame.origin = [-2.5, 12.];
+        let translated = config.sample(frame, 1);
+        assert_eq!(translated.position, [8.5, 34.]);
+        frame.origin = [0., 0.];
         frame.elapsed = 2.25;
         assert_eq!(config.live_range(frame), 2..=4);
         frame.elapsed = 3.;
@@ -198,7 +282,7 @@ mod tests {
         frame.elapsed = 1_000_000.;
         assert_eq!(config.live_range(frame).count(), 8);
         frame.extent = [100., 100.];
-        let mut other = config.clone();
+        let mut other = config;
         other.seed = 43;
         assert_ne!(
             config.sample(frame, 4_000_000),

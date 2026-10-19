@@ -78,6 +78,8 @@ pub struct GeometryRecord {
     pub virtual_revision: Option<u64>,
     /// Cursor container identity accepted with this frame.
     pub is_cursor: bool,
+    /// Shared selection identity accepted with this frame.
+    pub selection_group: Option<crate::core::SelectionGroupId>,
 }
 impl GeometryRecord {
     fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
@@ -101,6 +103,7 @@ impl GeometryRecord {
             input_revision: s.input_revision,
             virtual_revision: None,
             is_cursor: false,
+            selection_group: None,
         }
     }
 }
@@ -492,6 +495,8 @@ impl RenderRoot {
             view.records[index].virtual_revision =
                 node.item.widget.virtual_children().map(|v| v.revision);
             view.records[index].is_cursor = node.item.widget.is_cursor();
+            view.records[index].selection_group =
+                node.item.widget.selection_group().map(|group| group.id);
             view.ids.push((node.item.state.id, index));
             if node.item.state.is_modal && !node.item.state.is_stashed && !node.item.state.in_cursor {
                 view.modal_scope = Some(node.item.state.id);

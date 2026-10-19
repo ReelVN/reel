@@ -1,5 +1,4 @@
 use super::{Gpu, GpuError, Quality, mesh::Vertex, targets::Target};
-use reel_ui::core::MaskProgress;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -23,6 +22,13 @@ impl PipelineSlots {
             .filter(|slot| slot.lock().unwrap().is_some())
             .count()
     }
+    pub(super) fn prune_masks(&self) {
+        for slot in &self.slots {
+            if let Some(pipelines) = slot.lock().unwrap().as_ref() {
+                pipelines.masks.prune();
+            }
+        }
+    }
     pub(super) fn get(&self, gpu: &Gpu, quality: Quality) -> Result<Arc<Pipelines>, GpuError> {
         gpu.check()?;
         let index = match (quality.format, quality.samples) {
@@ -42,40 +48,14 @@ impl PipelineSlots {
             .lock()
             .expect("pipeline construction poisoned");
         gpu.check()?;
-        let scopes = [
-            wgpu::ErrorFilter::Validation,
-            wgpu::ErrorFilter::Internal,
-            wgpu::ErrorFilter::OutOfMemory,
-        ]
-        .map(|filter| gpu.device.push_error_scope(filter));
-        let pipelines = Arc::new(Pipelines::new(
-            &gpu.device,
-            quality,
-            #[cfg(test)]
-            &self.creations,
-        ));
-        // Pop every scope before returning, including on captured failure. The
-        // native wgpu-core backend returns ready(scope.error); this does not wait
-        // for queue completion. Never infer success from an uncaptured handler,
-        // nor block this synchronous API on a WebGPU Promise.
-        let mut pending = false;
-        for scope in scopes.into_iter().rev() {
-            let mut result = std::pin::pin!(scope.pop());
-            match result
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-            {
-                Poll::Ready(Some(error)) => gpu.capture_driver_error(error),
-                Poll::Ready(None) => (),
-                Poll::Pending => pending = true,
-            }
-        }
-        gpu.check()?;
-        if pending {
-            return Err(GpuError::Device(
-                "pipeline construction requires asynchronous validation on this backend".into(),
-            ));
-        }
+        let pipelines = validated(gpu, || {
+            Arc::new(Pipelines::new(
+                &gpu.device,
+                quality,
+                #[cfg(test)]
+                &self.creations,
+            ))
+        })?;
         *slot = Some(pipelines.clone());
         Ok(pipelines)
     }
@@ -111,7 +91,6 @@ pub(super) enum CompositeOperation {
     SourceOver,
     AlphaMask,
     LuminanceMask,
-    ImageMask(MaskProgress),
     Crossfade(f32),
 }
 
@@ -137,8 +116,9 @@ pub struct Pipelines {
     pub composite_layout: wgpu::BindGroupLayout,
     pub samplers: [wgpu::Sampler; 4],
     pub plain_gradient: wgpu::Buffer,
+    pub masks: super::mask::Cache,
 }
-fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(super) fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -150,7 +130,7 @@ fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
         count: None,
     }
 }
-fn sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(super) fn sampler(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -306,6 +286,7 @@ impl Pipelines {
             composite_layout,
             samplers,
             plain_gradient,
+            masks: super::mask::Cache::default(),
         }
     }
     pub(super) fn composite(
@@ -321,17 +302,7 @@ impl Pipelines {
             mask,
             backdrop,
         } = inputs;
-        let (mode, progress, softness): (u32, f32, f32) = match params.operation {
-            CompositeOperation::SourceOver => (0, 0., 0.),
-            CompositeOperation::AlphaMask => (1, 0., 0.),
-            CompositeOperation::LuminanceMask => (2, 0., 0.),
-            CompositeOperation::Crossfade(progress) => (3, progress, 0.),
-            CompositeOperation::ImageMask(mask) => (
-                if mask.invert { 5 } else { 4 },
-                mask.progress,
-                mask.softness,
-            ),
-        };
+        let (mode, progress, softness) = operation_words(params.operation);
         let words = [
             params.opacity.to_bits(),
             mode,
@@ -411,7 +382,7 @@ pub fn pipeline(
         counts,
     )
 }
-fn pipeline_entry(
+pub(super) fn pipeline_entry(
     device: &wgpu::Device,
     quality: Quality,
     layout: &wgpu::BindGroupLayout,
@@ -489,4 +460,55 @@ fn pipeline_entry(
         multiview_mask: None,
         cache: None,
     })
+}
+
+pub(super) fn operation_words(operation: CompositeOperation) -> (u32, f32, f32) {
+    match operation {
+        CompositeOperation::SourceOver => (0, 0., 0.),
+        CompositeOperation::AlphaMask => (1, 0., 0.),
+        CompositeOperation::LuminanceMask => (2, 0., 0.),
+        CompositeOperation::Crossfade(progress) => (3, progress, 0.),
+    }
+}
+
+pub(super) fn uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+pub(super) fn validated<T>(gpu: &Gpu, create: impl FnOnce() -> T) -> Result<T, GpuError> {
+    gpu.check()?;
+    let scopes = [
+        wgpu::ErrorFilter::Validation,
+        wgpu::ErrorFilter::Internal,
+        wgpu::ErrorFilter::OutOfMemory,
+    ]
+    .map(|filter| gpu.device.push_error_scope(filter));
+    let value = create();
+    let mut pending = false;
+    for scope in scopes.into_iter().rev() {
+        let mut result = std::pin::pin!(scope.pop());
+        match result
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(Some(error)) => gpu.capture_driver_error(error),
+            Poll::Ready(None) => (),
+            Poll::Pending => pending = true,
+        }
+    }
+    gpu.check()?;
+    if pending {
+        return Err(GpuError::Device(
+            "pipeline construction requires asynchronous validation on this backend".into(),
+        ));
+    }
+    Ok(value)
 }

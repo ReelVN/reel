@@ -4,8 +4,10 @@
 //! Author-owned scene composition, shared by the script host and presentation.
 mod camera;
 mod image;
+mod mask;
 pub use camera::CameraView;
 pub use image::ImageSource;
+pub use mask::{MaskChannel, MaskOp, MaskProgram};
 pub mod particles;
 
 use crate::input::{ActionPhase, Binding};
@@ -213,7 +215,7 @@ pub struct NodeClick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
-    Particles(particles::ParticleBatch),
+    Particles(particles::ParticleNode),
     Text(reel_core::text::Text),
     TextInput {
         value: Arc<str>,
@@ -236,6 +238,7 @@ pub enum NodeKind {
     Radio {
         label: Option<String>,
         selected: bool,
+        group: Option<crate::core::SelectionGroupId>,
         /// Changes only when the option's identity changes, not for hover/value updates.
         revision: u64,
     },
@@ -338,11 +341,13 @@ pub struct NodeProps {
     pub anchor_x: f64,
     pub anchor_y: f64,
     /// Whole-image threshold mask in the node's local layout rectangle.
-    pub mask: Option<Arc<str>>,
+    pub mask: Option<Arc<MaskProgram>>,
     pub mask_origin: Option<Arc<str>>,
     pub mask_progress: f64,
     pub mask_softness: f64,
     pub mask_invert: bool,
+    pub mask_x: f64,
+    pub mask_y: f64,
 }
 impl Default for NodeProps {
     fn default() -> Self {
@@ -387,6 +392,8 @@ impl Default for NodeProps {
             mask_progress: 1.,
             mask_softness: 0.06,
             mask_invert: false,
+            mask_x: 0.,
+            mask_y: 0.,
         }
     }
 }
@@ -511,18 +518,29 @@ impl Stage {
             parent = node.parent;
         }
     }
-    /// Publish a constant-size particle clock projection without copying nodes.
-    pub fn set_particle_frame(
-        &mut self,
-        id: NodeId,
-        frame: Option<particles::ParticleFrame>,
-    ) -> Result<(), StageError> {
+    /// Clock changes do not clone the immutable emission collection.
+    pub fn set_particle_time(&mut self, id: NodeId, time: f64) -> Result<(), StageError> {
         let node = self.nodes.get_mut(&id).ok_or(StageError::RetiredNode)?;
-        let NodeKind::Particles(batch) = &mut node.kind else {
+        let NodeKind::Particles(particles) = &mut node.kind else {
             return Err(StageError::NotContainer);
         };
-        if batch.frame != frame {
-            batch.frame = frame;
+        if particles.time != time {
+            particles.time = time;
+            self.changed(id, false);
+        }
+        Ok(())
+    }
+    pub fn set_particle_batches(
+        &mut self,
+        id: NodeId,
+        batches: particles::ParticleBatches,
+    ) -> Result<(), StageError> {
+        let node = self.nodes.get_mut(&id).ok_or(StageError::RetiredNode)?;
+        let NodeKind::Particles(particles) = &mut node.kind else {
+            return Err(StageError::NotContainer);
+        };
+        if particles.batches != batches {
+            particles.batches = batches;
             self.changed(id, false);
         }
         Ok(())

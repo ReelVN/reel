@@ -550,6 +550,40 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
         })
         .or(root.input_scope(view).filter(|&id| root.has_widget(id)));
 
+    // Like editors and sliders, a focused selection control gets first refusal
+    // before an ancestor's raw keyboard callback or action binding.
+    if let TextEvent::Keyboard(key) = event
+        && target
+            .and_then(|id| super::selection::member(root, id))
+            .is_some()
+    {
+        use crate::input::{ActionPhase, NavigationAction as N, NavigationEvent};
+        let direction = match key.key {
+            Key::Named(NamedKey::ArrowLeft) => Some(N::Left),
+            Key::Named(NamedKey::ArrowRight) => Some(N::Right),
+            Key::Named(NamedKey::ArrowUp) => Some(N::Up),
+            Key::Named(NamedKey::ArrowDown) => Some(N::Down),
+            _ => None,
+        };
+        if let Some(action) = direction {
+            super::navigation::run(
+                root,
+                NavigationEvent {
+                    action,
+                    value: 1.,
+                    phase: if key.state.is_up() {
+                        ActionPhase::Released
+                    } else if key.repeat {
+                        ActionPhase::Repeated
+                    } else {
+                        ActionPhase::Pressed
+                    },
+                },
+            );
+            return Handled::Yes;
+        }
+    }
+
     let skip_if_disabled = !cleanup;
     let mut handled = run_event_pass(
         root,
@@ -599,8 +633,18 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
             && handled == Handled::No
         {
             let forward = !key.modifiers.shift();
+            let leaving_group = root
+                .global_state
+                .focused_widget
+                .and_then(|id| super::selection::member(root, id))
+                .is_some();
             let next_focused_widget = find_next_focusable(root, forward);
-            if !super::navigation::defer_virtual(root, next_focused_widget, forward, None) {
+            if leaving_group
+                || !super::navigation::defer_virtual(root, next_focused_widget, forward, None)
+            {
+                if leaving_group {
+                    super::navigation::cancel_virtual(root);
+                }
                 root.global_state.next_focused_widget = next_focused_widget;
             }
             handled = Handled::Yes;
