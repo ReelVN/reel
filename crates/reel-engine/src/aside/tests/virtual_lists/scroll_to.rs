@@ -712,29 +712,46 @@ fn virtual_list_scroll_to_snapshot_during_dirty_source_and_reindexing_rejects_ol
 #[test]
 #[ignore = "release measurement of model-field source dependencies"]
 fn virtual_list_scroll_to_model_key_dependency_cost() {
-    for n in [1000, 10_000, 100_000] {
+    for n in std::env::var("REEL_COST_ROWS")
+        .unwrap_or_else(|_| "1000,10000,100000".into())
+        .split(',')
+        .map(|s| s.parse::<usize>().unwrap())
+    {
         let code = format!(
             r#"
             let state=model({{items:[],status:"waiting"}});let mut keys=0;
             fn opening(){{
                 let mut i=0;while i<{n}{{state.items.append({{id:i}});i+=1;}}
+                stage.replace(button("build",on_click:||{{
                 let items=list(||state.items,key:|item|{{keys+=1;item.id}},virtual:true,
                     build:|row|column(height:20+(row.value.id%3)*20){{text(f"row {{row.value.id}}")}});
                 stage.replace(column{{scroll(width:320,height:120){{items}};text(value:derive(||state.status));
                     button("jump",on_click:||{{await items.scroll_to({n}-20,align:"center");state.status="done";}});
                     button("check",on_click:||{{if keys!={n}{{throw "source was reindexed";}}}});
-                }});narrator("ready");
+                }});
+                }}));narrator("ready");
             }}"#
         );
         let (mut session, mut vm) = models::prepared(&code, true);
         let source_start = std::time::Instant::now();
-        eprintln!("model-key rows={n} phase=source-generation-and-index");
+        eprintln!("model-key rows={n} phase=source-generation");
         drive(&mut vm, &mut session);
         eprintln!(
-            "model-key rows={n} source-generation-and-index={:?}",
+            "model-key rows={n} source-generation={:?}",
             source_start.elapsed()
         );
+        let index_start = std::time::Instant::now();
+        eprintln!("model-key rows={n} phase=index");
+        click(&mut vm, &mut session, "build");
+        eprintln!("model-key rows={n} index={:?}", index_start.elapsed());
+        let window_start = std::time::Instant::now();
         layout(&mut vm, &mut session);
+        eprintln!(
+            "model-key rows={n} first-window={:?} charge={} peak_charge={}",
+            window_start.elapsed(),
+            vm.vm.heap().stats().charged_bytes,
+            vm.vm.heap().stats().peak_charged_bytes
+        );
         let (list, _) = ids(&vm);
         let host = vm.stage.value(vm.vm.heap(), list).unwrap();
         let observer = vm.vm.heap().host_payload(host, 3).unwrap();
@@ -751,9 +768,16 @@ fn virtual_list_scroll_to_model_key_dependency_cost() {
         assert!(status(&vm, "done"));
         click(&mut vm, &mut session, "check");
         assert!(vm.stage().nodes().count() < 80);
+        let peak = vm.vm.heap().stats().peak_charged_bytes;
+        let before_gc = vm.vm.heap().stats().charged_bytes;
+        let gc_start = std::time::Instant::now();
+        collect(&mut vm);
+        let gc = gc_start.elapsed();
+        assert!(status(&vm, "done"));
         eprintln!(
-            "model-key rows={n} freshness={query:?} far-position={elapsed:?} nodes={}",
-            vm.stage().nodes().count()
+            "model-key rows={n} freshness={query:?} far-position={elapsed:?} nodes={} charge_before_gc={before_gc} charge_after_gc={} peak_charge={peak} gc={gc:?}",
+            vm.stage().nodes().count(),
+            vm.vm.heap().stats().charged_bytes
         );
     }
 }

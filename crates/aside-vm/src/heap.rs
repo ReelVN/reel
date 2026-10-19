@@ -48,6 +48,8 @@ pub enum ObjectKind {
     FaultStack,
     FaultCause,
     CoreError,
+    /// Private reactive dependency sequence; not a script-mutable array.
+    Dependencies,
 }
 impl ObjectKind {
     fn values(self) -> bool {
@@ -937,6 +939,7 @@ impl Heap {
             || matches!(
                 obj.kind,
                 ObjectKind::Tuple
+                    | ObjectKind::Dependencies
                     | ObjectKind::Closure
                     | ObjectKind::BoundBuiltin
                     | ObjectKind::BoundNative

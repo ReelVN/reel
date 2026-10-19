@@ -61,7 +61,14 @@ impl Heap {
     }
 
     pub fn begin_derived(&mut self, output: Value) -> Result<(), HeapError> {
-        let candidate = self.alloc_array(&[])?;
+        self.ensure_object_slot()?;
+        self.ensure_bytes(crate::dependencies::BASE_BYTES)?;
+        let candidate = self.allocate(
+            ObjectKind::Dependencies,
+            Payload::Dependencies(Box::default()),
+            None,
+            crate::dependencies::BASE_BYTES,
+        );
         self.begin_capture(output, candidate)
     }
 
@@ -160,14 +167,25 @@ impl Heap {
             return Ok(());
         }
         let selector = field.map_or(-1, i64::from);
-        for index in (0..self.sequence_len(dependencies)?).step_by(2) {
-            if self.sequence_get(dependencies, index)?.same_bits(source)
-                && self.sequence_get(dependencies, index + 1)?.as_int() == Some(selector)
-            {
-                return Ok(());
-            }
+        let key = self.key(dependencies)?;
+        let Payload::Dependencies(capture) = &self.object(key)?.payload else {
+            unreachable!()
+        };
+        if capture.contains(source, field) {
+            return Ok(());
         }
-        self.packed_pair_push(dependencies, source, Value::int(selector))
+        let extra = capture.pair_bytes()?;
+        let chunks = Values::growth_bytes(capture.values.len.into(), 2) / VALUE_CHUNK_BYTES;
+        self.ensure_bytes(extra)?;
+        self.barrier(source)?;
+        self.charge(extra, chunks);
+        let object = self.objects.get_mut(key).unwrap();
+        let Payload::Dependencies(capture) = &mut object.payload else {
+            unreachable!()
+        };
+        capture.push_pair(source, Value::int(selector));
+        object.charged += extra;
+        Ok(())
     }
 
     pub fn observe_write(&self, value: Value, field: Option<u32>) -> Result<(), HeapError> {
@@ -181,14 +199,15 @@ impl Heap {
         let object = self.object(self.key(value)?)?;
         let source = object
             .property_owner
-            .map_or(value, |key| Value::object(self.id, key.data().as_ffi()));
-        for i in (0..self.sequence_len(dependencies)?).step_by(2) {
-            let selector = self.sequence_get(dependencies, i + 1)?.as_int().unwrap();
-            if self.sequence_get(dependencies, i)?.same_bits(source)
-                && (selector == -1 || field.is_none_or(|f| selector == i64::from(f)))
-            {
-                return Err(HeapError::BindingCycle);
-            }
+            .map_or(value, |owner| Value::object(self.id, owner.data().as_ffi()));
+        if object.property_owner.is_none() && !object.model && object.observable_fields == 0 {
+            return Ok(());
+        }
+        let Payload::Dependencies(capture) = &self.object(self.key(dependencies)?)?.payload else {
+            unreachable!()
+        };
+        if capture.overlaps(source, field) {
+            return Err(HeapError::BindingCycle);
         }
         Ok(())
     }
@@ -236,31 +255,43 @@ impl Heap {
         Ok(())
     }
 
+    fn derived_cycle_input(
+        &self,
+        output: PropertyId,
+        mut source: PropertyId,
+    ) -> Result<Option<PropertyId>, HeapError> {
+        if source.host.same_bits(output.host)
+            && (source.field == output.field || source.field == u32::MAX)
+        {
+            return Err(HeapError::BindingCycle);
+        }
+        if source.field != u32::MAX {
+            source = self.property_source(source)?.0;
+        }
+        if source.host.same_bits(output.host)
+            && (source.field == output.field || source.field == u32::MAX)
+        {
+            return Err(HeapError::BindingCycle);
+        }
+        Ok(self
+            .object(self.key(source.host)?)?
+            .derived
+            .then_some(source))
+    }
+
     pub(super) fn check_derived_cycle(
         &mut self,
         output: PropertyId,
         source: PropertyId,
     ) -> Result<(), HeapError> {
         self.property_work.clear();
-        self.work_push(source)?;
+        if let Some(source) = self.derived_cycle_input(output, source)? {
+            self.work_push(source)?;
+        }
         let mut cursor = 0;
         while cursor < self.property_work.len() {
-            let mut current = self.property_work[cursor];
+            let current = self.property_work[cursor];
             cursor += 1;
-            if current.host.same_bits(output.host)
-                && (current.field == output.field || current.field == u32::MAX)
-            {
-                return Err(HeapError::BindingCycle);
-            }
-            if current.field != u32::MAX {
-                current = self.property_source(current)?.0;
-            }
-            if current.host.same_bits(output.host) && current.field == output.field {
-                return Err(HeapError::BindingCycle);
-            }
-            if !self.object(self.key(current.host)?)?.derived {
-                continue;
-            }
             let dependencies = self.host_payload(current.host, DerivedSlot::Dependencies as u32)?;
             if dependencies.same_bits(Value::NULL) {
                 continue;
@@ -269,6 +300,11 @@ impl Heap {
                 let next = PropertyId {
                     host: self.sequence_get(dependencies, i)?,
                     field: self.sequence_get(dependencies, i + 1)?.as_int().unwrap() as u32,
+                };
+                // Ordinary model endpoints can close a binding cycle, but have
+                // no derived inputs. Do not add them to the visited work list.
+                let Some(next) = self.derived_cycle_input(output, next)? else {
+                    continue;
                 };
                 if !self
                     .property_work
@@ -338,19 +374,21 @@ impl Heap {
     ) -> Result<(), HeapError> {
         let key = self.key(value)?;
         let source = self.object(key)?.property_owner.unwrap_or(key);
+        let object = self.object(source)?;
+        if !object.model && object.observable_fields == 0 {
+            return Ok(());
+        }
         if let Some(output) = self.reactive_capture
             && let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?
             && !dependencies.same_bits(Value::NULL)
         {
             let source_value = Value::object(self.id, source.data().as_ffi());
-            for i in (0..self.sequence_len(dependencies)?).step_by(2) {
-                let selector = self.sequence_get(dependencies, i + 1)?.as_int().unwrap();
-                if self.sequence_get(dependencies, i)?.same_bits(source_value)
-                    && (selector == -1 || field.is_none_or(|f| selector == i64::from(f)))
-                {
-                    self.enqueue_derived(self.key(output)?);
-                    break;
-                }
+            let Payload::Dependencies(capture) = &self.object(self.key(dependencies)?)?.payload
+            else {
+                unreachable!()
+            };
+            if capture.overlaps(source_value, field) {
+                self.enqueue_derived(self.key(output)?);
             }
         }
         let subscribers = self.object(source)?.reactive_subscribers;
@@ -631,6 +669,399 @@ mod tests {
         assert!(!heap.derived_is_current(output, None).unwrap());
         heap.end_derived(output).unwrap();
         assert!(heap.derived_is_current(output, None).unwrap());
+    }
+
+    fn model_fields(heap: &mut Heap, n: u32) -> Value {
+        let source = heap.alloc_table().unwrap();
+        for field in 0..n {
+            heap.table_store(source, field, Value::int(field.into()), Value::int(0))
+                .unwrap();
+        }
+        heap.observe_model_object(source).unwrap();
+        source
+    }
+    fn capture_len(heap: &Heap, output: Value) -> u32 {
+        let candidate = heap
+            .host_payload(output, DerivedSlot::Candidate as u32)
+            .unwrap();
+        heap.sequence_len(candidate).unwrap()
+    }
+
+    #[test]
+    fn dependency_index_preserves_nested_capture_and_field_conflicts() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let source = model_fields(&mut heap, 3);
+        let outer = heap.alloc_derived(Value::NULL).unwrap();
+        let inner = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(outer).unwrap();
+        heap.observe_read(source, Some(0)).unwrap();
+        heap.begin_derived(inner).unwrap();
+        heap.observe_read(source, Some(1)).unwrap();
+        heap.observe_read(source, Some(1)).unwrap();
+        assert_eq!(capture_len(&heap, inner), 2);
+        assert!(heap.observe_write(source, Some(0)).is_ok());
+        assert_eq!(
+            heap.observe_write(source, Some(1)),
+            Err(HeapError::BindingCycle)
+        );
+        heap.commit_derived(inner, Value::int(1)).unwrap();
+        heap.observe_read(source, Some(0)).unwrap();
+        assert_eq!(capture_len(&heap, outer), 2);
+        heap.observe_read(source, Some(1)).unwrap();
+        assert_eq!(capture_len(&heap, outer), 4);
+        assert!(heap.observe_write(source, Some(2)).is_ok());
+        assert_eq!(
+            heap.observe_write(source, None),
+            Err(HeapError::BindingCycle)
+        );
+        heap.observe_read(source, None).unwrap();
+        assert_eq!(
+            heap.observe_write(source, Some(2)),
+            Err(HeapError::BindingCycle)
+        );
+        heap.begin_untracked(inner).unwrap();
+        heap.observe_read(source, Some(2)).unwrap();
+        heap.end_derived(inner).unwrap();
+        assert_eq!(capture_len(&heap, outer), 6);
+        heap.commit_derived(outer, Value::int(2)).unwrap();
+        heap.begin_derived(outer).unwrap();
+        heap.observe_read(source, Some(2)).unwrap();
+        heap.end_derived(outer).unwrap(); // A failed/abandoned candidate never replaces dependencies.
+        let dependencies = heap
+            .host_payload(outer, DerivedSlot::Dependencies as u32)
+            .unwrap();
+        assert_eq!(heap.sequence_len(dependencies).unwrap(), 6);
+        assert_eq!(
+            heap.host_property(PropertyId {
+                host: outer,
+                field: 0
+            })
+            .unwrap()
+            .as_int(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn dependency_admission_is_atomic_and_gc_releases_index_incrementally() {
+        let mut heap = Heap::new(
+            SessionEpoch(1),
+            HeapLimits {
+                max_bytes: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let source = model_fields(&mut heap, 100);
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        let root = heap.add_root(RootOwner(1), RootKind::Host, output).unwrap();
+        heap.begin_derived(output).unwrap();
+        for field in 0..4 {
+            heap.observe_read(source, Some(field)).unwrap();
+        }
+        let bytes = heap.stats().charged_bytes;
+        let reserved = heap
+            .budget_usage()
+            .reserve(
+                heap.budget_usage().remaining_bytes()
+                    - VALUE_CHUNK_BYTES
+                    - crate::dependencies::INDEX_ENTRY_BYTES
+                    + 1,
+            )
+            .unwrap();
+        assert!(matches!(
+            heap.observe_read(source, Some(4)),
+            Err(HeapError::ResourceLimit { .. })
+        ));
+        assert_eq!(capture_len(&heap, output), 8);
+        heap.observe_read(source, Some(0)).unwrap(); // Duplicate reads need no capacity.
+        drop(reserved);
+        assert_eq!(heap.stats().charged_bytes, bytes);
+        for field in 4..100 {
+            heap.observe_read(source, Some(field)).unwrap();
+        }
+        let candidate = heap
+            .host_payload(output, DerivedSlot::Candidate as u32)
+            .unwrap();
+        assert_eq!(
+            heap.array_push(candidate, Value::NULL),
+            Err(HeapError::WrongKind)
+        );
+        assert_eq!(
+            heap.set_field(candidate, 0, Value::NULL),
+            Err(HeapError::WrongKind)
+        );
+        collect(&mut heap); // Only the candidate's strong values retain the source.
+        assert!(heap.info(source).is_ok());
+        heap.end_derived(output).unwrap();
+        heap.release_root(root).unwrap();
+        heap.begin_collection().unwrap();
+        let mut examined_release = false;
+        let mut previous_index_len = 100;
+        while heap.phase() != GcPhase::Idle {
+            let progress = heap
+                .gc_step(crate::GcBudget {
+                    units: 1,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(progress.units <= 1);
+            if let Ok(key) = heap.key(candidate) {
+                if let Some(object) = heap.objects.get(key) {
+                    if let Payload::Dependencies(d) = &object.payload {
+                        assert!(previous_index_len - d.index.len() <= 1);
+                        previous_index_len = d.index.len();
+                        examined_release |= d.index.len() < 100;
+                    }
+                }
+            }
+        }
+        assert!(examined_release);
+        assert_eq!(heap.stats().payload_bytes, 0);
+        assert_eq!(heap.stats().live_objects, 0);
+        assert!(heap.info(source).is_err());
+        let replacement = model_fields(&mut heap, 1);
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(replacement, Some(0)).unwrap();
+        assert_eq!(capture_len(&heap, output), 2);
+    }
+
+    #[test]
+    fn derived_cycle_check_still_rejects_normal_fields_and_bound_aliases() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let source = model_fields(&mut heap, 2);
+        let alias = model_fields(&mut heap, 1);
+        let source_ref = heap
+            .alloc_property_ref(
+                PropertyId {
+                    host: source,
+                    field: 0,
+                },
+                true,
+            )
+            .unwrap();
+        heap.bind_host_property(
+            PropertyId {
+                host: alias,
+                field: 0,
+            },
+            source_ref,
+        )
+        .unwrap();
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(alias, Some(0)).unwrap();
+        heap.commit_derived(output, Value::int(42)).unwrap();
+        let reference = heap
+            .alloc_property_ref(
+                PropertyId {
+                    host: output,
+                    field: 0,
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            heap.bind_host_property(
+                PropertyId {
+                    host: alias,
+                    field: 0
+                },
+                reference
+            ),
+            Err(HeapError::BindingCycle)
+        );
+        assert_eq!(
+            heap.bind_host_property(
+                PropertyId {
+                    host: source,
+                    field: 0
+                },
+                reference
+            ),
+            Err(HeapError::BindingCycle)
+        );
+        heap.bind_host_property(
+            PropertyId {
+                host: source,
+                field: 1,
+            },
+            reference,
+        )
+        .unwrap();
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(source, Some(1)).unwrap();
+        assert_eq!(
+            heap.commit_derived(output, Value::NULL),
+            Err(HeapError::BindingCycle)
+        );
+        heap.end_derived(output).unwrap();
+        assert_eq!(
+            heap.host_property(PropertyId {
+                host: output,
+                field: 0
+            })
+            .unwrap()
+            .as_int(),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn dependency_snapshot_rebuilds_remapped_indexes_and_nested_captures() {
+        use crate::heap::snapshot as graph;
+        use crate::snapshot::{SnapshotMap, SnapshotRegistry, VmSnapshot};
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let slots = crate::FrameSlots::new(
+            &mut heap,
+            crate::FrameSlotsLimits {
+                initial_capacity: 8,
+                max_capacity: 128,
+                max_window_len: 64,
+            },
+        )
+        .unwrap();
+        let source = model_fields(&mut heap, 97);
+        let outer = heap.alloc_derived(Value::NULL).unwrap();
+        let inner = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(outer).unwrap();
+        for field in 0..80 {
+            heap.observe_read(source, Some(field)).unwrap();
+        }
+        heap.begin_derived(inner).unwrap();
+        heap.observe_read(source, Some(1)).unwrap();
+        let (active, evaluation) = heap.snapshot_reactive_state();
+        let registry = SnapshotRegistry::default();
+        let mut image = VmSnapshot {
+            version: VmSnapshot::FORMAT_VERSION,
+            code: [0; 32],
+            source_heap: heap.id().get(),
+            source_epoch: 1,
+            records: Vec::new(),
+            bytes: 0,
+        };
+        let mut capture = graph::GraphCapture::new(&heap).unwrap();
+        while !capture.step(&heap, &slots, &registry, &mut image).unwrap() {}
+        let image = VmSnapshot::decode(&image.encode().unwrap()).unwrap();
+        let mut restored = Heap::new(SessionEpoch(2), HeapLimits::default()).unwrap();
+        // Force a different slot mapping rather than accidentally testing equal raw keys.
+        for _ in 0..7 {
+            restored.alloc_array(&[]).unwrap();
+        }
+        let mut restored_slots = crate::FrameSlots::new(
+            &mut restored,
+            crate::FrameSlotsLimits {
+                initial_capacity: 8,
+                max_capacity: 128,
+                max_window_len: 64,
+            },
+        )
+        .unwrap();
+        let mut map = SnapshotMap::new(&restored, &image);
+        for record in &image.records {
+            graph::allocate(
+                &mut restored,
+                &mut restored_slots,
+                &mut map,
+                record,
+                &registry,
+            )
+            .unwrap();
+        }
+        for record in &image.records {
+            graph::connect(&mut restored, &mut restored_slots, &mut map, record).unwrap();
+        }
+        for record in &image.records {
+            graph::validate(&restored, &map, record).unwrap();
+        }
+        let source2 = map.value(source).unwrap();
+        assert_ne!(
+            source.object_parts().unwrap().1,
+            source2.object_parts().unwrap().1
+        );
+        let outer = map.value(outer).unwrap();
+        let inner = map.value(inner).unwrap();
+        restored
+            .restore_reactive_state(active.map(|v| map.value(v).unwrap()), evaluation)
+            .unwrap();
+        restored.observe_read(source2, Some(1)).unwrap();
+        assert_eq!(capture_len(&restored, inner), 2);
+        assert_eq!(
+            restored.observe_write(source2, Some(1)),
+            Err(HeapError::BindingCycle)
+        );
+        restored.commit_derived(inner, Value::int(1)).unwrap();
+        for field in 0..80 {
+            restored.observe_read(source2, Some(field)).unwrap();
+        }
+        assert_eq!(capture_len(&restored, outer), 160);
+        restored.observe_read(source2, Some(80)).unwrap();
+        assert_eq!(capture_len(&restored, outer), 162);
+        restored.commit_derived(outer, Value::int(2)).unwrap();
+        assert!(!restored.reactive_evaluating());
+        restored.invalidate_reactive(source2, Some(0)).unwrap();
+        assert!(restored.next_derived().unwrap().unwrap().same_bits(outer));
+        assert!(restored.next_derived().unwrap().is_none());
+    }
+
+    #[test]
+    #[ignore = "release measurement of dependency capture"]
+    fn model_dependency_capture_cost() {
+        let sizes = std::env::var("REEL_COST_ROWS").unwrap_or_else(|_| "1000,10000,30000".into());
+        for n in sizes.split(',').map(|s| s.parse::<usize>().unwrap()) {
+            let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+            let roots = heap.alloc_array(&[]).unwrap();
+            heap.add_root(RootOwner(1), RootKind::Host, roots).unwrap();
+            let mut sources = Vec::with_capacity(n);
+            let key = heap.alloc_string("id").unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..n {
+                let source = heap.alloc_table().unwrap();
+                heap.table_store(source, 0, key, Value::int(i as i64))
+                    .unwrap();
+                heap.observe_model_object(source).unwrap();
+                heap.array_push(roots, source).unwrap();
+                sources.push(source);
+            }
+            let generation = start.elapsed();
+            let output = heap.alloc_derived(Value::NULL).unwrap();
+            heap.add_root(RootOwner(1), RootKind::Host, output).unwrap();
+            let before = heap.stats().charged_bytes;
+            heap.begin_derived(output).unwrap();
+            let start = std::time::Instant::now();
+            let allocation = allocation_counter::measure(|| {
+                for source in &sources {
+                    heap.observe_read(*source, Some(0)).unwrap();
+                }
+            });
+            let capture = start.elapsed();
+            let candidate = heap
+                .host_payload(output, DerivedSlot::Candidate as u32)
+                .unwrap();
+            assert_eq!(heap.sequence_len(candidate).unwrap() as usize, n * 2);
+            let start = std::time::Instant::now();
+            heap.commit_derived(output, Value::NULL).unwrap();
+            let commit = start.elapsed();
+            let start = std::time::Instant::now();
+            assert!(heap.derived_is_current(output, None).unwrap());
+            let freshness = start.elapsed();
+            let downstream = heap.alloc_derived(Value::NULL).unwrap();
+            heap.begin_derived(downstream).unwrap();
+            heap.observe_read(output, Some(0)).unwrap();
+            let start = std::time::Instant::now();
+            heap.commit_derived(downstream, Value::NULL).unwrap();
+            let downstream_commit = start.elapsed();
+            let stats = heap.stats();
+            eprintln!(
+                "model-dependencies rows={n} generation={generation:?} capture={capture:?} commit={commit:?} downstream_commit={downstream_commit:?} freshness={freshness:?} capture_alloc_live={} capture_alloc_peak={} added_charge={} charge={} peak_charge={}",
+                allocation.bytes_current,
+                allocation.bytes_max,
+                stats.charged_bytes - before,
+                stats.charged_bytes,
+                stats.peak_charged_bytes
+            );
+        }
     }
 
     fn collect(heap: &mut Heap) {

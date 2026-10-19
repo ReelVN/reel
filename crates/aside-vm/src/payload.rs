@@ -320,6 +320,7 @@ pub(crate) enum Payload {
     Fault(crate::fault::FaultPayload),
     Values(Values),
     Table(Values),
+    Dependencies(Box<crate::dependencies::Dependencies>),
     Bytes(Bytes),
     Empty,
 }
@@ -328,6 +329,7 @@ impl Payload {
         match self {
             Self::Cell(v) if cursor == 0 => v.value,
             Self::Values(v) | Self::Table(v) => v.get(cursor),
+            Self::Dependencies(d) => d.values.get(cursor),
             Self::Fault(p) => p.edges.get(cursor as usize).copied(),
             _ => None,
         }
@@ -336,6 +338,7 @@ impl Payload {
         match self {
             Self::Cell(v) => u32::from(v.value.is_some()),
             Self::Values(v) | Self::Table(v) => v.len,
+            Self::Dependencies(d) => d.values.len,
             Self::Fault(_) => 3,
             Self::Bytes(b) => b.len,
             Self::Empty => 0,

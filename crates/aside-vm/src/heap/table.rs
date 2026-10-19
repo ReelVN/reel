@@ -226,10 +226,13 @@ pub struct TableLookupProgress {
     pub status: TableLookupStatus,
 }
 impl Heap {
-    /// Length of an array or tuple, with no traversal or implicit conversion.
+    /// Length of an array, tuple or private dependency sequence, without traversal.
     pub fn sequence_len(&self, sequence: Value) -> Result<u32, HeapError> {
         let info = self.info(sequence)?;
-        if !matches!(info.kind, ObjectKind::Array | ObjectKind::Tuple) {
+        if !matches!(
+            info.kind,
+            ObjectKind::Array | ObjectKind::Tuple | ObjectKind::Dependencies
+        ) {
             return Err(HeapError::WrongKind);
         }
         Ok(info.len)

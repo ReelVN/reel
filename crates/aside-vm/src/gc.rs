@@ -1,4 +1,4 @@
-use crate::payload::Payload;
+use crate::payload::{Payload, VALUE_CHUNK_BYTES};
 use crate::slots::RangeKey;
 use crate::{Heap, HeapError, RootRangeToken, RootRanges};
 
@@ -365,6 +365,52 @@ impl Heap {
                 p.release_edges += 1;
                 p.units += 1;
                 return true;
+            }
+            Payload::Dependencies(d) if !d.index.is_empty() => {
+                d.index.pop_first();
+                if d.index.is_empty() {
+                    drop(std::mem::take(&mut d.index));
+                }
+                p.units += 1;
+                return true;
+            }
+            Payload::Dependencies(d) if d.index_reserved != 0 => {
+                let released = d
+                    .index_reserved
+                    .min(VALUE_CHUNK_BYTES)
+                    .min(budget.bytes.saturating_sub(p.bytes));
+                if released == 0 {
+                    return false;
+                }
+                d.index_reserved -= released;
+                released
+            }
+            Payload::Dependencies(d) if !d.values.empty() => {
+                let values = &mut d.values;
+                let remaining = values.first_chunk_len() - values.release_cursor;
+                if remaining != 0 {
+                    if p.release_edges == budget.release_edges {
+                        return false;
+                    }
+                    values.clear_release_edge();
+                    p.release_edges += 1;
+                    p.units += 1;
+                    return true;
+                }
+                let released = values.release_bytes();
+                if budget.bytes.saturating_sub(p.bytes) < released {
+                    return false;
+                }
+                values.drop_first_chunk();
+                released
+            }
+            Payload::Dependencies(_) => {
+                let released = crate::dependencies::BASE_BYTES;
+                if budget.bytes.saturating_sub(p.bytes) < released {
+                    return false;
+                }
+                obj.payload = Payload::Empty;
+                released
             }
             Payload::Values(values) | Payload::Table(values) if !values.empty() => {
                 let remaining = values.first_chunk_len() - values.release_cursor;
