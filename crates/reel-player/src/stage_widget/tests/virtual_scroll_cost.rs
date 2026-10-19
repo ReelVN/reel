@@ -83,8 +83,8 @@ fn virtual_scroll_to_far_target_has_bounded_actual_text_layout() {
         let started = std::time::Instant::now();
         for frame in 1..10 {
             driver.sync(&mut bridge, root_id).unwrap();
-            let recording = bridge.record(FrameId(frame)).unwrap();
-            let stamp = driver.projection_stamp();
+            let (recording, stamp) = driver.record(&mut bridge, root_id, FrameId(frame)).unwrap();
+
             assert_eq!(
                 bridge.resolve(PresentationNotice::new(
                     recording.key(),
@@ -93,7 +93,7 @@ fn virtual_scroll_to_far_target_has_bounded_actual_text_layout() {
                 )),
                 NoticeResult::Accepted
             );
-            driver.presented(stamp).unwrap();
+            driver.presented(&bridge, &stamp).unwrap();
             settle(&mut driver);
         }
         let elapsed = started.elapsed();

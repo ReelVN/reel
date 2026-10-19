@@ -2,7 +2,7 @@ use crate::diagnostic::Diagnostic;
 #[path = "window_control.rs"]
 mod control;
 use crate::platform::WindowControl;
-use crate::session::{ProjectionStamp, SessionHostDiagnostic};
+use crate::session::{RecordedProjection, SessionHostDiagnostic};
 use crate::{
     aside_session::AsideSessionUi, shell::StoryWindowOptions, window_session::WindowSession,
 };
@@ -63,7 +63,7 @@ pub(crate) struct State {
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
     pub(crate) session: Option<WindowSession>,
-    recorded_projection: Option<ProjectionStamp>,
+    recorded_projection: Option<RecordedProjection>,
     closing: bool,
     first_frame_pending: bool,
     completions: Vec<RenderEvent<GpuError>>,
@@ -671,11 +671,13 @@ impl State {
             resources,
             session,
             recorded_projection,
+            root_id,
             ..
         } = self;
         let result = presentation.render(backend, host, |bridge, id, info| {
             build_frame(
                 bridge,
+                *root_id,
                 id,
                 info,
                 pool,
@@ -708,9 +710,9 @@ impl State {
         };
         if result.accepted
             && !self.settings_pending()
-            && let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
+            && let (Some(session), Some(stamp)) = (&mut self.session, &self.recorded_projection)
         {
-            session.presented(stamp)?;
+            session.presented(&self.presentation.bridge, stamp)?;
         }
         if result.accepted && self.first_frame_pending {
             self.first_frame_pending = false;
@@ -1046,15 +1048,24 @@ impl Drop for State {
 )]
 fn build_frame(
     bridge: &mut PresentationBridge,
+    root: WidgetId,
     id: FrameId,
     info: SurfaceInfo,
     pool: &BudgetPool,
     resources: &[reel_ui::resources::ResourceLease],
     session: Option<&WindowSession>,
-    recorded_projection: &mut Option<ProjectionStamp>,
+    recorded_projection: &mut Option<RecordedProjection>,
 ) -> Result<RenderFrame, Error> {
-    let source = bridge.record(id).map_err(|e| format!("record: {e:?}"))?;
-    *recorded_projection = session.map(|session| session.ui().projection_stamp());
+    let source = if let Some(session) = session {
+        let (source, receipt) = session.record(bridge, root, id)?;
+        *recorded_projection = Some(receipt);
+        source
+    } else {
+        *recorded_projection = None;
+        bridge
+            .record(id)
+            .map_err(|error| format!("record: {error:?}"))?
+    };
     let images = session.map_or(&[][..], |session| session.ui().image_resources());
     let snapshot = reel_ui::resources::ResourceSnapshot::capture(
         (0..resources.len() + images.len()).map(|index| {
@@ -1103,6 +1114,7 @@ impl State {
         let info = self.presentation.surface_info();
         build_frame(
             &mut self.presentation.bridge,
+            self.root_id,
             FrameId(self.presentation.frame),
             info,
             &self.pool,

@@ -6,6 +6,7 @@ mod activities;
 mod buttons;
 mod dialogue_history;
 mod dynamic_stage;
+mod geometry;
 mod localization;
 mod models;
 mod particles;

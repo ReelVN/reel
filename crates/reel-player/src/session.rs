@@ -2,8 +2,10 @@
 //!
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
+mod geometry;
 mod playback;
 use crate::stage_widget::{StageView, StageWidget};
+pub use geometry::RecordedProjection;
 use playback::dialogue_complete;
 #[cfg(test)]
 mod button_tests;
@@ -1031,13 +1033,6 @@ impl SessionUi {
             ..self.stamp
         }
     }
-    /// Call only after PresentationBridge accepted the matching actual frame.
-    pub fn presented(&mut self, stamp: ProjectionStamp) {
-        let mut binding = self.binding.borrow_mut();
-        binding.control_accepted = Some(stamp);
-        binding.accepted_buttons = Some(stamp.button_revision);
-        binding.accepted = (!self.images_pending()).then_some(stamp);
-    }
     pub(crate) fn gesture_active(&self) -> bool {
         let binding = self.binding.borrow();
         !binding.contacts.is_empty() || binding.navigation_down.is_some()
@@ -1491,9 +1486,13 @@ mod tests {
             id,
         )
     }
-    pub(super) fn accept(ui: &mut SessionUi, bridge: &mut PresentationBridge, frame: u64) {
-        let source = bridge.record(FrameId(frame)).unwrap();
-        let stamp = ui.projection_stamp();
+    pub(super) fn accept(
+        ui: &mut SessionUi,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+        frame: u64,
+    ) {
+        let (source, stamp) = ui.record(bridge, root, FrameId(frame)).unwrap();
         assert_eq!(
             bridge.resolve(PresentationNotice::new(
                 source.key(),
@@ -1502,7 +1501,40 @@ mod tests {
             )),
             NoticeResult::Accepted
         );
-        ui.presented(stamp);
+        ui.presented(bridge, &stamp);
+    }
+    #[test]
+    fn initial_record_uses_explicit_root_when_stage_sync_returns_early() {
+        let mut driver = crate::aside_session::AsideSessionUi::from_source(
+            session(),
+            "fn main() { stage.replace(stack(width:40,height:30)); await stage.presented(); }",
+            "first_frame",
+            1,
+            "main",
+            "en",
+            reel_engine::aside::VmLimits::default(),
+        )
+        .unwrap();
+        let (mut bridge, root) = mount(driver.ui());
+        // Recording the mounted initial tree has no sync-registration prerequisite.
+        let (initial, receipt) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
+        assert_eq!(receipt.stamp.presentation_request, 0);
+        assert_eq!(receipt.key.frame_id(), initial.key().frame_id());
+        driver.await_initial_stage();
+        assert!(driver.adapter().stage().root().is_none());
+        driver.sync(&mut bridge, root).unwrap(); // Must take awaiting_stage's early return.
+        let (source, receipt) = driver.record(&mut bridge, root, FrameId(2)).unwrap();
+        assert_eq!(receipt.stamp.presentation_request, 0);
+        assert_eq!(
+            bridge.resolve(PresentationNotice::new(
+                source.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(2))
+            )),
+            NoticeResult::Accepted
+        );
+        driver.presented(&bridge, &receipt).unwrap();
+        assert!(driver.adapter().stage().root().is_none());
     }
     pub(super) fn mouse(kind: &str, point: (f64, f64)) -> PointerEvent {
         let pointer = PointerInfo {
@@ -1568,8 +1600,9 @@ mod tests {
             resources: (&ResourceRegistry, &[ResourceHandle]),
         ) -> Vec<(WidgetId, String)> {
             driver.sync(bridge, root).unwrap();
-            let source = bridge.record(FrameId(frame)).unwrap();
+            let (source, receipt) = driver.record(bridge, root, FrameId(frame)).unwrap();
             let key = source.key();
+
             let pool = BudgetPool::new(
                 BudgetCategory::CpuOutput,
                 QueueLimits {
@@ -1612,7 +1645,7 @@ mod tests {
                 )),
                 NoticeResult::Accepted
             );
-            driver.presented(driver.projection_stamp()).unwrap();
+            driver.presented(&bridge, &receipt).unwrap();
             let root_widget = bridge
                 .root()
                 .get_widget(root)
@@ -1745,7 +1778,7 @@ mod tests {
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(visible(&ui), 0);
         assert!(ui.session.take_completion().is_none());
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, id, 1);
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, id).unwrap();
         assert_eq!(visible(&ui), "A full unchanged line".len());
@@ -1754,7 +1787,7 @@ mod tests {
         // Accepted frame 1 still depicts the previous reveal projection.
         click(&mut ui, &mut bridge, (100., 300.));
         assert!(ui.session.take_completion().is_none());
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, id, 2);
         click(&mut ui, &mut bridge, (100., 300.));
         let completion = ui.session.take_completion().unwrap();
         assert_eq!(completion.outcome(), &CompletionOutcome::Advanced);
@@ -1764,7 +1797,7 @@ mod tests {
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(visible(&ui), 0);
         assert_eq!(ui.session.view().history.len(), 2);
-        accept(&mut ui, &mut bridge, 3);
+        accept(&mut ui, &mut bridge, id, 3);
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, id).unwrap();
         assert_eq!(visible(&ui), "The unseen successor".len());
@@ -1785,13 +1818,13 @@ mod tests {
             click(&mut ui, &mut bridge, (100., 300.));
             assert_eq!(ui.session.reading().skipping(), skip);
             assert_eq!(ui.session.reading().automatic(), !skip);
-            accept(&mut ui, &mut bridge, 1);
+            accept(&mut ui, &mut bridge, root, 1);
             click(&mut ui, &mut bridge, (100., 300.));
             assert!(!ui.session.reading().skipping());
             assert!(!ui.session.reading().automatic());
             ui.sync(&mut bridge, root).unwrap();
             assert_eq!(visible(&ui), "Manual interruption".len());
-            accept(&mut ui, &mut bridge, 2);
+            accept(&mut ui, &mut bridge, root, 2);
             ui.advance_dialogue(10_000_000_000, 30.).unwrap();
             assert!(
                 ui.session.view().interaction.is_some(),
@@ -1808,7 +1841,7 @@ mod tests {
             .unwrap();
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, id) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, id, 1);
         ui.handle_pointer(&mut bridge, mouse("move", (100., 300.)))
             .unwrap();
         ui.handle_pointer(&mut bridge, mouse("down", (100., 300.)))
@@ -1823,7 +1856,7 @@ mod tests {
         ui.session.take_completion().unwrap();
         say(&mut ui.session, "Second");
         ui.sync(&mut bridge, id).unwrap();
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, id, 2);
         ui.handle_pointer(&mut bridge, mouse("up", (100., 300.)))
             .unwrap();
         assert_eq!(visible(&ui), 0);
@@ -1853,7 +1886,7 @@ mod tests {
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         let old_owners = ui.choice_owners.clone();
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         let buttons = bridge
             .root()
             .get_widget(root)
@@ -1895,7 +1928,7 @@ mod tests {
         say(&mut session, "Cancel this");
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         bridge.clear();
         ui.clear_presented();
         click(&mut ui, &mut bridge, (100., 300.));
@@ -1916,8 +1949,8 @@ mod tests {
         let mut session = session();
         say(&mut session, "A live main interaction");
         let mut ui = SessionUi::preview(session).unwrap();
-        let (mut bridge, _) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, root, 1);
         ui.session.revoke_owner(ui.source_owner).unwrap();
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(visible(&ui), 0);
@@ -1940,7 +1973,7 @@ mod tests {
         );
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(
             ui.session_mut().take_completion().unwrap().outcome(),
@@ -1959,7 +1992,7 @@ mod tests {
         let first = say(&mut session, "First");
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, root).unwrap();
         assert_eq!(visible(&ui), "First".len());
@@ -1975,7 +2008,7 @@ mod tests {
             }),
             Err(reel_engine::InputRejection::StaleInteraction)
         );
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, root, 2);
         click(&mut ui, &mut bridge, (100., 300.));
         let completion = ui.session_mut().take_completion().unwrap();
         assert_eq!(completion.interaction_id(), first);
@@ -1991,12 +2024,12 @@ mod tests {
             }),
             Err(reel_engine::InputRejection::StaleInteraction)
         );
-        accept(&mut ui, &mut bridge, 3);
+        accept(&mut ui, &mut bridge, root, 3);
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, root).unwrap();
         assert_eq!(visible(&ui), "After external input".len());
         assert!(ui.session_mut().take_completion().is_none());
-        accept(&mut ui, &mut bridge, 4);
+        accept(&mut ui, &mut bridge, root, 4);
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(
             ui.session_mut().take_completion().unwrap().outcome(),
@@ -2013,7 +2046,7 @@ mod tests {
         let (mut bridge, root) = mount(&ui);
         click(&mut ui, &mut bridge, (100., 300.));
         assert!(ui.session_mut().take_completion().is_none());
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         click(&mut ui, &mut bridge, (100., 300.));
         let completion = ui.session_mut().take_completion().unwrap();
         assert_eq!(completion.interaction_id(), interaction);
@@ -2025,7 +2058,7 @@ mod tests {
         ui.sync(&mut bridge, root).unwrap();
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(visible(&ui), 0);
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, root, 2);
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, root).unwrap();
         assert_eq!(visible(&ui), "Unseen successor".len());
@@ -2051,7 +2084,7 @@ mod tests {
     fn many_dialogue_rows_retain_full_text_and_scroll_without_negative_layout() {
         let mut ui = SessionUi::preview(session()).unwrap();
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         let text = "A complete long dialogue line. ".repeat(40);
         let line = DialogueLineInput {
             history: Default::default(),
@@ -2064,11 +2097,11 @@ mod tests {
             .begin_say(ui.session.root_owner(), &[line; 6], "en")
             .unwrap();
         ui.sync(&mut bridge, root).unwrap();
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, root, 2);
         assert_eq!(ui.projection.lines.len(), 6);
         assert!(ui.projection.lines.iter().all(|row| row.text == text));
         scroll(&mut ui, &mut bridge, 100_000.);
-        accept(&mut ui, &mut bridge, 3);
+        accept(&mut ui, &mut bridge, root, 3);
         assert!(ui.scroll.get() > 0.);
         click(&mut ui, &mut bridge, (100., 300.));
         ui.sync(&mut bridge, root).unwrap();
@@ -2078,7 +2111,7 @@ mod tests {
                 .iter()
                 .all(|row| row.visible.end == text.len())
         );
-        accept(&mut ui, &mut bridge, 4);
+        accept(&mut ui, &mut bridge, root, 4);
         click(&mut ui, &mut bridge, (100., 300.));
         assert_eq!(
             ui.session.take_completion().unwrap().outcome(),
@@ -2104,14 +2137,14 @@ mod tests {
             "one projection lifetime, not one owner per option"
         );
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         ui.handle_pointer(&mut bridge, mouse("down", (100., 270.)))
             .unwrap();
         scroll(&mut ui, &mut bridge, 100_000.);
         assert!(ui.binding.borrow().accepted.is_none());
         click(&mut ui, &mut bridge, (100., 350.));
         assert!(ui.session.take_completion().is_none());
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, root, 2);
         ui.handle_pointer(&mut bridge, mouse("up", (100., 350.)))
             .unwrap();
         assert!(ui.session.take_completion().is_none());
@@ -2156,14 +2189,14 @@ mod tests {
         session.begin_choice(session.root_owner(), &rows).unwrap();
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         for i in 0..keys.len() {
             ui.handle_text(&mut bridge, nav(A::Down, P::Pressed))
                 .unwrap();
             ui.handle_text(&mut bridge, nav(A::Down, P::Released))
                 .unwrap();
             ui.sync(&mut bridge, root).unwrap();
-            accept(&mut ui, &mut bridge, i as u64 + 2);
+            accept(&mut ui, &mut bridge, root, i as u64 + 2);
             let focused = bridge.root().focused_widget().unwrap();
             let reel_ui::app::InputGeometrySource::Presented(Some(geometry)) =
                 bridge.root().input_geometry_source()
@@ -2197,7 +2230,7 @@ mod tests {
         }
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
-        accept(&mut ui, &mut bridge, 1);
+        accept(&mut ui, &mut bridge, root, 1);
         ui.session
             .begin_choice(
                 ui.session.root_owner(),
@@ -2216,7 +2249,7 @@ mod tests {
         ui.sync(&mut bridge, root).unwrap();
         assert_eq!(ui.projection.choices.len(), 2);
         assert_ne!(ui.binding.borrow().accepted, Some(ui.projection_stamp()));
-        accept(&mut ui, &mut bridge, 2);
+        accept(&mut ui, &mut bridge, root, 2);
         assert_eq!(ui.binding.borrow().accepted, Some(ui.projection_stamp()));
         assert!(ui.session.create_owner().is_ok());
         assert_eq!(ui.choice_owners.len(), 1);

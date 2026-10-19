@@ -612,13 +612,17 @@ impl Fixture {
         edit(&mut props);
         self.stage.update(id, node.kind.clone(), props).unwrap();
     }
-    fn record(&mut self) -> RecordedSource {
+    fn record(&mut self) -> TestFrame {
         self.ui.set_stage(&self.stage);
         self.ui.sync(&mut self.bridge, self.widget).unwrap();
         self.frame += 1;
-        self.bridge.record(FrameId(self.frame)).unwrap()
+        let (source, receipt) = self
+            .ui
+            .record(&mut self.bridge, self.widget, FrameId(self.frame))
+            .unwrap();
+        TestFrame { source, receipt }
     }
-    fn accept(&mut self, source: &RecordedSource) {
+    fn accept(&mut self, source: &TestFrame) {
         assert_eq!(
             self.bridge.resolve(PresentationNotice::new(
                 source.key(),
@@ -627,7 +631,7 @@ impl Fixture {
             )),
             NoticeResult::Accepted
         );
-        self.ui.presented(self.ui.projection_stamp());
+        self.ui.presented(&self.bridge, &source.receipt);
     }
     fn layouts(&self) -> BTreeMap<NodeId, (WidgetId, usize)> {
         fn walk(
@@ -661,7 +665,7 @@ impl Fixture {
         );
         let resources = ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap();
         let mut build = FrameBuild::new(
-            source,
+            source.source,
             resources,
             FrameInfo {
                 logical_size: [640., 420.],
@@ -787,7 +791,7 @@ fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_ide
     // Old frames retain their original font data and glyph selection.
     assert_eq!(used_fonts(&mixed).len(), 2);
     let mut build = FrameBuild::new(
-        mixed,
+        mixed.source,
         ResourceSnapshot::capture([Ok(latin_lease), Ok(cjk_lease)].into_iter(), &pool).unwrap(),
         FrameInfo {
             logical_size: [640., 420.],
@@ -2480,7 +2484,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         view.resources[0].handle(),
         images.loaded["assets/panels.png"].handle()
     );
-    let widget = SceneWidget::new(root);
+    let widget = SceneWidget::new(root, &mut BTreeMap::new());
     assert!(widget.image.is_none());
     assert_eq!(
         images.loads, 1,
@@ -2620,7 +2624,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         };
         assert_eq!(image.plane(0).as_ptr(), pointer);
         let mut build = FrameBuild::new(
-            source,
+            source.source,
             snapshot,
             FrameInfo {
                 logical_size: [640., 420.],
@@ -2756,3 +2760,14 @@ fn subtree_invert_updates_cached_composition_without_relayout() {
 }
 
 mod virtual_scroll_cost;
+
+struct TestFrame {
+    source: RecordedSource,
+    receipt: crate::session::RecordedProjection,
+}
+impl std::ops::Deref for TestFrame {
+    type Target = RecordedSource;
+    fn deref(&self) -> &Self::Target {
+        &self.source
+    }
+}

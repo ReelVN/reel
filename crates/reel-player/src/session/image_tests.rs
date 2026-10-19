@@ -92,10 +92,16 @@ fn settle(
         driver.sync(bridge, root).unwrap();
     }
 }
-fn frame(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, id: u64) -> RenderFrame {
+fn frame(
+    driver: &mut AsideSessionUi,
+    bridge: &mut PresentationBridge,
+    root: WidgetId,
+    id: u64,
+) -> RenderFrame {
     frame_with_info(
         driver,
         bridge,
+        root,
         id,
         FrameInfo {
             logical_size: [640., 420.],
@@ -106,6 +112,7 @@ fn frame(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, id: u64) 
 fn frame_with_info(
     driver: &mut AsideSessionUi,
     bridge: &mut PresentationBridge,
+    root: WidgetId,
     id: u64,
     info: FrameInfo,
 ) -> RenderFrame {
@@ -116,8 +123,9 @@ fn frame_with_info(
             max_bytes: 32 << 20,
         },
     );
-    let source = bridge.record(FrameId(id)).unwrap();
+    let (source, receipt) = driver.record(bridge, root, FrameId(id)).unwrap();
     let key = source.key();
+
     let resources =
         ResourceSnapshot::capture(driver.ui().image_resources().iter().cloned().map(Ok), &pool)
             .unwrap();
@@ -147,7 +155,7 @@ fn frame_with_info(
         )),
         NoticeResult::Accepted
     );
-    driver.presented(driver.projection_stamp()).unwrap();
+    driver.presented(&bridge, &receipt).unwrap();
     frame
 }
 fn image_ids(bridge: &PresentationBridge, root: WidgetId) -> Vec<WidgetId> {
@@ -184,7 +192,7 @@ fn advance(
         }
         driver.sync(bridge, root).unwrap();
         *id += 1;
-        frame(driver, bridge, *id);
+        frame(driver, bridge, root, *id);
     }
 }
 fn image_transforms(frame: &RenderFrame) -> Vec<[f64; 6]> {
@@ -247,7 +255,7 @@ fn image_pipeline(
     drive(&mut driver);
     settle(&mut driver, &mut bridge, root, &wake);
     let mut id = 1;
-    let first = frame(&mut driver, &mut bridge, id);
+    let first = frame(&mut driver, &mut bridge, root, id);
     let ids = image_ids(&bridge, root);
     assert_eq!(ids.len(), 6);
     assert_eq!(driver.ui().images.loads, 1);
@@ -300,7 +308,7 @@ fn image_pipeline(
     assert!(driver.ui().images_pending());
     assert_eq!(image_ids(&bridge, root), ids);
     assert_eq!(driver.ui().image_resources().len(), 1);
-    let pending = frame(&mut driver, &mut bridge, id + 1);
+    let pending = frame(&mut driver, &mut bridge, root, id + 1);
     assert_eq!(image_transforms(&pending), transforms);
     assert_eq!(image_pixel_ids(&pending), pixel_ids);
     assert!(
@@ -313,7 +321,7 @@ fn image_pipeline(
     assert_eq!(driver.ui().image_resources().len(), 2);
     assert_eq!(resident.usage().bytes, (160 * 90 + 96 * 96) * 4);
     id += 2;
-    let changed = frame(&mut driver, &mut bridge, id);
+    let changed = frame(&mut driver, &mut bridge, root, id);
     assert_ne!(image_transforms(&changed), transforms);
     let changed_pixels = image_pixel_ids(&changed);
     assert_ne!(changed_pixels[0], pixel_ids[0]);
@@ -326,7 +334,7 @@ fn image_pipeline(
     drive(&mut driver);
     assert_eq!(driver.state(), StoryState::Finished);
     driver.sync(&mut bridge, root).unwrap();
-    let final_frame = frame(&mut driver, &mut bridge, id + 1);
+    let final_frame = frame(&mut driver, &mut bridge, root, id + 1);
     assert_eq!(image_ids(&bridge, root), ids);
     assert_eq!(image_transforms(&changed), image_transforms(&final_frame));
     assert_eq!(image_pixel_ids(&final_frame), changed_pixels);
@@ -358,7 +366,7 @@ fn image_pipeline(
     driver.sync(&mut bridge, root).unwrap();
     assert!(driver.ui().image_resources().is_empty());
     assert!(image_ids(&bridge, root).is_empty());
-    let closed_frame = frame(&mut driver, &mut bridge, id + 2);
+    let closed_frame = frame(&mut driver, &mut bridge, root, id + 2);
     assert!(image_transforms(&closed_frame).is_empty());
     assert_eq!(driver.state(), StoryState::Finished);
     drop(driver);
@@ -381,7 +389,7 @@ fn cancelled_story_sync_clears_published_images_and_keeps_only_submitted_leases(
         drive(&mut driver);
         settle(&mut driver, &mut bridge, root, &wake);
         let mut id = 1;
-        let submitted = frame(&mut driver, &mut bridge, id);
+        let submitted = frame(&mut driver, &mut bridge, root, id);
         let resident = driver.ui().images.pool.clone();
         if replacement_pending {
             advance(&mut driver, &mut bridge, root, &mut id);
@@ -412,7 +420,7 @@ fn cancelled_story_sync_clears_published_images_and_keeps_only_submitted_leases(
             "cancellation must not inject diagnostic UI"
         );
         assert!(widget.lines.is_empty() && widget.choices.is_empty());
-        let cancelled = frame(&mut driver, &mut bridge, id + 1);
+        let cancelled = frame(&mut driver, &mut bridge, root, id + 1);
         assert!(image_transforms(&cancelled).is_empty());
         assert!(
             submitted
@@ -444,7 +452,7 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
     let (mut driver, mut bridge, root, wake) = fixture();
     drive(&mut driver);
     settle(&mut driver, &mut bridge, root, &wake);
-    let first_frame = frame(&mut driver, &mut bridge, 1);
+    let first_frame = frame(&mut driver, &mut bridge, root, 1);
     let instance = wgpu::Instance::default();
     let limits = GpuLimits::default();
     let gpu =
@@ -532,7 +540,7 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
     advance(&mut driver, &mut bridge, root, &mut id);
     drive(&mut driver);
     settle(&mut driver, &mut bridge, root, &wake);
-    let changed_frame = frame(&mut driver, &mut bridge, id + 1);
+    let changed_frame = frame(&mut driver, &mut bridge, root, id + 1);
     let changed_pixels = renderer
         .readback(renderer.prepare(&changed_frame).unwrap())
         .unwrap();
@@ -559,6 +567,7 @@ fn author_image_gpu_fit_alpha_and_clip_pixels() {
     let window_frame = frame_with_info(
         &mut driver,
         &mut bridge,
+        root,
         id + 2,
         FrameInfo {
             logical_size: [640., 420.],

@@ -786,6 +786,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             false,
         ),
         (
+            "stage::geometry",
+            vec![
+                parameter("node", None),
+                parameter("relative_to", Some(bc::Const::Null)),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        (
             "completion",
             vec![parameter("owner", Some(bc::Const::Null))],
             false,

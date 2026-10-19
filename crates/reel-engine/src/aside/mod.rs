@@ -24,6 +24,7 @@ mod particles;
 mod publication;
 mod registry;
 mod results;
+pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
 mod rich_text;
 pub mod saves;
 pub mod snapshot;
@@ -591,6 +592,10 @@ impl SessionVm {
             }
             "reel::list::scroll_to" => {
                 self.dispatch_list_scroll_to(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::stage::geometry" => {
+                self.dispatch_geometry(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::list" => {

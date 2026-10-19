@@ -6,6 +6,7 @@ use aside_vm::{
     executor::{Completion, HostResponse, Vm, WaitId},
 };
 use std::collections::VecDeque;
+pub(super) mod geometry;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
@@ -25,6 +26,7 @@ enum Slot {
     Owner,
     Value,
     Target,
+    Attachment,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -91,6 +93,9 @@ pub(super) struct Results {
     presentation_remaining: usize,
 }
 impl Results {
+    pub(super) fn presentation_roots(&self) -> impl Iterator<Item = RootToken> + '_ {
+        self.presentations.iter().copied()
+    }
     pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
         use super::snapshot::{Part, Record};
         Box::new(
@@ -111,12 +116,13 @@ impl Results {
         &mut self,
         record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
-        heap: &Heap,
+        heap: &mut Heap,
     ) -> Result<(), AdapterError> {
         use super::snapshot::Part;
         match record.part {
             Part::Results => {
                 *self = record.read()?;
+                self.presented = 0;
                 self.dirty = true;
             }
             Part::ResultWait => {
@@ -126,6 +132,7 @@ impl Results {
             }
             Part::Presentation => {
                 let root = map.root(record.read()?)?;
+                geometry::restore(heap, heap.root_value(root)?)?;
                 reserve_queue(heap, &mut self.presentations, &mut self.presentation_charge)?;
                 self.presentations.push_back(root);
             }
@@ -143,6 +150,9 @@ fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<
     heap.set_host_payload(object, Slot::Owner as u32, Value::NULL)?;
     if matches!(kind(heap, object)?, Kind::Particle | Kind::Presentation) {
         heap.set_host_payload(object, Slot::Target as u32, Value::NULL)?;
+    }
+    if kind(heap, object)? == Kind::Presentation {
+        heap.set_host_payload(object, Slot::Attachment as u32, Value::NULL)?;
     }
     Ok(())
 }
@@ -170,6 +180,10 @@ fn state(heap: &mut Heap, object: Value) -> Result<State, AdapterError> {
         _ => unreachable!("private result state"),
     };
     if state == State::Pending && kind != Kind::Task {
+        if kind == Kind::Presentation && geometry::retired(heap, object)? {
+            settle(heap, object, State::Cancelled, Value::NULL)?;
+            return Ok(State::Cancelled);
+        }
         let owner = heap.host_payload(object, Slot::Owner as u32)?;
         if owner.tag() != ValueTag::Null {
             match heap.host_fields(owner) {
@@ -314,10 +328,13 @@ impl Results {
             owner,
             Value::NULL,
             Value::NULL,
+            Value::NULL,
         ];
         let object = heap.alloc_host(
             fields,
-            &slots[..if matches!(kind, Kind::Particle | Kind::Presentation) {
+            &slots[..if kind == Kind::Presentation {
+                6
+            } else if kind == Kind::Particle {
                 5
             } else {
                 4
@@ -432,7 +449,9 @@ impl Results {
             let barrier = heap.host_payload(object, Slot::Target as u32)?;
             let mut ready = pending
                 && barrier.tag() != ValueTag::Null
-                && heap.sequence_get(barrier, 0)?.as_int().unwrap() as u64 <= self.presented;
+                && heap.sequence_get(barrier, 0)?.as_int().unwrap() as u64 <= self.presented
+                && (heap.host_payload(object, Slot::Attachment as u32)?.tag() == ValueTag::Null
+                    || heap.sequence_get(barrier, 1)?.tag() != ValueTag::Null);
             if ready && !current(heap, object, heap.host_payload(object, Slot::Owner as u32)?)? {
                 heap.set_host_payload(object, Slot::Target as u32, Value::NULL)?;
                 ready = false;

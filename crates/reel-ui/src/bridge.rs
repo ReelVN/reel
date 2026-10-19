@@ -375,6 +375,11 @@ impl PresentationBridge {
     pub fn pending_count(&self) -> usize {
         self.pending.iter().filter(|p| p.eligible()).count()
     }
+    /// Read geometry only when this exact recorded candidate is the accepted frame.
+    pub fn accepted_geometry(&self, key: &CandidateKey) -> Option<&PresentedGeometryView> {
+        let (accepted, geometry) = self.accepted.as_ref()?;
+        Arc::ptr_eq(&accepted.identity, &key.identity).then_some(geometry)
+    }
     pub fn accepted_key(&self) -> Option<&CandidateKey> {
         self.accepted.as_ref().map(|(key, _)| key)
     }
