@@ -968,9 +968,58 @@ mod tests {
                 .host_payload(output, DerivedSlot::Candidate as u32)
                 .unwrap();
             assert_eq!(heap.sequence_len(candidate).unwrap() as usize, n * 2);
+            // Separate repeated sequence lookup and endpoint normalization from
+            // subscription storage. These diagnostic passes do not publish a
+            // value, run scripts, allocate subscriptions or change the capture.
             let start = std::time::Instant::now();
-            heap.commit_derived(output, Value::NULL).unwrap();
+            for i in (0..heap.sequence_len(candidate).unwrap()).step_by(2) {
+                std::hint::black_box((
+                    heap.sequence_get(candidate, i).unwrap(),
+                    heap.sequence_get(candidate, i + 1).unwrap(),
+                ));
+            }
+            let dependency_reads = start.elapsed();
+            let start = std::time::Instant::now();
+            for source in &sources {
+                std::hint::black_box(
+                    heap.property_source(PropertyId {
+                        host: *source,
+                        field: 0,
+                    })
+                    .unwrap(),
+                );
+            }
+            let endpoint_resolution = start.elapsed();
+            let start = std::time::Instant::now();
+            for i in (0..heap.sequence_len(candidate).unwrap()).step_by(2) {
+                heap.check_derived_cycle(
+                    PropertyId {
+                        host: output,
+                        field: 0,
+                    },
+                    PropertyId {
+                        host: heap.sequence_get(candidate, i).unwrap(),
+                        field: heap
+                            .sequence_get(candidate, i + 1)
+                            .unwrap()
+                            .as_int()
+                            .unwrap() as u32,
+                    },
+                )
+                .unwrap();
+            }
+            let cycle_validation = start.elapsed();
+            let objects_before_commit = heap.stats().live_objects;
+            let start = std::time::Instant::now();
+            let commit_allocation = allocation_counter::measure(|| {
+                heap.commit_derived(output, Value::NULL).unwrap();
+            });
             let commit = start.elapsed();
+            let commit_objects = heap.stats().live_objects - objects_before_commit;
+            eprintln!(
+                "model-dependency-phases rows={n} dependency_reads={dependency_reads:?} endpoint_resolution={endpoint_resolution:?} cycle_validation={cycle_validation:?} commit_alloc_live={} commit_alloc_peak={} commit_objects={commit_objects}",
+                commit_allocation.bytes_current, commit_allocation.bytes_max,
+            );
             let before_freshness = heap.stats().charged_bytes;
             let start = std::time::Instant::now();
             assert!(heap.derived_is_current(output, None).unwrap());
