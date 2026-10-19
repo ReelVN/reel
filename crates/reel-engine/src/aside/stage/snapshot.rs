@@ -186,6 +186,7 @@ impl StageBinding {
             let version = match shape {
                 Shape::Video => 4,
                 Shape::Image => 8,
+                Shape::Particles => 7,
                 _ => 6,
             };
             registry.register_validator(name, version, shape.validator())?;

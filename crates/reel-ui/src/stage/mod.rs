@@ -213,7 +213,7 @@ pub struct NodeClick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
-    Particles(particles::ParticleBatch),
+    Particles(particles::ParticleNode),
     Text(reel_core::text::Text),
     TextInput {
         value: Arc<str>,
@@ -509,18 +509,29 @@ impl Stage {
             parent = node.parent;
         }
     }
-    /// Publish a constant-size particle clock projection without copying nodes.
-    pub fn set_particle_frame(
-        &mut self,
-        id: NodeId,
-        frame: Option<particles::ParticleFrame>,
-    ) -> Result<(), StageError> {
+    /// Clock changes do not clone the immutable emission collection.
+    pub fn set_particle_time(&mut self, id: NodeId, time: f64) -> Result<(), StageError> {
         let node = self.nodes.get_mut(&id).ok_or(StageError::RetiredNode)?;
-        let NodeKind::Particles(batch) = &mut node.kind else {
+        let NodeKind::Particles(particles) = &mut node.kind else {
             return Err(StageError::NotContainer);
         };
-        if batch.frame != frame {
-            batch.frame = frame;
+        if particles.time != time {
+            particles.time = time;
+            self.changed(id, false);
+        }
+        Ok(())
+    }
+    pub fn set_particle_batches(
+        &mut self,
+        id: NodeId,
+        batches: particles::ParticleBatches,
+    ) -> Result<(), StageError> {
+        let node = self.nodes.get_mut(&id).ok_or(StageError::RetiredNode)?;
+        let NodeKind::Particles(particles) = &mut node.kind else {
+            return Err(StageError::NotContainer);
+        };
+        if particles.batches != batches {
+            particles.batches = batches;
             self.changed(id, false);
         }
         Ok(())

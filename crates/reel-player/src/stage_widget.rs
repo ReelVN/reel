@@ -536,7 +536,7 @@ fn image_source(kind: &NodeKind) -> Option<(&str, &Option<String>)> {
         {
             Some((source.key(), origin))
         }
-        NodeKind::Particles(batch) => Some((&batch.config.source, &batch.config.origin)),
+        NodeKind::Particles(batch) => Some((&batch.source, &batch.origin)),
         _ => None,
     }
 }
@@ -1323,10 +1323,7 @@ impl SceneWidget {
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {
                     (NodeKind::VirtualList(a), NodeKind::VirtualList(b)) => a != b,
-                    (NodeKind::Particles(a), NodeKind::Particles(b)) => {
-                        a.config != b.config
-                            || a.frame.map(|f| f.extent) != b.frame.map(|f| f.extent)
-                    }
+                    (NodeKind::Particles(a), NodeKind::Particles(b)) => a.batches != b.batches,
                     (
                         NodeKind::Scroll {
                             axis: a,
@@ -1956,8 +1953,9 @@ impl Widget for SceneWidget {
             }
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
-            let insets = batch.frame.map_or(Insets::ZERO, |frame| {
-                let config = &batch.config;
+            let insets = batch.batches.iter().fold(Insets::ZERO, |insets, emission| {
+                let frame = emission.frame;
+                let config = &emission.config;
                 let max_size =
                     (config.size + config.size_spread).max(config.size_end.unwrap_or(0.));
                 let lifetime = config.max_lifetime();
@@ -1971,10 +1969,14 @@ impl Widget for SceneWidget {
                 // Birth dimensions belong to emit's snapshot, not the current
                 // layout. Resizing must keep older sprites inside paint bounds.
                 Insets::new(
-                    reach[0],
-                    reach[1],
-                    (frame.extent[0] + reach[0] - size.width).max(0.),
-                    (frame.extent[1] + reach[1] - size.height).max(0.),
+                    insets.x0.max(reach[0] - frame.origin[0]),
+                    insets.y0.max(reach[1] - frame.origin[1]),
+                    insets
+                        .x1
+                        .max((frame.origin[0] + frame.extent[0] + reach[0] - size.width).max(0.)),
+                    insets
+                        .y1
+                        .max((frame.origin[1] + frame.extent[1] + reach[1] - size.height).max(0.)),
                 )
             });
             ctx.set_paint_insets(insets);

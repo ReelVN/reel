@@ -849,7 +849,7 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 13. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 15. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 
@@ -1338,31 +1338,38 @@ configure preserves omitted fields and returns an activity; await receives the a
 
 ### Sprite particles
 
-`particles` creates one stage node for snow, petals or other sprite effects. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. `emit` starts it and returns an activity; configure the birth rectangle with width/height. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
+`particles(source, seed:0, ...node properties)` creates one stage node with a shared sprite and coordinate space. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. Each `emit` appends a batch and returns its own activity. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
 
 ```aside
-let petals = particles("assets/petal.png", width: 1280, height: 20,
-    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
-    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
-    spin_spread: 60);
+let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
 stage.replace(petals);
-let falling = emit(petals, duration: 10);
+let falling = emit(petals, burst: 0, rate: 80, duration: 10,
+    lifetime: 8, velocity_y: 90, velocity_x: 15, spread_x: 30,
+    size: 18, size_spread: 6, spin_spread: 60);
 await falling;
 ```
 
-Defaults: rate 60 particles/second, burst 0, lifetime 5 seconds, lifetime_spread 0, seed 0, velocity_x/y 0/80, spread_x/y 20/20, acceleration_x/y 0/0, size 12, size_spread 4, size_end null, opacity_start/end 1/0, spin 0 and spin_spread 30 degrees/second. Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed lifetime. Each particle uses its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured by emit (omitted dimensions are zero). burst particles appear immediately, then rate adds a particle every 1/rate seconds. Configurations are read-only; ordinary position, rotation, scale, visibility, opacity and clipping remain editable and animatable.
+`emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` describes this batch. The default emits one particle immediately. Set burst to zero for a stream whose first particle is born after 1/rate seconds. duration null keeps a positive-rate stream emitting; a finite duration includes births at its endpoint. rate zero emits only the burst, even with duration null. duration zero still emits the burst. The activity completes when its last particle actually dies.
 
-Omit duration to emit continuously. A finite duration includes births exactly at its endpoint and completes when the last particle actually dies. rate:0 creates only the burst and completes naturally; rate:0 with burst:0 completes immediately. duration:0 still emits the burst. `pause(falling)` freezes the whole effect, `resume(falling)` continues it, and `stop(falling)` clears particles and returns Stopped from await. `finish(falling)` clears a finite effect and returns Completed; it rejects continuous emission. Calling emit again on the same node stops the previous activity and restarts its seeded sequence. The same seed and elapsed time reproduce the same particles regardless of frame timing. Retiring the node or activity owner cancels emission; hiding it does not pause it. Owner defaults follow other activities; cancelling a waiter leaves emission running. Completed activities retain their result for repeated waits. Particles share the stage image resource and renderer; no script runs for each particle. Save/restore preserves running effects, their elapsed time and paused state.
+Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed the positive lifetime. Each particle has its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured from the node by each emit (omitted dimensions are zero). The batch x/y is the rectangle origin in node-local coordinates; both accept positive or negative finite numbers and are fixed at emission. Moving the node still moves every batch; use emit x/y to add effects at different positions on the same node. Velocity uses logical pixels/second, acceleration pixels/second² and spin degrees/second. Source and seed are read-only; the node's position, rotation, scale, visibility, opacity and clipping still affect every batch.
 
-Use a burst with varying lifetimes and shrinking widths for a short spray:
+`pause(falling)` freezes only that batch's births and motion, `resume(falling)` continues it, and `stop(falling)` clears that batch and returns Stopped from await. `finish(falling)` clears a finite batch and returns Completed; it rejects continuous emission. Calling emit again leaves previous batches running. The node seed, successful emission order and elapsed time reproduce the same particles regardless of frame timing; successive emissions use different samples. Retiring the node cancels all its batches; retiring an owner or scope cancels its batches. Hiding does not pause. Cancelling a waiter leaves emission running. Terminal results can be awaited again. Save/restore retains each batch's configuration, time, pause and owner, plus the next emission sequence. No script runs for each particle.
+
+This overlapping spray emits twice on the same node. Common styles can be ordinary functions around emit:
 
 ```aside
-let spray = particles("assets/petal.png", x: 640, y: 360,
-    rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
-    velocity_y: -160, spread_x: 180, spread_y: 100,
-    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+let spray = particles("assets/petal.png", x: 640, y: 360, seed: 42);
 stage.replace(spray);
-await emit(spray);
+fn burst() {
+    emit(spray, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+        velocity_y: -160, spread_x: 180, spread_y: 100,
+        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
+}
+let first = burst();
+await run(delay(0.2));
+let second = burst();
+await first;
+await second;
 spray.remove();
 ```
 

@@ -860,7 +860,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 13；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 15；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1335,31 +1335,38 @@ configure 省略的项保持原值，返回活动，await 得到平台应用后�
 
 ### 图片粒子
 
-`particles` 用一个舞台节点组合落雪、花瓣等图片效果。source 必须是完整 PNG/JPEG 精灵，分块 `.reel-image` 只供 `image` 节点使用；`emit` 启动并返回活动，width/height 指定出生矩形。示例使用你提供的 `assets/petal.png` 和 `fonts/body.ttf`，完整入口见 [author_particles.aside](../../examples/author_particles.aside)。
+`particles(source, seed:0, ...节点属性)` 创建一个共享精灵与坐标空间的舞台节点。source 必须是完整 PNG/JPEG 精灵；预处理的 `.reel-image` 只供 image 使用。每次 `emit` 追加一个批次并返回独立活动。示例需要自行提供 `assets/petal.png` 和 `fonts/body.ttf`，完整示例见 [author_particles.aside](../../examples/author_particles.aside)。
 
 ```aside
-let petals = particles("assets/petal.png", width: 1280, height: 20,
-    rate: 80, lifetime: 8, seed: 42, velocity_y: 90,
-    velocity_x: 15, spread_x: 30, size: 18, size_spread: 6,
-    spin_spread: 60);
+let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
 stage.replace(petals);
-let falling = emit(petals, duration: 10);
+let falling = emit(petals, burst: 0, rate: 80, duration: 10,
+    lifetime: 8, velocity_y: 90, velocity_x: 15, spread_x: 30,
+    size: 18, size_spread: 6, spin_spread: 60);
 await falling;
 ```
 
-缺省值：rate 每秒 60 粒，burst 0，lifetime 5 秒，lifetime_spread 0，seed 0，velocity_x/y 为 0/80，spread_x/y 为 20/20，acceleration_x/y 为 0/0，size 12，size_spread 4，size_end null，opacity_start/end 为 1/0，spin 0、spin_spread 每秒 30 度。spread 表示基值两侧均匀取样的半幅；size 为图片宽度，保留原宽高比，size_spread 不得超过 size，lifetime_spread 不得超过 lifetime。每粒寿命按种子独立取样；size_end:null 保留每粒随机出生宽度，非负终值使宽度在该粒寿命内线性变化。出生位置在 emit 启动时读取的 width/height 内均匀分布（未指定时为零）；burst 粒立即出生，随后每 1/rate 秒增加一粒。配置只读；共同位置、旋转、缩放、可见性、透明度及裁剪仍可更新和动画。
+`emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` 描述本批粒子。默认立即发射一粒。burst 为零时，定时流的第一粒在 1/rate 秒后出生。duration 为 null 时，正 rate 持续发射；有限 duration 包含截止时刻的出生。rate 为零只产生瞬发粒子，即使 duration 为 null。duration 为零仍发射 burst。最后一粒实际死亡后，活动完成。
 
-省略 duration 持续发射；有限时长包含截止时刻出生的粒子，等待最后一粒实际死亡后返回 Completed。rate:0 只产生瞬发粒子并自然结束；rate:0 且 burst:0 立即完成。duration:0 仍产生 burst。`pause(falling)` 冻结整个效果，`resume(falling)` 继续，`stop(falling)` 清空粒子并使 await 返回 Stopped。`finish(falling)` 清空有限效果并返回 Completed，持续效果不接受 finish。同一节点再次 emit 停止原活动，从同一种子重新开始；同一种子和累计时间与分帧无关。节点或活动 owner 退休取消发射，隐藏不暂停。缺省 owner 沿用其他活动规则；取消等待者不取消生产者。终态保留以供重复等待。粒子共用舞台图片资源和绘制路径，不逐粒子运行脚本。存档恢复保留运行效果、累计时间和暂停状态。
+spread 是围绕基值的均匀半幅；size 是保留图片宽高比的宽度。size_spread 不超过 size，lifetime_spread 不超过正数 lifetime，每粒分别确定性取样寿命。size_end 为 null 时保留随机出生宽度，非负终值则在该粒寿命内线性插值。每次 emit 捕获节点 width/height 作为均匀出生矩形尺寸，缺省为零。本批 x/y 指定节点本地坐标中的矩形原点，接受正负有限数并在发射时固定。修改节点 x/y 仍移动全部批次；用 emit 的 x/y 可在同一节点的不同位置追加效果。速度单位是逻辑像素/秒，加速度为像素/秒²，spin 为度/秒。source 和 seed 只读；节点的位置、旋转、缩放、可见性、透明度和裁剪仍同时作用于全部批次。
 
-短暂喷射可以组合瞬发、不同寿命和逐渐缩小的宽度：
+`pause(falling)` 只冻结本批的出生与运动，`resume(falling)` 继续，`stop(falling)` 清除本批并使 await 返回 Stopped。`finish(falling)` 清除有限批次并返回 Completed，连续发射不可 finish。再次 emit 保留旧批次。相同节点种子、成功发射顺序和累计时间产生相同粒子，不依赖分帧；连续发射使用不同随机样本。节点退休取消全部批次，owner 或作用域退休取消归属它的批次。隐藏不暂停；取消等待者不取消生产者；终态可重复 await。存读档保留各批的配置、时间、暂停与归属，以及下一发射序号，不执行逐粒脚本。
+
+以下喷射在同一节点上重叠两批。通用风格可用普通函数封装 emit：
 
 ```aside
-let spray = particles("assets/petal.png", x: 640, y: 360,
-    rate: 0, burst: 48, lifetime: 1, lifetime_spread: 0.4,
-    velocity_y: -160, spread_x: 180, spread_y: 100,
-    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0);
+let spray = particles("assets/petal.png", x: 640, y: 360, seed: 42);
 stage.replace(spray);
-await emit(spray);
+fn burst() {
+    emit(spray, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+        velocity_y: -160, spread_x: 180, spread_y: 100,
+        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
+}
+let first = burst();
+await run(delay(0.2));
+let second = burst();
+await first;
+await second;
 spray.remove();
 ```
 
