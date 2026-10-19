@@ -1139,24 +1139,22 @@ impl StageBinding {
         }
         let id = self.id(heap, receiver)?;
         let parent = heap.host_payload(receiver, 2)?;
-        let edges = if parent.tag() != ValueTag::Null {
-            let previous = heap.host_payload(parent, 1)?;
-            let next = heap.alloc_array(&[])?;
-            for i in 0..heap.sequence_len(previous)? {
-                let child = heap.sequence_get(previous, i)?;
-                if !child.same_bits(receiver) {
-                    heap.array_push(next, child)?;
-                }
+        if parent.tag() != ValueTag::Null {
+            let edges = heap.host_payload(parent, 1)?;
+            let len = heap.sequence_len(edges)?;
+            let index = (0..len)
+                .rev()
+                .find(|&i| heap.sequence_get(edges, i).unwrap().same_bits(receiver))
+                .expect("mounted child has a traced parent edge");
+            // The parent edge array is private stage storage. Compact it in
+            // place so retirement does not allocate a replacement child tree.
+            for i in index..len - 1 {
+                heap.set_field(edges, i, heap.sequence_get(edges, i + 1)?)?;
             }
-            Some(next)
-        } else {
-            None
-        };
+            heap.array_pop(edges)?;
+        }
         let was_root = self.scene.root() == Some(id);
         let retired = self.scene.remove(id)?;
-        if let Some(edges) = edges {
-            heap.set_host_payload(parent, 1, edges)?;
-        }
         if was_root && let Some(root) = self.root.take() {
             heap.release_root(root)?;
         }

@@ -111,6 +111,66 @@ fn scope_nodes_restore_without_rebuilding_and_cancel_node_owned_work() {
     }
 }
 
+#[test]
+fn scope_nodes_retirement_reuses_parent_edges_without_vm_chunk_allocation() {
+    let code = r#"fn opening() {
+        let root=stack(); stage.replace(root);
+        root.add(text("before"));
+        scope(body: |s| {
+            let mut i=0;
+            while i<256 { s.add(root,stack()); i+=1; }
+            root.add(text("after"));
+            narrator("retire");
+        });
+    }"#;
+    let (mut session, mut vm) = prepared(code, true);
+    drive(&mut vm, &mut session, false);
+    let interaction = session.view().interaction.unwrap().id();
+    for _ in 0..2 {
+        session
+            .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+            .unwrap();
+    }
+    let mut measured = false;
+    for _ in 0..1000 {
+        match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                let package = vm.vm.program().package();
+                let closing = package.symbols
+                    [package.natives[ticket.native.index()].symbol.index()]
+                    == "reel::scope"
+                    && ticket.input == NativeInput::CallbackReturned;
+                let before = vm.vm.heap().stats().chunk_allocations;
+                vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                if closing {
+                    assert_eq!(
+                        vm.vm.heap().stats().chunk_allocations,
+                        before,
+                        "retirement allocated replacement child arrays"
+                    );
+                    measured = true;
+                    break;
+                }
+            }
+            SessionStep::Vm(RunOutcome::BudgetYield(_)) | SessionStep::Progress => {}
+            other => panic!("scope did not return: {other:?}"),
+        }
+    }
+    assert!(measured);
+    drive(&mut vm, &mut session, true);
+    let stage = vm.stage();
+    let children = &stage.node(stage.root().unwrap()).unwrap().children;
+    assert_eq!(children.len(), 2);
+    assert_eq!(
+        stage.node(children[0]).unwrap().kind,
+        NodeKind::Text("before".into())
+    );
+    assert_eq!(
+        stage.node(children[1]).unwrap().kind,
+        NodeKind::Text("after".into())
+    );
+}
+
 fn restored(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
     use super::snapshot::{SessionSnapshot, SnapshotBudget};
     let bytecode = bc::encode(vm.vm.program().package(), bc::Limits::default()).unwrap();
