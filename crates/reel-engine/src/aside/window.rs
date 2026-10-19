@@ -40,6 +40,7 @@ fn table(heap: &mut Heap, fields: &[(&str, Value)]) -> Result<Value, AdapterErro
     Ok(value)
 }
 fn value(heap: &mut Heap, info: &WindowInfo) -> Result<Value, AdapterError> {
+    let platform = heap.alloc_string(info.platform.as_str())?;
     let capabilities = table(
         heap,
         &[
@@ -62,6 +63,7 @@ fn value(heap: &mut Heap, info: &WindowInfo) -> Result<Value, AdapterError> {
     table(
         heap,
         &[
+            ("platform", platform),
             ("width", Value::float(info.size.width)),
             ("height", Value::float(info.size.height)),
             ("windowed_width", Value::float(info.windowed_size.width)),

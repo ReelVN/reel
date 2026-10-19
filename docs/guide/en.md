@@ -1322,7 +1322,7 @@ Runnable example: [author_audio.aside](../../examples/author_audio.aside), using
 
 Run [author_window.aside](../../examples/author_window.aside) with your own `fonts/body.ttf`, using the same assets directory as the audio example above.
 
-`window.info()` returns the current client area's logical width/height, scale_factor, fullscreen, vsync, windowed_width/windowed_height, capabilities and resolutions. resolutions lists the current display's available sizes converted to logical pixels; these are separate from the stage canvas. Check capabilities.resize/fullscreen/vsync before showing corresponding controls. A host without a window reports all capabilities as false.
+`window.info()` returns the current client area's logical width/height, scale_factor, fullscreen, vsync, windowed_width/windowed_height, platform, capabilities and resolutions. The host supplies platform as windows, macos, linux, android, ios, web or unknown; a host without a window or a declared platform reports unknown. Use this field for platform-specific wording and capabilities.resize/fullscreen/vsync for available settings; a host without a window reports all capabilities as false. resolutions lists the current display's available sizes converted to logical pixels; these are separate from the stage canvas. Call info again after restoring a save to read the current host; a previously saved display table retains its original values. The [runnable window example](../../examples/author_window.aside) displays the platform and client size together.
 
 ```aside
 let mut display = window.info();

@@ -77,7 +77,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::window::{name}"),
-            abi_version: 1,
+            abi_version: 2,
             parameters: fields
                 .iter()
                 .map(|field| NativeParameter {

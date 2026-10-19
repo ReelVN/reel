@@ -1319,7 +1319,7 @@ cargo test -p reel-cli --test project_scenarios external_project_scenario -- --i
 
 使用自己的 `fonts/body.ttf` 运行 [author_window.aside](../../examples/author_window.aside)，资源目录可沿用上面的音频示例。
 
-`window.info()` 返回当前客户区的逻辑 width/height、scale_factor、fullscreen、vsync、窗口模式的 windowed_width/windowed_height，以及 capabilities 和 resolutions。resolutions 是当前显示器可用尺寸换算为逻辑像素后的列表，不是舞台画布大小。先检查 capabilities.resize/fullscreen/vsync 再显示对应控件；无窗口宿主的能力均为 false。
+`window.info()` 返回当前客户区的逻辑 width/height、scale_factor、fullscreen、vsync、窗口模式的 windowed_width/windowed_height，以及 platform、capabilities 和 resolutions。platform 为宿主提供的 windows、macos、linux、android、ios、web 或 unknown；无窗口或未声明的平台为 unknown。适配平台文案可读取这个字段，显示设置按 capabilities.resize/fullscreen/vsync 决定；无窗口宿主的能力均为 false。resolutions 是当前显示器可用尺寸换算为逻辑像素后的列表，不是舞台画布大小。存档恢复后重新调用 info 可读取当前宿主，先前保存的 display 表仍保留原值。[可运行窗口示例](../../examples/author_window.aside)同时展示平台与客户区尺寸。
 
 ```aside
 let mut display = window.info();
