@@ -88,12 +88,12 @@ pub(crate) struct GraphCapture {
 }
 impl GraphCapture {
     pub fn new(heap: &Heap) -> Result<Self, SnapshotError> {
-        if heap.reactive_capture.is_some() || heap.property_proposal.is_some() {
+        if heap.property_proposal.is_some() {
             return Err(SnapshotError::Busy(
-                "binding evaluation must finish before capture",
+                "property proposal must finish before capture",
             ));
         }
-        Ok(Self {
+        let mut capture = Self {
             root: 0,
             range: 0,
             range_offset: None,
@@ -101,7 +101,11 @@ impl GraphCapture {
             seen: HashSet::new(),
             object: 0,
             offset: None,
-        })
+        };
+        if let Some(output) = heap.reactive_capture {
+            capture.trace(heap, output)?;
+        }
+        Ok(capture)
     }
     fn trace(&mut self, heap: &Heap, value: Value) -> Result<(), SnapshotError> {
         if value.object_parts().is_some() {
@@ -273,6 +277,28 @@ impl GraphCapture {
             }
         }
         Ok(false)
+    }
+}
+
+impl Heap {
+    pub(crate) fn snapshot_reactive_state(&self) -> (Option<Value>, u64) {
+        (self.reactive_capture, self.evaluation)
+    }
+
+    pub(crate) fn restore_reactive_state(
+        &mut self,
+        output: Option<Value>,
+        evaluation: u64,
+    ) -> Result<(), SnapshotError> {
+        if let Some(output) = output {
+            let object = self.object(self.key(output)?)?;
+            if !object.derived {
+                return Err(SnapshotError::Invalid("reactive capture output".into()));
+            }
+        }
+        self.reactive_capture = output;
+        self.evaluation = evaluation;
+        Ok(())
     }
 }
 

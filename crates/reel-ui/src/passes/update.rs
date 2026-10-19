@@ -75,7 +75,7 @@ fn run_targeted_update_pass(
     }
 }
 
-fn run_single_update_pass(
+pub(super) fn run_single_update_pass(
     root: &mut RenderRoot,
     target: Option<WidgetId>,
     mut pass_fn: impl FnMut(&mut dyn Widget, &mut UpdateCtx<'_>, &mut PropertiesMut<'_>),

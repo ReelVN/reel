@@ -11,7 +11,7 @@ use reel_ui::{
 };
 use std::sync::Arc;
 pub fn settle(driver: &mut AsideSessionUi) {
-    for _ in 0..10_000 {
+    for _ in 0..100_000 {
         match driver
             .tick(
                 SliceBudget {

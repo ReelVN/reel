@@ -21,6 +21,7 @@ pub(in crate::aside) enum Shape {
     Row,
     Column,
     Stack,
+    VirtualList,
 }
 
 impl Shape {
@@ -57,7 +58,7 @@ impl Shape {
             Self::Particles => super::super::particles::PREFIX.len(),
             Self::Camera => camera::CameraField::PROPERTIES.len(),
             Self::Scroll => scroll::ScrollField::PROPERTIES.len(),
-            Self::Row | Self::Column | Self::Stack => 0,
+            Self::Row | Self::Column | Self::Stack | Self::VirtualList => 0,
         }
     }
     pub(super) fn project(
@@ -125,6 +126,7 @@ impl Shape {
             Self::Row => NodeKind::Row,
             Self::Column => NodeKind::Column,
             Self::Stack => NodeKind::Stack,
+            Self::VirtualList => unreachable!("virtual list projects its VM-owned state"),
         })
     }
     pub(super) fn validator(self) -> aside_vm::HostPropertyValidator {
@@ -147,7 +149,7 @@ impl Shape {
             Self::Particles => super::super::particles::validate,
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
-            Self::Row | Self::Column | Self::Stack => {
+            Self::Row | Self::Column | Self::Stack | Self::VirtualList => {
                 |h, _, i, v| validate_layout_property(h, i, v)
             }
         }
@@ -216,7 +218,11 @@ impl StageBinding {
         let value = heap.import_handle(handle)?;
         let fields = heap.host_fields(value)?;
         let mask_origin = saved.origin.as_deref().map(Arc::from);
-        let kind = saved.shape.project(heap, fields, saved.origin, limit)?;
+        let kind = if saved.shape == Shape::VirtualList {
+            NodeKind::VirtualList(super::super::lists::virtualized::project(heap, value)?)
+        } else {
+            saved.shape.project(heap, fields, saved.origin, limit)?
+        };
         let props = read_props(heap, fields, saved.shape.prefix(), limit, None, mask_origin)?;
         let mask_source = mask_handle(heap, fields, saved.shape.prefix())?;
         let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;

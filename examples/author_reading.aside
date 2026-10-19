@@ -11,7 +11,7 @@ fn history_page() {
     let history = game.history();
     stack(modal: true, width: 1000, height: 720, background: "#101926ff") {
         scroll(x: 40, y: 80, width: 920, height: 570, follow_end: true) {
-            list(|| history, key: |group| group.group_id, build: |row| {
+            list(|| history, key: |group| group.group_id, virtual: true, build: |row| {
                 column(gap: 8) {
                     for line in row.value.lines {
                         text(line.speaker_name, color: "#9ed8ff");

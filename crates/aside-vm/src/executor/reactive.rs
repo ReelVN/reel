@@ -69,9 +69,54 @@ impl Vm {
         pure: bool,
         retained: &[Value],
     ) -> Result<(), VmError> {
+        self.prepare_reactive(ticket, output)?;
+        if let Err(error) = self.respond(
+            ticket,
+            HostResponse::CallScript {
+                closure,
+                arguments: &[],
+                continuation: Continuation {
+                    version: 1,
+                    stage: 0,
+                    values: retained,
+                    faults: FaultRetention::Preserve,
+                },
+            },
+        ) {
+            self.heap.end_derived(output)?;
+            return Err(error);
+        }
+        self.enter_reactive_context(output, pure);
+        Ok(())
+    }
+
+    /// Start a host-maintained observer in the same native frame. The caller
+    /// retains `output` in its continuation, and commits or ends the capture
+    /// exactly as for `call_reactive`; no script callback is required.
+    pub fn begin_reactive(
+        &mut self,
+        ticket: HostTicket,
+        output: Value,
+        pure: bool,
+        continuation: Continuation<'_>,
+    ) -> Result<(), VmError> {
+        self.prepare_reactive(ticket, output)?;
+        if let Err(error) = self.respond(ticket, HostResponse::Continue(continuation)) {
+            self.heap.end_derived(output)?;
+            return Err(error);
+        }
+        self.enter_reactive_context(output, pure);
+        Ok(())
+    }
+
+    fn prepare_reactive(&mut self, ticket: HostTicket, output: Value) -> Result<(), VmError> {
         self.select_task(ticket.task)?;
         let native = self.ticket(ticket)?;
-        if native.derived_output.is_none() {
+        if self
+            .heap
+            .host_payload(output, DerivedSlot::Function as u32)?
+            .same_bits(Value::NULL)
+        {
             let arguments = self.heap.alloc_array(&[])?;
             let count = self.host_arguments(ticket)?.len();
             for i in 0..count {
@@ -104,29 +149,16 @@ impl Vm {
             )?;
         }
         self.heap.begin_derived(output)?;
-        if let Err(error) = self.respond(
-            ticket,
-            HostResponse::CallScript {
-                closure,
-                arguments: &[],
-                continuation: Continuation {
-                    version: 1,
-                    stage: 0,
-                    values: retained,
-                    faults: FaultRetention::Preserve,
-                },
-            },
-        ) {
-            self.heap.end_derived(output)?;
-            return Err(error);
-        }
+        Ok(())
+    }
+
+    fn enter_reactive_context(&mut self, output: Value, pure: bool) {
         let Frame::Native(frame) = self.active.frames.data.last_mut().unwrap() else {
             unreachable!()
         };
         frame.context.derived |= pure;
         frame.context.no_wait = true;
         frame.derived_output = Some(output);
-        Ok(())
     }
 
     pub fn start_derived(&mut self, output: Value, owner: RootOwner) -> Result<TaskId, VmError> {

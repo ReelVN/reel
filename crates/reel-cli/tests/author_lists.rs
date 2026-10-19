@@ -7,6 +7,94 @@ use reel_ui::{input::GamepadButton, stage::NodeKind};
 use support::*;
 
 #[test]
+fn virtual_list_source_and_asb_layout_navigation_and_filter_share_one_stage() {
+    let source = r#"
+        fn main() {
+            let data=model({items:[],even:false,selected:-1});
+            let mut i=0; while i<1000 {data.items.append({id:i,expanded:false});i+=1;}
+            stage.replace(stack(width:600,height:400) {
+                scroll(width:400,height:180) {
+                    list(|| {
+                        let result=[];
+                        for item in data.items {if !data.even || item.id%2==0 {result.append(item);}}
+                        result
+                    },key:|item|item.id,virtual:true,build:|row|column(gap:2) {
+                        button(label:derive(||f"item {row.value.id}"),height:30,width:300,on_click:|e|{
+                            data.selected=row.value.id;row.value.expanded=!row.value.expanded;
+                        });
+                        text("description",height:18+(row.value.id%3)*12);
+                        text("expanded",height:40,visible:derive(||row.value.expanded));
+                    });
+                };
+                button("filter",x:450,y:0,width:100,height:40,on_click:|e|{data.even=!data.even;});
+                text(value:derive(||f"selected:{data.selected}"),y:240);
+            });
+            narrator("ready");
+        }
+    "#;
+    let checked = reel_cli::check(source, "virtual.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        let mut frame = 0;
+        let mut flush = |driver: &mut AsideSessionUi,
+                         bridge: &mut reel_ui::bridge::PresentationBridge| {
+            for _ in 0..5 {
+                frame += 1;
+                present(driver, bridge, root, frame);
+                settle(driver);
+            }
+        };
+        flush(&mut driver, &mut bridge);
+        assert!(driver.adapter().stage().nodes().count() < 80);
+        click_at(&mut driver, &mut bridge, 20., 15.);
+        flush(&mut driver, &mut bridge);
+        for _ in 0..25 {
+            gamepad_press(&mut driver, &mut bridge, GamepadButton::DpadDown);
+            flush(&mut driver, &mut bridge);
+        }
+        gamepad_press(&mut driver, &mut bridge, GamepadButton::South);
+        flush(&mut driver, &mut bridge);
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("selected:25".into()))
+        );
+        assert!(driver.adapter().stage().nodes().count() < 100);
+        click_at(&mut driver, &mut bridge, 470., 20.);
+        flush(&mut driver, &mut bridge);
+        let view = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find_map(|n| {
+                if let NodeKind::VirtualList(v) = &n.kind {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(view.total_rows, 500);
+        assert!(view.rows.len() < 30);
+        driver.cancel().unwrap();
+    }
+}
+
+#[test]
 fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
     let source = r#"
     fn main() {

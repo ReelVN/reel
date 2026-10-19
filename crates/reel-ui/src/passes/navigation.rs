@@ -3,11 +3,316 @@
 
 use super::{
     event::run_event_pass,
-    update::{find_first_focusable, run_update_focus_pass},
+    update::{find_first_focusable, run_single_update_pass, run_update_focus_pass},
 };
 use crate::app::{GeometryView, RenderRoot};
 use crate::core::{Handled, TextEvent, WidgetId};
 use crate::input::{ActionPhase, NavigationAction, NavigationEvent};
+
+#[derive(Clone, Copy)]
+pub(crate) struct DeferredNavigation {
+    owner: WidgetId,
+    anchor: Option<WidgetId>,
+    index: usize,
+    forward: bool,
+    direction: Option<NavigationAction>,
+}
+
+fn request_virtual(root: &mut RenderRoot, request: DeferredNavigation) {
+    cancel(root);
+    root.global_state.deferred_navigation = Some(request);
+    run_single_update_pass(root, Some(request.owner), |widget, ctx, props| {
+        widget.request_virtual_child(ctx, props, Some((request.index, request.forward)));
+    });
+}
+
+pub(crate) fn cancel_virtual(root: &mut RenderRoot) {
+    if let Some(request) = root.global_state.deferred_navigation.take() {
+        run_single_update_pass(root, Some(request.owner), |widget, ctx, props| {
+            widget.request_virtual_child(ctx, props, None);
+        });
+    }
+}
+
+fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> bool {
+    if root.is_descendant(candidate, anchor) {
+        return true;
+    }
+    if root.is_descendant(anchor, candidate) {
+        return false;
+    }
+    let mut current = anchor;
+    while let Some(parent) = root.widget_arena.parent_of(current) {
+        if root.is_descendant(candidate, parent) {
+            let mut other = candidate;
+            while root.widget_arena.parent_of(other) != Some(parent) {
+                other = root.widget_arena.parent_of(other).expect("common ancestor");
+            }
+            let children = root
+                .widget_arena
+                .get_node(parent)
+                .item
+                .widget
+                .children_ids();
+            return children.iter().position(|&id| id == other)
+                > children.iter().position(|&id| id == current);
+        }
+        current = parent;
+    }
+    false
+}
+
+fn entry_gap(
+    root: &mut RenderRoot,
+    candidate: Option<WidgetId>,
+    forward: bool,
+) -> Option<(WidgetId, usize)> {
+    let inspect = |root: &RenderRoot, owner| {
+        if !root.focus_in_scope(owner) {
+            return None;
+        }
+        if let Some(candidate) = candidate
+            && !root.is_descendant(candidate, owner)
+            && follows_in_tree(root, owner, candidate) != forward
+        {
+            return None;
+        }
+        let node = root.widget_arena.nodes.find(owner)?;
+        let list = node.item.widget.virtual_children()?;
+        if let crate::app::InputGeometrySource::Presented(view) =
+            &root.global_state.input_geometry_source
+            && view.as_ref()?.get(owner)?.virtual_revision != Some(list.revision)
+        {
+            return None;
+        }
+        let stop = candidate.and_then(|candidate| {
+            list.children
+                .iter()
+                .find(|row| root.is_descendant(candidate, row.widget))
+                .map(|row| row.index)
+        });
+        let mut index = if forward {
+            list.children.first().map_or(Some(0), |row| Some(row.index))
+        } else {
+            list.children
+                .last()
+                .map(|row| row.index)
+                .or_else(|| list.total.checked_sub(1))
+        };
+        while let Some(next) = index.filter(|&next| next < list.total) {
+            if Some(next) == stop {
+                return None;
+            }
+            if !list.children.iter().any(|row| row.index == next) {
+                return Some((owner, next));
+            }
+            index = if forward {
+                next.checked_add(1)
+            } else {
+                next.checked_sub(1)
+            };
+        }
+        None
+    };
+    if let crate::app::InputGeometrySource::Presented(Some(view)) =
+        &root.global_state.input_geometry_source
+    {
+        return if forward {
+            view.records()
+                .iter()
+                .find_map(|record| inspect(root, record.id))
+        } else {
+            view.records()
+                .iter()
+                .rev()
+                .find_map(|record| inspect(root, record.id))
+        };
+    }
+    let mut walk = std::mem::take(&mut root.global_state.navigation_walk);
+    walk.clear();
+    walk.push(root.global_state.modal_scope.unwrap_or(root.root_id()));
+    let mut found = None;
+    while let Some(owner) = walk.pop() {
+        if let Some(gap) = inspect(root, owner) {
+            found = Some(gap);
+            break;
+        }
+        let children = root.widget_arena.get_node(owner).item.widget.children_ids();
+        if forward {
+            walk.extend(children.into_iter().rev());
+        } else {
+            walk.extend(children);
+        }
+    }
+    root.global_state.navigation_walk = walk;
+    found
+}
+
+/// Check logical gaps before the ordinary spatial or Tab candidate is committed.
+pub(crate) fn defer_virtual(
+    root: &mut RenderRoot,
+    candidate: Option<WidgetId>,
+    forward: bool,
+    direction: Option<NavigationAction>,
+) -> bool {
+    let forward = if root.global_state.focused_widget.is_none() && direction.is_some() {
+        true
+    } else {
+        forward
+    };
+    if let Some(pending) = root.global_state.deferred_navigation {
+        if pending.forward == forward && pending.direction == direction {
+            return true;
+        }
+        cancel_virtual(root);
+    }
+    let Some(anchor) = root.global_state.focused_widget else {
+        if let Some((owner, index)) = entry_gap(root, candidate, forward) {
+            request_virtual(
+                root,
+                DeferredNavigation {
+                    owner,
+                    anchor: None,
+                    index,
+                    forward,
+                    direction,
+                },
+            );
+            return true;
+        }
+        return false;
+    };
+    let mut row = anchor;
+    while let Some(owner) = root.widget_arena.parent_of(row) {
+        let widget = &root.widget_arena.get_node(owner).item.widget;
+        if let Some(list) = widget.virtual_children()
+            && let Some(current) = list.children.iter().find(|entry| entry.widget == row)
+        {
+            if let crate::app::InputGeometrySource::Presented(view) =
+                &root.global_state.input_geometry_source
+                && view
+                    .as_ref()
+                    .and_then(|view| view.get(owner))
+                    .and_then(|record| record.virtual_revision)
+                    != Some(list.revision)
+            {
+                return true;
+            }
+            // Preserve normal navigation among controls inside a logical row.
+            if candidate.is_some_and(|next| {
+                next != anchor
+                    && root.is_descendant(next, row)
+                    && (direction.is_some() || follows_in_tree(root, anchor, next) == forward)
+            }) {
+                return false;
+            }
+            let stop = candidate.and_then(|next| {
+                list.children
+                    .iter()
+                    .find(|entry| root.is_descendant(next, entry.widget))
+                    .map(|entry| entry.index)
+            });
+            let mut index = if forward {
+                current.index.checked_add(1)
+            } else {
+                current.index.checked_sub(1)
+            };
+            while let Some(next) = index.filter(|&next| next < list.total) {
+                if Some(next) == stop {
+                    return false;
+                }
+                if !list.children.iter().any(|entry| entry.index == next) {
+                    request_virtual(
+                        root,
+                        DeferredNavigation {
+                            owner,
+                            anchor: Some(anchor),
+                            index: next,
+                            forward,
+                            direction,
+                        },
+                    );
+                    return true;
+                }
+                index = if forward {
+                    next.checked_add(1)
+                } else {
+                    next.checked_sub(1)
+                };
+            }
+            return false;
+        }
+        row = owner;
+    }
+    false
+}
+
+/// Only accepted presentation can complete a request for a newly mounted row.
+pub(crate) fn resume_virtual(root: &mut RenderRoot) {
+    let Some(mut request) = root.global_state.deferred_navigation else {
+        return;
+    };
+    if root.global_state.focused_widget != request.anchor || !root.focus_in_scope(request.owner) {
+        cancel_virtual(root);
+        return;
+    }
+    let source = root.global_state.input_geometry_source.clone();
+    let view = source.borrow();
+    let Some(node) = root.widget_arena.nodes.find(request.owner) else {
+        return;
+    };
+    let Some(list) = node.item.widget.virtual_children() else {
+        return;
+    };
+    if request.index >= list.total {
+        cancel_virtual(root);
+        return;
+    }
+    if let GeometryView::Presented(view) = view
+        && view
+            .and_then(|view| view.get(request.owner))
+            .and_then(|record| record.virtual_revision)
+            != Some(list.revision)
+    {
+        return;
+    }
+    if list.target != Some((request.index, request.forward)) {
+        return;
+    }
+    let total = list.total;
+    let Some(row) = list
+        .children
+        .iter()
+        .find(|row| row.index == request.index)
+        .map(|row| row.widget)
+    else {
+        return;
+    };
+    if !root.input_in_scope(row, view) {
+        return;
+    }
+    if let Some(next) = find_first_focusable(root, &[], row, request.forward) {
+        cancel_virtual(root);
+        cancel(root);
+        root.global_state.next_focused_widget = Some(next);
+        return;
+    }
+    let next = if request.forward {
+        request.index.checked_add(1)
+    } else {
+        request.index.checked_sub(1)
+    };
+    if let Some(next) = next.filter(|&next| next < total) {
+        request.index = next;
+        request_virtual(root, request);
+    } else {
+        cancel_virtual(root);
+        root.global_state.next_focused_widget = match request.direction {
+            Some(direction) => directional_focus(root, direction, view),
+            None => super::update::find_next_focusable(root, request.forward),
+        };
+    }
+}
 
 fn target(root: &RenderRoot, view: GeometryView<'_>) -> Option<WidgetId> {
     root.global_state
@@ -35,6 +340,7 @@ fn dispatch(
     )
 }
 pub(crate) fn cancel_all(root: &mut RenderRoot) {
+    cancel_virtual(root);
     root.global_state.navigation_directions.clear();
     cancel(root);
 }
@@ -62,6 +368,11 @@ pub(crate) fn run(root: &mut RenderRoot, event: NavigationEvent) -> Handled {
     let source = root.global_state.input_geometry_source.clone();
     let view = source.borrow();
     if matches!(view, GeometryView::Presented(None)) {
+        return Handled::Yes;
+    }
+    if event.action == NavigationAction::Confirm && root.global_state.deferred_navigation.is_some()
+    {
+        cancel(root);
         return Handled::Yes;
     }
     if event.action.is_direction() {
@@ -123,7 +434,14 @@ pub(crate) fn run(root: &mut RenderRoot, event: NavigationEvent) -> Handled {
         && matches!(event.phase, ActionPhase::Pressed | ActionPhase::Repeated)
     {
         let next = directional_focus(root, event.action, view);
-        if next.is_some() {
+        let deferred = matches!(event.action, NavigationAction::Up | NavigationAction::Down)
+            && defer_virtual(
+                root,
+                next,
+                event.action == NavigationAction::Down,
+                Some(event.action),
+            );
+        if !deferred && next.is_some() {
             root.global_state.next_focused_widget = next;
         }
         handled = Handled::Yes;

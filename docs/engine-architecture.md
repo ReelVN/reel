@@ -122,9 +122,21 @@ VM 任务槽按并发数量增长和复用，执行根在宿主准入点扩容/�
 
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
-`list(items, key:, build:, ...NodeProps)` 是 Reel native ABI 2，Aside 字节码/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
+`list(items, key:, build:, virtual:false, ...NodeProps)` 是 Reel native ABI 5，Aside 字节码/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
 
-结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。当前列表保留全部行实例，滚动使用既有 scroll；可见范围虚拟化不属于这个接口的已实现能力。示例见 [author_list.aside](../examples/author_list.aside)。
+结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。默认保留全部行实例；virtual:true 的组件寿命与窗口协调见下节。示例见 [author_list.aside](../examples/author_list.aside)。
+
+#### 虚拟列表（已实现）
+
+`list(items, key:, build:, virtual:false, ...NodeProps)` 仍组合普通 `scroll`。virtual 为构造时固定的组件寿命选择：false 保留全部行；true 只保留视窗及有限缓冲中的行，离屏退休取消节点任务与活动，重新进入时重建组件。需长期保留的编辑值、选中状态和业务数据放在作者 model 中。正在聚焦或捕获指针的行在交互结束前保留。第一版要求列表是有限高度纵向 scroll 的唯一流内容；来源预先过滤，build 返回自然高度为正的 Node。列表本身保留自然高度，不设置 height/max_height、纵向 stretch 或局部 x/y/anchor/rotation/scale；整体变换放在外层 scroll，行内组件仍使用共同舞台能力。宽度、横向对齐、padding 和 gap 沿普通布局。无二维网格、横向虚拟化或作者测量/逐帧回调。
+
+数据来源与 key 的响应式索引和视窗协调是同一个 list native 的两个 observer。滚动不重跑来源和 key；VM 的 `begin_reactive(ticket, output, pure, continuation)` 提取既有 call_reactive 的元数据、NoWait、捕获与恢复规则，宿主维护不需先执行脚本。窗口组件继续通过原生续体调用 build，所有持久和候选脚本值留在 VM 图中。来源和键索引仍为 O(n) 存储及 O(n log n) 协调，不宣称端到端开页成本与总条目数无关。
+
+reel-ui Stage 只投影当前行、逻辑索引、位置、总估计高度及修订；播放器在既有布局中测量当前行，通过 NodeEvent 反馈列表/scroll 身份、修订、实际约束宽度、可见范围、行高和交互保留行。只接受当前投影的反馈。窗口需求合并为最新值，只保留一个构造候选；远距离拖动直接定位目标范围。未知高度使用首个有效测量估计，随后按 key 更新高度索引。content_height 在部分行尚未测量时是估计值。测量或结构变化保留可见 key 及行内偏移，锚点删除时使用相邻行；follow_end 保持末端，新用户或脚本位置写入优先于旧修正。窗口边缘导航先挂载逻辑目标，接受新呈现后才聚焦，旧确认配对不得激活新行。
+
+快照保存来源、键/高度索引、已挂载行、锚点和工厂续体；最后提交的行投影独立于候选索引保存，恢复不会提前发布中途候选。不重跑已生效工厂，不保存 WidgetId 或布局缓存。VM 快照 v5 保存并重映射 active capture 的 Value，保留 evaluation 代数；NativeFrame 的根范围和 Continuation 仍由原快照重映射。SessionSnapshot v7 另保存 reactive_ready 并重映射 derived_task，继续现有调度；属性提交 proposal 仍须先结束。恢复仍按会话合同清空悬停、按住与焦点。列表 native ABI 由 4 升为 5，SessionSnapshot 由 6 升为 7；Aside 字节码/ASB 不变，无兼容迁移、无新依赖。范围为 aside-vm 的上述通用响应式入口、reel-engine、reel-ui、reel-player、对应测试、作者列表/历史示例及双语指南。
+
+验证分别记录来源索引、首屏工厂/节点/文字布局、首次接受帧和内存；固定视窗的 1 千、1 万、10 万行负载中，首屏组件和排版不随总行数增长。覆盖变高富文本、宽度改变、key 增删重排、末端跟随、快速往返拖动、焦点与捕获保留、跨窗口导航、候选失败/取消及中途快照。窗口内纯滚动和空闲不得增加文字排版或列表脚本工作。测量与报告存放 target/reel-artifacts；完整文本及翻译目录仍驻留。行为命令：`cargo test --locked -p reel-engine --lib virtual_list`、`cargo test --locked -p reel-player --lib virtual_list`、`cargo test --locked -p reel-cli --test author_lists --test author_reading`。成本命令：`cargo test --release --locked -p reel-engine --lib virtual_list_first_window_cost_against_full_materialization -- --ignored --nocapture`；引擎命令分离数据生成、来源/key 索引、首窗构造和 GC 后 VM 存活计账，不含设备呈现。设置 `REEL_SESSION_FONT` 后运行 `cargo test --release --locked -p reel-player --lib virtual_list_rich_text -- --ignored --nocapture` 验证实际富文本排版、宽度变化和 CPU 接受帧成本；这不是 GPU/实机验收。长菜单与过滤/重排/键盘选择见 [author_list.aside](../examples/author_list.aside)，历史见 [author_reading.aside](../examples/author_reading.aside)。
 
 ### 角色对白与公共播放时钟
 

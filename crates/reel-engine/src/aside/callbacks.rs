@@ -134,6 +134,9 @@ impl SessionVm {
                 reel_ui::stage::NodeEvent::Scroll(event) => {
                     changed |= self.stage.scroll(self.vm.heap_mut(), event)?
                 }
+                reel_ui::stage::NodeEvent::VirtualList(event) => {
+                    changed |= self.virtual_feedback(event)?;
+                }
                 _ => {}
             }
         }
