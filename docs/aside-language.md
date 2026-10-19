@@ -680,7 +680,7 @@ Reel `container.move(child, index: ...)` 是保留接收者身份的普通绑定
 ## Reel 窗口宿主接口
 
 
-Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info()` 返回一次平台状态快照，不创建响应式时钟；`window.configure(width:null,height:null,fullscreen:null,vsync:null,owner:null)` 返回既有 completion 协议的可等待活动，完成时返回实际窗口快照。全屏为无边框，尺寸为窗口客户区逻辑像素，capabilities 表示可修改项；平台边界、取消和存档合同见[引擎架构](engine-architecture.md)。native ABI 1，不增加语言语法或 VM 指令。
+Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info()` 返回一次平台状态快照，不创建响应式时钟；`window.configure(width:null,height:null,fullscreen:null,vsync:null,owner:null)` 返回既有 completion 协议的可等待活动，完成时返回实际窗口快照。只读 platform 为 windows、macos、linux、android、ios、web 或 unknown，由宿主提供，无窗口或未声明的平台为 unknown。全屏为无边框，尺寸为窗口客户区逻辑像素，capabilities 表示可修改项；平台边界、取消和存档合同见[引擎架构](engine-architecture.md)。info/configure native ABI 2，不增加语言语法或 VM 指令。
 
 ## Reel 粒子宿主接口
 

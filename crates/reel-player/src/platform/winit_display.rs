@@ -1,5 +1,7 @@
 //! Native window state and asynchronous resize completion, independent of GPU APIs.
-use reel_core::window::{WindowCapabilities, WindowConfiguration, WindowInfo, WindowSize};
+use reel_core::window::{
+    WindowCapabilities, WindowConfiguration, WindowInfo, WindowPlatform, WindowSize,
+};
 use std::sync::Arc;
 use winit::{
     dpi::LogicalSize,
@@ -23,6 +25,23 @@ fn size(window: &Window) -> WindowSize {
     WindowSize {
         width: size.width,
         height: size.height,
+    }
+}
+fn platform() -> WindowPlatform {
+    if cfg!(target_arch = "wasm32") {
+        WindowPlatform::Web
+    } else if cfg!(target_os = "windows") {
+        WindowPlatform::Windows
+    } else if cfg!(target_os = "macos") {
+        WindowPlatform::Macos
+    } else if cfg!(target_os = "linux") {
+        WindowPlatform::Linux
+    } else if cfg!(target_os = "android") {
+        WindowPlatform::Android
+    } else if cfg!(target_os = "ios") {
+        WindowPlatform::Ios
+    } else {
+        WindowPlatform::Unknown
     }
 }
 fn matches_size(window: &Window, desired: WindowSize) -> bool {
@@ -76,6 +95,7 @@ impl WindowDisplay {
             target_os = "macos"
         ));
         WindowInfo {
+            platform: platform(),
             size: current,
             windowed_size: self.windowed,
             scale_factor: scale,
