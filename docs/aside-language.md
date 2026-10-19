@@ -400,7 +400,7 @@ invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最
 
 宿主可将一个已准入 native callable 的首参数绑定为接收者，产生普通可调用值。绑定值保留代码版本、模块和接收者身份，受既有 GC 跟踪；保存方法后调用仍使用原接收者。调用直接进入 NativeFrame，首参数预绑定，余下位置/具名/默认参数使用同一个 VM binder，显式重复指定首参数仍报重复绑定。脚本调用、宿主 start_closure 和 CallScript 回调使用相同协议，不建立合成脚本调用栈；诊断定位真实调用者。绑定不改变效果或等待许可，不保存 Rust 对象地址。
 
-Reel 作者事件通过宿主已有 start_closure 创建节点拥有的普通任务，不引入 Aside 事件语法或 UI 依赖。回调接受一个事件对象并共享闭包捕获；可以等待普通宿主 Awaitable。Reel 在任务等待或结束后切换任务；指令预算和同步 native 往返只让出宿主执行，不在同步脚本段内切换其他任务。每个任务保留自己的等待和源码故障，节点退休使用既有硬取消与分片释放。Reel 的 SessionVm::step 返回 SessionStep，将实际 VM 结果、已处理的回调完成 Progress 和无可运行任务 Idle 区分；不会伪造 VM WaitId 表示 UI 空闲。
+Reel 作者事件通过宿主已有 start_closure 创建节点拥有的普通任务，不引入 Aside 事件语法或 UI 依赖。回调接受一个事件对象并共享闭包捕获；可以等待普通宿主 Awaitable。Reel 在显式 await 首次宿主入口、普通调用真正等待或任务结束后切换任务；已完成的可等待对象也产生该边界。宿主使用 HostTicket.await_activation 与 NativeInput::Entry 识别，不把 WAIT 效果或 continuation 当作新的 await；指令预算和普通同步 native 往返只让出宿主执行，不在同步脚本段内切换其他任务。每个任务保留自己的等待和源码故障，节点退休使用既有硬取消与分片释放。Reel 的 SessionVm::step 返回 SessionStep，将实际 VM 结果、已处理的回调完成 Progress 和无可运行任务 Idle 区分；不会伪造 VM WaitId 表示 UI 空闲。
 
 Reel 共同节点的 `on_interaction` 是默认 null 的普通可写回调属性；节点交互状态实际变化后，宿主先发布整批只读属性，再创建节点任务。不可变事件提供 target、hover、pressed、focused、disabled、focus_visible，该次布尔值在等待后仍保持原值。赋予或替换回调不触发初始事件；没有回调时不创建事件对象或任务。业务选中和演出由此回调修改，derive 保持只读求值；回调、捕获与等待复用既有任务快照和退休规则。
 
@@ -495,7 +495,7 @@ Cargo feature source 决定是否包含 aside-compiler；关闭时仍执行完�
 
 ## 二十 操作与验收覆盖
 
-宿主音频队列沿普通 native 调用、活动等待和 owner 取消合同接入：`audio.queue(activity, source, start:0, looping:false, loop_start:0, loop_end:null)` ABI 1 成功提交返回 null，异步失败归属原活动，重复等待观察同一终态。位置与循环参数使用 `audio.play` 相同边界；已终止活动不能追加。它不创建新的脚本任务或活动身份，也不改变 Aside 字节码格式。新声音在创建任务真正等待或返回时封口首批，工作切片与 HostCall 不封口；故障或取消撤销未提交声音。片段队列、当前内容位置与未提交批次的任务身份由宿主媒体快照保存。精确播放、资源容量与恢复规则见引擎架构的“作者音频活动”。
+宿主音频队列沿普通 native 调用、活动等待和 owner 取消合同接入：`audio.queue(activity, source, start:0, looping:false, loop_start:0, loop_end:null)` ABI 1 成功提交返回 null，异步失败归属原活动，重复等待观察同一终态。位置与循环参数使用 `audio.play` 相同边界；已终止活动不能追加。它不创建新的脚本任务或活动身份，也不改变 Aside 字节码格式。新声音在创建任务开始显式 await、普通调用真正等待或返回时封口首批，即使 await 的对象已完成；工作切片与普通 HostCall 不封口；故障或取消撤销未提交声音。片段队列、当前内容位置与未提交批次的任务身份由宿主媒体快照保存。精确播放、资源容量与恢复规则见引擎架构的“作者音频活动”。
 
 1. 包装组件：命名/展开/动态转发/children 统一绑定；验证求值一次、默认数组独立、重复参数错误、构造暂停后无重复 Node。
 2. 回调控制器：cell 和强绑定方法保留接收者/模块；验证每轮捕获、订阅 token、引用环回收、owner 销毁后过期完成失效。

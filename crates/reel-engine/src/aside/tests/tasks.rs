@@ -152,3 +152,100 @@ fn task_fault_keeps_original_source_as_a_cause_after_gc_and_await() {
         assert!(vm.tasks.is_empty());
     }
 }
+
+#[test]
+fn completed_awaits_yield_to_other_tasks_even_on_a_slow_host() {
+    for encoded in [false, true] {
+        for instructions in [1, 1000] {
+            for wait in ["ready", "run(delay(0.004), owner: root)"] {
+                let code = format!(
+                    r#"fn opening() {{
+                    let root = stack(); stage.replace(root);
+                    let ready = completion(); ready.resolve();
+                    spawn(|| {{ loop {{ await {wait}; root.x += 1; }} }}, owner: root);
+                    await run(delay(2), owner: root);
+                    if root.x == 0 {{ throw "worker never ran"; }}
+                    root.remove(); stage.replace(text("continued"));
+                }}"#
+                );
+                let (mut session, mut vm) = prepared(&code, encoded);
+                let main = vm.task.unwrap();
+                let mut ready_awaits = 0;
+                let mut finished = false;
+                for step in 0..2000 {
+                    // Each tiny VM/native slice costs a full 16 ms host frame.
+                    // Short activities therefore finish before their await is entered.
+                    vm.advance_time(&session, step as f64 * 0.016, 64).unwrap();
+                    match vm
+                        .step(
+                            &mut session,
+                            SliceBudget {
+                                instructions,
+                                ..Default::default()
+                            },
+                            || 0,
+                        )
+                        .unwrap()
+                    {
+                        SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                            vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                            if ticket.task != main
+                                && ticket.await_activation.is_some()
+                                && !vm.vm.wait_is_pending(ticket.wait_id())
+                            {
+                                ready_awaits += 1;
+                            }
+                        }
+                        SessionStep::Vm(RunOutcome::Returned(_)) => {
+                            vm.discard_delivery(&mut session).unwrap();
+                            finished = true;
+                            break;
+                        }
+                        SessionStep::Vm(RunOutcome::Fault(id)) => {
+                            panic!("{:?}", vm.vm.delivery_fault(id))
+                        }
+                        SessionStep::Vm(RunOutcome::ResourceBlocked(e)) => panic!("{e:?}"),
+                        _ => {}
+                    }
+                }
+                assert!(
+                    finished,
+                    "ready await starved main: {wait}, instructions={instructions}"
+                );
+                assert!(
+                    ready_awaits > 0,
+                    "exercise a completed await, not only a pending wait"
+                );
+                drive(&mut vm, &mut session, false);
+                assert!(
+                    vm.stage()
+                        .nodes()
+                        .any(|n| n.kind == NodeKind::Text("continued".into()))
+                );
+                assert!(vm.tasks.is_empty(), "owner retirement cleans up the loop");
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_wait_capable_calls_and_budget_slices_keep_the_sync_segment() {
+    let code = r#"fn opening() {
+        let state = {value: 0};
+        let worker = spawn(|| { if state.value != 20 { throw "interrupted synchronous segment"; } state.value = 21; });
+        for i in 0..20 { run(delay(0)); state.value += 1; }
+        if state.value != 20 { throw "ordinary WAIT native yielded"; }
+        await worker;
+        if state.value != 21 { throw "await did not schedule worker"; }
+        stage.replace(text("atomic"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, false);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("atomic".into()))
+        );
+    }
+}
