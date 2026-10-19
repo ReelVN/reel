@@ -40,10 +40,17 @@ pub(super) fn collect<'a>(
         while let Some(commands) = streams.pop() {
             for command in commands {
                 let at = command.origin.at;
-                let brush = match &command.op {
+                let handles: &[ResourceHandle] = match &command.op {
                     FrameOp::Draw(
-                        FrameDraw::Fill { brush, .. } | FrameDraw::Stroke { brush, .. },
-                    ) => brush,
+                        FrameDraw::Fill {
+                            brush: Brush::Image(brush),
+                            ..
+                        }
+                        | FrameDraw::Stroke {
+                            brush: Brush::Image(brush),
+                            ..
+                        },
+                    ) => std::slice::from_ref(&brush.image.resource),
                     FrameOp::PushGroup(group) => {
                         if let Some(mask) = group.mask {
                             let index = mask.mask as usize;
@@ -57,57 +64,57 @@ pub(super) fn collect<'a>(
                                 streams.push(&definition.commands);
                             }
                         }
-                        continue;
+                        group.image_mask.as_ref().map_or(&[], |mask| &mask.images)
                     }
                     _ => continue,
                 };
-                let Brush::Image(brush) = brush else { continue };
-                let handle = brush.image.resource;
-                if !seen.insert(handle) {
-                    continue;
-                }
-                let source = *sources.get(&handle).ok_or(GpuError::Unsupported {
-                    at,
-                    record: "missing image lease",
-                })?;
-                let (size, resident, staging, minimum_staging) = match source.data() {
-                    ResourceData::Image { image, .. } => {
-                        if image.format != ImageFormat::Rgba8 {
+                for &handle in handles {
+                    if !seen.insert(handle) {
+                        continue;
+                    }
+                    let source = *sources.get(&handle).ok_or(GpuError::Unsupported {
+                        at,
+                        record: "missing image lease",
+                    })?;
+                    let (size, resident, staging, minimum_staging) = match source.data() {
+                        ResourceData::Image { image, .. } => {
+                            if image.format != ImageFormat::Rgba8 {
+                                return Err(GpuError::Unsupported {
+                                    at,
+                                    record: "image format",
+                                });
+                            }
+                            let size = [image.width, image.height];
+                            let resident = u64::from(image.width) * u64::from(image.height) * 8;
+                            (
+                                size,
+                                resident,
+                                resources::upload_cost(size)? - resident,
+                                resources::row_bytes(size[0]),
+                            )
+                        }
+                        ResourceData::Yuv420(image) => {
+                            let (resident, staging) = super::video::costs(image);
+                            (image.size(), resident, staging, staging)
+                        }
+                        _ => {
                             return Err(GpuError::Unsupported {
                                 at,
-                                record: "image format",
+                                record: "non-image resource",
                             });
                         }
-                        let size = [image.width, image.height];
-                        let resident = u64::from(image.width) * u64::from(image.height) * 8;
-                        (
-                            size,
-                            resident,
-                            resources::upload_cost(size)? - resident,
-                            resources::row_bytes(size[0]),
-                        )
+                    };
+                    if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
+                        return Err(GpuError::InvalidSize);
                     }
-                    ResourceData::Yuv420(image) => {
-                        let (resident, staging) = super::video::costs(image);
-                        (image.size(), resident, staging, staging)
-                    }
-                    _ => {
-                        return Err(GpuError::Unsupported {
-                            at,
-                            record: "non-image resource",
-                        });
-                    }
-                };
-                if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
-                    return Err(GpuError::InvalidSize);
+                    required.push(Required {
+                        source,
+                        at,
+                        resident,
+                        staging,
+                        minimum_staging,
+                    });
                 }
-                required.push(Required {
-                    source,
-                    at,
-                    resident,
-                    staging,
-                    minimum_staging,
-                });
             }
         }
     }
