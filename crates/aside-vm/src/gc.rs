@@ -357,7 +357,7 @@ impl Heap {
             _ => {
                 // Empty payload before remove guarantees no recursive/unbounded drop.
                 assert_eq!(obj.charged, 0);
-                self.objects.remove(key);
+                self.remove_object(key);
                 self.release.pop_front();
                 p.released_objects += 1;
                 p.units += 1;

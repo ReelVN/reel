@@ -47,10 +47,11 @@ fn default_storage_grows_past_old_content_quotas_during_each_gc_phase() {
 
 #[test]
 fn failed_growth_keeps_published_values_and_accounts_for_retained_capacity() {
-    let baseline = Heap::new(SessionEpoch(1), HeapLimits::default())
-        .unwrap()
-        .stats()
-        .reserved_bytes;
+    let mut probe = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    for _ in 0..256 {
+        probe.alloc_cell(Value::NULL).unwrap();
+    }
+    let baseline = probe.stats().reserved_bytes;
     let mut h = Heap::new(
         SessionEpoch(1),
         HeapLimits {
@@ -682,6 +683,7 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
         Err(HeapError::ResourceLimit { .. })
     ));
     let mut probe = heap(2);
+    probe.alloc_array(&[]).unwrap(); // Admit the entity page independently of payload.
     let reserved = probe.stats().reserved_bytes;
     let limits = HeapLimits {
         max_objects: 2,
@@ -767,6 +769,7 @@ fn input_caps_and_failed_mutations_leave_content_unchanged() {
 #[test]
 fn live_arrays_return_all_payload_allocations_when_the_last_element_is_removed() {
     let mut h = heap(256);
+    let reserved = h.stats().reserved_bytes;
     let info = allocation_counter::measure(|| {
         for len in [1, 9, 65] {
             for _ in 0..40 {
@@ -779,8 +782,105 @@ fn live_arrays_return_all_payload_allocations_when_the_last_element_is_removed()
         }
         assert_eq!(h.stats().payload_bytes, 0);
     });
-    // Reserved slots remain outside this measured region; empty live containers
-    // must not retain an uncharged tree allocation after the last chunk is gone.
-    assert_eq!(info.bytes_current, 0);
+    // Demand-grown entity pages remain live; payload trees must not retain any
+    // uncharged allocation after the last element is gone.
+    assert_eq!(
+        info.bytes_current as u64,
+        h.stats().reserved_bytes - reserved
+    );
     collect(&mut h);
+}
+
+#[test]
+fn compacted_entities_release_peak_capacity_without_payload_bytes_or_allocations() {
+    for count in [3_000, 10_000] {
+        let mut h = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let mut survivors = Vec::new();
+        let mut stale = None;
+        for i in 0..count {
+            let value = h.alloc_cell(Value::int(i)).unwrap();
+            if [0, 31, 32, 63, 64, count - 1].contains(&i) {
+                survivors.push((i, value, root(&mut h, value)));
+            } else if i == 1 {
+                stale = Some(h.handle(value).unwrap());
+            }
+        }
+        let peak = h.stats().reserved_bytes;
+        let started = std::time::Instant::now();
+        let allocations = allocation_counter::measure(|| {
+            h.begin_collection().unwrap();
+            finish(&mut h, GcBudget { bytes: 0, ..tiny() });
+        });
+        assert_eq!(allocations.count_total, 0, "compaction only frees storage");
+        assert_eq!(
+            -allocations.bytes_current as u64,
+            peak - h.stats().reserved_bytes
+        );
+        assert_eq!(
+            h.import_handle(stale.unwrap()).unwrap_err(),
+            HeapError::InvalidHandle
+        );
+        assert_eq!(h.stats().live_objects as usize, survivors.len());
+        for (i, value, token) in survivors {
+            assert!(h.root_value(token).unwrap().same_bits(value));
+            assert_eq!(h.cell_read(value).unwrap().as_int(), Some(i));
+            h.release_root(token).unwrap();
+        }
+        h.begin_collection().unwrap();
+        finish(&mut h, GcBudget { bytes: 0, ..tiny() });
+        let empty = h.stats();
+        assert_eq!(empty.live_objects, 0);
+        assert_eq!(empty.charged_bytes, empty.reserved_bytes);
+        assert!(
+            empty.reserved_bytes < peak / 4,
+            "only thin indices/queues remain"
+        );
+        eprintln!(
+            "{count} compacted cells: peak_reserved={peak}, empty_reserved={}, collect={:?}",
+            empty.reserved_bytes,
+            started.elapsed()
+        );
+        let replacement = h.alloc_cell(Value::int(77)).unwrap();
+        assert_eq!(h.cell_read(replacement).unwrap().as_int(), Some(77));
+        assert_eq!(
+            h.import_handle(stale.unwrap()).unwrap_err(),
+            HeapError::InvalidHandle
+        );
+    }
+}
+
+#[test]
+fn sweep_growth_reuses_identities_without_invalidating_moved_or_new_entities() {
+    let mut h = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+    let mut old = Vec::new();
+    for i in 0..129 {
+        old.push(h.alloc_cell(Value::int(i)).unwrap());
+    }
+    let anchor = root(&mut h, old[128]);
+    let before = h.stats().reserved_bytes;
+    h.begin_collection().unwrap();
+    while h.stats().reserved_bytes == before {
+        assert_ne!(h.phase(), GcPhase::Idle);
+        h.gc_step(GcBudget { bytes: 0, ..tiny() }).unwrap();
+    }
+    assert_eq!(h.phase(), GcPhase::Sweep);
+    assert_eq!(
+        h.cell_read(h.root_value(anchor).unwrap()).unwrap().as_int(),
+        Some(128)
+    );
+    let mut fresh = Vec::new();
+    for i in 0..257 {
+        let value = h.alloc_cell(Value::int(i + 1_000)).unwrap();
+        fresh.push((value, root(&mut h, value)));
+    }
+    finish(&mut h, GcBudget { bytes: 0, ..tiny() });
+    collect(&mut h);
+    for value in &old[..128] {
+        assert!(h.info(*value).is_err());
+    }
+    assert_eq!(h.cell_read(old[128]).unwrap().as_int(), Some(128));
+    for (i, (value, token)) in fresh.into_iter().enumerate() {
+        assert!(h.root_value(token).unwrap().same_bits(value));
+        assert_eq!(h.cell_read(value).unwrap().as_int(), Some(i as i64 + 1_000));
+    }
 }
