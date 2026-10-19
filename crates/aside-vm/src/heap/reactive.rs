@@ -2,6 +2,8 @@
 use super::*;
 
 mod freshness;
+mod scan;
+use scan::DependencyCursor;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -298,10 +300,11 @@ impl Heap {
             if dependencies.same_bits(Value::NULL) {
                 continue;
             }
-            for i in (0..self.sequence_len(dependencies)?).step_by(2) {
+            let mut inputs = DependencyCursor::new(dependencies);
+            while let Some((host, selector)) = inputs.next(self)? {
                 let next = PropertyId {
-                    host: self.sequence_get(dependencies, i)?,
-                    field: self.sequence_get(dependencies, i + 1)?.as_int().unwrap() as u32,
+                    host,
+                    field: selector.as_int().unwrap() as u32,
                 };
                 // Ordinary model endpoints can close a binding cycle, but have
                 // no derived inputs. Do not add them to the visited work list.
@@ -322,23 +325,24 @@ impl Heap {
 
     pub fn commit_derived(&mut self, output: Value, result: Value) -> Result<(), HeapError> {
         let dependencies = self.host_payload(output, DerivedSlot::Candidate as u32)?;
-        for i in (0..self.sequence_len(dependencies)?).step_by(2) {
+        let mut inputs = DependencyCursor::new(dependencies);
+        while let Some((host, selector)) = inputs.next(self)? {
             self.check_derived_cycle(
                 PropertyId {
                     host: output,
                     field: 0,
                 },
                 PropertyId {
-                    host: self.sequence_get(dependencies, i)?,
-                    field: self.sequence_get(dependencies, i + 1)?.as_int().unwrap() as u32,
+                    host,
+                    field: selector.as_int().unwrap() as u32,
                 },
             )?;
         }
         let weak = self.host_payload(output, DerivedSlot::Weak as u32)?;
         // Admit new edges before publishing the computed value. A failed evaluation
         // never changes the last valid output; retained metadata stays GC-owned.
-        for i in (0..self.sequence_len(dependencies)?).step_by(2) {
-            let source = self.sequence_get(dependencies, i)?;
+        let mut inputs = DependencyCursor::new(dependencies);
+        while let Some((source, selector)) = inputs.next(self)? {
             let key = self.key(source)?;
             let mut subscribers = self.object(key)?.reactive_subscribers;
             if subscribers.same_bits(Value::NULL) {
@@ -346,15 +350,14 @@ impl Heap {
                 self.barrier(subscribers)?;
                 self.objects.get_mut(key).unwrap().reactive_subscribers = subscribers;
             }
-            self.packed_pair_push(subscribers, weak, self.sequence_get(dependencies, i + 1)?)?;
+            self.packed_pair_push(subscribers, weak, selector)?;
             self.reconnect_derived(source)?;
         }
         let old = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
         if !old.same_bits(Value::NULL) {
-            for i in (0..self.sequence_len(old)?).step_by(2) {
+            let mut inputs = DependencyCursor::new(old);
+            while let Some((source, selector)) = inputs.next(self)? {
                 // Remove one old occurrence, retaining the new subscription.
-                let source = self.sequence_get(old, i)?;
-                let selector = self.sequence_get(old, i + 1)?;
                 self.reactive_remove(source, weak, selector)?;
             }
         }
@@ -422,12 +425,9 @@ impl Heap {
         let dependencies = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
         let weak = self.host_payload(output, DerivedSlot::Weak as u32)?;
         if !dependencies.same_bits(Value::NULL) {
-            for i in (0..self.sequence_len(dependencies)?).step_by(2) {
-                self.reactive_remove(
-                    self.sequence_get(dependencies, i)?,
-                    weak,
-                    self.sequence_get(dependencies, i + 1)?,
-                )?;
+            let mut inputs = DependencyCursor::new(dependencies);
+            while let Some((source, selector)) = inputs.next(self)? {
+                self.reactive_remove(source, weak, selector)?;
             }
         }
         self.set_host_payload(output, DerivedSlot::Dependencies as u32, Value::NULL)?;
@@ -669,6 +669,75 @@ mod tests {
             .as_int(),
             Some(2)
         );
+    }
+
+    #[test]
+    fn dependency_block_tail_keeps_alias_checks_and_replacement_subscriptions() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let sources: Vec<_> = (0..67).map(|_| model_fields(&mut heap, 2)).collect();
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(output).unwrap();
+        for source in &sources {
+            heap.observe_read(*source, Some(0)).unwrap();
+        }
+        heap.commit_derived(output, Value::int(0)).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+
+        // The last pair is in a partially filled third block. An equal-value
+        // alias must still expose a dirty ancestor, without direct invalidation.
+        let tail = sources[66];
+        let upstream = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(upstream).unwrap();
+        heap.observe_read(tail, Some(1)).unwrap();
+        heap.commit_derived(upstream, Value::int(0)).unwrap();
+        let reference = heap
+            .alloc_property_ref(
+                PropertyId {
+                    host: upstream,
+                    field: 0,
+                },
+                false,
+            )
+            .unwrap();
+        heap.bind_host_property(
+            PropertyId {
+                host: tail,
+                field: 0,
+            },
+            reference,
+        )
+        .unwrap();
+        heap.invalidate_reactive(tail, Some(1)).unwrap();
+        assert!(
+            !heap
+                .object(heap.key(output).unwrap())
+                .unwrap()
+                .derived_dirty
+        );
+        assert!(!heap.derived_is_current(output, None).unwrap());
+
+        // Replacing a cross-block set removes every old subscription, including
+        // the partial tail, while abandoning a later capture keeps the new set.
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(sources[0], Some(0)).unwrap();
+        heap.commit_derived(output, Value::int(1)).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+        for source in &sources[1..] {
+            heap.invalidate_reactive(*source, Some(0)).unwrap();
+        }
+        assert!(heap.derived_is_current(output, None).unwrap());
+        heap.begin_derived(output).unwrap();
+        for source in &sources[1..] {
+            heap.observe_read(*source, Some(0)).unwrap();
+        }
+        heap.end_derived(output).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+        heap.invalidate_reactive(sources[0], Some(0)).unwrap();
+        assert!(!heap.derived_is_current(output, None).unwrap());
+        heap.disconnect_derived(output).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+        heap.invalidate_reactive(sources[0], Some(0)).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
     }
 
     #[test]
