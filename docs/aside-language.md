@@ -37,6 +37,8 @@ Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, .
 
 Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null, locale: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 3，不改变 Aside/Aside 字节码。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。`reel loc extract --output-dir` 按模块组织原文 FTL，`reel loc bundle` 把同语言的模块译文编成一个运行时 FTL；文件组织不改变消息身份、运行时接口或存档格式。
 
+节点 `invert` 是 0..1 的普通可动画宿主属性，默认 0，对子树合成结果做保留 alpha 的 sRGB 反色；使用既有属性写入、derive、tween 与快照协议，不增加 VM 指令。
+
 节点图像遮罩使用普通宿主属性 mask、mask_progress、mask_softness、mask_invert，数值动画和绑定沿用现有属性协议。资源路径与进度进入节点 VM 字段和快照，Aside 不持有 GPU 对象；不增加语言语法或 VM 指令。
 
 

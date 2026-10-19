@@ -748,6 +748,18 @@ reveal.mask = null;
 ```
 mask_progress 和 mask_softness 使用普通 derive/tween。完整示例：[author_image_mask.aside](../../examples/author_image_mask.aside)。进度为 1 时跳过遮罩合成；用完可将 mask 设为 null 释放资源引用。遮罩不改变逻辑命中，需要禁用交互时使用 enabled/visible。遮罩需要完整 PNG/JPEG，不接受分块 .reel-image。
 
+节点 `invert` 将整个子树的合成画面反色，范围 0..1，默认 0；1 完全反色，中间值渐变。颜色按 sRGB 反转，透明度保持不变；对白和菜单放在同级节点即可独立于反色场景。可以直接赋值、derive 或 tween，参数随存档恢复。
+
+```aside
+let scene = stack(width: 800, height: 450, invert: 0) {
+    text("A different view", color: "#e08020", font_size: 48);
+};
+stage.replace(scene);
+await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
+```
+
+完整可运行示例：[author_invert.aside](../../examples/author_invert.aside)。反色和 opacity/mask 共用组离屏目标；不用时设为 0，独立反色组不再需要额外目标。
+
 效果参数与节点属性采用同一动画规则。更复杂画面可以嵌套 group：背景单独模糊，人物保持清晰，图片按钮仍在最上方；再对整组使用遮罩或镜头变换。所有子节点的前后顺序由树结构决定。
 自定义效果通过版本化 Effect 描述输入图像、参数、输出范围和后端实现。高级作者可以开发宿主扩展，常用效果随后以普通 Aside 函数组合复用。shader 支持属于后端能力，项目检查列出缺少的能力。可移植效果应同时提供简化实现，游戏通过能力查询选择适合的平台版本。
 特效改变的像素与逻辑输入区域分别声明。普通仿射变换与几何裁剪自动映射命中；弯曲、扭曲和任意着色器的交互区域由作者提供逻辑形状或专用映射。为每次点击从 GPU 读回画面会增加延迟，因此基础接口使用可直接计算的区域。

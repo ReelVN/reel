@@ -656,3 +656,200 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
         empty(&renderer);
     }
 }
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn subtree_invert_pixels_preserve_alpha_nesting_and_siblings() {
+    use reel_ui::{
+        core::Widget,
+        kurbo::{Point, Size},
+    };
+    let pool = pool();
+    let mut renderer = renderer(Default::default());
+    eprintln!("invert adapter={:?}", renderer.gpu.adapter.get_info());
+    let build_widget = |widget| {
+        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+        build(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        )
+    };
+    // Two overlapping translucent children must be inverted after composition.
+    let mut painted = scene(Color::from_rgba8(128, 64, 32, 128));
+    painted.append_transformed(
+        &scene(Color::from_rgba8(32, 128, 64, 128)),
+        Affine::IDENTITY,
+    );
+    let mut widget = RecordWidget::new(painted);
+    widget.clip = false;
+    widget.opacity = 0.5;
+    widget.invert = 1.;
+    let frame = build_widget(widget);
+    assert_eq!(
+        frame
+            .commands()
+            .iter()
+            .filter(|c| matches!(c.op, reel_ui::frame::FrameOp::PushGroup(_)))
+            .count(),
+        1,
+        "opacity and inversion share one compositing group"
+    );
+    let pixels = renderer
+        .readback(renderer.prepare(&frame).unwrap())
+        .unwrap();
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let encoded = |v: f32| {
+        if v <= 0.0031308 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1. / 2.4) - 0.055
+        }
+    };
+    let a = 128. / 255.;
+    let alpha = a + a * (1. - a);
+    let expected: [f32; 4] = std::array::from_fn(|i| {
+        if i == 3 {
+            return alpha * 0.5;
+        }
+        let first = [128., 64., 32.][i] / 255.;
+        let second = [32., 128., 64.][i] / 255.;
+        let composed = (linear(second) * a + linear(first) * a * (1. - a)) / alpha;
+        linear(1. - encoded(composed)) * alpha * 0.5
+    });
+    for pixel in &pixels {
+        for i in 0..4 {
+            assert!(
+                (pixel[i] - expected[i]).abs() < 0.006,
+                "{pixel:?} != {expected:?}"
+            );
+        }
+    }
+    let mut outer = RecordWidget::new(Scene::new());
+    outer.clip = false;
+    let mut parent = RecordWidget::new(Scene::new());
+    parent.clip = false;
+    parent.invert = 1.;
+    let mut child = RecordWidget::new(scene(Color::from_rgb8(128, 64, 32)));
+    child.clip = true;
+    child.inner.clip = Rect::new(0., 0., 100., 100.);
+    child.invert = 1.;
+    parent
+        .inner
+        .add(child.prepare(), Point::ZERO, Size::new(100., 100.));
+    outer
+        .inner
+        .add(parent.prepare(), Point::ZERO, Size::new(100., 100.));
+    let mut sibling = RecordWidget::new(scene(Color::from_rgb8(32, 128, 64)));
+    sibling.clip = true;
+    sibling.inner.clip = Rect::new(0., 0., 100., 100.);
+    outer.inner.add(
+        sibling.prepare(),
+        Point::new(200., 0.),
+        Size::new(100., 100.),
+    );
+    let frame = build_widget(outer);
+    let pixels = renderer
+        .readback(renderer.prepare(&frame).unwrap())
+        .unwrap();
+    for (x, rgb) in [(50, [128., 64., 32.]), (250, [32., 128., 64.])] {
+        let p = pixels[50 * 400 + x];
+        for i in 0..3 {
+            assert!(
+                (p[i] - linear(rgb[i] / 255.)).abs() < 0.006,
+                "nested/sibling {p:?}"
+            );
+        }
+        assert!((p[3] - 1.).abs() < 0.006);
+    }
+    assert_eq!(
+        pixels[150 * 400 + 150],
+        [0.; 4],
+        "transparent pixels stay transparent"
+    );
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn subtree_invert_and_image_threshold_share_composite() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        core::PaintImageMask,
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+    let handle = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("invert-mask".into()),
+                version: ContentVersion([1; 32]),
+            },
+            OwnedBytes::new(vec![0, 0, 0, 128], pool.reserve(4).unwrap()).unwrap(),
+            [1, 1],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let lease = registry.acquire(handle).unwrap();
+    let ResourceData::Image { image, .. } = lease.data() else {
+        unreachable!()
+    };
+    let mut renderer = renderer(Default::default());
+    for progress in [0., 0.5, 1.] {
+        let mut widget = RecordWidget::new(scene(Color::from_rgb8(255, 0, 0)));
+        widget.clip = false;
+        widget.invert = 1.;
+        widget.opacity = 0.5;
+        widget.mask = Some(PaintImageMask {
+            image: image.clone(),
+            bounds: Rect::new(0., 0., 400., 300.),
+            progress,
+            softness: 0.,
+            invert: false,
+        });
+        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+        let frame = build(
+            bridge.record(FrameId(1)).unwrap(),
+            registry.freeze(&[handle], &pool).unwrap(),
+            &pool,
+        );
+        assert_eq!(
+            frame
+                .commands()
+                .iter()
+                .filter(|c| matches!(c.op, reel_ui::frame::FrameOp::PushGroup(_)))
+                .count(),
+            usize::from(progress != 0.),
+            "zero progress suppresses the subtree; otherwise all effects share one group"
+        );
+        let pixels = renderer
+            .readback(renderer.prepare(&frame).unwrap())
+            .unwrap();
+        let coverage = if progress == 0. {
+            0.
+        } else if progress == 1. {
+            0.5
+        } else {
+            0.5 * 128. / 255.
+        };
+        for p in pixels {
+            assert!(p[0].abs() < 0.006);
+            assert!(
+                p[1..].iter().all(|v| (*v - coverage).abs() < 0.006),
+                "{p:?} at progress {progress}"
+            );
+        }
+    }
+}
