@@ -835,23 +835,9 @@ else { by_door(); }
 choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作者的剧情函数。choose 把传入的普通记录复制成引擎拥有的只读可观察行，id、key 和 label 都可读取并绑定，输入记录保持原值。id 是本次 InteractionId 与 key 形成的不透明稳定标识，按钮捕获 option.id 保持这一交互身份；下一次选择使用新的 id。game.choice().options 是这些行构成的只读可观察列表，默认为空；等待选择时填入选项，选择完成后清空。select 接收包含交互身份的 option.id，返回剧情的仍是业务 key；过期或重复 select 返回 false，成功返回 true；choose 始终返回原 key。
 普通 children 中的 for 构造当下内容；`view(|| ...)` 在实际读取的可观察数据变化后重新构造子树，外层容器身份保持。计算成功后才替换旧内容；旧节点拥有的回调和活动随之取消。用 bind/derive 更新单个属性时保留节点身份。需要保留控件身份的集合使用 `list(|| data.items, key: |item| item.id, build: |row| text(value: derive(|| row.value.label)))`。插入、排序保留相同 key 的节点、焦点和局部状态；删除则退休其任务和活动。key 可以是任意值，但在列表内必须唯一；标量区分类型，字符串按内容比较，其余对象按身份比较。因此可直接使用选项 id 或稳定的对象引用，不必另造数字 id。每个新 key 只调用一次 build，参数 row 提供只读可观察 key、value（当前条目）和 index（从 0 开始）；返回 null 时该 key 不产生节点。回调读取 row.value 取得最新记录；derive 会跟随记录替换，bind(row.value.label) 则固定原字段位置。只有来源函数和 key 函数的读取决定列表协调；行内变化使用 bind/derive/view。重复 key 或组件失败不替换原树。列表子节点由来源数据管理，外层可组合 scroll。默认保留全部条目。见 [author_list.aside](../../examples/author_list.aside)。
 
-长菜单、历史和图库可使用虚拟列表 `list(..., virtual:true)`，放在有限高度纵向 scroll 内，作为唯一的流式内容。它只保留窗口附近的行；离开后组件会退休，回来时重新构造，长期状态应保存在 model 中。正在编辑或拖动的行保留到交互结束。来源先过滤不显示的项，build 必须返回节点，自然测量模式要求行的自然高度为正；list 使用自然高度，不设置 height/max_height、纵向 stretch 或自身位置/旋转/缩放/锚点，整体变换可放在外层 scroll。行内仍可组合普通文字、图片、控件和自定义外观。不同高度由布局自动测量，滚动保留阅读锚点并支持跨窗口键盘/手柄导航；尚未测量的内容使用估计高度，所以自定义滚动条的 content_height 会逐步修正。它减少组件和排版成本，全文与来源数据仍保留。多列图库可以先把每一排照片组织为稳定 key 的条目，再在 build 中返回普通 row 组合；整排一起测量和退休，照片的长期状态仍放在 model 中。列数改变或重新分组后，新行按新 key 构造，这不提供二维网格虚拟化。可交互的千项菜单见 [author_list.aside](../../examples/author_list.aside)：支持变高说明、展开状态、过滤、重排、键盘和手柄选择。运行 `reel dev examples/author_list.aside --assets target/reel-artifacts/author-assets`，先按示例准备 fonts/body.ttf。
+长菜单、历史和图库可使用虚拟列表 `list(..., virtual:true)`，放在有限高度纵向 scroll 内，作为唯一的流式内容。它只保留窗口附近的行；离开后组件会退休，回来时重新构造，长期状态应保存在 model 中。正在编辑或拖动的行保留到交互结束。来源先过滤不显示的项，build 必须返回节点，行的自然高度须为正；list 使用自然高度，不设置 height/max_height、纵向 stretch 或自身位置/旋转/缩放/锚点，整体变换可放在外层 scroll。行内仍可组合普通文字、图片、控件和自定义外观。不同高度由布局自动测量，缓冲区在未测行进入视口前提前补充；新窗口先按本次测量连续排列并保留阅读锚点，支持跨窗口键盘/手柄导航。尚未测量的内容使用当前宽度已测行的平均高度，所以自定义滚动条的 content_height 仍会逐步修正；远跳和新图片的实际尺寸无法提前保证。它减少组件和排版成本，全文与来源数据仍保留。多列图库可以先把每一排照片组织为稳定 key 的条目，再在 build 中返回普通 row 组合；整排一起测量和退休，照片的长期状态仍放在 model 中。列数改变或重新分组后，新行按新 key 构造，这不提供二维网格虚拟化。可交互的千项菜单见 [author_list.aside](../../examples/author_list.aside)：支持变高说明、展开状态、过滤、重排、键盘和手柄选择。运行 `reel dev examples/author_list.aside --assets target/reel-artifacts/author-assets`，先按示例准备 fonts/body.ttf。
 
-尺寸已知的虚拟列表可设置 `row_height: 180`，或用 `row_height: |item| item.height` 声明不同高度。它是行根的精确布局高度，优先于行根自己的 height/max_height/纵向 stretch；超出部分是否裁剪由 clip 决定。这样图库不必等待离屏组件和图片加载就能得到稳定滚动范围。函数不可等待，随来源和 key 一起跟踪模型读取，数据变化后更新；滚动不反复求值。省略或 null 继续自动测量，未测行的估计仍可能细化。高度必须正且有限，非 null 仅用于 virtual:true。下面的数据同时用于索引与实际行布局，不需要在 build 中重复设置高度。
-
-```aside
-let rows = model({items: [
-    {id: "header", height: 72, label: "Gallery"},
-    {id: "pictures", height: 180, label: "A row of pictures"},
-]});
-stage.replace(scroll(width: 640, height: 400) {
-    list(|| rows.items, key: |item| item.id, virtual: true,
-        row_height: |item| item.height,
-        build: |row| column(clip: true) { text(row.value.label); });
-});
-```
-
-完整示例：[已知行高的图库与滚动条](../../examples/author_list_sized.aside)。准备 fonts/body.ttf 后运行 `reel dev examples/author_list_sized.aside --assets target/reel-artifacts/author-assets`。
+可运行的自动测量图库及自定义滚动条见 [author_list_gallery.aside](../../examples/author_list_gallery.aside)。准备 fonts/body.ttf 后运行 `reel dev examples/author_list_gallery.aside --assets target/reel-artifacts/author-assets`。行内按普通布局表达内容，不需要另传行高。远处窗口构造、测量期间保留上一完整画面，准备就绪后发布，不先显示空白或只校正了一部分的中间帧。
 
 按 key 定位：`let row = await items.scroll_to(key, align: "nearest")` 先构造和测量目标附近的行，在实际呈现后返回该行节点。align 可选 start、center、end、nearest，默认只做必要滚动。重排仍跟随同一 key；过滤掉目标、移除列表或新的滚动/定位会取消旧请求，可用 try/catch 处理。返回节点仍遵循普通离屏退休规则，持久状态保存在 model。
 等待期间改变视口尺寸会重新校准目标；自动夹取滚动范围不会取消请求。来源重算后，会等待新位置的实际呈现再返回。
@@ -876,7 +862,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 6，会话快照格式为 11；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 6，会话快照格式为 12；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

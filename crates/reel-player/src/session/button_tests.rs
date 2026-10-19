@@ -173,7 +173,8 @@ fn present(
     let (recording, stamp) = runtime
         .driver()
         .record(bridge, root, FrameId(frame))
-        .unwrap();
+        .unwrap()
+        .expect("settled frame");
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
             recording.key(),
@@ -1051,7 +1052,8 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         let (recording, old) = runtime
             .driver()
             .record(&mut bridge, root, FrameId(1))
-            .unwrap();
+            .unwrap()
+            .expect("settled frame");
         bridge.resolve(PresentationNotice::new(
             recording.key(),
             SurfaceEpoch(1),
@@ -1104,7 +1106,8 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         let (recording, first) = runtime
             .driver()
             .record(&mut bridge, root, FrameId(4))
-            .unwrap();
+            .unwrap()
+            .expect("settled frame");
         bridge.resolve(PresentationNotice::new(
             recording.key(),
             SurfaceEpoch(1),

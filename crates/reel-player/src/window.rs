@@ -467,6 +467,7 @@ impl State {
             ..Default::default()
         };
         let before = session.ui().projection_stamp();
+        let frame_was_ready = session.frame_ready();
         session.tick(budget, now)?;
         if !self.closing && session.exit_requested() {
             return self.close();
@@ -486,7 +487,10 @@ impl State {
             }
             let session = self.session.as_mut().unwrap();
             session.sync(&mut self.presentation.bridge, self.root_id)?;
-            if settings_changed || before != session.ui().projection_stamp() {
+            if settings_changed
+                || before != session.ui().projection_stamp()
+                || (!frame_was_ready && session.frame_ready())
+            {
                 self.invalidate();
             }
         }
@@ -1055,9 +1059,12 @@ fn build_frame(
     resources: &[reel_ui::resources::ResourceLease],
     session: Option<&WindowSession>,
     recorded_projection: &mut Option<RecordedProjection>,
-) -> Result<RenderFrame, Error> {
+) -> Result<Option<RenderFrame>, Error> {
     let source = if let Some(session) = session {
-        let (source, receipt) = session.record(bridge, root, id)?;
+        let Some((source, receipt)) = session.record(bridge, root, id)? else {
+            *recorded_projection = None;
+            return Ok(None);
+        };
         *recorded_projection = Some(receipt);
         source
     } else {
@@ -1104,7 +1111,7 @@ fn build_frame(
         budget.max_units = budget.max_units.max(progress.minimum_units);
         budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
     }
-    Ok(build.finish().map_err(|e| format!("finish: {e:?}"))?)
+    Ok(Some(build.finish().map_err(|e| format!("finish: {e:?}"))?))
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
@@ -1122,6 +1129,7 @@ impl State {
             self.session.as_ref(),
             &mut self.recorded_projection,
         )
+        .map(|frame| frame.expect("test frame is ready"))
     }
 }
 

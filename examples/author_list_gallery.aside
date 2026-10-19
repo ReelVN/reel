@@ -1,12 +1,10 @@
 // Supply fonts/body.ttf under --assets before opening a native window.
-fn row_height(item) { if item.id % 10 == 0 { 112 } else { 72 } }
 
 pub fn main() {
     game.configure(fonts: ["fonts/body.ttf"], width: 800, height: 600);
     let items = [];
     for id in 0..80 { items.append({id: id}); }
     let rows = list(|| items, key: |item| item.id, virtual: true,
-        row_height: row_height,
         build: |entry| column(gap: 8, clip: true) {
             if entry.value.id % 10 == 0 { text(f"Section {entry.value.id / 10 + 1}", height: 32); }
             row(gap: 12) {
@@ -28,7 +26,7 @@ pub fn main() {
     stage.replace(column(x: 40, y: 24, gap: 16) {
         row(gap: 16) {
             button("Row 60", on_click: || { await rows.scroll_to(60, align: "start"); });
-            text("Known sizes keep the thumb and row positions stable.");
+            text("Rows measure automatically as the window approaches.");
         };
         stack(width: 664, height: 480) {
             viewport;

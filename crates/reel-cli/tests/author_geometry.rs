@@ -31,8 +31,19 @@ fn run(source: &str) {
         .unwrap();
         settle(&mut driver);
         let (mut bridge, root) = bridge(&driver);
-        driver.sync(&mut bridge, root).unwrap();
-        let (rejected, stale) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
+        let (first_frame, (rejected, stale)) = (1..30)
+            .find_map(|frame| {
+                driver.sync(&mut bridge, root).unwrap();
+                let candidate = driver.record(&mut bridge, root, FrameId(frame)).unwrap();
+                if candidate.is_none() {
+                    assert_eq!(bridge.pending_count(), 0);
+                    assert!(!done(&driver), "preparation cannot complete geometry");
+                    assert!(driver.has_runnable_tasks());
+                    settle(&mut driver);
+                }
+                candidate.map(|candidate| (frame, candidate))
+            })
+            .expect("layout preparation must produce a candidate");
 
         driver.presented(&bridge, &stale).unwrap();
         settle(&mut driver);
@@ -45,7 +56,7 @@ fn run(source: &str) {
         driver.presented(&bridge, &stale).unwrap();
         settle(&mut driver);
         assert!(!done(&driver), "skipped candidate is not accepted");
-        for frame in 2..30 {
+        for frame in first_frame + 1..first_frame + 30 {
             present(&mut driver, &mut bridge, root, frame);
             settle(&mut driver);
             // Old receipts cannot change the accepted-frame confirmation.
@@ -135,7 +146,10 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
     settle(&mut driver);
     let (mut bridge, root) = bridge(&driver);
     driver.sync(&mut bridge, root).unwrap();
-    let (source, stale) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
+    let (source, stale) = driver
+        .record(&mut bridge, root, FrameId(1))
+        .unwrap()
+        .expect("settled frame");
 
     assert!(bridge.replace_surface(SurfaceEpoch(2)));
     bridge.resolve(PresentationNotice::new(
@@ -146,7 +160,10 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
     driver.presented(&bridge, &stale).unwrap();
     settle(&mut driver);
     assert!(!done(&driver));
-    let (current, receipt) = driver.record(&mut bridge, root, FrameId(2)).unwrap();
+    let (current, receipt) = driver
+        .record(&mut bridge, root, FrameId(2))
+        .unwrap()
+        .expect("settled frame");
 
     bridge.resolve(PresentationNotice::new(
         current.key(),
@@ -191,7 +208,10 @@ fn geometry_old_receipt_and_unsynced_model_cannot_stamp_old_layout_as_a_new_requ
         settle(&mut driver);
         let (mut bridge, root) = bridge(&driver);
         driver.sync(&mut bridge, root).unwrap();
-        let (old, receipt) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
+        let (old, receipt) = driver
+            .record(&mut bridge, root, FrameId(1))
+            .unwrap()
+            .expect("settled frame");
         bridge.resolve(PresentationNotice::new(
             old.key(),
             SurfaceEpoch(1),
@@ -205,7 +225,10 @@ fn geometry_old_receipt_and_unsynced_model_cannot_stamp_old_layout_as_a_new_requ
         settle(&mut driver);
         assert!(!done(&driver));
         // A recording before sync contains the old widget tree and its old watermark.
-        let (unsynced, unsynced_receipt) = driver.record(&mut bridge, root, FrameId(2)).unwrap();
+        let (unsynced, unsynced_receipt) = driver
+            .record(&mut bridge, root, FrameId(2))
+            .unwrap()
+            .expect("settled frame");
         bridge.resolve(PresentationNotice::new(
             unsynced.key(),
             SurfaceEpoch(1),

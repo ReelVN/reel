@@ -494,10 +494,10 @@ fn virtual_scroll_to_source_and_asb_complete_only_after_real_layout_and_acceptan
 }
 
 #[test]
-fn sized_gallery_example_source_and_asb_keep_declared_layout_extents() {
+fn natural_gallery_example_source_and_asb_measure_only_the_window() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_list_sized.aside"),
-        "sized-gallery.aside",
+        include_str!("../../../examples/author_list_gallery.aside"),
+        "natural-gallery.aside",
     )
     .unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
@@ -526,13 +526,16 @@ fn sized_gallery_example_source_and_asb_keep_declared_layout_extents() {
                     _ => None,
                 })
                 .unwrap();
-            assert_eq!(view.total_height, 6080.);
+            assert!(view.total_height > 480.);
             assert!(view.rows.len() < 20);
+            if frame < 3 {
+                continue;
+            }
             for row in view.rows.iter() {
-                let height = if row.index % 10 == 0 { 112. } else { 72. };
-                assert_eq!(row.height, Some(height));
-                let expected = row.index as f64 * 72. + row.index.div_ceil(10) as f64 * 40.;
-                assert_eq!(row.offset, expected);
+                if let Some(next) = view.rows.iter().find(|next| next.index == row.index + 1) {
+                    let expected = if row.index % 10 == 0 { 100. } else { 60. };
+                    assert!((next.offset - row.offset - expected).abs() < 1e-6);
+                }
             }
         }
         driver.cancel().unwrap();

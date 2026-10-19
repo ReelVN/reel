@@ -309,7 +309,13 @@ impl AsideSessionUi {
         bridge: &mut PresentationBridge,
         root: WidgetId,
         id: reel_core::identity::FrameId,
-    ) -> Result<(reel_ui::bridge::RecordedSource, RecordedProjection), Error> {
+    ) -> Result<Option<(reel_ui::bridge::RecordedSource, RecordedProjection)>, Error> {
+        // sync can turn layout feedback into more reactive work. Do not record
+        // that intermediate tree (for example an empty far-scroll window), or
+        // mint a receipt that could complete a geometry/presentation barrier.
+        if self.state == StoryState::Running && !self.vm.stage_ready() {
+            return Ok(None);
+        }
         let (source, mut frame) = self.ui.record(bridge, root, id)?;
         frame.geometry = Some(self.vm.record_geometry(
             frame.stamp.presentation_request,
@@ -318,7 +324,7 @@ impl AsideSessionUi {
                     .read_geometry(bridge, &source, frame.stage_widget, query)
             },
         )?);
-        Ok((source, frame))
+        Ok(Some((source, frame)))
     }
     pub fn presented(
         &mut self,

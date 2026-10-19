@@ -152,15 +152,21 @@ impl WindowSession {
         root: WidgetId,
         id: reel_core::identity::FrameId,
     ) -> Result<
-        (
+        Option<(
             reel_ui::bridge::RecordedSource,
             crate::session::RecordedProjection,
-        ),
+        )>,
         Error,
     > {
         match self {
-            Self::Diagnostic(host) => host.ui.record(bridge, root, id),
+            Self::Diagnostic(host) => host.ui.record(bridge, root, id).map(Some),
             Self::Aside { story, .. } => story.driver().record(bridge, root, id),
+        }
+    }
+    pub(crate) fn frame_ready(&self) -> bool {
+        match self {
+            Self::Diagnostic(_) => true,
+            Self::Aside { story, .. } => story.driver().adapter().stage_ready(),
         }
     }
     pub(crate) fn presented(

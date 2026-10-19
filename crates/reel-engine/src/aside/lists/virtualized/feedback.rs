@@ -125,30 +125,11 @@ impl SessionVm {
             )?;
             put(self.vm.heap_mut(), s, S::AnchorOffset, Value::float(offset))?;
         }
-        let exact = exact_height(self.vm.heap(), s)?;
         if num(self.vm.heap(), s, S::Width)? != event.width {
-            if !exact {
-                let epoch = int(self.vm.heap(), s, S::Epoch)? + 1;
-                put(self.vm.heap_mut(), s, S::Epoch, Value::int(epoch))?;
-            }
+            let epoch = int(self.vm.heap(), s, S::Epoch)? + 1;
+            put(self.vm.heap_mut(), s, S::Epoch, Value::int(epoch))?;
             put(self.vm.heap_mut(), s, S::Width, Value::float(event.width))?;
-            put(self.vm.heap_mut(), s, S::EstimateReady, Value::bool(false))?;
             changed = true;
-        }
-        if !exact
-            && get(self.vm.heap(), s, S::EstimateReady)?.as_bool() != Some(true)
-            && let Some(first) = event
-                .measurements
-                .iter()
-                .find(|m| m.height.is_finite() && m.height > 0.)
-        {
-            put(
-                self.vm.heap_mut(),
-                s,
-                S::Estimate,
-                Value::float(first.height),
-            )?;
-            put(self.vm.heap_mut(), s, S::EstimateReady, Value::bool(true))?;
         }
         let mounted = get(self.vm.heap(), s, S::Mounted)?;
         let mut retained = Vec::new();
@@ -165,15 +146,15 @@ impl SessionVm {
                     changed = true;
                     continue;
                 }
-                if exact {
-                    continue;
-                }
                 let index = self.vm.heap().sequence_get(e, INDEX)?.as_int().unwrap() as u32;
-                let old = height(self.vm.heap(), s, e)?;
                 let epoch = int(self.vm.heap(), s, S::Epoch)?;
-                if old != measurement.height
-                    || self.vm.heap().sequence_get(e, EPOCH)?.as_int() != Some(epoch)
-                {
+                let measured = self.vm.heap().sequence_get(e, EPOCH)?.as_int() == Some(epoch);
+                let old = if measured {
+                    stage::number(self.vm.heap().sequence_get(e, HEIGHT)?)?
+                } else {
+                    0.
+                };
+                if old != measurement.height || !measured {
                     let tree = get(self.vm.heap(), s, S::Tree)?;
                     let count = count(self.vm.heap(), s)?;
                     add(
@@ -182,6 +163,7 @@ impl SessionVm {
                         count,
                         index,
                         epoch,
+                        i64::from(!measured),
                         measurement.height - old,
                     )?;
                     self.vm
@@ -192,10 +174,13 @@ impl SessionVm {
                 }
             }
         }
-        // Scroll within the buffered window only updates the anchor. It does
-        // not schedule a native observer or allocate a replacement component.
-        let first = locate(self.vm.heap(), s, event.visible_start.max(0.))?;
-        let last = locate(self.vm.heap(), s, event.visible_end.max(0.))?;
+        changed |= refresh_estimate(self.vm.heap_mut(), s)?;
+        // Refill before unknown rows become visible. Half a viewport is the
+        // low-water mark; construction restores a full viewport on both sides.
+        // The hysteresis keeps small scrolls from rerunning the window observer.
+        let reserve = (event.visible_end - event.visible_start) * 0.5;
+        let first = locate(self.vm.heap(), s, (event.visible_start - reserve).max(0.))?;
+        let last = locate(self.vm.heap(), s, (event.visible_end + reserve).max(0.))?;
         if count(self.vm.heap(), s)? > 0
             && (first..=last).any(|index| !view.rows.iter().any(|r| r.index == index as usize))
         {
