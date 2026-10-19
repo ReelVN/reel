@@ -559,6 +559,18 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for (name, parameters, waits) in [
         (
+            "queue",
+            vec![
+                parameter("activity", None),
+                parameter("source", None),
+                parameter("start", Some(bc::Const::Int(0))),
+                parameter("looping", Some(bc::Const::Bool(false))),
+                parameter("loop_start", Some(bc::Const::Int(0))),
+                parameter("loop_end", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
+        (
             "play",
             vec![
                 parameter("source", None),
@@ -628,7 +640,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             parameters,
             result: if name == "position" {
                 BuiltinType::Float
-            } else if name == "seek" {
+            } else if matches!(name, "seek" | "queue") {
                 BuiltinType::Null
             } else {
                 BuiltinType::Any

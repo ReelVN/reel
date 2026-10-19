@@ -834,7 +834,7 @@ narrator("A new chapter begins.");
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 4 and the session snapshot format is 6. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 5 and the session snapshot format is 8. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 
@@ -1250,6 +1250,19 @@ fn main() {
 
 `audio.play` reads, decodes and plays in the background, returning an activity immediately. `await` returns `Completed` or `Stopped`; loading and device errors can be caught with `try/catch`. `volume` is a nonnegative linear gain: 1 preserves the source level and 0 mutes it. pause/resume retain position, stop does not restart playback, and repeated waits retain the same result.
 
+`audio.queue(activity, source, start: 0, looping: false, loop_start: 0, loop_end: null)` appends a music or narration segment to the same activity and returns null. The activity retains its owner, group, volume, pan and controls. Prepared segments join at the mixer boundary; a late segment holds the content clock and outputs silence until ready. New audio prepares in the background and starts after its creating task first waits or ends, with the segments submitted in that synchronous execution segment prepared together. Internal work slices do not start playback; an uncaught error or cancellation discards audio that has not been submitted yet. A queued successor exits the current loop at its next end; without a successor, looping continues. position and seek refer to the current source. Stop or owner retirement cancels the remaining queue; a loading error fails the original activity, and a completed activity cannot accept new segments. Saves preserve the current segment, position and remaining queue.
+Runnable example: [author_audio_queue.aside](../../examples/author_audio_queue.aside) uses bundled clips for intro → loop → outro and continuous narration. Replace the clip paths with your own audio.
+
+```aside
+let music = audio.play("assets/intro.ogg", group: "music");
+audio.queue(music, "assets/loop.ogg", looping: true);
+narrator("Continue to leave the loop after this pass.");
+audio.queue(music, "assets/outro.ogg");
+await music;
+```
+
+Supply your own three audio files for this example. Queue capacity and PCM residency use the host's existing audio budgets. Exhausted capacity reports an error; the script does not configure additional limits.
+
 Images, fonts and audio share the host's resource input capacity. When concurrent reads temporarily fill it, later reads wait for existing work to release its input. A single file larger than the configured input capacity still fails with its path and byte counts in the diagnostic.
 
 Audio decoding accounts for overlapping old and new storage only during buffer growth and the final transfer to shared storage. Ordinary packet decoding reuses existing PCM capacity. Insufficient memory reports the bytes needed by that decoding stage.
@@ -1265,7 +1278,7 @@ let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
 audio.stop(music, fade: 2);
 music = next;
 ```
-Position is an explicit read and does not continuously refresh the UI. Saves retain music position and loop bounds for resumed playback; current voice restarts and transient sound effects are not replayed.
+Position is an explicit read and does not continuously refresh the UI. Saves retain the current item, its position and loop bounds, and the remaining queue for every audio group. Ended activities retain their result and do not replay. To replay a voice line from the beginning, explicitly seek or play it again.
 
 Use `audio.group_volume("music", value)` for music/voice/effects/ui, or master for overall volume. Sound, group and master gains multiply; group settings also apply to later sounds. `audio.pan(sound, value, duration: seconds)` moves stereo position from -1 (left) to 1 (right), with 0 centered. `audio.volume` and `audio.group_volume` also accept duration; omission applies the change immediately. `fade_in` starts when playback actually begins. `audio.stop(sound, fade: seconds)` resolves await with Stopped after fading out; loading or paused sounds stop immediately. Pause retains playback position while volume/pan envelopes continue; output suspension freezes all envelopes. Pausing during a fade-out stop finishes the stop immediately. Volume transitions interpolate decibels with a -60 dB silence endpoint. New commands continue from the current value; controls during loading update initial playback values.
 

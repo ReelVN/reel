@@ -1,16 +1,20 @@
 //! Session media assembly. Audio and video share one output and resource service.
 use crate::assets::{AssetKind, Assets, LoadId, worker::Worker};
 use reel_core::{
-    budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+    budget::{BudgetCategory, BudgetPool, BudgetTicket, OwnedBytes, QueueLimits},
     identity::{Priority, ResourceVersion, Scope},
     wake::WakeSignal,
 };
 use reel_engine::{
-    audio::AudioRequest,
+    audio::{AudioQueueItem, AudioRequest},
     media::{MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaPlayback, MediaResult},
 };
 use reel_media::*;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 #[derive(Clone, Debug)]
 pub struct MediaOptions {
@@ -39,12 +43,14 @@ impl AsRef<[u8]> for Input {
 }
 struct Decode {
     id: MediaId,
+    item: u64,
     version: ResourceVersion,
     bytes: Arc<OwnedBytes>,
     ticket: reel_core::budget::BudgetTicket,
 }
 struct Decoded {
     id: MediaId,
+    item: u64,
     version: ResourceVersion,
     sound: Result<DecodedSound, String>,
 }
@@ -59,6 +65,116 @@ struct Entry {
     request: AudioRequest,
     phase: Phase,
     paused: bool,
+    queue: VecDeque<Segment>,
+    item: u64,
+    tail: u64,
+    key: u64,
+    initial_batch: Option<u64>,
+    started: bool,
+    descriptor: BudgetTicket,
+    _queue_storage: BudgetTicket,
+}
+struct Segment {
+    item: u64,
+    key: u64,
+    request: AudioQueueItem,
+    phase: Phase,
+    descriptor: BudgetTicket,
+}
+impl Entry {
+    fn advance_to(&mut self, item: u64, position: Duration) {
+        while self
+            .queue
+            .front()
+            .is_some_and(|segment| segment.item <= item)
+        {
+            let segment = self.queue.pop_front().unwrap();
+            self.item = segment.item;
+            self.key = segment.key;
+            self.request.source = segment.request.source;
+            self.request.loop_region = segment.request.loop_region;
+            self.descriptor = segment.descriptor;
+        }
+        self.request.start_position = position;
+    }
+}
+fn descriptor_bytes(source: &String) -> u64 {
+    (std::mem::size_of::<Entry>() + std::mem::size_of::<Segment>() + source.capacity()) as u64
+}
+fn resolve_decoded(
+    event: Decoded,
+    phase: &mut Phase,
+    start: &mut Duration,
+    loop_region: Option<reel_core::audio::AudioLoopRegion>,
+    source: &String,
+    descriptor: &mut BudgetTicket,
+) {
+    descriptor
+        .resize(descriptor_bytes(source))
+        .expect("release decode input charge");
+    *phase = match event.sound.and_then(|sound| {
+        sound
+            .with_playback(*start, loop_region)
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(sound) => {
+            *start = sound.start_position();
+            Phase::Ready(event.version, Box::new(sound))
+        }
+        Err(error) => Phase::Done(MediaResult::Failed(error)),
+    };
+}
+fn cancel_segment(assets: &Assets, worker: &mut Worker<Decode, Decoded>, key: u64, phase: &Phase) {
+    match phase {
+        Phase::Loading(load) => assets.cancel(*load),
+        Phase::Queued => worker.cancel(key),
+        _ => {}
+    }
+}
+fn poll_segment(
+    assets: &Assets,
+    worker: &mut Worker<Decode, Decoded>,
+    pcm: &BudgetPool,
+    id: MediaId,
+    item: u64,
+    key: u64,
+    source: &String,
+    phase: &mut Phase,
+    descriptor: &mut BudgetTicket,
+) {
+    let Phase::Loading(load) = *phase else {
+        return;
+    };
+    match assets.poll_bytes(load) {
+        Ok(Some((version, bytes))) => {
+            let result = descriptor
+                .resize(descriptor_bytes(source) + bytes.as_slice().len() as u64)
+                .map_err(|error| error.message)
+                .and_then(|_| pcm.reserve(0).map_err(|error| error.message))
+                .and_then(|ticket| {
+                    worker
+                        .accept(
+                            key,
+                            Decode {
+                                id,
+                                item,
+                                version,
+                                bytes,
+                                ticket,
+                            },
+                            0,
+                            Priority::Visible,
+                        )
+                        .map_err(|error| error.reason.message)
+                });
+            *phase = match result {
+                Ok(()) => Phase::Queued,
+                Err(error) => Phase::Done(MediaResult::Failed(error)),
+            };
+        }
+        Ok(None) => {}
+        Err(error) => *phase = Phase::Done(MediaResult::Failed(error)),
+    }
 }
 type OutputFactory = Box<dyn FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String>>;
 
@@ -74,6 +190,7 @@ pub struct MediaPlayer {
     reclaim: Option<AudioReclaimService>,
     owner: Option<AudioOwner>,
     pcm: BudgetPool,
+    descriptors: BudgetPool,
     #[cfg(feature = "video")]
     movies: video::Movies,
     worker: Worker<Decode, Decoded>,
@@ -86,6 +203,7 @@ pub struct MediaPlayer {
     closed: bool,
     suspended: bool,
     failure: Option<String>,
+    reclaim_pending: bool,
 }
 impl MediaPlayer {
     #[cfg(feature = "video")]
@@ -131,11 +249,19 @@ impl MediaPlayer {
             reclaim: None,
             owner: None,
             pcm,
+            descriptors: BudgetPool::new(
+                BudgetCategory::CpuInput,
+                QueueLimits {
+                    max_requests: queue.max_requests.saturating_mul(2),
+                    ..queue
+                },
+            ),
             worker: Worker::new(
                 queue,
                 wake,
                 |request: Decode, cancelled| Decoded {
                     id: request.id,
+                    item: request.item,
                     version: request.version,
                     sound: DecodedSound::decode(Input(request.bytes), request.ticket, cancelled),
                 },
@@ -150,6 +276,7 @@ impl MediaPlayer {
             closed: false,
             suspended: false,
             failure: None,
+            reclaim_pending: false,
         };
         // Device preparation belongs to host assembly, before executing scripts.
         // Games without audio can still run if this host has no output device.
@@ -197,12 +324,12 @@ impl MediaPlayer {
             KiraMixer::new(&format, self.options.mixer, &reclaim).map_err(|e| e.to_string())?;
         let slots = u32::try_from(self.options.mixer.max_sounds)
             .map_err(|_| "audio capacity exceeds addressable slots")?;
+        let fixed_bytes = AudioActivityService::slot_bytes(slots, &mixer);
         let mut service = AudioActivityService::new(
             mixer,
             QueueLimits {
                 max_requests: slots,
-                max_bytes: AudioActivityService::slot_bytes(slots)
-                    .saturating_add(self.options.queue_bytes),
+                max_bytes: fixed_bytes.saturating_add(self.options.queue_bytes),
             },
             MediaEpoch(1),
             self.wake.clone(),
@@ -234,11 +361,19 @@ impl MediaPlayer {
                 .map_or(AudioErrorKind::DeviceFailure, |e| e.kind);
             let _ = service.fail_output(reason);
             self.failure = Some(format!("audio output: {reason:?}"));
-            for (&id, entry) in &mut self.entries {
+            for entry in self.entries.values_mut() {
+                if let Phase::Playing(media) = entry.phase
+                    && let Some(state) = service.snapshot(media)
+                {
+                    entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+                }
+                for segment in entry.queue.drain(..) {
+                    cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
+                }
                 if !matches!(entry.phase, Phase::Playing(_) | Phase::Done(_)) {
                     match entry.phase {
                         Phase::Loading(id) => self.assets.cancel(id),
-                        Phase::Queued => self.worker.cancel(id.0),
+                        Phase::Queued => self.worker.cancel(entry.key),
                         _ => {}
                     }
                     entry.phase =
@@ -254,9 +389,20 @@ impl MediaPlayer {
     }
     fn stop_entry(&mut self, id: MediaId, deliver: bool) {
         if let Some(entry) = self.entries.get_mut(&id) {
+            if let Phase::Playing(media) = entry.phase
+                && let Some(state) = self
+                    .service
+                    .as_ref()
+                    .and_then(|service| service.snapshot(media))
+            {
+                entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+            }
+            for segment in entry.queue.drain(..) {
+                cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
+            }
             match entry.phase {
                 Phase::Loading(load) => self.assets.cancel(load),
-                Phase::Queued => self.worker.cancel(id.0),
+                Phase::Queued => self.worker.cancel(entry.key),
                 Phase::Playing(media) => {
                     if let Some(service) = &mut self.service {
                         service.stop(media);
@@ -276,14 +422,35 @@ impl MediaPlayer {
         }
     }
     fn active_count(&self) -> usize {
+        let audio = self
+            .entries
+            .values()
+            .map(|entry| 1 + entry.queue.len())
+            .sum::<usize>();
         #[cfg(feature = "video")]
         {
-            self.entries.len() + self.movies.entries.len() + self.movies.retiring.len()
+            audio + self.movies.entries.len() + self.movies.retiring.len()
         }
         #[cfg(not(feature = "video"))]
         {
-            self.entries.len()
+            audio
         }
+    }
+    fn audio_capacity_full(&self) -> bool {
+        let loading = self
+            .entries
+            .values()
+            .map(|entry| {
+                usize::from(matches!(entry.phase, Phase::Loading(_)))
+                    + entry
+                        .queue
+                        .iter()
+                        .filter(|segment| matches!(segment.phase, Phase::Loading(_)))
+                        .count()
+            })
+            .sum::<usize>();
+        self.active_count() >= self.options.mixer.max_sounds
+            || self.pcm.usage().tickets as usize + loading >= self.options.mixer.max_sounds
     }
     fn video_pending(&self) -> bool {
         #[cfg(feature = "video")]
@@ -311,6 +478,16 @@ fn db(volume: f64) -> f32 {
         -60.0
     } else {
         (20. * volume.log10()) as f32
+    }
+}
+fn media_result(terminal: AudioActivityTerminal) -> MediaResult {
+    match terminal {
+        AudioActivityTerminal::Completed { .. } => MediaResult::Completed,
+        AudioActivityTerminal::Stopped { .. } => MediaResult::Stopped,
+        AudioActivityTerminal::Cancelled => MediaResult::Cancelled,
+        AudioActivityTerminal::Failed(error) => {
+            MediaResult::Failed(format!("audio output: {error:?}"))
+        }
     }
 }
 impl MediaBackend for MediaPlayer {
@@ -352,14 +529,36 @@ impl MediaBackend for MediaPlayer {
             .get(&id)
             .ok_or("media activity is no longer retained")?;
         let mut request = entry.request.clone();
-        request.start_position = self.position(id).ok_or("audio transport missing")?;
+        let state = if let Phase::Playing(media) = entry.phase {
+            self.service
+                .as_ref()
+                .and_then(|service| service.snapshot(media))
+        } else {
+            None
+        };
+        let item = state.as_ref().map_or(entry.item, |state| state.item);
+        if let Some(segment) = entry.queue.iter().find(|segment| segment.item == item) {
+            request.source = segment.request.source.clone();
+            request.loop_region = segment.request.loop_region;
+        }
+        request.start_position = state
+            .as_ref()
+            .map_or(entry.request.start_position, |state| {
+                Duration::from_secs_f64(state.position_seconds)
+            });
         Ok(MediaPlayback::Audio(reel_engine::audio::AudioPlayback {
             request,
+            queue: entry
+                .queue
+                .iter()
+                .filter(|segment| segment.item > item)
+                .map(|segment| segment.request.clone())
+                .collect(),
             paused: entry.paused,
             result: if let Phase::Done(result) = &entry.phase {
                 Some(result.clone())
             } else {
-                None
+                state.and_then(|state| state.terminal).map(media_result)
             },
         }))
     }
@@ -373,10 +572,18 @@ impl MediaBackend for MediaPlayer {
         if !(-1.0..=1.0).contains(&request.pan) {
             return Err("audio pan must be between -1 and 1".into());
         }
-        if self.active_count() >= self.options.mixer.max_sounds {
+        if self.audio_capacity_full() {
             return Err("audio activity capacity exhausted".into());
         }
         self.initialize()?;
+        let descriptor = self
+            .descriptors
+            .reserve(descriptor_bytes(&request.source))
+            .map_err(|error| error.message)?;
+        let queue_storage = self
+            .descriptors
+            .reserve((self.options.mixer.max_sounds * std::mem::size_of::<Segment>()) as u64)
+            .map_err(|error| error.message)?;
         self.next = self.next.checked_add(1).ok_or("audio identity exhausted")?;
         let id = MediaId(self.next);
         let load = self.assets.request(&request.source, AssetKind::Bytes);
@@ -386,9 +593,61 @@ impl MediaBackend for MediaPlayer {
                 request,
                 phase: Phase::Loading(load),
                 paused: false,
+                queue: VecDeque::with_capacity(self.options.mixer.max_sounds),
+                item: 0,
+                tail: 0,
+                key: id.0,
+                initial_batch: None,
+                started: false,
+                descriptor,
+                _queue_storage: queue_storage,
             },
         );
         Ok(id)
+    }
+    fn commit_audio(&mut self, id: MediaId) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.initial_batch.get_or_insert(entry.tail);
+        }
+    }
+    fn queue_audio(&mut self, id: MediaId, request: AudioQueueItem) -> Result<(), String> {
+        if self.audio_capacity_full() {
+            return Err("audio segment capacity exhausted".into());
+        }
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or("audio activity is no longer retained")?;
+        if matches!(entry.phase, Phase::Done(_)) {
+            return Err("audio has ended".into());
+        }
+        let descriptor = self
+            .descriptors
+            .reserve(descriptor_bytes(&request.source))
+            .map_err(|error| error.message)?;
+        let item = entry
+            .tail
+            .checked_add(1)
+            .ok_or("audio segment identity exhausted")?;
+        let key = self.next.checked_add(1).ok_or("audio identity exhausted")?;
+        if let Phase::Playing(media) = entry.phase {
+            self.service
+                .as_mut()
+                .unwrap()
+                .announce(media, item)
+                .map_err(|error| error.to_string())?;
+        }
+        self.next = key;
+        let load = self.assets.request(&request.source, AssetKind::Bytes);
+        entry.queue.push_back(Segment {
+            item,
+            key: self.next,
+            request,
+            phase: Phase::Loading(load),
+            descriptor,
+        });
+        entry.tail = item;
+        Ok(())
     }
     fn command(&mut self, id: MediaId, command: MediaCommand) -> Result<(), String> {
         #[cfg(feature = "video")]
@@ -404,6 +663,14 @@ impl MediaBackend for MediaPlayer {
         let Some(entry) = self.entries.get_mut(&id) else {
             return Ok(());
         };
+        if let Phase::Playing(media) = entry.phase
+            && let Some(state) = self
+                .service
+                .as_ref()
+                .and_then(|service| service.snapshot(media))
+        {
+            entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+        }
         if matches!(entry.phase, Phase::Done(_)) {
             return Ok(());
         }
@@ -506,22 +773,28 @@ impl MediaBackend for MediaPlayer {
         let _ = elapsed;
         self.worker.drain(&mut self.decoded, 64);
         for event in self.decoded.drain(..) {
-            if let Some(entry) = self.entries.get_mut(&event.id)
-                && matches!(entry.phase, Phase::Queued)
-            {
-                // Resolve transport settings on the control side: a seek may have
-                // arrived after this decode was queued.
-                entry.phase = match event.sound.and_then(|sound| {
-                    sound
-                        .with_playback(entry.request.start_position, entry.request.loop_region)
-                        .map_err(|error| error.to_string())
+            if let Some(entry) = self.entries.get_mut(&event.id) {
+                if event.item == entry.item && matches!(entry.phase, Phase::Queued) {
+                    resolve_decoded(
+                        event,
+                        &mut entry.phase,
+                        &mut entry.request.start_position,
+                        entry.request.loop_region,
+                        &entry.request.source,
+                        &mut entry.descriptor,
+                    );
+                } else if let Some(segment) = entry.queue.iter_mut().find(|segment| {
+                    segment.item == event.item && matches!(segment.phase, Phase::Queued)
                 }) {
-                    Ok(sound) => {
-                        entry.request.start_position = sound.start_position();
-                        Phase::Ready(event.version, Box::new(sound))
-                    }
-                    Err(error) => Phase::Done(MediaResult::Failed(error)),
-                };
+                    resolve_decoded(
+                        event,
+                        &mut segment.phase,
+                        &mut segment.request.start_position,
+                        segment.request.loop_region,
+                        &segment.request.source,
+                        &mut segment.descriptor,
+                    );
+                }
             }
         }
         use std::ops::Bound::{Excluded, Unbounded};
@@ -531,37 +804,34 @@ impl MediaBackend for MediaPlayer {
         }
         for (&id, entry) in self.entries.range_mut((start, Unbounded)).take(64) {
             self.cursor = Some(id);
-            if let Phase::Loading(load) = entry.phase {
-                match self.assets.poll_bytes(load) {
-                    Ok(Some((version, bytes))) => {
-                        let result =
-                            self.pcm
-                                .reserve(0)
-                                .map_err(|e| e.message)
-                                .and_then(|ticket| {
-                                    let charge = bytes.as_slice().len() as u64;
-                                    self.worker
-                                        .accept(
-                                            id.0,
-                                            Decode {
-                                                id,
-                                                version,
-                                                bytes,
-                                                ticket,
-                                            },
-                                            charge,
-                                            Priority::Visible,
-                                        )
-                                        .map_err(|e| e.reason.message)
-                                });
-                        entry.phase = match result {
-                            Ok(()) => Phase::Queued,
-                            Err(e) => Phase::Done(MediaResult::Failed(e)),
-                        };
-                    }
-                    Ok(None) => {}
-                    Err(e) => entry.phase = Phase::Done(MediaResult::Failed(e)),
-                }
+            if let Phase::Playing(media) = entry.phase
+                && let Some(state) = self.service.as_ref().unwrap().snapshot(media)
+            {
+                entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+            }
+            poll_segment(
+                &self.assets,
+                &mut self.worker,
+                &self.pcm,
+                id,
+                entry.item,
+                entry.key,
+                &entry.request.source,
+                &mut entry.phase,
+                &mut entry.descriptor,
+            );
+            for segment in &mut entry.queue {
+                poll_segment(
+                    &self.assets,
+                    &mut self.worker,
+                    &self.pcm,
+                    id,
+                    segment.item,
+                    segment.key,
+                    &segment.request.source,
+                    &mut segment.phase,
+                    &mut segment.descriptor,
+                );
             }
             if !entry.paused && matches!(entry.phase, Phase::Ready(_, _)) {
                 let Phase::Ready(version, sound) =
@@ -574,7 +844,7 @@ impl MediaBackend for MediaPlayer {
                     .with_pan(entry.request.pan as f32)
                     .with_fade_in(entry.request.fade_in);
                 let service = self.service.as_mut().unwrap();
-                entry.phase = match service.play(AudioActivityRequest {
+                entry.phase = match service.play_held(AudioActivityRequest {
                     epoch: service.epoch(),
                     owner: self.owner.as_ref().unwrap().clone(),
                     resource: version,
@@ -583,6 +853,11 @@ impl MediaBackend for MediaPlayer {
                 }) {
                     Ok(media) => {
                         self.playing.insert(media.0, id);
+                        if entry.tail != 0 {
+                            service
+                                .announce(media, entry.tail)
+                                .expect("new held activity");
+                        }
                         Phase::Playing(media)
                     }
                     Err(error) if error.reason.retryable() => {
@@ -591,9 +866,71 @@ impl MediaBackend for MediaPlayer {
                     Err(error) => Phase::Done(MediaResult::Failed(error.reason.message)),
                 };
             }
+            if let Phase::Playing(media) = entry.phase {
+                let service = self.service.as_mut().unwrap();
+                for segment in &mut entry.queue {
+                    if matches!(segment.phase, Phase::Playing(_)) {
+                        continue;
+                    }
+                    if !matches!(segment.phase, Phase::Ready(_, _)) {
+                        break;
+                    }
+                    let Phase::Ready(version, sound) =
+                        std::mem::replace(&mut segment.phase, Phase::Queued)
+                    else {
+                        unreachable!()
+                    };
+                    match service.queue(media, segment.item, *sound) {
+                        Ok(()) => segment.phase = Phase::Playing(media),
+                        Err(error) if error.reason.retryable() => {
+                            segment.phase = Phase::Ready(version, Box::new(error.request));
+                            break;
+                        }
+                        Err(error) => {
+                            segment.phase = Phase::Done(MediaResult::Failed(error.reason.message));
+                            break;
+                        }
+                    }
+                }
+                if !entry.started
+                    && entry.initial_batch.is_some_and(|tail| {
+                        entry
+                            .queue
+                            .iter()
+                            .filter(|segment| segment.item <= tail)
+                            .all(|segment| matches!(segment.phase, Phase::Playing(_)))
+                    })
+                {
+                    service.start(media);
+                    entry.started = true;
+                }
+            }
+            let failure = entry
+                .queue
+                .iter()
+                .find_map(|segment| match &segment.phase {
+                    Phase::Done(MediaResult::Failed(error)) => Some(error.clone()),
+                    _ => None,
+                })
+                .or_else(|| match &entry.phase {
+                    Phase::Done(MediaResult::Failed(error)) => Some(error.clone()),
+                    _ => None,
+                });
+            if let Some(error) = failure {
+                if let Phase::Playing(media) = entry.phase {
+                    self.service.as_mut().unwrap().stop(media);
+                    self.playing.remove(&media.0);
+                } else {
+                    cancel_segment(&self.assets, &mut self.worker, entry.key, &entry.phase);
+                }
+                for segment in entry.queue.drain(..) {
+                    cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
+                }
+                entry.phase = Phase::Done(MediaResult::Failed(error));
+            }
         }
         if let Some(service) = &mut self.service {
-            service.maintain(64, 64);
+            self.reclaim_pending = service.maintain(64, 64).reclaim.needs_maintenance;
             service.drain(&mut self.events, 64, |id, _, _| {
                 self.playing.contains_key(&id.0)
             });
@@ -601,15 +938,11 @@ impl MediaBackend for MediaPlayer {
                 if let Some(id) = self.playing.remove(&event.id.0)
                     && let Some(entry) = self.entries.get_mut(&id)
                 {
-                    entry.request.start_position = Duration::from_secs_f64(event.position_seconds);
-                    entry.phase = Phase::Done(match event.terminal {
-                        AudioActivityTerminal::Completed { .. } => MediaResult::Completed,
-                        AudioActivityTerminal::Stopped { .. } => MediaResult::Stopped,
-                        AudioActivityTerminal::Cancelled => MediaResult::Cancelled,
-                        AudioActivityTerminal::Failed(error) => {
-                            MediaResult::Failed(format!("audio output: {error:?}"))
-                        }
-                    });
+                    entry.advance_to(event.item, Duration::from_secs_f64(event.position_seconds));
+                    for segment in entry.queue.drain(..) {
+                        cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
+                    }
+                    entry.phase = Phase::Done(media_result(event.terminal));
                 }
             }
         }
@@ -620,6 +953,7 @@ impl MediaBackend for MediaPlayer {
                 .is_some_and(|service| service.occupied() == 0)
         {
             self.service = None;
+            self.reclaim_pending = false;
         }
     }
     fn take_result(&mut self, id: MediaId) -> Option<MediaCompletion> {
@@ -647,6 +981,7 @@ impl MediaBackend for MediaPlayer {
         (self.video_pending()
             || !self.entries.is_empty()
             || self.cleanup_pending()
+            || self.reclaim_pending
             || self.service.as_ref().is_some_and(|s| s.occupied() != 0)
             || self.pcm.usage().bytes != 0)
             .then_some(if self.wake.is_pending() {
@@ -692,6 +1027,7 @@ impl MediaBackend for MediaPlayer {
         }
         self.output = None;
         self.service = None; // Existing deferred teardown owns all accepted PCM.
+        self.reclaim_pending = false;
         self.factory = None;
     }
     fn cleanup_pending(&self) -> bool {

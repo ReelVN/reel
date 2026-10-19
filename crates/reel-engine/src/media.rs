@@ -1,6 +1,6 @@
 //! Host-owned audio and video transport. Native devices remain in adapters.
 use crate::{
-    audio::{AudioGroup, AudioPlayback, AudioRequest},
+    audio::{AudioGroup, AudioPlayback, AudioQueueItem, AudioRequest},
     video::{VideoPlaybackState, VideoRequest},
 };
 use reel_ui::resources::ResourceLease;
@@ -39,7 +39,12 @@ pub enum MediaCommand {
 /// Nonblocking control-thread boundary. Results remain until taken; retired
 /// readers, workers and device allocations remain owned until released.
 pub trait MediaBackend {
+    /// Prepare a held activity; commit_audio seals its finite initial queue batch.
     fn play_audio(&mut self, request: AudioRequest) -> Result<MediaId, String>;
+    fn commit_audio(&mut self, id: MediaId);
+    fn queue_audio(&mut self, _id: MediaId, _item: AudioQueueItem) -> Result<(), String> {
+        Err("audio queues are not installed".into())
+    }
     fn play_video(&mut self, _request: VideoRequest) -> Result<MediaId, String> {
         Err("video playback is not installed".into())
     }

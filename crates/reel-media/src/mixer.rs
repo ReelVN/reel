@@ -10,7 +10,10 @@ use reel_audio::{
     info::Info,
     sound::{
         EndPosition, PlaybackPosition, PlaybackState, Region, Sound, SoundData,
-        static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
+        static_sound::{
+            QueuedStaticSound, StaticSoundData, StaticSoundHandle, StaticSoundQueue,
+            StaticSoundSettings,
+        },
     },
     track::{MainTrackBuilder, TrackBuilder, TrackHandle},
 };
@@ -256,6 +259,7 @@ struct BudgetedData {
     data: StaticSoundData,
     budget: Arc<Residency>,
     signal: Arc<RetirementSignal>,
+    capacity: usize,
 }
 #[cfg(feature = "video")]
 struct ObservedData<D>(D, Arc<RetirementSignal>);
@@ -299,7 +303,6 @@ struct BudgetedSound {
     // Rust drops fields in declaration order: native Sound/PCM FIRST, ticket
     // SECOND. The private frame Arc has no externally held Weak references.
     sound: Box<dyn Sound>,
-    _budget: Arc<Residency>,
     signal: Arc<RetirementSignal>,
 }
 impl Sound for BudgetedSound {
@@ -319,16 +322,15 @@ impl Sound for BudgetedSound {
 }
 impl SoundData for BudgetedData {
     type Error = ();
-    type Handle = StaticSoundHandle;
+    type Handle = (StaticSoundHandle, StaticSoundQueue);
     fn into_sound(self) -> Result<(Box<dyn Sound>, Self::Handle), ()> {
-        let (sound, handle) = self.data.into_sound()?;
+        let (sound, handle, queue) = self.data.into_sound_with_queue(self.capacity, self.budget);
         Ok((
             Box::new(BudgetedSound {
                 sound,
-                _budget: self.budget,
                 signal: self.signal,
             }),
-            handle,
+            (handle, queue),
         ))
     }
 }
@@ -337,6 +339,7 @@ impl SoundData for BudgetedData {
 /// allocations are established before real-time consumption starts.
 pub(crate) struct MixerControl {
     pub groups: Vec<TrackHandle>,
+    queues: Vec<Option<StaticSoundQueue>>,
     pub manager: AudioManager<Bridge>,
 }
 pub struct KiraMixer {
@@ -348,6 +351,7 @@ pub struct KiraMixer {
 /// A count of pure ownership transfers. Destruction/budget return is asynchronous.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReclaimProgress {
+    /// Ownership objects: native sounds, consumed queue segments, or endpoints.
     pub transferred_sounds: usize,
     /// A reached quota requests another maintenance turn even if the queue
     /// happens to be empty. False only observed no currently published garbage;
@@ -431,6 +435,7 @@ impl KiraMixer {
         let mut manager = DeferredManager::new(
             MixerControl {
                 groups: Vec::with_capacity(AudioGroup::ALL.len()),
+                queues: (0..limits.max_sounds).map(|_| None).collect(),
                 manager,
             },
             manager_credit,
@@ -483,7 +488,8 @@ impl KiraMixer {
     /// Quota/full returns needs_maintenance. No physical destructor runs here.
     pub fn reclaim_unused(&mut self, limit: usize) -> ReclaimProgress {
         let signal = self.signal.clone();
-        let groups = &mut self.manager.manager.as_mut().expect("owned manager").groups;
+        let control = self.manager.manager.as_mut().expect("owned manager");
+        let count = AudioGroup::ALL.len() + control.queues.len();
         let limit = limit.min(self.max_sounds);
         let mut transferred_sounds = 0;
         let mut needs_maintenance = true;
@@ -495,18 +501,28 @@ impl KiraMixer {
                 let Ok(chunk) = producer.write_chunk_uninit(1) else {
                     break;
                 };
-                let track = &mut groups[self.reclaim_cursor];
-                self.reclaim_cursor = (self.reclaim_cursor + 1) % AudioGroup::ALL.len();
-                if let Some(sound) = track.try_take_unused_sound() {
-                    chunk.fill_from_iter(std::iter::once(Envelope::normal(
-                        Job::Sound(sound),
-                        &signal,
-                    )));
+                let slot = self.reclaim_cursor;
+                self.reclaim_cursor = (slot + 1) % count;
+                let job = if slot < AudioGroup::ALL.len() {
+                    control.groups[slot].try_take_unused_sound().map(Job::Sound)
+                } else {
+                    let entry = &mut control.queues[slot - AudioGroup::ALL.len()];
+                    if entry.as_ref().is_some_and(StaticSoundQueue::is_finished) {
+                        entry.take().map(Job::SoundQueue)
+                    } else {
+                        entry
+                            .as_mut()
+                            .and_then(StaticSoundQueue::take_retired)
+                            .map(Job::QueuedSound)
+                    }
+                };
+                if let Some(job) = job {
+                    chunk.fill_from_iter(std::iter::once(Envelope::normal(job, &signal)));
                     transferred_sounds += 1;
                     empty = 0;
                 } else {
                     empty += 1;
-                    if empty == AudioGroup::ALL.len() {
+                    if empty == count {
                         needs_maintenance = false;
                         break;
                     }
@@ -557,6 +573,14 @@ impl KiraMixer {
         group: AudioGroup,
         sound: DecodedSound,
     ) -> Result<Playback, Rejected<DecodedSound>> {
+        self.play_in_mode(group, sound, false)
+    }
+    pub(crate) fn play_in_mode(
+        &mut self,
+        group: AudioGroup,
+        sound: DecodedSound,
+        held: bool,
+    ) -> Result<Playback, Rejected<DecodedSound>> {
         let signal = self.signal.clone();
         let reject = |request| Rejected {
             request,
@@ -587,15 +611,29 @@ impl KiraMixer {
             return Err(reject(sound));
         };
         let bounds = PlaybackBounds::new(&sound.data);
+        let control = self.manager.manager.as_mut().expect("owned manager");
+        let Some(queue_slot) = control.queues.iter().position(Option::is_none).or_else(|| {
+            control
+                .queues
+                .iter()
+                .position(|queue| queue.as_ref().is_some_and(StaticSoundQueue::is_finished))
+        }) else {
+            return Err(reject(sound));
+        };
         let data = BudgetedData {
             data: sound.data.clone(),
             budget: sound.budget.clone(),
             signal: signal.clone(),
+            capacity: self.max_sounds,
         };
-        match self.manager.manager.as_mut().expect("owned manager").groups[group as usize]
-            .play(data)
-        {
-            Ok(handle) => {
+        match control.groups[group as usize].play(data) {
+            Ok((handle, queue)) => {
+                if !held {
+                    queue.start();
+                }
+                // Reuse a finished endpoint by transferring it with the already
+                // reserved acceptance job. No PCM destruction occurs on control.
+                let retired_queue = control.queues[queue_slot].replace(queue);
                 #[cfg(test)]
                 {
                     let hook = signal.shared.after_accept.lock().unwrap().clone();
@@ -604,14 +642,104 @@ impl KiraMixer {
                     }
                 }
                 chunk.fill_from_iter(std::iter::once(Envelope::normal(
-                    Job::AcceptedData(sound),
+                    Job::AcceptedData(sound, retired_queue),
                     &signal,
                 )));
                 signal.shared.notify();
-                Ok(Playback { handle, bounds })
+                let mut history = std::collections::VecDeque::with_capacity(self.max_sounds + 1);
+                history.push_back((0, bounds));
+                Ok(Playback {
+                    handle,
+                    bounds: history,
+                    queue_slot,
+                })
             }
             Err(_) => Err(reject(sound)),
         }
+    }
+    /// Announce before decoding so an exhausted segment holds its content clock.
+    pub fn start(&mut self, playback: &Playback) {
+        self.manager.manager.as_ref().unwrap().queues[playback.queue_slot]
+            .as_ref()
+            .expect("live playback queue")
+            .start();
+    }
+    pub fn announce(&mut self, playback: &Playback, index: u64) -> Result<(), AudioError> {
+        if playback.is_stopped() {
+            return Err(AudioError::new(
+                AudioErrorKind::InvalidRequest,
+                "audio has ended",
+            ));
+        }
+        let queue = self.manager.manager.as_mut().unwrap().queues[playback.queue_slot]
+            .as_ref()
+            .expect("live playback queue");
+        queue
+            .announce(index)
+            .map_err(|()| AudioError::new(AudioErrorKind::InvalidRequest, "audio has ended"))
+    }
+    pub fn queue(
+        &mut self,
+        playback: &mut Playback,
+        index: u64,
+        sound: DecodedSound,
+    ) -> Result<(), Rejected<DecodedSound>> {
+        if playback.is_stopped() {
+            return Err(Rejected {
+                request: sound,
+                reason: RejectReason::new(RejectCode::InvalidRequest, "audio has ended"),
+            });
+        }
+        let signal = self.signal.clone();
+        let reject = |request| Rejected {
+            request,
+            reason: RejectReason::new(
+                RejectCode::Busy,
+                "audio queue or background ownership capacity exhausted",
+            ),
+        };
+        let Some(mut producer) = try_producer(&signal.shared) else {
+            return Err(reject(sound));
+        };
+        let Ok(chunk) = producer.write_chunk_uninit(1) else {
+            return Err(reject(sound));
+        };
+        let queue = self.manager.manager.as_mut().unwrap().queues[playback.queue_slot]
+            .as_mut()
+            .expect("live playback queue");
+        let item = QueuedStaticSound {
+            index,
+            data: sound.data.clone(),
+            retention: Some(sound.budget.clone()),
+        };
+        if let Err(item) = queue.push(item) {
+            drop(item); // The unchanged request still owns both PCM and reservation.
+            return Err(reject(sound));
+        }
+        let current = playback.queue_cursor().0;
+        while playback
+            .bounds
+            .front()
+            .is_some_and(|(item, _)| *item < current)
+        {
+            playback.bounds.pop_front();
+        }
+        playback
+            .bounds
+            .push_back((index, PlaybackBounds::new(&sound.data)));
+        chunk.fill_from_iter(std::iter::once(Envelope::normal(
+            Job::AcceptedData(sound, None),
+            &signal,
+        )));
+        signal.shared.notify();
+        Ok(())
+    }
+    pub(crate) fn queue_bytes(&self) -> u64 {
+        let capacity = self.max_sounds as u64;
+        capacity
+            * ((2 * capacity + 7) * std::mem::size_of::<QueuedStaticSound>() as u64
+                + (capacity + 1) * std::mem::size_of::<(u64, PlaybackBounds)>() as u64
+                + std::mem::size_of::<Option<StaticSoundQueue>>() as u64)
     }
 }
 /// Small transport metadata; never retains a second PCM allocation.
@@ -650,9 +778,13 @@ impl PlaybackBounds {
 /// Control wrapper; state/position describe content consumption, not device presentation.
 pub struct Playback {
     handle: StaticSoundHandle,
-    bounds: PlaybackBounds,
+    bounds: std::collections::VecDeque<(u64, PlaybackBounds)>,
+    queue_slot: usize,
 }
 impl Playback {
+    pub fn queue_cursor(&self) -> (u64, f64) {
+        self.handle.queue_cursor()
+    }
     pub fn position_seconds(&self) -> f64 {
         self.handle.position()
     }
@@ -661,7 +793,14 @@ impl Playback {
         if self.is_stopped() {
             return Duration::from_secs_f64(self.position_seconds());
         }
-        let position = self.bounds.time(self.bounds.frame(position));
+        let current = self.queue_cursor().0;
+        let bounds = &self
+            .bounds
+            .iter()
+            .find(|(item, _)| *item == current)
+            .expect("current transport metadata")
+            .1;
+        let position = bounds.time(bounds.frame(position));
         self.handle.seek_to(position.as_secs_f64());
         position
     }

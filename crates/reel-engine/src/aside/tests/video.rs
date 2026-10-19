@@ -61,6 +61,7 @@ impl Backend {
     }
 }
 impl MediaBackend for Backend {
+    fn commit_audio(&mut self, _: MediaId) {}
     fn play_audio(&mut self, _: crate::audio::AudioRequest) -> Result<MediaId, String> {
         Err("no audio fixture".into())
     }

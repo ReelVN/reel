@@ -120,11 +120,12 @@ fn main() {
         &reclaim,
     )
     .unwrap();
+    let fixed_bytes = AudioActivityService::slot_bytes(1, &mixer);
     let mut service = AudioActivityService::new(
         mixer,
         QueueLimits {
             max_requests: 1,
-            max_bytes: AudioActivityService::slot_bytes(1) + 64,
+            max_bytes: fixed_bytes + 64,
         },
         MediaEpoch(7),
         wake,

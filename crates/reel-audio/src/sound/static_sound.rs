@@ -27,11 +27,13 @@ when starting and seeking, but they use a lot more memory.
 
 mod data;
 mod handle;
+mod queue;
 mod settings;
 mod sound;
 
 pub use data::*;
 pub use handle::*;
+pub use queue::{QueuedStaticSound, StaticSoundQueue};
 pub use settings::*;
 
 use crate::{

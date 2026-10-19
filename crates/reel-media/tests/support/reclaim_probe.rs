@@ -100,6 +100,9 @@ fn main() {
         let mut largest_worker_free = 0;
         for sample in 0..SAMPLES {
             let (_, ticket) = mixer.reserve_decode_budget(&pool, bytes, 1);
+            // Preparing the next sample may transfer the previous queue endpoint.
+            // Wait for admission credit outside the measured play operation.
+            wait(|| service.status().outstanding_work == 0);
             let owned =
                 DecodedSound::new(48_000, vec![[0.1, -0.2]; frames], ticket.unwrap()).unwrap();
             enable_background(frames, &pool);
