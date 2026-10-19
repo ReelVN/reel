@@ -72,11 +72,11 @@ impl SessionVm {
         &mut self,
         scroll: NodeId,
     ) -> Result<(), AdapterError> {
-        if let Some(s) = self.virtual_scroll_state(scroll)? {
-            if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null {
-                self.virtual_target_cancel(s)?;
-                self.virtual_target_demand(s)?;
-            }
+        if let Some(s) = self.virtual_scroll_state(scroll)?
+            && get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null
+        {
+            self.virtual_target_cancel(s)?;
+            self.virtual_target_demand(s)?;
         }
         Ok(())
     }

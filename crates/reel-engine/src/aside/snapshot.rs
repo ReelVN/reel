@@ -511,7 +511,7 @@ impl SessionRestore<'_> {
                     Part::Scope => {
                         runtime
                             .scopes
-                            .restore(record.read()?, &map, runtime.vm.heap())?
+                            .restore(record.read()?, map, runtime.vm.heap())?
                     }
                     Part::Pending => {
                         let mut pending: Option<PendingInteraction> = record.read()?;

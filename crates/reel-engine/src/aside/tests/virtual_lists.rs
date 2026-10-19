@@ -364,13 +364,12 @@ fn virtual_list_reorder_keeps_anchor_and_snapshot_keeps_window() {
     let NodeKind::VirtualList(view) = &vm.stage().node(list).unwrap().kind else {
         unreachable!()
     };
-    let anchor = view
+    let anchor = *view
         .rows
         .iter()
         .filter(|r| r.offset <= offset.y)
         .max_by_key(|r| r.index)
-        .unwrap()
-        .clone();
+        .unwrap();
     let within = offset.y - anchor.offset;
     click(&mut vm, &mut session, "reverse");
     let NodeKind::VirtualList(view) = &vm.stage().node(list).unwrap().kind else {
