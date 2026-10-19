@@ -1,7 +1,24 @@
 //! Compose portable window requests with independently selected window/render adapters.
 use super::*;
+use reel_engine::aside::window::{WindowCommand, WindowReply};
 
 impl State {
+    pub(super) fn publish_pointer_info(&mut self) -> Result<(), Error> {
+        if let Some(WindowSession::Aside { story, .. }) = &mut self.session {
+            if story.capturing() {
+                return Ok(());
+            }
+            let position = story
+                .driver()
+                .ui()
+                .pointer_position(&self.presentation.bridge, self.root_id);
+            story
+                .driver_mut()?
+                .adapter_mut()
+                .set_pointer_position(position);
+        }
+        Ok(())
+    }
     pub(super) fn publish_window_info(&mut self) -> Result<(), Error> {
         let mut info = self.host.window_info();
         info.vsync = self.backend.vsync_enabled();
@@ -32,7 +49,7 @@ impl State {
             && story
                 .driver_mut()?
                 .adapter_mut()
-                .complete_window_request(id, result)?
+                .complete_window_request(id, result.map(WindowReply::Configured))?
         {
             story.wake_input();
         }
@@ -51,21 +68,72 @@ impl State {
         let Some(request) = story.driver_mut()?.adapter_mut().take_window_request()? else {
             return Ok(());
         };
+        let configuration = match request.command {
+            WindowCommand::Configure(configuration) => configuration,
+            WindowCommand::MovePointer { position, owner } => {
+                let destination = if story
+                    .driver()
+                    .adapter()
+                    .pointer_owner_permits_input(owner)?
+                {
+                    story.driver().ui().pointer_destination(
+                        &self.presentation.bridge,
+                        self.root_id,
+                        owner,
+                        position,
+                    )
+                } else {
+                    None
+                };
+                let logical = self
+                    .window
+                    .inner_size()
+                    .to_logical::<f64>(self.window.scale_factor());
+                let destination = destination.filter(|[x, y]| {
+                    x.is_finite()
+                        && y.is_finite()
+                        && *x >= 0.
+                        && *y >= 0.
+                        && *x < logical.width
+                        && *y < logical.height
+                });
+                let result = match destination {
+                    Some(position) => self.host.move_pointer(position),
+                    None => Ok(false),
+                };
+                let moved = matches!(result, Ok(true));
+                if story
+                    .driver_mut()?
+                    .adapter_mut()
+                    .complete_window_request(request.id, result.map(WindowReply::PointerMoved))?
+                {
+                    story.wake_input();
+                }
+                if moved {
+                    let [x, y] = destination.unwrap();
+                    let scale = self.window.scale_factor();
+                    self.pointer = reel_ui::dpi::PhysicalPosition::new(x * scale, y * scale);
+                    self.pointer_event(PointerKind::Move)?;
+                    self.publish_pointer_info()?;
+                }
+                return Ok(());
+            }
+        };
         self.window_request = Some(request.id);
-        if request.configuration.width.is_some()
-            || request.configuration.height.is_some()
-            || request.configuration.fullscreen.is_some()
+        if configuration.width.is_some()
+            || configuration.height.is_some()
+            || configuration.fullscreen.is_some()
         {
             self.fit_initial_canvas = false;
         }
         let result = (|| -> Result<bool, String> {
-            if let Some(vsync) = request.configuration.vsync {
+            if let Some(vsync) = configuration.vsync {
                 self.backend
                     .set_vsync(vsync)
                     .map_err(|error| error.to_string())?
                     .ok_or("presentation synchronization cannot be changed by this backend")?;
             }
-            self.host.configure_window(request.configuration)
+            self.host.configure_window(configuration)
         })();
         match result {
             Ok(true) => {

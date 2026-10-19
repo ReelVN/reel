@@ -77,7 +77,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::window::{name}"),
-            abi_version: 2,
+            abi_version: 3,
             parameters: fields
                 .iter()
                 .map(|field| NativeParameter {
@@ -97,6 +97,35 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     },
             ),
             required_capabilities: vec![],
+        });
+    }
+    for (name, fields) in [
+        ("pointer", &[][..]),
+        ("move_pointer", &["x", "y", "owner"][..]),
+    ] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::stage::{name}"),
+            abi_version: 1,
+            parameters: fields
+                .iter()
+                .map(|field| NativeParameter {
+                    name: (*field).into(),
+                    ty: BuiltinType::Any,
+                    default: None,
+                })
+                .collect(),
+            result: BuiltinType::Any,
+            effects: Effects(
+                Effects::ALLOCATE
+                    | Effects::HOST
+                    | if name == "move_pointer" {
+                        Effects::WRITE
+                    } else {
+                        0
+                    },
+            ),
+            required_capabilities: vec!["reel.stage".into()],
         });
     }
     for (symbol, parameters, effects) in [

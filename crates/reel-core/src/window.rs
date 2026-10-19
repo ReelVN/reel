@@ -12,6 +12,7 @@ pub struct WindowCapabilities {
     pub resize: bool,
     pub fullscreen: bool,
     pub vsync: bool,
+    pub pointer_move: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

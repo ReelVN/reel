@@ -910,6 +910,10 @@ impl StageBinding {
             .then_some((target, callback)))
     }
 
+    pub(super) fn permits_input(&self, heap: &Heap, id: NodeId) -> Result<bool, AdapterError> {
+        self.mounted_in_scope(heap, id, self.modal_scope(heap)?)
+    }
+
     fn mounted_in_scope(
         &self,
         heap: &Heap,

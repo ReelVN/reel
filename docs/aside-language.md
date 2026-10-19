@@ -1,5 +1,7 @@
 # Aside VM 与完整语言规范
 
+舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
+
 字节码文本存储：发布宿主可把 Utf8 常量外置为 Text{offset,len}，包内 TextPoolDescriptor 保存共享 UTF-8 池长度与摘要。验证器静态检查描述与范围；宿主通过 VerifiedProgram::bind_text_pool 绑定正文后才允许 VM 加载。Aside 不承担文件或资源包 IO。内嵌与外置字符串均在 LoadConst 时创建共享视图，弱常量句柄只复用仍存活对象；未使用正文不分配 GC 字符串对象。tuple 常量构造可按执行预算让出，保持值相等语义，不暴露对象身份。存档中的常量引用恢复到同一程序正文，动态字符串保存实际内容。仅支持当前字节码和快照格式，不保留旧格式兼容路径。
 
 设计版本 1.1 · 开发基线，接口实现状态见正文。

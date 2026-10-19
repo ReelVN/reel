@@ -5,6 +5,8 @@
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
 ## 目标与文档边界
+舞台指针（已实现）：`stage.pointer()` 返回最近真实鼠标输入在已接受逻辑舞台中的 `{x,y}` 快照；无接受画面、离窗、失焦或触摸/键盘手柄导航时返回 null。位置不随执行快照恢复，返回的普通数据值照常保存。`await stage.move_pointer(x,y,owner:node)` 请求真实宿主定位；owner 必须是挂载、可用且在当前模态范围内的节点。请求归该节点所有，与窗口配置共用单个有界在途槽，取消/会话替换撤销未执行请求。宿主按接受的舞台变换与 DPI 转换，目标须在客户区；当前输入/呈现/节点无效或不支持返回 false，执行成功经普通 Move 更新命中与悬停。非法参数及宿主执行错误给出诊断。能力为 `window.info().capabilities.pointer_move`，定位句柄留在平台适配器。范围为 core/engine/ui/player 与示例指南，无新依赖；新增 stage.pointer/move_pointer ABI 1，window.info/configure ABI 3，VM/ASB/SessionSnapshot 不变。检查源码/ASB、取消/恢复、接受坐标、模态/隐藏/输入方式；`cargo test --locked -p reel-engine --lib aside::tests::window`、`cargo test --locked -p reel-player --lib pointer_` 与 `cargo test --locked -p reel-cli --test author_pointer` 可复跑。坐标检查覆盖非单位舞台缩放、DPI、黑边和未接受的新布局；实际系统定位仍按设备分别验收。
+
 Reel 的目标是让创作者直观地表达想象中的画面和交互，包括自定义对白、UI、演出和嵌入的 2D 游戏。统一舞台承载画面、文字、控件与效果，函数组织组件，状态和活动表达交互与时间顺序；低端设备的内存、帧成本和输入体验同时进入设计。引擎复用 Masonry 的控件能力和 Kira 的音频能力，配套语言 Aside 以 Quirrel 为参照，用 Rust 实现编译器和 VM。
 
 当前快速迭代以同一版本的完整行为为准，接口与格式变化直接更新调用方、规范、双语指南和验证，不维护旧 API、旧字节码或旧存档兼容层。必要校验集中在输入、资源和状态提交边界，内部遵循明确的不变量；不增加重复校验或静默兜底。
