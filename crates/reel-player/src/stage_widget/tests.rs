@@ -1,7 +1,6 @@
 use super::*;
 mod radio_navigation;
 use crate::session::SessionUi;
-#[cfg(feature = "window")]
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::identity::{FrameId, SurfaceEpoch};
 use reel_engine::{Epoch, Session, SessionId};
@@ -1243,15 +1242,15 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
 }
 
 #[test]
-fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
+fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
     use reel_ui::{
         app::GeometryRecord,
         peniko::{Blob, ImageAlphaType, ImageFormat},
-        stage::particles::{ParticleBatch, ParticleConfig, ParticleFrame},
+        stage::particles::{
+            ParticleBatches, ParticleConfig, ParticleEmission, ParticleFrame, ParticleNode,
+        },
     };
-    let config = Arc::new(ParticleConfig {
-        source: "sprite.png".into(),
-        origin: None,
+    let config = ParticleConfig {
         rate: 100.,
         burst: 0,
         lifetime: 5.,
@@ -1266,19 +1265,45 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
         opacity: [1., 1.],
         spin: 90.,
         spin_spread: 40.,
-    });
+    };
     let mut frame = ParticleFrame {
+        origin: [0., 0.],
         elapsed: 1.,
         duration: None,
         extent: [1000., 700.],
     };
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 32,
+            max_bytes: 1 << 20,
+        },
+    );
+    let make_node = |frames: &[ParticleFrame]| ParticleNode {
+        source: "sprite.png".into(),
+        origin: None,
+        seed: 42,
+        time: 0.,
+        batches: ParticleBatches::try_new(
+            &pool,
+            frames.len(),
+            frames
+                .iter()
+                .enumerate()
+                .map(|(i, frame)| ParticleEmission {
+                    sequence: i as u64,
+                    config,
+                    frame: *frame,
+                    started: 0.,
+                    paused: false,
+                }),
+        )
+        .unwrap(),
+    };
     let mut stage = Stage::default();
     let id = stage
         .create(
-            NodeKind::Particles(ParticleBatch {
-                config: config.clone(),
-                frame: Some(frame),
-            }),
+            NodeKind::Particles(make_node(&[frame])),
             NodeProps {
                 width: Some(1000.),
                 height: Some(700.),
@@ -1331,6 +1356,20 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
     ) -> (GeometryRecord, usize) {
         bridge.edit_widget(widget, |mut w| StageWidget::sync(&mut w.downcast(), view));
         let source = bridge.record(FrameId(frame)).unwrap();
+        let NodeKind::Particles(expected) = &view.root.as_ref().unwrap().node.kind else {
+            unreachable!()
+        };
+        let draws = source
+            .scene()
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, reel_ui::imaging::record::Command::Draw(_)))
+            .count();
+        assert_eq!(
+            draws,
+            expected.samples().count(),
+            "record includes every overlapping batch"
+        );
         let root = bridge.root().get_widget(widget).unwrap();
         let children = root.children();
         let particles = children[0].downcast::<SceneWidget>().unwrap();
@@ -1339,7 +1378,7 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
             particles.layouts,
         )
     }
-    fn assert_covers_sprites(geometry: &GeometryRecord, batch: &ParticleBatch) {
+    fn assert_covers_sprites(geometry: &GeometryRecord, batch: &ParticleNode) {
         let viewport = Rect::new(0., 0., 640., 420.);
         let mut visible = 0;
         for sprite in batch.samples() {
@@ -1376,44 +1415,30 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
             .area(),
         0.
     );
-    assert_covers_sprites(
-        &small,
-        &ParticleBatch {
-            config: config.clone(),
-            frame: Some(frame),
-        },
-    );
+    assert_covers_sprites(&small, &make_node(&[frame]));
 
-    // A restarted emission can capture a different extent even if its final
-    // authored dimensions equal the last presentation's dimensions.
+    // An appended emission captures a different extent; both batches retain
+    // their original birth rectangle, even after the node is resized.
+    let first_frame = frame;
     frame.extent = [1400., 1000.];
+    frame.origin = [-200., 300.];
     Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node).kind =
-        NodeKind::Particles(ParticleBatch {
-            config: config.clone(),
-            frame: Some(frame),
-        });
+        NodeKind::Particles(make_node(&[first_frame, frame]));
     let (restarted, restarted_layouts) = record(&mut bridge, widget_id, &view, 3);
     assert!(restarted_layouts > resized_layouts);
     assert!(restarted.bounding_box.x1 > small.bounding_box.x1);
     assert!(restarted.bounding_box.y1 > small.bounding_box.y1);
-    assert_covers_sprites(
-        &restarted,
-        &ParticleBatch {
-            config: config.clone(),
-            frame: Some(frame),
-        },
-    );
+    assert_covers_sprites(&restarted, &make_node(&[frame]));
 
     for step in 4..20 {
-        frame.elapsed += 0.1;
         let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
         node.props.rotation = -17.;
         node.props.scale_x = 1.5;
-        let batch = ParticleBatch {
-            config: config.clone(),
-            frame: Some(frame),
+        let NodeKind::Particles(batch) = &mut node.kind else {
+            unreachable!()
         };
-        node.kind = NodeKind::Particles(batch.clone());
+        batch.time += 0.1;
+        let batch = batch.clone();
         let (geometry, layouts) = record(&mut bridge, widget_id, &view, step);
         assert_eq!(
             layouts, restarted_layouts,
@@ -2400,30 +2425,16 @@ fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
 fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     use crate::assets::{AssetOptions, Assets};
     use reel_core::prepared_image::PreparedImage;
-    use reel_ui::stage::particles::{ParticleBatch, ParticleConfig};
+    use reel_ui::stage::particles::ParticleNode;
     let mut stage = Stage::default();
     let particle = stage
         .create(
-            NodeKind::Particles(ParticleBatch {
-                config: Arc::new(ParticleConfig {
-                    source: "assets/panels.png".into(),
-                    origin: Some("snow.aside:7:3".into()),
-                    rate: 4.,
-                    burst: 0,
-                    lifetime: 2.,
-                    lifetime_spread: 0.,
-                    seed: 42,
-                    velocity: [0., 20.],
-                    spread: [0., 0.],
-                    acceleration: [0., 0.],
-                    size: 8.,
-                    size_spread: 0.,
-                    size_end: None,
-                    opacity: [1., 0.],
-                    spin: 0.,
-                    spin_spread: 0.,
-                }),
-                frame: None,
+            NodeKind::Particles(ParticleNode {
+                source: "assets/panels.png".into(),
+                origin: Some("snow.aside:7:3".into()),
+                seed: 42,
+                time: 0.,
+                batches: Default::default(),
             }),
             NodeProps::default(),
             vec![],
@@ -2498,7 +2509,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     let NodeKind::Particles(batch) = &mut Arc::make_mut(&mut child.node).kind else {
         unreachable!()
     };
-    Arc::make_mut(&mut batch.config).source = "background.reel-image".into();
+    batch.source = "background.reel-image".into();
     images.request_stage(&view);
     let error = images.poll().unwrap_err();
     assert!(error.contains("snow.aside:7:3"), "{error}");

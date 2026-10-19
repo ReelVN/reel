@@ -382,16 +382,20 @@ impl StageBinding {
             }
         }
         let id = self.scene.next_identity()?;
-        let value = heap.alloc_composable_host(
-            fields,
-            &[
-                Value::int(id.0 as i64),
-                references,
-                Value::NULL,
-                Value::NULL,
-            ],
-            Some(shape.validator()),
-        )?;
+        let payload = [
+            Value::int(id.0 as i64),
+            references,
+            Value::NULL,
+            Value::NULL,
+            Value::int(0),
+        ];
+        let payload_len = if shape == snapshot::Shape::Particles {
+            5
+        } else {
+            4
+        };
+        let value =
+            heap.alloc_composable_host(fields, &payload[..payload_len], Some(shape.validator()))?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;

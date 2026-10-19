@@ -285,7 +285,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             } else if name == "slider" {
                 15
             } else if name == "particles" {
-                9
+                10
             } else if name == "camera" {
                 8
             } else if matches!(name, "checkbox" | "radio") {
@@ -970,16 +970,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::emit".into(),
-        abi_version: 1,
-        parameters: ["node", "duration", "owner"]
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| NativeParameter {
-                name: name.into(),
-                ty: BuiltinType::Any,
-                default: (i != 0).then_some(bc::Const::Null),
-            })
-            .collect(),
+        abi_version: 2,
+        parameters: super::particles::emission_parameters(),
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],
