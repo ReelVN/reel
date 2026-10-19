@@ -414,7 +414,14 @@ impl Narrative {
         )?;
         self.sync_reading(heap, session)?;
         if let Some(history) = &mut self.history {
-            history.sync(heap, session, self.interaction, self.dialogue, chunk)?;
+            history.sync(
+                heap,
+                session,
+                self.interaction,
+                self.dialogue,
+                self.roots,
+                chunk,
+            )?;
         }
         Ok(())
     }
@@ -455,7 +462,13 @@ impl SessionVm {
             "reel::game::choice" => model.choice,
             "reel::game::reading" => model.reading,
             "reel::game::clear_history" => {
-                session.clear_history();
+                let keep = self.vm.host_arguments(ticket)?[0]
+                    .as_int()
+                    .filter(|&value| value >= 0)
+                    .ok_or(AdapterError::Input(
+                        "history keep_last requires a nonnegative int",
+                    ))?;
+                session.clear_history(usize::try_from(keep).unwrap_or(usize::MAX));
                 Value::NULL
             }
             "reel::game::clear_read_progress" => {

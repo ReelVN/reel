@@ -13,10 +13,12 @@ fn history_page() {
         scroll(x: 40, y: 80, width: 920, height: 570, follow_end: true) {
             list(|| history, key: |group| group.group_id, virtual: true, build: |row| {
                 column(gap: 8) {
-                    for line in row.value.lines {
-                        text(line.speaker_name, color: "#9ed8ff");
-                        text(line.text, width: 850);
-                    }
+                    list(|| row.value.lines, key: |line| line.id, build: |line| {
+                        column() {
+                            text(line.value.speaker_name, color: "#9ed8ff");
+                            text(line.value.text, width: 850);
+                        }
+                    });
                 }
             }, gap: 24);
         }
@@ -24,6 +26,8 @@ fn history_page() {
                on_click: |event| game.pause_reading(false));
         button("Clear history", x: 300, y: 20,
                on_click: |event| game.clear_history());
+        button("Keep last 37 lines", x: 560, y: 20,
+               on_click: |event| game.clear_history(keep_last: 37));
     }
 }
 

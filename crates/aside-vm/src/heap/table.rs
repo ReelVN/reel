@@ -22,14 +22,15 @@ impl Heap {
         Ok(())
     }
 
-    /// Commit a private collection work buffer without copying or freeing edges.
-    /// The caller roots both objects and checks its recorded content versions.
-    /// The old payload remains in `prepared` for incremental reclamation.
-    pub(crate) fn commit_collection(
-        &mut self,
-        target: Value,
-        prepared: Value,
-    ) -> Result<(), HeapError> {
+    /// Trusted-host commit of a private collection work buffer. Both objects
+    /// must be rooted and have the same collection kind. Callers must not expose
+    /// `prepared` to scripts; preparation crossing a mutable boundary requires
+    /// checking the source content version. Kind validation precedes the swap.
+    /// Target identity/metadata are retained and observers are invalidated once,
+    /// without copying/freeing old edges. The old payload remains in `prepared`
+    /// for incremental reclamation;
+    /// callers release that root and may request collection after large trims.
+    pub fn commit_collection(&mut self, target: Value, prepared: Value) -> Result<(), HeapError> {
         let target_value = target;
         let prepared_value = prepared;
         let target = self.key(target)?;

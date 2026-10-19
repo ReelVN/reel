@@ -825,12 +825,16 @@ Resizing the viewport while waiting realigns the target; automatic scroll clampi
 
 History, auto-reading and save/load interfaces are implemented; route switching and chapter jumping remain design targets. Authors compose the UI; services do not generate fixed screens.
 
-Call `game.clear_history()` at a chapter boundary when earlier history is no longer needed. It clears the existing observable history array without replacing its identity. Current dialogue, NVL display, advancement, read progress, preferences and saved slots remain unchanged; loading a save restores its recorded history. New group IDs are not reused. Clearing releases the session's references in time proportional to the record count and requests incremental GC, so reclamation continues even if subsequent interactions allocate little. Routine collection starts from allocation pressure; scripts do not need a cleanup timer. References or UI caches held by your script still keep their contents alive: retire those views or refresh them from the history array as well. History has no automatic length limit. Rust hosts use `Session::clear_history()`. See [author_reading.aside](../../examples/author_reading.aside).
+Call `game.clear_history()` when earlier history is no longer needed, or `game.clear_history(keep_last: 37)` to retain the latest 37 recorded history lines. The count is in lines, not dialogue groups; lines with `history:false` do not count. The earliest retained group may keep only its trailing lines. Retained groups and lines keep their IDs, objects, contents and order without renumbering; the group's speaker_name/text update to its first remaining line. The observable history array and retained groups' lines arrays keep their identities. Omitting the argument or passing 0 clears everything; a count at least as large as the current line count changes nothing. Negative or non-integer counts are rejected. Current dialogue, NVL display, advancement, read progress, preferences and saved slots remain unchanged; loading a save restores its recorded history. New group IDs are not reused. Trimming performs synchronous work proportional to the record count, releases session references and requests incremental GC, so reclamation continues even if later interactions allocate little. References or UI caches held by your script still retain their contents: retire those views or refresh them from the history array as well. History has no automatic length limit and needs no cleanup timer. Rust hosts use `Session::clear_history(keep_last)`. See [author_reading.aside](../../examples/author_reading.aside).
 
 ```aside
 game.dialogue().clear();
 game.clear_history();
 narrator("A new chapter begins.");
+```
+
+```aside
+game.clear_history(keep_last: 37);
 ```
 
 `saves.save(slot, title: null, thumbnail: null)`, `saves.load(slot)`, `saves.delete(slot)`, `saves.thumbnail(slot)` and `saves.list()` immediately return awaitable requests with read-only `status` (pending, succeeded, failed) and `error`. Awaiting a failed request throws its error; a successful save has atomically published the complete file. `await saves.list()` returns occupied slot summaries with string id, title, saved_at (UTC Unix seconds) and has_thumbnail, without loading images. Slot names are logical keys. Authors choose pages and empty slots and can use a fixed key such as `"quick"` for quick saves.
