@@ -504,7 +504,7 @@ mod tests {
                 ""
             };
             let mut story = runtime(&format!(
-                "fn main() {{ let snow = particles(\"snow.png\", rate: 10, lifetime: 1); stage.replace(snow); let active = emit(snow, duration: 1); {ending} }}"
+                "fn main() {{ let snow = particles(\"snow.png\"); stage.replace(snow); let active = emit(snow, burst:0, rate:10, lifetime:1, duration: 1); {ending} }}"
             ));
             for _ in 0..10000 {
                 if !story.needs_work() {

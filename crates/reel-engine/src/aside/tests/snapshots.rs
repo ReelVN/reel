@@ -494,8 +494,8 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let first = rng.int(0, 1000000);
         let done = completion();
         let background = image("scene.png", stretch: "both", blend: "screen");
-        let snow = particles("flake.png", rate: 5, lifetime: 2);
-        let emission = emit(snow);
+        let snow = particles("flake.png");
+        let emission = emit(snow, burst:0, rate:5, lifetime:2);
         let mover = run(tween(background, x: 100, invert: 1, duration: 4, easing: "linear"));
         let task = spawn(|| { await run(delay(2)); data.score += 3; done.resolve(9); });
         let caption = text("score", x: bind(data.score), max_width: 140, align_x: 0.5);

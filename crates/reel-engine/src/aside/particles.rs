@@ -2,55 +2,66 @@
 use super::{AdapterError, HostTicket, SessionVm, results, stage, text};
 use aside_vm::executor::HostResponse;
 use aside_vm::{Heap, HeapError, HeapReservation, RootKind, RootToken, Value, ValueTag};
+use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_ui::stage::{
     NodeId, NodeKind,
-    particles::{ParticleBatch, ParticleConfig, ParticleFrame},
+    particles::{ParticleBatches, ParticleConfig, ParticleEmission, ParticleFrame, ParticleNode},
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
 
-pub(super) const PREFIX: &[&str] = &[
-    "source",
-    "rate",
-    "lifetime",
-    "seed",
-    "velocity_x",
-    "velocity_y",
-    "spread_x",
-    "spread_y",
-    "acceleration_x",
-    "acceleration_y",
-    "size",
-    "size_spread",
-    "opacity_start",
-    "opacity_end",
-    "spin",
-    "spin_spread",
-    "burst",
-    "lifetime_spread",
-    "size_end",
-];
+pub(super) const PREFIX: &[&str] = &["source", "seed"];
+/// Shared node payload: 0 identity, 1 children, 2 parent, 3 derived view;
+/// particles alone add 4, the next deterministic emission sequence.
+const SEQUENCE: u32 = 4;
 pub(super) fn parameters() -> Vec<aside_host::NativeParameter> {
     use aside_vm::bytecode::{BuiltinType, Const};
-    let defaults: [f64; 19] = [
-        0., 60., 5., 0., 0., 80., 20., 20., 0., 0., 12., 4., 1., 0., 0., 30., 0., 0., 0.,
-    ];
-    PREFIX
-        .iter()
-        .enumerate()
-        .map(|(i, name)| aside_host::NativeParameter {
-            name: (*name).into(),
+    vec![
+        aside_host::NativeParameter {
+            name: "source".into(),
             ty: BuiltinType::Any,
-            default: if i == 0 {
-                None
-            } else if i == 3 || i == 16 {
-                Some(Const::Int(0))
-            } else if i == 18 {
-                Some(Const::Null)
-            } else {
-                Some(Const::FloatBits(defaults[i].to_bits()))
-            },
-        })
-        .collect()
+            default: None,
+        },
+        aside_host::NativeParameter {
+            name: "seed".into(),
+            ty: BuiltinType::Any,
+            default: Some(Const::Int(0)),
+        },
+    ]
+}
+pub(super) fn emission_parameters() -> Vec<aside_host::NativeParameter> {
+    use aside_vm::bytecode::{BuiltinType, Const};
+    let number = |value: f64| Some(Const::FloatBits(value.to_bits()));
+    [
+        ("node", None),
+        ("burst", Some(Const::Int(1))),
+        ("rate", number(0.)),
+        ("duration", Some(Const::Null)),
+        ("lifetime", number(5.)),
+        ("lifetime_spread", number(0.)),
+        ("velocity_x", number(0.)),
+        ("velocity_y", number(80.)),
+        ("spread_x", number(20.)),
+        ("spread_y", number(20.)),
+        ("acceleration_x", number(0.)),
+        ("acceleration_y", number(0.)),
+        ("size", number(12.)),
+        ("size_spread", number(4.)),
+        ("size_end", Some(Const::Null)),
+        ("opacity_start", number(1.)),
+        ("opacity_end", number(0.)),
+        ("spin", number(0.)),
+        ("spin_spread", number(30.)),
+        ("x", number(0.)),
+        ("y", number(0.)),
+        ("owner", Some(Const::Null)),
+    ]
+    .into_iter()
+    .map(|(name, default)| aside_host::NativeParameter {
+        name: name.into(),
+        ty: BuiltinType::Any,
+        default,
+    })
+    .collect()
 }
 pub(super) fn kind(
     heap: &Heap,
@@ -58,41 +69,76 @@ pub(super) fn kind(
     origin: Option<String>,
     limit: usize,
 ) -> Result<NodeKind, AdapterError> {
-    let n = |i| stage::number(args[i]);
     let source = text::read_string(heap, args[0], limit)?;
     if source.is_empty() {
         return Err(AdapterError::Input("particle source must not be empty"));
     }
-    let config = ParticleConfig {
+    let seed = args[1]
+        .as_int()
+        .ok_or(AdapterError::Input("particle seed must be int"))? as u64;
+    Ok(NodeKind::Particles(ParticleNode {
         source,
         origin,
-        rate: n(1)?,
-        burst: args[16]
+        seed,
+        batches: Default::default(),
+        time: 0.,
+    }))
+}
+fn configuration(args: &[Value], seed: u64) -> Result<ParticleConfig, AdapterError> {
+    let n = |i: usize| {
+        args[i]
+            .as_int()
+            .map(|v| v as f64)
+            .or_else(|| args[i].as_float())
+            .ok_or(AdapterError::Input("particle parameter must be a number"))
+    };
+    let config = ParticleConfig {
+        rate: n(2)?,
+        burst: args[1]
             .as_int()
             .filter(|count| *count >= 0)
             .ok_or(AdapterError::Input(
                 "particle burst must be a nonnegative int",
             ))? as u64,
-        lifetime: n(2)?,
-        lifetime_spread: n(17)?,
-        seed: args[3]
-            .as_int()
-            .ok_or(AdapterError::Input("particle seed must be int"))? as u64,
-        velocity: [n(4)?, n(5)?],
-        spread: [n(6)?, n(7)?],
-        acceleration: [n(8)?, n(9)?],
-        size: n(10)?,
-        size_spread: n(11)?,
-        size_end: if args[18].tag() == ValueTag::Null {
+        lifetime: n(4)?,
+        lifetime_spread: n(5)?,
+        seed,
+        velocity: [n(6)?, n(7)?],
+        spread: [n(8)?, n(9)?],
+        acceleration: [n(10)?, n(11)?],
+        size: n(12)?,
+        size_spread: n(13)?,
+        size_end: if args[14].tag() == ValueTag::Null {
             None
         } else {
-            Some(n(18)?)
+            Some(n(14)?)
         },
-        opacity: [n(12)?, n(13)?],
-        spin: n(14)?,
-        spin_spread: n(15)?,
+        opacity: [n(15)?, n(16)?],
+        spin: n(17)?,
+        spin_spread: n(18)?,
     };
-    if config.rate < 0.
+    validate_configuration(&config)?;
+    Ok(config)
+}
+fn validate_configuration(config: &ParticleConfig) -> Result<(), AdapterError> {
+    let numbers = [
+        config.rate,
+        config.lifetime,
+        config.lifetime_spread,
+        config.size,
+        config.size_spread,
+        config.spin,
+        config.spin_spread,
+    ]
+    .into_iter()
+    .chain(config.velocity)
+    .chain(config.spread)
+    .chain(config.acceleration)
+    .chain(config.opacity)
+    .chain(config.size_end);
+    if numbers.into_iter().any(|value| !value.is_finite())
+        || config.burst > i64::MAX as u64
+        || config.rate < 0.
         || config.lifetime <= 0.
         || config.lifetime_spread < 0.
         || config.lifetime_spread > config.lifetime
@@ -111,10 +157,7 @@ pub(super) fn kind(
             "invalid particle rate, lifetime, spread, size or opacity",
         ));
     }
-    Ok(NodeKind::Particles(ParticleBatch {
-        config: Arc::new(config),
-        frame: None,
-    }))
+    Ok(())
 }
 pub(super) fn validate(heap: &Heap, _: Value, index: u32, value: Value) -> Result<(), HeapError> {
     if index < PREFIX.len() as u32 {
@@ -167,10 +210,23 @@ impl Completion {
 struct Live {
     root: RootToken,
     target: NodeId,
+    sequence: u64,
+    config: ParticleConfig,
     frame: ParticleFrame,
-    last_time: f64,
+    started: f64,
     paused: bool,
     completion: Option<Completion>,
+}
+impl Live {
+    fn projection(&self) -> ParticleEmission {
+        ParticleEmission {
+            sequence: self.sequence,
+            config: self.config,
+            frame: self.frame,
+            started: self.started,
+            paused: self.paused,
+        }
+    }
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Particles {
@@ -178,6 +234,8 @@ pub(super) struct Particles {
     live: VecDeque<Live>,
     #[serde(skip)]
     charge: Option<HeapReservation>,
+    #[serde(skip)]
+    projection_pool: Option<BudgetPool>,
     time: f64,
     remaining: usize,
     revision: u64,
@@ -211,8 +269,19 @@ impl Particles {
             }
             Part::Particle => {
                 let mut live: Live = record.read()?;
+                // Emission configuration now belongs to adapter records rather
+                // than constructor fields: restoration uses the same boundary.
+                validate_configuration(&live.config)?;
                 live.root = map.root(live.root)?;
-                stage.set_particle_frame(live.target, Some(live.frame))?;
+                let batches = self.project(
+                    heap,
+                    stage,
+                    live.target,
+                    live.sequence,
+                    Some(live.projection()),
+                )?;
+                stage.set_particle_batches(live.target, batches)?;
+                stage.set_particle_time(live.target, self.time)?;
                 results::reserve_queue(heap, &mut self.live, &mut self.charge)?;
                 self.live.push_back(live);
             }
@@ -220,6 +289,54 @@ impl Particles {
         }
         self.revision = stage.revision();
         Ok(())
+    }
+    /// Admission prepares the replacement before changing either the activity
+    /// or the stage. Old UI views retain their independent CPU-output lease.
+    fn project(
+        &mut self,
+        heap: &Heap,
+        stage: &reel_ui::stage::Stage,
+        target: NodeId,
+        sequence: u64,
+        replacement: Option<ParticleEmission>,
+    ) -> Result<ParticleBatches, AdapterError> {
+        let NodeKind::Particles(node) = &stage.node(target).unwrap().kind else {
+            unreachable!()
+        };
+        let pool = self.projection_pool.get_or_insert_with(|| {
+            BudgetPool::new(
+                BudgetCategory::CpuOutput,
+                QueueLimits {
+                    max_requests: u32::MAX,
+                    max_bytes: heap.budget_usage().limit(),
+                },
+            )
+        });
+        // Maintenance rotates its queue; saved records therefore need not
+        // arrive in paint order. Sequence remains the single ordering source.
+        let at = node
+            .batches
+            .partition_point(|batch| batch.sequence < sequence);
+        let replacing = node
+            .batches
+            .get(at)
+            .is_some_and(|batch| batch.sequence == sequence);
+        let count =
+            node.batches.len() - usize::from(replacing) + usize::from(replacement.is_some());
+        let entries = node.batches[..at]
+            .iter()
+            .copied()
+            .chain(replacement)
+            .chain(node.batches[at + usize::from(replacing)..].iter().copied());
+        ParticleBatches::try_new(pool, count, entries).map_err(|_| AdapterError::Allocation)
+    }
+    #[cfg(test)]
+    pub(super) fn projection_pool(&self) -> &BudgetPool {
+        self.projection_pool.as_ref().unwrap()
+    }
+    #[cfg(test)]
+    pub(super) fn set_projection_pool(&mut self, pool: BudgetPool) {
+        self.projection_pool = Some(pool);
     }
     pub fn has_active(&self) -> bool {
         !self.live.is_empty()
@@ -274,26 +391,25 @@ impl SessionVm {
             let mut terminal = cancelled.then_some(results::TaskResult::Cancelled);
             let mut pending_completion = false;
             if !cancelled {
-                if !live.paused {
-                    live.frame.elapsed += self.particles.time - live.last_time;
-                }
-                live.last_time = self.particles.time;
-                let NodeKind::Particles(batch) = &node.unwrap().kind else {
-                    unreachable!()
-                };
+                // Keep the clock origin unchanged between controls so a
+                // snapshot does not introduce a different floating-point sum.
+                let elapsed = live.frame.elapsed
+                    + if live.paused {
+                        0.
+                    } else {
+                        self.particles.time - live.started
+                    };
                 if let Some(completion) = &mut live.completion {
-                    work += completion.advance(&batch.config, budget - work).max(1);
+                    work += completion.advance(&live.config, budget - work).max(1);
                     pending_completion = completion.next != 0;
-                    if !pending_completion && live.frame.elapsed >= completion.end {
+                    if !pending_completion && elapsed >= completion.end {
                         terminal = Some(results::TaskResult::Returned(
                             self.vm.heap_mut().alloc_string("Completed")?,
                         ));
                     }
                 } else {
                     work += 1;
-                    if live.frame.elapsed * batch.config.rate + batch.config.burst as f64
-                        >= u64::MAX as f64
-                    {
+                    if elapsed * live.config.rate + live.config.burst as f64 >= u64::MAX as f64 {
                         terminal = Some(results::TaskResult::Rejected(
                             self.vm
                                 .heap_mut()
@@ -304,23 +420,31 @@ impl SessionVm {
             } else {
                 work += 1;
             }
+            let target = live.target;
+            let sequence = live.sequence;
             if let Some(terminal) = terminal {
-                if self.stage.scene.node(live.target).is_some() {
-                    self.stage.scene.set_particle_frame(live.target, None)?;
+                if self.stage.scene.node(target).is_some() {
+                    let batches = self.particles.project(
+                        self.vm.heap(),
+                        &self.stage.scene,
+                        target,
+                        sequence,
+                        None,
+                    )?;
+                    self.stage.scene.set_particle_batches(target, batches)?;
                 }
                 results::finish_task(self.vm.heap_mut(), result, terminal)?;
-                self.vm.heap_mut().release_root(live.root)?;
+                self.vm
+                    .heap_mut()
+                    .release_root(self.particles.live.front().unwrap().root)?;
                 self.results.changed();
                 self.particles.woke = true;
                 self.particles.live.pop_front();
             } else {
                 self.stage
                     .scene
-                    .set_particle_frame(live.target, Some(live.frame))?;
+                    .set_particle_time(target, self.particles.time)?;
                 if pending_completion {
-                    // Retain this producer at the pending prefix until its
-                    // bounded completion scan has drained. No clock advance
-                    // or per-particle allocation is needed between slices.
                     break;
                 }
                 let live = self.particles.live.pop_front().unwrap();
@@ -341,19 +465,19 @@ impl SessionVm {
         let args = self.vm.host_arguments(ticket)?;
         let target = args[0];
         let id = self.stage.id(self.vm.heap(), target)?;
-        let duration = if args[1].tag() == ValueTag::Null {
+        let duration = if args[3].tag() == ValueTag::Null {
             None
         } else {
-            let duration = stage::number(args[1])?;
+            let duration = stage::number(args[3])?;
             if duration < 0. {
                 return Err(AdapterError::Input("emission duration must be nonnegative"));
             }
             Some(duration)
         };
-        let owner = if args[2].tag() == ValueTag::Null {
+        let owner = if args[21].tag() == ValueTag::Null {
             self.default_activity_owner(ticket.task)?
         } else {
-            args[2]
+            args[21]
         };
         let owner_value = owner;
         super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
@@ -361,20 +485,33 @@ impl SessionVm {
         let NodeKind::Particles(batch) = &node.kind else {
             return Err(AdapterError::Input("emit requires a particles node"));
         };
-        let duration = if batch.config.rate == 0. {
+        let sequence = (self
+            .vm
+            .heap()
+            .host_payload(target, SEQUENCE)?
+            .as_int()
+            .unwrap() as u64)
+            .checked_add(1)
+            .ok_or(AdapterError::Input("particle emission sequence exhausted"))?;
+        let seed = batch
+            .seed
+            .wrapping_add(sequence.wrapping_mul(0xa0761d6478bd642f));
+        let config = configuration(args, seed)?;
+        let origin = [stage::number(args[19])?, stage::number(args[20])?];
+        let duration = if config.rate == 0. {
             Some(0.)
         } else {
             duration
         };
         if duration.is_some_and(|d| {
-            !(d + batch.config.max_lifetime()).is_finite()
-                || d * batch.config.rate + batch.config.burst as f64 >= u64::MAX as f64
+            !(d + config.max_lifetime()).is_finite()
+                || d * config.rate + config.burst as f64 >= u64::MAX as f64
         }) {
             return Err(AdapterError::Input(
                 "emission duration exceeds representable range",
             ));
         }
-        let completion = duration.map(|duration| Completion::new(&batch.config, duration));
+        let completion = duration.map(|duration| Completion::new(&config, duration));
         // Read current authored dimensions, including writes since the last projection.
         let offset = self.stage.property_offset(self.vm.heap(), target)?;
         let dimension = |field: stage::NodeProperty| -> Result<f64, AdapterError> {
@@ -405,6 +542,30 @@ impl SessionVm {
         } else {
             None
         };
+        let frame = ParticleFrame {
+            origin,
+            elapsed: 0.,
+            duration,
+            extent,
+        };
+        let projection = ParticleEmission {
+            sequence,
+            config,
+            frame,
+            started: self.particles.time,
+            paused: false,
+        };
+        let batches = if completed.is_none() {
+            Some(self.particles.project(
+                self.vm.heap(),
+                &self.stage.scene,
+                id,
+                sequence,
+                Some(projection),
+            )?)
+        } else {
+            None
+        };
         let result = self
             .results
             .create_particle(&mut self.vm, owner_value, target)?;
@@ -412,16 +573,9 @@ impl SessionVm {
             .vm
             .heap_mut()
             .add_root(self.root_owner, RootKind::Host, result)?;
-        if let Some(index) = self
-            .particles
-            .live
-            .iter()
-            .position(|live| live.target == id)
-            && let Err(error) = self.end_emission(index, "Stopped")
-        {
-            self.vm.heap_mut().release_root(root)?;
-            return Err(error);
-        }
+        self.vm
+            .heap_mut()
+            .set_host_payload(target, SEQUENCE, Value::int(sequence as i64))?;
         if let Some(value) = completed {
             results::finish_task(
                 self.vm.heap_mut(),
@@ -430,17 +584,19 @@ impl SessionVm {
             )?;
             self.vm.heap_mut().release_root(root)?;
         } else {
-            let frame = ParticleFrame {
-                elapsed: 0.,
-                duration,
-                extent,
-            };
-            self.stage.scene.set_particle_frame(id, Some(frame))?;
+            self.stage
+                .scene
+                .set_particle_batches(id, batches.unwrap())?;
+            self.stage
+                .scene
+                .set_particle_time(id, self.particles.time)?;
             self.particles.live.push_back(Live {
                 root,
                 target: id,
+                sequence,
+                config,
                 frame,
-                last_time: self.particles.time,
+                started: self.particles.time,
                 paused: false,
                 completion,
             });
@@ -456,6 +612,19 @@ impl SessionVm {
         let live = &self.particles.live[index];
         let result = self.vm.heap().root_value(live.root)?;
         let value = self.vm.heap_mut().alloc_string(status)?;
+        let target = live.target;
+        let sequence = live.sequence;
+        let batches = if self.stage.scene.node(target).is_some() {
+            Some(self.particles.project(
+                self.vm.heap(),
+                &self.stage.scene,
+                target,
+                sequence,
+                None,
+            )?)
+        } else {
+            None
+        };
         results::finish_task(
             self.vm.heap_mut(),
             result,
@@ -468,8 +637,8 @@ impl SessionVm {
             self.particles.remaining -= 1;
         }
         self.vm.heap_mut().release_root(live.root)?;
-        if self.stage.scene.node(live.target).is_some() {
-            self.stage.scene.set_particle_frame(live.target, None)?;
+        if let Some(batches) = batches {
+            self.stage.scene.set_particle_batches(target, batches)?;
         }
         self.results.changed();
         Ok(())
@@ -487,8 +656,28 @@ impl SessionVm {
                 .is_ok_and(|v| v.same_bits(result))
         }) {
             match symbol {
-                "reel::pause" => self.particles.live[index].paused = true,
-                "reel::resume" => self.particles.live[index].paused = false,
+                "reel::pause" | "reel::resume" => {
+                    let live = &self.particles.live[index];
+                    let paused = symbol == "reel::pause";
+                    let mut projection = live.projection();
+                    projection.frame = projection.frame_at(self.particles.time);
+                    projection.started = self.particles.time;
+                    projection.paused = paused;
+                    let target = live.target;
+                    let sequence = live.sequence;
+                    let batches = self.particles.project(
+                        self.vm.heap(),
+                        &self.stage.scene,
+                        target,
+                        sequence,
+                        Some(projection),
+                    )?;
+                    let live = &mut self.particles.live[index];
+                    live.frame = projection.frame;
+                    live.started = projection.started;
+                    live.paused = paused;
+                    self.stage.scene.set_particle_batches(target, batches)?;
+                }
                 "reel::stop" => self.end_emission(index, "Stopped")?,
                 "reel::finish" => {
                     if self.particles.live[index].frame.duration.is_none() {
