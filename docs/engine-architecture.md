@@ -78,6 +78,8 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 共享舞台文字属性 `text_fit` 默认 `none`；`shrink` 按完整、不自动折行的文本与可用宽度等比缩小，保留显式换行，最高为作者字号，最低为 `min_font_size`（默认 0）。富文本字号和 ruby 一起缩放，打字机揭示不改变适配结果；最低字号仍不足时允许溢出，裁剪由节点 clip 决定。布局缓存区分字体缩放与换行宽度，输入链接和无障碍几何使用同一布局。`text_outline` 默认 0，表示字形向外描边的逻辑宽度；`text_outline_color` 默认黑色。描边复用字形 stroke，先描边再填色，并服从完整 cluster 揭示；不复制文字节点或引入专用光栅器。文字属性应用于 text 与控件标签，现有输入编辑器保持自己的布局语义。
 
+共同布尔属性 `text_wrap` 默认 true，只控制 text 节点的自动折行；false 保留显式换行，并允许各行超出可用宽度，裁剪仍由 clip 决定。控件标签原有的不自动折行行为和文本编辑器保持不变。构造、直接赋值及 bind/derive 共用节点属性 schema；切换只更新同一 Label 的 LineBreaking 属性并使布局失效，不复制文本或控件。`text_fit:"shrink"` 继续按不自动折行的完整文本适配，不受 text_wrap 开关影响；outline/reveal 沿已有绘制及字形缓存路径。范围为 reel-ui NodeProps、reel-engine 属性/快照、reel-player、测试、[author_text_wrap.aside](../examples/author_text_wrap.aside) 及双语指南；无新增依赖，Aside 字节码/ASB 与 SessionSnapshot 版本不变。共同节点构造（含 list/view/layered_image）native ABI 各加 1，节点宿主验证器版本为普通 4、image 6、video 2。检查直接写入、响应式更新、同包恢复、长文本高度变化、显式换行，以及逐字显示不重排、描边复用字形布局；描边宽度变化仍更新墨迹边界。
+
 `spawn(work, owner: null)` 在普通剧情或回调中启动独立的零参数脚本任务，复用同一 VM、协作调度和执行片。返回对象可 await 并用 `.cancel()` 取消实际生产者；返回值保持身份，多次等待共享终态，错误保留原始故障和源码因果链。省略 owner 时沿用当前回调/任务的节点，主剧情中归会话；节点退休取消所属任务，隐藏不取消。等待者取消不影响生产者。取消请求立即阻止后续脚本执行，清理完成后 await 才得到 Cancelled；取消不执行脚本 finally，与既有 owner 撤销一致。任务启动后先返回句柄，正文在调用者等待或返回后调度；不能通过 spawn 绕过初始化/纯派生/NoWait 边界。任务无主剧情对白/选项权限。任务结果复用 completion 的订阅与终态存储，活动仍用现有计时器，没有空闲轮询或 OS 线程。范围为 reel-engine、示例及双语指南，新增 native ABI 1，Aside 字节码/ASB 不变，无新增依赖。
 
 VM 任务槽按并发数量增长和复用，执行根在宿主准入点扩容/整理，保留稳定根身份并计入堆预算；默认无固定任务数量配额，宿主可显式设限。任务增长失败释放部分根，不影响已有任务。
@@ -122,7 +124,7 @@ VM 任务槽按并发数量增长和复用，执行根在宿主准入点扩容/�
 
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
-`list(items, key:, build:, virtual:false, ...NodeProps)` 是 Reel native ABI 5，Aside 字节码/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
+`list(items, key:, build:, virtual:false, ...NodeProps)` 是 Reel native ABI 7，Aside 字节码/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
 
 结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。默认保留全部行实例；virtual:true 的组件寿命与窗口协调见下节。示例见 [author_list.aside](../examples/author_list.aside)。
 
@@ -559,6 +561,8 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 节点图像遮罩使用公共属性 `mask: null|string`、`mask_progress: 1`、`mask_softness: 0.06`、`mask_invert: false`。mask 使用普通 PNG/JPEG 资源路径，按节点局部布局矩形拉伸覆盖整个子树；不接受分块 .reel-image。progress 在 0..1，softness 为有限非负数，两个数值可派生及动画。0 全隐藏、1 全显示并跳过额外遮罩合成；中间覆盖率为 alpha × clamp((progress × (1 + softness) − gray) / softness, 0, 1)，softness=0 使用硬阈值。gray 使用素材编码灰度而非线性化后的色值，invert 对 gray 取 1−gray。遮罩不更改布局、裁剪或逻辑命中，交互使用 visible/enabled 显式控制。VM 保存资源路径与普通属性，恢复复用图片服务；无 GPU 句柄或截图进入脚本状态。渲染使用具名 Rust 元数据传递遮罩参数，复用帧资源租约和组离屏目标池，不逐帧解码、上传或 CPU 读回。
 透视与可编程渲染：场景组可带 Camera 与 3D Transform，RenderFrame 支持版本化 Mesh、Material、纹理、uniform、混合/深度设置及效果输入。普通节点生成二维平面网格，透视后仍参与统一组顺序；显式深度组使用自己的深度缓冲规则。交互几何可以是二维逆变换、投影平面射线映射或注册的自定义映射。着色器改变形状时作者提供匹配命中策略。WGSL 是默认后端实现语言，Effect/Material 身份和参数独立于后端。
 作者自定义节点：custom_node 注册可保存 state、measure(constraints)、record(draw_context)、event(event_context) 与显式重绘请求。绘制回调记录有资源身份的绘制命令，布局与绘制阶段只读并保持有界；异步加载由正常任务完成后标脏。作者可以增加小游戏、图形和输入行为而沿用同一布局、变换、焦点与恢复协议。Live2D 通过格式/SDK 适配节点提供模型、动作、表情及可恢复参数，SDK 许可与目标构建随适配器明确列出。
+节点 `invert: 0..1` 对完成合成的整个子树做 sRGB 反色，默认 0；1 将非预乘的编码 RGB 变为 1−RGB，中间值在编码 RGB 中插值，alpha 保持不变，再转回线性预乘值。嵌套节点按树由内到外应用，兄弟节点不受影响；反色先于该组的遮罩与透明度，不改变布局和输入。沿用普通属性写入、derive、tween 与快照，不新增语言语法。UI 的具名组元数据将参数传到帧与 GPU，在既有组离屏目标上一次合成，和 opacity/mask 共用目标；默认值不产生额外组，无截图、CPU 读回或新依赖。范围为 engine 属性/ABI、UI 绘制、player 与 renderer；节点 native ABI、节点快照验证器版本递增，旧编译产物重新构建。验证覆盖组合后的像素、半透明、嵌套与兄弟、遮罩、动态属性和保存恢复，并按设备标明像素验证范围。可运行示例为 examples/author_invert.aside。
+
 音频视频：音轨可排队、定区间循环、淡化、声像、滤镜与同步组起播；语音支持逐句关联和历史重播。各操作对应可恢复媒体描述，队列/滤镜状态与逻辑位置进入快照。视频支持普通节点、全屏、循环、跳过、seek、音画同步与遮罩。错误、设备恢复和取消遵守媒体身份与唯一终态。
 存档与历史控制：普通/快速/自动槽位、回滚、前滚、选择锁定、回放和持久解锁共用服务。前滚只复用仍匹配代码/状态版本的已记录交互与选择；分支改变使后续记录失效。作者可建立显式回滚边界。发行升级保存代码版本清单，构建工具保留所需历史编译产物；迁移在隔离候选中验证后切换，运行位置只通过声明的恢复映射改变。
 平台与发行：桌面 Windows/Linux/macOS、Android/iOS/Web 以及额外 PS Vita 目标分别实现窗口、输入、音频、存储与生命周期适配。发布清单记录能力与后备策略，实际支持按平台验证。移动签名与 SDK、商店服务和受限平台编码能力由对应构建适配器处理。

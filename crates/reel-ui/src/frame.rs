@@ -151,6 +151,7 @@ pub struct FrameGroup {
     pub mask: Option<MaskUse>,
     pub filters: Vec<Filter>,
     pub composite: Composite,
+    pub invert: f32,
     pub owner: WidgetId,
     pub effect_to_target: Affine,
     pub ink_bounds: InkBounds,
@@ -968,7 +969,7 @@ impl Building {
         let c = self.cursors.last().unwrap();
         let layer = &self.source.plan.layers[c.layer];
         let meta = if c.stream.is_some() {
-            Some((c.owner, Affine::IDENTITY, None))
+            Some((c.owner, Affine::IDENTITY, None, 0.))
         } else {
             layer
                 .groups
@@ -979,6 +980,7 @@ impl Building {
                         layer.groups[i].owner,
                         layer.transform * layer.groups[i].effect_transform,
                         layer.groups[i].mask_progress,
+                        layer.groups[i].invert,
                     )
                 })
         };
@@ -1495,7 +1497,7 @@ fn make_op(
     scene: &Scene,
     c: &Command,
     t: Affine,
-    meta: Option<(WidgetId, Affine, Option<MaskProgress>)>,
+    meta: Option<(WidgetId, Affine, Option<MaskProgress>, f32)>,
     mut mask: Option<MaskUse>,
     paint: ImagePaint,
     resources: &ResourceSnapshot,
@@ -1510,7 +1512,8 @@ fn make_op(
         Command::PopContext => (LocalId::None, FrameOp::PopContext),
         Command::PushGroup(id) => {
             let g = scene.group(*id);
-            let (owner, effect, progress) = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
+            let (owner, effect, progress, invert) =
+                meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
             if let Some(progress) = progress {
                 if !progress.progress.is_finite()
                     || !(0.0..=1.).contains(&progress.progress)
@@ -1521,7 +1524,9 @@ fn make_op(
                 }
                 mask.as_mut().ok_or(BuildErrorKind::InvalidRecord)?.progress = Some(progress);
             }
-            if !finite(effect)
+            if !invert.is_finite()
+                || !(0. ..=1.).contains(&invert)
+                || !finite(effect)
                 || !valid_composite(g.composite)
                 || mask.is_some_and(|m| !finite(m.transform))
             {
@@ -1534,6 +1539,7 @@ fn make_op(
                     mask,
                     filters: Vec::with_capacity(g.filters.len()),
                     composite: g.composite,
+                    invert,
                     owner,
                     effect_to_target: effect,
                     ink_bounds: InkBounds::Empty,

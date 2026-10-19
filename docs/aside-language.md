@@ -37,6 +37,8 @@ Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, .
 
 Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null, locale: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 3，不改变 Aside/Aside 字节码。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。`reel loc extract --output-dir` 按模块组织原文 FTL，`reel loc bundle` 把同语言的模块译文编成一个运行时 FTL；文件组织不改变消息身份、运行时接口或存档格式。
 
+节点 `invert` 是 0..1 的普通可动画宿主属性，默认 0，对子树合成结果做保留 alpha 的 sRGB 反色；使用既有属性写入、derive、tween 与快照协议，不增加 VM 指令。
+
 节点图像遮罩使用普通宿主属性 mask、mask_progress、mask_softness、mask_invert，数值动画和绑定沿用现有属性协议。资源路径与进度进入节点 VM 字段和快照，Aside 不持有 GPU 对象；不增加语言语法或 VM 指令。
 
 
@@ -284,9 +286,9 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `slider` 接受可选 children（默认空），沿普通节点子树和方法组合。`decorated: false` 只关闭原生绘制，数值轨道覆盖完整内容宽度；拖动、键盘、手柄、绑定回写和无障碍行为保持有效。作者可将子图片的 x 绑定到 `(slider.value-slider.min)/(slider.max-slider.min)*内容宽度`，以锚点居中放置滑块。slider native ABI 为 8。
 
-`list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的值：标量保留类型，字符串按内容比较，其余对象按身份比较；对象键须复用原对象引用，null 也可作键。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，当前实例化全部条目。
+`list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的值：标量保留类型，字符串按内容比较，其余对象按身份比较；对象键须复用原对象引用，null 也可作键。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，默认实例化全部条目；`virtual:true` 见下段。
 
-虚拟列表（已实现）：`list(items, key:, build:, virtual:false, ...布局属性)` 的 virtual 固定选择组件寿命。true 只实例化视窗附近的行，离屏退休、返回重建；持久状态放在作者 model 中，聚焦和捕获中的行暂时保留。首版要求有限高度纵向 scroll 的唯一流内容、正自然高度 Node，来源预先过滤；list 本身使用自然高度与无局部变换，整体变换放在外层 scroll。窗口变化只触发宿主维护 observer，不重跑来源和 key。VM `begin_reactive(ticket, output, pure, continuation)` 与 call_reactive 共用原生元数据、NoWait、捕获嵌套、故障/取消恢复与快照续体；不增加语言语法、指令或脚本逐帧回调。Reel list native ABI 5、SessionSnapshot 7、VM 快照 5，具体窗口、锚点、测量及导航合同见[引擎架构](engine-architecture.md#虚拟列表已实现)。
+虚拟列表（已实现）：`list(items, key:, build:, virtual:false, ...布局属性)` 的 virtual 固定选择组件寿命。true 只实例化视窗附近的行，离屏退休、返回重建；持久状态放在作者 model 中，聚焦和捕获中的行暂时保留。首版要求有限高度纵向 scroll 的唯一流内容、正自然高度 Node，来源预先过滤；list 本身使用自然高度与无局部变换，整体变换放在外层 scroll。窗口变化只触发宿主维护 observer，不重跑来源和 key。VM `begin_reactive(ticket, output, pure, continuation)` 与 call_reactive 共用原生元数据、NoWait、捕获嵌套、故障/取消恢复与快照续体；不增加语言语法、指令或脚本逐帧回调。Reel list native ABI 7、SessionSnapshot 7、VM 快照 5，具体窗口、锚点、测量及导航合同见[引擎架构](engine-architecture.md#虚拟列表已实现)。
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。game.configure 只配置呈现参数，不含默认界面开关，其 native ABI 为 3。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。
 
@@ -327,6 +329,8 @@ Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格
 宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 3，包含排序及比较器返回续体，旧版本明确报告版本不匹配；Aside 字节码/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，Aside 字节码/ASB 不变。
+
+共同宿主属性 `text_wrap` 是默认 true 的 bool，支持构造、直接赋值和 bind/derive。它只控制 text 节点的自动折行；false 保留显式换行，溢出沿 clip 裁剪。控件标签及文本编辑器不改变原有换行规则，`text_fit:"shrink"` 仍按完整的不自动折行文本适配。字段与同包执行快照一起恢复，不增加语言语法、VM 指令或依赖；共同节点构造 native ABI（含 list/view/layered_image）各加 1，节点宿主验证器版本为普通 4、image 6、video 2，Aside 字节码/ASB 和 SessionSnapshot 版本不变。
 
 Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。共同节点构造 native ABI 各加 1，节点宿主快照适配器 2（image 4），SessionSnapshot 5。
 

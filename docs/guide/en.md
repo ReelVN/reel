@@ -737,13 +737,32 @@ reveal.mask = null;
 ```
 mask_progress and mask_softness use ordinary derive/tween. See [author_image_mask.aside](../../examples/author_image_mask.aside). Progress 1 bypasses mask compositing; set mask to null when finished to release its resource reference. Masks do not change logical hit geometry; use enabled/visible to control interaction. Masks require whole PNG/JPEG images, not tiled .reel-image sources.
 
+The `invert` node property inverts the composited subtree. It ranges from 0 (the default) to 1 for full inversion, with intermediate values blending in sRGB. Alpha is preserved. Put dialogue and menus in sibling nodes to keep them independent of the inverted scene. Direct assignment, derive, tween, and save restoration use the ordinary property protocol.
+
+```aside
+let scene = stack(width: 800, height: 450, invert: 0) {
+    text("A different view", color: "#e08020", font_size: 48);
+};
+stage.replace(scene);
+await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
+```
+
+Runnable example: [author_invert.aside](../../examples/author_invert.aside). Inversion shares the group target with opacity/mask; set it to 0 when finished to remove the need for a separate inversion target.
+
 Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
 Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.
 
 ## 10 Choices and Changing Content
 
-Use `text_fit: "shrink"` to fit a complete title or option into a fixed width; `min_font_size` sets its lower font-size bound. The default, `text_fit: "none"`, keeps normal layout. Fitting only shrinks, preserves explicit line breaks and scales rich text and ruby together; typewriter reveal does not change the size. Use clip if text still overflows at the minimum. `text_outline` sets the outward glyph outline width and `text_outline_color` sets its color for text and control labels. For example: `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`. These properties accept derive, so hover or focus can change the text appearance.
+Text automatically wraps to the available width by default. Set `text_wrap: false` to retain each explicitly authored line; excess text remains visible unless clip trims it. The property supports direct assignment and bind/derive. This switch applies only to text: control labels such as buttons still do not wrap automatically, and text editors keep their own rules. See [author_text_wrap.aside](../../examples/author_text_wrap.aside) for a complete example.
+
+```aside
+text("A long authored line without automatic wrapping.\nA second explicit line.",
+    width: 240, text_wrap: false, clip: true);
+```
+
+Use `text_fit: "shrink"` to fit a complete title or option into a fixed width; `min_font_size` sets its lower font-size bound. The default, `text_fit: "none"`, keeps normal layout. Shrink always fits the complete text without automatic wrapping, independently of text_wrap. Fitting only shrinks, preserves explicit line breaks and scales rich text and ruby together; typewriter reveal does not change the size. Use clip if text still overflows at the minimum. `text_outline` sets the outward glyph outline width and `text_outline_color` sets its color for text and control labels. For example: `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`. These properties accept derive, so hover or focus can change the text appearance.
 
 Use `spawn(work, owner: root)` for independent scripted scenes or background game logic. work is a zero-argument function, closure or bound method and may loop and await animations/results. `await task` returns its value or raises its original error; repeated awaits share the terminal result. `task.cancel()` returns true for the first cancellation request and false afterwards; waiters receive Cancelled after cleanup. Cancellation does not run script finally blocks, so attach resources to their owning nodes. Removing a node cancels its tasks; hiding it does not. Cancelling a waiter leaves the producer running. An omitted owner inherits the callback/task node, or the session in the main story. Work starts after the caller waits or returns and has no main-story dialogue/choice permission. Initialization, pure derive and NoWait contexts cannot spawn tasks. See [author_tasks.aside](../../examples/author_tasks.aside). Use sequence/parallel/repeat for fixed animations; tween supports quadratic `quad_in`, `quad_out`, `quad_in_out` curves alongside the cubic in/out/in_out curves.
 
@@ -919,7 +938,7 @@ Write sentence timing in rich text too: `[speed=15]慢慢说[/speed]` reveals 15
 
 Paired, nested tags include `[b]`, `[i]`, `[u]`, `[s]` (bold, italic, underline, strike), `[size=36]`, `[color=#RRGGBB]` / `[color=#RRGGBBAA]`, `[em]` (emphasis dots), `[ruby=注音]基文[/ruby]`, and `[link=词条ID]正文[/link]`. `[[` represents a literal opening bracket; use rich_escape before inserting arbitrary player text. Invalid markup reports the rich call's source location and includes the tag's UTF-8 byte offset in the error value. Ruby cannot nest. Its base and half-size annotation wrap as one unit; the base reveals progressively and the annotation appears when the complete base is visible. Games supply fonts; bold and italic appearance depends on those fonts.
 
-text wraps to its available width. width, x/y, padding and scroll determine NVL page placement and bounds; list gap controls paragraph spacing. `text_align` accepts start/end/left/right/center/justify and defaults to start. `line_height` is a font-size multiplier, defaulting to 1.2. Mixed sizes, ruby and emphasis dots participate in line height; reveal changes painting without reshaping. Node color supplies the base color, while explicit inline colors override their spans. Omit inline color to inherit speaker or read-state coloring.
+text wraps to its available width by default. width, x/y, padding and scroll determine NVL page placement and bounds; list gap controls paragraph spacing. `text_align` accepts start/end/left/right/center/justify and defaults to start. `line_height` is a font-size multiplier, defaulting to 1.2. Mixed sizes, ruby and emphasis dots participate in line height; reveal changes painting without reshaping. Node color supplies the base color, while explicit inline colors override their spans. Omit inline color to inherit speaker or read-state coloring.
 
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` passes the link ID to an ordinary callback; event.target is the text node. Fully revealed links accept mouse and touch clicks. With text focused, left/right selects a link and confirm activates it. Link input is consumed without advancing dialogue or opening a browser. Removing the node cancels callbacks under its ownership. Runnable example: [author_rich_text.aside](../../examples/author_rich_text.aside); supply fonts/body.ttf first. Use `derive(|| rich(tr(...)))` for reactive language switching and rich_escape for player text passed into translated markup. Submitted dialogue and history preserve their original language and styles. Accessibility currently exposes the body label, without separate semantic link children.
 

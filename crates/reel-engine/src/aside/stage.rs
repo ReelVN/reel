@@ -34,6 +34,8 @@ pub(super) enum NodeProperty {
     Height,
     #[aside(name = "opacity", ty = Any, default = 1, validate = validate_opacity, animatable)]
     Opacity,
+    #[aside(name = "invert", ty = Any, default = 0, validate = validate_invert, animatable)]
+    Invert,
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
     #[aside(name = "enabled", ty = Bool, default = true)]
@@ -70,6 +72,8 @@ pub(super) enum NodeProperty {
     Reveal,
     #[aside(name = "text_align", ty = String, default = "start", validate = validate_text_align)]
     TextAlign,
+    #[aside(name = "text_wrap", ty = Bool, default = true)]
+    TextWrap,
     #[aside(name = "line_height", ty = Any, default = 1.2, validate = validate_nonnegative, animatable)]
     LineHeight,
     #[aside(name = "text_fit", ty = String, default = "none", validate = validate_text_fit)]
@@ -1457,6 +1461,16 @@ fn validate_number(_: &Heap, value: Value) -> Result<(), HeapError> {
 fn validate_dimension(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(dimension(value))
 }
+fn invert(value: Value) -> Result<f64, AdapterError> {
+    let value = number(value)?;
+    if !(0. ..=1.).contains(&value) {
+        return Err(AdapterError::Input("invert must be between zero and one"));
+    }
+    Ok(value)
+}
+fn validate_invert(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(invert(value))
+}
 fn validate_opacity(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(opacity(value))
 }
@@ -1608,6 +1622,7 @@ fn read_props(
         align_x: opacity(get(NodeProperty::AlignX)?)?,
         align_y: opacity(get(NodeProperty::AlignY)?)?,
         opacity: opacity(get(NodeProperty::Opacity)?)?,
+        invert: invert(get(NodeProperty::Invert)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,
@@ -1619,6 +1634,7 @@ fn read_props(
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
         font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
+        text_wrap: boolean(get(NodeProperty::TextWrap)?)?,
         line_height: nonnegative(get(NodeProperty::LineHeight)?)?,
         text_fit: if shrink_text(heap, get(NodeProperty::TextFit)?)? {
             reel_ui::core::TextFit::Shrink {

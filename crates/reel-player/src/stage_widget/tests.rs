@@ -1642,6 +1642,179 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
 }
 
 #[test]
+#[ignore = "requires REEL_SESSION_FONT with Latin glyphs for real wrapping geometry"]
+fn text_wrap_changes_height_preserves_newlines_and_reuses_the_label() {
+    use reel_ui::imaging::record::{Command, Draw};
+
+    let font = reel_ui::peniko::Blob::from(
+        std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+    );
+    let mut f = Fixture::new(Some(font));
+    f.edit(f.root, |props| {
+        *props = NodeProps {
+            width: Some(600.),
+            height: Some(400.),
+            ..Default::default()
+        };
+    });
+    let text: reel_core::text::Text =
+        "A deliberately long authored sentence that spans several widths.\nSecond explicit line."
+            .into();
+    f.stage
+        .update(
+            f.blue,
+            NodeKind::Text(text.clone()),
+            NodeProps {
+                width: Some(120.),
+                font_size: 24.,
+                text_wrap: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let glyphs = |source: &RecordedSource| {
+        let scene = source.scene();
+        scene
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                Command::Draw(id) => match scene.draw_op(*id) {
+                    Draw::GlyphRun(run) => Some(run),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flat_map(|run| run.glyphs.iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let label_identity = |f: &Fixture| {
+        let scene = f.bridge.root().get_widget(f.layouts()[&f.blue].0).unwrap();
+        let scene = scene.downcast::<SceneWidget>().unwrap();
+        let id = scene.label.as_ref().unwrap().id();
+        let label = f.bridge.root().get_widget(id).unwrap();
+        (id, label.downcast::<Label>().unwrap().text().clone())
+    };
+    let unwrapped = f.record();
+    f.accept(&unwrapped);
+    let (label_id, plain) = label_identity(&f);
+    let widget_id = f.layouts()[&f.blue].0;
+    let height = |source: &RecordedSource| source.geometry().get(widget_id).unwrap().size.height;
+    let original_height = height(&unwrapped);
+    let original_glyphs = glyphs(&unwrapped);
+    assert!(!original_glyphs.is_empty());
+    assert!(original_glyphs.iter().all(|glyph| glyph.id != 0));
+    assert_eq!(
+        original_glyphs
+            .iter()
+            .map(|glyph| glyph.y.to_bits())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2,
+        "only the explicit newline breaks text"
+    );
+    assert!(
+        original_glyphs.iter().any(|glyph| glyph.x > 120.),
+        "overflow keeps the complete authored line"
+    );
+    drop(unwrapped);
+
+    f.edit(f.blue, |props| props.text_wrap = true);
+    let wrapped = f.record();
+    f.accept(&wrapped);
+    assert!(
+        height(&wrapped) > original_height * 2.,
+        "automatic wrapping changes natural height"
+    );
+    assert_eq!(label_identity(&f).0, label_id);
+    assert!(Arc::ptr_eq(&label_identity(&f).1, &plain));
+    drop(wrapped);
+
+    f.edit(f.blue, |props| props.text_wrap = false);
+    let restored = f.record();
+    f.accept(&restored);
+    assert_eq!(height(&restored), original_height);
+    assert_eq!(glyphs(&restored), original_glyphs);
+    drop(restored);
+    f.edit(f.blue, |props| props.text_outline = 2.);
+    let outlined = f.record();
+    f.accept(&outlined);
+    assert_eq!(
+        height(&outlined),
+        original_height,
+        "outline changes ink bounds only"
+    );
+    drop(outlined);
+    let layouts = f.layouts();
+    f.edit(f.blue, |props| props.reveal = Some(0));
+    let hidden = f.record();
+    f.accept(&hidden);
+    assert!(glyphs(&hidden).is_empty());
+    assert_eq!(f.layouts(), layouts, "reveal must not relayout");
+    drop(hidden);
+    f.edit(f.blue, |props| {
+        props.reveal = Some(text.len());
+        props.text_outline_color = [255, 0, 255, 255];
+    });
+    let revealed = f.record();
+    f.accept(&revealed);
+    assert!(!glyphs(&revealed).is_empty());
+    assert_eq!(f.layouts(), layouts);
+    drop(revealed);
+    f.edit(f.blue, |props| props.text_outline = 0.);
+    let filled = f.record();
+    f.accept(&filled);
+    assert_eq!(glyphs(&filled), original_glyphs);
+    assert_eq!(height(&filled), original_height);
+    drop(filled);
+
+    f.edit(f.blue, |props| {
+        props.text_fit = reel_ui::core::TextFit::Shrink { min_font_size: 0. }
+    });
+    let fitted = f.record();
+    f.accept(&fitted);
+    let fitted_height = height(&fitted);
+    let fitted_glyphs = glyphs(&fitted);
+    drop(fitted);
+    f.edit(f.blue, |props| props.text_wrap = true);
+    let fitted_wrapped = f.record();
+    f.accept(&fitted_wrapped);
+    assert!(fitted_height < original_height);
+    assert_eq!(fitted_height, height(&fitted_wrapped));
+    assert_eq!(
+        fitted_glyphs,
+        glyphs(&fitted_wrapped),
+        "shrink is independent of automatic wrapping"
+    );
+    assert_eq!(label_identity(&f).0, label_id);
+    assert!(Arc::ptr_eq(&label_identity(&f).1, &plain));
+}
+
+#[test]
+fn text_wrap_keeps_control_labels_on_their_existing_overflow_path() {
+    let mut f = Fixture::new(None);
+    f.stage
+        .update(
+            f.blue,
+            NodeKind::Button {
+                label: Some("A control label keeps its existing layout".into()),
+                listening: true,
+            },
+            NodeProps {
+                width: Some(120.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let original = f.record();
+    f.accept(&original);
+    let layouts = f.layouts();
+    f.edit(f.blue, |props| props.text_wrap = false);
+    let changed = f.record();
+    f.accept(&changed);
+    assert_eq!(f.layouts(), layouts);
+}
+
+#[test]
 fn dialogue_reveal_keeps_text_identity_and_layout() {
     let mut f = Fixture::new(None);
     let first = f.record();
@@ -2520,4 +2693,58 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
     drop(f);
     drop(registry);
     assert_eq!(pixels.usage().bytes, 0);
+}
+
+#[test]
+fn subtree_invert_updates_cached_composition_without_relayout() {
+    let mut f = Fixture::new(None);
+    let first = f.record();
+    f.accept(&first);
+    let layouts = f.layouts();
+    f.edit(f.root, |p| {
+        p.invert = 0.75;
+        p.opacity = 0.5;
+    });
+    let inverted = f.record();
+    let groups: Vec<_> = inverted
+        .plan()
+        .layers
+        .iter()
+        .flat_map(|l| &l.groups)
+        .filter(|g| g.invert != 0.)
+        .collect();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].invert, 0.75);
+    assert_eq!(
+        f.layouts(),
+        layouts,
+        "pixel effects must keep layout and widget identity"
+    );
+    f.accept(&inverted);
+    let cached = f.record();
+    assert_eq!(
+        cached
+            .plan()
+            .layers
+            .iter()
+            .flat_map(|l| &l.groups)
+            .filter(|g| g.invert == 0.75)
+            .count(),
+        1
+    );
+    f.accept(&cached);
+    f.edit(f.root, |p| {
+        p.invert = 0.;
+        p.opacity = 1.;
+    });
+    let cleared = f.record();
+    assert!(
+        cleared
+            .plan()
+            .layers
+            .iter()
+            .flat_map(|l| &l.groups)
+            .all(|g| g.invert == 0.)
+    );
+    assert_eq!(f.layouts(), layouts);
 }

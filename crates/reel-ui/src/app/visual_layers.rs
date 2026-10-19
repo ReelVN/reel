@@ -31,6 +31,8 @@ pub struct GroupMetadata {
     pub effect_transform: Affine,
     /// Optional image threshold, separate from the retained mask's scene content.
     pub mask_progress: Option<MaskProgress>,
+    /// sRGB inversion of the completed subtree before coverage and opacity.
+    pub invert: f32,
 }
 
 /// Snapshot of Masonry's current visual layers in painter order.

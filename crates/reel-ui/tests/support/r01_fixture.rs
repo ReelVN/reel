@@ -23,6 +23,9 @@ pub struct RecordWidget {
     pub token: u64,
     pub scroll: Vec2,
     pub clip: bool,
+    pub opacity: f32,
+    pub invert: f32,
+    pub mask: Option<PaintImageMask>,
 }
 impl RecordWidget {
     pub fn new(own: Scene) -> Self {
@@ -39,6 +42,9 @@ impl RecordWidget {
             token: 0,
             scroll: Vec2::ZERO,
             clip: true,
+            opacity: 1.,
+            invert: 0.,
+            mask: None,
         }
     }
 }
@@ -68,7 +74,8 @@ impl Widget for RecordWidget {
             c.set_animated_child_scroll_translation(child, self.scroll);
         }
     }
-    fn pre_paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
+    fn pre_paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
+        c.set_subtree_composite(self.opacity, self.invert, self.mask.clone());
         p.replay(&self.pre)
     }
     fn paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
