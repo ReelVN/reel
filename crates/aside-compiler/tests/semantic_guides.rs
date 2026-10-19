@@ -10,6 +10,7 @@ const PRELUDE: &[&str] = &[
     "audio",
     "rich",
     "camera",
+    "cursor",
     "view",
     "window",
     "particles",

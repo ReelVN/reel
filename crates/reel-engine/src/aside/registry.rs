@@ -162,6 +162,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         "row",
         "column",
         "stack",
+        "cursor",
         "button",
         "input",
         "slider",
@@ -260,6 +261,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "row"
                 | "column"
                 | "stack"
+                | "cursor"
                 | "button"
                 | "slider"
                 | "input"
@@ -278,7 +280,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "video" {
+            abi_version: if name == "cursor" {
+                1
+            } else if name == "video" {
                 5
             } else if name == "image" {
                 16

@@ -40,6 +40,10 @@ fn main() {
 "#;
 
 fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
+    render_at(story, assets, false)
+}
+
+fn render_at(story: CompiledStory, assets: &Path, mouse: bool) -> RenderFrame {
     let mut driver = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
         story,
@@ -97,6 +101,41 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
         driver.sync(&mut bridge, root_id).unwrap();
     }
     assert_eq!(driver.ui().image_resources().len(), 2);
+    if mouse {
+        let (first, receipt) = driver
+            .record(&mut bridge, root_id, FrameId(0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bridge.resolve(PresentationNotice::new(
+                first.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(0))
+            )),
+            NoticeResult::Accepted
+        );
+        driver.presented(&bridge, &receipt).unwrap();
+        use reel_ui::{core::*, dpi::PhysicalPosition};
+        driver
+            .handle_pointer(
+                &mut bridge,
+                PointerEvent::Move(PointerUpdate {
+                    pointer: PointerInfo {
+                        pointer_id: Some(PointerId::PRIMARY),
+                        persistent_device_id: None,
+                        pointer_type: PointerType::Mouse,
+                    },
+                    current: PointerState {
+                        position: PhysicalPosition::new(50., 60.),
+                        ..Default::default()
+                    },
+                    coalesced: vec![],
+                    predicted: vec![],
+                }),
+            )
+            .unwrap();
+    }
+
     let pool = BudgetPool::new(
         BudgetCategory::CpuOutput,
         QueueLimits {
@@ -272,5 +311,45 @@ fn source_and_asb_share_real_image_frames_with_an_independent_asset_root() {
                 expected = Some(actual);
             }
         }
+    }
+}
+
+#[test]
+fn cursor_source_and_asb_use_ordinary_image_resource_leases_after_owner_drop() {
+    let source = r#"fn main() {stage.replace(stack(width:640,height:420) {
+        cursor {image("assets/panels.png",width:70,height:70,anchor_x:0.5,anchor_y:0.5);image("assets/sun.jpg",x:80);};
+    });}"#;
+    let checked = reel_cli::check(source, "cursor-images.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    for story in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let frame = render_at(story, &assets, true);
+        let mut count = 0;
+        for command in frame.commands() {
+            if let FrameOp::Draw(FrameDraw::Fill {
+                brush: Brush::Image(image),
+                ..
+            }) = &command.op
+            {
+                let lease = frame
+                    .resources()
+                    .leases()
+                    .iter()
+                    .find(|lease| lease.handle() == image.image.resource)
+                    .unwrap();
+                let ResourceData::Image { image, .. } = lease.data() else {
+                    panic!("cursor image lease");
+                };
+                assert!(!image.data.is_empty());
+                count += 1;
+            }
+        }
+        assert_eq!(
+            count, 2,
+            "cursor images stay in the common frame with valid leases after its driver is dropped"
+        );
     }
 }

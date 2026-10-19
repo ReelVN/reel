@@ -218,6 +218,19 @@ stack(max_width: 420) {
 
 `view` 的内容按 stack 布局，可同时使用 `align_x/align_y`。input 可以嵌入普通容器；没有焦点时，最前方可见且启用的内层 input 接收键盘和手柄输入，模态面板和已聚焦编辑框仍优先。调整 `game.configure(text_speed:)` 不会中断正在拖动的控件。窗口、画布或父节点放大文字时，WGPU 按实际显示倍率生成并缓存更高分辨率字形，不改变逻辑排版。
 
+### 自定义鼠标光标
+
+将 `cursor` 作为需要改变鼠标外观的面板或控件的普通子节点。图片、文字和动画继续使用舞台节点，鼠标移动由宿主跟踪。容器 x/y 是热点偏移，下面的图片 anchor 将图像中心放在鼠标位置：
+
+```aside
+let pointer = cursor {
+    image("images/pointer.png", anchor_x: 0.5, anchor_y: 0.5);
+};
+panel.add(pointer);
+```
+
+光标外观使用窗口逻辑坐标，位于场景上方，不受面板的相机、缩放和裁剪影响；其自身的变换、透明度和动画照常工作。光标子树不占父布局，不接收输入或焦点。鼠标经过多个作用范围时，最近的面板优先，同一面板最后添加的可用光标优先；拖动期间沿捕获控件确定范围。`cursor()` 隐藏系统光标；设置 `pointer.visible = false` 或移除它恢复祖先或系统光标。面板隐藏、禁用、退休或退出当前模态范围时失效；鼠标离窗、窗口失焦或切换触摸也会撤销。存档保存外观和动画，恢复后等待真实鼠标输入，不恢复旧指针位置。完整可运行示例：[author_cursor.aside](../../examples/author_cursor.aside)，包含普通动画、隐藏和移除。
+
 ### 分层图片
 
 图片的 `color` 用于乘色：`image("assets/panels.png", color: "#ffaaaa")` 让原图偏红，白色保持原样。透明度同时受颜色 alpha 与 opacity 控制。普通图片、分块大图及每个分层描述使用相同规则；给容器设置 color 不会改变子层。使用 bind/derive 调整悬浮等状态的颜色，无需为每种颜色准备或上传一份图片。
@@ -871,7 +884,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 15；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 16；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

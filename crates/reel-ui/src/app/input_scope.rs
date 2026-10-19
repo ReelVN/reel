@@ -63,7 +63,7 @@ impl RenderRoot {
         let mut pending = vec![self.root_id()];
         while let Some(id) = pending.pop() {
             let node = self.widget_arena.get_node(id);
-            if node.item.state.is_stashed {
+            if node.item.state.is_stashed || node.item.state.in_cursor {
                 continue;
             }
             if node.item.state.is_modal {

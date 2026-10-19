@@ -1,4 +1,5 @@
 use super::*;
+mod cursor;
 mod radio_navigation;
 use crate::session::SessionUi;
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};

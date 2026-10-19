@@ -256,6 +256,7 @@ impl ApplicationHandler for App {
                 state.pointer = reel_ui::dpi::PhysicalPosition::new(position.x, position.y);
                 state.pointer_event(PointerKind::Move)
             }
+            WindowEvent::CursorLeft { .. } => state.pointer_event(PointerKind::Leave),
             WindowEvent::MouseInput {
                 state: pressed,
                 button,

@@ -218,6 +218,19 @@ Complete example: [author_stretch.aside](../../examples/author_stretch.aside). S
 
 A view lays out its content as a stack, so both align_x and align_y apply. An input may be nested inside ordinary containers; without focus, the frontmost visible, enabled inner input receives keyboard and gamepad events. Modal panels and focused editors retain priority. Updating game.configure(text_speed:) does not interrupt an active drag. When the window, canvas or parent enlarges text, WGPU generates and caches higher-resolution glyphs for the display scale without changing logical layout.
 
+### Custom mouse cursors
+
+Add a `cursor` as an ordinary child of the panel or control whose pointer appearance it changes. Images, text and animations use ordinary stage nodes; the host tracks mouse movement. The container's x/y offset the hotspot, and the image anchor below places its center at the pointer:
+
+```aside
+let pointer = cursor {
+    image("images/pointer.png", anchor_x: 0.5, anchor_y: 0.5);
+};
+panel.add(pointer);
+```
+
+Cursor visuals use window logical coordinates above the scene, independent of the panel's camera, scaling and clipping. Their own transforms, opacity and animations work normally. The cursor subtree takes no space in its parent's layout and receives no input or focus. The nearest eligible owner takes precedence, with the last available cursor child winning within that owner; dragging uses the captured control's path. `cursor()` hides the system cursor. Setting `pointer.visible = false` or removing it restores an ancestor or system cursor. Hiding, disabling or retiring its panel, or leaving the current modal scope, makes it ineligible. Leaving the window, losing focus or switching to touch also withdraws it. Saves retain the visuals and animations; restoration waits for real mouse input and does not restore an old pointer position. Run [author_cursor.aside](../../examples/author_cursor.aside) for ordinary animation, hiding and removal.
+
 ### Layered images
 
 An image's `color` multiplies its pixels: `image("assets/panels.png", color: "#ffaaaa")` gives the image a red tint; white preserves it. Both the color's alpha and opacity affect transparency. Ordinary images, tiled large images and individual layer descriptions share this behavior; a container's color does not affect its children. Use bind/derive for hover and other state colors without preparing or uploading separate images.
@@ -860,7 +873,7 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 15. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 16. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 

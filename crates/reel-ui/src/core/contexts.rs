@@ -803,6 +803,14 @@ impl MeasureCtx<'_> {
 
 // --- MARK: UPDATE LAYOUT
 impl LayoutCtx<'_> {
+    /// Window logical dimensions, independent of an authored camera or parent transform.
+    pub fn window_size(&self) -> Size {
+        let size = self
+            .global_state
+            .size
+            .to_logical::<f64>(self.global_state.scale_factor);
+        Size::new(size.width, size.height)
+    }
     #[track_caller]
     fn assert_layout_done(&self, child: &WidgetPod<impl Widget + ?Sized>, method_name: &str) {
         let child_state = self.get_child_state(child);
@@ -1598,6 +1606,8 @@ impl_context_method!(
 
         /// Update a widget whose content adds or removes interactive regions.
         pub fn set_interactive(&mut self, pointer: bool, focus: bool) {
+            let pointer = pointer && !self.widget_state.in_cursor;
+            let focus = focus && !self.widget_state.in_cursor;
             if self.widget_state.accepts_pointer_interaction == pointer
                 && self.widget_state.accepts_focus == focus
             {
