@@ -618,7 +618,7 @@ impl Fixture {
         self.frame += 1;
         let (source, receipt) = self
             .ui
-            .record(&mut self.bridge, FrameId(self.frame))
+            .record(&mut self.bridge, self.widget, FrameId(self.frame))
             .unwrap();
         TestFrame { source, receipt }
     }

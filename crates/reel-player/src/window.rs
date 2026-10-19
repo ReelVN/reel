@@ -671,11 +671,13 @@ impl State {
             resources,
             session,
             recorded_projection,
+            root_id,
             ..
         } = self;
         let result = presentation.render(backend, host, |bridge, id, info| {
             build_frame(
                 bridge,
+                *root_id,
                 id,
                 info,
                 pool,
@@ -1046,6 +1048,7 @@ impl Drop for State {
 )]
 fn build_frame(
     bridge: &mut PresentationBridge,
+    root: WidgetId,
     id: FrameId,
     info: SurfaceInfo,
     pool: &BudgetPool,
@@ -1054,7 +1057,7 @@ fn build_frame(
     recorded_projection: &mut Option<RecordedProjection>,
 ) -> Result<RenderFrame, Error> {
     let source = if let Some(session) = session {
-        let (source, receipt) = session.record(bridge, id)?;
+        let (source, receipt) = session.record(bridge, root, id)?;
         *recorded_projection = Some(receipt);
         source
     } else {
@@ -1111,6 +1114,7 @@ impl State {
         let info = self.presentation.surface_info();
         build_frame(
             &mut self.presentation.bridge,
+            self.root_id,
             FrameId(self.presentation.frame),
             info,
             &self.pool,

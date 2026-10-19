@@ -307,9 +307,10 @@ impl AsideSessionUi {
     pub fn record(
         &self,
         bridge: &mut PresentationBridge,
+        root: WidgetId,
         id: reel_core::identity::FrameId,
     ) -> Result<(reel_ui::bridge::RecordedSource, RecordedProjection), Error> {
-        let (source, mut frame) = self.ui.record(bridge, id)?;
+        let (source, mut frame) = self.ui.record(bridge, root, id)?;
         frame.geometry = Some(self.vm.record_geometry(
             frame.stamp.presentation_request,
             |query| {

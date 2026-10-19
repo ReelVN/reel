@@ -101,7 +101,7 @@ fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
         assert_eq!(woke, second == 2);
         driver.sync(&mut bridge, root_id).unwrap();
         let (recording, receipt) = driver
-            .record(&mut bridge, FrameId(second as u64 + 1))
+            .record(&mut bridge, root_id, FrameId(second as u64 + 1))
             .unwrap();
         let key = recording.key();
 

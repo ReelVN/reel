@@ -1348,7 +1348,7 @@ spray.remove();
 
 ### Querying presented node geometry
 
-`stage.geometry(node, relative_to: overlay, owner: root)` waits for a frame actually presented after the request and returns one read-only geometry snapshot. width/height describe the node itself; bounds supplies x/y/width/height in the reference space, and transform's a/b/c/d/tx/ty maps local points into that space. Omitting relative_to uses logical stage coordinates. A sibling overlay or ancestor may be the reference; scrolling, cameras, rotation and mirroring are included, without clipping. The query uses the published layout recorded with that frame; property edits that have not been presented cannot be attached to an older frame.
+`stage.geometry(node, relative_to: overlay, owner: root)` waits for a frame actually presented after the request and returns one read-only geometry snapshot. width/height describe the node itself; bounds supplies x/y/width/height in the reference space, and transform's a/b/c/d/tx/ty maps local points into that space. Omitting relative_to uses logical stage coordinates. A sibling overlay or ancestor may be the reference; scrolling, cameras, rotation and mirroring are included, without clipping. The query uses the published layout recorded with that frame; property edits that have not been presented cannot be attached to an older frame. A retained picture shown while the stage is preparing cannot complete a new query.
 
 ```aside
 overlay.visible = true;

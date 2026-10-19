@@ -224,7 +224,9 @@ fn frames(story: CompiledStory) -> Vec<Vec<Fill>> {
         }
         assert_eq!(driver.adapter().stage().root(), node_id);
         driver.sync(&mut bridge, root_id).unwrap();
-        let (recording, receipt) = driver.record(&mut bridge, FrameId(second + 1)).unwrap();
+        let (recording, receipt) = driver
+            .record(&mut bridge, root_id, FrameId(second + 1))
+            .unwrap();
         let key = recording.key();
 
         let mut build = FrameBuild::new(

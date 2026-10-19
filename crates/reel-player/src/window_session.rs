@@ -149,6 +149,7 @@ impl WindowSession {
     pub(crate) fn record(
         &self,
         bridge: &mut PresentationBridge,
+        root: WidgetId,
         id: reel_core::identity::FrameId,
     ) -> Result<
         (
@@ -158,8 +159,8 @@ impl WindowSession {
         Error,
     > {
         match self {
-            Self::Diagnostic(host) => host.ui.record(bridge, id),
-            Self::Aside { story, .. } => story.driver().record(bridge, id),
+            Self::Diagnostic(host) => host.ui.record(bridge, root, id),
+            Self::Aside { story, .. } => story.driver().record(bridge, root, id),
         }
     }
     pub(crate) fn presented(

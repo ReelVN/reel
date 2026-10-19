@@ -195,7 +195,7 @@ fn huge_image_cold_warm_pan_zoom_and_retirement_use_visible_residency() {
             "every painted tile has a frozen existing resource lease"
         );
     }
-    super::tests::accept(&mut ui, &mut bridge, 2);
+    super::tests::accept(&mut ui, &mut bridge, widget, 2);
     pan(&mut ui, &mut stage, image, -32., 1.);
     settle(&mut ui, &mut bridge, widget, &wake);
     assert!(

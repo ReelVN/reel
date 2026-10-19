@@ -32,7 +32,7 @@ fn run(source: &str) {
         settle(&mut driver);
         let (mut bridge, root) = bridge(&driver);
         driver.sync(&mut bridge, root).unwrap();
-        let (rejected, stale) = driver.record(&mut bridge, FrameId(1)).unwrap();
+        let (rejected, stale) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
 
         driver.presented(&bridge, &stale).unwrap();
         settle(&mut driver);
@@ -135,7 +135,7 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
     settle(&mut driver);
     let (mut bridge, root) = bridge(&driver);
     driver.sync(&mut bridge, root).unwrap();
-    let (source, stale) = driver.record(&mut bridge, FrameId(1)).unwrap();
+    let (source, stale) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
 
     assert!(bridge.replace_surface(SurfaceEpoch(2)));
     bridge.resolve(PresentationNotice::new(
@@ -146,7 +146,7 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
     driver.presented(&bridge, &stale).unwrap();
     settle(&mut driver);
     assert!(!done(&driver));
-    let (current, receipt) = driver.record(&mut bridge, FrameId(2)).unwrap();
+    let (current, receipt) = driver.record(&mut bridge, root, FrameId(2)).unwrap();
 
     bridge.resolve(PresentationNotice::new(
         current.key(),
@@ -191,7 +191,7 @@ fn geometry_old_receipt_and_unsynced_model_cannot_stamp_old_layout_as_a_new_requ
         settle(&mut driver);
         let (mut bridge, root) = bridge(&driver);
         driver.sync(&mut bridge, root).unwrap();
-        let (old, receipt) = driver.record(&mut bridge, FrameId(1)).unwrap();
+        let (old, receipt) = driver.record(&mut bridge, root, FrameId(1)).unwrap();
         bridge.resolve(PresentationNotice::new(
             old.key(),
             SurfaceEpoch(1),
@@ -205,7 +205,7 @@ fn geometry_old_receipt_and_unsynced_model_cannot_stamp_old_layout_as_a_new_requ
         settle(&mut driver);
         assert!(!done(&driver));
         // A recording before sync contains the old widget tree and its old watermark.
-        let (unsynced, unsynced_receipt) = driver.record(&mut bridge, FrameId(2)).unwrap();
+        let (unsynced, unsynced_receipt) = driver.record(&mut bridge, root, FrameId(2)).unwrap();
         bridge.resolve(PresentationNotice::new(
             unsynced.key(),
             SurfaceEpoch(1),

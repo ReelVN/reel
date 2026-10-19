@@ -170,7 +170,10 @@ fn present(
     frame: u64,
 ) {
     runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
-    let (recording, stamp) = runtime.driver().record(bridge, FrameId(frame)).unwrap();
+    let (recording, stamp) = runtime
+        .driver()
+        .record(bridge, root, FrameId(frame))
+        .unwrap();
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
             recording.key(),
@@ -803,7 +806,7 @@ fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
     ui.set_stage(&stage);
     let (mut bridge, root) = mount(&ui);
     ui.sync(&mut bridge, root).unwrap();
-    super::tests::accept(&mut ui, &mut bridge, 1);
+    super::tests::accept(&mut ui, &mut bridge, root, 1);
     let clicks = |dispatch: UiDispatch| {
         dispatch
             .events
@@ -849,7 +852,7 @@ fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
             ui.sync(&mut bridge, root).unwrap();
             if published {
                 frame += 1;
-                super::tests::accept(&mut ui, &mut bridge, frame);
+                super::tests::accept(&mut ui, &mut bridge, root, frame);
             }
             assert_eq!(
                 clicks(send(&mut ui, &mut bridge, false)),
@@ -873,7 +876,7 @@ fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
         // just because a frame arrives while the button is held.
         send(&mut ui, &mut bridge, true);
         frame += 1;
-        super::tests::accept(&mut ui, &mut bridge, frame);
+        super::tests::accept(&mut ui, &mut bridge, root, frame);
         assert_eq!(
             clicks(send(&mut ui, &mut bridge, false)),
             0,
@@ -886,7 +889,7 @@ fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
         ui.set_stage(&stage);
         ui.sync(&mut bridge, root).unwrap();
         frame += 1;
-        super::tests::accept(&mut ui, &mut bridge, frame);
+        super::tests::accept(&mut ui, &mut bridge, root, frame);
         assert_eq!(
             clicks(send(&mut ui, &mut bridge, false)),
             0,
@@ -1045,7 +1048,10 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             .sync(&mut bridge, root)
             .unwrap();
         assert!(runtime.driver().ui().images_pending());
-        let (recording, old) = runtime.driver().record(&mut bridge, FrameId(1)).unwrap();
+        let (recording, old) = runtime
+            .driver()
+            .record(&mut bridge, root, FrameId(1))
+            .unwrap();
         bridge.resolve(PresentationNotice::new(
             recording.key(),
             SurfaceEpoch(1),
@@ -1095,7 +1101,10 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             "recording and rejecting do not acknowledge presentation"
         );
         present(&mut runtime, &mut bridge, root, 3);
-        let (recording, first) = runtime.driver().record(&mut bridge, FrameId(4)).unwrap();
+        let (recording, first) = runtime
+            .driver()
+            .record(&mut bridge, root, FrameId(4))
+            .unwrap();
         bridge.resolve(PresentationNotice::new(
             recording.key(),
             SurfaceEpoch(1),

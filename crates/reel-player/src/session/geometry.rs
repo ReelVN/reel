@@ -59,11 +59,9 @@ impl SessionUi {
     pub fn record(
         &self,
         bridge: &mut PresentationBridge,
+        root: WidgetId,
         id: reel_core::identity::FrameId,
     ) -> Result<(RecordedSource, RecordedProjection), Error> {
-        let root = self
-            .session_widget
-            .ok_or("sync the session widget before recording")?;
         let source = bridge
             .record(id)
             .map_err(|error| format!("record: {error:?}"))?;
