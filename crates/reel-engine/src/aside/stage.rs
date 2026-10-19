@@ -36,6 +36,8 @@ pub(super) enum NodeProperty {
     Opacity,
     #[aside(name = "invert", ty = Any, default = 0, validate = validate_invert, animatable)]
     Invert,
+    #[aside(name = "blend", ty = String, default = "normal", validate = validate_blend)]
+    Blend,
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
     #[aside(name = "enabled", ty = Bool, default = true)]
@@ -1471,6 +1473,25 @@ fn invert(value: Value) -> Result<f64, AdapterError> {
 fn validate_invert(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(invert(value))
 }
+fn blend(heap: &Heap, value: Value) -> Result<reel_ui::peniko::BlendMode, HeapError> {
+    use reel_ui::peniko::{BlendMode, Compose, Mix};
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 8 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 8];
+    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    Ok(match &bytes[..info.len as usize] {
+        b"normal" => BlendMode::default(),
+        b"add" => BlendMode::new(Mix::Normal, Compose::PlusLighter),
+        b"multiply" => Mix::Multiply.into(),
+        b"screen" => Mix::Screen.into(),
+        _ => return Err(HeapError::TypeMismatch),
+    })
+}
+fn validate_blend(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    blend(heap, value).map(|_| ())
+}
 fn validate_opacity(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(opacity(value))
 }
@@ -1623,6 +1644,7 @@ fn read_props(
         align_y: opacity(get(NodeProperty::AlignY)?)?,
         opacity: opacity(get(NodeProperty::Opacity)?)?,
         invert: invert(get(NodeProperty::Invert)?)?,
+        blend: blend(heap, get(NodeProperty::Blend)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,

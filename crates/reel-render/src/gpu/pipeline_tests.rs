@@ -64,14 +64,164 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 3 * sets, 3 * sets, 3 * sets, 4 * sets]
+        [3 * sets, 4 * sets, 4 * sets, 4 * sets, 4 * sets]
     );
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn subtree_blend_pixels_preserve_transparency_and_nested_opacity() {
+    use reel_ui::peniko::{BlendMode, Compose, Mix};
+    let pool = pool();
+    let mut renderer = renderer(Default::default());
+    eprintln!("blend adapter={:?}", renderer.gpu.adapter.get_info());
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    for backdrop_alpha in [0, 64, 192, 255] {
+        for (blend, mode) in [
+            (BlendMode::default(), 0),
+            (BlendMode::new(Mix::Normal, Compose::PlusLighter), 1),
+            (Mix::Multiply.into(), 2),
+            (Mix::Screen.into(), 3),
+        ] {
+            let mut drawing = Scene::new();
+            drawing.push_group(Group {
+                composite: Composite {
+                    alpha: 0.5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            drawing.append_transformed(
+                &scene(Color::from_rgba8(64, 128, 192, backdrop_alpha)),
+                Affine::IDENTITY,
+            );
+            drawing.push_group(Group {
+                composite: Composite { alpha: 0.75, blend },
+                ..Default::default()
+            });
+            drawing.append_transformed(
+                &scene(Color::from_rgba8(192, 96, 32, 192)),
+                Affine::IDENTITY,
+            );
+            drawing.pop_group();
+            drawing.pop_group();
+            let frame = frame(drawing, [400, 300], &pool);
+            let pixels = renderer
+                .readback(renderer.prepare(&frame).unwrap())
+                .unwrap();
+            let sa = 192. / 255. * 0.75;
+            let da = backdrop_alpha as f32 / 255.;
+            let expected: [f32; 4] = std::array::from_fn(|i| {
+                if i == 3 {
+                    return 0.5
+                        * if mode == 1 {
+                            (sa + da).min(1.)
+                        } else {
+                            sa + da * (1. - sa)
+                        };
+                }
+                let s = linear([192., 96., 32.][i] / 255.) * sa;
+                let d = linear([64., 128., 192.][i] / 255.) * da;
+                0.5 * match mode {
+                    0 => s + d * (1. - sa),
+                    1 => (s + d).min(1.),
+                    2 => s * d + s * (1. - da) + d * (1. - sa),
+                    _ => s + d - s * d,
+                }
+            });
+            for pixel in pixels {
+                for i in 0..4 {
+                    assert!(
+                        (pixel[i] - expected[i]).abs() < 0.006,
+                        "mode={mode} alpha={backdrop_alpha}: {pixel:?} != {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+    counts(&renderer, 1);
+    empty(&renderer);
 }
 fn empty(renderer: &Renderer) {
     renderer.targets.clear();
     let usage = renderer.usage();
     assert_eq!([usage.targets, usage.resources, usage.transient], [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
+    use reel_ui::{
+        imaging::{
+            MaskMode,
+            record::{AppliedMask, Clip, Mask},
+        },
+        peniko::Mix,
+    };
+    let pool = pool();
+    for masked in [false, true] {
+        for clipped in [false, true] {
+            let mut drawing = scene(Color::from_rgb8(255, 0, 0));
+            let mask = masked.then(|| {
+                drawing.define_mask(Mask::new(
+                    MaskMode::Alpha,
+                    scene(Color::from_rgba8(255, 255, 255, 128)),
+                ))
+            });
+            drawing.push_group(Group {
+                composite: Composite {
+                    alpha: 0.5,
+                    blend: Mix::Screen.into(),
+                },
+                mask: mask.map(AppliedMask::new),
+                clip: clipped.then_some(Clip::Fill {
+                    transform: Affine::IDENTITY,
+                    shape: Geometry::Rect(Rect::new(0., 0., 200., 300.)),
+                    fill_rule: Default::default(),
+                }),
+                ..Default::default()
+            });
+            drawing.append_transformed(&scene(Color::from_rgb8(0, 0, 255)), Affine::IDENTITY);
+            drawing.pop_group();
+            let frame = frame(drawing, [400, 300], &pool);
+            let expected_targets = if masked || clipped { 4 } else { 3 };
+            let planned =
+                super::super::targets::peak_targets(&frame, [400, 300], |_| Ok(())).unwrap();
+            assert_eq!(planned, expected_targets);
+            // Exactly one-sample RGBA16F storage: an omitted backdrop in planning
+            // would choose a quality whose replay does not fit this budget.
+            let mut renderer = renderer(super::super::GpuLimits {
+                target_bytes: expected_targets * 400 * 300 * 8,
+                ..Default::default()
+            });
+            let prepared = renderer.prepare(&frame).unwrap();
+            assert_eq!(prepared.quality().samples, 1);
+            assert_eq!(prepared.quality().format, wgpu::TextureFormat::Rgba16Float);
+            let pixels = renderer.readback(prepared).unwrap();
+            let coverage = 0.5 * if masked { 128. / 255. } else { 1. };
+            for (index, pixel) in pixels.iter().enumerate() {
+                let blue = if clipped && index % 400 >= 200 {
+                    0.
+                } else {
+                    coverage
+                };
+                for (actual, expected) in pixel.iter().zip([1., 0., blue, 1.]) {
+                    assert!(
+                        (*actual - expected).abs() < 0.006,
+                        "{pixel:?}, mask={masked}, clip={clipped}"
+                    );
+                }
+            }
+            empty(&renderer);
+        }
+    }
 }
 
 #[test]
@@ -302,7 +452,7 @@ fn pipeline_reuse_refusals_and_completion_lifecycle() {
     bad.push_group(Group {
         composite: Composite {
             blend: reel_ui::peniko::BlendMode::new(
-                reel_ui::peniko::Mix::Multiply,
+                reel_ui::peniko::Mix::ColorDodge,
                 reel_ui::peniko::Compose::SrcOver,
             ),
             ..Default::default()
@@ -356,8 +506,8 @@ fn pipeline_reuse_construction_and_warm_driver_errors() {
     let attempted = cold.pipelines.creations.snapshot();
     assert_eq!(cold.pipelines.initialized_count(), 0);
     assert_eq!(
-        attempted[3], 2,
-        "both actual pipeline construction calls exercised"
+        attempted[3], 4,
+        "paint, video and both group pipelines were constructed"
     );
     assert!(matches!(cold.prepare(&frame), Err(GpuError::Driver(_))));
     assert_eq!(cold.pipelines.creations.snapshot(), attempted);
@@ -424,7 +574,7 @@ fn pipeline_reuse_cold_warm_cpu_distribution() {
         cold.sort_unstable();
         warm.sort_unstable();
         eprintln!(
-            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[2,2,2,2,1]",
+            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[3,4,4,4,4]",
             frame.info().physical_size,
             quality.unwrap(),
             cold[14].as_secs_f64() * 1e6,
@@ -527,7 +677,7 @@ fn pipeline_reuse_outer_scope_cannot_hide_construction_failure() {
         .store(false, Ordering::Relaxed);
     assert_eq!(renderer.pipelines.initialized_count(), 0);
     let attempted = renderer.pipelines.creations.snapshot();
-    assert_eq!(attempted[3], 2);
+    assert_eq!(attempted[3], 4);
     assert!(matches!(renderer.prepare(&frame), Err(GpuError::Driver(_))));
     assert_eq!(renderer.pipelines.creations.snapshot(), attempted);
     // Renderer owns its construction error; the caller's scope stays balanced.
@@ -628,7 +778,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             assert_eq!(renderer.pipelines.initialized_count(), 0);
             assert_eq!(
                 renderer.pipelines.creations.snapshot(),
-                [3, 3, 3, 3, 4],
+                [3, 4, 4, 4, 4],
                 "one failed constructor becomes sticky before another tier constructs"
             );
         } else {

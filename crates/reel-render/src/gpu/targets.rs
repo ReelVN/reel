@@ -138,7 +138,17 @@ pub(super) fn peak_targets(
                 } else {
                     1
                 };
-                current.peak = current.peak.max(current.live + clip_targets);
+                let backdrop = u64::from(group.composite.blend != Default::default());
+                let composite_targets = if group.mask.is_some() {
+                    // The clipped source replaces the original before mask replay.
+                    // The final mask and backdrop coexist during group composition.
+                    1 + backdrop
+                } else {
+                    clip_targets + backdrop
+                };
+                current.peak = current
+                    .peak
+                    .max(current.live + clip_targets.max(composite_targets));
                 if let Some(mask) = group.mask {
                     let definition =
                         frame

@@ -25,6 +25,7 @@ pub struct RecordWidget {
     pub clip: bool,
     pub opacity: f32,
     pub invert: f32,
+    pub blend: reel_ui::peniko::BlendMode,
     pub mask: Option<PaintImageMask>,
 }
 impl RecordWidget {
@@ -44,6 +45,7 @@ impl RecordWidget {
             clip: true,
             opacity: 1.,
             invert: 0.,
+            blend: Default::default(),
             mask: None,
         }
     }
@@ -75,7 +77,7 @@ impl Widget for RecordWidget {
         }
     }
     fn pre_paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
-        c.set_subtree_composite(self.opacity, self.invert, self.mask.clone());
+        c.set_subtree_composite(self.opacity, self.invert, self.blend, self.mask.clone());
         p.replay(&self.pre)
     }
     fn paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
