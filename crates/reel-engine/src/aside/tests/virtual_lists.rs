@@ -75,7 +75,7 @@ fn ids(vm: &SessionVm) -> (NodeId, NodeId) {
     let list = vm
         .stage()
         .nodes()
-        .find(|n| matches!(n.kind, NodeKind::VirtualList(_)))
+        .find(|n| n.parent.is_some() && matches!(n.kind, NodeKind::VirtualList(_)))
         .unwrap();
     (list.id, list.parent.unwrap())
 }
@@ -103,7 +103,9 @@ fn event(vm: &SessionVm, y: f64, width: f64, retained: &[NodeId]) -> NodeVirtual
             .iter()
             .map(|r| VirtualRowMeasurement {
                 node: r.node,
-                height: vm.stage().node(r.node).unwrap().props.height.unwrap(),
+                height: r
+                    .height
+                    .unwrap_or_else(|| vm.stage().node(r.node).unwrap().props.height.unwrap()),
             })
             .collect(),
         retained: retained.into(),
@@ -772,3 +774,5 @@ fn virtual_list_first_window_cost_against_full_materialization() {
 }
 
 mod scroll_to;
+
+mod row_height;

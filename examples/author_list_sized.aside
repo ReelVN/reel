@@ -1,0 +1,50 @@
+// Supply fonts/body.ttf under --assets before opening a native window.
+fn row_height(item) { if item.id % 10 == 0 { 112 } else { 72 } }
+
+pub fn main() {
+    game.configure(fonts: ["fonts/body.ttf"], width: 800, height: 600);
+    let items = [];
+    for id in 0..80 { items.append({id: id}); }
+    let rows = list(|| items, key: |item| item.id, virtual: true,
+        row_height: row_height,
+        build: |entry| column(gap: 8, clip: true) {
+            if entry.value.id % 10 == 0 { text(f"Section {entry.value.id / 10 + 1}", height: 32); }
+            row(gap: 12) {
+                for card in 0..4 {
+                    stack(width: 138, height: 60, background: if card % 2 == 0 { "#567c9e" } else { "#876b92" }) {
+                        text(f"{entry.value.id * 4 + card + 1}", x: 12, y: 12);
+                    };
+                };
+            };
+        });
+    let viewport = scroll(width: 620, height: 480) { rows; };
+    let grab = model({offset: 0.0});
+    let thumb = derive(|| if viewport.content_height > 0 {
+        480 * viewport.viewport_height / viewport.content_height
+    } else { 480 });
+    let position = derive(|| if viewport.content_height > 0 {
+        480 * viewport.scroll_y / viewport.content_height
+    } else { 0 });
+    stage.replace(column(x: 40, y: 24, gap: 16) {
+        row(gap: 16) {
+            button("Row 60", on_click: || { await rows.scroll_to(60, align: "start"); });
+            text("Known sizes keep the thumb and row positions stable.");
+        };
+        stack(width: 664, height: 480) {
+            viewport;
+            input(x: 640, width: 16, height: 480, on_pointer: |event| {
+                if event.phase == "pressed" {
+                    grab.offset = if event.y >= position.value && event.y <= position.value + thumb.value {
+                        event.y - position.value
+                    } else { thumb.value / 2 };
+                }
+                if event.phase == "pressed" || event.phase == "moved" {
+                    let fraction = (event.y - grab.offset) / (480 - thumb.value);
+                    viewport.scroll_y = (if fraction < 0 { 0 } else if fraction > 1 { 1 } else { fraction })
+                        * (viewport.content_height - viewport.viewport_height);
+                }
+            }) { stack(y: position, width: 16, height: thumb, background: "#d6c5e8"); };
+        };
+    });
+    narrator("Ready");
+}

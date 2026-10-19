@@ -492,3 +492,49 @@ fn virtual_scroll_to_source_and_asb_complete_only_after_real_layout_and_acceptan
         driver.cancel().unwrap();
     }
 }
+
+#[test]
+fn sized_gallery_example_source_and_asb_keep_declared_layout_extents() {
+    let checked = reel_cli::check(
+        include_str!("../../../examples/author_list_sized.aside"),
+        "sized-gallery.aside",
+    )
+    .unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        for frame in 1..5 {
+            present(&mut driver, &mut bridge, root, frame);
+            settle(&mut driver);
+            let view = driver
+                .adapter()
+                .stage()
+                .nodes()
+                .find_map(|n| match &n.kind {
+                    NodeKind::VirtualList(view) => Some(view),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(view.total_height, 6080.);
+            assert!(view.rows.len() < 20);
+            for row in view.rows.iter() {
+                let height = if row.index % 10 == 0 { 112. } else { 72. };
+                assert_eq!(row.height, Some(height));
+                let expected = row.index as f64 * 72. + row.index.div_ceil(10) as f64 * 40.;
+                assert_eq!(row.offset, expected);
+            }
+        }
+        driver.cancel().unwrap();
+    }
+}

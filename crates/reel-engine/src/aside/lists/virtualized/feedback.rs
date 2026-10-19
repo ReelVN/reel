@@ -125,14 +125,18 @@ impl SessionVm {
             )?;
             put(self.vm.heap_mut(), s, S::AnchorOffset, Value::float(offset))?;
         }
+        let exact = exact_height(self.vm.heap(), s)?;
         if num(self.vm.heap(), s, S::Width)? != event.width {
-            let epoch = int(self.vm.heap(), s, S::Epoch)? + 1;
-            put(self.vm.heap_mut(), s, S::Epoch, Value::int(epoch))?;
+            if !exact {
+                let epoch = int(self.vm.heap(), s, S::Epoch)? + 1;
+                put(self.vm.heap_mut(), s, S::Epoch, Value::int(epoch))?;
+            }
             put(self.vm.heap_mut(), s, S::Width, Value::float(event.width))?;
             put(self.vm.heap_mut(), s, S::EstimateReady, Value::bool(false))?;
             changed = true;
         }
-        if get(self.vm.heap(), s, S::EstimateReady)?.as_bool() != Some(true)
+        if !exact
+            && get(self.vm.heap(), s, S::EstimateReady)?.as_bool() != Some(true)
             && let Some(first) = event
                 .measurements
                 .iter()
@@ -159,6 +163,9 @@ impl SessionVm {
                 if !measurement.height.is_finite() || measurement.height <= 0. {
                     put(self.vm.heap_mut(), s, S::Fault, Value::bool(true))?;
                     changed = true;
+                    continue;
+                }
+                if exact {
                     continue;
                 }
                 let index = self.vm.heap().sequence_get(e, INDEX)?.as_int().unwrap() as u32;

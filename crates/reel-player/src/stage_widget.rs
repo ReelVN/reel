@@ -1963,6 +1963,13 @@ impl Widget for SceneWidget {
                 }
                 continue;
             }
+            let virtual_row = virtual_list.map(|list| {
+                list.rows
+                    .iter()
+                    .find(|row| row.node == node.id)
+                    .expect("virtual projection contains every mounted child")
+            });
+            let declared_height = virtual_row.and_then(|row| row.height);
             let definition = if virtual_list.is_some() {
                 SizeDef::new(LenDef::Fixed(Length::px(inner.width)), LenDef::MaxContent)
             } else if let NodeKind::Scroll { axis, .. } = self.node.kind {
@@ -1997,19 +2004,16 @@ impl Widget for SceneWidget {
                 } else {
                     capped(Axis::Horizontal, node.props.max_width)
                 },
-                if node.props.stretch.axis(Axis::Vertical) {
+                if let Some(height) = declared_height {
+                    LenDef::Fixed(Length::px(height))
+                } else if node.props.stretch.axis(Axis::Vertical) {
                     LenDef::Fixed(Length::px(inner.height))
                 } else {
                     capped(Axis::Vertical, node.props.max_height)
                 },
             );
             let chosen = ctx.compute_size(child, definition, inner.into());
-            let mut offset = if let Some(list) = virtual_list {
-                let row = list
-                    .rows
-                    .iter()
-                    .find(|row| row.node == node.id)
-                    .expect("virtual projection contains every mounted child");
+            let mut offset = if let Some(row) = virtual_row {
                 measurements.push(VirtualRowMeasurement {
                     node: node.id,
                     height: chosen.height,

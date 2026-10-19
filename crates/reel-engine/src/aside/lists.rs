@@ -231,6 +231,9 @@ impl SessionVm {
         }
         if ticket.input == NativeInput::Entry {
             let args = self.vm.host_arguments(ticket)?.to_vec();
+            if args[4].tag() != ValueTag::Null {
+                return Err(AdapterError::Input("row_height requires a virtual list"));
+            }
             let (output, state) = if let Some(output) = self.vm.reactive_output(ticket)? {
                 let state = self.vm.heap().derived_state(output)?;
                 let node = self.vm.heap().sequence_get(state, State::Node as u32)?;
@@ -242,7 +245,7 @@ impl SessionVm {
                 }
                 (output, state)
             } else {
-                let mut layout = args[4..].to_vec();
+                let mut layout = args[5..].to_vec();
                 layout.push(Value::NULL);
                 let origin = self.stage_origin(ticket);
                 let node = self.stage.dispatch(
