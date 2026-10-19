@@ -16,6 +16,7 @@ pub struct WindowCapabilities {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WindowInfo {
+    pub platform: WindowPlatform,
     pub size: WindowSize,
     pub windowed_size: WindowSize,
     pub scale_factor: f64,
@@ -23,6 +24,33 @@ pub struct WindowInfo {
     pub vsync: bool,
     pub capabilities: WindowCapabilities,
     pub resolutions: Arc<[WindowSize]>,
+}
+
+/// Declared by the window host; separate from available window capabilities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowPlatform {
+    Windows,
+    Macos,
+    Linux,
+    Android,
+    Ios,
+    Web,
+    #[default]
+    Unknown,
+}
+
+impl WindowPlatform {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+            Self::Linux => "linux",
+            Self::Android => "android",
+            Self::Ios => "ios",
+            Self::Web => "web",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
