@@ -62,7 +62,7 @@ fn setup_source(n: usize, encoded: bool, upstream: bool) -> (Session, SessionVm)
     }
     (session, vm)
 }
-fn status(vm: &SessionVm, label: &str) -> bool {
+pub(super) fn status(vm: &SessionVm, label: &str) -> bool {
     vm.stage()
         .nodes()
         .any(|n| matches!(&n.kind,NodeKind::Text(t) if t.as_ref()==label))

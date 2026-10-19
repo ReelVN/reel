@@ -387,6 +387,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ty: BuiltinType::Bool,
         default: Some(bc::Const::Bool(false)),
     });
+    list_parameters.push(NativeParameter {
+        name: "row_height".into(),
+        ty: BuiltinType::Any,
+        default: Some(bc::Const::Null),
+    });
     list_parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
     for parameter in &mut list_parameters {
         parameter.ty = BuiltinType::Any;
@@ -394,7 +399,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::list".into(),
-        abi_version: 8,
+        abi_version: 9,
         parameters: list_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

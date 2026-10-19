@@ -45,8 +45,9 @@ enum S {
     MeasuredRevision,
     LastNavigation,
     Fault,
+    ExactHeight,
 }
-const STATE_LEN: usize = S::Fault as usize + 1;
+const STATE_LEN: usize = S::ExactHeight as usize + 1;
 const HEIGHT: u32 = 4;
 const INDEX: u32 = 5;
 const EPOCH: u32 = 6;
@@ -57,6 +58,7 @@ const INDEX_HEIGHTS: u64 = 3;
 const WINDOW: u64 = 4;
 const BUILT: u64 = 5;
 const PREPARE_WINDOW: u64 = 6;
+const ROW_HEIGHT: u64 = 7;
 
 fn get(h: &Heap, s: Value, f: S) -> Result<Value, HeapError> {
     h.sequence_get(s, f as u32)
@@ -83,12 +85,16 @@ pub(in crate::aside) fn project(h: &Heap, host: Value) -> Result<VirtualListView
     let s = state(h, host)?;
     let projection = get(h, s, S::Projection)?;
     let mut rows = Vec::new();
-    for i in (4..h.sequence_len(projection)?).step_by(3) {
+    for i in (4..h.sequence_len(projection)?).step_by(4) {
         let child = h.sequence_get(projection, i)?;
         rows.push(VirtualRow {
             node: NodeId(h.host_payload(child, 0)?.as_int().unwrap() as u64),
             index: h.sequence_get(projection, i + 1)?.as_int().unwrap() as usize,
             offset: stage::number(h.sequence_get(projection, i + 2)?)?,
+            height: match h.sequence_get(projection, i + 3)? {
+                value if value.tag() == ValueTag::Null => None,
+                value => Some(stage::number(value)?),
+            },
         });
     }
     let nav = h.sequence_get(projection, 3)?;
@@ -131,12 +137,30 @@ fn commit_projection(h: &mut Heap, s: Value) -> Result<(), AdapterError> {
             entry(h, e, Entry::Node)?,
             index,
             Value::float(prefix(h, s, index.as_int().unwrap() as u32)?),
+            if exact_height(h, s)? {
+                h.sequence_get(e, HEIGHT)?
+            } else {
+                Value::NULL
+            },
         ] {
             h.array_push(projection, value)?;
         }
     }
     put(h, s, S::Projection, projection)?;
     Ok(())
+}
+
+fn exact_height(h: &Heap, s: Value) -> Result<bool, HeapError> {
+    Ok(get(h, s, S::ExactHeight)?.as_bool() == Some(true))
+}
+fn validate_height(value: Value) -> Result<f64, AdapterError> {
+    let height = stage::number(value)?;
+    if !height.is_finite() || height <= 0. {
+        return Err(AdapterError::Input(
+            "row_height must be positive and finite",
+        ));
+    }
+    Ok(height)
 }
 
 impl SessionVm {
@@ -196,6 +220,22 @@ impl SessionVm {
             self.virtual_continue(t, &w, INDEX_ROWS)
         }
     }
+    fn virtual_row_height(
+        &mut self,
+        t: HostTicket,
+        mut w: Work,
+        height: f64,
+    ) -> Result<(), AdapterError> {
+        w.check_source(self.vm.heap())?;
+        let e = self.vm.heap().sequence_get(w.entries, w.index)?;
+        let epoch = int(self.vm.heap(), w.state, S::Epoch)?;
+        self.vm
+            .heap_mut()
+            .set_field(e, HEIGHT, Value::float(height))?;
+        self.vm.heap_mut().set_field(e, EPOCH, Value::int(epoch))?;
+        w.index += 1;
+        self.virtual_key(t, w)
+    }
     pub(super) fn dispatch_virtual_list(&mut self, t: HostTicket) -> Result<(), AdapterError> {
         let result = self.dispatch_virtual_list_work(t);
         if result.is_err() && t.input != NativeInput::Entry {
@@ -231,7 +271,18 @@ impl SessionVm {
                 }
                 (output, s)
             } else {
-                let mut layout = args[4..].to_vec();
+                match args[4].tag() {
+                    ValueTag::Null => {}
+                    ValueTag::Int | ValueTag::Float => {
+                        validate_height(args[4])?;
+                    }
+                    _ => {
+                        self.vm.callable_has_parameters(args[4]).map_err(|_| {
+                            AdapterError::Input("row_height must be null, a number or a function")
+                        })?;
+                    }
+                }
+                let mut layout = args[5..].to_vec();
                 layout.push(Value::NULL);
                 let origin = self.stage_origin(t);
                 let host = self.stage.dispatch(
@@ -270,6 +321,7 @@ impl SessionVm {
                     (S::Pinned, empty),
                     (S::Estimate, Value::float(48.)),
                     (S::AnchorIndex, Value::int(-1)),
+                    (S::ExactHeight, Value::bool(args[4].tag() != ValueTag::Null)),
                 ] {
                     values[f as usize] = v;
                 }
@@ -343,8 +395,19 @@ impl SessionVm {
                         Value::int(-1),
                     ])?;
                     self.vm.heap_mut().array_push(w.entries, e)?;
-                    w.index += 1;
-                    self.virtual_key(t, w)?;
+                    let declared = self.vm.host_arguments(t)?[4];
+                    if declared.tag() == ValueTag::Null {
+                        w.index += 1;
+                        self.virtual_key(t, w)?;
+                    } else if matches!(declared.tag(), ValueTag::Int | ValueTag::Float) {
+                        self.virtual_row_height(t, w, stage::number(declared)?)?;
+                    } else {
+                        self.virtual_call(t, &w, ROW_HEIGHT, declared, item)?;
+                    }
+                }
+                ROW_HEIGHT => {
+                    let height = self.vm.host_callback_value(t)?;
+                    self.virtual_row_height(t, w, validate_height(height)?)?;
                 }
                 INDEX_ROWS => {
                     w.check_source(self.vm.heap())?;
@@ -358,14 +421,19 @@ impl SessionVm {
                             self.read_limit,
                         )? {
                             for field in [Entry::Row as u32, Entry::Node as u32, HEIGHT, EPOCH] {
+                                if field >= HEIGHT && exact_height(self.vm.heap(), w.state)? {
+                                    continue;
+                                }
                                 let value = self.vm.heap().sequence_get(old, field)?;
                                 self.vm.heap_mut().set_field(e, field, value)?;
                             }
-                            if !entry(self.vm.heap(), e, Entry::Item)?.same_bits(entry(
-                                self.vm.heap(),
-                                old,
-                                Entry::Item,
-                            )?) {
+                            if !exact_height(self.vm.heap(), w.state)?
+                                && !entry(self.vm.heap(), e, Entry::Item)?.same_bits(entry(
+                                    self.vm.heap(),
+                                    old,
+                                    Entry::Item,
+                                )?)
+                            {
                                 self.vm.heap_mut().set_field(e, EPOCH, Value::int(-1))?;
                             }
                         }

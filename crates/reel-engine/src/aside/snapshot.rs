@@ -108,7 +108,7 @@ pub struct SessionSnapshot {
     committed_save: Option<saves::SaveRequestId>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 10;
+    pub const FORMAT_VERSION: u32 = 11;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
