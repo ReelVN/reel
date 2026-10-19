@@ -65,6 +65,21 @@ impl Values {
                 .map(|c| c[index as usize % VALUE_CHUNK_LEN]),
         }
     }
+    /// The remaining values in one existing storage block. Internal walkers
+    /// retain the owning payload and do not use this slice across mutation.
+    pub fn segment(&self, offset: u32) -> &[Value] {
+        if offset == self.len {
+            return &[];
+        }
+        match &self.storage {
+            ValueStorage::Inline(values) => &values[offset as usize..self.len as usize],
+            ValueStorage::Chunks(chunks) => {
+                let within = offset as usize % VALUE_CHUNK_LEN;
+                let count = (self.len - offset).min((VALUE_CHUNK_LEN - within) as u32) as usize;
+                &chunks[&(offset / VALUE_CHUNK_LEN as u32)][within..within + count]
+            }
+        }
+    }
     pub fn set(&mut self, index: u32, value: Value) {
         match &mut self.storage {
             ValueStorage::Inline(values) => values[index as usize] = value,

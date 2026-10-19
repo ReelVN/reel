@@ -68,10 +68,17 @@ impl Heap {
         };
         payload.ancestor_revision = 0;
         payload.ancestors.clear();
-        for index in (0..self.sequence_len(dependencies)?).step_by(2) {
-            let source = self.dependency_source(dependencies, index)?;
+        let mut inputs = DependencyCursor::new(dependencies);
+        while let Some((host, selector)) = inputs.next(self)? {
+            let mut source = PropertyId {
+                host,
+                field: selector.as_int().unwrap() as u32,
+            };
+            if source.field != u32::MAX {
+                source = self.property_source(source)?.0;
+            }
             if self.object(self.key(source.host)?)?.derived {
-                self.push_derived_ancestor(key, index)?;
+                self.push_derived_ancestor(key, inputs.offset - 2)?;
             }
         }
         let Payload::Dependencies(payload) = &mut self.objects.get_mut(key).unwrap().payload else {
