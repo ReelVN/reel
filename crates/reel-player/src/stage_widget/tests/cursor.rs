@@ -633,3 +633,174 @@ fn cursor_deepest_owner_wins_and_disabled_owner_yields_to_ancestor() {
     f.accept(&removed);
     assert_eq!(visibility.borrow().last(), Some(&true));
 }
+
+#[test]
+fn pointer_queries_require_accepted_mouse_and_current_input_ownership() {
+    let (mut f, owner, _, _, _) = fixture();
+    assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
+    let initial = f.record();
+    f.accept(&initial);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (110., 90.), None),
+    )
+    .unwrap();
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([110., 90.])
+    );
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        Some([200., 150.])
+    );
+    f.ui.handle_text(
+        &mut f.bridge,
+        TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Tab)),
+    )
+    .unwrap();
+    assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (111., 91.), None),
+    )
+    .unwrap();
+    f.edit(owner, |props| props.enabled = false);
+    let disabled = f.record();
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        None
+    );
+    f.accept(&disabled);
+    f.edit(owner, |props| props.enabled = true);
+    let restored = f.record();
+    f.accept(&restored);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (110., 90.), None),
+    )
+    .unwrap();
+    let modal = f
+        .stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(640.),
+                height: Some(420.),
+                modal: true,
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    f.stage.add(f.root, modal, 2).unwrap();
+    let frame = f.record();
+    f.accept(&frame);
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        None
+    );
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, modal, [200., 150.]),
+        Some([200., 150.])
+    );
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Touch, (110., 90.), Some(true)),
+    )
+    .unwrap();
+    assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (110., 90.), None),
+    )
+    .unwrap();
+    f.bridge.clear();
+    assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, modal, [200., 150.]),
+        None
+    );
+}
+
+#[test]
+fn pointer_coordinates_round_trip_accepted_canvas_fit_and_dpi() {
+    let (mut f, owner, _, _, _) = fixture();
+    let widget = f.ui.widget().prepare();
+    f.widget = widget.id();
+    let canvas = reel_ui::widgets::Canvas::new(widget, [320, 180]).prepare();
+    let canvas_id = canvas.id();
+    f.bridge = PresentationBridge::new(
+        RenderRoot::new(
+            canvas,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(1280, 960),
+                scale_factor: 2.,
+                default_font: None,
+            },
+        ),
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 8 << 20,
+        },
+    )
+    .unwrap();
+    let initial = f.record();
+    f.accept(&initial);
+    // 640x480 logical viewport: 2x canvas fit with 60px top letterbox.
+    // Physical mouse (440,480) -> window (220,240) -> stage (110,90).
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (440., 480.), None),
+    )
+    .unwrap();
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([110., 90.])
+    );
+    let destination =
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [150., 100.])
+            .unwrap();
+    assert_eq!(destination, [300., 260.]);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(
+            PointerType::Mouse,
+            (destination[0] * 2., destination[1] * 2.),
+            None,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([150., 100.])
+    );
+    // An unaccepted layout must not replace the coordinate system under input.
+    f.bridge.edit_widget(canvas_id, |mut widget| {
+        reel_ui::widgets::Canvas::set_size(&mut widget.downcast(), Some([640, 360]));
+    });
+    let resized = f.record();
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([150., 100.])
+    );
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [150., 100.]),
+        Some([300., 260.])
+    );
+    f.accept(&resized);
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([300., 200.])
+    );
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [150., 100.]),
+        Some([150., 160.])
+    );
+}

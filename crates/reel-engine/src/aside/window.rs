@@ -2,7 +2,18 @@
 use super::{AdapterError, HostResponse, HostTicket, SessionVm, results, stage, text};
 use aside_vm::{Heap, RootKind, RootToken, Value, ValueTag};
 use reel_core::window::{WindowConfiguration, WindowInfo};
+use reel_ui::stage::NodeId;
 use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug)]
+pub enum WindowCommand {
+    Configure(WindowConfiguration),
+    MovePointer { position: [f64; 2], owner: NodeId },
+}
+pub enum WindowReply {
+    Configured(Arc<WindowInfo>),
+    PointerMoved(bool),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowRequestId {
@@ -12,7 +23,7 @@ pub struct WindowRequestId {
 #[derive(Clone, Copy, Debug)]
 pub struct WindowRequest {
     pub id: WindowRequestId,
-    pub configuration: WindowConfiguration,
+    pub command: WindowCommand,
 }
 struct Pending {
     request: WindowRequest,
@@ -22,6 +33,7 @@ struct Pending {
 #[derive(Default)]
 pub(super) struct Window {
     info: Arc<WindowInfo>,
+    pointer: Option<[f64; 2]>,
     serial: u64,
     pending: Option<Pending>,
 }
@@ -47,6 +59,7 @@ fn value(heap: &mut Heap, info: &WindowInfo) -> Result<Value, AdapterError> {
             ("resize", Value::bool(info.capabilities.resize)),
             ("fullscreen", Value::bool(info.capabilities.fullscreen)),
             ("vsync", Value::bool(info.capabilities.vsync)),
+            ("pointer_move", Value::bool(info.capabilities.pointer_move)),
         ],
     )?;
     let mut resolutions = Vec::with_capacity(info.resolutions.len());
@@ -84,8 +97,15 @@ impl SessionVm {
     pub fn window_info(&self) -> &Arc<WindowInfo> {
         &self.window.info
     }
+    /// Host-only, ephemeral accepted stage coordinates. Never restored from a save.
+    pub fn set_pointer_position(&mut self, position: Option<[f64; 2]>) {
+        self.window.pointer = position;
+    }
     pub fn has_window_requests(&self) -> bool {
         !self.revoked && self.window.pending.as_ref().is_some_and(|p| !p.claimed)
+    }
+    pub fn pointer_owner_permits_input(&self, owner: NodeId) -> Result<bool, AdapterError> {
+        self.stage.permits_input(self.vm.heap(), owner)
     }
     pub(super) fn dispatch_window(
         &mut self,
@@ -98,11 +118,37 @@ impl SessionVm {
             self.issued = None;
             return Ok(());
         }
+        if symbol == "reel::stage::pointer" {
+            let state = match self.window.pointer {
+                Some([x, y]) => table(
+                    self.vm.heap_mut(),
+                    &[("x", Value::float(x)), ("y", Value::float(y))],
+                )?,
+                None => Value::NULL,
+            };
+            self.vm.respond(ticket, HostResponse::Ready(state))?;
+            self.issued = None;
+            return Ok(());
+        }
         self.maintain_window_result()?;
         if self.window.pending.is_some() {
-            return Err(AdapterError::Input("window configuration is Busy"));
+            return Err(AdapterError::Input("window request is Busy"));
         }
         let args = self.vm.host_arguments(ticket)?;
+        if symbol == "reel::stage::move_pointer" {
+            let position = [stage::number(args[0])?, stage::number(args[1])?];
+            let owner = args[2];
+            let id = self.stage.id(self.vm.heap(), owner)?;
+            self.submit_window(
+                ticket,
+                WindowCommand::MovePointer {
+                    position,
+                    owner: id,
+                },
+                owner,
+            )?;
+            return Ok(());
+        }
         let dimension = |value: Value| -> Result<Option<f64>, AdapterError> {
             if value.tag() == ValueTag::Null {
                 return Ok(None);
@@ -151,7 +197,27 @@ impl SessionVm {
         if owner.tag() != ValueTag::Null {
             super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         }
+        self.submit_window(ticket, WindowCommand::Configure(configuration), owner)
+    }
+    fn submit_window(
+        &mut self,
+        ticket: HostTicket,
+        command: WindowCommand,
+        owner: Value,
+    ) -> Result<(), AdapterError> {
         let result = self.results.create_window(&mut self.vm, owner)?;
+        if matches!(command, WindowCommand::MovePointer { .. })
+            && !self.window.info.capabilities.pointer_move
+        {
+            results::finish_task(
+                self.vm.heap_mut(),
+                result,
+                results::TaskResult::Returned(Value::bool(false)),
+            )?;
+            self.vm.respond(ticket, HostResponse::Ready(result))?;
+            self.issued = None;
+            return Ok(());
+        }
         let root = self
             .vm
             .heap_mut()
@@ -163,7 +229,7 @@ impl SessionVm {
                     session: self.identity,
                     serial: self.window.serial,
                 },
-                configuration,
+                command,
             },
             root,
             claimed: false,
@@ -183,7 +249,7 @@ impl SessionVm {
     pub fn complete_window_request(
         &mut self,
         id: WindowRequestId,
-        result: Result<Arc<WindowInfo>, String>,
+        result: Result<WindowReply, String>,
     ) -> Result<bool, AdapterError> {
         if self.revoked || id.session != self.identity {
             return Ok(false);
@@ -195,10 +261,13 @@ impl SessionVm {
         let object = self.vm.heap().root_value(root)?;
         if results::pending(self.vm.heap_mut(), object)? {
             let outcome = match result {
-                Ok(info) => {
+                Ok(WindowReply::Configured(info)) => {
                     let result = value(self.vm.heap_mut(), &info)?;
                     self.window.info = info;
                     results::TaskResult::Returned(result)
+                }
+                Ok(WindowReply::PointerMoved(moved)) => {
+                    results::TaskResult::Returned(Value::bool(moved))
                 }
                 Err(message) => results::TaskResult::Rejected(text::alloc_string(
                     self.vm.heap_mut(),

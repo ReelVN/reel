@@ -54,6 +54,64 @@ fn geometry(
     })
 }
 impl SessionUi {
+    #[cfg(any(feature = "window", test))]
+    fn accepted_stage(
+        &self,
+        bridge: &PresentationBridge,
+        root: WidgetId,
+    ) -> Option<(WidgetId, Affine)> {
+        self.binding.borrow().accepted?;
+        let widget = bridge
+            .root()
+            .get_widget(root)?
+            .downcast::<SessionWidget>()?;
+        let stage_id = widget.stage.id();
+        let stage = bridge
+            .root()
+            .get_widget(stage_id)?
+            .downcast::<StageWidget>()?;
+        if stage.identity != self.stage.as_ref()?.identity {
+            return None;
+        }
+        let reel_ui::app::InputGeometrySource::Presented(Some(view)) =
+            bridge.root().input_geometry_source()
+        else {
+            return None;
+        };
+        let transform = visible(view, stage_id)?.window_transform;
+        (transform.determinant().is_finite() && transform.determinant() != 0.)
+            .then_some((stage_id, transform))
+    }
+    #[cfg(any(feature = "window", test))]
+    pub(crate) fn pointer_position(
+        &self,
+        bridge: &PresentationBridge,
+        root: WidgetId,
+    ) -> Option<[f64; 2]> {
+        let (_, transform) = self.accepted_stage(bridge, root)?;
+        let point = transform.inverse() * bridge.root().mouse_position()?;
+        Some([point.x, point.y])
+    }
+    #[cfg(any(feature = "window", test))]
+    pub(crate) fn pointer_destination(
+        &self,
+        bridge: &PresentationBridge,
+        root: WidgetId,
+        owner: reel_ui::stage::NodeId,
+        position: [f64; 2],
+    ) -> Option<[f64; 2]> {
+        bridge.root().mouse_position()?;
+        let (stage_id, transform) = self.accepted_stage(bridge, root)?;
+        let stage = bridge
+            .root()
+            .get_widget(stage_id)?
+            .downcast::<StageWidget>()?;
+        if !bridge.root().permits_input(stage.node_widget(owner)?) {
+            return None;
+        }
+        let point = transform * reel_ui::kurbo::Point::new(position[0], position[1]);
+        Some([point.x, point.y])
+    }
     /// Record the actual widget tree and its projection identity in one operation.
     /// Pending model edits cannot advance the watermark until sync publishes them.
     pub fn record(

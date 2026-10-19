@@ -15,6 +15,27 @@ pub(crate) struct CursorState {
 }
 
 impl RenderRoot {
+    /// Current mouse position in window logical coordinates, using accepted input.
+    /// Navigation, touch, focus loss and cleared presentation withdraw it.
+    pub fn mouse_position(&self) -> Option<Point> {
+        if !self.global_state.cursor.mouse_active
+            || !self.global_state.window_focused
+            || self.global_state.focus_visible
+        {
+            return None;
+        }
+        let view = self.global_state.input_geometry_source.borrow();
+        if matches!(view, GeometryView::Presented(None)) {
+            return None;
+        }
+        let mouse = std::iter::once(&self.global_state.pointer)
+            .chain(&self.global_state.other_pointers)
+            .find(|pointer| pointer.info.pointer_type == PointerType::Mouse)?;
+        let position = mouse
+            .last_pointer_physical?
+            .to_logical(view.scale(self.global_state.scale_factor));
+        Some(Point::new(position.x, position.y))
+    }
     fn cursor_child(&self, owner: WidgetId, view: GeometryView<'_>) -> Option<WidgetId> {
         if !self.is_still_interactive(owner) || !self.input_in_scope(owner, view) {
             return None;

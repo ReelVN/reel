@@ -188,7 +188,7 @@ fn restored(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
         VmLimits::default(),
         SessionIdentity {
             session_id: SessionId(41),
-            epoch: Epoch(10),
+            epoch: Epoch(session.identity().epoch.0 + 1),
         },
         crate::ReadProgress::default(),
         None,
@@ -451,3 +451,5 @@ fn effect_scope_cancels_particles_clock_and_presentation_requests() {
         );
     }
 }
+
+mod overrides;

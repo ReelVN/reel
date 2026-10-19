@@ -5,6 +5,7 @@ pub(super) mod camera;
 pub(super) mod controls;
 pub(super) mod input;
 mod interaction;
+pub(super) mod overrides;
 pub(super) mod scroll;
 pub(super) mod snapshot;
 pub(super) mod text_input;
@@ -127,6 +128,8 @@ struct NodeBinding {
     interaction_offset: u32,
     interaction_listening: bool,
     fields_version: u64,
+    projection_dirty: bool,
+    overrides: Option<Box<overrides::Cache>>,
     input_source: Option<HeapHandle>,
     text_source: Option<HeapHandle>,
     mask_source: Option<HeapHandle>,
@@ -352,8 +355,16 @@ impl StageBinding {
         let shape = snapshot::Shape::from_symbol(symbol);
         let mask_origin = origin.as_deref().map(Arc::from);
         let mut kind = shape.project(heap, fields, origin, read_limit)?;
-        let props = read_props(heap, fields, prefix.len(), read_limit, None, mask_origin)?;
-        let mask_source = mask_handle(heap, fields, prefix.len())?;
+        let props = read_props(
+            heap,
+            fields,
+            prefix.len(),
+            Value::NULL,
+            read_limit,
+            None,
+            mask_origin,
+        )?;
+        let mask_source = mask_handle(heap, fields, prefix.len(), Value::NULL)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
         if matches!(
@@ -389,14 +400,9 @@ impl StageBinding {
             Value::NULL,
             Value::NULL,
             Value::int(0),
+            Value::NULL,
         ];
-        let payload_len = if shape == snapshot::Shape::Particles {
-            5
-        } else {
-            4
-        };
-        let value =
-            heap.alloc_composable_host(fields, &payload[..payload_len], Some(shape.validator()))?;
+        let value = heap.alloc_composable_host(fields, &payload, Some(shape.validator()))?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;
@@ -516,6 +522,8 @@ impl StageBinding {
                     .tag()
                     != ValueTag::Null,
                 fields_version: heap.info(fields)?.content_version,
+                projection_dirty: false,
+                overrides: None,
                 input_source: if symbol == "reel::input" {
                     input::source_handle(heap, args[0])?
                 } else {
@@ -611,7 +619,20 @@ impl StageBinding {
             }
             let fields = heap.host_fields(value)?;
             let version = heap.info(fields)?.content_version;
-            if version == binding.fields_version {
+            let selected = if binding.overrides.is_some() {
+                overrides::selection(heap, value)?
+            } else {
+                Value::NULL
+            };
+            if version == binding.fields_version
+                && !binding.projection_dirty
+                && !binding
+                    .overrides
+                    .as_ref()
+                    .map(|cache| cache.changed(heap, selected))
+                    .transpose()?
+                    .unwrap_or(false)
+            {
                 continue;
             }
             let (mut kind, offset) = match &node.kind {
@@ -744,6 +765,7 @@ impl StageBinding {
                 heap,
                 fields,
                 offset,
+                selected,
                 read_limit,
                 Some((binding.mask_source, &node.props)),
                 node.props.mask_origin.clone(),
@@ -751,7 +773,7 @@ impl StageBinding {
             if matches!(kind, NodeKind::VirtualList(_)) {
                 validate_virtual_props(&props)?;
             }
-            let mask_source = mask_handle(heap, fields, offset)?;
+            let mask_source = mask_handle(heap, fields, offset, selected)?;
             updates.push((id, kind, props, version, mask_source));
         }
         for (id, kind, props, version, mask_source) in updates {
@@ -790,6 +812,13 @@ impl StageBinding {
             self.scene.update(id, kind, props)?;
             let binding = self.handles.get_mut(&id).unwrap();
             binding.fields_version = version;
+            binding.projection_dirty = false;
+            if let Some(cache) = &mut binding.overrides {
+                cache.accept(
+                    heap,
+                    overrides::selection(heap, heap.import_handle(binding.handle)?)?,
+                )?;
+            }
             binding.mask_source = mask_source;
             let fields = heap.host_fields(heap.import_handle(binding.handle)?)?;
             binding.interaction_listening = heap
@@ -834,6 +863,7 @@ impl StageBinding {
                 if view.tag() != ValueTag::Null {
                     heap.disconnect_derived(view)?;
                 }
+                overrides::retire(heap, value)?;
                 heap.retire_host(value)?;
             }
         }
@@ -910,6 +940,10 @@ impl StageBinding {
             .then_some((target, callback)))
     }
 
+    pub(super) fn permits_input(&self, heap: &Heap, id: NodeId) -> Result<bool, AdapterError> {
+        self.mounted_in_scope(heap, id, self.modal_scope(heap)?)
+    }
+
     fn mounted_in_scope(
         &self,
         heap: &Heap,
@@ -925,10 +959,14 @@ impl StageBinding {
             let fields = heap.host_fields(value)?;
             let offset = self.property_offset(heap, value)?;
             for property in [NodeProperty::Visible, NodeProperty::Enabled] {
-                if heap
-                    .table_entry(fields, offset + property.index() as u32)?
-                    .1
-                    .as_bool()
+                if overrides::get(
+                    heap,
+                    fields,
+                    offset as usize,
+                    overrides::selection(heap, value)?,
+                    property.index(),
+                )?
+                .as_bool()
                     != Some(true)
                 {
                     return Ok(false);
@@ -955,10 +993,14 @@ impl StageBinding {
             let fields = heap.host_fields(value)?;
             let offset = self.property_offset(heap, value)?;
             let flag = |property: NodeProperty| -> Result<bool, AdapterError> {
-                Ok(heap
-                    .table_entry(fields, offset + property.index() as u32)?
-                    .1
-                    .as_bool()
+                Ok(overrides::get(
+                    heap,
+                    fields,
+                    offset as usize,
+                    overrides::selection(heap, value)?,
+                    property.index(),
+                )?
+                .as_bool()
                     == Some(true))
             };
             if !flag(NodeProperty::Visible)? {
@@ -1561,10 +1603,13 @@ fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> {
         super::masks::validate(heap, value)
     }
 }
-fn mask_handle(heap: &Heap, fields: Value, offset: usize) -> Result<Option<HeapHandle>, HeapError> {
-    let value = heap
-        .table_entry(fields, (offset + NodeProperty::Mask.index()) as u32)?
-        .1;
+fn mask_handle(
+    heap: &Heap,
+    fields: Value,
+    offset: usize,
+    selected: Value,
+) -> Result<Option<HeapHandle>, HeapError> {
+    let value = overrides::get(heap, fields, offset, selected, NodeProperty::Mask.index())?;
     if value.tag() == ValueTag::Null {
         Ok(None)
     } else {
@@ -1653,14 +1698,19 @@ fn read_props(
     heap: &Heap,
     fields: Value,
     offset: usize,
+    selected: Value,
     read_limit: usize,
     previous: Option<(Option<HeapHandle>, &NodeProps)>,
     mask_origin: Option<Arc<str>>,
 ) -> Result<NodeProps, AdapterError> {
     let get = |property: NodeProperty| -> Result<Value, AdapterError> {
-        Ok(heap
-            .table_entry(fields, (property.index() + offset) as u32)?
-            .1)
+        Ok(overrides::get(
+            heap,
+            fields,
+            offset,
+            selected,
+            property.index(),
+        )?)
     };
     let background = get(NodeProperty::Background)?;
     validate_callback(heap, get(NodeProperty::OnInteraction)?)?;

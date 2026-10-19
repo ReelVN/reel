@@ -20,6 +20,8 @@ pub trait WindowControl {
     fn configure_window(&mut self, configuration: WindowConfiguration) -> Result<bool, String>;
     /// Called after the platform applies a native resize, including fullscreen changes.
     fn window_resized(&mut self) -> bool;
+    /// Window client-area logical coordinates; false means unsupported.
+    fn move_pointer(&mut self, position: [f64; 2]) -> Result<bool, String>;
 }
 
 #[cfg(all(

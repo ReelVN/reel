@@ -62,6 +62,16 @@ fn scope_example_start_stop_retires_child_work_from_source_and_asb() {
                 .nodes()
                 .any(|n| n.kind == NodeKind::Text("Scoped effect is running".into()))
         );
+        let panel = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|n| n.props.width == Some(220.))
+            .unwrap();
+        assert_eq!(
+            panel.props.opacity, 0.6,
+            "Stop exposes the latest read-only derived base value"
+        );
         while driver.advance_time(2., 16).unwrap().pending {}
         settle(&mut driver);
         assert!(
