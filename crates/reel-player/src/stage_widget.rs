@@ -1296,7 +1296,10 @@ impl SceneWidget {
                 this.ctx.remove_child(pod);
             }
             this.ctx.children_changed();
-            this.ctx.set_interactive(this.widget.accepts_pointer_interaction(), this.widget.accepts_focus());
+            this.ctx.set_interactive(
+                this.widget.accepts_pointer_interaction(),
+                this.widget.accepts_focus(),
+            );
             this.ctx.request_cursor_icon_change();
         }
         if children_changed {
@@ -1905,7 +1908,10 @@ impl Widget for SceneWidget {
         }
         let mut visible = 0;
         for (node, child) in &mut self.children {
-            if !node.props.visible || node.props.stretch.axis(axis) || matches!(node.kind, NodeKind::Cursor) {
+            if !node.props.visible
+                || node.props.stretch.axis(axis)
+                || matches!(node.kind, NodeKind::Cursor)
+            {
                 continue;
             }
             let length = ctx
@@ -2365,7 +2371,10 @@ impl Widget for SceneWidget {
         self.is_button()
             || self.input.is_some()
             || matches!(self.node.kind, NodeKind::Scroll { .. })
-            || self.children.iter().any(|(node, _)| matches!(node.kind, NodeKind::Cursor))
+            || self
+                .children
+                .iter()
+                .any(|(node, _)| matches!(node.kind, NodeKind::Cursor))
     }
     fn is_cursor(&self) -> bool {
         matches!(self.node.kind, NodeKind::Cursor)

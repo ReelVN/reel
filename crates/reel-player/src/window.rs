@@ -1155,6 +1155,92 @@ mod tests {
         };
         view.get(state.root_id).unwrap().transform
     }
+    #[test]
+    #[ignore = "requires a native display, actual graphics adapter and REEL_SESSION_FONT; creates only a hidden window"]
+    fn actual_cursor_window_routes_leave_and_clears_presented_appearance() {
+        struct Harness;
+        impl ApplicationHandler for Harness {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+                let font = std::env::var("REEL_SESSION_FONT")
+                    .expect("set REEL_SESSION_FONT to a real font")
+                    .replace('\\', "/");
+                let source = r##"fn main() {stage.replace(stack(width:640,height:420) {
+                    cursor(width:20,height:20) {stack(width:20,height:20,background:"#ff0000");};
+                });}"##
+                    .replace(
+                        "fn main() {",
+                        &format!("fn main() {{game.configure(fonts:[{font:?}]);"),
+                    );
+                let driver = AsideSessionUi::from_source(
+                    Session::new(SessionId(1), Epoch(1)).unwrap(),
+                    &source,
+                    "main",
+                    1,
+                    "main",
+                    "en",
+                    VmLimits::default(),
+                )
+                .unwrap();
+                let mut state =
+                    State::new_story(event_loop, 1, driver, StoryWindowOptions::default()).unwrap();
+                state.first_frame_pending = false; // This host check never shows or moves a user window.
+                let deadline = Instant::now() + std::time::Duration::from_secs(15);
+                loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "cursor native resources did not settle"
+                    );
+                    state.tick_story().unwrap();
+                    if !state.settings_pending() && !state.session.as_ref().unwrap().needs_tick() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                present_session(&mut state);
+                let plain = state.build_frame().unwrap().commands().len();
+                state.pointer = reel_ui::dpi::PhysicalPosition::new(
+                    100. * state.window.scale_factor(),
+                    100. * state.window.scale_factor(),
+                );
+                state.pointer_event(PointerKind::Move).unwrap();
+                let custom = state.build_frame().unwrap().commands().len();
+                assert!(
+                    custom > plain,
+                    "mouse input activates a top layer on the real native host"
+                );
+                state.pointer_event(PointerKind::Leave).unwrap();
+                assert_eq!(state.build_frame().unwrap().commands().len(), plain);
+                state.pointer_event(PointerKind::Move).unwrap();
+                assert!(state.build_frame().unwrap().commands().len() > plain);
+                state.presentation.bridge.clear();
+                assert_eq!(state.build_frame().unwrap().commands().len(), plain);
+                #[cfg(target_os = "windows")]
+                assert_eq!(state.window.is_visible(), Some(false));
+                eprintln!(
+                    "native cursor: hidden Windows/Linux host, real GPU surface, move/leave/clear signal path passed; physical-device appearance remains manual"
+                );
+                event_loop.exit();
+            }
+            fn window_event(
+                &mut self,
+                _: &ActiveEventLoop,
+                _: winit::window::WindowId,
+                _: winit::event::WindowEvent,
+            ) {
+            }
+        }
+        #[cfg(target_os = "linux")]
+        let event_loop = EventLoop::builder()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        #[cfg(target_os = "windows")]
+        let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        event_loop.run_app(&mut Harness).unwrap();
+    }
+
     fn exercise(event_loop: &ActiveEventLoop) {
         // Derive pressure from the current profile rather than assuming 4x support.
         let mut probe = State::with_limits(

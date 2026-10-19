@@ -218,16 +218,28 @@ fn paint_widget(
 ) {
     if node.item.widget.is_cursor() && !in_cursor {
         let id = node.item.state.id;
-        let active = global_state.cursor.overlay.filter(|(cursor, _)| *cursor == id);
+        let active = global_state
+            .cursor
+            .overlay
+            .filter(|(cursor, _)| *cursor == id);
         let position = active.map_or(Point::ORIGIN, |(_, point)| point);
         let mut collector = LayerCollector::new(id, Affine::translate(position.to_vec2()));
         collector.suppress_output = active.is_none();
-        let size = global_state.size.to_logical::<f64>(global_state.scale_factor);
+        let size = global_state
+            .size
+            .to_logical::<f64>(global_state.scale_factor);
         let transform = node.item.state.transform;
         paint_widget(
-            global_state, default_properties, property_arena, &mut collector,
-            scene_cache, cursor_layers, true, transform,
-            Rect::new(0., 0., size.width, size.height), node,
+            global_state,
+            default_properties,
+            property_arena,
+            &mut collector,
+            scene_cache,
+            cursor_layers,
+            true,
+            transform,
+            Rect::new(0., 0., size.width, size.height),
+            node,
         );
         if active.is_some() {
             cursor_layers.extend(collector.into_layers());

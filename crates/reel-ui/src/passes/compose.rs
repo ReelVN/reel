@@ -31,7 +31,9 @@ fn compose_widget(
 
     let local_transform = state.compose_local_transform();
     state.window_transform = if widget.is_cursor() {
-        let position = global_state.cursor.overlay
+        let position = global_state
+            .cursor
+            .overlay
             .filter(|(cursor, _)| *cursor == id)
             .map_or(kurbo::Point::ORIGIN, |(_, position)| position);
         Affine::translate(position.to_vec2()) * state.transform
@@ -75,7 +77,8 @@ fn compose_widget(
         let parent_bounding_box = parent_state.bounding_box;
 
         if !node.item.widget.is_cursor()
-            && let Some(child_bounding_box) = parent_state.clip_child(node.item.state.bounding_box) {
+            && let Some(child_bounding_box) = parent_state.clip_child(node.item.state.bounding_box)
+        {
             parent_state.bounding_box = parent_bounding_box.union(child_bounding_box);
         }
 

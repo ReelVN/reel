@@ -3,8 +3,8 @@
 
 //! Types needed for running a Masonry app.
 
-mod input_scope;
 mod cursor;
+mod input_scope;
 mod layer_stack;
 mod pointer;
 mod presented_geometry;

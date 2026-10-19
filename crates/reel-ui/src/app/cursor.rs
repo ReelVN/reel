@@ -19,8 +19,12 @@ impl RenderRoot {
         }
         let owner_node = self.widget_arena.nodes.find(owner)?;
         let available = |id| {
-            let Some(node) = self.widget_arena.nodes.find(id) else { return false; };
-            node.item.widget.is_cursor() && !node.item.state.is_stashed && !node.item.state.is_disabled
+            let Some(node) = self.widget_arena.nodes.find(id) else {
+                return false;
+            };
+            node.item.widget.is_cursor()
+                && !node.item.state.is_stashed
+                && !node.item.state.is_disabled
                 && self.widget_arena.parent_of(id) == Some(owner)
         };
         match view {
@@ -29,11 +33,21 @@ impl RenderRoot {
                 if record.input_revision != owner_node.item.state.input_revision {
                     return None;
                 }
-                view.children_of(owner).rev().find(|&id| available(id)
-                    && view.get(id).is_some_and(|record| record.is_cursor && !record.is_stashed))
+                view.children_of(owner).rev().find(|&id| {
+                    available(id)
+                        && view
+                            .get(id)
+                            .is_some_and(|record| record.is_cursor && !record.is_stashed)
+                })
             }
             GeometryView::Presented(None) => None,
-            GeometryView::Live => owner_node.item.widget.children_ids().into_iter().rev().find(|&id| available(id)),
+            GeometryView::Live => owner_node
+                .item
+                .widget
+                .children_ids()
+                .into_iter()
+                .rev()
+                .find(|&id| available(id)),
         }
     }
 
@@ -47,8 +61,14 @@ impl RenderRoot {
                 .find(|pointer| pointer.info.pointer_type == PointerType::Mouse)?;
             let physical = mouse.last_pointer_physical?;
             let logical = physical.to_logical(view.scale(self.global_state.scale_factor));
-            let path = if mouse.pointer_capture_target.is_some() { &mouse.active_path } else { &mouse.hovered_path };
-            let cursor = path.iter().find_map(|&owner| self.cursor_child(owner, view))?;
+            let path = if mouse.pointer_capture_target.is_some() {
+                &mouse.active_path
+            } else {
+                &mouse.hovered_path
+            };
+            let cursor = path
+                .iter()
+                .find_map(|&owner| self.cursor_child(owner, view))?;
             Some((cursor, Point::new(logical.x, logical.y)))
         })();
         let previous = self.global_state.cursor.overlay;
@@ -65,9 +85,11 @@ impl RenderRoot {
             }
         }
         if previous.is_some() != next.is_some() {
-            self.global_state.emit_signal(RenderRootSignal::SetCursorVisible(next.is_none()));
+            self.global_state
+                .emit_signal(RenderRootSignal::SetCursorVisible(next.is_none()));
         }
         self.root_state_mut().needs_paint = true;
-        self.global_state.emit_signal(RenderRootSignal::RequestRedraw);
+        self.global_state
+            .emit_signal(RenderRootSignal::RequestRedraw);
     }
 }

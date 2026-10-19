@@ -218,7 +218,7 @@ Complete example: [author_stretch.aside](../../examples/author_stretch.aside). S
 
 A view lays out its content as a stack, so both align_x and align_y apply. An input may be nested inside ordinary containers; without focus, the frontmost visible, enabled inner input receives keyboard and gamepad events. Modal panels and focused editors retain priority. Updating game.configure(text_speed:) does not interrupt an active drag. When the window, canvas or parent enlarges text, WGPU generates and caches higher-resolution glyphs for the display scale without changing logical layout.
 
-### Custom mouse cursors (not yet implemented)
+### Custom mouse cursors
 
 Add a `cursor` as an ordinary child of the panel or control whose pointer appearance it changes. Images, text and animations use ordinary stage nodes; the host tracks mouse movement. The container's x/y offset the hotspot, and the image anchor below places its center at the pointer:
 
@@ -229,7 +229,7 @@ let pointer = cursor {
 panel.add(pointer);
 ```
 
-Cursor visuals use window logical coordinates above the scene, independent of the panel's camera, scaling and clipping. Their own transforms, opacity and animations work normally. The cursor subtree takes no space in its parent's layout and receives no input or focus. The nearest eligible owner takes precedence, with the last available cursor child winning within that owner; dragging uses the captured control's path. `cursor()` hides the system cursor. Setting `pointer.visible = false` or removing it restores an ancestor or system cursor. Hiding, disabling or retiring its panel, or leaving the current modal scope, makes it ineligible. Leaving the window, losing focus or switching to touch also withdraws it. Saves retain the visuals and animations; restoration waits for real mouse input and does not restore an old pointer position.
+Cursor visuals use window logical coordinates above the scene, independent of the panel's camera, scaling and clipping. Their own transforms, opacity and animations work normally. The cursor subtree takes no space in its parent's layout and receives no input or focus. The nearest eligible owner takes precedence, with the last available cursor child winning within that owner; dragging uses the captured control's path. `cursor()` hides the system cursor. Setting `pointer.visible = false` or removing it restores an ancestor or system cursor. Hiding, disabling or retiring its panel, or leaving the current modal scope, makes it ineligible. Leaving the window, losing focus or switching to touch also withdraws it. Saves retain the visuals and animations; restoration waits for real mouse input and does not restore an old pointer position. Run [author_cursor.aside](../../examples/author_cursor.aside) for ordinary animation, hiding and removal.
 
 ### Layered images
 

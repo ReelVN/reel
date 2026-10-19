@@ -805,7 +805,10 @@ impl MeasureCtx<'_> {
 impl LayoutCtx<'_> {
     /// Window logical dimensions, independent of an authored camera or parent transform.
     pub fn window_size(&self) -> Size {
-        let size = self.global_state.size.to_logical::<f64>(self.global_state.scale_factor);
+        let size = self
+            .global_state
+            .size
+            .to_logical::<f64>(self.global_state.scale_factor);
         Size::new(size.width, size.height)
     }
     #[track_caller]

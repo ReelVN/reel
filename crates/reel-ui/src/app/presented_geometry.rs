@@ -186,9 +186,14 @@ impl PresentedGeometryView {
     pub fn get(&self, id: WidgetId) -> Option<&GeometryRecord> {
         self.index(id).map(|i| &self.records[i])
     }
-    pub(crate) fn children_of(&self, id: WidgetId) -> impl DoubleEndedIterator<Item = WidgetId> + '_ {
+    pub(crate) fn children_of(
+        &self,
+        id: WidgetId,
+    ) -> impl DoubleEndedIterator<Item = WidgetId> + '_ {
         let range = self.get(id).map_or(0..0, |record| record.children.clone());
-        self.children[range].iter().map(|&index| self.records[index].id)
+        self.children[range]
+            .iter()
+            .map(|&index| self.records[index].id)
     }
     fn index(&self, id: WidgetId) -> Option<usize> {
         self.ids
@@ -498,7 +503,8 @@ impl RenderRoot {
             view.records[index].selection_group =
                 node.item.widget.selection_group().map(|group| group.id);
             view.ids.push((node.item.state.id, index));
-            if node.item.state.is_modal && !node.item.state.is_stashed && !node.item.state.in_cursor {
+            if node.item.state.is_modal && !node.item.state.is_stashed && !node.item.state.in_cursor
+            {
                 view.modal_scope = Some(node.item.state.id);
             }
             for (slot, child) in (start..end).zip(children).rev() {
