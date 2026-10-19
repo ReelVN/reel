@@ -3210,6 +3210,7 @@ dependencies = [
  "libc",
  "reel-core",
  "reel-engine",
+ "reel-media",
  "reel-package",
  "reel-player",
  "reel-storage",

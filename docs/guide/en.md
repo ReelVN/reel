@@ -1289,6 +1289,13 @@ By default, sound belongs to the current callback node, or to the session in the
 
 The Windows player submits stereo audio to the system, including when the default output device uses multiple channels.
 
+Provide an Aside check entry that makes its own assertions and finishes, then run the command below to check both source and ASB. The host uses the project resource root, isolated temporary saves, real CPU layout and accepted frames, with actual audio decoding and mixing enabled by default. It consumes 48 kHz stereo PCM offline according to monotonic elapsed time, without audible output. Each run has a 90-second limit and supplies no automatic clicks, choices or skipping. This can check audio waits, positions, queues and restoration; audiovisual synchronization still requires device testing.
+
+```powershell
+$env:REEL_SCENARIO = "path/to/project/check.aside"
+cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
+```
+
 WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Starting positions, loop regions, seeking during playback and save restoration are connected; streaming long tracks remains part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
 
 Runnable example: [author_audio.aside](../../examples/author_audio.aside), using examples as the asset root and the same font configuration as other author examples. Its chime.wav is an original short sine tone supplied by this repository.

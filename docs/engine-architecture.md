@@ -786,6 +786,8 @@ AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前�
 
 核心通过 MediaBackend 接口接入媒体，不持有平台句柄。播放器将共享 AssetIo 读取与独立解码容量、AudioActivityService 及 AudioOutput 组合。预解码 PCM 按实际容量预留与计账，不设固定音长上限；每包解码检查取消与预算。长轨流式与设备重建继续遵循上文完整设计。音频控制维护使用 10 ms 后备调度，仅有未完成播放/回收时启用，不请求布局或绘制。
 
+工程自检宿主 `reel-cli/tests/project_scenarios.rs` 默认把项目资源根接入真实 `MediaPlayer` 读取、解码与混音，并用 `OfflineOutput` 消费 48 kHz 双声道 PCM。消费帧数来自单调经过时间，不随 VM 切片或 UI 帧数增加；使用固定大小的临时 PCM 缓冲，不保留音频流。存档恢复及新会话通过同一媒体工厂重新创建后端，输出随其所属后端释放。每次运行仍使用独立存档目录、90 秒上限和真实 CPU 布局/接受帧，不自动选择、点击或快进。范围仅为测试宿主和说明，无生产接口、ABI 或快照格式变化；依赖已有 reel-media。该检查验证资源、音频等待、播放位置、排队、取消及恢复，不证明声卡输出或实机音画同步。命令：`cargo test -p reel-cli --test project_scenarios`；外部自检入口设置 `REEL_SCENARIO` 后运行 `cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture`。
+
 ### 混音与音频过渡
 
 AudioGroup 位于 reel-core 的平台无关契约；media 与 engine 使用同一枚举。播放器将 music/voice/effects/ui 路由到四个 Kira 子轨道，主轨道负责 master 增益。每声增益、分组增益与主增益相乘，组设置影响已有与后续播放。子轨道只预留声音槽和内部缓冲，不复制 PCM；每组槽容量为 max_sounds，总播放准入仍共享 max_sounds。四组控制句柄随 manager 一起移交原后台退休服务，按轮转游标和统一配额取走已退休声音。
