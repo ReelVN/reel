@@ -279,25 +279,25 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: if name == "video" {
-                1
+                2
             } else if name == "image" {
-                12
+                13
             } else if name == "slider" {
-                11
-            } else if name == "particles" {
-                5
-            } else if name == "camera" {
-                4
-            } else if matches!(name, "checkbox" | "radio") {
-                6
-            } else if name == "input" {
                 12
-            } else if name == "scroll" {
-                8
-            } else if name == "text_input" {
+            } else if name == "particles" {
+                6
+            } else if name == "camera" {
+                5
+            } else if matches!(name, "checkbox" | "radio") {
                 7
+            } else if name == "input" {
+                13
+            } else if name == "scroll" {
+                9
+            } else if name == "text_input" {
+                8
             } else {
-                10
+                11
             },
             parameters,
             result: BuiltinType::Any,
@@ -389,7 +389,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::list".into(),
-        abi_version: 4,
+        abi_version: 5,
         parameters: list_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -402,7 +402,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::view".into(),
-        abi_version: 4,
+        abi_version: 5,
         parameters: view_parameters.clone(),
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -412,7 +412,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::layered_image".into(),
-        abi_version: 3,
+        abi_version: 4,
         parameters: view_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

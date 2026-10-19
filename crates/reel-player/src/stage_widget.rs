@@ -733,6 +733,13 @@ fn text_outline(props: &reel_ui::stage::NodeProps) -> Option<reel_ui::core::Text
         color: color(props.text_outline_color),
     })
 }
+fn text_line_breaking(node: &SceneProperties) -> reel_ui::properties::LineBreaking {
+    if matches!(node.kind, NodeKind::Text(_)) && node.props.text_wrap {
+        reel_ui::properties::LineBreaking::WordWrap
+    } else {
+        reel_ui::properties::LineBreaking::Overflow
+    }
+}
 impl SceneWidget {
     fn image_widget(view: &SceneNode) -> Option<WidgetPod<Image>> {
         let NodeKind::Image {
@@ -821,11 +828,7 @@ impl SceneWidget {
                         ))
                         .with_style(font_style(&view.node.props.font)),
                 )
-                .with_props(if matches!(view.node.kind, NodeKind::Text(_)) {
-                    reel_ui::properties::LineBreaking::WordWrap
-                } else {
-                    reel_ui::properties::LineBreaking::Overflow
-                })
+                .with_props(text_line_breaking(&view.node))
                 .with_props(ContentColor::new(color(view.node.props.color)))
                 .to_pod(),
             ),
@@ -1147,6 +1150,9 @@ impl SceneWidget {
             if this.widget.node.props.text_align != view.node.props.text_align {
                 Label::set_text_alignment(&mut label, view.node.props.text_align);
             }
+            if text_line_breaking(&this.widget.node) != text_line_breaking(&view.node) {
+                label.insert_prop(text_line_breaking(&view.node));
+            }
             Label::set_text_fit(&mut label, view.node.props.text_fit);
             Label::set_outline(&mut label, text_outline(&view.node.props));
             if this.widget.node.props.line_height != view.node.props.line_height {
@@ -1224,6 +1230,7 @@ impl SceneWidget {
                 || old.font_size != new.font_size
                 || old.font != new.font
                 || old.text_fit != new.text_fit
+                || text_line_breaking(&this.widget.node) != text_line_breaking(&view.node)
                 || old.clip != new.clip
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {

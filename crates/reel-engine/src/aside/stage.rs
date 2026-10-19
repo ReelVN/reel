@@ -70,6 +70,8 @@ pub(super) enum NodeProperty {
     Reveal,
     #[aside(name = "text_align", ty = String, default = "start", validate = validate_text_align)]
     TextAlign,
+    #[aside(name = "text_wrap", ty = Bool, default = true)]
+    TextWrap,
     #[aside(name = "line_height", ty = Any, default = 1.2, validate = validate_nonnegative, animatable)]
     LineHeight,
     #[aside(name = "text_fit", ty = String, default = "none", validate = validate_text_fit)]
@@ -1525,6 +1527,7 @@ fn read_props(
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
         font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
+        text_wrap: boolean(get(NodeProperty::TextWrap)?)?,
         line_height: nonnegative(get(NodeProperty::LineHeight)?)?,
         text_fit: if shrink_text(heap, get(NodeProperty::TextFit)?)? {
             reel_ui::core::TextFit::Shrink {
