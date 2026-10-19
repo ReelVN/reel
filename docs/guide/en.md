@@ -401,8 +401,6 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 
 The four camera properties work with assignment, bind/derive and tween, including normal cancellation and ownership. Put HUD siblings outside the camera to keep them fixed; nested cameras are ordinary components. Motion preserves text layout and loaded images. Drawing and pointer coordinates share the accepted frame's transforms and clips. See the complete [author_camera.aside](../../examples/author_camera.aside), which needs only `fonts/body.ttf`; run it using section 1's dev/build/run commands. This is a two-dimensional camera; perspective projection is not implemented.
 
-
-
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside
@@ -652,7 +650,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
 }
 ```
 bind connects an observable property while preserving that property's existing read/write permissions. text can read a read-only property; slider requires a writable property when it writes a value back. derive computes read-only presentation values. A derived function establishes dependencies on the observable properties it reads and may also read immutable captured values. Internal changes to ordinary data retain ordinary language semantics. Observable property changes update only the relevant nodes. Writing a scalar to a writable bound property writes through to its binding source while preserving the binding. Animation also reserves and writes the ultimate source property, so two nodes bound to the same source reveal the actual write conflict. Explicitly changing the source stops the relevant root activities; passive projection updates are reads. Use scope overrides for temporary animation of read-only derived properties. Rebinding or unbind first ends activities that depend on the old binding; unbind preserves the current effective base value. During the brief save-capture period, script-derived computations and author-defined presentation updates pause, then resume using the latest state when capture finishes. Ordinary {...} data records are suitable for passing parameters; use model({...}) to create an observable model for application values that change over time. Cyclic dependencies, writes inside derived computations, and waits inside derived computations produce source-level diagnostics.
-Repeated reads of the same model field in one derivation register one dependency. An internal index deduplicates large sets of model fields; nested components, cancellation and restoration during evaluation preserve the same dependencies and evaluation order without author cache or capacity settings. Virtual lists reduce live row nodes; the full data, key index and dependencies remain resident. Source changes still require indexing, and freshness checks before presentation still depend on the registered dependency graph.
+Repeated reads of the same model field in one derivation register one dependency. An internal index deduplicates large sets of model fields; nested components, cancellation and restoration during evaluation preserve the same dependencies and evaluation order without author cache or capacity settings. Virtual lists reduce live row nodes; the full data, key index and dependencies remain resident. Source changes still require indexing. Stable freshness checks before presentation reuse an index of derived ancestors instead of rescanning ordinary model fields. The first check after rebinding or loading a save rebuilds that index and still has dependency-graph cost. No author cache parameter is needed; conditional dependencies, equal-value rebinding, and mid-evaluation restoration keep their existing semantics.
 
 Authors can use the same approach to wrap consistent fonts, button images, spacing, and animation, then import them as ordinary modules. Visual style is reused through components and parameters; shared property objects can also be organized using ordinary language rules.
 
@@ -736,6 +734,19 @@ await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
 reveal.mask = null;
 ```
 mask_progress and mask_softness use ordinary derive/tween. See [author_image_mask.aside](../../examples/author_image_mask.aside). Progress 1 bypasses mask compositing; set mask to null when finished to release its resource reference. Masks do not change logical hit geometry; use enabled/visible to control interaction. Masks require whole PNG/JPEG images, not tiled .reel-image sources.
+
+`mask.alpha` samples an image's alpha; `mask.gray` samples its encoded sRGB gray. Compose samples with `mask.add`, `subtract`, `multiply`, `pow`, `clamp` and `smoothstep`. Sampling accepts `x`, `y`, `scale_x`, `scale_y` and `repeat` (`"none"`, `"x"`, `"y"`, `"both"`); coordinates are normalized to the masked node, so they follow its transforms. Use `mask.param("x")` and `mask.param("y")` to read the animatable `mask_x` and `mask_y` properties, or `"progress"` and `"softness"` for their existing properties.
+
+```aside
+let edge = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
+    stack(width: 640, height: 360, background: "#2d8aab");
+};
+stage.replace(reveal);
+await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+```
+
+`pow` clamps its base to zero and accepts a finite nonnegative constant power; `0^0` is 1. `clamp` takes ordered constant bounds. `smoothstep` supports reversed edges; equal edges become a hard step at that value. The final result is clamped to 0..1. A composed expression remains active at `mask_progress: 1`. Its structure and image resources are reused during parameter animation. Run [author_composed_mask.aside](../../examples/author_composed_mask.aside) for a moving reveal made from two included alpha images.
 
 The `invert` node property inverts the composited subtree. It ranges from 0 (the default) to 1 for full inversion, with intermediate values blending in sRGB. Alpha is preserved. Put dialogue and menus in sibling nodes to keep them independent of the inverted scene. Direct assignment, derive, tween, and save restoration use the ordinary property protocol.
 
@@ -1269,7 +1280,7 @@ fn main() {
 Runnable example: [author_audio_queue.aside](../../examples/author_audio_queue.aside) uses bundled clips for intro → loop → outro and continuous narration. Replace the clip paths with your own audio.
 
 ```aside
-let music = audio.play("assets/intro.ogg", group: "music");
+let mut music = audio.play("assets/intro.ogg", group: "music");
 audio.queue(music, "assets/loop.ogg", looping: true);
 narrator("Continue to leave the loop after this pass.");
 audio.queue(music, "assets/outro.ogg");

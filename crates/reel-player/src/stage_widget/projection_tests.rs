@@ -336,7 +336,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
                 corner_colors: None,
             },
             NodeProps {
-                mask: Some("mask.png".into()),
+                mask: Some(reel_ui::stage::MaskProgram::image("mask.png".into())),
                 ..Default::default()
             },
             vec![],
@@ -358,7 +358,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         if node.node.id == picture {
             SceneImages {
                 image: Some(image.clone()),
-                mask_image: Some(image.clone()),
+                mask_images: vec![image.clone()].into(),
                 ..Default::default()
             }
         } else {
@@ -376,7 +376,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         if node.node.id == picture {
             SceneImages {
                 image: Some(replacement.clone()),
-                mask_image: Some(image.clone()),
+                mask_images: vec![image.clone()].into(),
                 ..Default::default()
             }
         } else {
@@ -429,5 +429,5 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         .unwrap()
         .downcast::<SceneWidget>()
         .unwrap();
-    assert!(image_widget.image.is_none() && image_widget.mask_image.is_none());
+    assert!(image_widget.image.is_none() && image_widget.mask_images.is_empty());
 }

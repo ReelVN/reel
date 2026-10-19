@@ -206,6 +206,7 @@ impl Renderer {
             }
         });
         self.images.retire(&[]);
+        self.pipelines.prune_masks();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {

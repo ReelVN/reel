@@ -401,8 +401,6 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 
 四个取景属性支持赋值、bind/derive 和 tween，沿用活动的取消和所有权规则。把 HUD 作为相机外的兄弟节点即可保持固定；相机也能嵌套组合。移动不会重新排版文字或重新加载图片；绘制与指针坐标共用已接受帧的变换和裁剪。完整的 [author_camera.aside](../../examples/author_camera.aside) 仅需提供 `fonts/body.ttf`，沿用第一节 dev/build/run 命令。这里是二维相机，尚未实现透视投影。
 
-
-
 画面的节点、绘制记录和嵌套层级随实际内容增长。输入路径在新画面发布前扩容，已有按下、拖动和释放继续对应正确的节点。实际内存预算与 GPU 纹理尺寸由运行宿主和设备管理。
 以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 game:: 模块和自定义对话视图。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。
 ```aside
@@ -664,7 +662,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
 }
 ```
 bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对实际读取的可观察属性建立依赖，条件变化后替换依赖；结果也可通过 `binding.value` 读取并继续派生。派生更新在同步脚本段结束后、舞台发布前集中完成，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。标量写入可写绑定属性会写回绑定源并保留绑定；动画也保留和写入最终源属性，因此两个节点绑定同一源会发现真实写入冲突。源的显式改写停止相关根活动；被动投影更新属于读取。只读派生属性用 scope 覆盖做临时演出；重新绑定或 unbind 会先结束依赖旧绑定的活动，unbind 保留当前有效基础值。捕获存档的短暂期间，脚本派生与作者外观更新暂停，捕获完成后按最新状态恢复。普通 {...} 数据记录适合传参，持续变化的业务值用 model({...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
-同一派生计算反复读取同一模型字段只登记一次依赖。大量不同模型字段使用内部索引去重；嵌套组件、取消及存档中途恢复仍保留原有依赖与求值顺序，不需要作者设置缓存或容量参数。虚拟列表只减少同时存在的行节点，完整数据、key 索引和依赖仍驻留；来源变更仍需重新索引，呈现前的有效性检查也有依赖图成本。
+同一派生计算反复读取同一模型字段只登记一次依赖。大量不同模型字段使用内部索引去重；嵌套组件、取消及存档中途恢复仍保留原有依赖与求值顺序，不需要作者设置缓存或容量参数。虚拟列表只减少同时存在的行节点，完整数据、key 索引和依赖仍驻留；来源变更仍需重新索引。稳定的呈现前有效性检查复用派生祖先索引，不反复扫描普通模型字段；重新绑定或读档后的首次检查仍需重建，具有依赖图成本。作者无需设置缓存参数，条件依赖、同值重绑与中途恢复保持原有语义。
 
 作者可用同样方式封装统一字体、按钮图片、留白和动效，再作为普通模块导入。风格复用来自组件和参数，共用的属性对象也可按普通语言规则组织。
 
@@ -747,6 +745,19 @@ await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
 reveal.mask = null;
 ```
 mask_progress 和 mask_softness 使用普通 derive/tween。完整示例：[author_image_mask.aside](../../examples/author_image_mask.aside)。进度为 1 时跳过遮罩合成；用完可将 mask 设为 null 释放资源引用。遮罩不改变逻辑命中，需要禁用交互时使用 enabled/visible。遮罩需要完整 PNG/JPEG，不接受分块 .reel-image。
+
+`mask.alpha` 采样图片 alpha，`mask.gray` 采样编码 sRGB 灰度。用 `mask.add`、`subtract`、`multiply`、`pow`、`clamp` 和 `smoothstep` 组合采样值。采样接受 `x`、`y`、`scale_x`、`scale_y` 及 `repeat`（`"none"`、`"x"`、`"y"`、`"both"`）；坐标按蒙版节点归一化，随节点变换。`mask.param("x")` 和 `mask.param("y")` 读取可动画的 `mask_x`、`mask_y`，`"progress"` 和 `"softness"` 读取已有对应属性。
+
+```aside
+let edge = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
+    stack(width: 640, height: 360, background: "#2d8aab");
+};
+stage.replace(reveal);
+await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+```
+
+`pow` 先把底数夹到零，指数是有限非负常数，`0^0` 为 1。`clamp` 接受有序常量边界。`smoothstep` 支持倒序边界，相等边界则在该值产生硬阶跃。最终结果夹到 0..1。组合表达式在 `mask_progress: 1` 时仍然生效；参数动画复用表达式结构和图片资源。[author_composed_mask.aside](../../examples/author_composed_mask.aside) 使用随附的两张 alpha 图片展示移动显现效果。
 
 节点 `invert` 将整个子树的合成画面反色，范围 0..1，默认 0；1 完全反色，中间值渐变。颜色按 sRGB 反转，透明度保持不变；对白和菜单放在同级节点即可独立于反色场景。可以直接赋值、derive 或 tween，参数随存档恢复。
 
@@ -1266,7 +1277,7 @@ fn main() {
 可运行示例：[author_audio_queue.aside](../../examples/author_audio_queue.aside) 用内置音频演示 intro → loop → outro 与连续语音片段；创作时把路径换成自己的素材。
 
 ```aside
-let music = audio.play("assets/intro.ogg", group: "music");
+let mut music = audio.play("assets/intro.ogg", group: "music");
 audio.queue(music, "assets/loop.ogg", looping: true);
 narrator("Continue to leave the loop after this pass.");
 audio.queue(music, "assets/outro.ogg");

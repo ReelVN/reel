@@ -279,25 +279,25 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: if name == "video" {
-                4
+                5
             } else if name == "image" {
-                15
+                16
             } else if name == "slider" {
-                14
-            } else if name == "particles" {
-                9
-            } else if name == "camera" {
-                7
-            } else if matches!(name, "checkbox" | "radio") {
-                9
-            } else if name == "input" {
                 15
-            } else if name == "scroll" {
-                11
-            } else if name == "text_input" {
+            } else if name == "particles" {
                 10
+            } else if name == "camera" {
+                8
+            } else if matches!(name, "checkbox" | "radio") {
+                10
+            } else if name == "input" {
+                16
+            } else if name == "scroll" {
+                12
+            } else if name == "text_input" {
+                11
             } else {
-                13
+                14
             },
             parameters,
             result: BuiltinType::Any,
@@ -977,6 +977,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         required_capabilities: vec!["reel.stage".into()],
     });
     contracts.extend(aside_std::contracts());
+    contracts.extend(super::masks::contracts());
     contracts
 }
 

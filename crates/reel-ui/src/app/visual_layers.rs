@@ -3,7 +3,7 @@
 
 use kurbo::{Affine, Rect};
 
-use crate::core::{MaskProgress, WidgetId};
+use crate::core::{PaintImageMask, WidgetId};
 use crate::imaging::PaintSink;
 use crate::imaging::record::{Scene, replay_transformed};
 
@@ -21,7 +21,7 @@ pub struct CommandOwnerRange {
 }
 
 /// Reliable provenance captured when a widget's cached paint is appended.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct GroupMetadata {
     /// Index of the `PushGroup` command in this fragment.
     pub command: usize,
@@ -30,7 +30,7 @@ pub struct GroupMetadata {
     /// Effect-local coordinates to layer-local coordinates.
     pub effect_transform: Affine,
     /// Optional image threshold, separate from the retained mask's scene content.
-    pub mask_progress: Option<MaskProgress>,
+    pub image_mask: Option<PaintImageMask>,
     /// sRGB inversion of the completed subtree before coverage and opacity.
     pub invert: f32,
 }

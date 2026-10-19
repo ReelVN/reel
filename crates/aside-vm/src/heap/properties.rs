@@ -454,9 +454,18 @@ impl Heap {
             return Err(error);
         }
         self.detach_property(target)?;
+        self.binding_changed()?;
         self.set_field(target_meta, Slot::Binding as u32, reference)?;
         self.reconnect_derived(source.host)?;
         self.commit_properties(value, true)
+    }
+
+    fn binding_changed(&mut self) -> Result<(), HeapError> {
+        self.binding_revision = self
+            .binding_revision
+            .checked_add(1)
+            .ok_or(HeapError::IdentityExhausted)?;
+        Ok(())
     }
 
     fn detach_property(&mut self, target: PropertyId) -> Result<(), HeapError> {
@@ -478,6 +487,7 @@ impl Heap {
             }
         }
         let entry = self.property_metadata(target)?;
+        self.binding_changed()?;
         self.set_field(entry, Slot::Binding as u32, Value::NULL)?;
         self.disconnect_unobserved_derived(source.host)
     }
