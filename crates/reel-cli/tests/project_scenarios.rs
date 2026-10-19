@@ -4,7 +4,10 @@
 mod support;
 
 use reel_core::{budget::QueueLimits, wake::WakeSignal};
-use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+use reel_engine::{
+    Epoch, Session, SessionId,
+    aside::{SliceBudget, VmLimits},
+};
 use reel_player::{
     aside_session::{AsideSessionUi, StoryState},
     assets::AssetOptions,
@@ -56,8 +59,18 @@ fn execute_project(path: &Path) {
         let mut frame = 0;
         loop {
             frame += 1;
-            let now = frame * 16_000_000;
-            let progress = runtime.tick(Default::default(), || now).unwrap();
+            // Match the window host: native continuations share one frame's CPU
+            // deadline. A budget slice must not advance game time by one frame.
+            let deadline = started.elapsed().as_nanos() as u64 + 2_000_000;
+            let progress = runtime
+                .tick(
+                    SliceBudget {
+                        deadline_ns: Some(deadline),
+                        ..Default::default()
+                    },
+                    || started.elapsed().as_nanos() as u64,
+                )
+                .unwrap();
             assert!(
                 started.elapsed() < Duration::from_secs(90),
                 "{kind} scenario did not finish: {}; title={:?}, frame={frame}, progress={progress:?}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
@@ -94,7 +107,7 @@ fn execute_project(path: &Path) {
                 support::present(runtime.driver_mut().unwrap(), &mut bridge, root, frame);
                 runtime.wake_input();
             }
-            // Give filesystem/resource workers CPU time; logical time stays deterministic.
+            // Give filesystem/resource workers CPU time between presentation attempts.
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!runtime.driver().cleanup_pending());
