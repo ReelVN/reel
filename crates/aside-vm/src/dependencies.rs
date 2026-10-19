@@ -13,6 +13,10 @@ pub(crate) struct Dependencies {
     pub values: Values,
     pub index: BTreeSet<(u64, u32)>,
     pub index_reserved: u64,
+    // Non-owning offsets into `values`, rebuilt after binding topology changes.
+    pub ancestors: Vec<u32>,
+    pub ancestor_revision: u64,
+    pub ancestor_reserved: u64,
 }
 impl Dependencies {
     fn key(source: Value, selector: Value) -> Result<(u64, u32), HeapError> {
@@ -55,6 +59,7 @@ impl Dependencies {
         self.index_reserved += INDEX_ENTRY_BYTES;
         self.values.push(source);
         self.values.push(selector);
+        self.ancestor_revision = 0;
     }
     pub fn restore_bytes(&self, value: Value) -> Result<u64, HeapError> {
         if self.values.len.is_multiple_of(2) {
