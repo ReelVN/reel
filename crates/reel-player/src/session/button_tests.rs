@@ -146,6 +146,97 @@ fn runtime(source: &str) -> StoryRuntime {
         .unwrap(),
     )
 }
+
+#[test]
+fn radio_group_snapshot_rebuilds_binding_identity_and_restores_selection_without_focus() {
+    use reel_engine::aside::{SessionVm, snapshot::SnapshotBudget};
+    use reel_engine::{Epoch, SessionId, SessionIdentity};
+    let mut story = runtime(
+        r#"
+        fn main(){
+            let state=model({value:0,changes:0});
+            let changed=||{state.changes+=1;};
+            stage.replace(column{
+                radio(0,"zero",value:bind(state.value),height:40,width:120,on_change:changed);
+                radio(1,"one",value:bind(state.value),height:40,width:120,on_change:changed);
+                text(derive(||f"selection:{state.value}:{state.changes}"));
+            });
+        }
+    "#,
+    );
+    drain(&mut story);
+    let (mut bridge, root) = mount(story.driver().ui());
+    present(&mut story, &mut bridge, root, 1);
+    let press = |story: &mut StoryRuntime, bridge: &mut PresentationBridge, named| {
+        for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+            story
+                .driver_mut()
+                .unwrap()
+                .handle_text(bridge, key(state, keyboard::Key::Named(named)))
+                .unwrap();
+        }
+        story.wake_input();
+        drain(story);
+    };
+    let state = |story: &StoryRuntime| {
+        story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::Text(text) if text.as_ref().starts_with("selection:") => {
+                    Some(text.to_string())
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    press(&mut story, &mut bridge, keyboard::NamedKey::Tab);
+    press(&mut story, &mut bridge, keyboard::NamedKey::ArrowDown);
+    assert_eq!(state(&story), "selection:1:1");
+    let live = story.driver();
+    let mut capture = live.snapshot_begin().unwrap();
+    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let bytes = capture.finish().unwrap().encode().unwrap();
+    let mut image = reel_engine::aside::snapshot::SessionSnapshot::decode(&bytes).unwrap();
+    let mut restore = SessionVm::restore_begin(
+        &mut image,
+        live.adapter().vm().program().clone(),
+        VmLimits::default(),
+        SessionIdentity {
+            session_id: SessionId(802),
+            epoch: Epoch(2),
+        },
+        Default::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let (session, vm) = restore.finish().unwrap();
+    let mut restored = AsideSessionUi::restored(
+        session,
+        vm,
+        "en".into(),
+        live.ui().assets(),
+        live.initializer(),
+    )
+    .unwrap();
+    while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+    let mut story = StoryRuntime::new(restored);
+    drain(&mut story);
+    let (mut bridge, root) = mount(story.driver().ui());
+    assert!(bridge.root().focused_widget().is_none());
+    present(&mut story, &mut bridge, root, 1);
+    press(&mut story, &mut bridge, keyboard::NamedKey::Tab);
+    press(&mut story, &mut bridge, keyboard::NamedKey::ArrowDown);
+    assert_eq!(
+        state(&story),
+        "selection:0:2",
+        "the restored group selects the next item once"
+    );
+}
 fn drain(runtime: &mut StoryRuntime) {
     for _ in 0..10_000 {
         if !runtime.needs_tick() {

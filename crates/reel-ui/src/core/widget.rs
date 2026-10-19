@@ -56,6 +56,17 @@ pub struct VirtualChildren<'a> {
     pub target_ready: bool,
 }
 
+/// Opaque identity of one shared selection value. The host owns its lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionGroupId(pub u64, pub u32);
+
+/// A mounted member of an exclusive selection group.
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionGroup {
+    pub id: SelectionGroupId,
+    pub selected: bool,
+}
+
 impl WidgetId {
     /// A serialized representation of the `WidgetId` for debugging purposes.
     pub fn trace(self) -> DisplayValue<Self> {
@@ -547,6 +558,15 @@ pub trait Widget: AsDynWidget + Any {
     fn accepts_focus(&self) -> bool {
         false
     }
+
+    /// Shared selection identity and current value, independent of decoration.
+    fn selection_group(&self) -> Option<SelectionGroup> {
+        None
+    }
+
+    /// Select this member after accepted-frame group navigation.
+    /// Implementations use the same value proposal as pointer activation.
+    fn select_group_member(&mut self, _ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>) {}
 
     /// Whether this widget gets IME events. False by default.
     ///

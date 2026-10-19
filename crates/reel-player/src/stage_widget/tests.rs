@@ -1,4 +1,5 @@
 use super::*;
+mod radio_navigation;
 use crate::session::SessionUi;
 #[cfg(feature = "window")]
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
@@ -1588,6 +1589,7 @@ fn continuous_control_projection_preserves_widgets_and_layout() {
         .stage
         .create(
             NodeKind::Radio {
+                group: None,
                 label: Some("Radio".into()),
                 selected: false,
                 revision: 0,

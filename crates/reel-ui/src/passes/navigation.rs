@@ -6,7 +6,7 @@ use super::{
     update::{find_first_focusable, run_single_update_pass, run_update_focus_pass},
 };
 use crate::app::{GeometryView, RenderRoot};
-use crate::core::{Handled, TextEvent, WidgetId};
+use crate::core::{Handled, SelectionGroupId, TextEvent, WidgetId};
 use crate::input::{ActionPhase, NavigationAction, NavigationEvent};
 
 #[derive(Clone, Copy)]
@@ -18,6 +18,13 @@ pub(crate) struct DeferredNavigation {
     index: usize,
     forward: bool,
     direction: Option<NavigationAction>,
+    selection: Option<SelectionGroupId>,
+}
+
+pub(super) fn select_deferred_member(root: &mut RenderRoot, group: SelectionGroupId) {
+    if let Some(request) = &mut root.global_state.deferred_navigation {
+        request.selection = Some(group);
+    }
 }
 
 fn request_virtual(root: &mut RenderRoot, mut request: DeferredNavigation) {
@@ -50,7 +57,7 @@ pub(crate) fn cancel_virtual(root: &mut RenderRoot) {
     }
 }
 
-fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> bool {
+pub(super) fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> bool {
     if root.is_descendant(candidate, anchor) {
         return true;
     }
@@ -76,6 +83,64 @@ fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> 
         current = parent;
     }
     false
+}
+
+/// A group's logical boundary is not the first/last row of the mounted window.
+/// Entering another list or wrapping requests its actual endpoint through the
+/// same measured, accepted-frame navigation protocol as an ordinary row edge.
+pub(super) fn defer_group_entry(
+    root: &mut RenderRoot,
+    candidate: WidgetId,
+    group: SelectionGroupId,
+    forward: bool,
+    direction: NavigationAction,
+    wrapping: bool,
+) -> bool {
+    let anchor = root.global_state.focused_widget;
+    let mut row = candidate;
+    let mut target = None;
+    while let Some(owner) = root.widget_arena.parent_of(row) {
+        if let Some(list) = root
+            .widget_arena
+            .get_node(owner)
+            .item
+            .widget
+            .virtual_children()
+            && (wrapping || anchor.is_none_or(|anchor| !root.is_descendant(anchor, owner)))
+        {
+            if let crate::app::InputGeometrySource::Presented(view) =
+                &root.global_state.input_geometry_source
+                && view
+                    .as_ref()
+                    .and_then(|view| view.get(owner))
+                    .and_then(|record| record.virtual_revision)
+                    != Some(list.revision)
+            {
+                return true;
+            }
+            if list.total > 0 {
+                target = Some((owner, if forward { 0 } else { list.total - 1 }));
+            }
+        }
+        row = owner;
+    }
+    let Some((owner, index)) = target else {
+        return false;
+    };
+    request_virtual(
+        root,
+        DeferredNavigation {
+            serial: 0,
+            revision: 0,
+            owner,
+            anchor,
+            index,
+            forward,
+            direction: Some(direction),
+            selection: Some(group),
+        },
+    );
+    true
 }
 
 fn entry_gap(
@@ -194,6 +259,7 @@ pub(crate) fn defer_virtual(
                     index,
                     forward,
                     direction,
+                    selection: None,
                 },
             );
             return true;
@@ -250,6 +316,7 @@ pub(crate) fn defer_virtual(
                             index: next,
                             forward,
                             direction,
+                            selection: None,
                         },
                     );
                     return true;
@@ -273,6 +340,16 @@ pub(crate) fn resume_virtual(root: &mut RenderRoot) {
         return;
     };
     if root.global_state.focused_widget != request.anchor || !root.focus_in_scope(request.owner) {
+        cancel_virtual(root);
+        return;
+    }
+    if let Some(group) = request.selection
+        && request
+            .anchor
+            .and_then(|id| super::selection::member(root, id))
+            .map(|member| member.id)
+            != Some(group)
+    {
         cancel_virtual(root);
         return;
     }
@@ -318,10 +395,17 @@ pub(crate) fn resume_virtual(root: &mut RenderRoot) {
     if !root.input_in_scope(row, view) {
         return;
     }
-    if let Some(next) = find_first_focusable(root, &[], row, request.forward) {
+    let next = match request.selection {
+        Some(group) => super::selection::first_in_row(root, row, group, request.forward),
+        None => find_first_focusable(root, &[], row, request.forward),
+    };
+    if let Some(next) = next {
         cancel_virtual(root);
         cancel(root);
         root.global_state.next_focused_widget = Some(next);
+        if let Some(group) = request.selection {
+            super::selection::select(root, next, group);
+        }
         return;
     }
     let next = if request.forward {
@@ -334,6 +418,16 @@ pub(crate) fn resume_virtual(root: &mut RenderRoot) {
         request_virtual(root, request);
     } else {
         cancel_virtual(root);
+        if let Some(group) = request.selection {
+            super::selection::finish_virtual(
+                root,
+                request.owner,
+                group,
+                request.forward,
+                request.direction.expect("group navigation has a direction"),
+            );
+            return;
+        }
         root.global_state.next_focused_widget = match request.direction {
             Some(direction) => directional_focus(root, direction, view),
             None => super::update::find_next_focusable(root, request.forward),
@@ -433,7 +527,8 @@ pub(crate) fn run(root: &mut RenderRoot, event: NavigationEvent) -> Handled {
         // controls uses its existing explicit fallback.
         if root.global_state.focused_widget.is_none() {
             let scope = root.input_scope(view).unwrap_or(root.root_id());
-            root.global_state.next_focused_widget = find_first_focusable(root, &[], scope, true);
+            root.global_state.next_focused_widget = find_first_focusable(root, &[], scope, true)
+                .map(|id| super::selection::entry(root, id));
             run_update_focus_pass(root);
         }
         cancel(root);
@@ -460,6 +555,9 @@ pub(crate) fn run(root: &mut RenderRoot, event: NavigationEvent) -> Handled {
         && event.action.is_direction()
         && matches!(event.phase, ActionPhase::Pressed | ActionPhase::Repeated)
     {
+        if super::selection::navigate(root, event.action) {
+            return Handled::Yes;
+        }
         let next = directional_focus(root, event.action, view);
         let deferred = matches!(event.action, NavigationAction::Up | NavigationAction::Down)
             && defer_virtual(
@@ -487,7 +585,8 @@ fn directional_focus(
 ) -> Option<WidgetId> {
     let scope = root.input_scope(view).unwrap_or(root.root_id());
     let Some(focus) = root.global_state.focused_widget else {
-        return find_first_focusable(root, &[], scope, true);
+        return find_first_focusable(root, &[], scope, true)
+            .map(|id| super::selection::entry(root, id));
     };
     let center = |root: &RenderRoot, id| {
         let state = &root.widget_arena.nodes.find(id)?.item.state;
