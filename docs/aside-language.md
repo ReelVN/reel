@@ -328,6 +328,8 @@ Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，Aside 字节码/ASB 不变。
 
+共同宿主属性 `text_wrap` 是默认 true 的 bool，支持构造、直接赋值和 bind/derive。它只控制 text 节点的自动折行；false 保留显式换行，溢出沿 clip 裁剪。控件标签及文本编辑器不改变原有换行规则，`text_fit:"shrink"` 仍按完整的不自动折行文本适配。字段与同包执行快照一起恢复，不增加语言语法、VM 指令或依赖；共同节点构造 native ABI（含 list/view/layered_image）各加 1，节点宿主验证器版本为普通 4、image 6、video 2，Aside 字节码/ASB 和 SessionSnapshot 版本不变。
+
 Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。共同节点构造 native ABI 各加 1，节点宿主快照适配器 2（image 4），SessionSnapshot 5。
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；Aside 字节码/ASB 不变。

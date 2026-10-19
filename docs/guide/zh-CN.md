@@ -506,7 +506,7 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体仍由游戏提供，粗体、斜体的字形效果取决于字体。
 
-text 按可用宽度自然换行；width、x/y、padding、scroll 决定 NVL 页面的位置与边界，列表 gap 决定段落间距。`text_align` 支持 start/end/left/right/center/justify，默认 start；`line_height` 是字号倍率，默认 1.2。不同字号、ruby 与着重号共同决定行高，逐字显示只改变绘制范围。节点 color 是基础颜色，显式句内颜色覆盖对应片段；省略句内颜色即可沿用角色或已读配色。
+text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 NVL 页面的位置与边界，列表 gap 决定段落间距。`text_align` 支持 start/end/left/right/center/justify，默认 start；`line_height` 是字号倍率，默认 1.2。不同字号、ruby 与着重号共同决定行高，逐字显示只改变绘制范围。节点 color 是基础颜色，显式句内颜色覆盖对应片段；省略句内颜色即可沿用角色或已读配色。
 
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` 把词条 ID 交给普通回调。event.target 是文字节点；链接完整显示后可以鼠标或触摸点击，焦点在文字上时左右方向选择链接，确认键激活。链接消费输入，不推进对白，不自动打开浏览器；节点移除后其回调任务按节点所有权取消。完整示例：[author_rich_text.aside](../../examples/author_rich_text.aside)，运行前提供 fonts/body.ttf。需要语言切换时使用 `derive(|| rich(tr(...)))`；传入翻译模板的玩家文字先 rich_escape。提交过的对白和历史保留原语言和样式。当前无障碍树提供正文标签，尚未提供逐链接语义子节点。
 
@@ -766,7 +766,14 @@ await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 
 ## 十 选择与会变化的内容
 
-固定宽度的选项或标题可以用 `text_fit: "shrink"` 自动缩小完整文字，`min_font_size` 指定最低字号；默认 `text_fit: "none"` 保留普通排版。适配只缩小、不放大，保留显式换行，富文本和 ruby 一起缩放；打字机不会逐字改变字号。最低字号仍放不下时可以配合 clip。`text_outline` 设置字形向外描边宽度，`text_outline_color` 设置颜色，适用于 text 和控件标签。例如 `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`。这些属性可以 derive，让悬停或焦点只改变文字外观。
+text 默认按可用宽度自动折行。设置 `text_wrap: false` 保留每个显式书写的行，超出宽度的部分仍显示，或由 clip 裁剪；它可以直接赋值，也可以 bind/derive。这个开关只作用于 text，按钮等控件的标签仍不自动折行，文本编辑器使用自身规则。完整示例：[author_text_wrap.aside](../../examples/author_text_wrap.aside)。
+
+```aside
+text("A long authored line without automatic wrapping.\nA second explicit line.",
+    width: 240, text_wrap: false, clip: true);
+```
+
+固定宽度的选项或标题可以用 `text_fit: "shrink"` 自动缩小完整文字，`min_font_size` 指定最低字号；默认 `text_fit: "none"` 保留普通排版。shrink 始终按不自动折行的完整文本适配，不受 text_wrap 开关影响。适配只缩小、不放大，保留显式换行，富文本和 ruby 一起缩放；打字机不会逐字改变字号。最低字号仍放不下时可以配合 clip。`text_outline` 设置字形向外描边宽度，`text_outline_color` 设置颜色，适用于 text 和控件标签。例如 `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`。这些属性可以 derive，让悬停或焦点只改变文字外观。
 
 独立演出或小游戏后台逻辑使用 `spawn(work, owner: root)`。work 是零参数函数、闭包或绑定方法，可以循环并等待动画/结果；`await task` 取得返回值或原错误，重复等待得到同一终态。`task.cancel()` 首次请求取消返回 true，之后返回 false；任务清理后等待者收到 Cancelled。取消不会执行脚本 finally，资源应交给节点所有权管理。节点移除自动取消所属任务，隐藏不取消；取消等待者不取消生产者。省略 owner 时继承回调/任务节点，在主剧情中归会话。正文在当前调用者等待或返回后开始调度，不占用主剧情的对白/选项权限；初始化、纯 derive 和 NoWait 中不能启动任务。见 [author_tasks.aside](../../examples/author_tasks.aside)。普通固定演出继续用 sequence/parallel/repeat；`tween` 可用 `quad_in`、`quad_out`、`quad_in_out` 表达二次曲线，in/out/in_out 表达三次曲线。
 

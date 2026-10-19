@@ -75,6 +75,122 @@ fn dialogue_ready_tracks_group_timing_and_interaction_boundaries_from_source_and
 use reel_ui::stage::{NodeKind, NodeLink};
 
 #[test]
+fn text_wrap_validates_reacts_and_restores_from_source_and_asb() {
+    use aside_vm::snapshot::SnapshotBudget;
+
+    let code = r#"
+    fn opening() {
+        let state = model({wrap: false});
+        let defaulted = text("default");
+        let direct = text("direct");
+        if !defaulted.text_wrap || !direct.text_wrap { throw "default must wrap"; }
+        direct.text_wrap = false;
+        let bound = text("bound", text_wrap: bind(state.wrap));
+        let derived = text("derived", text_wrap: derive(|| state.wrap));
+        let explicit = text("explicit\nline", text_wrap: false);
+        let mut rejected = 0;
+        try { direct.text_wrap = 0; } catch e { rejected += 1; }
+        try { state.wrap = "bad"; } catch e { rejected += 1; }
+        if rejected != 2 || direct.text_wrap || state.wrap { throw "boolean validation"; }
+        stage.replace(column() {
+            defaulted; direct; bound; derived; explicit;
+            button("toggle", on_click: |event| {
+                state.wrap = !state.wrap;
+                direct.text_wrap = state.wrap;
+            });
+        });
+        narrator("ready");
+    }
+    "#;
+    let assert_wrap = |vm: &SessionVm, expected| {
+        for (name, wrap) in [
+            ("default", true),
+            ("direct", expected),
+            ("bound", expected),
+            ("derived", expected),
+            ("explicit\nline", false),
+        ] {
+            let node = vm
+                .stage()
+                .nodes()
+                .find(|node| node.kind == NodeKind::Text(name.into()))
+                .unwrap();
+            assert_eq!(node.props.text_wrap, wrap, "{name}");
+        }
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        assert_wrap(&vm, false);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut restored_session, mut restored) = restore.finish().unwrap();
+        for (session, vm) in [
+            (&mut session, &mut vm),
+            (&mut restored_session, &mut restored),
+        ] {
+            models::drive(vm, session, true);
+            assert_wrap(vm, false);
+            let button = vm
+                .stage()
+                .nodes()
+                .find(|node| {
+                    matches!(
+                        &node.kind, NodeKind::Button { label: Some(label), .. } if label == "toggle"
+                    )
+                })
+                .unwrap()
+                .id;
+            for expected in [true, false] {
+                assert!(vm.click(session, button).unwrap());
+                models::drive(vm, session, true);
+                assert_wrap(vm, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn published_text_wrap_example_projects_from_source_and_asb() {
+    let code = include_str!("../../../../../examples/author_text_wrap.aside")
+        .replace("fn main()", "fn opening()");
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(&code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let unwrapped: Vec<_> = vm
+            .stage()
+            .nodes()
+            .filter(|node| matches!(node.kind, NodeKind::Text(_)) && !node.props.text_wrap)
+            .collect();
+        assert_eq!(unwrapped.len(), 2);
+        assert!(unwrapped.iter().any(|node| matches!(
+            &node.kind, NodeKind::Text(text) if text.contains('\n')
+        )));
+        assert!(unwrapped.iter().any(|node| matches!(
+            node.props.text_fit,
+            reel_ui::core::TextFit::Shrink { min_font_size: 12. }
+        )));
+    }
+}
+
+#[test]
 fn published_rich_nvl_example_retains_styled_lines_and_activates_the_glossary() {
     let code = include_str!("../../../../../examples/author_rich_text.aside")
         .replace("fn main()", "fn opening()");

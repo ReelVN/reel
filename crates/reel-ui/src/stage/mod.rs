@@ -270,6 +270,8 @@ pub struct NodeProps {
     pub font_size: f64,
     pub font: String,
     pub text_align: crate::TextAlign,
+    /// Automatic wrapping for text nodes; explicit newlines are always retained.
+    pub text_wrap: bool,
     pub line_height: f64,
     pub text_fit: crate::core::TextFit,
     pub text_outline: f64,
@@ -313,6 +315,7 @@ impl Default for NodeProps {
             font_size: 24.,
             font: "system-ui".into(),
             text_align: crate::TextAlign::Start,
+            text_wrap: true,
             line_height: 1.2,
             text_fit: crate::core::TextFit::None,
             text_outline: 0.,
