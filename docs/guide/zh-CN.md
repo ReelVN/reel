@@ -836,12 +836,16 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
 
-跨章后不再需要之前的历史时，调用 `game.clear_history()`。它清空现有可观察历史数组，保留数组身份。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。清理按记录数量释放会话引用，并请求增量 GC，即使后续交互很少分配也会继续回收。平时回收按分配压力启动，无需脚本定时清理。脚本自行持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度。Rust 宿主调用 `Session::clear_history()`。见 [author_reading.aside](../../examples/author_reading.aside)。
+跨章后不再需要之前的历史时，调用 `game.clear_history()`；用 `game.clear_history(keep_last: 37)` 保留最近 37 条实际历史行，较早记录被删除。数量按行计算，不按对白组计算，`history:false` 的行不计入；可以只保留最早一个保留组的尾部。剩余组和行保持原 ID、对象、内容及顺序，不重新编号，组 speaker_name/text 更新为剩余首行。顶层可观察数组和保留组的 lines 数组保持身份。缺省或 0 清空全部，数量不少于现有行数时不改动，负数或非整数报错。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。裁剪同步执行，工作量随记录数增长；释放会话引用并请求增量 GC，即使后续交互很少分配也会继续回收。脚本持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度，无需脚本定时清理。Rust 宿主调用 `Session::clear_history(keep_last)`。见 [author_reading.aside](../../examples/author_reading.aside)。
 
 ```aside
 game.dialogue().clear();
 game.clear_history();
 narrator("A new chapter begins.");
+```
+
+```aside
+game.clear_history(keep_last: 37);
 ```
 
 `saves.save(slot, title: null, thumbnail: null)`、`saves.load(slot)`、`saves.delete(slot)`、`saves.thumbnail(slot)` 和 `saves.list()` 立即返回可等待请求，具有只读的 `status`（pending、succeeded、failed）与 `error`。失败会在 await 处抛出错误；成功保存意味着完整文件已原子发布。`await saves.list()` 返回已占用槽位摘要，包含字符串 id、title、saved_at（UTC Unix 秒）与 has_thumbnail，不加载图片。槽位名是逻辑标识；作者决定页面与空槽，用 `"quick"` 等固定标识组合快速保存。

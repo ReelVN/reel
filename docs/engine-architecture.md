@@ -504,7 +504,11 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 
 历史组提供 `group_id/interaction_id/locale/lines/speaker_name/text`，行提供 `id/speaker_id/speaker_name/content_id/text`。行 ID 与对白模型一致，在同一会话中稳定。历史全文在提交时记录一次；清页和界面替换不删除历史。首次访问按已有历史建立投影，之后只追加新增组，显现更新不扫描历史、不复制全文。数据/控制服务不创建 UI，作者用通用组件组合回看和阅读控件，示例见 [author_reading.aside](../examples/author_reading.aside)。新增 native ABI 1；Aside 字节码/ASB 格式不变。恢复点、语音重播和已读跳过依赖各自后续服务，不在历史记录内提供占位字段。
 
-`game.clear_history()` 显式清空全部会话历史，返回 null；Rust 宿主使用 `Session::clear_history()`。稳定历史数组保持身份并发布集合变更，之后新记录继续追加，组 ID 不复用。当前对白、NVL 显示页、推进权限、已读进度、阅读设置及系统数据不变；已保存槽位不改写，加载它仍恢复保存时的历史。宿主释放历史容器与内容引用，代价随记录数增长；VM 投影交换为空集合，旧内容沿增量 GC 回收。作者自行持有的行、富文本与界面缓存继续有效，应按需移除或重建；不强制收集整个 VM，也不默认截断历史。范围为会话、历史投影、既有快照与脚本绑定，无新增依赖。验证覆盖稳定数组通知、清空后继续追加、正文推进、GC 释放及快照恢复。
+`game.clear_history(keep_last: int = 0)` 删除较早历史并返回 null；Rust 宿主使用 `Session::clear_history(keep_last: usize)`。0 清空全部，正数按实际记录的历史行保留末尾至多指定数量，`history:false` 行不计数；数量不少于当前行数时不改动，负数或非整数在原调用位置拒绝。边界可以落在一个组内：只删除该组较早的行，保留组 ID、locale、剩余行的 ID、内容、对象身份及顺序，不重新编号；组 speaker_name/text 更新为剩余首行。顶层历史数组、保留组及其 lines 数组保持身份，变更通知沿现有观察协议发布。完整保留组不重建；后续新记录正常追加，组 ID 不复用。当前对白、NVL 显示页、推进权限、已读进度、阅读设置及系统数据不变，不重新记录已裁掉的当前对白行；已保存槽位不改写，加载它仍恢复保存时的历史。裁剪是同步线性工作，不按 VM 预算自动拆分；只移动保留引用，不复制正文，释放前段容器和内容强边并请求增量 GC。作者持有的行、富文本与界面缓存继续有效，应按需移除或刷新；不强制收集整个 VM，也不默认截断历史。范围为会话、历史投影、快照行为检查与脚本绑定，无新增依赖；clear_history native ABI 2，Aside 字节码/ASB 与 SessionSnapshot 10 不变。验证覆盖跨组/组内保留、稳定对象和通知、继续追加、正文推进、1 万/10 万行裁剪成本、GC 释放及快照恢复。
+
+历史投影复用 `Heap::commit_collection` 受信宿主提交入口：只将同种集合的私有准备载荷交换进原对象，不改变原身份和元数据，完成后只失效通知一次。历史路径限定 Array→Array，原对象和准备对象都必须有强根，准备对象不可泄露给脚本；全部保留引用复制完毕才提交；若准备过程跨越可修改边界，调用方需验证源 content_version，种类检查失败不交换。旧载荷留在准备对象供增量 GC 回收，调用方释放准备根并请求收集；不逐项移动可观察数组，也不增加第二套批量实现。
+
+复核命令：`cargo test -p reel-engine --lib history` 检查真实源码/ASB、节点退休、同组裁剪与GC强边释放；`cargo test -p reel-engine --release --lib history_retention_cost -- --ignored --nocapture` 分别报告1万/10万行保留37行的会话裁剪、投影同步和GC累计耗时。成本样本直接构造真实历史和VM投影，不包含全量列表索引、排版或渲染；内存数字为VM/Session计账，不是进程RSS。
 
 `game.set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。set_skip native ABI 为 2，SessionSnapshot 为 9；范围为 reel-engine 阅读状态、宿主接线、示例及双语指南，无新依赖或逐帧分配。复核边界为选择等待/提交、未读、暂停、输入退休和读档清除快进。
 

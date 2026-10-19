@@ -1,9 +1,47 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[repr(u32)]
 enum HistoryLineField {
     SpeakerName = 2,
     Text = 4,
+}
+
+#[repr(u32)]
+enum HistoryGroupField {
+    Id = 0,
+    Lines = 3,
+    SpeakerName = 4,
+    Text = 5,
+}
+
+/// Prepare a private tail before changing the observable array. Retained row
+/// values are reused; one payload swap detaches the prefix and notifies once.
+fn retain_tail(
+    heap: &mut Heap,
+    array: Value,
+    remove: u32,
+    roots: Value,
+) -> Result<(), AdapterError> {
+    if remove == 0 {
+        return Ok(());
+    }
+    let len = heap.sequence_len(array)?;
+    let prepared = heap.alloc_array(&[])?;
+    heap.array_push(roots, prepared)?;
+    let result = (|| {
+        for index in remove..len {
+            let value = heap.sequence_get(array, index)?;
+            heap.array_push(prepared, value)?;
+        }
+        heap.commit_collection(array, prepared)?;
+        heap.request_collection();
+        Ok(())
+    })();
+    heap.array_pop(roots)?;
+    result
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -39,6 +77,7 @@ impl History {
         session: &Session,
         current: Option<InteractionId>,
         dialogue: Value,
+        roots: Value,
         chunk: usize,
     ) -> Result<(), AdapterError> {
         let first_group = session
@@ -46,13 +85,54 @@ impl History {
             .history
             .first()
             .map(|g| g.interaction_id().generation());
-        // Hosts may clear and append between synchronizations. Length alone
-        // cannot distinguish that case; interaction generations are never reused.
+        // Retain existing projected groups by their stable generation. Hosts
+        // can trim and append before synchronization, including equal lengths.
         if self.groups != 0 && self.first_group != first_group {
-            heap.clear_collection(self.value)?;
-            self.groups = 0;
+            let mut removed = 0;
+            while removed < self.groups {
+                let row = heap.sequence_get(self.value, removed as u32)?;
+                let id = heap
+                    .host_property(PropertyId {
+                        host: row,
+                        field: HistoryGroupField::Id as u32,
+                    })?
+                    .as_int()
+                    .unwrap() as u64;
+                if Some(id) == first_group {
+                    break;
+                }
+                removed += 1;
+            }
+            retain_tail(heap, self.value, removed as u32, roots)?;
+            self.groups -= removed;
         }
         self.first_group = first_group;
+        if self.groups != 0 {
+            let row = heap.sequence_get(self.value, 0)?;
+            let lines = heap.host_property(PropertyId {
+                host: row,
+                field: HistoryGroupField::Lines as u32,
+            })?;
+            let keep = session.view().history[0].lines().len() as u32;
+            let previous = heap.sequence_len(lines)?;
+            if previous > keep {
+                retain_tail(heap, lines, previous - keep, roots)?;
+                let first = heap.sequence_get(lines, 0)?;
+                for (group_field, line_field) in [
+                    (
+                        HistoryGroupField::SpeakerName,
+                        HistoryLineField::SpeakerName,
+                    ),
+                    (HistoryGroupField::Text, HistoryLineField::Text),
+                ] {
+                    let value = heap.host_property(PropertyId {
+                        host: first,
+                        field: line_field as u32,
+                    })?;
+                    publish(heap, row, group_field as u32, value)?;
+                }
+            }
+        }
         for group in &session.view().history[self.groups..] {
             let lines = array(heap)?;
             let active = if current == Some(group.interaction_id()) {

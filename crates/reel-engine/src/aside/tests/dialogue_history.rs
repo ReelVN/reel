@@ -14,6 +14,136 @@ fn advance(vm: &mut SessionVm, session: &mut Session) {
 }
 
 #[test]
+fn retaining_history_rows_preserves_partial_groups_views_and_restored_aliases() {
+    let code = r#"
+    let history = game.history();
+    fn opening() {
+        let mio = character("Mio");
+        let d = game.dialogue();
+        game.record("discarded group");
+        say([mio.line("discarded row"), mio.line("unrecorded", history: false),
+             mio.line("retained first"), mio.line("retained second")]);
+        game.record("retained last");
+        let group = history[1];
+        let lines = group.lines;
+        let first = lines[1];
+        let second = lines[2];
+        let last = history[2];
+        stage.replace(column() {
+            list(|| history, key: |group| group.group_id, build: |group| {
+                list(|| group.value.lines, key: |line| line.id,
+                     build: |line| text(line.value.text))
+            });
+            text(value: derive(|| f"first {group.text}; rows {lines.len()}"));
+            button("retain", on_click: || {
+                let mut errors = 0;
+                try { game.clear_history(-1); } catch e { errors += 1; }
+                try { game.clear_history(1.5); } catch e { errors += 1; }
+                try { game.clear_history(true); } catch e { errors += 1; }
+                if errors != 3 || history.len() != 3 || lines.len() != 3 {
+                    throw "invalid retention changed history";
+                }
+                game.clear_history(keep_last: 3);
+                game.clear_history(999);
+                game.clear_history(3);
+            });
+        });
+        narrator("waiting", history: false);
+        if history != game.history() || history.len() != 2 || history[0] != group
+            || history[1] != last || group.lines != lines || lines.len() != 2
+            || lines[0] != first || lines[1] != second || group.text != first.text
+            || group.speaker_name != first.speaker_name || d.lines.len() != 5
+            || first.id != d.lines[2].id || second.id != d.lines[3].id {
+            throw "retained identity, sparse index, NVL or restore";
+        }
+        game.record("new group");
+        if history.len() != 3 || history[2].group_id <= last.group_id {
+            throw "history returned or group ID reused";
+        }
+        narrator("finished", history: false);
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        advance(&mut vm, &mut session);
+        let active = session.view().interaction.unwrap().id();
+        let kept = ["retained first", "retained second", "retained last"].map(|text| {
+            vm.stage()
+                .nodes()
+                .find(|n| n.kind == NodeKind::Text(text.into()))
+                .unwrap()
+                .id
+        });
+        let removed = ["discarded group", "discarded row"].map(|text| {
+            vm.stage()
+                .nodes()
+                .find(|n| n.kind == NodeKind::Text(text.into()))
+                .unwrap()
+                .id
+        });
+        let button = vm.stage().nodes().find(|node| {
+            matches!(&node.kind, NodeKind::Button { label: Some(label), .. } if label == "retain")
+        }).unwrap().id;
+        assert!(vm.click(&mut session, button).unwrap());
+        models::drive(&mut vm, &mut session, true);
+        collect(&mut vm);
+        assert_eq!(session.view().interaction.unwrap().id(), active);
+        assert_eq!(session.view().history.len(), 2);
+        assert_eq!(session.view().history[0].lines()[0].id().index(), 2);
+        assert!(
+            kept.iter().all(|&id| vm.stage().node(id).is_some()),
+            "kept {kept:?}, current {:?}",
+            vm.stage()
+                .nodes()
+                .map(|n| (n.id, &n.kind))
+                .collect::<Vec<_>>()
+        );
+        assert!(removed.iter().all(|&id| vm.stage().node(id).is_none()));
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("first retained first; rows 2".into()))
+        );
+        // A partial group's original row/array aliases survive graph restore.
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut saved = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut saved,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(42),
+                epoch: Epoch(10),
+            },
+            Default::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        (session, vm) = restore.finish().unwrap();
+        advance(&mut vm, &mut session);
+        assert_eq!(
+            session
+                .view()
+                .history
+                .iter()
+                .map(|g| g.lines().len())
+                .sum::<usize>(),
+            4
+        );
+        let Some(crate::InteractionView::Dialogue(dialogue)) = session.view().interaction else {
+            panic!()
+        };
+        assert_eq!(dialogue.text(), "finished");
+    }
+}
+
+#[test]
 fn clear_history_preserves_observers_display_and_saved_continuations() {
     let code = r#"
     let history = game.history();
@@ -130,7 +260,7 @@ fn host_history_clear_detects_replacement_of_equal_length() {
     );
     models::drive(&mut vm, &mut session, true);
     let interaction = session.view().interaction.unwrap().id();
-    session.clear_history();
+    session.clear_history(0);
     session
         .record_history(
             &[DialogueLineInput {
@@ -151,6 +281,35 @@ fn host_history_clear_detects_replacement_of_equal_length() {
         panic!()
     };
     assert_eq!(dialogue.text(), "finished");
+}
+
+#[test]
+fn successive_retention_within_the_same_group_preserves_its_projection() {
+    let code = r#"
+        fn opening() {
+            let mio = character("Mio");
+            let history = game.history();
+            say([mio.line("one"), mio.line("two"), mio.line("three")]);
+            let group = history[0];
+            let lines = group.lines;
+            let last = lines[2];
+            game.clear_history(2);
+            if group.text != "two" || lines.len() != 2 { throw "first trim"; }
+            game.clear_history(1);
+            if history.len() != 1 || history[0] != group || group.lines != lines
+                || lines.len() != 1 || lines[0] != last || group.text != "three" {
+                throw "same group trim lost identity";
+            }
+            narrator("finished", history: false);
+        }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        advance(&mut vm, &mut session);
+        assert_eq!(session.view().history[0].lines().len(), 1);
+        assert_eq!(session.view().history[0].lines()[0].id().index(), 2);
+    }
 }
 
 #[test]

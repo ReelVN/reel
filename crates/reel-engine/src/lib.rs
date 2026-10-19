@@ -746,10 +746,33 @@ impl Session {
         &self.read_progress
     }
 
-    /// Release all history records and backing storage without changing display,
-    /// input ownership or read progress. Previously saved snapshots are independent.
-    pub fn clear_history(&mut self) {
-        self.history = Vec::new();
+    /// Retain at most the final `keep_last` recorded lines, preserving original
+    /// group/line IDs even when the boundary cuts a group. Zero clears all.
+    /// Display, input, read progress and previously saved snapshots are independent.
+    /// This explicit operation synchronously releases discarded storage.
+    pub fn clear_history(&mut self, keep_last: usize) {
+        if keep_last == 0 {
+            self.history = Vec::new();
+            return;
+        }
+        let count: usize = self.history.iter().map(|group| group.lines.len()).sum();
+        if keep_last >= count {
+            return;
+        }
+        let mut remaining = keep_last;
+        let mut first = self.history.len();
+        while first != 0 {
+            first -= 1;
+            let count = self.history[first].lines.len();
+            if count >= remaining {
+                self.history[first].lines.drain(..count - remaining);
+                self.history[first].lines.shrink_to_fit();
+                break;
+            }
+            remaining -= count;
+        }
+        self.history.drain(..first);
+        self.history.shrink_to_fit();
     }
 
     /// Forget content-read records while preserving the currently displayed text.
