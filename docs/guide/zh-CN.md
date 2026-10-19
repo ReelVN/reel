@@ -848,7 +848,7 @@ narrator("A new chapter begins.");
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 5，会话快照格式为 9；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 5，会话快照格式为 10；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1342,3 +1342,18 @@ stage.replace(spray);
 await emit(spray);
 spray.remove();
 ```
+
+### 查询已显示的节点位置
+
+`stage.geometry(node, relative_to: overlay, owner: root)` 等待请求后真正显示的帧，返回一次只读几何快照。width/height 是节点自身尺寸；bounds 给出参考空间中的 x/y/width/height，transform 的 a/b/c/d/tx/ty 将节点局部点映射到参考空间。省略 relative_to 使用逻辑舞台坐标；可指定兄弟浮层或祖先，包含滚动、相机、旋转与镜像，不裁剪。
+
+```aside
+overlay.visible = true;
+overlay.opacity = 0;
+let geometry = await stage.geometry(thumbnail, relative_to: overlay, owner: root);
+indicator.x = geometry.bounds.x + geometry.bounds.width / 2;
+indicator.y = geometry.bounds.y;
+overlay.opacity = 1;
+```
+
+隐藏节点没有可查询的当前布局；接受帧中目标或参考仍隐藏、未挂载，或参考变换不可逆时，catch 收到 code 为 GeometryUnavailable 的值。透明节点仍正常布局。目标、参考或 owner 退休会取消请求；取消类别使用 `core.error_info().code`，不能假定 catch 原值具有 code。结果不会逐帧更新；虚拟行可先 await list.scroll_to(key)，再查询行节点。完整示例：[author_geometry.aside](../../examples/author_geometry.aside)。

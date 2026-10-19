@@ -45,7 +45,7 @@ pub fn present(
 ) {
     driver.sync(bridge, root).unwrap();
     let recording = bridge.record(FrameId(frame)).unwrap();
-    let stamp = driver.projection_stamp();
+    let stamp = driver.recorded(&bridge, &recording).unwrap();
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
             recording.key(),
@@ -54,7 +54,7 @@ pub fn present(
         )),
         NoticeResult::Accepted
     );
-    driver.presented(stamp).unwrap();
+    driver.presented(&bridge, &stamp).unwrap();
 }
 
 pub fn click_at(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64, y: f64) {

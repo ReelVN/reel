@@ -2,7 +2,7 @@ use crate::diagnostic::Diagnostic;
 #[path = "window_control.rs"]
 mod control;
 use crate::platform::WindowControl;
-use crate::session::{ProjectionStamp, SessionHostDiagnostic};
+use crate::session::{RecordedProjection, SessionHostDiagnostic};
 use crate::{
     aside_session::AsideSessionUi, shell::StoryWindowOptions, window_session::WindowSession,
 };
@@ -63,7 +63,7 @@ pub(crate) struct State {
     pub(crate) root_id: WidgetId,
     pub(crate) zoom: f64,
     pub(crate) session: Option<WindowSession>,
-    recorded_projection: Option<ProjectionStamp>,
+    recorded_projection: Option<RecordedProjection>,
     closing: bool,
     first_frame_pending: bool,
     completions: Vec<RenderEvent<GpuError>>,
@@ -708,9 +708,9 @@ impl State {
         };
         if result.accepted
             && !self.settings_pending()
-            && let (Some(session), Some(stamp)) = (&mut self.session, self.recorded_projection)
+            && let (Some(session), Some(stamp)) = (&mut self.session, &self.recorded_projection)
         {
-            session.presented(stamp)?;
+            session.presented(&self.presentation.bridge, stamp)?;
         }
         if result.accepted && self.first_frame_pending {
             self.first_frame_pending = false;
@@ -1051,10 +1051,12 @@ fn build_frame(
     pool: &BudgetPool,
     resources: &[reel_ui::resources::ResourceLease],
     session: Option<&WindowSession>,
-    recorded_projection: &mut Option<ProjectionStamp>,
+    recorded_projection: &mut Option<RecordedProjection>,
 ) -> Result<RenderFrame, Error> {
     let source = bridge.record(id).map_err(|e| format!("record: {e:?}"))?;
-    *recorded_projection = session.map(|session| session.ui().projection_stamp());
+    *recorded_projection = session
+        .map(|session| session.recorded(bridge, &source))
+        .transpose()?;
     let images = session.map_or(&[][..], |session| session.ui().image_resources());
     let snapshot = reel_ui::resources::ResourceSnapshot::capture(
         (0..resources.len() + images.len()).map(|index| {

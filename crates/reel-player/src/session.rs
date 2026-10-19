@@ -2,8 +2,10 @@
 //!
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
+mod geometry;
 mod playback;
 use crate::stage_widget::{StageView, StageWidget};
+pub use geometry::RecordedProjection;
 use playback::dialogue_complete;
 #[cfg(test)]
 mod button_tests;
@@ -822,6 +824,7 @@ pub struct SessionUi {
     scroll: Rc<Cell<f64>>,
     stage: Option<StageView>,
     stage_dirty: bool,
+    stage_widget: Option<WidgetId>,
     pending_stage: Option<StageView>,
     images: crate::images::Images,
     playback: playback::Playback,
@@ -866,6 +869,7 @@ impl SessionUi {
             scroll: Rc::new(Cell::new(0.)),
             stage: None,
             stage_dirty: false,
+            stage_widget: None,
             pending_stage: None,
             playback: Default::default(),
             preview,
@@ -1031,13 +1035,6 @@ impl SessionUi {
             ..self.stamp
         }
     }
-    /// Call only after PresentationBridge accepted the matching actual frame.
-    pub fn presented(&mut self, stamp: ProjectionStamp) {
-        let mut binding = self.binding.borrow_mut();
-        binding.control_accepted = Some(stamp);
-        binding.accepted_buttons = Some(stamp.button_revision);
-        binding.accepted = (!self.images_pending()).then_some(stamp);
-    }
     pub(crate) fn gesture_active(&self) -> bool {
         let binding = self.binding.borrow();
         !binding.contacts.is_empty() || binding.navigation_down.is_some()
@@ -1136,6 +1133,7 @@ impl SessionUi {
                 SessionWidget::sync(&mut widget, self);
                 widget.widget.stage.id()
             });
+            self.stage_widget = Some(stage_id);
             self.input_fallback = bridge
                 .root()
                 .get_widget(stage_id)
@@ -1493,7 +1491,7 @@ mod tests {
     }
     pub(super) fn accept(ui: &mut SessionUi, bridge: &mut PresentationBridge, frame: u64) {
         let source = bridge.record(FrameId(frame)).unwrap();
-        let stamp = ui.projection_stamp();
+        let stamp = ui.recorded(&source);
         assert_eq!(
             bridge.resolve(PresentationNotice::new(
                 source.key(),
@@ -1502,7 +1500,7 @@ mod tests {
             )),
             NoticeResult::Accepted
         );
-        ui.presented(stamp);
+        ui.presented(bridge, &stamp);
     }
     pub(super) fn mouse(kind: &str, point: (f64, f64)) -> PointerEvent {
         let pointer = PointerInfo {
@@ -1570,6 +1568,7 @@ mod tests {
             driver.sync(bridge, root).unwrap();
             let source = bridge.record(FrameId(frame)).unwrap();
             let key = source.key();
+            let receipt = driver.recorded(&bridge, &source).unwrap();
             let pool = BudgetPool::new(
                 BudgetCategory::CpuOutput,
                 QueueLimits {
@@ -1612,7 +1611,7 @@ mod tests {
                 )),
                 NoticeResult::Accepted
             );
-            driver.presented(driver.projection_stamp()).unwrap();
+            driver.presented(&bridge, &receipt).unwrap();
             let root_widget = bridge
                 .root()
                 .get_widget(root)

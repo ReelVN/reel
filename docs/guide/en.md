@@ -837,7 +837,7 @@ narrator("A new chapter begins.");
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 5 and the session snapshot format is 9. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 5 and the session snapshot format is 10. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 
@@ -1345,3 +1345,18 @@ stage.replace(spray);
 await emit(spray);
 spray.remove();
 ```
+
+### Querying presented node geometry
+
+`stage.geometry(node, relative_to: overlay, owner: root)` waits for a frame actually presented after the request and returns one read-only geometry snapshot. width/height describe the node itself; bounds supplies x/y/width/height in the reference space, and transform's a/b/c/d/tx/ty maps local points into that space. Omitting relative_to uses logical stage coordinates. A sibling overlay or ancestor may be the reference; scrolling, cameras, rotation and mirroring are included, without clipping.
+
+```aside
+overlay.visible = true;
+overlay.opacity = 0;
+let geometry = await stage.geometry(thumbnail, relative_to: overlay, owner: root);
+indicator.x = geometry.bounds.x + geometry.bounds.width / 2;
+indicator.y = geometry.bounds.y;
+overlay.opacity = 1;
+```
+
+Hidden nodes have no current layout to query. If the accepted frame still hides or omits either node, or the reference transform is not invertible, catch receives a value whose code is GeometryUnavailable. Transparent nodes still participate in layout. Retiring the target, reference or owner cancels the request; inspect `core.error_info().code` for cancellation rather than assuming the caught value has a code field. Results do not update every frame. For virtual rows, await list.scroll_to(key) before querying the row node. Complete example: [author_geometry.aside](../../examples/author_geometry.aside).

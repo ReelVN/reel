@@ -106,6 +106,7 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
     );
     let source = bridge.record(FrameId(1)).unwrap();
     let key = source.key();
+    let receipt = driver.recorded(&bridge, &source).unwrap();
     let resources =
         ResourceSnapshot::capture(driver.ui().image_resources().iter().cloned().map(Ok), &pool)
             .unwrap();
@@ -138,7 +139,7 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
         )),
         NoticeResult::Accepted
     );
-    driver.presented(driver.projection_stamp()).unwrap();
+    driver.presented(&bridge, &receipt).unwrap();
     frame
 }
 

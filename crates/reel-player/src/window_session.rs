@@ -146,17 +146,30 @@ impl WindowSession {
         }
     }
 
+    pub(crate) fn recorded(
+        &self,
+        bridge: &PresentationBridge,
+        source: &reel_ui::bridge::RecordedSource,
+    ) -> Result<crate::session::RecordedProjection, Error> {
+        match self {
+            Self::Diagnostic(host) => Ok(host.ui.recorded(source)),
+            Self::Aside { story, .. } => story.driver().recorded(bridge, source),
+        }
+    }
     pub(crate) fn presented(
         &mut self,
-        stamp: crate::session::ProjectionStamp,
+        bridge: &PresentationBridge,
+        frame: &crate::session::RecordedProjection,
     ) -> Result<(), Error> {
         match self {
-            Self::Diagnostic(host) => host.ui.presented(stamp),
+            Self::Diagnostic(host) => {
+                host.ui.presented(bridge, frame);
+            }
             Self::Aside { story, .. } => {
                 if story.capturing() {
                     return Ok(());
                 }
-                story.driver_mut()?.presented(stamp)?;
+                story.driver_mut()?.presented(bridge, frame)?;
                 story.wake_input();
             }
         }

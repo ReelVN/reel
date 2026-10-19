@@ -118,6 +118,7 @@ fn frame_with_info(
     );
     let source = bridge.record(FrameId(id)).unwrap();
     let key = source.key();
+    let receipt = driver.recorded(&bridge, &source).unwrap();
     let resources =
         ResourceSnapshot::capture(driver.ui().image_resources().iter().cloned().map(Ok), &pool)
             .unwrap();
@@ -147,7 +148,7 @@ fn frame_with_info(
         )),
         NoticeResult::Accepted
     );
-    driver.presented(driver.projection_stamp()).unwrap();
+    driver.presented(&bridge, &receipt).unwrap();
     frame
 }
 fn image_ids(bridge: &PresentationBridge, root: WidgetId) -> Vec<WidgetId> {

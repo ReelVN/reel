@@ -1,5 +1,5 @@
 //! Compiler/VM-to-SessionUi assembly shared by library hosts and the native window.
-use crate::session::{ProjectionStamp, SessionUi, SessionWidget};
+use crate::session::{ProjectionStamp, RecordedProjection, SessionUi, SessionWidget};
 use reel_engine::aside::{
     DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionStep,
     SessionVm, SliceBudget, VmLimits, source,
@@ -304,11 +304,36 @@ impl AsideSessionUi {
     pub fn projection_stamp(&self) -> ProjectionStamp {
         self.ui.projection_stamp()
     }
-    pub fn presented(&mut self, stamp: ProjectionStamp) -> Result<(), Error> {
-        self.ui.presented(stamp);
-        if self.state == StoryState::Running {
+    pub fn recorded(
+        &self,
+        bridge: &PresentationBridge,
+        source: &reel_ui::bridge::RecordedSource,
+    ) -> Result<RecordedProjection, Error> {
+        let mut frame = self.ui.recorded(source);
+        frame.geometry = Some(
             self.vm
-                .accept_presentation(self.ui.session(), stamp.presentation_request)?;
+                .record_geometry(frame.stamp.presentation_request, |query| {
+                    self.ui.read_geometry(bridge, source, query)
+                })?,
+        );
+        Ok(frame)
+    }
+    pub fn presented(
+        &mut self,
+        bridge: &PresentationBridge,
+        frame: &RecordedProjection,
+    ) -> Result<(), Error> {
+        if !self.ui.presented(bridge, frame) {
+            return Ok(());
+        }
+        if self.state == StoryState::Running {
+            if let Some(identity) = &frame.identity {
+                if let Some(geometry) = &frame.geometry {
+                    self.vm.accept_geometry(identity, geometry)?;
+                }
+            }
+            self.vm
+                .accept_presentation(self.ui.session(), frame.stamp.presentation_request)?;
         }
         let events = self.ui.take_events();
         self.accept_events(events)

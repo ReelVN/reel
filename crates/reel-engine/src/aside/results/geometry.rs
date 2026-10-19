@@ -1,0 +1,271 @@
+//! Geometry requests are attachments on the single presentation-result queue.
+use super::*;
+use crate::aside::observable;
+use reel_ui::stage::{NodeId, StageIdentity};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeometryQuery {
+    pub sequence: u64,
+    pub node: NodeId,
+    pub relative_to: Option<NodeId>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeGeometry {
+    pub width: f64,
+    pub height: f64,
+    /// x, y, width, height of the transformed local border box.
+    pub bounds: [f64; 4],
+    /// a, b, c, d, tx, ty; maps target-local points to reference-local points.
+    pub transform: [f64; 6],
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeometryReply {
+    pub sequence: u64,
+    /// None means the accepted frame cannot provide the requested geometry.
+    pub geometry: Option<NodeGeometry>,
+}
+
+/// Charged numerical payload retained by exactly one recorded projection.
+pub struct GeometryReplies {
+    values: Vec<GeometryReply>,
+    charge: HeapReservation,
+}
+impl std::ops::Deref for GeometryReplies {
+    type Target = [GeometryReply];
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+impl std::fmt::Debug for GeometryReplies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.values.fmt(f)
+    }
+}
+fn attachment(heap: &Heap, result: Value) -> Result<Value, HeapError> {
+    heap.host_payload(result, Slot::Attachment as u32)
+}
+pub(super) fn retired(heap: &Heap, result: Value) -> Result<bool, HeapError> {
+    let query = attachment(heap, result)?;
+    if query.tag() != ValueTag::Null {
+        for index in 0..2 {
+            let node = heap.sequence_get(query, index)?;
+            if node.tag() != ValueTag::Null {
+                match heap.host_fields(node) {
+                    Err(HeapError::RetiredHost) => return Ok(true),
+                    value => {
+                        value?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+fn record<const N: usize>(
+    heap: &mut Heap,
+    fields: [(&'static str, f64); N],
+) -> Result<Value, AdapterError> {
+    observable::record(
+        heap,
+        &fields.map(|(name, value)| (name, Value::float(value))),
+        &[],
+    )
+}
+fn value(heap: &mut Heap, geometry: NodeGeometry) -> Result<Value, AdapterError> {
+    let [x, y, width, height] = geometry.bounds;
+    let bounds = record(
+        heap,
+        [("x", x), ("y", y), ("width", width), ("height", height)],
+    )?;
+    let [a, b, c, d, tx, ty] = geometry.transform;
+    let transform = record(
+        heap,
+        [
+            ("a", a),
+            ("b", b),
+            ("c", c),
+            ("d", d),
+            ("tx", tx),
+            ("ty", ty),
+        ],
+    )?;
+    observable::record(
+        heap,
+        &[
+            ("width", Value::float(geometry.width)),
+            ("height", Value::float(geometry.height)),
+            ("bounds", bounds),
+            ("transform", transform),
+        ],
+        &[],
+    )
+}
+
+impl SessionVm {
+    pub(in crate::aside) fn dispatch_geometry(
+        &mut self,
+        ticket: HostTicket,
+    ) -> Result<(), AdapterError> {
+        if ticket.context.no_wait || ticket.context.init || ticket.context.derived {
+            return Err(AdapterError::Vm(aside_vm::executor::VmError::Effect));
+        }
+        let arguments = self.vm.host_arguments(ticket)?;
+        let (target, relative, requested_owner) = (arguments[0], arguments[1], arguments[2]);
+        self.stage.id(self.vm.heap(), target)?;
+        if relative.tag() != ValueTag::Null {
+            self.stage.id(self.vm.heap(), relative)?;
+        }
+        let owner = if requested_owner.tag() == ValueTag::Null {
+            self.default_activity_owner(ticket.task)?
+        } else {
+            requested_owner
+        };
+        if owner.tag() != ValueTag::Null {
+            self.stage.id(self.vm.heap(), owner)?;
+        }
+        let result = self
+            .results
+            .create_presentation(&mut self.vm, self.root_owner, owner)?;
+        let query = self.vm.heap_mut().alloc_array(&[target, relative])?;
+        self.vm
+            .heap_mut()
+            .set_host_payload(result, Slot::Attachment as u32, query)?;
+        self.results
+            .arm_presentation(&mut self.vm, result, Value::NULL)?;
+        self.vm.respond(ticket, HostResponse::Ready(result))?;
+        self.issued = None;
+        Ok(())
+    }
+
+    /// Iterate the single producer queue without copying node or VM roots.
+    pub fn geometry_queries(
+        &self,
+    ) -> impl Iterator<Item = Result<GeometryQuery, AdapterError>> + '_ {
+        self.results.presentation_roots().filter_map(|root| {
+            let query = (|| -> Result<Option<GeometryQuery>, AdapterError> {
+                let heap = self.vm.heap();
+                let result = heap.root_value(root)?;
+                let query = attachment(heap, result)?;
+                let barrier = heap.host_payload(result, Slot::Target as u32)?;
+                if query.tag() == ValueTag::Null
+                    || barrier.tag() == ValueTag::Null
+                    || heap.sequence_get(barrier, 1)?.tag() != ValueTag::Null
+                    || retired(heap, result)?
+                {
+                    return Ok(None);
+                }
+                let relative = heap.sequence_get(query, 1)?;
+                Ok(Some(GeometryQuery {
+                    sequence: heap.sequence_get(barrier, 0)?.as_int().unwrap() as u64,
+                    node: self.stage.id(heap, heap.sequence_get(query, 0)?)?,
+                    relative_to: if relative.tag() == ValueTag::Null {
+                        None
+                    } else {
+                        Some(self.stage.id(heap, relative)?)
+                    },
+                }))
+            })();
+            query.transpose()
+        })
+    }
+    /// Capture only outstanding requests at or before this projection watermark.
+    /// The frame owns its payload reservation until it is dropped, including any
+    /// overlap with another in-flight/accepted frame and the Vec growth peak.
+    pub fn record_geometry(
+        &self,
+        through: u64,
+        mut read: impl FnMut(GeometryQuery) -> Option<NodeGeometry>,
+    ) -> Result<GeometryReplies, AdapterError> {
+        let mut replies = GeometryReplies {
+            values: Vec::new(),
+            charge: self.vm.heap().budget_usage().reserve(0)?,
+        };
+        for query in self.geometry_queries() {
+            let query = query?;
+            if query.sequence > through {
+                continue;
+            }
+            if replies.values.len() == replies.values.capacity() {
+                let capacity = replies
+                    .values
+                    .len()
+                    .max(4)
+                    .checked_mul(2)
+                    .ok_or(AdapterError::Allocation)?;
+                let bytes = capacity
+                    .checked_mul(size_of::<GeometryReply>())
+                    .ok_or(AdapterError::Allocation)? as u64;
+                let mut charge = self.vm.heap().budget_usage().reserve(bytes)?;
+                let mut next = Vec::new();
+                next.try_reserve_exact(capacity)
+                    .map_err(|_| AdapterError::Allocation)?;
+                charge.resize((next.capacity() * size_of::<GeometryReply>()) as u64)?;
+                next.append(&mut replies.values);
+                replies.values = next;
+                replies.charge = charge;
+            }
+            replies.values.push(GeometryReply {
+                sequence: query.sequence,
+                geometry: read(query),
+            });
+        }
+        replies.values.sort_unstable_by_key(|reply| reply.sequence);
+        Ok(replies)
+    }
+
+    /// The host supplies only replies frozen with the actually accepted candidate.
+    /// Replies are sorted by sequence by record_geometry(). All outcomes are
+    /// installed before advancing the common presentation barrier.
+    pub fn accept_geometry(
+        &mut self,
+        identity: &StageIdentity,
+        replies: &[GeometryReply],
+    ) -> Result<(), AdapterError> {
+        if replies.is_empty() || identity != self.stage.scene.identity() {
+            return Ok(());
+        }
+        for root in self.results.presentation_roots() {
+            let heap = self.vm.heap_mut();
+            let result = heap.root_value(root)?;
+            if state(heap, result)? != State::Pending
+                || attachment(heap, result)?.tag() == ValueTag::Null
+            {
+                continue;
+            }
+            let barrier = heap.host_payload(result, Slot::Target as u32)?;
+            if barrier.tag() == ValueTag::Null
+                || heap.sequence_get(barrier, 1)?.tag() != ValueTag::Null
+            {
+                continue;
+            }
+            let sequence = heap.sequence_get(barrier, 0)?.as_int().unwrap() as u64;
+            let Ok(index) = replies.binary_search_by_key(&sequence, |reply| reply.sequence) else {
+                continue;
+            };
+            let reply = &replies[index];
+            match reply.geometry {
+                Some(geometry) => {
+                    let value = value(heap, geometry)?;
+                    heap.set_field(barrier, 1, value)?;
+                }
+                None => {
+                    let code = heap.alloc_string("GeometryUnavailable")?;
+                    let error = observable::record(heap, &[("code", code)], &[])?;
+                    settle(heap, result, State::Rejected, error)?;
+                }
+            }
+        }
+        self.results.changed();
+        Ok(())
+    }
+}
+
+pub(super) fn restore(heap: &mut Heap, result: Value) -> Result<(), AdapterError> {
+    if attachment(heap, result)?.tag() != ValueTag::Null {
+        let barrier = heap.host_payload(result, Slot::Target as u32)?;
+        if barrier.tag() != ValueTag::Null {
+            heap.set_field(barrier, 1, Value::NULL)?;
+        }
+    }
+    Ok(())
+}

@@ -627,7 +627,7 @@ impl Fixture {
             )),
             NoticeResult::Accepted
         );
-        self.ui.presented(self.ui.projection_stamp());
+        self.ui.presented(&self.bridge, &self.ui.recorded(&source));
     }
     fn layouts(&self) -> BTreeMap<NodeId, (WidgetId, usize)> {
         fn walk(
@@ -2480,7 +2480,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         view.resources[0].handle(),
         images.loaded["assets/panels.png"].handle()
     );
-    let widget = SceneWidget::new(root);
+    let widget = SceneWidget::new(root, &mut BTreeMap::new());
     assert!(widget.image.is_none());
     assert_eq!(
         images.loads, 1,

@@ -34,7 +34,7 @@ pub(crate) struct StageView {
     pub button_revision: u64,
     pub presentation_request: u64,
     pub feedback: bool,
-    identity: Option<StageIdentity>,
+    pub(crate) identity: Option<StageIdentity>,
     root: Option<Arc<SceneNode>>,
     pub resources: Vec<ResourceLease>,
 }
@@ -550,6 +550,7 @@ fn image_resource(kind: &NodeKind) -> Option<&ResourceLease> {
 }
 
 pub(crate) struct StageWidget {
+    nodes: BTreeMap<NodeId, WidgetId>,
     root: Option<WidgetPod<SceneWidget>>,
     root_id: Option<NodeId>,
     identity: Option<StageIdentity>,
@@ -594,12 +595,18 @@ impl StageWidget {
     }
     pub fn new(view: Option<&StageView>) -> Self {
         let root = view.and_then(|view| view.root.as_ref());
+        let mut nodes = BTreeMap::new();
+        let root_pod = root.map(|node| SceneWidget::new_pod(node, &mut nodes));
         Self {
-            root: root.map(|node| WidgetPod::new(SceneWidget::new(node))),
+            nodes,
+            root: root_pod,
             root_id: root.map(|node| node.node.id),
             identity: view.and_then(|view| view.identity.clone()),
             root_props: root.map(|node| node.node.props.clone()).unwrap_or_default(),
         }
+    }
+    pub(crate) fn node_widget(&self, node: NodeId) -> Option<WidgetId> {
+        self.nodes.get(&node).copied()
     }
     pub fn input_fallback(&self, root: &reel_ui::app::RenderRoot) -> Option<WidgetId> {
         fn visit(root: &reel_ui::app::RenderRoot, id: WidgetId) -> Option<WidgetId> {
@@ -622,17 +629,18 @@ impl StageWidget {
             if let Some(root) = this.widget.root.take() {
                 this.ctx.remove_child(root);
             }
+            this.widget.nodes.clear();
             this.widget.root = view
                 .root
                 .as_ref()
-                .map(|node| WidgetPod::new(SceneWidget::new(node)));
+                .map(|node| SceneWidget::new_pod(node, &mut this.widget.nodes));
             this.widget.root_id = id;
             this.widget.identity = view.identity.clone();
             this.ctx.children_changed();
         } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root)
             && let Some(mut child) = this.ctx.get_mut(pod)
         {
-            SceneWidget::sync(&mut child, node, view.feedback);
+            SceneWidget::sync(&mut child, node, view.feedback, &mut this.widget.nodes);
         }
         let props = view
             .root
@@ -816,7 +824,18 @@ impl SceneWidget {
         }
         0..end
     }
-    fn new(view: &Arc<SceneNode>) -> Self {
+    fn new_pod(view: &Arc<SceneNode>, nodes: &mut BTreeMap<NodeId, WidgetId>) -> WidgetPod<Self> {
+        let pod = WidgetPod::new(Self::new(view, nodes));
+        nodes.insert(view.node.id, pod.id());
+        pod
+    }
+    fn forget(view: &Arc<SceneNode>, nodes: &mut BTreeMap<NodeId, WidgetId>) {
+        nodes.remove(&view.node.id);
+        for child in view.children.iter() {
+            Self::forget(child, nodes);
+        }
+    }
+    fn new(view: &Arc<SceneNode>, nodes: &mut BTreeMap<NodeId, WidgetId>) -> Self {
         let label = match &view.node.kind {
             NodeKind::Text(_)
             | NodeKind::Button { .. }
@@ -909,7 +928,7 @@ impl SceneWidget {
             children: view
                 .children
                 .iter()
-                .map(|child| (child.node.clone(), WidgetPod::new(Self::new(child))))
+                .map(|child| (child.node.clone(), Self::new_pod(child, nodes)))
                 .collect(),
             size: Size::ZERO,
             scroll: ScrollState::default(),
@@ -930,7 +949,12 @@ impl SceneWidget {
             syncs: 0,
         }
     }
-    fn sync(this: &mut WidgetMut<'_, Self>, view: &Arc<SceneNode>, feedback: bool) -> bool {
+    fn sync(
+        this: &mut WidgetMut<'_, Self>,
+        view: &Arc<SceneNode>,
+        feedback: bool,
+        nodes: &mut BTreeMap<NodeId, WidgetId>,
+    ) -> bool {
         if !this.widget.sync_dirty && Arc::ptr_eq(&this.widget.projection, view) {
             return false;
         }
@@ -1192,10 +1216,19 @@ impl SceneWidget {
                 .map(|next| {
                     retained
                         .remove(&next.node.id)
-                        .unwrap_or_else(|| (next.node.clone(), WidgetPod::new(Self::new(next))))
+                        .unwrap_or_else(|| (next.node.clone(), Self::new_pod(next, nodes)))
                 })
                 .collect();
-            for (_, (_, pod)) in retained {
+            for (id, (_, pod)) in retained {
+                if let Some(old) = this
+                    .widget
+                    .projection
+                    .children
+                    .iter()
+                    .find(|old| old.node.id == id)
+                {
+                    Self::forget(old, nodes);
+                }
                 this.ctx.remove_child(pod);
             }
             this.ctx.children_changed();
@@ -1214,7 +1247,7 @@ impl SceneWidget {
                     this.ctx.request_compose();
                 }
                 if let Some(mut child) = this.ctx.get_mut(pod) {
-                    content_changed |= Self::sync(&mut child, next, feedback);
+                    content_changed |= Self::sync(&mut child, next, feedback, nodes);
                 }
             }
         }

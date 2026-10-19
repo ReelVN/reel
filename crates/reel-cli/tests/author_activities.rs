@@ -102,6 +102,7 @@ fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
         driver.sync(&mut bridge, root_id).unwrap();
         let recording = bridge.record(FrameId(second as u64 + 1)).unwrap();
         let key = recording.key();
+        let receipt = driver.recorded(&bridge, &recording).unwrap();
         let mut build = FrameBuild::new(
             recording,
             ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap(),
@@ -147,7 +148,7 @@ fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
             )),
             NoticeResult::Accepted
         );
-        driver.presented(driver.projection_stamp()).unwrap();
+        driver.presented(&bridge, &receipt).unwrap();
     }
     for _ in 0..10000 {
         if matches!(

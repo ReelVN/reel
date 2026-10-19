@@ -59,7 +59,7 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
     ui.sync(&mut bridge, root_id).unwrap();
     // This host contract fixture acknowledges the projection directly; it measures
     // the playback + projection update, not GPU presentation or device behavior.
-    ui.presented(ui.projection_stamp());
+    accept(&mut ui, &mut bridge);
     ui.advance_dialogue(0, 1000.).unwrap();
     ui.advance_dialogue(1_000_000, 1000.).unwrap();
     ui.sync(&mut bridge, root_id).unwrap();
@@ -80,7 +80,7 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
     assert!(!ui.dialogue_needs_time());
     ui.session_mut()
         .set_auto_reading(true, Some(std::time::Duration::from_secs(3600)));
-    ui.presented(ui.projection_stamp());
+    accept(&mut ui, &mut bridge);
     ui.advance_dialogue(20_000_000_000, 1000.).unwrap();
     let auto_started = Instant::now();
     let auto_region = Region::new(GLOBAL);
@@ -108,4 +108,21 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
         "10000 typewriter + projection updates: {elapsed:?}; allocations={}, reallocations={}",
         stats.allocations, stats.reallocations
     );
+}
+
+fn accept(
+    ui: &mut reel_player::session::SessionUi,
+    bridge: &mut reel_ui::bridge::PresentationBridge,
+) {
+    use reel_core::identity::FrameId;
+    use reel_ui::bridge::{PresentationNotice, PresentationOutcome};
+    let id = FrameId(bridge.accepted_key().map_or(1, |key| key.frame_id().0 + 1));
+    let source = bridge.record(id).unwrap();
+    let receipt = ui.recorded(&source);
+    bridge.resolve(PresentationNotice::new(
+        source.key(),
+        source.key().surface_epoch(),
+        PresentationOutcome::Accepted(id),
+    ));
+    assert!(ui.presented(bridge, &receipt));
 }

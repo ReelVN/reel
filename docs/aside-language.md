@@ -679,3 +679,5 @@ Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info(
 Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 Aside 不注册这些名称。particles 返回共同舞台节点，emit 返回使用既有 completion 等待协议的独立活动；pause/resume/stop/finish 分派到该生产者。burst:0、lifetime_spread:0、size_end:null 是只读构造参数，分别控制起始瞬发数量、寿命半幅、寿命结束宽度；rate:0 允许只瞬发，空发射直接完成。配置、单位、种子和终态合同见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。配置字段只读，共同节点字段保持原属性、绑定与动画语义。构造和控制遵循既有宿主效果边界；错误在原调用/赋值位置抛出。Aside 字节码/ASB 与语言语法不变。
 
 Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 Aside 字节码/ASB 格式。
+
+Reel `stage.geometry(node, relative_to: null, owner: null)` 返回共享呈现请求；await 取得只读的 width/height、bounds 和六系数 transform 数字快照。只接受请求后确切帧的几何，目标/参考隐藏或未挂载、参考变换不可逆时拒绝值为只读 `{code:"GeometryUnavailable"}`。目标、参考或 owner 退休，以及 cancel，沿现有 Cancelled 故障；catch 读取原拒绝值，取消类别通过 core.error_info().code 查询。构造遵守普通上下文限制，不可在初始化、NoWait 或 derive 内调用。节点守卫与请求在同一 VM 图中保存，未决请求恢复后等待新接受帧，已完成数字不重算。native ABI 1，语言与 ASB 不变，SessionSnapshot 10。

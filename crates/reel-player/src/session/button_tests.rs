@@ -171,7 +171,7 @@ fn present(
 ) {
     runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
     let recording = bridge.record(FrameId(frame)).unwrap();
-    let stamp = runtime.driver().projection_stamp();
+    let stamp = runtime.driver().recorded(bridge, &recording).unwrap();
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
             recording.key(),
@@ -180,7 +180,11 @@ fn present(
         )),
         NoticeResult::Accepted
     );
-    runtime.driver_mut().unwrap().presented(stamp).unwrap();
+    runtime
+        .driver_mut()
+        .unwrap()
+        .presented(bridge, &stamp)
+        .unwrap();
 }
 fn click(runtime: &mut StoryRuntime, bridge: &mut PresentationBridge) {
     for kind in ["move", "down", "up"] {
@@ -972,14 +976,16 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         let generated = prepared.then(|| super::prepared_image_tests::fixture().6);
         let story = r#"fn main() {
         let data = model({message: "waiting"});
+        let picture=image("assets/panels.png");
         stage.replace(stack {
-            image("assets/panels.png");
+            picture;
             image("ordinary-source.png", x: 600, y: 400, width: 1, height: 1);
             image("ordinary-source.png", x: 602, y: 400, width: 1, height: 1);
             text(bind(data.message));
             button("keep scene interactive", on_click: |event| {});
         });
-        await stage.presented();
+        let geometry=await stage.geometry(picture);
+        if geometry.width<=0 || geometry.height<=0 {throw "geometry before image preparation";}
         data.message = "first";
         await stage.presented();
         data.message = "done";
@@ -1040,9 +1046,18 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             .sync(&mut bridge, root)
             .unwrap();
         assert!(runtime.driver().ui().images_pending());
-        let old = runtime.driver().projection_stamp();
-        super::tests::accept(runtime.driver_mut().unwrap().ui_mut(), &mut bridge, 1);
-        runtime.driver_mut().unwrap().presented(old).unwrap();
+        let recording = bridge.record(FrameId(1)).unwrap();
+        let old = runtime.driver().recorded(&bridge, &recording).unwrap();
+        bridge.resolve(PresentationNotice::new(
+            recording.key(),
+            SurfaceEpoch(1),
+            PresentationOutcome::Accepted(FrameId(1)),
+        ));
+        runtime
+            .driver_mut()
+            .unwrap()
+            .presented(&bridge, &old)
+            .unwrap();
         runtime.wake_input();
         drain(&mut runtime);
         assert_eq!(
@@ -1082,8 +1097,14 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             "recording and rejecting do not acknowledge presentation"
         );
         present(&mut runtime, &mut bridge, root, 3);
-        let first = runtime.driver().projection_stamp();
-        assert_eq!(first.presentation_request, 1);
+        let recording = bridge.record(FrameId(4)).unwrap();
+        let first = runtime.driver().recorded(&bridge, &recording).unwrap();
+        bridge.resolve(PresentationNotice::new(
+            recording.key(),
+            SurfaceEpoch(1),
+            PresentationOutcome::Accepted(FrameId(4)),
+        ));
+        assert_eq!(first.stamp.presentation_request, 1);
         runtime.wake_input();
         drain(&mut runtime);
         runtime
@@ -1092,7 +1113,11 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             .sync(&mut bridge, root)
             .unwrap();
         assert_eq!(state(&runtime), "first");
-        runtime.driver_mut().unwrap().presented(first).unwrap();
+        runtime
+            .driver_mut()
+            .unwrap()
+            .presented(&bridge, &first)
+            .unwrap();
         runtime.wake_input();
         drain(&mut runtime);
         assert_eq!(
@@ -1100,7 +1125,7 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             "first",
             "repainting the accepted old frame cannot settle the next wait"
         );
-        present(&mut runtime, &mut bridge, root, 4);
+        present(&mut runtime, &mut bridge, root, 5);
         runtime.wake_input();
         drain(&mut runtime);
         runtime

@@ -226,6 +226,7 @@ fn frames(story: CompiledStory) -> Vec<Vec<Fill>> {
         driver.sync(&mut bridge, root_id).unwrap();
         let recording = bridge.record(FrameId(second + 1)).unwrap();
         let key = recording.key();
+        let receipt = driver.recorded(&bridge, &recording).unwrap();
         let mut build = FrameBuild::new(
             recording,
             ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap(),
@@ -277,7 +278,7 @@ fn frames(story: CompiledStory) -> Vec<Vec<Fill>> {
             )),
             NoticeResult::Accepted
         );
-        driver.presented(driver.projection_stamp()).unwrap();
+        driver.presented(&bridge, &receipt).unwrap();
         assert!(driver.advance_time((second + 1) as f64, 64).unwrap().woke);
     }
     for _ in 0..10000 {
