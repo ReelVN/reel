@@ -226,7 +226,8 @@ fn frames(story: CompiledStory) -> Vec<Vec<Fill>> {
         driver.sync(&mut bridge, root_id).unwrap();
         let (recording, receipt) = driver
             .record(&mut bridge, root_id, FrameId(second + 1))
-            .unwrap();
+            .unwrap()
+            .expect("settled frame");
         let key = recording.key();
 
         let mut build = FrameBuild::new(

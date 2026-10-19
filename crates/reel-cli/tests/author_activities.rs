@@ -102,7 +102,8 @@ fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
         driver.sync(&mut bridge, root_id).unwrap();
         let (recording, receipt) = driver
             .record(&mut bridge, root_id, FrameId(second as u64 + 1))
-            .unwrap();
+            .unwrap()
+            .expect("settled frame");
         let key = recording.key();
 
         let mut build = FrameBuild::new(

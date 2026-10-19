@@ -105,11 +105,16 @@ impl Presentation {
         Ok(())
     }
     /// Build only when current model work is eligible. Frozen repaint never runs build.
+    /// `None` retains the accepted frame until the caller invalidates after preparation.
     pub fn render<B: RenderBackend, H: PlatformHost>(
         &mut self,
         backend: &mut B,
         host: &mut H,
-        build: impl FnOnce(&mut PresentationBridge, FrameId, SurfaceInfo) -> Result<RenderFrame, Error>,
+        build: impl FnOnce(
+            &mut PresentationBridge,
+            FrameId,
+            SurfaceInfo,
+        ) -> Result<Option<RenderFrame>, Error>,
     ) -> Result<PresentationResult, Error> {
         if !self.needs_redraw() {
             return Ok(PresentationResult::default());
@@ -121,7 +126,11 @@ impl Presentation {
                     .frame
                     .checked_add(1)
                     .ok_or("frame identity exhausted")?;
-                build(&mut self.bridge, FrameId(self.frame), self.info)?
+                let Some(frame) = build(&mut self.bridge, FrameId(self.frame), self.info)? else {
+                    self.demand.preparing();
+                    return Ok(PresentationResult::default());
+                };
+                frame
             }
             Draw::Accepted => {
                 let Some(frame) = &self.accepted_frame else {

@@ -3,6 +3,7 @@ use reel_render::FailureKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Model {
     Pending,
+    Preparing,
     Waiting,
     Idle,
     Blocked,
@@ -41,7 +42,7 @@ impl Demand {
         }
     }
     pub(crate) fn invalidate(&mut self) {
-        if matches!(self.model, Model::Idle | Model::Blocked) {
+        if matches!(self.model, Model::Idle | Model::Blocked | Model::Preparing) {
             self.model = Model::Pending;
         }
     }
@@ -64,6 +65,9 @@ impl Demand {
     }
     pub(crate) fn has_work(self) -> bool {
         self.draw().is_some()
+    }
+    pub(crate) fn preparing(&mut self) {
+        self.model = Model::Preparing;
     }
     pub(crate) fn refused(&mut self, draw: Draw, error: FailureKind) {
         if draw == Draw::Current {
@@ -99,6 +103,19 @@ impl Demand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_waits_for_model_readiness_and_repaints_only_accepted_content() {
+        let mut demand = Demand::default();
+        demand.preparing();
+        demand.completed(true);
+        assert!(!demand.has_work());
+        demand.exposed();
+        assert_eq!(demand.draw(), Some(Draw::Accepted));
+        demand.presented(Draw::Accepted);
+        assert!(!demand.has_work());
+        demand.invalidate();
+        assert_eq!(demand.draw(), Some(Draw::Current));
+    }
     #[test]
     fn pressure_and_busy_wait_for_completion_then_retry_latest_state() {
         for error in [FailureKind::Pressure] {

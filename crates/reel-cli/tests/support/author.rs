@@ -44,7 +44,9 @@ pub fn present(
     frame: u64,
 ) {
     driver.sync(bridge, root).unwrap();
-    let (recording, stamp) = driver.record(bridge, root, FrameId(frame)).unwrap();
+    let Some((recording, stamp)) = driver.record(bridge, root, FrameId(frame)).unwrap() else {
+        return;
+    };
 
     assert_eq!(
         bridge.resolve(PresentationNotice::new(

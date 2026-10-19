@@ -162,7 +162,10 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         let mut stamp = None;
         let result = view
             .render(backend, host, |bridge, id, info| {
-                let (source, receipt) = story.driver().record(bridge, root, id).unwrap();
+                let Some((source, receipt)) = story.driver().record(bridge, root, id).unwrap()
+                else {
+                    return Ok(None);
+                };
                 stamp = Some(receipt);
                 let mut build = FrameBuild::new(
                     source,
@@ -188,7 +191,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
                     budget.max_units = budget.max_units.max(progress.minimum_units);
                     budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
                 }
-                Ok(build.finish().unwrap())
+                Ok(Some(build.finish().unwrap()))
             })
             .unwrap();
         if result.accepted {
@@ -231,6 +234,24 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
     );
     assert!(render(&mut story, &mut view, &mut backend, &mut host).accepted);
     let accepted = view.bridge.accepted_key().unwrap().frame_id();
+    let presents = host.presents;
+    view.invalidate();
+    let pending = view
+        .render(&mut backend, &mut host, |_, _, _| Ok(None))
+        .unwrap();
+    assert!(!pending.accepted && pending.refused.is_none());
+    assert_eq!(
+        host.presents, presents,
+        "unfinished content never reaches the backend"
+    );
+    assert_eq!(view.bridge.pending_count(), 0);
+    assert_eq!(view.bridge.accepted_key().unwrap().frame_id(), accepted);
+    assert!(!view.needs_redraw());
+    view.render(&mut backend, &mut host, |_, _, _| {
+        panic!("preparation waits for the VM")
+    })
+    .unwrap();
+    view.invalidate();
     click(&mut story, &mut view);
     assert_eq!(
         story

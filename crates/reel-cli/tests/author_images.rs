@@ -104,7 +104,10 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
             max_bytes: 32 << 20,
         },
     );
-    let (source, receipt) = driver.record(&mut bridge, root_id, FrameId(1)).unwrap();
+    let (source, receipt) = driver
+        .record(&mut bridge, root_id, FrameId(1))
+        .unwrap()
+        .expect("settled frame");
     let key = source.key();
 
     let resources =
