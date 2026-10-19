@@ -294,9 +294,9 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 `list(items, key:, build:, ...布局属性)` 返回稳定的纵向容器。items 是不可等待的数组来源函数；key(item) 返回本次列表中唯一的值：标量保留类型，字符串按内容比较，其余对象按身份比较；对象键须复用原对象引用，null 也可作键。来源及 key 的实际可观察读取触发协调；build(row) 只在新 key 出现时调用，返回 Node 或 null。row.key/value/index 是只读可观察字段，value 为最新条目，index 从 0 开始。保留 key 的排序、数据替换不重建节点；读取最新记录的回调用 row.value，需要跟随记录替换的属性用 `derive(|| row.value.label)`。`bind(row.value.label)` 仍固定创建时的字段位置。build 中的普通读取不成为列表或外围 view 的依赖，动态行内内容使用 bind/derive/view。删除 key 退休其节点及所属任务/活动；重新加入同一 key 创建新行。重复 key、非法节点或构造失败不替换原树。list 的 children 由列表管理，作者通过来源数据增删重排，嵌套组件放在 build 内。列表使用现有 scroll 组合滚动，默认实例化全部条目；`virtual:true` 见下段。
 
-虚拟列表（已实现）：`list(items, key:, build:, virtual:false, ...布局属性)` 的 virtual 固定选择组件寿命。true 只实例化视窗附近的行，离屏退休、返回重建；持久状态放在作者 model 中，聚焦和捕获中的行暂时保留。首版要求有限高度纵向 scroll 的唯一流内容、正自然高度的 Node，来源预先过滤；list 本身使用自然高度与无局部变换，整体变换放在外层 scroll。窗口变化只触发宿主维护 observer，不重跑来源和 key。自然高度按半视口低水位提前补充缓冲；真实测量在本帧连续放置并保持锚点，未知行按当前宽度已测样本的平均高度估算，总范围仍会修正。VM `begin_reactive(ticket, output, pure, continuation)` 与 call_reactive 共用原生元数据、NoWait、捕获嵌套、故障/取消恢复与快照续体；不增加语言语法、指令或脚本逐帧回调。Reel list native ABI 11、SessionSnapshot 13、VM 快照 7，具体窗口、锚点、测量及导航合同见[引擎架构](engine-architecture.md#虚拟列表已实现)。
+虚拟列表（已实现）：`list(items, key:, build:, virtual:false, ...布局属性)` 的 virtual 固定选择组件寿命。true 只实例化视窗附近的行，离屏退休、返回重建；持久状态放在作者 model 中，聚焦和捕获中的行暂时保留。首版要求有限高度纵向 scroll 的唯一流内容、正自然高度的 Node，来源预先过滤；list 本身使用自然高度与无局部变换，整体变换放在外层 scroll。窗口变化只触发宿主维护 observer，不重跑来源和 key。自然高度按半视口低水位提前补充缓冲；真实测量在本帧连续放置并保持锚点，未知行按当前宽度已测样本的平均高度估算，总范围仍会修正。VM `begin_reactive(ticket, output, pure, continuation)` 与 call_reactive 共用原生元数据、NoWait、捕获嵌套、故障/取消恢复与快照续体；不增加语言语法、指令或脚本逐帧回调。Reel list native ABI 11、SessionSnapshot 14、VM 快照 7，具体窗口、锚点、测量及导航合同见[引擎架构](engine-architecture.md#虚拟列表已实现)。
 
-按 key 定位（已实现）：`let row = await items.scroll_to(key, align: "nearest")` 接受虚拟列表的业务 key，align 为 start/center/end/nearest；完成时返回已测量、校准并实际呈现的行根节点。每列表只有最新目标，过滤、退休、主动取消和较新的定位/滚动/导航令旧请求 Cancelled。重排跟随 key；不隐式聚焦或保留行。共享列表窗口、原生续体和 stage.presented 结果屏障；list ABI 11、SessionSnapshot 13，VM 快照 7。
+按 key 定位（已实现）：`let row = await items.scroll_to(key, align: "nearest")` 接受虚拟列表的业务 key，align 为 start/center/end/nearest；完成时返回已测量、校准并实际呈现的行根节点。每列表只有最新目标，过滤、退休、主动取消和较新的定位/滚动/导航令旧请求 Cancelled。重排跟随 key；不隐式聚焦或保留行。共享列表窗口、原生续体和 stage.presented 结果屏障；list ABI 11、SessionSnapshot 14，VM 快照 7。
 视口高度变化和布局夹取会保留目标、重新校准；来源及上游派生失效后，旧帧不能完成定位，须等待重算、测量和新的实际呈现。
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。game.configure 只配置呈现参数，不含默认界面开关，其 native ABI 为 3。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。
@@ -335,13 +335,13 @@ Reel image 的既有 color 属性表示图像像素乘色，默认白色；直�
 
 Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格。slice 接受非负有限数值，或左、上、右、下四项非负有限数值组成的数组/tuple；边距为源像素，slice_scale 为非负有限目标边宽倍率。null 保持 fit 行为；启用时填满内容框，角保持比例、边与中心拉伸，源尺寸或目标尺寸不足时按统一比例收缩对应边距。完整 PNG/JPEG 路径或编码 Bytes 共用原图片资源，分块 .reel-image 不支持九宫格。slice、slice_scale 与其他图片属性一样支持赋值、bind/derive、layered_image 和快照；不增加语言语法或 VM 图形类型。image ABI 9、reel.image 宿主属性快照版本 2，Aside 字节码 不变。
 
-宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 6，包含排序、比较器返回续体与响应式捕获，旧版本明确报告版本不匹配；Aside 字节码/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
+宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 7，包含排序、比较器返回续体与响应式捕获，旧版本明确报告版本不匹配；Aside 字节码/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，Aside 字节码/ASB 不变。
 
 共同宿主属性 `text_wrap` 是默认 true 的 bool，支持构造、直接赋值和 bind/derive。它只控制 text 节点的自动折行；false 保留显式换行，溢出沿 clip 裁剪。控件标签及文本编辑器不改变原有换行规则，`text_fit:"shrink"` 仍按完整的不自动折行文本适配。字段与同包执行快照一起恢复，不增加语言语法、VM 指令或依赖；共同节点构造 native ABI（含 list/view/layered_image）各加 1，节点宿主验证器版本为普通 4、image 6、video 2，Aside 字节码/ASB 和 SessionSnapshot 版本不变。
 
-Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。共同节点构造 native ABI 各加 1，节点宿主快照适配器 2（image 4），SessionSnapshot 13。
+Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。共同节点构造 native ABI 各加 1，节点宿主快照适配器 2（image 4），SessionSnapshot 14。
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。新增宿主字段后节点 native ABI 为 input 9、scroll 5、text_input 4、checkbox/radio 3、其余 7；Aside 字节码/ASB 不变。
 
@@ -401,7 +401,7 @@ Continue 保存版本化 native 算法状态，在同一 Task 下一预算片继
 
 CallScript 不提升权限或取消已有受限上下文；sort 的同步 comparator 仍不能等待，受限 derive 仍不能写外部状态。需要普通可暂停 callback 的宿主操作在签名中明确声明。native frame 的取消/释放由宿主 adapter 幂等完成；脚本 fault 未被 continuation 处理则按原调用链传播。旧 continuation 版本在所有帧/快照引用退出前必须可解析。
 
-native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照 7 保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。
+native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照 7 保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。Reel 的 s.add(parent, node, index:null) 将显式挂载的临时节点登记到作用域对象图，复用普通节点挂载和退休语义；scope ABI 2、SessionSnapshot 14，VM 快照 7 不变。
 
 invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终返回 Returned、Error 或明确的同步控制失败；完整调用在本次同步边界内结束。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
 
@@ -468,7 +468,7 @@ slotmap 的完整版本仍有回绕边界。封装删除时，在完整代数耗
 
 ## 十八 快照 恢复与版本
 
-当前 VM 快照格式为 6，使用独立于 Aside 字节码 的带版本记录流；对象、根区间、帧和 payload 块分别记录，引用保留完整代际键并在隔离恢复时重新映射。捕获器借用被冻结的 VM，按工作额度推进；只遍历强可达图，弱边不参与追踪。标量记录使用 pinned Serde/Postcard 编码，长值按既有堆块拆分；后台接收无运行时句柄的字节记录。不持久化分配器容量、空槽或 GC 扫描状态。恢复重新走堆和帧存储的计账入口；宿主验证函数由版本化注册名重接，不记录地址。接口与实现范围为 aside-vm 快照和后续 Reel 会话适配，ASB/native ABI 不变；代码和资源的归属仍由宿主匹配，VM 不访问文件或设备。
+当前 VM 快照格式为 7，使用独立于 Aside 字节码 的带版本记录流；对象、根区间、帧和 payload 块分别记录，引用保留完整代际键并在隔离恢复时重新映射。捕获器借用被冻结的 VM，按工作额度推进；只遍历强可达图，弱边不参与追踪。标量记录使用 pinned Serde/Postcard 编码，长值按既有堆块拆分；后台接收无运行时句柄的字节记录。不持久化分配器容量、空槽或 GC 扫描状态。恢复重新走堆和帧存储的计账入口；宿主验证函数由版本化注册名重接，不记录地址。接口与实现范围为 aside-vm 快照和后续 Reel 会话适配，ASB/native ABI 不变；代码和资源的归属仍由宿主匹配，VM 不访问文件或设备。
 
 已验证字节码通过不可变共享所有权复用于读档候选，无需复制或再次验证整个代码包；每个 VM 仍按完整代码成本执行自身配额检查。VM 保存完整可恢复执行状态和对象图，宿主协调请求、舞台/资源屏障及原子磁盘提交。snapshot_begin 在安全点固定根和逻辑状态，snapshot_step 按对象/边/字节预算复制到独立区；业务写入暂停，后台结果排队，长字符串/缓冲/容器也分块。绑定派生与写回在捕获中暂停，非持久原生控件反馈可继续。
 
@@ -688,4 +688,4 @@ Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 A
 
 Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 Aside 字节码/ASB 格式。
 
-Reel `stage.geometry(node, relative_to: null, owner: null)` 返回共享呈现请求；await 取得只读的 width/height、bounds 和六系数 transform 数字快照。只接受请求后确切帧的几何；宿主显式传入已挂载根控件 ID 并原子录制候选与回执，不依赖 sync 完成；水位取已发布控件树，未同步模型和旧 source 不能冒充新帧。目标/参考隐藏或未挂载、参考变换不可逆时拒绝值为只读 `{code:"GeometryUnavailable"}`。目标、参考或 owner 退休，以及 cancel，沿现有 Cancelled 故障；catch 读取原拒绝值，取消类别通过 core.error_info().code 查询。构造遵守普通上下文限制，不可在初始化、NoWait 或 derive 内调用。节点守卫与请求在同一 VM 图中保存，未决请求恢复后等待新接受帧，已完成数字不重算。native ABI 1，语言与 ASB 不变，SessionSnapshot 13。
+Reel `stage.geometry(node, relative_to: null, owner: null)` 返回共享呈现请求；await 取得只读的 width/height、bounds 和六系数 transform 数字快照。只接受请求后确切帧的几何；宿主显式传入已挂载根控件 ID 并原子录制候选与回执，不依赖 sync 完成；水位取已发布控件树，未同步模型和旧 source 不能冒充新帧。目标/参考隐藏或未挂载、参考变换不可逆时拒绝值为只读 `{code:"GeometryUnavailable"}`。目标、参考或 owner 退休，以及 cancel，沿现有 Cancelled 故障；catch 读取原拒绝值，取消类别通过 core.error_info().code 查询。构造遵守普通上下文限制，不可在初始化、NoWait 或 derive 内调用。节点守卫与请求在同一 VM 图中保存，未决请求恢复后等待新接受帧，已完成数字不重算。native ABI 1，语言与 ASB 不变，SessionSnapshot 14。

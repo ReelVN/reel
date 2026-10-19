@@ -43,11 +43,25 @@ fn scope_example_start_stop_retires_child_work_from_source_and_asb() {
                 .any(|n| n.kind == NodeKind::Text("Scope ticks: 1".into()))
         );
         assert!(driver.activities_need_time());
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("Scoped effect is running".into()))
+        );
         present(&mut driver, &mut bridge, root, 3);
         gamepad_press(&mut driver, &mut bridge, GamepadButton::DpadRight);
         gamepad_press(&mut driver, &mut bridge, GamepadButton::South);
         settle(&mut driver);
         assert!(!driver.activities_need_time());
+        assert!(
+            !driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("Scoped effect is running".into()))
+        );
         while driver.advance_time(2., 16).unwrap().pending {}
         settle(&mut driver);
         assert!(

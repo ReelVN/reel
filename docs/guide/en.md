@@ -562,21 +562,20 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 5 Managing Temporary Scenes with Scopes
 
-Scope ownership of tasks, activities and waits is implemented; see the choreography example below. The temporary-node, property-override and restoration interfaces below remain design targets.
+Scope ownership of tasks, activities, waits and temporary nodes is implemented. Property overrides and additive offsets remain planned.
 
-scope executes an ordinary closure within the current story call chain. Its body can deliver dialogue, wait and call other functions. Exiting retires work owned by that scope. Temporary scenes are planned to join the same lifetime management as follows:
+scope executes an ordinary closure within the current story call chain. Its body can deliver dialogue, wait and call other functions. Exiting retires work owned by that scope. Temporary scenes join the same lifetime management as follows:
 ```aside
 fn show_cg(view) {
     scope(body: |s| {
-        s.override(view.hud, visible: false);
         s.add(view.picture, image("assets/window-cg.png"));
         await game.advance();
     });
 }
 ```
-Here the HUD is temporarily hidden, and the CG is added at the top of picture. When the player advances, the CG is removed and this visible override is released. The HUD's original bindings and underlying values are preserved throughout. On exit, the latest underlying values become visible, with any other active overrides still in place. Later-created overrides take precedence when nested; ending any layer removes only its own token.
-s.add(parent, node) mounts a temporary subtree, s.override(node, props...) creates an animatable override layer, s.offset(node) creates an independent additive x/y offset, and s.run(action) starts an activity owned by this scope. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
-Normal return, exceptions, and scene exit all trigger synchronous, idempotent host cleanup. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities, and overrides; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
+The CG appears at the top of picture and is removed when the player advances and the scope exits. s.add(parent, node, index: 0) chooses an insertion position and returns the original node. Early page removal, scene replacement and exit after loading a save use the same retirement rules.
+s.add(parent, node) mounts a temporary subtree, and s.run(action) starts an activity owned by this scope. The planned s.override(node, props...) will create an animatable override layer, while s.offset(node) will create an independent additive x/y offset. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
+Normal return, exceptions, and scene exit all trigger synchronous, idempotent host cleanup. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities and temporary subtrees; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
 By default, scope lives with the current task. Use scope(owner: node, body: ...) when it should end with a particular node. If that node ends first, only the scope region is cancelled, and ScopeCancelled is raised at the outer call site. Main-story code that is still alive can catch it outside the scope. Code involving invalid nodes within the region ends, and the host performs cleanup. If the current task itself is cancelled, the entire task ends.
 visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and a container's replace(new_child) for permanent local replacements.
 
