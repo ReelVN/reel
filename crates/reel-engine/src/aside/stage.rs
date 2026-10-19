@@ -359,6 +359,7 @@ impl StageBinding {
                 | NodeKind::Column
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
+                | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }

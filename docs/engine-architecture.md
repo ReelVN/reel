@@ -645,6 +645,9 @@ E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P
 ## 十五 UI 模块与呈现桥接合同
 本节规定 reel-ui 的模块与行为边界。UI 结构整合不改变已验收的控件、CPU 帧记录、呈现几何和资源契约；后端与设备仍按各自用例验收。工作区采用 Rust 1.96.0 工具链。
 
+自定义光标（待实现）
+`cursor(children: [], ...)` 是普通舞台容器，挂载父节点拥有其寿命。整个子树不参与指针、焦点或父容器流布局；可用图片、文字、变换、透明度、遮罩和普通活动构成外观。容器局部原点跟随鼠标，x/y 是相对热点的偏移；子 image 的 anchor 或 x/y 定义图像热点。外观使用窗口逻辑坐标，在完整场景之后绘制，祖先相机、变换、裁剪和合成不影响此窗口层；cursor 本身及后代的合成仍沿唯一绘制流和资源预算。最近鼠标输入的接受 hover 路径决定 owner，按压捕获期间使用捕获路径；从深到浅选首个具有可用 cursor 的 owner，同父以树顺序最后者优先。祖先 visibility/enabled、退休和当前模态范围决定资格，旧接受帧不能复活已隐藏或退休的节点。可见空容器隐藏系统光标；visible=false 或移除让回祖先 cursor 或系统光标。离窗、失焦、切换触摸、清空接受视图和会话切换撤销自定义光标；再次真实鼠标输入按当前画面恢复。指针坐标和平台句柄不保存，普通节点、资源和动画沿现有快照恢复，恢复后等待真实指针输入。移动只更新 UI 呈现位置，不回写 VM 坐标、不增加脚本逐帧任务，也不重新排版未变外观。范围为 reel-engine 舞台注册/快照、reel-ui 接受几何/指针/绘制、reel-player 舞台与原生窗口适配、示例和双语指南；无新依赖，新增 cursor native ABI 1，SessionSnapshot 15，VM/ASB 不变。检查须包含源码/ASB 动态外观、真实 CursorLeft 路由、触摸/捕获/模态/退休/旧帧与恢复，以及离屏绘制的热点、顶层次序、原有资源租约、连续移动的 VM 分配和布局次数；原生设备行为另行明确验收。
+
 呈现几何与上下文
 reel-ui::app/core 导出几何、选择输入源并分发事件；bridge 管理 FrameId、surface epoch、呈现接受门和 NodeId↔WidgetId 的代际映射，沿用 reel-core 的共享预算。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。
 几何快照包含全部登记节点，包括 stashed 节点。采用连续记录与 children 索引数组，每节点保存 WidgetId、parent 索引、children 范围、对齐 border-box 尺寸、border/paint insets、局部变换、border-box 到 window 变换、window 子树 bounds、已解析 content baselines、border-box 坐标的 clip 和 frozen 命中标志（content-box getter 只转换一次）。整帧保存 DPI、根及 id 索引。布局缓存、属性、action 和完整 WidgetState 留在当前运行时。路径沿 parent links 在有上限的复用缓冲中生成一次，整次事件借用；内存与构建成本计入候选帧预算。

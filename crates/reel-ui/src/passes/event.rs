@@ -200,6 +200,13 @@ pub(crate) fn run_on_pointer_event_with_view(
         super::navigation::cancel_virtual(root);
     }
     let physical_pos = try_event_position(event);
+    if root.global_state.pointer.info.pointer_type == PointerType::Mouse {
+        if !matches!(event, PointerEvent::Cancel(_)) {
+            root.global_state.cursor.mouse_active = physical_pos.is_some();
+        }
+    } else if matches!(event, PointerEvent::Down(_) | PointerEvent::Move(_)) {
+        root.global_state.cursor.mouse_active = false;
+    }
     if matches!(event, PointerEvent::Down(_) | PointerEvent::Scroll(_))
         || matches!(event, PointerEvent::Move(_))
             && physical_pos != root.global_state.pointer.last_pointer_physical

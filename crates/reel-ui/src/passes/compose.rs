@@ -30,7 +30,14 @@ fn compose_widget(
     }
 
     let local_transform = state.compose_local_transform();
-    state.window_transform = parent_window_transform * local_transform;
+    state.window_transform = if widget.is_cursor() {
+        let position = global_state.cursor.overlay
+            .filter(|(cursor, _)| *cursor == id)
+            .map_or(kurbo::Point::ORIGIN, |(_, position)| position);
+        Affine::translate(position.to_vec2()) * state.transform
+    } else {
+        parent_window_transform * local_transform
+    };
 
     let paint_box = state.paint_box();
     state.bounding_box = state.window_transform.transform_rect_bbox(paint_box);
@@ -67,7 +74,8 @@ fn compose_widget(
         );
         let parent_bounding_box = parent_state.bounding_box;
 
-        if let Some(child_bounding_box) = parent_state.clip_child(node.item.state.bounding_box) {
+        if !node.item.widget.is_cursor()
+            && let Some(child_bounding_box) = parent_state.clip_child(node.item.state.bounding_box) {
             parent_state.bounding_box = parent_bounding_box.union(child_bounding_box);
         }
 

@@ -55,6 +55,7 @@ impl WinitHost {
                     }
                 }
                 RenderRootSignal::SetCursor(cursor) => window.set_cursor(cursor),
+                RenderRootSignal::SetCursorVisible(visible) => window.set_cursor_visible(visible),
                 _ => {}
             }
         }

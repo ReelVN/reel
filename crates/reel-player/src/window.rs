@@ -872,7 +872,7 @@ impl State {
         Ok(handled)
     }
     pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {
-        if self.settings_pending() && !matches!(kind, PointerKind::Cancel) {
+        if self.settings_pending() && !matches!(kind, PointerKind::Cancel | PointerKind::Leave) {
             return Ok(());
         }
         match kind {
@@ -909,6 +909,7 @@ impl State {
                 button: Some(button),
             }),
             PointerKind::Cancel => PointerEvent::Cancel(pointer),
+            PointerKind::Leave => PointerEvent::Leave(pointer),
             PointerKind::Scroll(delta) => PointerEvent::Scroll(PointerScrollEvent {
                 pointer,
                 state,
@@ -1029,6 +1030,7 @@ impl State {
 }
 #[derive(Clone, Copy)]
 pub(crate) enum PointerKind {
+    Leave,
     Move,
     Down(PointerButton),
     Up(PointerButton),

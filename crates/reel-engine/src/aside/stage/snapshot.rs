@@ -22,6 +22,7 @@ pub(in crate::aside) enum Shape {
     Column,
     Stack,
     VirtualList,
+    Cursor,
 }
 
 impl Shape {
@@ -43,6 +44,7 @@ impl Shape {
             "reel::row" => Self::Row,
             "reel::column" => Self::Column,
             "reel::stack" => Self::Stack,
+            "reel::cursor" => Self::Cursor,
             _ => unreachable!("registered stage constructor"),
         }
     }
@@ -58,7 +60,7 @@ impl Shape {
             Self::Particles => super::super::particles::PREFIX.len(),
             Self::Camera => camera::CameraField::PROPERTIES.len(),
             Self::Scroll => scroll::ScrollField::PROPERTIES.len(),
-            Self::Row | Self::Column | Self::Stack | Self::VirtualList => 0,
+            Self::Row | Self::Column | Self::Stack | Self::VirtualList | Self::Cursor => 0,
         }
     }
     pub(super) fn project(
@@ -126,6 +128,7 @@ impl Shape {
             Self::Row => NodeKind::Row,
             Self::Column => NodeKind::Column,
             Self::Stack => NodeKind::Stack,
+            Self::Cursor => NodeKind::Cursor,
             Self::VirtualList => unreachable!("virtual list projects its VM-owned state"),
         })
     }
@@ -149,7 +152,7 @@ impl Shape {
             Self::Particles => super::super::particles::validate,
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
-            Self::Row | Self::Column | Self::Stack | Self::VirtualList => {
+            Self::Row | Self::Column | Self::Stack | Self::VirtualList | Self::Cursor => {
                 |h, _, i, v| validate_layout_property(h, i, v)
             }
         }

@@ -249,6 +249,8 @@ use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view;
 type_of、is、signature、members、own_fields 提供一致反射。签名包含参数名、顺序、缺省是否存在、变参、返回契约和效果，不因反射而执行缺省表达式。native 与脚本类型遵循同一描述。反射不泄露原生地址、任意私有环境、恢复 PC 的写权限或绕过字段/schema 的写入口。
 
 ## 十一 children 与可观察绑定
+
+Reel 自定义光标（待实现）：`cursor(children: [], ...)` 使用普通 Node、children 和共同属性，新增 native ABI 1，不新增语言语法。挂载父节点决定光标作用范围和寿命，外观按窗口逻辑坐标在顶层绘制；容器 x/y 偏移热点，图片 anchor 定义图像热点。整棵子树不参与输入、焦点和父布局。空容器隐藏系统光标，visible=false 或移除恢复祖先/系统光标。接受几何、捕获和模态决定当前 owner，祖先隐藏/禁用或退休立即撤销资格。指针移动由 UI 完成，不改作者属性；普通源/属性动画和快照沿同一节点对象图，SessionSnapshot 15，VM/ASB 不变。
 当前实现增量贯通尾随 children、array/tuple 的 `for` 与可组合宿主对象。宿主通过通用的 composable 标记声明可收集对象；Aside 不依赖 Reel 类型或平台库。宿主对象有保持身份的公开字段表和私有载荷，成员读取/赋值访问同一字段表，私有载荷仅由宿主访问。公开字段参与 GC，私有载荷中的值同样可追踪。children 收集沿用本节 Node/null 规则，并保持 NoWait 边界；普通 helper 不继承调用者的收集器。for 的每轮词法绑定独立，array 结构变化遵循集合迭代规则。新增字节码行为直接进入当前 Aside 字节码 实现与执行能力表，不引入旧实现兼容路径。
 
 

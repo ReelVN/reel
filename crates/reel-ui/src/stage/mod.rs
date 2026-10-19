@@ -270,6 +270,8 @@ pub enum NodeKind {
     Column,
     VirtualList(VirtualListView),
     Stack,
+    /// Window-space pointer appearance, owned as an ordinary child subtree.
+    Cursor,
 }
 
 /// Axes filled from the parent's content box after its size has been measured.
@@ -667,6 +669,7 @@ impl Stage {
                 | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
+                | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
@@ -711,6 +714,7 @@ impl Stage {
                 | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
+                | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }
@@ -797,6 +801,7 @@ impl Stage {
                 | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
+                | NodeKind::Cursor
                 | NodeKind::Button { .. }
                 | NodeKind::Slider { .. }
                 | NodeKind::Toggle { .. }

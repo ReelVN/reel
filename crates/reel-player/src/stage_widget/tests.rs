@@ -1,4 +1,5 @@
 use super::*;
+mod cursor;
 use crate::session::SessionUi;
 #[cfg(feature = "window")]
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};

@@ -76,6 +76,8 @@ pub struct GeometryRecord {
     pub input_revision: u64,
     /// Logical child projection accepted with this geometry.
     pub virtual_revision: Option<u64>,
+    /// Cursor container identity accepted with this frame.
+    pub is_cursor: bool,
 }
 impl GeometryRecord {
     fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
@@ -98,6 +100,7 @@ impl GeometryRecord {
             is_modal: s.is_modal,
             input_revision: s.input_revision,
             virtual_revision: None,
+            is_cursor: false,
         }
     }
 }
@@ -179,6 +182,10 @@ impl PresentedGeometryView {
     /// Resolve an identity without falling back to live geometry.
     pub fn get(&self, id: WidgetId) -> Option<&GeometryRecord> {
         self.index(id).map(|i| &self.records[i])
+    }
+    pub(crate) fn children_of(&self, id: WidgetId) -> impl DoubleEndedIterator<Item = WidgetId> + '_ {
+        let range = self.get(id).map_or(0..0, |record| record.children.clone());
+        self.children[range].iter().map(|&index| self.records[index].id)
     }
     fn index(&self, id: WidgetId) -> Option<usize> {
         self.ids
@@ -484,8 +491,9 @@ impl RenderRoot {
             ));
             view.records[index].virtual_revision =
                 node.item.widget.virtual_children().map(|v| v.revision);
+            view.records[index].is_cursor = node.item.widget.is_cursor();
             view.ids.push((node.item.state.id, index));
-            if node.item.state.is_modal && !node.item.state.is_stashed {
+            if node.item.state.is_modal && !node.item.state.is_stashed && !node.item.state.in_cursor {
                 view.modal_scope = Some(node.item.state.id);
             }
             for (slot, child) in (start..end).zip(children).rev() {
@@ -515,6 +523,7 @@ impl RenderRoot {
     /// Switch views with old-view exits and then new-view entries. Host controls acceptance.
     pub fn set_input_geometry_source(&mut self, source: InputGeometrySource) {
         if matches!(source, InputGeometrySource::Presented(None)) {
+            self.global_state.cursor.mouse_active = false;
             crate::passes::navigation::cancel_all(self);
             crate::passes::event::run_on_text_event_pass(
                 self,

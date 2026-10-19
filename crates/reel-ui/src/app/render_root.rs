@@ -129,6 +129,7 @@ pub(crate) struct RenderRootState {
 
     /// Current cursor icon.
     pub(crate) cursor_icon: CursorIcon,
+    pub(crate) cursor: super::cursor::CursorState,
 
     /// Cache for Parley font data.
     // TODO: move font context out of RenderRootState so that we only have it once per app
@@ -247,6 +248,8 @@ pub enum RenderRootSignal {
     TakeFocus,
     /// The mouse icon should change.
     SetCursor(CursorIcon),
+    /// Native visibility is separate from the ordinary system icon selection.
+    SetCursorVisible(bool),
     /// The window should be resized.
     SetSize(PhysicalSize<u32>),
     /// The window title has changed.
@@ -366,6 +369,7 @@ impl RenderRoot {
                 window_focused: true,
                 scroll_request_targets: Vec::new(),
                 cursor_icon: CursorIcon::Default,
+                cursor: Default::default(),
                 font_context: FontContext {
                     collection: Collection::new(CollectionOptions {
                         system_fonts: use_system_fonts,
@@ -1010,7 +1014,7 @@ impl RenderRoot {
         };
         let state = &node.item.state;
 
-        !state.is_stashed && !state.is_disabled
+        !state.is_stashed && !state.is_disabled && !state.in_cursor
     }
 
     /// Returns the [`WidgetId`] of the [focused widget](crate::doc::concepts#text-focus).

@@ -520,6 +520,12 @@ pub trait Widget: AsDynWidget + Any {
         true
     }
 
+    /// A window-space cursor subtree, owned by its ordinary parent. The subtree
+    /// is excluded from input and painted after the ordinary scene.
+    fn is_cursor(&self) -> bool {
+        false
+    }
+
     /// Whether independent contacts may capture this widget simultaneously.
     fn accepts_multiple_pointers(&self) -> bool {
         false

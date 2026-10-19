@@ -184,6 +184,7 @@ fn update_widget_tree(
     property_arena: &PropertyArena,
     node: ArenaMut<'_, WidgetArenaNode>,
     ancestors: Option<&ParentLinkedList<'_>>,
+    parent_cursor: bool,
 ) {
     let mut children = node.children;
     let widget = &mut *node.item.widget;
@@ -195,9 +196,11 @@ fn update_widget_tree(
     let trace = global_state.trace.update_tree;
     let _span = enter_span_if(trace, state);
 
-    if !state.children_changed {
+    let in_cursor = parent_cursor || widget.is_cursor();
+    if !state.children_changed && state.in_cursor == in_cursor {
         return;
     }
+    state.in_cursor = in_cursor;
 
     register_children(global_state, widget, state, children.reborrow_mut());
 
@@ -221,10 +224,6 @@ fn update_widget_tree(
         if trace {
             trace!("{} received Update::WidgetAdded", widget.short_type_name());
         }
-        state.accepts_pointer_interaction = widget.accepts_pointer_interaction();
-        state.propagates_pointer_interaction = widget.propagates_pointer_interaction();
-        state.accepts_focus = widget.accepts_focus();
-        state.accepts_text_input = widget.accepts_text_input();
         state.trace_span = widget.make_trace_span(state.id);
         state.is_new = false;
 
@@ -232,6 +231,12 @@ fn update_widget_tree(
             register_children(global_state, widget, state, children.reborrow_mut());
         }
     }
+
+    state.accepts_pointer_interaction = !in_cursor && widget.accepts_pointer_interaction();
+    state.propagates_pointer_interaction = !in_cursor && widget.propagates_pointer_interaction();
+    state.accepts_focus = !in_cursor && widget.accepts_focus();
+    state.accepts_text_input = !in_cursor && widget.accepts_text_input();
+    state.needs_update_focusable = true;
 
     // We can recurse on this widget's children, because they have already been added
     // to the arena above.
@@ -248,6 +253,7 @@ fn update_widget_tree(
             property_arena,
             node.reborrow_mut(),
             Some(&ancestors),
+            in_cursor,
         );
         parent_state.merge_up(&mut node.item.state);
     });
@@ -324,6 +330,7 @@ pub(crate) fn run_update_widget_tree_pass(root: &mut RenderRoot) {
         &root.property_arena,
         root_node,
         None,
+        false,
     );
 }
 
@@ -922,6 +929,7 @@ pub(crate) fn transition_pointer_geometry(
             root.global_state.swap_pointer(i);
         }
     }
+    root.refresh_cursor(new);
 }
 
 fn transition_contact_geometry(

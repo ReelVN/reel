@@ -807,6 +807,7 @@ impl SessionVm {
             | "reel::camera"
             | "reel::scroll"
             | "reel::stack"
+            | "reel::cursor"
             | "reel::stage::replace" => {
                 let arguments = self.vm.host_arguments(ticket)?.to_vec();
                 let origin = self.stage_origin(ticket);

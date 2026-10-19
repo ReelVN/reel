@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::tree_arena::ArenaMut;
-use kurbo::{Affine, Line, Rect, Stroke};
+use kurbo::{Affine, Line, Point, Rect, Stroke};
 use peniko::{Color, Fill};
 use tracing::{info_span, trace};
 
@@ -231,10 +231,30 @@ fn paint_widget(
     property_arena: &PropertyArena,
     layer_collector: &mut LayerCollector,
     scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
+    cursor_layers: &mut Vec<VisualLayer>,
+    in_cursor: bool,
     border_box_to_layer_transform: Affine,
     parent_viewport: Rect,
     node: ArenaMut<'_, WidgetArenaNode>,
 ) {
+    if node.item.widget.is_cursor() && !in_cursor {
+        let id = node.item.state.id;
+        let active = global_state.cursor.overlay.filter(|(cursor, _)| *cursor == id);
+        let position = active.map_or(Point::ORIGIN, |(_, point)| point);
+        let mut collector = LayerCollector::new(id, Affine::translate(position.to_vec2()));
+        collector.suppress_output = active.is_none();
+        let size = global_state.size.to_logical::<f64>(global_state.scale_factor);
+        let transform = node.item.state.transform;
+        paint_widget(
+            global_state, default_properties, property_arena, &mut collector,
+            scene_cache, cursor_layers, true, transform,
+            Rect::new(0., 0., size.width, size.height), node,
+        );
+        if active.is_some() {
+            cursor_layers.extend(collector.into_layers());
+        }
+        return;
+    }
     let mut children = node.children;
     let widget = &mut *node.item.widget;
     let state = &mut node.item.state;
@@ -416,6 +436,8 @@ fn paint_widget(
             property_arena,
             layer_collector,
             scene_cache,
+            cursor_layers,
+            in_cursor,
             border_box_to_layer_transform * node.item.state.compose_local_transform(),
             viewport,
             node.reborrow_mut(),
@@ -514,6 +536,7 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
     let layer_root_ids = root.layer_root_ids();
 
     let mut layers = Vec::new();
+    let mut cursor_layers = Vec::new();
 
     for &layer_widget_id in &layer_root_ids {
         let transform = root
@@ -526,11 +549,13 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
             root,
             &mut collector,
             &mut scene_cache,
+            &mut cursor_layers,
             root_id,
             layer_widget_id,
         );
         layers.extend(collector.into_layers());
     }
+    layers.extend(cursor_layers);
 
     root.global_state.scene_cache = scene_cache;
 
@@ -545,6 +570,7 @@ fn paint_layer(
     root: &mut RenderRoot,
     layer_collector: &mut LayerCollector,
     scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
+    cursor_layers: &mut Vec<VisualLayer>,
     root_id: WidgetId,
     layer_widget_id: WidgetId,
 ) {
@@ -578,6 +604,8 @@ fn paint_layer(
         &root.property_arena,
         layer_collector,
         scene_cache,
+        cursor_layers,
+        false,
         Affine::IDENTITY,
         Rect::new(0., 0., size.width, size.height),
         layer_node,
