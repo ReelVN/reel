@@ -47,6 +47,7 @@ const SCENES: &[(&str, E)] = &[
     ("authored line wrapping", E::Block),
     ("component result in story", E::Block),
     ("choice component and branch in story", E::Block),
+    ("exact virtual row heights", E::Block),
     ("clear dialogue presentation", E::Block),
     ("retain recent history", E::Block),
     ("save button construction", E::Module),

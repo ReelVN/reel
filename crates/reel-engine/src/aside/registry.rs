@@ -399,7 +399,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::list".into(),
-        abi_version: 9,
+        abi_version: 10,
         parameters: list_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
