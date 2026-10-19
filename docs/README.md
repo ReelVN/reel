@@ -9,24 +9,24 @@
 
 ## 当前状态
 
-**目前能运行简单的交互场景，仍处于开发原型阶段，尚不能独立完成并发行一部完整作品。** 编译器接受语法、Rust 层有实现、作者能够实际使用是三个不同边界；以下按最后一项说明状态。不以测试数量换算引擎完成百分比。
+**目前已具备复杂交互作品的主要基础，仍需改善完整流程的可靠性、长内容成本和设备覆盖。** 目标是让创作者直观表达自定义对白、UI、演出和嵌入的 2D 游戏。下表区分实际可用能力与仍待完成的部分，不以测试数量换算完成百分比。
 
 本表随能力交付更新；实施顺序和验收进度集中维护在[引擎完善总清单 #94](https://github.com/jhq223/reel/issues/94)。
 
 | 领域 | 现在实际可用 | 主要缺口与跟踪 |
 | --- | --- | --- |
-| Aside / VM | 多源码链接→B01→执行；函数、闭包、默认/命名参数、spread、rest、类/类型字段/继承/绑定方法、集合编辑、异常/finally、可调用宿主对象及 await、增量 GC。[语言执行边界](../crates/aside-compiler/LOWERING.md) | 类的可观察模型集成、元方法、完整模式/标准库、通用 async/Future、generator/thread 和快照。[#65](https://github.com/jhq223/reel/issues/65) |
-| 剧情 | 角色/旁白、ADV 行组、choose 的等待与恢复、历史、Unicode 字素揭示和公共播放时钟；只读对白/选择/历史模型、自定义 ADV/NVL 与历史界面、可观察自动阅读/暂停/快进服务与可复用已读记录。[阅读服务](../examples/author_reading.aside) · [作者剧情界面](../examples/author_narrative.aside) · [角色对白](../examples/author_dialogue.aside) | 章节跳转、本地化和保存恢复等完整创作流程，见总清单 |
-| 舞台 / UI | text/image/row/column/stack/button/input/slider/toggle/scroll、PNG/JPEG、布局/变换/裁剪、原节点属性更新、局部 add/remove/clear；按钮及值变更回调可以等待活动，设置控件支持脚本回写和连续输入，model、bind/unbind、derive 连接可观察状态并共享动画写入权；view 按实际数据依赖重建内容，list 按 key 保留节点、局部状态及焦点；只读交互状态和 decorated 支持作者自绘按钮/开关；modal 隔离输入，支持嵌套焦点恢复。[动态组件](../examples/author_dynamic_stage.aside) · [按钮](../examples/author_buttons.aside) · [模态菜单](../examples/author_modal.aside) · [设置页](../examples/author_settings.aside) · [属性连接](../examples/author_bindings.aside) · [控件外观](../examples/author_control_states.aside) · [动态列表](../examples/author_list.aside) | 滑条外观槽位、文本输入、列表虚拟化、通用事件和 scope。[#90](https://github.com/jhq223/reel/issues/90) · [#63](https://github.com/jhq223/reel/issues/63) |
-| 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、属性接管和 owner 退休；纯变换不重新布局。[可运行例](../examples/author_activities.aside) | 通用 scope、快进和活动快照尚未接通。组合动作合同：[#88](https://github.com/jhq223/reel/issues/88) |
-| 渲染 / 效果 | 共同帧描述、可选 WGPU 实际绘制、已呈现几何输入；作者可用图片、文字、透明度和基础裁剪。[渲染器](../crates/reel-render/README.md) | 内部遮罩/滤镜记录尚未接成作者接口；通用转场和自定义效果。[#92](https://github.com/jhq223/reel/issues/92) |
-| 工程 / 资源 | check/build/dev/run；脚本初始化、多字体与节点字体选择、多源码导入、循环链接与独立环境、固定画布；完整代码 ASB；图片与字体使用可替换 AssetIo/WorkExecutor，后台读取、共享输入及像素、原子画面切换与租约；资源根移动不改变资源身份。[命令](guide/zh-CN.md#当前可用的检查构建与运行) | 资源包/发布与媒体消费方接入。[#66](https://github.com/jhq223/reel/issues/66) · [#67](https://github.com/jhq223/reel/issues/67) |
-| 音频 / 视频 | 作者 audio.play、循环/音量、pause/resume/stop、await、节点取消及 PCM 退休已接通；源码与 ASB 共用后台读取、解码和真实混音。[示例](../examples/author_audio.aside) | 当前是预解码播放；长轨流式、seek、分组混音、设备重建和视频继续由 [#67](https://github.com/jhq223/reel/issues/67) 跟踪。 |
-| 保存 / 恢复 | 有存储服务合同；ASB 是代码产物 | **VM、剧情及活动快照尚未实现**；没有可用的游戏存读档。[#91](https://github.com/jhq223/reel/issues/91) |
-| 输入 | 鼠标、多触点、键盘和手柄；命名动作、保持/模拟值与重映射；已接受画面的空间导航及焦点滚动。[作者动作](../examples/author_input.aside) | 手柄 Windows 后端初始化已验证，实体设备及其他平台仍待实测；小游戏会话/更新由 [#101](https://github.com/jhq223/reel/issues/101) 继续 |
-| 平台 | PlatformHost/Presentation/StoryRuntime/RenderBackend 与作者资源 HAL 已贯通，Winit 与 WGPU 可独立启用；内置窗口复用相同接口。[宿主接入](../crates/reel-player/README.md) | 媒体适配、原生 IME/可访问性及各设备运行仍需交付。[#93](https://github.com/jhq223/reel/issues/93) |
+| Aside / VM | 多文件、类型、类与继承、静态成员、可观察状态、宿主等待、任务与取消、执行快照、轻量标准库；GC 按分配压力调度。[语言执行范围](../crates/aside-compiler/LOWERING.md) | 结构模式、原生 async/generator 执行、剩余有价值的 Quirrel 用例与整体运行成本。[#65](https://github.com/jhq223/reel/issues/65) |
+| 剧情 | 自定义 ADV/NVL、选择、历史、自动/快进、已读记录、本地化和全新剧情入口。[阅读服务](../examples/author_reading.aside) · [作者剧情界面](../examples/author_narrative.aside) | 完整游戏流程中菜单、演出、取消和恢复的连续验证；全文和翻译目录仍整体驻留。 |
+| 舞台 / UI | 函数组件、响应式绑定、动态 keyed list、变高虚拟列表、自绘控件、文本输入与 IME、滚动、布局和富文本。[列表](../examples/author_list.aside) · [控件外观](../examples/author_control_states.aside) · [换行](../examples/author_text_wrap.aside) | dropdown、多行编辑、单选组键盘交互、程序化列表定位与接受帧几何查询；继续用复杂组件打磨写法。[#63](https://github.com/jhq223/reel/issues/63) |
+| 演出 | tween、sequence/parallel/repeat、run/await、pause/resume/stop/finish、可观察时钟、属性接管、owner 退休与活动快照。[组合动作](../examples/author_activities.aside) | 通用演出作用域、取消恢复及更多转场组合。[#88](https://github.com/jhq223/reel/issues/88) |
+| 渲染 / 效果 | 共同舞台、分层图像、2D 相机、大图分块、粒子、图像遮罩、子树反相与 WGPU 绘制；输入使用已呈现几何。[反相](../examples/author_invert.aside) | 更多滤镜、转场、自定义效果和完整 2D 创作 API。[#92](https://github.com/jhq223/reel/issues/92) |
+| 工程 / 资源 | check/build/dev/run/export；开发与发布分离、外部文本池、资源分卷、后台读取与资源计账。[发布命令](guide/zh-CN.md#当前可用的检查构建与运行) | 长内容加载成本、编辑工具与跨平台发行验收。 |
+| 音频 / 视频 | 音频播放、分组、循环区间、定位、音量/声像与淡变；H.264/AAC 视频节点使用共同舞台。[音频](../examples/author_audio.aside) | 长音轨流式、设备恢复和实机音画同步。[#67](https://github.com/jhq223/reel/issues/67) |
+| 保存 / 恢复 | VM 执行、剧情、节点和活动快照；独立系统数据、缩略图、分片捕获与后台写盘。[存档](../examples/author_saves.aside) · [系统数据](../examples/author_persistent.aside) | 复杂同包恢复可靠性、暂停与峰值内存。要求匹配代码和格式，不提供旧包/旧档兼容。[#91](https://github.com/jhq223/reel/issues/91) |
+| 输入 / 嵌入游戏 | 键鼠、触摸和手柄公共输入；命名动作、模拟值、重映射、焦点导航；小游戏与对白共用节点、结果、时钟和存档。[开关谜题](../examples/author_embedded_puzzle.aside) | 连续 2D 游戏所需能力仍需补齐；示例不代表已有完整物理、碰撞或固定步进 API。[#101](https://github.com/jhq223/reel/issues/101) |
+| 平台 | 平台、呈现、运行时和资源 HAL；Winit 与 WGPU 可独立启用。[宿主接入](../crates/reel-player/README.md) | 实体设备、设备恢复、原生 IME/可访问性及跨平台验收。[#93](https://github.com/jhq223/reel/issues/93) |
 
-Quirrel 原始输入、预期输出及来源保留在 [compiler fixtures](../crates/aside-compiler/tests/fixtures/quirrel/README.md)。当前映射登记了 **69 个完整文件的迁移**，会编译、往返 B01 并在真实 VM 中执行；其余保留资产不等于已迁移或已通过。新宿主测试不计入原始测试迁移。
+Quirrel 原始输入、预期输出、来源和迁移登记保留在 [compiler fixtures](../crates/aside-compiler/tests/fixtures/quirrel/README.md)。已迁移用例经过编译、B01 往返和真实 VM 执行；保留资产不等于已迁移或已通过。
 
 ### 先运行已支持的示例
 
@@ -45,6 +45,15 @@ cargo run --locked -p reel-cli --features window -- dev examples/author_stage.as
 cargo test --locked --workspace
 cargo run --locked -p reel-dev -- check
 ```
+
+自检工程可以复用源码/ASB 执行检查。入口应自行断言结果并返回；检查使用真实存储服务和每轮独立的临时存档目录，可执行保存、恢复和 `game.start`，不读写玩家存档。CPU 呈现用于推进布局与呈现屏障，不包含 GPU、音频设备、窗口配置或截图后端，也不会自动点击或推进对白。
+
+```powershell
+$env:REEL_SCENARIO = 'D:/your-project/flow_check.aside'
+cargo test --locked -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
+```
+
+通用驱动本身由 `cargo test --locked -p reel-cli --test project_scenarios` 验证保存恢复、系统数据不回退和入口切换。游戏专属场景和资源留在作品目录，公共仓库只保留通用检查。
 
 - 作者指南两版使用相同 Aside 片段；API、默认值和行为改变时同步规范与指南。
 - 关键路径按身份、预算、取消和交付合同审查，并实际运行相关检查。
