@@ -284,6 +284,35 @@ fn host_history_clear_detects_replacement_of_equal_length() {
 }
 
 #[test]
+fn successive_retention_within_the_same_group_preserves_its_projection() {
+    let code = r#"
+        fn opening() {
+            let mio = character("Mio");
+            let history = game.history();
+            say([mio.line("one"), mio.line("two"), mio.line("three")]);
+            let group = history[0];
+            let lines = group.lines;
+            let last = lines[2];
+            game.clear_history(2);
+            if group.text != "two" || lines.len() != 2 { throw "first trim"; }
+            game.clear_history(1);
+            if history.len() != 1 || history[0] != group || group.lines != lines
+                || lines.len() != 1 || lines[0] != last || group.text != "three" {
+                throw "same group trim lost identity";
+            }
+            narrator("finished", history: false);
+        }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        advance(&mut vm, &mut session);
+        assert_eq!(session.view().history[0].lines().len(), 1);
+        assert_eq!(session.view().history[0].lines()[0].id().index(), 2);
+    }
+}
+
+#[test]
 fn independent_history_keeps_display_identity_callbacks_and_snapshot_continuations() {
     let code = r#"
     fn opening() {

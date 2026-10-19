@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[repr(u32)]
 enum HistoryLineField {
     SpeakerName = 2,
