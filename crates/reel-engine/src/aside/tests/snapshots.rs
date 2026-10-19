@@ -98,7 +98,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let background = image("scene.png", stretch: "both");
         let snow = particles("flake.png", rate: 5, lifetime: 2);
         let emission = emit(snow);
-        let mover = run(tween(background, x: 100, duration: 4, easing: "linear"));
+        let mover = run(tween(background, x: 100, invert: 1, duration: 4, easing: "linear"));
         let task = spawn(|| { await run(delay(2)); data.score += 3; done.resolve(9); });
         let caption = text("score", x: bind(data.score), max_width: 140, align_x: 0.5);
         stage.replace(column() {
@@ -116,7 +116,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         await task;
         finish(mover); stop(emission);
         if caption.max_width != 140 || caption.align_x != 0.5 { throw "lost layout constraints"; }
-        if entries != 1 || data.score != 5 || background.x != 100 { throw "replayed or lost state"; }
+        if entries != 1 || data.score != 5 || background.x != 100 || background.invert != 1 { throw "replayed or lost state"; }
         narrator(f"done {rng.int(0, 1000000)}");
     }
     "##;

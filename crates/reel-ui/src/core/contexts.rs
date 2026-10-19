@@ -2418,12 +2418,19 @@ impl PaintCtx<'_> {
         self.widget_state.external_paint_token = token;
     }
 
-    /// Apply an image mask to this widget's pre-paint, paint, children and post-paint.
+    /// Apply compositing to this widget's pre-paint, paint, children and post-paint.
     ///
     /// A declaration made during `pre_paint` affects the current frame and remains
-    /// active across cached paints. Pass `None` to remove it. Masking changes only
-    /// the rendered pixels, leaving layout and input geometry intact.
-    pub fn set_subtree_image_mask(&mut self, mask: Option<PaintImageMask>) {
+    /// active across cached paints. Identity values remove the group. Compositing
+    /// changes only rendered pixels, leaving layout and input geometry intact.
+    pub fn set_subtree_composite(
+        &mut self,
+        opacity: f32,
+        invert: f32,
+        mask: Option<PaintImageMask>,
+    ) {
+        self.widget_state.subtree_opacity = opacity;
+        self.widget_state.subtree_invert = invert;
         match (&mut self.widget_state.subtree_image_mask, mask) {
             (Some(current), Some(mask)) => **current = mask,
             (slot, mask) => *slot = mask.map(Box::new),

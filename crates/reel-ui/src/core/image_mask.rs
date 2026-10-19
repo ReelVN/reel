@@ -15,8 +15,6 @@ pub struct PaintImageMask {
     pub progress: f32,
     pub softness: f32,
     pub invert: bool,
-    /// Subtree opacity, composed together with the mask coverage.
-    pub opacity: f32,
 }
 
 /// Threshold parameters at a particular use of a retained image mask.

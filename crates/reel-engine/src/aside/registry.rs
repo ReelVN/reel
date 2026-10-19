@@ -813,7 +813,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "tween" { 6 } else { 1 },
+            abi_version: if name == "tween" { 7 } else { 1 },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(

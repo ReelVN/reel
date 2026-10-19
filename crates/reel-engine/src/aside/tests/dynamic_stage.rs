@@ -277,3 +277,34 @@ fn same_parent_reorder_public_example_callbacks_keep_the_animation() {
         );
     }
 }
+
+#[test]
+fn invert_is_a_validated_reactive_node_property() {
+    let (mut session, mut runtime) = super::models::prepared(
+        r#"
+        fn opening() {
+            let state = model({amount: 0.25});
+            let scene = stack(invert: derive(|| state.amount)) { text("content"); };
+            stage.replace(scene);
+            state.amount = 0.75;
+            let other = text("untouched");
+            if other.invert != 0 { throw "default inversion"; }
+            let mut rejected = false;
+            try { other.invert = 2; } catch error { rejected = true; }
+            if !rejected || other.invert != 0 { throw "invalid inversion accepted"; }
+            narrator("ready");
+        }
+    "#,
+        true,
+    );
+    super::models::drive(&mut runtime, &mut session, false);
+    let root = runtime
+        .stage()
+        .node(runtime.stage().root().unwrap())
+        .unwrap();
+    assert_eq!(root.props.invert, 0.75);
+    assert_eq!(
+        runtime.stage().node(root.children[0]).unwrap().props.invert,
+        0.
+    );
+}
