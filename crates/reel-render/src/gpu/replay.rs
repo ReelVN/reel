@@ -35,13 +35,15 @@ struct Scope<'a> {
     target: Target,
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
+    image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     opacity: f32,
     invert: f32,
     blend: reel_ui::peniko::BlendMode,
     scissor: Scissor,
     isolated: bool,
 }
-struct MaskComposition {
+struct MaskComposition<'a> {
+    image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     source: Target,
     opacity: f32,
     invert: f32,
@@ -53,7 +55,7 @@ struct Stream<'a> {
     next: usize,
     transform: Affine,
     scopes: Scopes<Scope<'a>>,
-    mask: Option<MaskComposition>,
+    mask: Option<MaskComposition<'a>>,
 }
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
@@ -143,6 +145,7 @@ impl Context<'_> {
                     },
                     mask.invert,
                     mask.operation,
+                    mask.image_mask,
                 )?;
                 self.recycle_target(mask.source)?;
                 self.recycle_target(finished)?;
@@ -167,6 +170,7 @@ impl Context<'_> {
                             },
                             clip: if scissor.is_some() { None } else { Some(clip) },
                             mask: None,
+                            image_mask: None,
                             opacity: 1.,
                             invert: 0.,
                             blend: Default::default(),
@@ -194,6 +198,10 @@ impl Context<'_> {
                             target: self.target()?,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
+                            image_mask: group
+                                .image_mask
+                                .as_ref()
+                                .map(|mask| (mask, transform * group.effect_to_target)),
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
@@ -232,6 +240,7 @@ impl Context<'_> {
                                 },
                                 group.invert,
                                 CompositeOperation::AlphaMask,
+                                group.image_mask,
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
@@ -260,16 +269,14 @@ impl Context<'_> {
                                     record: "missing mask",
                                 })?;
                         current.mask = Some(MaskComposition {
+                            image_mask: group.image_mask,
                             source,
                             opacity: group.opacity,
                             invert: group.invert,
                             blend: group.blend,
-                            operation: match mask.progress {
-                                Some(progress) => CompositeOperation::ImageMask(progress),
-                                None => match definition.mode {
-                                    MaskMode::Alpha => CompositeOperation::AlphaMask,
-                                    MaskMode::Luminance => CompositeOperation::LuminanceMask,
-                                },
+                            operation: match definition.mode {
+                                MaskMode::Alpha => CompositeOperation::AlphaMask,
+                                MaskMode::Luminance => CompositeOperation::LuminanceMask,
                             },
                         });
                         let child =
@@ -286,6 +293,7 @@ impl Context<'_> {
                             },
                             group.invert,
                             CompositeOperation::SourceOver,
+                            group.image_mask,
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -324,6 +332,7 @@ impl Context<'_> {
                 target: self.target()?,
                 clip: None,
                 mask: None,
+                image_mask: None,
                 opacity: 1.,
                 invert: 0.,
                 blend: Default::default(),
@@ -373,45 +382,103 @@ impl Context<'_> {
         composite: reel_ui::imaging::Composite,
         invert: f32,
         operation: CompositeOperation,
+        image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
     ) -> Result<(), GpuError> {
-        let alpha = composite.alpha;
-        let blend = blend_code(composite.blend).expect("validated group blend");
-        if blend == 0 {
-            return self.combine(target, source, mask, alpha, invert, operation);
-        }
         if self.scissor.empty() {
             return Ok(());
         }
-        // A target cannot be sampled while it is attached for drawing. Copy only
-        // this group's affected backdrop into a pooled, budgeted target.
-        let backdrop = self.target()?;
-        self.combine(
-            &backdrop,
-            &target.view,
-            &target.view,
-            1.,
-            0.,
-            CompositeOperation::SourceOver,
-        )?;
-        self.transient(32)?;
-        self.pipelines.composite(
-            &self.gpu.device,
-            &mut self.encoder,
-            target,
-            super::pipeline::CompositeInputs {
-                source,
-                mask,
-                backdrop: &backdrop.view,
-            },
-            super::pipeline::CompositeParams {
-                scissor: self.scissor,
-                opacity: alpha,
-                invert,
-                operation,
-                blend,
-            },
-        );
-        self.recycle_target(backdrop)
+        let blend = blend_code(composite.blend).expect("validated group blend");
+        if blend == 0 && image_mask.is_none() {
+            return self.combine(target, source, mask, composite.alpha, invert, operation);
+        }
+        let image_mask = if let Some((definition, transform)) = image_mask {
+            if definition.bounds.width() <= 0.
+                || definition.bounds.height() <= 0.
+                || transform.determinant() == 0.
+            {
+                return Ok(());
+            }
+            let uv = Affine::scale_non_uniform(
+                1. / definition.bounds.width(),
+                1. / definition.bounds.height(),
+            ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
+                * transform.inverse();
+            Some((definition, uv))
+        } else {
+            None
+        };
+        // The attached backdrop is copied only for a blend which reads it.
+        let backdrop = if blend != 0 {
+            let backdrop = self.target()?;
+            self.combine(
+                &backdrop,
+                &target.view,
+                &target.view,
+                1.,
+                0.,
+                CompositeOperation::SourceOver,
+            )?;
+            Some(backdrop)
+        } else {
+            None
+        };
+        let params = super::pipeline::CompositeParams {
+            scissor: self.scissor,
+            opacity: composite.alpha,
+            invert,
+            operation,
+            blend,
+        };
+        if let Some((definition, uv)) = image_mask {
+            self.transient(
+                96 + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
+                    + definition.images.len() * size_of::<&wgpu::TextureView>())
+                    as u64,
+            )?;
+            let pipeline = self.pipelines.masks.get(
+                self.gpu,
+                self.quality,
+                &definition.program,
+                &self.budgets.resources,
+            )?;
+            let images = definition
+                .images
+                .iter()
+                .map(|handle| &self.images[handle].view)
+                .collect();
+            pipeline.draw(
+                &self.gpu.device,
+                &mut self.encoder,
+                target,
+                super::mask::Inputs {
+                    source,
+                    mask,
+                    backdrop: backdrop.as_ref().map_or(source, |b| &b.view),
+                    images,
+                },
+                params,
+                definition,
+                uv,
+                &self.pipelines.samplers,
+            );
+        } else {
+            self.transient(32)?;
+            self.pipelines.composite(
+                &self.gpu.device,
+                &mut self.encoder,
+                target,
+                super::pipeline::CompositeInputs {
+                    source,
+                    mask,
+                    backdrop: backdrop.as_ref().map_or(source, |b| &b.view),
+                },
+                params,
+            );
+        }
+        if let Some(backdrop) = backdrop {
+            self.recycle_target(backdrop)?;
+        }
+        Ok(())
     }
     pub(super) fn transient(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.tickets.push(reserve(

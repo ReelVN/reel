@@ -945,7 +945,7 @@ fn subtree_invert_and_image_threshold_share_composite() {
                 key: AssetKey("invert-mask".into()),
                 version: ContentVersion([1; 32]),
             },
-            OwnedBytes::new(vec![0, 0, 0, 128], pool.reserve(4).unwrap()).unwrap(),
+            OwnedBytes::new(vec![48, 96, 192, 128], pool.reserve(4).unwrap()).unwrap(),
             [1, 1],
             ImageFormat::Rgba8,
             ImageAlphaType::Alpha,
@@ -957,17 +957,23 @@ fn subtree_invert_and_image_threshold_share_composite() {
         unreachable!()
     };
     let mut renderer = renderer(Default::default());
-    for progress in [0., 0.5, 1.] {
+    let program = reel_ui::stage::MaskProgram::image("mask".into());
+    for (progress, invert) in [
+        (0., false),
+        (0.2, false),
+        (0.5, false),
+        (0.5, true),
+        (1., false),
+    ] {
         let mut widget = RecordWidget::new(scene(Color::from_rgb8(255, 0, 0)));
         widget.clip = false;
         widget.invert = 1.;
         widget.opacity = 0.5;
         widget.mask = Some(PaintImageMask {
-            image: image.clone(),
+            program: program.clone(),
+            images: vec![image.clone()].into(),
             bounds: Rect::new(0., 0., 400., 300.),
-            progress,
-            softness: 0.,
-            invert: false,
+            parameters: [progress, 0., 0., 0., f32::from(invert)],
         });
         let mut bridge = widget_bridge(widget, Affine::IDENTITY);
         let frame = build(
@@ -987,7 +993,7 @@ fn subtree_invert_and_image_threshold_share_composite() {
         let pixels = renderer
             .readback(renderer.prepare(&frame).unwrap())
             .unwrap();
-        let coverage = if progress == 0. {
+        let coverage = if progress == 0. || progress == 0.2 || invert {
             0.
         } else if progress == 1. {
             0.5
@@ -1002,4 +1008,323 @@ fn subtree_invert_and_image_threshold_share_composite() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn composed_masks_transform_sample_animate_and_retire() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        core::PaintImageMask,
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        stage::{MaskChannel, MaskOp, MaskProgram},
+    };
+    use std::sync::Arc;
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+    let mut handles = Vec::new();
+    let mut images = Vec::new();
+    let mut versions = Vec::new();
+    let alphas = [[0_u8, 128, 192, 255], [255_u8, 64, 128, 0]];
+    for (index, values) in alphas.iter().enumerate() {
+        let bytes = values
+            .iter()
+            .flat_map(|&a| [19, 231, 75, a])
+            .collect::<Vec<_>>();
+        let version = ResourceVersion {
+            key: AssetKey(format!("mask-{index}")),
+            version: ContentVersion([index as u8; 32]),
+        };
+        let handle = registry
+            .register_image(
+                version.clone(),
+                OwnedBytes::new(bytes, pool.reserve(16).unwrap()).unwrap(),
+                [2, 2],
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
+            )
+            .unwrap();
+        let lease = registry.acquire(handle).unwrap();
+        let ResourceData::Image { image, .. } = lease.data() else {
+            unreachable!()
+        };
+        images.push(image.clone());
+        handles.push(handle);
+        versions.push(version);
+    }
+    let c = |v: f32| MaskOp::Constant(v.to_bits());
+    let program = MaskProgram::new(
+        vec![
+            c(0.),
+            c(1.),
+            c(-1.),
+            MaskOp::Parameter(2),
+            MaskOp::Parameter(0),
+            MaskOp::Sample {
+                image: 0,
+                channel: MaskChannel::Alpha,
+                coordinates: [3, 0, 1, 1],
+                repeat: 1,
+            },
+            MaskOp::Sample {
+                image: 1,
+                channel: MaskChannel::Alpha,
+                coordinates: [0, 1, 1, 2],
+                repeat: 0,
+            },
+            MaskOp::Pow(5, 2_f32.to_bits()),
+            MaskOp::Multiply(6, 4),
+            MaskOp::Add(7, 8),
+            MaskOp::Clamp(9, 0_f32.to_bits(), 1_f32.to_bits()),
+            c(0.25),
+            c(0.75),
+            MaskOp::Smoothstep(11, 12, 10),
+            c(0.7),
+            MaskOp::Multiply(13, 14),
+        ],
+        vec!["a".into(), "b".into()],
+    )
+    .unwrap();
+    let transform =
+        Affine::translate((20., 30.)) * Affine::rotate(0.2) * Affine::scale_non_uniform(0.75, 0.6);
+    let frame = |progress, offset| {
+        let mut widget = RecordWidget::new(scene(Color::WHITE));
+        widget.clip = false;
+        widget.mask = Some(PaintImageMask {
+            program: program.clone(),
+            images: images.clone().into(),
+            bounds: Rect::new(0., 0., 400., 300.),
+            parameters: [progress, 0., offset, 0., 0.],
+        });
+        let mut bridge = widget_bridge(widget, transform);
+        build(
+            bridge.record(FrameId(1)).unwrap(),
+            registry.freeze(&handles, &pool).unwrap(),
+            &pool,
+        )
+    };
+    let sample = |values: [u8; 4], uv: [f64; 2], repeat: bool| {
+        let [x, y] = uv.map(|v| v * 2. - 0.5);
+        let ix = x.floor() as i32;
+        let iy = y.floor() as i32;
+        let at = |x: i32, y: i32| {
+            values[(y.clamp(0, 1) * 2
+                + if repeat {
+                    x.rem_euclid(2)
+                } else {
+                    x.clamp(0, 1)
+                }) as usize] as f64
+                / 255.
+        };
+        let top = at(ix, iy) * (1. - x.fract().rem_euclid(1.))
+            + at(ix + 1, iy) * x.fract().rem_euclid(1.);
+        let bottom = at(ix, iy + 1) * (1. - x.fract().rem_euclid(1.))
+            + at(ix + 1, iy + 1) * x.fract().rem_euclid(1.);
+        top * (1. - (y - y.floor())) + bottom * (y - y.floor())
+    };
+    let mut renderer = renderer(Default::default());
+    eprintln!("mask adapter={:?}", renderer.gpu.adapter.get_info());
+    let quality = renderer.gpu.quality([400, 300]).unwrap();
+    let pipelines = renderer.pipelines.get(&renderer.gpu, quality).unwrap();
+    let mut pipeline_identity = None;
+    for (progress, offset) in [(0., 0.), (0.4, 0.25), (1., 0.75)] {
+        let frame = frame(progress, offset);
+        let start = Instant::now();
+        let prepared = renderer.prepare(&frame).unwrap();
+        eprintln!(
+            "mask prepare progress={progress} elapsed_us={}",
+            start.elapsed().as_micros()
+        );
+        let compiled = pipelines
+            .masks
+            .get(
+                &renderer.gpu,
+                quality,
+                &program,
+                &renderer.budgets.resources,
+            )
+            .unwrap();
+        if let Some(weak) = &pipeline_identity {
+            assert!(Arc::ptr_eq(
+                &compiled,
+                &std::sync::Weak::upgrade(weak).unwrap()
+            ));
+        } else {
+            pipeline_identity = Some(Arc::downgrade(&compiled));
+        }
+        assert_eq!(pipelines.masks.len(), 1);
+        let pixels = renderer.readback(prepared).unwrap();
+        for y in (8..290).step_by(19) {
+            for x in (8..390).step_by(23) {
+                let local = transform.inverse()
+                    * reel_ui::kurbo::Point::new(x as f64 + 0.5, y as f64 + 0.5);
+                let uv = [local.x / 400., local.y / 300.];
+                if uv
+                    .iter()
+                    .any(|v| v.abs() < 0.015 || (*v - 1.).abs() < 0.015)
+                {
+                    continue;
+                }
+                let expected = if uv.iter().any(|v| !(0. ..=1.).contains(v)) {
+                    0.
+                } else {
+                    let a = sample(alphas[0], [uv[0] + offset as f64, uv[1]], true);
+                    let b = sample(alphas[1], [uv[0], 1. - uv[1]], false);
+                    let t = ((a * a + b * progress as f64 - 0.25) / 0.5).clamp(0., 1.);
+                    t * t * (3. - 2. * t) * 0.7
+                };
+                assert!(
+                    pixels[y * 400 + x]
+                        .iter()
+                        .all(|v| (*v as f64 - expected).abs() < 0.008),
+                    "pixel ({x},{y}) uv={uv:?} actual={:?} expected={expected}",
+                    pixels[y * 400 + x]
+                );
+            }
+        }
+    }
+    let equivalent =
+        MaskProgram::new(program.operations().to_vec(), vec!["c".into(), "d".into()]).unwrap();
+    let compiled = pipelines
+        .masks
+        .get(
+            &renderer.gpu,
+            quality,
+            &equivalent,
+            &renderer.budgets.resources,
+        )
+        .unwrap();
+    assert!(
+        Arc::ptr_eq(
+            &compiled,
+            &pipeline_identity.as_ref().unwrap().upgrade().unwrap()
+        ),
+        "changing image paths preserves a shared structure pipeline"
+    );
+    drop(compiled);
+    drop(equivalent);
+    let last = frame(1., 0.75);
+    let held = renderer.prepare(&last).unwrap();
+    drop(last);
+    drop(program);
+    drop(images);
+    pipelines.masks.prune();
+    assert_eq!(pipelines.masks.len(), 1, "prepared frame owns the program");
+    drop(held);
+    let before = renderer.usage().resources;
+    pipelines.masks.prune();
+    assert_eq!(pipelines.masks.len(), 0);
+    assert!(pipeline_identity.unwrap().upgrade().is_none());
+    assert!(
+        renderer.usage().resources < before,
+        "released pipeline metadata refunds its ticket"
+    );
+    renderer.retire(&versions);
+    assert_eq!(
+        renderer.usage().resources,
+        0,
+        "retired textures and pipelines refund all resource storage"
+    );
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn mask_expression_math_edges_and_budget_admission() {
+    use reel_ui::{
+        core::PaintImageMask,
+        stage::{MaskOp, MaskProgram},
+    };
+    let mut renderer = renderer(Default::default());
+    let pool = pool();
+    let c = |v: f32| MaskOp::Constant(v.to_bits());
+    let cases = [
+        (vec![c(-2.), MaskOp::Pow(0, 2_f32.to_bits())], 0.),
+        (vec![c(0.), MaskOp::Pow(0, 0_f32.to_bits())], 1.),
+        (
+            vec![c(1.), c(0.), c(0.25), MaskOp::Smoothstep(0, 1, 2)],
+            0.84375,
+        ),
+        (vec![c(0.5), MaskOp::Smoothstep(0, 0, 0)], 1.),
+        (vec![c(0.5), c(0.49), MaskOp::Smoothstep(0, 0, 1)], 0.),
+    ];
+    let quality = renderer.gpu.quality([400, 300]).unwrap();
+    let pipelines = renderer.pipelines.get(&renderer.gpu, quality).unwrap();
+    for (operations, expected) in cases {
+        let program = MaskProgram::new(operations, vec![]).unwrap();
+        let mut widget = RecordWidget::new(scene(Color::WHITE));
+        widget.clip = false;
+        widget.mask = Some(PaintImageMask {
+            program,
+            images: Vec::new().into(),
+            bounds: Rect::new(0., 0., 400., 300.),
+            parameters: [1., 0., 0., 0., 0.],
+        });
+        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+        let frame = build(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let pixels = renderer
+            .readback(renderer.prepare(&frame).unwrap())
+            .unwrap();
+        assert!(
+            pixels[150 * 400 + 200]
+                .iter()
+                .all(|v| (v - expected).abs() < 0.006),
+            "{expected} {:?}",
+            pixels[150 * 400 + 200]
+        );
+    }
+    pipelines.masks.prune();
+    assert_eq!(pipelines.masks.len(), 0);
+    let program = MaskProgram::new(vec![c(0.5)], vec![]).unwrap();
+    let empty = reel_core::budget::BudgetPool::new(
+        reel_core::budget::BudgetCategory::GpuResource,
+        reel_core::budget::QueueLimits {
+            max_requests: 100,
+            max_bytes: 1,
+        },
+    );
+    assert!(matches!(
+        pipelines
+            .masks
+            .get(&renderer.gpu, quality, &program, &empty),
+        Err(GpuError::Budget { .. })
+    ));
+    assert_eq!(empty.usage().bytes, 0);
+    assert_eq!(pipelines.masks.len(), 0);
+    let too_many = renderer
+        .gpu
+        .device
+        .limits()
+        .max_sampled_textures_per_shader_stage as usize;
+    let program = MaskProgram::new(
+        vec![c(0.5)],
+        (0..too_many).map(|i| format!("image{i}").into()).collect(),
+    )
+    .unwrap();
+    assert!(
+        pipelines
+            .masks
+            .get(
+                &renderer.gpu,
+                quality,
+                &program,
+                &renderer.budgets.resources
+            )
+            .is_err()
+    );
+    assert_eq!(pipelines.masks.len(), 0);
+    // Admission rejection leaves the renderer usable for the previously accepted content.
+    let plain = frame(scene(Color::WHITE), [400, 300], &pool);
+    let pixels = renderer
+        .readback(renderer.prepare(&plain).unwrap())
+        .unwrap();
+    assert!(pixels[0].iter().all(|v| (*v - 1.).abs() < 0.006));
 }
