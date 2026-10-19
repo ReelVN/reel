@@ -54,9 +54,13 @@ impl Activities {
             let fields = heap.alloc_table()?;
             let clock = action::kind(heap, action)? == action::Kind::Clock;
             if clock {
-                for (index, name) in ["ticks", "elapsed"].into_iter().enumerate() {
+                for (index, (name, initial)) in
+                    [("ticks", Value::int(0)), ("elapsed", Value::float(0.))]
+                        .into_iter()
+                        .enumerate()
+                {
                     let key = heap.alloc_string(name)?;
-                    heap.table_store(fields, index as u32, key, Value::float(0.))?;
+                    heap.table_store(fields, index as u32, key, initial)?;
                 }
             }
             let serial = self

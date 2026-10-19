@@ -132,9 +132,9 @@ impl Activities {
                     host: activity,
                     field: 0,
                 })?
-                .as_float()
+                .as_int()
                 .unwrap();
-            (ticks + 1.) * payload(heap, action, action::TIMES)?.as_float().unwrap()
+            (ticks as f64 + 1.) * payload(heap, action, action::TIMES)?.as_float().unwrap()
         } else {
             action::duration(heap, action)?
         };
@@ -222,8 +222,11 @@ impl Activities {
             let start = get(heap, leaf, Slot::StartedAt)?.as_float().unwrap();
             let interval = payload(heap, action, action::TIMES)?.as_float().unwrap();
             let ticks = ((self.target_time.max(time) - start) / interval).floor();
+            if ticks >= i64::MAX as f64 {
+                return Err(AdapterError::Input("clock tick count overflow"));
+            }
             self.remove_event(heap, leaf)?;
-            super::super::observable::publish(heap, activity, 0, Value::float(ticks))?;
+            super::super::observable::publish(heap, activity, 0, Value::int(ticks as i64))?;
             super::super::observable::publish(heap, activity, 1, Value::float(ticks * interval))?;
             return self.schedule(heap, leaf);
         }

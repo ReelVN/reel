@@ -486,7 +486,7 @@ StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声�
 
 ## 六 作用域 样式与状态
 
-`clock(interval: 1, owner: null)` 启动可观察的周期活动，复用活动图、期限索引、暂停/恢复/停止、等待和所有者退休。只读数值 `ticks` 与 `elapsed` 从 0 开始，仅在周期边界发布完整周期数与秒数；interval 必须有限且大于 0。长时钟步长合并为最新周期，不逐个补发，也不创建脚本回调。暂停不计时，停止后保留最后发布值；无终点的 clock 不能 finish。owner 规则与 run 相同。新增 native ABI 1，不改变 Aside 字节码/ASB；参见 examples/author_clock.aside。
+`clock(interval: 1, owner: null)` 启动可观察的周期活动，复用活动图、期限索引、暂停/恢复/停止、等待和所有者退休。只读 `ticks` 是 int 完整周期数，初值为整数 0，可直接用作索引或 slice 范围；`elapsed` 是 float 周期总秒数，初值为 0.0。仅在周期边界发布，elapsed 等于已完成周期数乘 interval；interval 必须有限且大于 0。长时钟步长合并为最新周期，不逐个补发，也不创建脚本回调。暂停不计时，停止后保留最后发布值；无终点的 clock 不能 finish。快照保存整数 ticks、浮点 elapsed、周期与暂停偏移，恢复后保留类型与下一期限。owner 规则与 run 相同。周期计数超出 int 范围时在发布前报错。clock native ABI 2，复用已有 Value 快照，不改变 VM/ASB/SessionSnapshot 格式；参见 examples/author_clock.aside。
 scope 已接通任务、活动、等待、临时节点和属性覆盖；加性偏移沿下述合同继续实现。范围为 aside-vm 原生回调屏障、reel-engine 所有权/调度/快照、私有演出消费者及规范和双语指南。独立 Aside 只认识 TaskId 与原生 FrameId：宿主可撤销指定原生回调区域，旧 ticket/wait 立即失效，按现有切片预算清理内层帧，保留外层 catch/finally，再以 CallbackCancelled 恢复该原生续体；整个任务撤销仍优先。清理期间的边界进入 VM 快照 7，SessionSnapshot 17；无新依赖。scope native ABI 3，源码与 ASB 共用。检查覆盖正常返回/错误、嵌套、节点退休、任务取消、旧完成、清理中及等待中恢复。VM 帧释放计入现有切片预算，宿主寿命检查线性访问当前活动作用域；登记容量计入 VM 堆预算，空闲不重建资源。
 
 `scope(body:, owner:null)` 通过 VM 的 CallScript/native continuation 在原 Task 中执行 body，返回 body 的结果，故障保留原身份。body 可接受零参数或一个作用域对象。作用域用普通宿主 owner 对象和 TaskId/FrameId 关联；`s.run(action)` 与 `s.spawn(work)` 显式归该作用域。run、spawn、clock、音视频、粒子、completion 与呈现请求默认继承当前作用域；子任务继续继承其资源 owner，显式 owner 转交生存范围。正常返回/异常退休 owner，后台资源沿现有账本清理，退场动画由 body 显式等待。附加 owner 撤销时，VM 只释放到指定 native 屏障，宿主退休资源后在原 scope 调用点交付 ScopeCancelled；外层主剧情仍可处理。硬撤销跳过区域内脚本 catch/finally，普通 return/throw 按语言规则展开。活动停止保留当前属性值。可运行示例为 [author_scope.aside](../examples/author_scope.aside)。

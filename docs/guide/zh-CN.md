@@ -534,7 +534,7 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 ## 四 时间顺序与同时发生的变化
 
-`clock(interval: 60, owner: panel)` 创建可绑定的周期时钟，ticks 是完整周期数，elapsed 是这些周期的总秒数，初始均为 0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，节点退休取消；clock 无终点，不能 finish。参见 [时钟示例](../../examples/author_clock.aside)。
+`clock(interval: 60, owner: panel)` 创建可绑定的周期时钟。只读 ticks 是 int 完整周期数，初值 0，可直接作为数组索引或字符串 slice 范围；elapsed 是这些周期的 float 总秒数，初值 0.0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，停止保留最后值，节点退休取消；clock 无终点，不能 finish。读档保留两者类型、已有计数和暂停状态，继续原周期。参见 [时钟示例](../../examples/author_clock.aside)。
 
 现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock.aside)。
 
