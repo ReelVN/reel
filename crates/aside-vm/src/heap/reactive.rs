@@ -1,6 +1,8 @@
 //! Read dependencies share heap ownership and weak reverse subscriptions.
 use super::*;
 
+mod freshness;
+
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum DerivedSlot {
@@ -535,79 +537,6 @@ impl Heap {
         !self.reactive_queue.is_empty() || self.reactive_capture.is_some()
     }
 
-    /// Check committed dependencies without running or dequeuing observers.
-    /// `evaluating` covers a scheduler's claimed output before begin_derived.
-    /// The reusable, accounted workspace visits each dependency once; callers
-    /// should use this at a publication boundary, not poll every derived value.
-    pub fn derived_is_current(
-        &mut self,
-        output: Value,
-        evaluating: Option<Value>,
-    ) -> Result<bool, HeapError> {
-        self.property_work.clear();
-        self.work_push(PropertyId {
-            host: output,
-            field: u32::MAX,
-        })?;
-        let mut cursor = 0;
-        while cursor < self.property_work.len() {
-            let mut current = self.property_work[cursor];
-            cursor += 1;
-            if current.field != u32::MAX {
-                current = self.property_source(current)?.0;
-            }
-            let object = self.object(self.key(current.host)?)?;
-            if !object.derived {
-                continue;
-            }
-            if object.derived_dirty
-                || evaluating.is_some_and(|v| v.same_bits(current.host))
-                || self
-                    .host_payload(current.host, DerivedSlot::Candidate as u32)?
-                    .tag()
-                    != crate::ValueTag::Null
-            {
-                return Ok(false);
-            }
-            // An untracked component factory also owns an unfinished capture.
-            let mut active = self.reactive_capture;
-            while let Some(value) = active {
-                if value.same_bits(current.host) {
-                    return Ok(false);
-                }
-                let parent = self.host_payload(value, DerivedSlot::Parent as u32)?;
-                active = (parent.tag() != crate::ValueTag::Null).then_some(parent);
-            }
-            let dependencies = self.host_payload(current.host, DerivedSlot::Dependencies as u32)?;
-            if dependencies.tag() == crate::ValueTag::Null {
-                continue;
-            }
-            for i in (0..self.sequence_len(dependencies)?).step_by(2) {
-                let mut next = PropertyId {
-                    host: self.sequence_get(dependencies, i)?,
-                    field: self.sequence_get(dependencies, i + 1)?.as_int().unwrap() as u32,
-                };
-                if next.field != u32::MAX {
-                    next = self.property_source(next)?.0;
-                }
-                // Plain model/collection writes already mark their direct
-                // observer dirty. Only derived ancestors need further visits.
-                if !self.object(self.key(next.host)?)?.derived {
-                    continue;
-                }
-                next.field = u32::MAX;
-                if !self
-                    .property_work
-                    .iter()
-                    .any(|p| p.host.same_bits(next.host) && p.field == next.field)
-                {
-                    self.work_push(next)?;
-                }
-            }
-        }
-        Ok(true)
-    }
-
     pub fn next_derived(&mut self) -> Result<Option<Value>, HeapError> {
         while let Some(key) = self.reactive_queue.pop_front() {
             let Some(object) = self.objects.get_mut(key) else {
@@ -1042,9 +971,16 @@ mod tests {
             let start = std::time::Instant::now();
             heap.commit_derived(output, Value::NULL).unwrap();
             let commit = start.elapsed();
+            let before_freshness = heap.stats().charged_bytes;
             let start = std::time::Instant::now();
             assert!(heap.derived_is_current(output, None).unwrap());
             let freshness = start.elapsed();
+            let freshness_charge = heap.stats().charged_bytes - before_freshness;
+            let start = std::time::Instant::now();
+            for _ in 0..100 {
+                assert!(heap.derived_is_current(output, None).unwrap());
+            }
+            let freshness_stable = start.elapsed() / 100;
             let downstream = heap.alloc_derived(Value::NULL).unwrap();
             heap.begin_derived(downstream).unwrap();
             heap.observe_read(output, Some(0)).unwrap();
@@ -1053,7 +989,7 @@ mod tests {
             let downstream_commit = start.elapsed();
             let stats = heap.stats();
             eprintln!(
-                "model-dependencies rows={n} generation={generation:?} capture={capture:?} commit={commit:?} downstream_commit={downstream_commit:?} freshness={freshness:?} capture_alloc_live={} capture_alloc_peak={} added_charge={} charge={} peak_charge={}",
+                "model-dependencies rows={n} generation={generation:?} capture={capture:?} commit={commit:?} downstream_commit={downstream_commit:?} freshness_cold={freshness:?} freshness_stable={freshness_stable:?} freshness_charge={freshness_charge} capture_alloc_live={} capture_alloc_peak={} added_charge={} charge={} peak_charge={}",
                 allocation.bytes_current,
                 allocation.bytes_max,
                 stats.charged_bytes - before,

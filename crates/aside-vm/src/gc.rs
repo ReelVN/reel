@@ -366,6 +366,22 @@ impl Heap {
                 p.units += 1;
                 return true;
             }
+            Payload::Dependencies(d) if d.ancestors.capacity() != 0 => {
+                drop(std::mem::take(&mut d.ancestors));
+                p.units += 1;
+                return true;
+            }
+            Payload::Dependencies(d) if d.ancestor_reserved != 0 => {
+                let released = d
+                    .ancestor_reserved
+                    .min(VALUE_CHUNK_BYTES)
+                    .min(budget.bytes.saturating_sub(p.bytes));
+                if released == 0 {
+                    return false;
+                }
+                d.ancestor_reserved -= released;
+                released
+            }
             Payload::Dependencies(d) if !d.index.is_empty() => {
                 d.index.pop_first();
                 if d.index.is_empty() {
