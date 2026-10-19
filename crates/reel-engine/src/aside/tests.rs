@@ -12,6 +12,7 @@ mod models;
 mod particles;
 mod results;
 mod rich_text;
+mod scopes;
 mod snapshots;
 mod tasks;
 mod video;

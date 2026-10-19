@@ -202,6 +202,9 @@ fn state(heap: &mut Heap, object: Value) -> Result<State, AdapterError> {
 pub(super) fn pending(heap: &mut Heap, object: Value) -> Result<bool, AdapterError> {
     Ok(state(heap, object)? == State::Pending)
 }
+pub(super) fn owner(heap: &Heap, object: Value) -> Result<Value, AdapterError> {
+    Ok(heap.host_payload(object, Slot::Owner as u32)?)
+}
 fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, AdapterError> {
     let state = state(heap, object)?;
     let value = heap.host_payload(object, Slot::Value as u32)?;
@@ -570,8 +573,12 @@ impl SessionVm {
         symbol: &str,
     ) -> Result<(), AdapterError> {
         let arguments = self.vm.host_arguments(ticket)?;
-        let object = arguments[0];
-        if symbol == "reel::spawn" {
+        let object = if symbol == "reel::scope::spawn" {
+            arguments[1]
+        } else {
+            arguments[0]
+        };
+        if matches!(symbol, "reel::spawn" | "reel::scope::spawn") {
             if ticket.context.no_wait || ticket.context.init || ticket.context.derived {
                 return Err(AdapterError::Vm(aside_vm::executor::VmError::Effect));
             }
@@ -582,18 +589,16 @@ impl SessionVm {
             {
                 return Err(AdapterError::Input("spawn requires a function"));
             }
-            let owner = if arguments[1].tag() == ValueTag::Null {
+            let owner = if symbol == "reel::scope::spawn" {
+                arguments[0]
+            } else if arguments[1].tag() == ValueTag::Null {
                 self.default_activity_owner(ticket.task)?
             } else {
                 arguments[1]
             };
-            let node = if owner.tag() == ValueTag::Null {
-                None
-            } else {
-                Some(self.stage.id(self.vm.heap(), owner)?)
-            };
+            super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
             let result = self.results.create(&mut self.vm, owner, Kind::Task)?;
-            self.start_owned_task(session, node, object, &[], Some(result))?;
+            self.start_owned_task(session, None, object, &[], Some(result))?;
             self.vm.respond(ticket, HostResponse::Ready(result))?;
             self.issued = None;
             return Ok(());
@@ -638,9 +643,7 @@ impl SessionVm {
                 } else {
                     object
                 };
-                if owner.tag() != ValueTag::Null {
-                    self.stage.id(self.vm.heap(), owner)?;
-                }
+                super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
                 let kind = if presentation {
                     Kind::Presentation
                 } else {

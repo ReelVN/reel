@@ -147,7 +147,7 @@ impl SessionVm {
             args[4]
         };
         if owner.tag() != ValueTag::Null {
-            self.stage.id(self.vm.heap(), owner)?;
+            super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         }
         let result = self.results.create_window(&mut self.vm, owner)?;
         let root = self

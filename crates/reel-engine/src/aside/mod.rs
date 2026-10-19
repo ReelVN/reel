@@ -24,6 +24,7 @@ mod particles;
 mod publication;
 mod registry;
 mod results;
+mod scopes;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
 mod rich_text;
 pub mod saves;
@@ -202,6 +203,7 @@ pub struct SessionVm {
     task: Option<TaskId>,
     main_wait: Option<WaitId>,
     tasks: Vec<callbacks::ScriptTask>,
+    scopes: scopes::Scopes,
     schedule_cursor: usize,
     derived_task: Option<TaskId>,
     reactive_ready: bool,
@@ -267,6 +269,7 @@ impl SessionVm {
             task: None,
             main_wait: None,
             tasks: Vec::new(),
+            scopes: scopes::Scopes::default(),
             schedule_cursor: 0,
             derived_task: None,
             reactive_ready: true,
@@ -579,6 +582,7 @@ impl SessionVm {
             "reel::completion"
             | "reel::stage::presented"
             | "reel::spawn"
+            | "reel::scope::spawn"
             | "reel::task::cancel"
             | "reel::completion::resolve"
             | "reel::completion::reject"
@@ -630,9 +634,17 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work })
             }
-            "reel::run" | "reel::clock" => {
+            "reel::scope" => {
+                self.dispatch_scope(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::run" | "reel::clock" | "reel::scope::run" => {
                 let args = self.vm.host_arguments(ticket)?;
-                let [action, owner] = [args[0], args[1]];
+                let [action, owner] = if symbol == "reel::scope::run" {
+                    [args[1], args[0]]
+                } else {
+                    [args[0], args[1]]
+                };
                 let owner = if owner.tag() == aside_vm::ValueTag::Null {
                     self.default_activity_owner(ticket.task)?
                 } else {
@@ -893,13 +905,6 @@ impl SessionVm {
             } else {
                 self.callback_owner(session, ticket.task) != Some(ticket.owner)
             }
-            || !matches!(
-                ticket.input,
-                NativeInput::Entry
-                    | NativeInput::Continue { .. }
-                    | NativeInput::CallbackReturned
-                    | NativeInput::CallbackFault
-            )
         {
             return Err(AdapterError::Input("foreign or consumed native ticket"));
         }
@@ -1252,6 +1257,9 @@ impl SessionVm {
         }
         for index in 0..self.tasks.len() {
             self.cancel_callback(session, index)?;
+        }
+        if let Some(task) = self.task {
+            self.cancel_task_scopes(task)?;
         }
         for index in 0..session.owners.len() {
             let peer = session.owners[index].handle;

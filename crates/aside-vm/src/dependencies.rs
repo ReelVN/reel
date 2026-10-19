@@ -57,7 +57,7 @@ impl Dependencies {
         self.values.push(selector);
     }
     pub fn restore_bytes(&self, value: Value) -> Result<u64, HeapError> {
-        if self.values.len % 2 == 0 {
+        if self.values.len.is_multiple_of(2) {
             value.object_parts().ok_or(HeapError::WrongKind)?;
         } else {
             let source = self.values.get(self.values.len - 1).unwrap();

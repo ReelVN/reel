@@ -103,6 +103,7 @@ struct SavedTask {
     delivery: Option<RootRangeToken>,
     terminal: Option<Terminal>,
     cancelling: bool,
+    cancel_boundary: Option<FrameId>,
     task_owner: Option<RootOwner>,
     task_id: Option<TaskId>,
     root_owner: RootOwner,
@@ -123,6 +124,7 @@ impl SavedTask {
             delivery: task.delivery,
             terminal: task.terminal,
             cancelling: task.cancelling,
+            cancel_boundary: task.cancel_boundary,
             task_owner: task.task_owner,
             task_id: task.task_id,
             root_owner: task.root_owner,
@@ -157,6 +159,7 @@ impl SavedTask {
         }
         task.terminal = self.terminal;
         task.cancelling = self.cancelling;
+        task.cancel_boundary = self.cancel_boundary;
         task.task_owner = self.task_owner;
         task.task_id = self.task_id.map(|t| map.task(t)).transpose()?;
         task.root_owner = self.root_owner;

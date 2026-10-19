@@ -55,6 +55,8 @@ struct Header {
 pub(super) enum Part {
     Header,
     Task,
+    Scopes,
+    Scope,
     Pending,
     ChoiceKey,
     Narrative,
@@ -108,7 +110,7 @@ pub struct SessionSnapshot {
     committed_save: Option<saves::SaveRequestId>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 12;
+    pub const FORMAT_VERSION: u32 = 13;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -200,7 +202,16 @@ impl SessionVm {
                         },
                     )
                 })
-                .chain(self.tasks.iter().map(|task| Record::new(Part::Task, task))),
+                .chain(self.tasks.iter().map(|task| Record::new(Part::Task, task)))
+                .chain(once_with(|| {
+                    Record::new(Part::Scopes, &self.scopes.methods)
+                }))
+                .chain(
+                    self.scopes
+                        .live
+                        .iter()
+                        .map(|scope| Record::new(Part::Scope, scope)),
+                ),
             ),
             Box::new(
                 once_with(|| Record::new(Part::Pending, &self.pending)).chain(
@@ -495,6 +506,12 @@ impl SessionRestore<'_> {
                         task.result = task.result.map(|r| map.root(r)).transpose()?;
                         task.wait = task.wait.map(|w| map.wait(w)).transpose()?;
                         runtime.tasks.push(task);
+                    }
+                    Part::Scopes => runtime.scopes.methods = record.read()?,
+                    Part::Scope => {
+                        runtime
+                            .scopes
+                            .restore(record.read()?, map, runtime.vm.heap())?
                     }
                     Part::Pending => {
                         let mut pending: Option<PendingInteraction> = record.read()?;

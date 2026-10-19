@@ -62,7 +62,7 @@ impl SessionVm {
             args[2]
         };
         if owner.tag() != ValueTag::Null {
-            self.stage.id(self.vm.heap(), owner)?;
+            super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         }
         results::reserve_queue(
             self.vm.heap(),

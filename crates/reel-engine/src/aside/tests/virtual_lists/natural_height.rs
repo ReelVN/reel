@@ -84,13 +84,12 @@ fn virtual_list_natural_height_keeps_anchor_on_measurement_resize_and_rejects_ol
         feedback(&mut vm, &mut session, 500., 320., &[]);
     }
     let old_offset = offset(&vm);
-    let anchor = view(&vm)
+    let anchor = *view(&vm)
         .rows
         .iter()
         .rev()
         .find(|r| r.offset <= old_offset)
-        .unwrap()
-        .clone();
+        .unwrap();
     let within = anchor.offset - old_offset;
     let mut measured = event(&vm, old_offset, 280., &[]);
     for item in std::sync::Arc::make_mut(&mut measured.measurements) {
@@ -169,7 +168,7 @@ fn virtual_list_natural_height_cost() {
                 SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
                     if !vm.has_runnable_tasks() =>
                 {
-                    vm.sync_stage(&mut session).unwrap();
+                    vm.sync_stage(&session).unwrap();
                     break;
                 }
                 SessionStep::Vm(RunOutcome::Fault(id)) => {

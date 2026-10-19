@@ -349,7 +349,7 @@ pub(crate) fn allocate(
                 }
                 Layout::Values if meta.kind.values() => Payload::Values(Values::default()),
                 Layout::Dependencies
-                    if meta.kind == ObjectKind::Dependencies && meta.len % 2 == 0 =>
+                    if meta.kind == ObjectKind::Dependencies && meta.len.is_multiple_of(2) =>
                 {
                     heap.ensure_bytes(crate::dependencies::BASE_BYTES)?;
                     Payload::Dependencies(Box::default())

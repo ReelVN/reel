@@ -17,6 +17,17 @@ pub(super) struct ScriptTask {
     #[serde(skip)]
     pending_move: Option<(Option<Value>, Value)>,
 }
+impl ScriptTask {
+    fn lifetime_live(&self, heap: &aside_vm::Heap, stage: &stage::StageBinding) -> bool {
+        if let Some(root) = self.result {
+            let result = heap.root_value(root).expect("task result root");
+            scopes::owner_live(heap, results::owner(heap, result).expect("task owner"))
+        } else {
+            self.node
+                .is_none_or(|node| stage.scene.node(node).is_some())
+        }
+    }
+}
 
 impl SessionVm {
     pub fn input_pointer(
@@ -369,7 +380,8 @@ impl SessionVm {
         if self.derived_task.is_some() || self.vm.heap().derived_pending() {
             return true;
         }
-        self.particles.needs_work(self.stage.scene.revision())
+        self.scopes_pending()
+            || self.particles.needs_work(self.stage.scene.revision())
             || self.results.needs_work(self.stage.scene.revision())
             || self.issued.is_some()
             || self.task.is_some()
@@ -378,9 +390,7 @@ impl SessionVm {
                     .is_none_or(|wait| !self.vm.wait_is_pending(wait))
             || self.tasks.iter().any(|callback| {
                 callback.cancelling
-                    || callback
-                        .node
-                        .is_some_and(|node| self.stage.scene.node(node).is_none())
+                    || !callback.lifetime_live(self.vm.heap(), &self.stage)
                     || callback
                         .wait
                         .is_none_or(|wait| !self.vm.wait_is_pending(wait))
@@ -407,12 +417,22 @@ impl SessionVm {
                 c.task == task
                     && !c.cancelling
                     && session.is_owner_live(c.owner)
-                    && c.node
-                        .is_none_or(|node| self.stage.scene.node(node).is_some())
+                    && c.lifetime_live(self.vm.heap(), &self.stage)
             })
             .map(|c| RootOwner(c.owner.owner_id().0))
     }
     pub(super) fn default_activity_owner(&self, task: TaskId) -> Result<Value, AdapterError> {
+        if let Some(scope) = self.current_scope(task)? {
+            return Ok(scope);
+        }
+        if let Some(root) = self
+            .tasks
+            .iter()
+            .find(|c| c.task == task)
+            .and_then(|c| c.result)
+        {
+            return results::owner(self.vm.heap(), self.vm.heap().root_value(root)?);
+        }
         match self
             .tasks
             .iter()
@@ -429,6 +449,7 @@ impl SessionVm {
         session: &mut Session,
         index: usize,
     ) -> Result<(), AdapterError> {
+        self.cancel_task_scopes(self.tasks[index].task)?;
         let callback = &mut self.tasks[index];
         if !callback.cancelling {
             callback.pending_move = None;
@@ -508,11 +529,10 @@ impl SessionVm {
             self.sync_narrative(session)?;
         }
         self.deliver_completion(session)?;
+        self.maintain_scopes(session)?;
         for index in 0..self.tasks.len() {
             let callback = &self.tasks[index];
-            if callback
-                .node
-                .is_some_and(|node| self.stage.scene.node(node).is_none())
+            if !callback.lifetime_live(self.vm.heap(), &self.stage)
                 || !session.is_owner_live(callback.owner)
             {
                 self.cancel_callback(session, index)?;

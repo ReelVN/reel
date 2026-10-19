@@ -346,6 +346,7 @@ struct TaskState {
     delivery: Option<RootRangeToken>,
     terminal: Option<Terminal>,
     cancelling: bool,
+    cancel_boundary: Option<FrameId>,
     task_owner: Option<RootOwner>,
     task_id: Option<TaskId>,
     root_owner: RootOwner,
@@ -407,6 +408,7 @@ impl TaskState {
             delivery,
             terminal: None,
             cancelling: false,
+            cancel_boundary: None,
             task_owner: None,
             task_id: None,
             root_owner: RootOwner(u64::MAX),
@@ -1881,7 +1883,30 @@ impl Vm {
         self.select_task(task)?;
         self.cancel_active()
     }
+    /// Revoke a native callback's inner frames while retaining its continuation.
+    /// Tickets and waits become invalid immediately; slices reclaim the frames
+    /// before returning `CallbackCancelled` to the named native frame.
+    pub fn cancel_host_callback(&mut self, task: TaskId, frame: FrameId) -> Result<bool, VmError> {
+        self.select_task(task)?;
+        if self.active.cancelling
+            && self
+                .active
+                .cancel_boundary
+                .is_none_or(|boundary| boundary.0 <= frame.0)
+        {
+            return Ok(false);
+        }
+        if !self.active.frames.data.iter().any(|candidate| {
+            matches!(candidate, Frame::Native(n) if n.id == frame && n.continuation_active)
+        }) {
+            return Ok(false);
+        }
+        self.cancel_active()?;
+        self.active.cancel_boundary = Some(frame);
+        Ok(true)
+    }
     fn cancel_active(&mut self) -> Result<(), VmError> {
+        self.active.cancel_boundary = None;
         if self.active.cancelling {
             return Ok(());
         }
@@ -1988,7 +2013,10 @@ impl Vm {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
             if self.active.cancelling {
-                if !self.active.caught.data.is_empty() {
+                let boundary = self.active.cancel_boundary;
+                if self.active.caught.data.last().is_some_and(|caught| {
+                    boundary.is_none_or(|boundary| caught.frame.0 > boundary.0)
+                }) {
                     if !m.take(0, 1, 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
@@ -2005,7 +2033,9 @@ impl Vm {
                     self.active.equality_cursors.data.pop();
                     continue;
                 }
-                if let Some(u) = self.active.unwinds.data.last().copied() {
+                if let Some(u) = self.active.unwinds.data.last().copied()
+                    && boundary.is_none_or(|boundary| u.frame.0 > boundary.0)
+                {
                     if !m.take(0, self.release_cost(1), 0) {
                         return Ok(RunOutcome::BudgetYield(m.usage));
                     }
@@ -2014,6 +2044,23 @@ impl Vm {
                     continue;
                 }
                 if let Some(f) = self.active.frames.data.last().copied() {
+                    if boundary == Some(f.id()) {
+                        if !m.take(0, 4, 0) {
+                            return Ok(RunOutcome::BudgetYield(m.usage));
+                        }
+                        let Frame::Native(mut native) = f else {
+                            unreachable!("callback boundary is a native frame")
+                        };
+                        self.put(native.roots, 0, Value::NULL)?;
+                        self.clear(native.roots, self.native_pending_slot())?;
+                        native.callback_fault = None;
+                        native.pending_fault = None;
+                        native.phase = NativePhase::Resume(NativeInput::CallbackCancelled);
+                        *self.active.frames.data.last_mut().unwrap() = Frame::Native(native);
+                        self.active.cancelling = false;
+                        self.active.cancel_boundary = None;
+                        continue;
+                    }
                     let count = match f {
                         Frame::Script(_) => 4,
                         Frame::Native(n) => n.root_count(),

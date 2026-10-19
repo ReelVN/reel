@@ -806,14 +806,13 @@ mod tests {
                 })
                 .unwrap();
             assert!(progress.units <= 1);
-            if let Ok(key) = heap.key(candidate) {
-                if let Some(object) = heap.objects.get(key) {
-                    if let Payload::Dependencies(d) = &object.payload {
-                        assert!(previous_index_len - d.index.len() <= 1);
-                        previous_index_len = d.index.len();
-                        examined_release |= d.index.len() < 100;
-                    }
-                }
+            if let Ok(key) = heap.key(candidate)
+                && let Some(object) = heap.objects.get(key)
+                && let Payload::Dependencies(d) = &object.payload
+            {
+                assert!(previous_index_len - d.index.len() <= 1);
+                previous_index_len = d.index.len();
+                examined_release |= d.index.len() < 100;
             }
         }
         assert!(examined_release);

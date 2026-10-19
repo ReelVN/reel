@@ -22,7 +22,7 @@ pub(in crate::aside) fn presentation_current(
     owner: Value,
     evaluating: Option<Value>,
 ) -> Result<bool, AdapterError> {
-    if owner.tag() == ValueTag::Null {
+    if owner.tag() == ValueTag::Null || crate::aside::scopes::is_scope(heap, owner) {
         return Ok(true);
     }
     let id = stage.id(heap, owner)?;
@@ -72,11 +72,11 @@ impl SessionVm {
         &mut self,
         scroll: NodeId,
     ) -> Result<(), AdapterError> {
-        if let Some(s) = self.virtual_scroll_state(scroll)? {
-            if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null {
-                self.virtual_target_cancel(s)?;
-                self.virtual_target_demand(s)?;
-            }
+        if let Some(s) = self.virtual_scroll_state(scroll)?
+            && get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null
+        {
+            self.virtual_target_cancel(s)?;
+            self.virtual_target_demand(s)?;
         }
         Ok(())
     }
