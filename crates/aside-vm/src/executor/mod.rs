@@ -1093,6 +1093,17 @@ impl Vm {
     ) -> Result<TaskId, VmError> {
         self.start_impl(function, None, args, owner, context)
     }
+    /// Whether a callable declares any parameters beyond its prebound receiver.
+    /// Rest parameters count; this does not relax ordinary argument validation.
+    pub fn callable_has_parameters(&self, callable: Value) -> Result<bool, VmError> {
+        let function = self.closure_function(callable)?;
+        let receiver = self.script_receiver(callable)?.is_some()
+            || self.callable_receiver(callable)?.is_some();
+        let package = self.program.package();
+        let signature = &package.signatures[package.functions[function.index()].signature.index()];
+        Ok(signature.parameters.len() > usize::from(receiver) || signature.rest.is_some())
+    }
+
     pub fn start_closure(
         &mut self,
         closure: Value,

@@ -12,9 +12,10 @@ pub(super) struct ScriptTask {
     pub wait: Option<WaitId>,
     pub cancelling: bool,
     // The not-yet-run VM argument roots this event. Once execution starts its
-    // coordinates are immutable, even if the callback later awaits.
+    // coordinates are immutable, even if the callback later awaits. A zero-argument
+    // handler retains only the coalescing marker, with no event value.
     #[serde(skip)]
-    pending_move: Option<(Value, Value)>,
+    pending_move: Option<(Option<Value>, Value)>,
 }
 
 impl SessionVm {
@@ -35,9 +36,11 @@ impl SessionVm {
             && let Some((event, handler)) = pending.pending_move
             && handler.same_bits(callback)
         {
-            let heap = self.vm.heap_mut();
-            super::observable::publish(heap, event, 1, Value::float(input.position.x))?;
-            super::observable::publish(heap, event, 2, Value::float(input.position.y))?;
+            if let Some(event) = event {
+                let heap = self.vm.heap_mut();
+                super::observable::publish(heap, event, 1, Value::float(input.position.x))?;
+                super::observable::publish(heap, event, 2, Value::float(input.position.y))?;
+            }
             return Ok(true);
         }
         let phase = match input.phase {
@@ -60,7 +63,8 @@ impl SessionVm {
         )?;
         self.start_callback(session, input.node, callback, event)?;
         if input.phase == PointerPhase::Moved {
-            self.tasks.last_mut().unwrap().pending_move = Some((event, callback));
+            let argument = self.vm.callable_has_parameters(callback)?.then_some(event);
+            self.tasks.last_mut().unwrap().pending_move = Some((argument, callback));
         }
         Ok(true)
     }
@@ -288,7 +292,13 @@ impl SessionVm {
         closure: Value,
         event: Value,
     ) -> Result<bool, AdapterError> {
-        self.start_owned_task(session, Some(node), closure, &[event], None)?;
+        let arguments = [event];
+        let arguments = if self.vm.callable_has_parameters(closure)? {
+            &arguments[..]
+        } else {
+            &[]
+        };
+        self.start_owned_task(session, Some(node), closure, arguments, None)?;
         Ok(true)
     }
 

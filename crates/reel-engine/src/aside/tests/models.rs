@@ -56,7 +56,7 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
             }
             SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
             SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
-                if !vm.has_runnable_tasks() =>
+                if !vm.has_runnable_tasks() && !vm.activities_pending() =>
             {
                 vm.sync_stage(session).unwrap();
                 return copies;
