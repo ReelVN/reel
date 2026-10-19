@@ -1345,7 +1345,7 @@ spray.remove();
 
 ### 查询已显示的节点位置
 
-`stage.geometry(node, relative_to: overlay, owner: root)` 等待请求后真正显示的帧，返回一次只读几何快照。width/height 是节点自身尺寸；bounds 给出参考空间中的 x/y/width/height，transform 的 a/b/c/d/tx/ty 将节点局部点映射到参考空间。省略 relative_to 使用逻辑舞台坐标；可指定兄弟浮层或祖先，包含滚动、相机、旋转与镜像，不裁剪。
+`stage.geometry(node, relative_to: overlay, owner: root)` 等待请求后真正显示的帧，返回一次只读几何快照。查询绑定该帧录制时已发布的布局；尚未呈现的属性修改不会混入旧帧。width/height 是节点自身尺寸；bounds 给出参考空间中的 x/y/width/height，transform 的 a/b/c/d/tx/ty 将节点局部点映射到参考空间。省略 relative_to 使用逻辑舞台坐标；可指定兄弟浮层或祖先，包含滚动、相机、旋转与镜像，不裁剪。
 
 ```aside
 overlay.visible = true;

@@ -304,19 +304,20 @@ impl AsideSessionUi {
     pub fn projection_stamp(&self) -> ProjectionStamp {
         self.ui.projection_stamp()
     }
-    pub fn recorded(
+    pub fn record(
         &self,
-        bridge: &PresentationBridge,
-        source: &reel_ui::bridge::RecordedSource,
-    ) -> Result<RecordedProjection, Error> {
-        let mut frame = self.ui.recorded(source);
-        frame.geometry = Some(
-            self.vm
-                .record_geometry(frame.stamp.presentation_request, |query| {
-                    self.ui.read_geometry(bridge, source, query)
-                })?,
-        );
-        Ok(frame)
+        bridge: &mut PresentationBridge,
+        id: reel_core::identity::FrameId,
+    ) -> Result<(reel_ui::bridge::RecordedSource, RecordedProjection), Error> {
+        let (source, mut frame) = self.ui.record(bridge, id)?;
+        frame.geometry = Some(self.vm.record_geometry(
+            frame.stamp.presentation_request,
+            |query| {
+                self.ui
+                    .read_geometry(bridge, &source, frame.stage_widget, query)
+            },
+        )?);
+        Ok((source, frame))
     }
     pub fn presented(
         &mut self,

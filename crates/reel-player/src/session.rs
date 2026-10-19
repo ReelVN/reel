@@ -824,7 +824,7 @@ pub struct SessionUi {
     scroll: Rc<Cell<f64>>,
     stage: Option<StageView>,
     stage_dirty: bool,
-    stage_widget: Option<WidgetId>,
+    session_widget: Option<WidgetId>,
     pending_stage: Option<StageView>,
     images: crate::images::Images,
     playback: playback::Playback,
@@ -869,7 +869,7 @@ impl SessionUi {
             scroll: Rc::new(Cell::new(0.)),
             stage: None,
             stage_dirty: false,
-            stage_widget: None,
+            session_widget: None,
             pending_stage: None,
             playback: Default::default(),
             preview,
@@ -1059,6 +1059,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root_id: WidgetId,
     ) -> Result<(), Error> {
+        self.session_widget = Some(root_id);
         bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
         let images_ready = self.images.poll()?;
         if self.images.metadata_ready() && !self.images.manifests.is_empty() {
@@ -1133,7 +1134,6 @@ impl SessionUi {
                 SessionWidget::sync(&mut widget, self);
                 widget.widget.stage.id()
             });
-            self.stage_widget = Some(stage_id);
             self.input_fallback = bridge
                 .root()
                 .get_widget(stage_id)
@@ -1490,8 +1490,12 @@ mod tests {
         )
     }
     pub(super) fn accept(ui: &mut SessionUi, bridge: &mut PresentationBridge, frame: u64) {
-        let source = bridge.record(FrameId(frame)).unwrap();
-        let stamp = ui.recorded(&source);
+        // Native preview fixtures mount their initial projection before the first frame.
+        if ui.session_widget.is_none() {
+            let root = bridge.root().get_layer_root(0).id();
+            ui.sync(bridge, root).unwrap();
+        }
+        let (source, stamp) = ui.record(bridge, FrameId(frame)).unwrap();
         assert_eq!(
             bridge.resolve(PresentationNotice::new(
                 source.key(),
@@ -1566,9 +1570,9 @@ mod tests {
             resources: (&ResourceRegistry, &[ResourceHandle]),
         ) -> Vec<(WidgetId, String)> {
             driver.sync(bridge, root).unwrap();
-            let source = bridge.record(FrameId(frame)).unwrap();
+            let (source, receipt) = driver.record(bridge, FrameId(frame)).unwrap();
             let key = source.key();
-            let receipt = driver.recorded(&bridge, &source).unwrap();
+
             let pool = BudgetPool::new(
                 BudgetCategory::CpuOutput,
                 QueueLimits {

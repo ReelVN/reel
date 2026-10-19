@@ -104,9 +104,9 @@ fn render(story: CompiledStory, assets: &Path) -> RenderFrame {
             max_bytes: 32 << 20,
         },
     );
-    let source = bridge.record(FrameId(1)).unwrap();
+    let (source, receipt) = driver.record(&mut bridge, FrameId(1)).unwrap();
     let key = source.key();
-    let receipt = driver.recorded(&bridge, &source).unwrap();
+
     let resources =
         ResourceSnapshot::capture(driver.ui().image_resources().iter().cloned().map(Ok), &pool)
             .unwrap();

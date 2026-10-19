@@ -12,6 +12,7 @@ use reel_ui::{
 pub struct RecordedProjection {
     pub(crate) key: CandidateKey,
     pub(crate) stamp: ProjectionStamp,
+    pub(crate) stage_widget: WidgetId,
     pub(crate) identity: Option<StageIdentity>,
     pub(crate) geometry: Option<GeometryReplies>,
 }
@@ -53,29 +54,54 @@ fn geometry(
     })
 }
 impl SessionUi {
-    /// Freeze the projection watermark beside the source produced by bridge.record().
-    pub fn recorded(&self, source: &RecordedSource) -> RecordedProjection {
-        RecordedProjection {
+    /// Record the actual widget tree and its projection identity in one operation.
+    /// Pending model edits cannot advance the watermark until sync publishes them.
+    pub fn record(
+        &self,
+        bridge: &mut PresentationBridge,
+        id: reel_core::identity::FrameId,
+    ) -> Result<(RecordedSource, RecordedProjection), Error> {
+        let root = self
+            .session_widget
+            .ok_or("sync the session widget before recording")?;
+        let source = bridge
+            .record(id)
+            .map_err(|error| format!("record: {error:?}"))?;
+        let widget = bridge
+            .root()
+            .get_widget(root)
+            .and_then(|widget| widget.downcast::<SessionWidget>())
+            .ok_or("recorded session widget is unavailable")?;
+        let stage_widget = widget.stage.id();
+        let stage = bridge
+            .root()
+            .get_widget(stage_widget)
+            .and_then(|widget| widget.downcast::<StageWidget>())
+            .ok_or("recorded stage widget is unavailable")?;
+        let receipt = RecordedProjection {
             key: source.key(),
-            stamp: self.projection_stamp(),
-            identity: self.stage.as_ref().and_then(|view| view.identity.clone()),
+            stamp: widget.current_stamp(),
+            stage_widget,
+            identity: stage.identity.clone(),
             geometry: None,
-        }
+        };
+        Ok((source, receipt))
     }
     pub(crate) fn read_geometry(
         &self,
         bridge: &PresentationBridge,
         source: &RecordedSource,
+        stage_widget: WidgetId,
         query: GeometryQuery,
     ) -> Option<NodeGeometry> {
         let stage = bridge
             .root()
-            .get_widget(self.stage_widget?)?
+            .get_widget(stage_widget)?
             .downcast::<StageWidget>()?;
         let node = stage.node_widget(query.node)?;
         let relative = match query.relative_to {
             Some(node) => stage.node_widget(node)?,
-            None => self.stage_widget?,
+            None => stage_widget,
         };
         geometry(source.geometry(), node, relative)
     }

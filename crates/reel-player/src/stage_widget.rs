@@ -553,7 +553,7 @@ pub(crate) struct StageWidget {
     nodes: BTreeMap<NodeId, WidgetId>,
     root: Option<WidgetPod<SceneWidget>>,
     root_id: Option<NodeId>,
-    identity: Option<StageIdentity>,
+    pub(crate) identity: Option<StageIdentity>,
     root_props: reel_ui::stage::NodeProps,
 }
 impl StageWidget {

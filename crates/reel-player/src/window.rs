@@ -1053,10 +1053,16 @@ fn build_frame(
     session: Option<&WindowSession>,
     recorded_projection: &mut Option<RecordedProjection>,
 ) -> Result<RenderFrame, Error> {
-    let source = bridge.record(id).map_err(|e| format!("record: {e:?}"))?;
-    *recorded_projection = session
-        .map(|session| session.recorded(bridge, &source))
-        .transpose()?;
+    let source = if let Some(session) = session {
+        let (source, receipt) = session.record(bridge, id)?;
+        *recorded_projection = Some(receipt);
+        source
+    } else {
+        *recorded_projection = None;
+        bridge
+            .record(id)
+            .map_err(|error| format!("record: {error:?}"))?
+    };
     let images = session.map_or(&[][..], |session| session.ui().image_resources());
     let snapshot = reel_ui::resources::ResourceSnapshot::capture(
         (0..resources.len() + images.len()).map(|index| {

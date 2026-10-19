@@ -170,8 +170,7 @@ fn present(
     frame: u64,
 ) {
     runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
-    let recording = bridge.record(FrameId(frame)).unwrap();
-    let stamp = runtime.driver().recorded(bridge, &recording).unwrap();
+    let (recording, stamp) = runtime.driver().record(bridge, FrameId(frame)).unwrap();
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
             recording.key(),
@@ -1046,8 +1045,7 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             .sync(&mut bridge, root)
             .unwrap();
         assert!(runtime.driver().ui().images_pending());
-        let recording = bridge.record(FrameId(1)).unwrap();
-        let old = runtime.driver().recorded(&bridge, &recording).unwrap();
+        let (recording, old) = runtime.driver().record(&mut bridge, FrameId(1)).unwrap();
         bridge.resolve(PresentationNotice::new(
             recording.key(),
             SurfaceEpoch(1),
@@ -1097,8 +1095,7 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             "recording and rejecting do not acknowledge presentation"
         );
         present(&mut runtime, &mut bridge, root, 3);
-        let recording = bridge.record(FrameId(4)).unwrap();
-        let first = runtime.driver().recorded(&bridge, &recording).unwrap();
+        let (recording, first) = runtime.driver().record(&mut bridge, FrameId(4)).unwrap();
         bridge.resolve(PresentationNotice::new(
             recording.key(),
             SurfaceEpoch(1),

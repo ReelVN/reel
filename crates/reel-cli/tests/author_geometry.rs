@@ -32,8 +32,8 @@ fn run(source: &str) {
         settle(&mut driver);
         let (mut bridge, root) = bridge(&driver);
         driver.sync(&mut bridge, root).unwrap();
-        let rejected = bridge.record(FrameId(1)).unwrap();
-        let stale = driver.recorded(&bridge, &rejected).unwrap();
+        let (rejected, stale) = driver.record(&mut bridge, FrameId(1)).unwrap();
+
         driver.presented(&bridge, &stale).unwrap();
         settle(&mut driver);
         assert!(!done(&driver), "candidate is not accepted");
@@ -135,8 +135,8 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
     settle(&mut driver);
     let (mut bridge, root) = bridge(&driver);
     driver.sync(&mut bridge, root).unwrap();
-    let source = bridge.record(FrameId(1)).unwrap();
-    let stale = driver.recorded(&bridge, &source).unwrap();
+    let (source, stale) = driver.record(&mut bridge, FrameId(1)).unwrap();
+
     assert!(bridge.replace_surface(SurfaceEpoch(2)));
     bridge.resolve(PresentationNotice::new(
         source.key(),
@@ -146,8 +146,8 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
     driver.presented(&bridge, &stale).unwrap();
     settle(&mut driver);
     assert!(!done(&driver));
-    let current = bridge.record(FrameId(2)).unwrap();
-    let receipt = driver.recorded(&bridge, &current).unwrap();
+    let (current, receipt) = driver.record(&mut bridge, FrameId(2)).unwrap();
+
     bridge.resolve(PresentationNotice::new(
         current.key(),
         SurfaceEpoch(2),
@@ -166,4 +166,61 @@ fn geometry_example_compiles_as_source_and_asb() {
     .unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     reel_cli::decode_story(&artifact.bytes).unwrap();
+}
+
+#[test]
+fn geometry_old_receipt_and_unsynced_model_cannot_stamp_old_layout_as_a_new_request() {
+    let source = r#"fn main(){let target=stack(width:20,height:30);stage.replace(target);
+        await stage.presented();target.width=40;
+        let geometry=await stage.geometry(target);
+        if geometry.width!=40 {throw "new request received old layout";}
+        stage.replace(text("done"));narrator("done");}"#;
+    let checked = reel_cli::check(source, "receipt.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        driver.sync(&mut bridge, root).unwrap();
+        let (old, receipt) = driver.record(&mut bridge, FrameId(1)).unwrap();
+        bridge.resolve(PresentationNotice::new(
+            old.key(),
+            SurfaceEpoch(1),
+            PresentationOutcome::Accepted(FrameId(1)),
+        ));
+        driver.presented(&bridge, &receipt).unwrap();
+        settle(&mut driver);
+        assert!(driver.adapter().geometry_queries().next().is_some());
+        // Keep both the accepted old source and its receipt alive across request 2.
+        driver.presented(&bridge, &receipt).unwrap();
+        settle(&mut driver);
+        assert!(!done(&driver));
+        // A recording before sync contains the old widget tree and its old watermark.
+        let (unsynced, unsynced_receipt) = driver.record(&mut bridge, FrameId(2)).unwrap();
+        bridge.resolve(PresentationNotice::new(
+            unsynced.key(),
+            SurfaceEpoch(1),
+            PresentationOutcome::Accepted(FrameId(2)),
+        ));
+        driver.presented(&bridge, &unsynced_receipt).unwrap();
+        settle(&mut driver);
+        assert!(!done(&driver));
+        driver.sync(&mut bridge, root).unwrap();
+        driver.presented(&bridge, &receipt).unwrap();
+        driver.presented(&bridge, &unsynced_receipt).unwrap();
+        settle(&mut driver);
+        assert!(!done(&driver));
+        present(&mut driver, &mut bridge, root, 3);
+        settle(&mut driver);
+        assert!(done(&driver));
+    }
 }

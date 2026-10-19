@@ -100,9 +100,11 @@ fn frames(story: CompiledStory, canvas: Option<[u32; 2]>) -> Vec<[f64; 6]> {
         }
         assert_eq!(woke, second == 2);
         driver.sync(&mut bridge, root_id).unwrap();
-        let recording = bridge.record(FrameId(second as u64 + 1)).unwrap();
+        let (recording, receipt) = driver
+            .record(&mut bridge, FrameId(second as u64 + 1))
+            .unwrap();
         let key = recording.key();
-        let receipt = driver.recorded(&bridge, &recording).unwrap();
+
         let mut build = FrameBuild::new(
             recording,
             ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap(),

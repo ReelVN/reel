@@ -146,14 +146,20 @@ impl WindowSession {
         }
     }
 
-    pub(crate) fn recorded(
+    pub(crate) fn record(
         &self,
-        bridge: &PresentationBridge,
-        source: &reel_ui::bridge::RecordedSource,
-    ) -> Result<crate::session::RecordedProjection, Error> {
+        bridge: &mut PresentationBridge,
+        id: reel_core::identity::FrameId,
+    ) -> Result<
+        (
+            reel_ui::bridge::RecordedSource,
+            crate::session::RecordedProjection,
+        ),
+        Error,
+    > {
         match self {
-            Self::Diagnostic(host) => Ok(host.ui.recorded(source)),
-            Self::Aside { story, .. } => story.driver().recorded(bridge, source),
+            Self::Diagnostic(host) => host.ui.record(bridge, id),
+            Self::Aside { story, .. } => story.driver().record(bridge, id),
         }
     }
     pub(crate) fn presented(

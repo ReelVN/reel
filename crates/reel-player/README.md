@@ -51,9 +51,15 @@ host, or `reel-render/wgpu` to use only the WGPU adapter. The `window` feature
 selects the built-in combination. A custom host implements redraw, wake deadline,
 before-present and exit commands; it converts input into the existing UI events.
 Construct `Presentation` with a fresh bridge and matching `SurfaceInfo`, configure
-the backend, then call `render` with a frame-building closure. Only an accepted
-result calls the story driver's `presented` with the projection stamp captured
-after recording. `poll` uses a reusable completion buffer and never accepts input.
+the backend, then call `render` with a frame-building closure. After `driver.sync`,
+that closure calls `driver.record(&mut bridge, frame_id)` once to obtain both the
+`RecordedSource` for frame building and its `RecordedProjection` receipt. The
+receipt freezes the actual SessionWidget watermark and StageWidget identity;
+pending model edits cannot stamp the previously published widget tree. Only an
+accepted result calls `driver.presented(&bridge, &receipt)`. The receipt must stay
+with that candidate through compilation and presentation; an old source cannot
+be used to mint a new receipt. `poll` uses a reusable completion buffer and never
+accepts input.
 
 On suspend, cancel active input, suspend presentation/backend and call
 `StoryRuntime::suspend` with the host's monotonic nanoseconds. On resume, replace

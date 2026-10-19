@@ -162,8 +162,8 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         let mut stamp = None;
         let result = view
             .render(backend, host, |bridge, id, info| {
-                let source = bridge.record(id).unwrap();
-                stamp = Some(story.driver().recorded(bridge, &source).unwrap());
+                let (source, receipt) = story.driver().record(bridge, id).unwrap();
+                stamp = Some(receipt);
                 let mut build = FrameBuild::new(
                     source,
                     ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap(),

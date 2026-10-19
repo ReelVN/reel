@@ -117,8 +117,7 @@ fn accept(
     use reel_core::identity::FrameId;
     use reel_ui::bridge::{PresentationNotice, PresentationOutcome};
     let id = FrameId(bridge.accepted_key().map_or(1, |key| key.frame_id().0 + 1));
-    let source = bridge.record(id).unwrap();
-    let receipt = ui.recorded(&source);
+    let (source, receipt) = ui.record(bridge, id).unwrap();
     bridge.resolve(PresentationNotice::new(
         source.key(),
         source.key().surface_epoch(),

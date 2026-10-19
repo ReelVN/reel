@@ -116,9 +116,9 @@ fn frame_with_info(
             max_bytes: 32 << 20,
         },
     );
-    let source = bridge.record(FrameId(id)).unwrap();
+    let (source, receipt) = driver.record(bridge, FrameId(id)).unwrap();
     let key = source.key();
-    let receipt = driver.recorded(&bridge, &source).unwrap();
+
     let resources =
         ResourceSnapshot::capture(driver.ui().image_resources().iter().cloned().map(Ok), &pool)
             .unwrap();
