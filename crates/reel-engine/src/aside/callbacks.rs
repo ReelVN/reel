@@ -585,10 +585,17 @@ impl SessionVm {
             }
             Err(error) => return Err(error.into()),
         };
-        if matches!(
+        let await_boundary = matches!(
             outcome,
-            RunOutcome::Returned(_) | RunOutcome::Fault(_) | RunOutcome::Waiting(_)
-        ) {
+            RunOutcome::HostCall(ticket)
+                if ticket.input == NativeInput::Entry && ticket.await_activation.is_some()
+        );
+        if await_boundary
+            || matches!(
+                outcome,
+                RunOutcome::Returned(_) | RunOutcome::Fault(_) | RunOutcome::Waiting(_)
+            )
+        {
             self.media
                 .finish_batch(task, !matches!(outcome, RunOutcome::Fault(_)));
             self.reactive_ready = true;
@@ -618,7 +625,12 @@ impl SessionVm {
                 self.retire_callback(session, index - 1)?;
                 return Ok(SessionStep::Progress);
             }
-            RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
+            RunOutcome::HostCall(ticket) => {
+                self.issued = Some(ticket);
+                if await_boundary {
+                    self.schedule_cursor = index + 1;
+                }
+            }
             RunOutcome::Returned(delivery) | RunOutcome::Fault(delivery) => {
                 self.schedule_cursor = index + 1;
                 self.delivery = Some(delivery);

@@ -242,6 +242,103 @@ mod audio {
     }
 
     #[test]
+    fn ready_await_commits_audio_and_restores_its_scheduled_continuation() {
+        let code = r#"fn opening() {
+            let ready = completion(); ready.resolve(42);
+            let state = {turns: 0};
+            spawn(|| { state.turns += 1; });
+            let sound = audio.play("first.wav");
+            audio.queue(sound, "second.wav");
+            let value = await ready;
+            if value != 42 || state.turns != 1 { throw "ready await continuation or scheduling lost"; }
+            audio.queue(sound, "after-await.wav");
+            narrator("ready await restored");
+        }"#;
+        for encoded in [false, true] {
+            let (mut session, mut runtime) = models::prepared(code, encoded);
+            let original = Host::default();
+            runtime.set_media(Box::new(original.clone())).unwrap();
+            let mut at_boundary = false;
+            for _ in 0..1000 {
+                if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = runtime
+                    .step(
+                        &mut session,
+                        SliceBudget {
+                            instructions: 1,
+                            ..Default::default()
+                        },
+                        || 0,
+                    )
+                    .unwrap()
+                {
+                    let explicit = ticket.await_activation.is_some();
+                    if explicit {
+                        assert_eq!(
+                            &*original.1.borrow(),
+                            &[MediaId(1)],
+                            "commit at await entry, even before Ready"
+                        );
+                        assert_eq!(original.0.borrow()[0].queue.len(), 1);
+                    } else {
+                        assert!(
+                            original.1.borrow().is_empty(),
+                            "ordinary native keeps the batch open"
+                        );
+                    }
+                    runtime.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    runtime.maintain_media().unwrap();
+                    if explicit {
+                        assert!(!runtime.vm.wait_is_pending(ticket.wait_id()));
+                        at_boundary = true;
+                        break;
+                    }
+                }
+            }
+            assert!(at_boundary);
+            let program = runtime.vm.program().clone();
+            let mut capture = runtime.snapshot_begin(&session).unwrap();
+            while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let mut image =
+                snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                    .unwrap();
+            let host = Host::default();
+            let mut restore = SessionVm::restore_begin(
+                &mut image,
+                program,
+                VmLimits::default(),
+                SessionIdentity {
+                    session_id: SessionId(42),
+                    epoch: Epoch(21),
+                },
+                Default::default(),
+                Some(Box::new(host.clone())),
+                None,
+            )
+            .unwrap();
+            while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let (mut session, mut runtime) = restore.finish().unwrap();
+            models::drive(&mut runtime, &mut session, false);
+            assert!(
+                matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "ready await restored")
+            );
+            assert_eq!(
+                &*host.1.borrow(),
+                &[MediaId(1)],
+                "restore submits the committed batch exactly once"
+            );
+            assert_eq!(
+                host.0.borrow()[0]
+                    .queue
+                    .iter()
+                    .map(|item| item.source.as_str())
+                    .collect::<Vec<_>>(),
+                ["second.wav", "after-await.wav"]
+            );
+            assert!(runtime.tasks.is_empty());
+        }
+    }
+
+    #[test]
     fn callback_return_commits_but_fault_and_cancellation_discard_uncommitted_audio() {
         for (body, commits) in [
             (
