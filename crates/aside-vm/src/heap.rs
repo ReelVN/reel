@@ -278,7 +278,7 @@ pub struct Heap {
     pub(crate) code: Option<Rc<crate::fault::CodeLease>>,
     pub(crate) id: HeapId,
     pub(crate) epoch: SessionEpoch,
-    pub(crate) objects: Slots<HeapKey, Object>,
+    pub(crate) objects: crate::slots::ObjectSlots<Object>,
     roots: Slots<RootKey, Root>,
     pub(crate) root_index: Vec<Option<RootKey>>,
     pub(crate) root_scan_len: usize,
@@ -329,13 +329,11 @@ impl Heap {
         let initial_objects = limits.max_objects.min(256) as usize;
         let initial_roots = limits.max_roots.min(64) as usize;
         let initial_ranges = limits.max_root_ranges.min(64) as usize;
-        let object_stride = std::mem::size_of::<crate::slots::Slot<Object>>()
-            + 2 * std::mem::align_of::<crate::slots::Slot<Object>>().max(4);
         let root_stride = std::mem::size_of::<crate::slots::Slot<Root>>()
             + 2 * std::mem::align_of::<crate::slots::Slot<Root>>().max(4);
         let range_stride = std::mem::size_of::<crate::slots::Slot<RangeDescriptor>>()
             + 2 * std::mem::align_of::<crate::slots::Slot<RangeDescriptor>>().max(4);
-        let estimate = (initial_objects as u64 + 1) * object_stride as u64
+        let estimate = crate::slots::ObjectSlots::<Object>::bytes_for(initial_objects)
             + (initial_roots as u64 + 1) * root_stride as u64
             + initial_objects as u64 * 4 * std::mem::size_of::<HeapKey>() as u64
             + (initial_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
@@ -360,7 +358,11 @@ impl Heap {
             code: None,
             id: HeapId::fresh().ok_or(HeapError::IdentityExhausted)?,
             epoch,
-            objects: Slots::new(initial_objects, limits.max_objects as usize, retirement),
+            objects: crate::slots::ObjectSlots::new(
+                initial_objects,
+                limits.max_objects as usize,
+                retirement,
+            ),
             roots: Slots::new(initial_roots, limits.max_roots as usize, retirement),
             root_index: vec![None; initial_roots + 1],
             root_scan_len: 0,
@@ -1337,6 +1339,60 @@ mod tests {
             h.gc_step(GcBudget::default()).unwrap();
         }
     }
+    #[test]
+    fn entity_page_admission_and_drop_refund_only_owned_storage() {
+        let limits = HeapLimits {
+            max_objects: 3,
+            ..HeapLimits::default()
+        };
+        let mut probe = Heap::new(SessionEpoch(1), limits).unwrap();
+        let initial = probe.stats().reserved_bytes;
+        probe.alloc_cell(Value::NULL).unwrap();
+        let populated = probe.stats().reserved_bytes;
+        assert!(
+            populated - initial < 2_048,
+            "small host quotas need no full 32-object page"
+        );
+        drop(probe);
+        for extra in [0, 128, populated - initial] {
+            let mut observation = None;
+            let allocation = allocation_counter::measure(|| {
+                let mut h = Heap::new(
+                    SessionEpoch(1),
+                    HeapLimits {
+                        max_bytes: initial + extra,
+                        ..limits
+                    },
+                )
+                .unwrap();
+                observation = Some(h.budget_usage());
+                let result = h.alloc_cell(Value::int(42));
+                if extra == populated - initial {
+                    assert_eq!(h.cell_read(result.unwrap()).unwrap().as_int(), Some(42));
+                    collect(&mut h);
+                    assert_eq!(h.stats().live_objects, 0);
+                    h.alloc_cell(Value::int(7)).unwrap();
+                } else {
+                    assert!(matches!(result, Err(HeapError::ResourceLimit { .. })));
+                    assert_eq!(h.stats().live_objects, 0);
+                    if extra != 0 {
+                        assert!(
+                            h.stats().reserved_bytes > initial,
+                            "failed page allocation retains its admitted page directory"
+                        );
+                    }
+                }
+                assert_eq!(h.stats().charged_bytes, h.stats().reserved_bytes);
+                drop(h);
+            });
+            assert_eq!(observation.unwrap().charged_bytes(), BOOK_BYTES);
+            assert_eq!(
+                allocation.bytes_current as u64, BOOK_BYTES,
+                "only the retained budget observer remains allocated"
+            );
+        }
+    }
+
     #[test]
     fn retirement_keeps_all_old_object_and_root_handles_invalid() {
         let limits = HeapLimits {

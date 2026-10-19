@@ -1,6 +1,7 @@
 //! Version-specific slotmap 1.1.1 adaptation. Never truncate keys for storage.
 use crate::{HeapBudgetUsage, HeapError};
 use slotmap::{Key, KeyData, SlotMap, new_key_type};
+use std::num::NonZeroU32;
 
 new_key_type! { pub(crate) struct HeapKey; pub(crate) struct RootKey; pub(crate) struct RangeKey; }
 
@@ -20,6 +21,149 @@ pub(crate) fn index<K: Key>(key: K) -> usize {
 pub(crate) enum Slot<T> {
     Occupied(T),
     Retired,
+}
+
+const OBJECTS_PER_PAGE: usize = 32;
+// Pinned slotmap 1.1.1: a four-byte position/free-list union and a u32 version.
+const POSITION_SLOT_BYTES: u64 = 8;
+
+struct ObjectEntry<T> {
+    key: HeapKey,
+    value: T,
+}
+
+/// Generations outlive vacant slots; the much larger entities do not.
+/// All entity movement stays behind the ordinary stable HeapKey lookup.
+pub(crate) struct ObjectSlots<T> {
+    positions: Option<SlotMap<HeapKey, Option<NonZeroU32>>>,
+    pages: Vec<Vec<ObjectEntry<T>>>,
+    len: usize,
+    limit: usize,
+    retired: usize,
+    retirement_version: u32,
+}
+
+impl<T> ObjectSlots<T> {
+    pub fn new(initial: usize, limit: usize, retirement_version: u32) -> Self {
+        Self {
+            positions: Some(SlotMap::with_capacity_and_key(initial)),
+            pages: Vec::new(),
+            len: 0,
+            limit,
+            retired: 0,
+            retirement_version,
+        }
+    }
+
+    pub fn full(&self) -> bool {
+        self.len + self.retired >= self.limit
+    }
+
+    pub fn reserve_one(&mut self, usage: &HeapBudgetUsage) -> Result<(), HeapError> {
+        let positions = self.positions.as_mut().unwrap();
+        if positions.len() == positions.capacity() {
+            let old = positions.capacity();
+            let capacity = ((old + 1) * 2).max(4) - 1;
+            let reservation = usage.reserve((capacity as u64 + 1) * POSITION_SLOT_BYTES)?;
+            let result = positions.try_reserve(1);
+            let added = (positions.capacity() - old) as u64 * POSITION_SLOT_BYTES;
+            drop(reservation);
+            usage.charge(added);
+            result.map_err(|_| HeapError::AllocationFailure)?;
+        }
+        if self.len == self.pages.len() * OBJECTS_PER_PAGE {
+            if self.pages.len() == self.pages.capacity() {
+                let old = self.pages.capacity();
+                let capacity = (old * 2).max(4);
+                let reservation =
+                    usage.reserve((capacity * size_of::<Vec<ObjectEntry<T>>>()) as u64)?;
+                let result = self.pages.try_reserve(1);
+                let added =
+                    ((self.pages.capacity() - old) * size_of::<Vec<ObjectEntry<T>>>()) as u64;
+                drop(reservation);
+                usage.charge(added);
+                result.map_err(|_| HeapError::AllocationFailure)?;
+            }
+            let mut page = Vec::new();
+            let capacity = self.limit.min(OBJECTS_PER_PAGE);
+            let bytes = (capacity * size_of::<ObjectEntry<T>>()) as u64;
+            let reservation = usage.reserve(bytes)?;
+            page.try_reserve_exact(capacity)
+                .map_err(|_| HeapError::AllocationFailure)?;
+            self.pages.push(page);
+            drop(reservation);
+            usage.charge(bytes);
+        }
+        Ok(())
+    }
+
+    pub fn insert(&mut self, value: T) -> HeapKey {
+        assert!(!self.full());
+        let position = NonZeroU32::new(self.len as u32 + 1).unwrap();
+        let key = self.positions.as_mut().unwrap().insert(Some(position));
+        self.pages[self.len / OBJECTS_PER_PAGE].push(ObjectEntry { key, value });
+        self.len += 1;
+        key
+    }
+
+    pub fn get(&self, key: HeapKey) -> Option<&T> {
+        let position = self.positions.as_ref().unwrap().get(key)?.as_ref()?.get() as usize - 1;
+        Some(&self.pages[position / OBJECTS_PER_PAGE][position % OBJECTS_PER_PAGE].value)
+    }
+
+    pub fn get_mut(&mut self, key: HeapKey) -> Option<&mut T> {
+        let position = self.positions.as_ref().unwrap().get(key)?.as_ref()?.get() as usize - 1;
+        Some(&mut self.pages[position / OBJECTS_PER_PAGE][position % OBJECTS_PER_PAGE].value)
+    }
+
+    pub fn remove(&mut self, key: HeapKey) -> Option<T> {
+        let positions = self.positions.as_mut().unwrap();
+        let position = if generation(key) >= self.retirement_version {
+            let position = positions.get_mut(key)?.take()?;
+            self.retired += 1;
+            position
+        } else {
+            positions.remove(key)??
+        }
+        .get() as usize
+            - 1;
+        self.len -= 1;
+        let last = self.pages[self.len / OBJECTS_PER_PAGE].pop().unwrap();
+        let removed = if position == self.len {
+            last
+        } else {
+            *positions.get_mut(last.key).unwrap() = NonZeroU32::new(position as u32 + 1);
+            std::mem::replace(
+                &mut self.pages[position / OBJECTS_PER_PAGE][position % OBJECTS_PER_PAGE],
+                last,
+            )
+        };
+        // A removal does constant work, including at most one allocator release.
+        if self.pages.last().is_some_and(Vec::is_empty) {
+            self.pages.pop();
+        }
+        Some(removed.value)
+    }
+
+    pub fn occupied(&self) -> usize {
+        self.len
+    }
+    pub fn retired(&self) -> usize {
+        self.retired
+    }
+    pub fn reserved_bytes(&self) -> u64 {
+        (self.positions.as_ref().unwrap().capacity() as u64 + 1) * POSITION_SLOT_BYTES
+            + (self.pages.capacity() * size_of::<Vec<ObjectEntry<T>>>()) as u64
+            + (self.pages.len() * self.limit.min(OBJECTS_PER_PAGE) * size_of::<ObjectEntry<T>>())
+                as u64
+    }
+    pub fn bytes_for(initial: usize) -> u64 {
+        (initial as u64 + 1) * POSITION_SLOT_BYTES
+    }
+    pub fn drop_storage(&mut self) {
+        drop(self.positions.take());
+        drop(std::mem::take(&mut self.pages));
+    }
 }
 
 pub(crate) struct Slots<K: Key, T> {
@@ -117,6 +261,19 @@ impl<K: Key, T> Slots<K, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn object_identity_table_matches_pinned_slotmap_allocation() {
+        let mut map = None;
+        let allocation = allocation_counter::measure(|| {
+            map = Some(SlotMap::<HeapKey, Option<NonZeroU32>>::with_capacity_and_key(33));
+        });
+        assert_eq!(allocation.count_total, 1);
+        assert_eq!(
+            allocation.bytes_current as u64,
+            (map.unwrap().capacity() as u64 + 1) * POSITION_SLOT_BYTES
+        );
+    }
+
     #[test]
     fn full_u64_keys_and_terminal_generation() {
         for raw in [

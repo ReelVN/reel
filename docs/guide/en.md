@@ -146,7 +146,7 @@ for caption in captions {
 ## 2 Describing the Whole Scene in Code
 ### Organizing Component Data
 
-The story VM has no fixed default memory byte quota. Object and root storage grows on demand, without the former default thresholds of 16,384 objects or 1,024 roots; embedding hosts can set an explicit budget for their environment. Long operations yield across execution slices to keep presentation responsive.
+The story VM has no fixed default memory byte quota. Object and root storage grows on demand, without the former default thresholds of 16,384 objects or 1,024 roots; embedding hosts can set an explicit budget for their environment. Incremental GC releases empty object storage pages instead of retaining the peak number of full object slots; small identity indexes and work queues remain available for reuse. Long operations yield across execution slices to keep presentation responsive.
 
 Fixed-length tuples can be destructured in let and for, including nested tuples and `_`. All values are prepared before names are bound; a shape mismatch raises PatternMismatch. Closures retain each iteration's values. Array/object/rest patterns and destructuring assignment remain pending. See [tuple_bindings.aside](../../examples/tuple_bindings.aside).
 

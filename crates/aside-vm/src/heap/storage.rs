@@ -42,24 +42,38 @@ fn grow_index<K: Copy>(
 }
 
 impl Heap {
+    pub(crate) fn remove_object(&mut self, key: HeapKey) {
+        let before = self.objects.reserved_bytes();
+        self.objects
+            .remove(key)
+            .expect("release record owns a dying slot");
+        let released = before - self.objects.reserved_bytes();
+        self.reserved -= released;
+        self.usage.refund(released);
+    }
+
     pub(crate) fn ensure_object_slot(&mut self) -> Result<(), HeapError> {
         if self.objects.full() {
             return Err(HeapError::ObjectCapacity);
         }
-        if let Some(capacity) = self.objects.growth_capacity() {
-            // Grow the object table last. A failed allocation can retain charged
-            // queue capacity, but cannot admit an object without all its queues.
-            for queue in [
-                &mut self.allocations,
-                &mut self.gray,
-                &mut self.release,
-                &mut self.reactive_queue,
-            ] {
+        // A reused identity can still require a fresh entity page or queue space.
+        // Prepare by live demand, independently of the generation table's peak.
+        let needed = self.objects.occupied() + 1;
+        for queue in [
+            &mut self.allocations,
+            &mut self.gray,
+            &mut self.release,
+            &mut self.reactive_queue,
+        ] {
+            if queue.capacity() < needed {
+                let capacity = (queue.capacity() * 2).max(needed);
                 self.reserved += grow_queue(queue, capacity, &self.usage)?;
             }
-            self.reserved += self.objects.reserve_one(&self.usage)?;
         }
-        Ok(())
+        let before = self.objects.reserved_bytes();
+        let result = self.objects.reserve_one(&self.usage);
+        self.reserved += self.objects.reserved_bytes() - before;
+        result
     }
 
     pub(super) fn ensure_root_slot(&mut self) -> Result<(), HeapError> {
