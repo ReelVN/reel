@@ -638,6 +638,10 @@ impl SessionVm {
                 self.dispatch_scope(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::scope::add" => {
+                self.dispatch_scope_add(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::run" | "reel::clock" | "reel::scope::run" => {
                 let args = self.vm.host_arguments(ticket)?;
                 let [action, owner] = if symbol == "reel::scope::run" {

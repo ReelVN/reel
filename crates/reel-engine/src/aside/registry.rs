@@ -784,6 +784,16 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![parameter("scope", None), parameter("work", None)],
             false,
         ),
+        (
+            "scope::add",
+            vec![
+                parameter("scope", None),
+                parameter("parent", None),
+                parameter("node", None),
+                parameter("index", Some(bc::Const::Null)),
+            ],
+            false,
+        ),
         ("delay", vec![parameter("seconds", None)], false),
         (
             "clock",
@@ -870,7 +880,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "tween" { 7 } else { 1 },
+            abi_version: match name {
+                "tween" => 7,
+                "scope" => 2,
+                _ => 1,
+            },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
