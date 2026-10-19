@@ -37,6 +37,7 @@ struct Scope<'a> {
     mask: Option<reel_ui::frame::MaskUse>,
     opacity: f32,
     invert: f32,
+    blend: reel_ui::peniko::BlendMode,
     scissor: Scissor,
     isolated: bool,
 }
@@ -44,6 +45,7 @@ struct MaskComposition {
     source: Target,
     opacity: f32,
     invert: f32,
+    blend: reel_ui::peniko::BlendMode,
     operation: CompositeOperation,
 }
 struct Stream<'a> {
@@ -131,13 +133,14 @@ impl Context<'_> {
                 };
                 let mask = parent.mask.take().expect("suspended mask composition");
                 self.scissor = parent.scopes.last().scissor;
-                self.combine(
+                self.combine_group(
                     &parent.scopes.last().target,
                     &mask.source.view,
                     &finished.view,
                     mask.opacity,
                     mask.invert,
                     mask.operation,
+                    mask.blend,
                 )?;
                 self.recycle_target(mask.source)?;
                 self.recycle_target(finished)?;
@@ -164,6 +167,7 @@ impl Context<'_> {
                             mask: None,
                             opacity: 1.,
                             invert: 0.,
+                            blend: Default::default(),
                             scissor: scissor.map_or(self.scissor, |s| self.scissor.intersect(s)),
                             isolated: scissor.is_none(),
                         },
@@ -171,7 +175,10 @@ impl Context<'_> {
                     )?;
                 }
                 FrameOp::PushGroup(group) => {
-                    self.composite_supported(group.composite, at)?;
+                    blend_code(group.composite.blend).ok_or(GpuError::Unsupported {
+                        at,
+                        record: "group blend mode",
+                    })?;
                     if !group.filters.is_empty() {
                         return Err(GpuError::Unsupported {
                             at,
@@ -187,6 +194,7 @@ impl Context<'_> {
                             mask: group.mask,
                             opacity: group.composite.alpha,
                             invert: group.invert,
+                            blend: group.composite.blend,
                             scissor: self.scissor,
                             isolated: true,
                         },
@@ -212,13 +220,14 @@ impl Context<'_> {
                         if group.mask.is_none() {
                             // Fold coverage and opacity into the final source-over pass.
                             // No intermediate full-size clipped texture is needed.
-                            self.combine(
+                            self.combine_group(
                                 &current.scopes.last().target,
                                 &source.view,
                                 &coverage.view,
                                 group.opacity,
                                 group.invert,
                                 CompositeOperation::AlphaMask,
+                                group.blend,
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
@@ -250,6 +259,7 @@ impl Context<'_> {
                             source,
                             opacity: group.opacity,
                             invert: group.invert,
+                            blend: group.blend,
                             operation: match mask.progress {
                                 Some(progress) => CompositeOperation::ImageMask(progress),
                                 None => match definition.mode {
@@ -262,13 +272,14 @@ impl Context<'_> {
                             self.start_stream(&definition.commands, transform * mask.transform)?;
                         push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                     } else {
-                        self.combine(
+                        self.combine_group(
                             &current.scopes.last().target,
                             &source.view,
                             &source.view,
                             group.opacity,
                             group.invert,
                             CompositeOperation::SourceOver,
+                            group.blend,
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -309,6 +320,7 @@ impl Context<'_> {
                 mask: None,
                 opacity: 1.,
                 invert: 0.,
+                blend: Default::default(),
                 scissor: Scissor::full(self.size),
                 isolated: true,
             }),
@@ -339,9 +351,57 @@ impl Context<'_> {
                 opacity: alpha,
                 invert,
                 operation,
+                blend: 0,
             },
+            source,
         );
         Ok(())
+    }
+    fn combine_group(
+        &mut self,
+        target: &Target,
+        source: &wgpu::TextureView,
+        mask: &wgpu::TextureView,
+        alpha: f32,
+        invert: f32,
+        operation: CompositeOperation,
+        blend: reel_ui::peniko::BlendMode,
+    ) -> Result<(), GpuError> {
+        let blend = blend_code(blend).expect("validated group blend");
+        if blend == 0 {
+            return self.combine(target, source, mask, alpha, invert, operation);
+        }
+        if self.scissor.empty() {
+            return Ok(());
+        }
+        // A target cannot be sampled while it is attached for drawing. Copy only
+        // this group's affected backdrop into a pooled, budgeted target.
+        let backdrop = self.target()?;
+        self.combine(
+            &backdrop,
+            &target.view,
+            &target.view,
+            1.,
+            0.,
+            CompositeOperation::SourceOver,
+        )?;
+        self.transient(32)?;
+        self.pipelines.composite(
+            &self.gpu.device,
+            &mut self.encoder,
+            target,
+            source,
+            mask,
+            super::pipeline::CompositeParams {
+                scissor: self.scissor,
+                opacity: alpha,
+                invert,
+                operation,
+                blend,
+            },
+            &backdrop.view,
+        );
+        self.recycle_target(backdrop)
     }
     pub(super) fn transient(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.tickets.push(reserve(
@@ -367,5 +427,16 @@ impl Context<'_> {
         } else {
             Ok(())
         }
+    }
+}
+
+fn blend_code(blend: reel_ui::peniko::BlendMode) -> Option<u32> {
+    use reel_ui::peniko::{Compose, Mix};
+    match (blend.mix, blend.compose) {
+        (Mix::Normal, Compose::SrcOver) => Some(0),
+        (Mix::Normal, Compose::PlusLighter) => Some(1),
+        (Mix::Multiply, Compose::SrcOver) => Some(2),
+        (Mix::Screen, Compose::SrcOver) => Some(3),
+        _ => None,
     }
 }

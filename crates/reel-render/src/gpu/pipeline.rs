@@ -120,12 +120,14 @@ pub(super) struct CompositeParams {
     pub opacity: f32,
     pub invert: f32,
     pub operation: CompositeOperation,
+    pub blend: u32,
 }
 pub struct Pipelines {
     pub paint: wgpu::RenderPipeline,
     pub yuv: wgpu::RenderPipeline,
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
+    pub composite_blend: wgpu::RenderPipeline,
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
     pub samplers: [wgpu::Sampler; 4],
@@ -184,6 +186,7 @@ impl Pipelines {
                 texture(0),
                 texture(1),
                 sampler(2),
+                texture(4),
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -237,6 +240,7 @@ impl Pipelines {
             include_str!("paint.wgsl"),
             true,
             "fragment_yuv",
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             #[cfg(test)]
             Some(counts),
         );
@@ -246,6 +250,17 @@ impl Pipelines {
             &composite_layout,
             include_str!("composite.wgsl"),
             false,
+            #[cfg(test)]
+            Some(counts),
+        );
+        let composite_blend = pipeline_entry(
+            device,
+            quality,
+            &composite_layout,
+            include_str!("composite.wgsl"),
+            false,
+            "fragment",
+            None,
             #[cfg(test)]
             Some(counts),
         );
@@ -281,6 +296,7 @@ impl Pipelines {
             yuv,
             yuv_layout,
             composite,
+            composite_blend,
             paint_layout,
             composite_layout,
             samplers,
@@ -295,6 +311,7 @@ impl Pipelines {
         source: &wgpu::TextureView,
         mask: &wgpu::TextureView,
         params: CompositeParams,
+        backdrop: &wgpu::TextureView,
     ) {
         let (mode, progress, softness): (u32, f32, f32) = match params.operation {
             CompositeOperation::SourceOver => (0, 0., 0.),
@@ -313,7 +330,7 @@ impl Pipelines {
             progress.to_bits(),
             softness.to_bits(),
             params.invert.to_bits(),
-            0,
+            params.blend,
             0,
             0,
         ];
@@ -342,6 +359,10 @@ impl Pipelines {
                     binding: 3,
                     resource: buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(backdrop),
+                },
             ],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -352,7 +373,11 @@ impl Pipelines {
             multiview_mask: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(&self.composite);
+        pass.set_pipeline(if params.blend == 0 {
+            &self.composite
+        } else {
+            &self.composite_blend
+        });
         params.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
@@ -373,6 +398,7 @@ pub fn pipeline(
         code,
         mesh,
         "fragment",
+        Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         #[cfg(test)]
         counts,
     )
@@ -384,6 +410,7 @@ fn pipeline_entry(
     code: &str,
     mesh: bool,
     fragment: &str,
+    blend: Option<wgpu::BlendState>,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
     #[cfg(test)]
@@ -441,7 +468,7 @@ fn pipeline_entry(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: quality.format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),

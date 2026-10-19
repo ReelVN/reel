@@ -306,6 +306,8 @@ pub struct NodeProps {
     pub opacity: f64,
     /// Subtree inversion in encoded sRGB, preserving alpha.
     pub invert: f64,
+    /// Blend the completed subtree with its backdrop.
+    pub blend: crate::peniko::BlendMode,
     pub visible: bool,
     pub enabled: bool,
     /// A visible subtree owns input until hidden, removed, or superseded in paint order.
@@ -354,6 +356,7 @@ impl Default for NodeProps {
             stretch: Stretch::None,
             opacity: 1.,
             invert: 0.,
+            blend: Default::default(),
             visible: true,
             enabled: true,
             modal: false,

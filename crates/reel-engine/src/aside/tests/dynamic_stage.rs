@@ -308,3 +308,44 @@ fn invert_is_a_validated_reactive_node_property() {
         0.
     );
 }
+
+#[test]
+fn blend_is_a_validated_reactive_node_property() {
+    use reel_ui::peniko::{BlendMode, Compose, Mix};
+    for (name, expected) in [
+        ("normal", BlendMode::default()),
+        ("add", BlendMode::new(Mix::Normal, Compose::PlusLighter)),
+        ("multiply", Mix::Multiply.into()),
+        ("screen", Mix::Screen.into()),
+    ] {
+        let source = format!(
+            r#"
+            fn opening() {{
+                let state = model({{mode: "normal"}});
+                let scene = stack(blend: derive(|| state.mode));
+                let other = stack();
+                if other.blend != "normal" {{ throw "blend default"; }}
+                let mut rejected = false;
+                try {{ other.blend = "unknown"; }} catch error {{ rejected = true; }}
+                if !rejected || other.blend != "normal" {{ throw "blend validation"; }}
+                stage.replace(scene);
+                state.mode = "{name}";
+                narrator("ready");
+            }}
+        "#
+        );
+        for asb in [false, true] {
+            let (mut session, mut runtime) = models::prepared(&source, asb);
+            models::drive(&mut runtime, &mut session, false);
+            assert_eq!(
+                runtime
+                    .stage()
+                    .node(runtime.stage().root().unwrap())
+                    .unwrap()
+                    .props
+                    .blend,
+                expected
+            );
+        }
+    }
+}

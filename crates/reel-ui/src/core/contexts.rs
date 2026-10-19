@@ -2428,10 +2428,12 @@ impl PaintCtx<'_> {
         &mut self,
         opacity: f32,
         invert: f32,
+        blend: peniko::BlendMode,
         mask: Option<PaintImageMask>,
     ) {
         self.widget_state.subtree_opacity = opacity;
         self.widget_state.subtree_invert = invert;
+        self.widget_state.subtree_blend = blend;
         match (&mut self.widget_state.subtree_image_mask, mask) {
             (Some(current), Some(mask)) => **current = mask,
             (slot, mask) => *slot = mask.map(Box::new),

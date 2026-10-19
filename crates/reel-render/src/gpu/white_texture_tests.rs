@@ -221,11 +221,14 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     let root = RenderRoot::new(
         NewWidget::new(
             reel_ui::widgets::Label::new(text)
+                // Keep thousands of painted glyphs in the viewport now that Label
+                // culls offscreen lines. Preserve the atlas/batching workload.
+                .with_style(StyleProperty::FontSize(8.))
                 .with_style(StyleProperty::FontStyle(
                     reel_ui::reel_text::FontStyle::Italic,
                 ))
                 .with_outline(Some(TextOutline {
-                    width: 2.,
+                    width: 1.,
                     color: Color::from_rgb8(255, 0, 0),
                 })),
         )
@@ -855,7 +858,7 @@ fn white_texture_refusal_pressure_and_cancel_do_not_publish_across_transactions(
     bad.push_group(Group {
         composite: Composite {
             blend: reel_ui::peniko::BlendMode::new(
-                reel_ui::peniko::Mix::Multiply,
+                reel_ui::peniko::Mix::ColorDodge,
                 reel_ui::peniko::Compose::SrcOver,
             ),
             ..Default::default()

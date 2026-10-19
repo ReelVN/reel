@@ -1,8 +1,9 @@
-struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32 };
+struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32 };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var mask: texture_2d<f32>;
 @group(0) @binding(2) var linear_sampler: sampler;
 @group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var backdrop: texture_2d<f32>;
 struct Varying { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex fn vertex(@builtin(vertex_index) i: u32) -> Varying {
     let uv = vec2(f32((i << 1u) & 2u), f32(i & 2u));
@@ -25,7 +26,7 @@ fn linear_srgb(encoded: vec3<f32>) -> vec3<f32> {
         encoded <= vec3(0.04045),
     );
 }
-@fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {
+fn covered_source(v: Varying) -> vec4<f32> {
     var s = textureSample(source, linear_sampler, v.uv);
     if params.invert != 0.0 && s.a > 0.0 {
         let encoded = encoded_srgb(clamp(s.rgb / s.a, vec3(0.0), vec3(1.0)));
@@ -55,4 +56,16 @@ fn linear_srgb(encoded: vec3<f32>) -> vec3<f32> {
         }
     }
     return s * coverage * params.opacity;
+}
+
+@fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {
+    let s = covered_source(v);
+    if params.blend == 0u { return s; }
+    let d = textureSample(backdrop, linear_sampler, v.uv);
+    if params.blend == 1u { return min(s + d, vec4(1.0)); }
+    let alpha = s.a + d.a * (1.0 - s.a);
+    if params.blend == 2u {
+        return vec4(s.rgb * d.rgb + s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a), alpha);
+    }
+    return vec4(s.rgb + d.rgb - s.rgb * d.rgb, alpha);
 }

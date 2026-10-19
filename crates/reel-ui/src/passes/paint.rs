@@ -80,17 +80,18 @@ impl LayerCollector {
         mask: Option<&PaintImageMask>,
         opacity: f32,
         invert: f32,
+        blend: peniko::BlendMode,
         transform: Affine,
         owner: WidgetId,
     ) -> bool {
         let mask = mask.filter(|mask| mask.progress < 1.);
-        if mask.is_none() && opacity == 1. && invert == 0. {
+        if mask.is_none() && opacity == 1. && invert == 0. && blend == Default::default() {
             return false;
         }
         let mut group = Group {
             composite: Composite {
                 alpha: opacity,
-                ..Default::default()
+                blend,
             },
             ..Default::default()
         };
@@ -349,6 +350,7 @@ fn paint_widget(
             state.subtree_image_mask.as_deref(),
             state.subtree_opacity,
             state.subtree_invert,
+            state.subtree_blend,
             content_box_to_layer_transform,
             id,
         );

@@ -2172,6 +2172,7 @@ impl Widget for SceneWidget {
         ctx.set_subtree_composite(
             self.node.props.opacity as f32,
             self.node.props.invert as f32,
+            self.node.props.blend,
             mask.map(|image| PaintImageMask {
                 image: image.clone(),
                 bounds: self.size.to_rect(),

@@ -14,6 +14,7 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 ## 一 产品范围与实现原则
 
+
 普通图片提供 `repeat: "none" | "x" | "y" | "both"`（默认 none）和正数 `tile_scale: 1`。重复轴按源像素乘 tile_scale 铺满节点，非重复轴保留一份同尺度图像；重复模式不应用 fit，与 slice 互斥。`.reel-image` 是按视窗驻留的完整大图，重复模式在其资源类型边界明确拒绝。四角 `corner_colors: null | [左上,右上,右下,左下]` 在节点内容框内按线性预乘 RGBA 双线性插值，再乘 color 和节点透明度；普通图、九宫格与分块图共用该坐标域。重复图通过共享 sampler 和单矩形绘制，四角颜色通过常量参数参与原绘制，不复制像素、不增加离屏通道。范围为 reel-ui、reel-render、reel-engine 和 reel-player；image native ABI 11，image 宿主快照适配器 4；无新依赖。
 
 滚动偏移使用同一活动机制：`tween(viewport, scroll_x: 120, scroll_y: 400, duration: 0.5)` 仅接受 scroll 节点，起点来自当前偏移，目标值在布局时按真实内容范围限制。暂停、停止、节点所有权和执行快照沿用普通 tween，不增加脚本逐帧回调；tween native ABI 5。
@@ -581,6 +582,8 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 节点图像遮罩使用公共属性 `mask: null|string`、`mask_progress: 1`、`mask_softness: 0.06`、`mask_invert: false`。mask 使用普通 PNG/JPEG 资源路径，按节点局部布局矩形拉伸覆盖整个子树；不接受分块 .reel-image。progress 在 0..1，softness 为有限非负数，两个数值可派生及动画。0 全隐藏、1 全显示并跳过额外遮罩合成；中间覆盖率为 alpha × clamp((progress × (1 + softness) − gray) / softness, 0, 1)，softness=0 使用硬阈值。gray 使用素材编码灰度而非线性化后的色值，invert 对 gray 取 1−gray。遮罩不更改布局、裁剪或逻辑命中，交互使用 visible/enabled 显式控制。VM 保存资源路径与普通属性，恢复复用图片服务；无 GPU 句柄或截图进入脚本状态。渲染使用具名 Rust 元数据传递遮罩参数，复用帧资源租约和组离屏目标池，不逐帧解码、上传或 CPU 读回。
 透视与可编程渲染：场景组可带 Camera 与 3D Transform，RenderFrame 支持版本化 Mesh、Material、纹理、uniform、混合/深度设置及效果输入。普通节点生成二维平面网格，透视后仍参与统一组顺序；显式深度组使用自己的深度缓冲规则。交互几何可以是二维逆变换、投影平面射线映射或注册的自定义映射。着色器改变形状时作者提供匹配命中策略。WGSL 是默认后端实现语言，Effect/Material 身份和参数独立于后端。
 作者自定义节点：custom_node 注册可保存 state、measure(constraints)、record(draw_context)、event(event_context) 与显式重绘请求。绘制回调记录有资源身份的绘制命令，布局与绘制阶段只读并保持有界；异步加载由正常任务完成后标脏。作者可以增加小游戏、图形和输入行为而沿用同一布局、变换、焦点与恢复协议。Live2D 通过格式/SDK 适配节点提供模型、动作、表情及可恢复参数，SDK 许可与目标构建随适配器明确列出。
+共同节点的 `blend: "normal" | "add" | "multiply" | "screen"` 对完成的整个子树与后方画面合成，默认 normal；构造、赋值、绑定和同包快照共用属性 schema。opacity、反色与遮罩先作用于子树，再执行混合；布局和命中不变。颜色运算在线性预乘 RGBA 中进行：add 对颜色和 alpha 的和分别限到 1；multiply/screen 使用透明度正确的 source-over 混合。复用现有绘制组和目标池，normal 路径保持原成本；其余模式用一个按现有预算租用的背景副本，不在逐帧创建 shader/pipeline。范围为 reel-ui、reel-engine、reel-player、reel-render、示例与双语指南；共同节点构造 ABI 和节点快照验证器随字段表递增，无新增依赖。行为检查覆盖嵌套、透明背景、遮罩、动态修改、保存恢复及实际 GPU 像素。
+
 节点 `invert: 0..1` 对完成合成的整个子树做 sRGB 反色，默认 0；1 将非预乘的编码 RGB 变为 1−RGB，中间值在编码 RGB 中插值，alpha 保持不变，再转回线性预乘值。嵌套节点按树由内到外应用，兄弟节点不受影响；反色先于该组的遮罩与透明度，不改变布局和输入。沿用普通属性写入、derive、tween 与快照，不新增语言语法。UI 的具名组元数据将参数传到帧与 GPU，在既有组离屏目标上一次合成，和 opacity/mask 共用目标；默认值不产生额外组，无截图、CPU 读回或新依赖。范围为 engine 属性/ABI、UI 绘制、player 与 renderer；节点 native ABI、节点快照验证器版本递增，旧编译产物重新构建。验证覆盖组合后的像素、半透明、嵌套与兄弟、遮罩、动态属性和保存恢复，并按设备标明像素验证范围。可运行示例为 examples/author_invert.aside。
 
 音频视频：音轨可排队、定区间循环、淡化、声像、滤镜与同步组起播；语音支持逐句关联和历史重播。各操作对应可恢复媒体描述，队列/滤镜状态与逻辑位置进入快照。视频支持普通节点、全屏、循环、跳过、seek、音画同步与遮罩。错误、设备恢复和取消遵守媒体身份与唯一终态。
