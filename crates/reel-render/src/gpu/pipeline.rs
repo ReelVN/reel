@@ -122,6 +122,11 @@ pub(super) struct CompositeParams {
     pub operation: CompositeOperation,
     pub blend: u32,
 }
+pub(super) struct CompositeInputs<'a> {
+    pub source: &'a wgpu::TextureView,
+    pub mask: &'a wgpu::TextureView,
+    pub backdrop: &'a wgpu::TextureView,
+}
 pub struct Pipelines {
     pub paint: wgpu::RenderPipeline,
     pub yuv: wgpu::RenderPipeline,
@@ -308,11 +313,14 @@ impl Pipelines {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         target: &Target,
-        source: &wgpu::TextureView,
-        mask: &wgpu::TextureView,
+        inputs: CompositeInputs<'_>,
         params: CompositeParams,
-        backdrop: &wgpu::TextureView,
     ) {
+        let CompositeInputs {
+            source,
+            mask,
+            backdrop,
+        } = inputs;
         let (mode, progress, softness): (u32, f32, f32) = match params.operation {
             CompositeOperation::SourceOver => (0, 0., 0.),
             CompositeOperation::AlphaMask => (1, 0., 0.),

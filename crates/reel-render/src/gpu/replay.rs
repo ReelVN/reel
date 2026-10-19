@@ -137,10 +137,12 @@ impl Context<'_> {
                     &parent.scopes.last().target,
                     &mask.source.view,
                     &finished.view,
-                    mask.opacity,
+                    reel_ui::imaging::Composite {
+                        alpha: mask.opacity,
+                        blend: mask.blend,
+                    },
                     mask.invert,
                     mask.operation,
-                    mask.blend,
                 )?;
                 self.recycle_target(mask.source)?;
                 self.recycle_target(finished)?;
@@ -224,10 +226,12 @@ impl Context<'_> {
                                 &current.scopes.last().target,
                                 &source.view,
                                 &coverage.view,
-                                group.opacity,
+                                reel_ui::imaging::Composite {
+                                    alpha: group.opacity,
+                                    blend: group.blend,
+                                },
                                 group.invert,
                                 CompositeOperation::AlphaMask,
-                                group.blend,
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
@@ -276,10 +280,12 @@ impl Context<'_> {
                             &current.scopes.last().target,
                             &source.view,
                             &source.view,
-                            group.opacity,
+                            reel_ui::imaging::Composite {
+                                alpha: group.opacity,
+                                blend: group.blend,
+                            },
                             group.invert,
                             CompositeOperation::SourceOver,
-                            group.blend,
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -344,8 +350,11 @@ impl Context<'_> {
             &self.gpu.device,
             &mut self.encoder,
             target,
-            source,
-            mask,
+            super::pipeline::CompositeInputs {
+                source,
+                mask,
+                backdrop: source,
+            },
             super::pipeline::CompositeParams {
                 scissor: self.scissor,
                 opacity: alpha,
@@ -353,7 +362,6 @@ impl Context<'_> {
                 operation,
                 blend: 0,
             },
-            source,
         );
         Ok(())
     }
@@ -362,12 +370,12 @@ impl Context<'_> {
         target: &Target,
         source: &wgpu::TextureView,
         mask: &wgpu::TextureView,
-        alpha: f32,
+        composite: reel_ui::imaging::Composite,
         invert: f32,
         operation: CompositeOperation,
-        blend: reel_ui::peniko::BlendMode,
     ) -> Result<(), GpuError> {
-        let blend = blend_code(blend).expect("validated group blend");
+        let alpha = composite.alpha;
+        let blend = blend_code(composite.blend).expect("validated group blend");
         if blend == 0 {
             return self.combine(target, source, mask, alpha, invert, operation);
         }
@@ -390,8 +398,11 @@ impl Context<'_> {
             &self.gpu.device,
             &mut self.encoder,
             target,
-            source,
-            mask,
+            super::pipeline::CompositeInputs {
+                source,
+                mask,
+                backdrop: &backdrop.view,
+            },
             super::pipeline::CompositeParams {
                 scissor: self.scissor,
                 opacity: alpha,
@@ -399,7 +410,6 @@ impl Context<'_> {
                 operation,
                 blend,
             },
-            &backdrop.view,
         );
         self.recycle_target(backdrop)
     }
