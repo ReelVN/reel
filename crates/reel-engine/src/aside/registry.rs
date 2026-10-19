@@ -887,6 +887,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             abi_version: match name {
                 "tween" => 7,
                 "scope" => 2,
+                "clock" => 2,
                 _ => 1,
             },
             parameters,

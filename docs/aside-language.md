@@ -321,7 +321,7 @@ text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直�
 
 Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。组导航已实现：最终可写属性身份用于 Tab 单停靠和方向选择，不新增语言语法或分组参数；当前模态范围内使用选中的可用项，否则首项。组在 Tab 顺序中的位置取其第一个可用节点；方向移动先回写再回调，脚本赋值不抢焦点。虚拟列表先沿既有逻辑导航挂载并接受目标，再选择；首尾循环及跨列表进入使用逻辑端点，不使用当前窗口边界，不预建中间离屏选项。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。组身份从恢复后的绑定重建，不进入快照格式。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
 
-Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 Aside 字节码/ASB 变化。
+Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。ticks 是 int 完整周期数，初值 0，直接用于索引或 slice 范围；elapsed 是 float 已完成周期总秒数，初值 0.0。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，停止保留最后值，finish 拒绝无终点活动。快照保留这两种值类型、周期与暂停偏移，恢复后继续原期限。周期计数超出 int 范围时在发布前报错。clock native ABI 2，无新语法或 VM/ASB/SessionSnapshot 格式变化。
 
 独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。首批 `random(seed: null)` 及其 int/float/pick 绑定方法使用普通 native 调用和共享身份，随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式；在主函数或事件中创建并保存随机流。没有新增语言语法、VM 指令或 Aside 字节码/ASB 编码，Aside 不依赖 Reel。
 

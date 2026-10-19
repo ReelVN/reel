@@ -71,6 +71,116 @@ fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
     }
 }
 
+#[test]
+fn clock_ticks_index_and_slice_through_pause_restore_and_stop() {
+    use aside_vm::snapshot::SnapshotBudget;
+    use std::time::Duration;
+    let source = r#"fn check(timer, expected: int) {
+        let ticks: int = timer.ticks;
+        let elapsed: float = timer.elapsed;
+        let prefixes = ["", "雪", "雪a", "雪a🙂", "雪a🙂b"];
+        if ticks != expected || "雪a🙂b".slice_scalars(0..ticks) != prefixes[ticks] {
+            throw "integer clock indexing";
+        }
+        if elapsed != ticks * 0.25 { throw "clock elapsed"; }
+    }
+    fn opening() {
+        let owner = stack(); stage.replace(owner);
+        let timer = clock(interval: 0.25, owner: owner);
+        owner.add(text(derive(|| "雪a🙂b".slice_scalars(0..timer.ticks))));
+        check(timer, 0);
+        narrator("initial");
+        check(timer, 2);
+        narrator("running");
+        check(timer, 3);
+        pause(timer);
+        narrator("paused");
+        check(timer, 3);
+        resume(timer);
+        narrator("resumed");
+        check(timer, 4);
+        stop(timer);
+        if await timer != "Stopped" { throw "clock stop"; }
+        check(timer, 4);
+        narrator("stopped");
+        check(timer, 4);
+        narrator("done");
+    }"#;
+    let shown = |vm: &SessionVm, value: &str| {
+        assert!(vm.stage().nodes().any(
+            |node| matches!(&node.kind, reel_ui::stage::NodeKind::Text(text) if text.as_ref() == value)
+        ));
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        shown(&vm, "");
+        advance_clock(&mut vm, &session, 0.625, 1);
+        advance_dialogue(&mut vm, &mut session);
+        shown(&vm, "雪a");
+        advance_clock(&mut vm, &session, 0.875, 1);
+        advance_dialogue(&mut vm, &mut session);
+        shown(&vm, "雪a🙂");
+        assert_eq!(vm.activities_poll_after(), None);
+
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image =
+            snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                .unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        assert_eq!(vm.activities_poll_after(), None);
+        advance_clock(&mut vm, &session, 10.875, 1);
+        models::drive(&mut vm, &mut session, false);
+        shown(&vm, "雪a🙂");
+        advance_dialogue(&mut vm, &mut session);
+        assert_eq!(vm.activities_poll_after(), Some(Duration::from_millis(125)));
+        advance_clock(&mut vm, &session, 11., 1);
+        advance_dialogue(&mut vm, &mut session);
+        shown(&vm, "雪a🙂b");
+        assert!(!vm.activities_need_time());
+        advance_clock(&mut vm, &session, 100., 1);
+        advance_dialogue(&mut vm, &mut session);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(dialogue)) if dialogue.text() == "done"));
+    }
+}
+
+#[test]
+fn clock_rejects_tick_count_overflow_before_publishing() {
+    let (mut session, mut vm) = models::prepared(
+        r#"fn opening() {
+            let timer = clock(interval: 1e-20);
+            stage.replace(text("clock", x: bind(timer.ticks), y: bind(timer.elapsed)));
+            narrator("running");
+        }"#,
+        false,
+    );
+    models::drive(&mut vm, &mut session, false);
+    assert!(matches!(
+        vm.advance_time(&session, 1., 256),
+        Err(AdapterError::Input("clock tick count overflow"))
+    ));
+    vm.sync_stage(&session).unwrap();
+    let node = vm.stage().node(vm.stage().root().unwrap()).unwrap();
+    assert_eq!((node.props.x, node.props.y), (0., 0.));
+}
+
 fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     loop {
         match next(vm, session) {
