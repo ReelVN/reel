@@ -315,7 +315,7 @@ impl StoryRuntime {
     }
 
     /// Alternate VM and incremental GC work, draining invalidated payloads before
-    /// allocating again. A wait finishes collection before sleeping.
+    /// allocating again. A wait finishes any requested collection before sleeping.
     fn step(&mut self, budget: SliceBudget, now: impl FnMut() -> u64) -> Result<(), Error> {
         if self.driver().cleanup_pending() {
             self.driver
@@ -353,6 +353,7 @@ impl StoryRuntime {
                     self.runnable = true;
                     self.retry_after_collection = false;
                 }
+                self.start_collection_if_due()?;
             }
             self.gc_turn = false;
             return Ok(());
@@ -430,11 +431,16 @@ impl StoryRuntime {
             _ => self.retried_collection = false,
         }
         if self.driver().state() == StoryState::Running {
-            if !self.collecting {
-                self.driver.as_mut().unwrap().begin_collection()?;
-                self.collecting = true;
-            }
+            self.start_collection_if_due()?;
             self.gc_turn = true;
+        }
+        Ok(())
+    }
+
+    fn start_collection_if_due(&mut self) -> Result<(), Error> {
+        if !self.collecting && self.driver().adapter().vm().heap().collection_due() {
+            self.driver.as_mut().unwrap().begin_collection()?;
+            self.collecting = true;
         }
         Ok(())
     }

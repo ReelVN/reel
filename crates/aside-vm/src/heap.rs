@@ -213,6 +213,8 @@ pub struct ObjectInfo {
 
 #[derive(Clone, Copy, Debug)]
 pub struct HeapStats {
+    pub collections: u64,
+    pub gc_units: u64,
     pub live_objects: u32,
     pub pending_objects: u32,
     pub roots: u32,
@@ -298,7 +300,7 @@ pub struct Heap {
     reactive_capture: Option<Value>,
     evaluation: u64,
     property_proposal: Option<Value>,
-    limits: HeapLimits,
+    pub(crate) limits: HeapLimits,
     reserved: u64,
     payload_bytes: u64,
     pub(crate) pending_bytes: u64,
@@ -423,6 +425,8 @@ impl Heap {
     pub fn stats(&self) -> HeapStats {
         let pending = self.release.len() as u32;
         HeapStats {
+            collections: self.gc.cycle,
+            gc_units: self.gc.units,
             live_objects: self.objects.occupied() as u32 - pending,
             pending_objects: pending,
             roots: self.roots.occupied() as u32,
@@ -446,6 +450,7 @@ impl Heap {
         self.usage.ensure(bytes)
     }
     fn charge(&mut self, bytes: u64, chunks: u64) {
+        self.gc.allocated_bytes = self.gc.allocated_bytes.saturating_add(bytes);
         self.payload_bytes += bytes;
         self.chunk_allocations += chunks;
         self.usage.charge(bytes);
@@ -542,6 +547,7 @@ impl Heap {
             _ => 0,
         };
         self.charge(charged, chunks);
+        self.gc.allocated_objects = self.gc.allocated_objects.saturating_add(1);
         let mark = if self.gc.phase == GcPhase::Idle {
             0
         } else {

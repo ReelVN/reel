@@ -17,7 +17,9 @@ impl Heap {
         } else {
             self.alloc_array(&[])?
         };
-        self.commit_collection(target, prepared)
+        self.commit_collection(target, prepared)?;
+        self.request_collection();
+        Ok(())
     }
 
     /// Commit a private collection work buffer without copying or freeing edges.
