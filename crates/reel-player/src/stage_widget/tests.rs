@@ -799,7 +799,7 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
         .unwrap();
     stage.replace(id).unwrap();
     let mut view = StageView::capture(&stage);
-    view.root.as_mut().unwrap().image = Some(ImageData {
+    Arc::make_mut(view.root.as_mut().unwrap()).images.image = Some(ImageData {
         data: Blob::new(Arc::new(vec![255_u8; 2 * 4 * 4])),
         format: ImageFormat::Rgba8,
         alpha_type: ImageAlphaType::Alpha,
@@ -870,7 +870,7 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
         );
     }
     let (_, original_layouts) = record(&mut bridge, widget_id, &view, 1);
-    let node = &mut view.root.as_mut().unwrap().node;
+    let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
     node.props.width = Some(10.);
     node.props.height = Some(5.);
     let (small, resized_layouts) = record(&mut bridge, widget_id, &view, 2);
@@ -895,10 +895,11 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
     // A restarted emission can capture a different extent even if its final
     // authored dimensions equal the last presentation's dimensions.
     frame.extent = [1400., 1000.];
-    view.root.as_mut().unwrap().node.kind = NodeKind::Particles(ParticleBatch {
-        config: config.clone(),
-        frame: Some(frame),
-    });
+    Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node).kind =
+        NodeKind::Particles(ParticleBatch {
+            config: config.clone(),
+            frame: Some(frame),
+        });
     let (restarted, restarted_layouts) = record(&mut bridge, widget_id, &view, 3);
     assert!(restarted_layouts > resized_layouts);
     assert!(restarted.bounding_box.x1 > small.bounding_box.x1);
@@ -913,7 +914,7 @@ fn particle_bounds_follow_captured_birth_extent_after_resize_and_restart() {
 
     for step in 4..20 {
         frame.elapsed += 0.1;
-        let node = &mut view.root.as_mut().unwrap().node;
+        let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
         node.props.rotation = -17.;
         node.props.scale_x = 1.5;
         let batch = ParticleBatch {
@@ -1808,8 +1809,11 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     }
     view.resolve_metadata(&images);
     let root = view.root.as_ref().unwrap();
-    assert_eq!(root.children[0].tiled_size, Some(Size::new(4096., 2048.)));
-    let sprite = root.children[1].image.as_ref().unwrap();
+    assert_eq!(
+        root.children[0].images.tiled_size,
+        Some(Size::new(4096., 2048.))
+    );
+    let sprite = root.children[1].images.image.as_ref().unwrap();
     assert_eq!([sprite.width, sprite.height], [160, 90]);
     assert_eq!(view.resources.len(), 1);
     assert_eq!(
@@ -1823,7 +1827,9 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         "metadata path reuses the one decoded sprite"
     );
 
-    let NodeKind::Particles(batch) = &mut view.root.as_mut().unwrap().children[1].node.kind else {
+    let root = Arc::make_mut(view.root.as_mut().unwrap());
+    let child = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[1]);
+    let NodeKind::Particles(batch) = &mut Arc::make_mut(&mut child.node).kind else {
         unreachable!()
     };
     Arc::make_mut(&mut batch.config).source = "background.reel-image".into();
