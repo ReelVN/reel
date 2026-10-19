@@ -31,11 +31,19 @@ fn run(source: &str) {
         .unwrap();
         settle(&mut driver);
         let (mut bridge, root) = bridge(&driver);
-        driver.sync(&mut bridge, root).unwrap();
-        let (rejected, stale) = driver
-            .record(&mut bridge, root, FrameId(1))
-            .unwrap()
-            .expect("settled frame");
+        let (first_frame, (rejected, stale)) = (1..30)
+            .find_map(|frame| {
+                driver.sync(&mut bridge, root).unwrap();
+                let candidate = driver.record(&mut bridge, root, FrameId(frame)).unwrap();
+                if candidate.is_none() {
+                    assert_eq!(bridge.pending_count(), 0);
+                    assert!(!done(&driver), "preparation cannot complete geometry");
+                    assert!(driver.has_runnable_tasks());
+                    settle(&mut driver);
+                }
+                candidate.map(|candidate| (frame, candidate))
+            })
+            .expect("layout preparation must produce a candidate");
 
         driver.presented(&bridge, &stale).unwrap();
         settle(&mut driver);
@@ -48,7 +56,7 @@ fn run(source: &str) {
         driver.presented(&bridge, &stale).unwrap();
         settle(&mut driver);
         assert!(!done(&driver), "skipped candidate is not accepted");
-        for frame in 2..30 {
+        for frame in first_frame + 1..first_frame + 30 {
             present(&mut driver, &mut bridge, root, frame);
             settle(&mut driver);
             // Old receipts cannot change the accepted-frame confirmation.
