@@ -146,6 +146,8 @@ reel-ui Stage 只投影当前行、逻辑索引、位置、总估计高度及修
 
 定位与边缘导航共用目标、窗口需求和候选；key 索引及高度前缀直接定位目标窗口，不构造中间行，不重新执行来源/key。布局返回真实目标高度及宽度修订、位置校准和窗口提交后才安装呈现屏障；下一完整实际接受帧才完成。变化使旧屏障失效并重新安装，录制、拒帧及旧帧不完成。NodeScroll 的 input 标志区分玩家滚动/焦点导航与布局夹取；新输入撤销未决定位，旧布局反馈仍按 requested 位置校验。复用 stage.presented 的 Results 生产根队列及请求序号，允许完成值是 Node，不新增调度器、脚本帧回调或布局估计参数。
 
+视口高度变化和当前 requested 所接受的布局夹取保留定位目标，重新校准并等待新帧；被拒绝的旧布局不改目标预期位置。来源或其上游 derive 已失效、正在重算时，旧屏障不能完成，即使来源索引续体尚未开始或尚未结束。安装屏障时检查派生来源；Results 在既有每片最多 64 个生产结果的轮转内，对准备完成且身份匹配当前定位请求的结果再检查。普通 stage.presented/geometry 即使 owner 是该列表，也保持各自语义；无关列表或派生更新不阻塞稳定结果。Aside 的 freshness 查询沿已登记依赖迭代、复用计账工作区，不执行脚本或改变调度；普通 model 字段仅检查、不加入派生祖先去重。这仍需扫描来源登记的全部依赖：`key: |item| item.id` 的 10 万个 model 条目会产生 O(n) 字段检查，不是总列表长度的常数成本，也不新增逐帧全列表扫描。独立成本命令为 `cargo test --release --locked -p reel-engine --lib virtual_list_scroll_to_model_key_dependency_cost -- --ignored --nocapture`，分别报告已建好来源后的有效性检查和完整远跳 CPU 路径；数据生成和来源索引不计入这两个时间。
+
 快照保留目标 key、请求身份、结果及构造续体，未决定位恢复后重新测量并等待新接受帧；候选仍不提前发布。范围为列表模块、共享结果屏障、UI/播放器反馈、测试和列表示例及四份文档；list ABI 8、新 scroll_to native ABI 1、SessionSnapshot 9、VM 快照 5，无新依赖、无兼容层。验证远跳 10 万行的工厂/节点/文字布局有界且来源/key 不重算，变高/宽度/重排、快速覆盖、删除/退休/取消、旧帧及未测量/构造中/已安装屏障三阶段快照。 行为命令：`cargo test --locked -p reel-engine --lib virtual_list_scroll_to`、`cargo test --locked -p reel-cli --test author_lists`。定位成本命令：`cargo test --release --locked -p reel-engine --lib virtual_list_scroll_to_far_window_is_bounded_without_reindexing -- --nocapture`；设置 `REEL_SESSION_FONT` 后运行 `cargo test --release --locked -p reel-player --lib virtual_scroll_to_far_target_has_bounded_actual_text_layout -- --ignored --nocapture` 验证 1 千/1 万/10 万项的真实文字排版与接受帧 CPU 路径，均不包含 GPU 呈现。交互示例 [author_list.aside](../examples/author_list.aside) 的 Item 998 按钮演示按业务 key 定位。
 
 ### 角色对白与公共播放时钟

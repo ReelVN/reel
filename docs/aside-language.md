@@ -278,6 +278,7 @@ bind(model.volume) 是编译器识别的可观察属性位置表达式，生成 
 
 derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取，版本变化后重算并替换条件依赖集合。禁止修改外部对象、可观察状态、启动活动或等待；native 必须 DerivedSafe，传递调用中继续检查。内部临时分配/写入允许，不能把临时引用逃逸成外部可变影响。普通捕获值保持通常共享语义，不因读取自动响应。环报错，替换/销毁解除订阅。移除最后一个属性消费者时，沿派生输入解除无消费者的订阅；重新绑定保留引用会恢复更新，共享消费者不受影响。输入宿主退休导致的冻结不可恢复。可写控件不可接受只读派生，通知/事务提交由宿主负责。
 派生结果沿用只读属性引用，可通过 `binding.value` 读取并继续派生。依赖变化合并到同步脚本段结束后的提交点，在下一次舞台发布或业务任务运行前稳定；不在每帧扫描所有绑定。首次计算沿原调用栈执行，后续计算保留闭包的源码位置。失败保留上次有效投影并报告脚本故障。
+宿主可通过 `Heap::derived_is_current(output, evaluating)` 检查派生及其已登记上游是否仍有效；evaluating 由 `Vm::reactive_task_output(task)` 从调度器当前派生任务读取，涵盖领取输出后、首次原生调用前的预算让出。查询不执行脚本、不消费脏队列，迭代复用计账工作区；成本与该依赖图有关。未完成的捕获和脏来源都不能作为已接受呈现的有效证据。
 
 
 Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存当前数值/布尔值；用户输入先写入，再以普通事件 `{target, value}` 调度 `on_change`，脚本赋值不触发回调。宿主属性校验可读取接收者其它字段，跨字段约束在写入前完成；错误沿原赋值源码位置报告。`bind` / `derive` 的语言设计不因控件引入而改变。
@@ -291,6 +292,7 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 虚拟列表（已实现）：`list(items, key:, build:, virtual:false, ...布局属性)` 的 virtual 固定选择组件寿命。true 只实例化视窗附近的行，离屏退休、返回重建；持久状态放在作者 model 中，聚焦和捕获中的行暂时保留。首版要求有限高度纵向 scroll 的唯一流内容、正自然高度 Node，来源预先过滤；list 本身使用自然高度与无局部变换，整体变换放在外层 scroll。窗口变化只触发宿主维护 observer，不重跑来源和 key。VM `begin_reactive(ticket, output, pure, continuation)` 与 call_reactive 共用原生元数据、NoWait、捕获嵌套、故障/取消恢复与快照续体；不增加语言语法、指令或脚本逐帧回调。Reel list native ABI 8、SessionSnapshot 9、VM 快照 5，具体窗口、锚点、测量及导航合同见[引擎架构](engine-architecture.md#虚拟列表已实现)。
 
 按 key 定位（已实现）：`let row = await items.scroll_to(key, align: "nearest")` 接受虚拟列表的业务 key，align 为 start/center/end/nearest；完成时返回已测量、校准并实际呈现的行根节点。每列表只有最新目标，过滤、退休、主动取消和较新的定位/滚动/导航令旧请求 Cancelled。重排跟随 key；不隐式聚焦或保留行。共享列表窗口、原生续体和 stage.presented 结果屏障；list ABI 8、SessionSnapshot 9，VM 快照 5。
+视口高度变化和布局夹取会保留目标、重新校准；来源及上游派生失效后，旧帧不能完成定位，须等待重算、测量和新的实际呈现。
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。game.configure 只配置呈现参数，不含默认界面开关，其 native ABI 为 3。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。
 

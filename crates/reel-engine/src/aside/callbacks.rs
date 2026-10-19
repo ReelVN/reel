@@ -139,7 +139,11 @@ impl SessionVm {
                     if event.input {
                         self.virtual_scroll_input(event.node)?;
                     }
-                    changed |= self.stage.scroll(self.vm.heap_mut(), event)?
+                    let (updated, accepted_y) = self.stage.scroll(self.vm.heap_mut(), event)?;
+                    changed |= updated;
+                    if !event.input && accepted_y {
+                        self.virtual_scroll_layout(event)?;
+                    }
                 }
                 reel_ui::stage::NodeEvent::VirtualList(event) => {
                     changed |= self.virtual_feedback(event)?;
@@ -521,10 +525,24 @@ impl SessionVm {
         if self.particles.needs_work(self.stage.scene.revision()) {
             return Ok(SessionStep::Progress);
         }
-        if self
-            .results
-            .maintain(&mut self.vm, self.stage.scene.revision())?
-        {
+        let evaluating = self
+            .derived_task
+            .map(|task| self.vm.reactive_task_output(task))
+            .transpose()?
+            .flatten();
+        if self.results.maintain(
+            &mut self.vm,
+            self.stage.scene.revision(),
+            |heap, result, owner| {
+                lists::virtualized::presentation_current(
+                    heap,
+                    &self.stage,
+                    result,
+                    owner,
+                    evaluating,
+                )
+            },
+        )? {
             return Ok(SessionStep::Progress);
         }
         if self.activities.pending() {

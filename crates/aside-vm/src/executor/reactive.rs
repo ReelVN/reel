@@ -61,6 +61,15 @@ impl Vm {
         Ok(self.ticket(ticket)?.derived_output)
     }
 
+    /// A scheduled observer owns its output before its first native admission,
+    /// including a budget yield between next_derived and begin_derived.
+    pub fn reactive_task_output(&self, task: TaskId) -> Result<Option<Value>, VmError> {
+        Ok(match self.task(task)?.frames.data.first() {
+            Some(Frame::Native(frame)) => frame.derived_output,
+            _ => None,
+        })
+    }
+
     pub fn call_reactive(
         &mut self,
         ticket: HostTicket,

@@ -407,7 +407,12 @@ impl Results {
     }
     /// Finish a registration-order round before running more scripts. Values in
     /// cancelled native frames may already be collected: check WaitId first.
-    pub fn maintain(&mut self, vm: &mut Vm, stage_revision: u64) -> Result<bool, AdapterError> {
+    pub fn maintain(
+        &mut self,
+        vm: &mut Vm,
+        stage_revision: u64,
+        mut current: impl FnMut(&mut Heap, Value, Value) -> Result<bool, AdapterError>,
+    ) -> Result<bool, AdapterError> {
         if !self.needs_work(stage_revision) {
             return Ok(false);
         }
@@ -425,9 +430,13 @@ impl Results {
             let heap = vm.heap_mut();
             let pending = state(heap, object)? == State::Pending;
             let barrier = heap.host_payload(object, Slot::Target as u32)?;
-            let ready = pending
+            let mut ready = pending
                 && barrier.tag() != ValueTag::Null
                 && heap.sequence_get(barrier, 0)?.as_int().unwrap() as u64 <= self.presented;
+            if ready && !current(heap, object, heap.host_payload(object, Slot::Owner as u32)?)? {
+                heap.set_host_payload(object, Slot::Target as u32, Value::NULL)?;
+                ready = false;
+            }
             let keep = pending && !ready;
             if ready {
                 let value = heap.sequence_get(barrier, 1)?;

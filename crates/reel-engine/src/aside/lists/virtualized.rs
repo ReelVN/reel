@@ -10,6 +10,7 @@ mod index;
 mod target;
 mod window;
 use index::*;
+pub(in crate::aside) use target::presentation_current;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -287,6 +288,7 @@ impl SessionVm {
                 self.bind_list_scroll_to(host)?;
                 (output, s)
             };
+            self.virtual_target_invalidate(s)?;
             let w = Work {
                 output,
                 state: s,

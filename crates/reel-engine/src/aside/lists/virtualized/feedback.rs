@@ -88,6 +88,12 @@ impl SessionVm {
             })
         );
         let mut changed = self.virtual_target_feedback(s, event)?;
+        if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null
+            && num(self.vm.heap(), s, S::End)? - num(self.vm.heap(), s, S::Start)?
+                != event.visible_end - event.visible_start
+        {
+            changed = true;
+        }
         let moved = num(self.vm.heap(), s, S::Start)? != event.visible_start
             || num(self.vm.heap(), s, S::End)? != event.visible_end;
         for (field, value) in [

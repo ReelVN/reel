@@ -14,11 +14,43 @@ fn field(h: &Heap, t: Value, f: T) -> Result<Value, HeapError> {
     h.sequence_get(t, f as u32)
 }
 
+/// Validate only this producer when its accepted barrier is about to settle.
+pub(in crate::aside) fn presentation_current(
+    heap: &mut Heap,
+    stage: &stage::StageBinding,
+    result: Value,
+    owner: Value,
+    evaluating: Option<Value>,
+) -> Result<bool, AdapterError> {
+    if owner.tag() == ValueTag::Null {
+        return Ok(true);
+    }
+    let id = stage.id(heap, owner)?;
+    if !matches!(
+        stage.scene.node(id).map(|n| &n.kind),
+        Some(NodeKind::VirtualList(_))
+    ) {
+        return Ok(true);
+    }
+    let s = state(heap, owner)?;
+    let target = get(heap, s, S::Target)?;
+    if target.tag() == ValueTag::Null || !field(heap, target, T::Result)?.same_bits(result) {
+        return Ok(true);
+    }
+    if heap.derived_is_current(get(heap, s, S::Window)?, evaluating)? {
+        return Ok(true);
+    }
+    heap.set_field(target, T::Armed as u32, Value::int(-1))?;
+    // Rebuild even when an upstream derive publishes the same value, so this
+    // invalidated result always gets a new measured window and accepted frame.
+    let request = int(heap, s, S::Request)? + 1;
+    put(heap, s, S::Request, Value::int(request))?;
+    observable::publish(heap, get(heap, s, S::Demand)?, 0, Value::int(request))?;
+    Ok(false)
+}
+
 impl SessionVm {
-    pub(in crate::aside) fn virtual_scroll_input(
-        &mut self,
-        scroll: NodeId,
-    ) -> Result<(), AdapterError> {
+    fn virtual_scroll_state(&self, scroll: NodeId) -> Result<Option<Value>, AdapterError> {
         let list = self.stage.scene.node(scroll).and_then(|n| {
             n.children
                 .iter()
@@ -30,13 +62,46 @@ impl SessionVm {
                 })
                 .copied()
         });
-        if let Some(id) = list {
+        list.map(|id| {
             let host = self.stage.value(self.vm.heap(), id)?;
-            let s = state(self.vm.heap(), host)?;
+            Ok(state(self.vm.heap(), host)?)
+        })
+        .transpose()
+    }
+    pub(in crate::aside) fn virtual_scroll_input(
+        &mut self,
+        scroll: NodeId,
+    ) -> Result<(), AdapterError> {
+        if let Some(s) = self.virtual_scroll_state(scroll)? {
             if get(self.vm.heap(), s, S::Target)?.tag() != ValueTag::Null {
                 self.virtual_target_cancel(s)?;
                 self.virtual_target_demand(s)?;
             }
+        }
+        Ok(())
+    }
+    /// Called only after the scroll property accepted this layout's requested
+    /// offset. A clamp adjusts our prediction; it is not a newer author input.
+    pub(in crate::aside) fn virtual_scroll_layout(
+        &mut self,
+        event: &reel_ui::stage::NodeScroll,
+    ) -> Result<(), AdapterError> {
+        let Some(s) = self.virtual_scroll_state(event.node)? else {
+            return Ok(());
+        };
+        let t = get(self.vm.heap(), s, S::Target)?;
+        if t.tag() == ValueTag::Null {
+            return Ok(());
+        }
+        let expected = field(self.vm.heap(), t, T::Expected)?;
+        if expected.tag() != ValueTag::Null
+            && stage::number(expected)? == event.requested.y
+            && event.requested.y != event.offset.y
+        {
+            self.virtual_target_invalidate(s)?;
+            self.vm
+                .heap_mut()
+                .set_field(t, T::Expected as u32, Value::float(event.offset.y))?;
         }
         Ok(())
     }
@@ -360,6 +425,10 @@ impl SessionVm {
             || self.vm.heap().sequence_get(e, EPOCH)?.as_int()
                 != Some(int(self.vm.heap(), s, S::Epoch)?)
         {
+            return Ok(false);
+        }
+        let window = get(self.vm.heap(), s, S::Window)?;
+        if !self.vm.heap_mut().derived_is_current(window, None)? {
             return Ok(false);
         }
         let child = entry(self.vm.heap(), e, Entry::Node)?;
