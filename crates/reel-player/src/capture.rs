@@ -1,5 +1,5 @@
 //! Host-independent frame capture and background PNG encoding.
-use crate::assets::worker::Worker;
+use crate::{aside_session::AsideSessionUi, assets::worker::Worker};
 use image::ImageEncoder;
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket, OwnedBytes, QueueLimits},
@@ -7,7 +7,7 @@ use reel_core::{
     wake::WakeSignal,
 };
 use reel_engine::aside::{
-    AdapterError, SessionVm,
+    AdapterError,
     capture::{CaptureId, CaptureRequest},
 };
 use reel_render::capture::{CaptureBackend, CapturedPixels};
@@ -125,9 +125,10 @@ impl<C> CaptureService<C> {
     pub fn drive<B: CaptureBackend<Capture = C>>(
         &mut self,
         backend: &mut B,
-        adapter: &mut SessionVm,
+        driver: &mut AsideSessionUi,
         frame: Option<&RenderFrame>,
     ) -> Result<bool, AdapterError> {
+        let adapter = driver.adapter_mut();
         self.wake.acknowledge();
         let mut changed = false;
         let mut events = Vec::new();

@@ -37,6 +37,9 @@ reel-media = { path = "../reel-media", default-features = false }
 reel-player = { path = "../reel-player" }
 reel-core = { path = "../reel-core" }
 reel-ui = { path = "../reel-ui" }
+reel-render = { path = "../reel-render", features = ["wgpu"] }
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
 
 [lints]
 workspace = true
