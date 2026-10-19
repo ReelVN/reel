@@ -26,7 +26,7 @@
 | 输入 / 嵌入游戏 | 键鼠、触摸和手柄公共输入；命名动作、模拟值、重映射、焦点导航；小游戏与对白共用节点、结果、时钟和存档。[开关谜题](../examples/author_embedded_puzzle.aside) | 连续 2D 游戏所需能力仍需补齐；示例不代表已有完整物理、碰撞或固定步进 API。[#101](https://github.com/jhq223/reel/issues/101) |
 | 平台 | 平台、呈现、运行时和资源 HAL；Winit 与 WGPU 可独立启用。[宿主接入](../crates/reel-player/README.md) | 实体设备、设备恢复、原生 IME/可访问性及跨平台验收。[#93](https://github.com/jhq223/reel/issues/93) |
 
-Quirrel 原始输入、预期输出、来源和迁移登记保留在 [compiler fixtures](../crates/aside-compiler/tests/fixtures/quirrel/README.md)。已迁移用例经过编译、B01 往返和真实 VM 执行；保留资产不等于已迁移或已通过。
+Quirrel 原始输入、预期输出、来源和迁移登记保留在 [compiler fixtures](../crates/aside-compiler/tests/fixtures/quirrel/README.md)。已迁移用例经过编译、ASB 往返和真实 VM 执行；保留资产不等于已迁移或已通过。
 
 ### 先运行已支持的示例
 
