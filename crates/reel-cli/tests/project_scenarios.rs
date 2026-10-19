@@ -1,6 +1,8 @@
-//! Execute self-checking projects with CPU presentation, offline audio and isolated storage.
+//! Self-checking projects with CPU or opt-in GPU presentation, offline audio and isolated storage.
 #[path = "support/audio.rs"]
 mod audio;
+#[path = "support/scenario_capture.rs"]
+mod scenario_capture;
 #[path = "support/author.rs"]
 #[allow(dead_code)]
 mod support;
@@ -23,12 +25,26 @@ use std::{
 };
 
 fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
+    execute_project_with_capture(
+        path,
+        timeout,
+        std::env::var("REEL_SCENARIO_GPU_CAPTURE").is_ok_and(|value| value == "1"),
+    )
+    .0
+}
+
+fn execute_project_with_capture(
+    path: &Path,
+    timeout: Duration,
+    gpu_capture: bool,
+) -> (Vec<audio::AudioStats>, Vec<scenario_capture::CaptureStats>) {
     let loaded =
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
     let entry = loaded.entry(None);
     let artifact = reel_cli::build(&checked, Some(&entry)).unwrap();
     let mut audio_stats = Vec::new();
+    let mut capture_stats = Vec::new();
     for (kind, story) in [
         ("source", reel_cli::into_story(checked, &entry).unwrap()),
         ("ASB", reel_cli::decode_story(&artifact.bytes).unwrap()),
@@ -60,6 +76,8 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
         let mut runtime = StoryRuntime::new(driver)
             .with_saves(RuntimeSaves::new(storage, 256 << 20))
             .with_media_factory(media);
+        let mut captures = gpu_capture.then(scenario_capture::ScenarioCapture::new);
+        runtime.set_frame_capture_enabled(gpu_capture);
         let (mut bridge, mut root) = support::bridge(runtime.driver());
         let mut identity = runtime.driver().ui().session().identity();
         let mut replacements = 0;
@@ -71,7 +89,7 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
             // Match the window host: native continuations share one frame's CPU
             // deadline. A budget slice must not advance game time by one frame.
             let deadline = started.elapsed().as_nanos() as u64 + 2_000_000;
-            let progress = runtime
+            runtime
                 .tick(
                     SliceBudget {
                         deadline_ns: Some(deadline),
@@ -82,7 +100,7 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
                 .unwrap();
             assert!(
                 started.elapsed() < timeout,
-                "{kind} scenario did not finish within {timeout:?}: {}; title={:?}, frame={frame}, progress={progress:?}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
+                "{kind} scenario did not finish within {timeout:?}: {}; title={:?}, frame={frame}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
                 path.display(),
                 runtime.driver().adapter().game_settings().title,
                 runtime.driver().state(),
@@ -105,15 +123,24 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
                 break;
             }
             // Mutable access would interrupt capture. Let the actual save worker and
-            // restore protocol finish before accepting another CPU frame.
+            // restore protocol finish before accepting another frame.
             if !runtime.capturing() {
                 let next = runtime.driver().ui().session().identity();
                 if next != identity {
                     (bridge, root) = support::bridge(runtime.driver());
                     identity = next;
                     replacements += 1;
+                    if let Some(captures) = &mut captures {
+                        captures.new_session();
+                    }
                 }
-                support::present(runtime.driver_mut().unwrap(), &mut bridge, root, frame);
+                if let Some(captures) = &mut captures {
+                    let driver = runtime.driver_mut().unwrap();
+                    captures.drive(driver);
+                    captures.present(driver, &mut bridge, root, frame);
+                } else {
+                    support::present(runtime.driver_mut().unwrap(), &mut bridge, root, frame);
+                }
                 runtime.wake_input();
             }
             // Give filesystem/resource workers CPU time between presentation attempts.
@@ -121,13 +148,78 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
         }
         assert!(!runtime.driver().cleanup_pending());
         audio_stats.push(audio.stats());
+        if let Some(captures) = &captures {
+            eprintln!("{kind} GPU captures: {:?}", captures.stats());
+            capture_stats.push(captures.stats());
+        }
         eprintln!(
             "{kind}: {} completed; frames={frame}, session_replacements={replacements}, audio={:?}",
             path.display(),
             audio.stats()
         );
     }
-    audio_stats
+    (audio_stats, capture_stats)
+}
+
+#[test]
+#[ignore = "requires a GPU adapter for real frame capture"]
+fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size() {
+    let project = tempfile::tempdir().unwrap();
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255]))
+        .save(project.path().join("blue.png"))
+        .unwrap();
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r##"
+        fn main() {
+            game.configure(width: 960, height: 540);
+            let ink = particles("blue.png", x: 480, y: 270, seed: 7);
+            stage.replace(stack(width: 960, height: 540, background: "#ff0000") {
+                image("blue.png", x: 800, width: 160, height: 540);
+                ink;
+            });
+            emit(ink, burst: 1, lifetime: 60, size: 32);
+            await stage.presented();
+            let png = await stage.capture();
+            let checkpoint = saves.save("captured", thumbnail: png);
+            await checkpoint;
+            if !checkpoint.restored {
+                await saves.load("captured");
+                throw "capture restore returned to old session";
+            }
+            let thumbnail = await saves.thumbnail("captured");
+            if thumbnail != png { throw "thumbnail bytes differ after restore"; }
+            stage.replace(image(png, width: 960, height: 540));
+            await stage.presented();
+            await stage.capture();
+        }
+    "##,
+    )
+    .unwrap();
+    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true);
+    assert_eq!(stats.len(), 2, "source and actual ASB must both render");
+    for captured in stats {
+        assert_eq!(captured.count, 2);
+        assert_eq!(
+            captured.size,
+            [960, 540],
+            "capture used the helper's old viewport"
+        );
+        assert!(
+            captured.center[0] <= 3
+                && captured.center[1] <= 3
+                && captured.center[2] >= 252
+                && captured.center[3] == 255,
+            "restored PNG lost its particle: {:?}",
+            captured.center
+        );
+        assert_eq!(
+            captured.right,
+            [0, 0, 255, 255],
+            "restored PNG lost its source image"
+        );
+    }
 }
 
 #[test]

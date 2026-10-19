@@ -3208,15 +3208,18 @@ dependencies = [
  "fluent-syntax",
  "image",
  "libc",
+ "pollster",
  "reel-core",
  "reel-engine",
  "reel-media",
  "reel-package",
  "reel-player",
+ "reel-render",
  "reel-storage",
  "reel-ui",
  "serde_json",
  "tempfile",
+ "wgpu",
 ]
 
 [[package]]

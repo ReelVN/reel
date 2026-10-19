@@ -56,7 +56,7 @@ pub fn present(
         )),
         NoticeResult::Accepted
     );
-    driver.presented(&bridge, &stamp).unwrap();
+    driver.presented(bridge, &stamp).unwrap();
 }
 
 pub fn click_at(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64, y: f64) {

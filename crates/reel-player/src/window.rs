@@ -503,7 +503,7 @@ impl State {
         {
             let changed = self.captures.drive(
                 &mut self.backend,
-                story.driver_mut()?.adapter_mut(),
+                story.driver_mut()?,
                 self.presentation.accepted_frame.as_ref(),
             )?;
             if changed {
