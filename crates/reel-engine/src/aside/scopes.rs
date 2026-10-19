@@ -19,7 +19,7 @@ pub(super) struct Scope {
 
 #[derive(Default)]
 pub(super) struct Scopes {
-    pub methods: Option<[FunctionId; 3]>,
+    pub methods: Option<[FunctionId; 5]>,
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
 }
@@ -83,6 +83,14 @@ impl SessionVm {
         let root = self.scopes.live[index].root;
         let heap = self.vm.heap_mut();
         let value = heap.root_value(root)?;
+        let overrides = heap.host_payload(value, 3)?;
+        if overrides.tag() != ValueTag::Null {
+            while heap.sequence_len(overrides)? != 0 {
+                let token = heap.sequence_get(overrides, heap.sequence_len(overrides)? - 1)?;
+                self.stage.remove_override(heap, token)?;
+                heap.array_pop(overrides)?;
+            }
+        }
         let nodes = heap.host_payload(value, 2)?;
         if nodes.tag() != ValueTag::Null {
             while heap.sequence_len(nodes)? != 0 {
@@ -186,6 +194,8 @@ impl SessionVm {
                     find("reel::scope::run")?,
                     find("reel::scope::spawn")?,
                     find("reel::scope::add")?,
+                    find("reel::scope::override")?,
+                    find("reel::override::remove")?,
                 ]);
             }
             results::reserve_queue(
@@ -197,10 +207,10 @@ impl SessionVm {
             let fields = heap.alloc_table()?;
             let object = heap.alloc_host(
                 fields,
-                &[Value::int(TAG), owner, Value::NULL],
+                &[Value::int(TAG), owner, Value::NULL, Value::NULL],
                 Some(results::readonly),
             )?;
-            for (i, (name, function)) in ["run", "spawn", "add"]
+            for (i, (name, function)) in ["run", "spawn", "add", "override"]
                 .into_iter()
                 .zip(self.scopes.methods.unwrap())
                 .enumerate()
@@ -224,7 +234,7 @@ impl SessionVm {
                         &[]
                     },
                     continuation: Continuation {
-                        version: 2,
+                        version: 3,
                         stage: 0,
                         values: &[object],
                         faults: FaultRetention::Preserve,
@@ -265,6 +275,39 @@ impl SessionVm {
             }
             self.vm.respond(ticket, response)?;
         }
+        self.issued = None;
+        Ok(())
+    }
+
+    pub(super) fn dispatch_scope_override(
+        &mut self,
+        ticket: HostTicket,
+    ) -> Result<(), AdapterError> {
+        let args = self.vm.host_arguments(ticket)?;
+        let [scope, node, properties] = [args[0], args[1], args[2]];
+        self.vm.heap().host_fields(scope)?;
+        if !is_scope(self.vm.heap(), scope) {
+            return Err(AdapterError::Input("override requires a scope"));
+        }
+        let token = self.stage.create_override(
+            &mut self.vm,
+            [scope, node, properties],
+            self.scopes.methods.unwrap()[4],
+            self.read_limit,
+        )?;
+        self.vm.respond(ticket, HostResponse::Ready(token))?;
+        self.issued = None;
+        Ok(())
+    }
+
+    pub(super) fn dispatch_override_remove(
+        &mut self,
+        ticket: HostTicket,
+    ) -> Result<(), AdapterError> {
+        let token = self.vm.host_arguments(ticket)?[0];
+        self.stage.remove_override(self.vm.heap_mut(), token)?;
+        self.activities.after_script(self.vm.heap())?;
+        self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
         self.issued = None;
         Ok(())
     }

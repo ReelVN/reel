@@ -194,6 +194,7 @@ impl StageBinding {
             };
             registry.register_validator(name, version, shape.validator())?;
         }
+        registry.register_validator("reel.override", 1, overrides::validate)?;
         Ok(())
     }
     pub(in crate::aside) fn snapshot_root(&self) -> Option<RootToken> {
@@ -228,8 +229,24 @@ impl StageBinding {
             saved.shape.project(heap, fields, saved.origin, limit)?
         };
         controls::project_group(heap, value, &mut kind)?;
-        let props = read_props(heap, fields, saved.shape.prefix(), limit, None, mask_origin)?;
-        let mask_source = mask_handle(heap, fields, saved.shape.prefix())?;
+        let selected = overrides::selection(heap, value)?;
+        let props = read_props(
+            heap,
+            fields,
+            saved.shape.prefix(),
+            selected,
+            limit,
+            None,
+            mask_origin,
+        )?;
+        let mask_source = mask_handle(heap, fields, saved.shape.prefix(), selected)?;
+        let overrides = if selected.tag() == ValueTag::Null {
+            None
+        } else {
+            let mut cache = overrides::Cache::new(heap)?;
+            cache.accept(heap, selected)?;
+            Some(cache)
+        };
         let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;
         interaction::publish(
             heap,
@@ -263,6 +280,8 @@ impl StageBinding {
                     .tag()
                     != ValueTag::Null,
                 fields_version: heap.info(fields)?.content_version,
+                projection_dirty: false,
+                overrides,
                 mask_source,
                 input_source: if matches!(saved.shape, Shape::Input) {
                     input::source_handle(heap, heap.table_entry(fields, 0)?.1)?

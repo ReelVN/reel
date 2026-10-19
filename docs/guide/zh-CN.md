@@ -585,7 +585,7 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 五 作用域管理临时画面
 
-scope 的任务、活动、等待和临时节点所有权已实现。属性覆盖与加性偏移继续实现。
+scope 的任务、活动、等待、临时节点和属性覆盖已实现。加性偏移继续实现。
 
 scope 在当前剧情调用链执行普通闭包；正文可以对白、等待、调用其他函数，退出时退休本次作用域拥有的工作。临时画面按下面的形式加入同一寿命管理：
 ```aside
@@ -597,7 +597,16 @@ fn show_cg(view) {
 }
 ```
 CG 加在 picture 最上方，玩家继续后随作用域退出移除。s.add(parent, node, index: 0) 可指定插入位置，返回原 node；提前移除页面、替换场景和读档后退出也沿同一退休规则处理。
-s.add(parent, node) 挂载临时子树，s.run(action) 启动归此作用域所有的活动。待实现的 s.override(node, props...) 将创建可动画的覆盖层，s.offset(node) 将创建独立的 x/y 附加偏移。普通 node.add 继续使用明确父节点寿命，不因身处 scope 而偷偷改变含义。
+s.add(parent, node) 挂载临时子树，s.run(action) 启动归此作用域所有的活动。s.override(node, properties) 创建可动画的覆盖层；待实现的 s.offset(node) 将创建独立的 x/y 附加偏移。普通 node.add 继续使用明确父节点寿命，不因身处 scope 而偷偷改变含义。
+属性覆盖使用记录参数保留 null 的含义，覆盖只读 derive 时无需保存和回写原值：
+```aside
+scope(body: |s| {
+    let effect = s.override(panel, {opacity: 0.4, width: null});
+    await s.run(tween(effect, opacity: 1, duration: 0.3));
+    await game.advance();
+});
+```
+node 的属性仍是基础值，effect 的属性是本层值；画面、布局、命中和 geometry 使用有效值。同字段后建立的层优先，修改旧层不改变顺序。基础绑定和被遮挡层的动画继续更新，移除后露出最新结果。effect.remove() 可提前撤销，退出作用域或目标退休也会撤销。可以覆盖共同布局与外观字段，token 只接受创建时列出的字段；控件值、回调、hover 等只读状态及 camera/scroll 专属字段不包含在内。各层动画独立，写同一字段或最终绑定源仍按普通活动冲突处理。s.offset 的加性偏移仍待实现。
 普通返回、异常和场景退出都触发同步、幂等的宿主清理。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和临时子树的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
 默认 scope 随当前任务存活。需要随某个节点结束时写 scope(owner: node, body: ...)。若该节点先结束，仅撤销 scope 区域并在外层调用点产生 ScopeCancelled，仍存活的主剧情可以在 scope 外捕获；区域内的失效节点代码结束，宿主完成清理。当前任务自身被撤销时，整个任务结束。
 visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用交互；opacity 只改变透明度。永久换景用 stage.replace(new_root)，局部永久替换用容器的 replace(new_child)。
@@ -698,7 +707,7 @@ let card = button("Sketch", on_interaction: |event| {
 
 图片使用相同资源时由播放器共享。wgpu 后端复用已提交的 GPU 图片，界面文字或悬停状态变化不会要求重新上传整套图片；缓存会在资源退休或需要腾出空间时释放，作者无需管理 GPU 句柄。
 
-普通函数、样式展开、节点属性修改、变换和有限动画已可用；临时 scope 覆盖仍待实现。
+普通函数、样式展开、节点属性修改、变换、有限动画和临时 scope 覆盖已可用。
 
 常用风格就是普通数据，组件函数决定如何把它应用到自己的节点。先写默认值，再用变体与显式参数覆盖；字段缺失才采用默认值，false、0 和 null 都保留作者的明确含义。临时 scope 覆盖优先于节点底层属性。
 ```aside
@@ -738,7 +747,7 @@ scope(body: |s| {
 });
 ```
 
-普通动画在停止位置保留属性值。独立属性覆盖与加性偏移的自动恢复仍待实现。绑定到 owner 节点的作用域在节点移除时取消内层工作，外层 catch 收到 "ScopeCancelled" 后可以继续；内层脚本 finally 被跳过，外层 finally 正常执行。取消外层任务会清理它的作用域。显式指定另一个 owner 的工作按该 owner 的寿命运行。作用域及其等待、活动和取消清理过程随同包存档恢复。
+普通动画在停止位置保留属性值。scope 覆盖在退出时撤销并显露最新底值；加性偏移仍待实现。绑定到 owner 节点的作用域在节点移除时取消内层工作，外层 catch 收到 "ScopeCancelled" 后可以继续；内层脚本 finally 被跳过，外层 finally 正常执行。取消外层任务会清理它的作用域。显式指定另一个 owner 的工作按该 owner 的寿命运行。作用域及其等待、活动和取消清理过程随同包存档恢复。
 
 [author_scope.aside](../../examples/author_scope.aside) 展示一个按钮同时启动动画和后台任务，另一个按钮通过一个任务句柄停止整段演出。运行 `reel dev examples/author_scope.aside`。
 
