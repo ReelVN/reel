@@ -75,6 +75,15 @@ impl super::WindowControl for WinitHost {
     fn window_resized(&mut self) -> bool {
         self.display.resized(&self.window)
     }
+    fn move_pointer(&mut self, position: [f64; 2]) -> Result<bool, String> {
+        if !self.display.info(&self.window).capabilities.pointer_move {
+            return Ok(false);
+        }
+        self.window
+            .set_cursor_position(winit::dpi::LogicalPosition::new(position[0], position[1]))
+            .map(|()| true)
+            .map_err(|error| error.to_string())
+    }
 }
 impl Clock for WinitHost {
     fn monotonic_now(&self) -> MonoTime {

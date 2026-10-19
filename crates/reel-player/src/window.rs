@@ -452,6 +452,7 @@ impl State {
             .and_then(|session| Instant::now().checked_add(session.tick_interval()))
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
+        self.publish_pointer_info()?;
         self.maintain_window_requests()?;
         self.maintain_captures()?;
         let Some(session) = &mut self.session else {

@@ -7,14 +7,18 @@ use std::sync::Arc;
 fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
     let code = r#"fn opening() {
         if window.info().platform != "unknown" { throw "headless platform"; }
+        if stage.pointer() != null { throw "initial pointer"; }
         narrator("attach host");
         let before = window.info();
+        let pointer_before = stage.pointer();
+        if pointer_before.x != 12 || pointer_before.y != 34 { throw "host pointer"; }
         if before.platform != "windows" || !before.fullscreen { throw "host platform"; }
         let applied = await window.configure(fullscreen: false);
         if applied.platform != "windows" || applied.fullscreen { throw "configure state"; }
         narrator("save");
         if before.platform != "windows" || !before.fullscreen { throw "saved value"; }
         if window.info().platform != "linux" || window.info().fullscreen { throw "restored host"; }
+        if stage.pointer() != null || pointer_before.x != 12 { throw "pointer restoration"; }
         narrator("restored");
     }"#;
     for encoded in [false, true] {
@@ -29,14 +33,23 @@ fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
             },
             ..Default::default()
         }));
+        vm.set_pointer_position(Some([12., 34.]));
         advance(&mut session);
         models::drive(&mut vm, &mut session, false);
         let request = vm.take_window_request().unwrap().unwrap();
-        assert_eq!(request.configuration.fullscreen, Some(false));
+        let crate::aside::window::WindowCommand::Configure(configuration) = request.command else {
+            panic!("configure request");
+        };
+        assert_eq!(configuration.fullscreen, Some(false));
         let mut applied = vm.window_info().as_ref().clone();
         applied.fullscreen = false;
-        vm.complete_window_request(request.id, Ok(Arc::new(applied)))
-            .unwrap();
+        vm.complete_window_request(
+            request.id,
+            Ok(crate::aside::window::WindowReply::Configured(Arc::new(
+                applied,
+            ))),
+        )
+        .unwrap();
         models::drive(&mut vm, &mut session, false);
         assert!(
             matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "save")
@@ -80,5 +93,66 @@ fn advance(session: &mut Session) {
         session
             .handle_local_input(session.root_owner(), InputAction::Advance(id))
             .unwrap();
+    }
+}
+
+#[test]
+fn pointer_requests_have_owned_results_and_one_pending_slot_from_source_and_asb() {
+    let code = r#"fn opening() {
+        let panel = stack(width: 320, height: 200);
+        let root = stack(children: [panel]);
+        stage.replace(root);
+        if await stage.move_pointer(10, 20, owner: panel) { throw "unsupported"; }
+        narrator("attach");
+        let request = stage.move_pointer(100, 120, owner: panel);
+        let mut busy = false;
+        try { stage.move_pointer(20, 40, owner: panel); } catch error { busy = true; }
+        if !busy { throw "unbounded queue"; }
+        if !await request { throw "host refused"; }
+        let cancelled = stage.move_pointer(50, 60, owner: panel);
+        panel.remove();
+        let mut rejected = false;
+        try { await cancelled; } catch error { rejected = true; }
+        if !rejected { throw "retired owner"; }
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(vm.take_window_request().unwrap().is_none());
+        vm.set_window_info(Arc::new(WindowInfo {
+            capabilities: WindowCapabilities {
+                pointer_move: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, false);
+        let request = vm.take_window_request().unwrap().unwrap();
+        assert!(matches!(
+            request.command,
+            crate::aside::window::WindowCommand::MovePointer {
+                position: [100., 120.],
+                ..
+            }
+        ));
+        vm.complete_window_request(
+            request.id,
+            Ok(crate::aside::window::WindowReply::PointerMoved(true)),
+        )
+        .unwrap();
+        assert!(
+            !vm.complete_window_request(
+                request.id,
+                Ok(crate::aside::window::WindowReply::PointerMoved(true))
+            )
+            .unwrap()
+        );
+        models::drive(&mut vm, &mut session, false);
+        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(
+            matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text()=="done")
+        );
     }
 }

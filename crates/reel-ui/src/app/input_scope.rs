@@ -6,6 +6,22 @@ use super::{GeometryView, InputGeometrySource, RenderRoot};
 use crate::core::WidgetId;
 
 impl RenderRoot {
+    /// Host commands use the same live eligibility and accepted scope as input.
+    pub fn permits_input(&self, id: WidgetId) -> bool {
+        let view = self.global_state.input_geometry_source.borrow();
+        self.is_still_interactive(id)
+            && self.input_in_scope(id, view)
+            && match view {
+                GeometryView::Presented(Some(view)) => view.get(id).is_some_and(|record| {
+                    self.widget_arena
+                        .nodes
+                        .find(id)
+                        .is_some_and(|node| node.item.state.input_revision == record.input_revision)
+                }),
+                GeometryView::Presented(None) => false,
+                GeometryView::Live => true,
+            }
+    }
     pub(crate) fn input_scope(&self, view: GeometryView<'_>) -> Option<WidgetId> {
         match view {
             GeometryView::Live => self.global_state.modal_scope,

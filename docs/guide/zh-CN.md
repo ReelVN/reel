@@ -220,6 +220,8 @@ stack(max_width: 420) {
 
 ### 自定义鼠标光标
 
+`stage.pointer()` 取得鼠标在当前已呈现舞台中的 `{x,y}`，坐标与 `stage.geometry(node)` 一致。鼠标离窗、失焦、触摸/键盘手柄导航或尚无呈现时返回 null。需要移动真实鼠标时用 `await stage.move_pointer(x, y, owner: panel)`；panel 须可用且位于当前模态范围，目标须在窗口客户区。成功返回 true，当前条件不允许或宿主不支持返回 false；支持情况可读 `window.info().capabilities.pointer_move`。节点退休会撤销其请求，读档后等真实鼠标输入再取得位置。示例：[author_pointer.aside](../../examples/author_pointer.aside)。
+
 将 `cursor` 作为需要改变鼠标外观的面板或控件的普通子节点。图片、文字和动画继续使用舞台节点，鼠标移动由宿主跟踪。容器 x/y 是热点偏移，下面的图片 anchor 将图像中心放在鼠标位置：
 
 ```aside

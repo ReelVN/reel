@@ -220,6 +220,8 @@ A view lays out its content as a stack, so both align_x and align_y apply. An in
 
 ### Custom mouse cursors
 
+`stage.pointer()` returns the mouse's `{x,y}` in the currently presented stage, using the same coordinates as `stage.geometry(node)`. It returns null after leaving the window, losing focus, switching to touch or keyboard/gamepad navigation, or without a presented frame. Use `await stage.move_pointer(x, y, owner: panel)` to move the real pointer. The panel must be available in the current modal scope and the destination must lie inside the client area. It returns true on success or false when current conditions or the host do not permit movement; inspect `window.info().capabilities.pointer_move` for host support. Retiring the owner cancels its request. Restoring a save waits for real mouse input before reporting a position. Example: [author_pointer.aside](../../examples/author_pointer.aside).
+
 Add a `cursor` as an ordinary child of the panel or control whose pointer appearance it changes. Images, text and animations use ordinary stage nodes; the host tracks mouse movement. The container's x/y offset the hotspot, and the image anchor below places its center at the pointer:
 
 ```aside

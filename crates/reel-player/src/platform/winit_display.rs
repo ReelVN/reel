@@ -3,6 +3,7 @@ use reel_core::window::{
     WindowCapabilities, WindowConfiguration, WindowInfo, WindowPlatform, WindowSize,
 };
 use std::sync::Arc;
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     dpi::LogicalSize,
     monitor::MonitorHandle,
@@ -105,6 +106,17 @@ impl WindowDisplay {
                 resize: desktop,
                 fullscreen: desktop,
                 vsync: false,
+                // Wayland requires a locked cursor; this API moves an ordinary
+                // client-area pointer and does not acquire a lock.
+                pointer_move: window.window_handle().is_ok_and(|handle| {
+                    matches!(
+                        handle.as_raw(),
+                        RawWindowHandle::Win32(_)
+                            | RawWindowHandle::AppKit(_)
+                            | RawWindowHandle::Xlib(_)
+                            | RawWindowHandle::Xcb(_)
+                    )
+                }),
             },
             resolutions: self.resolutions.clone(),
         }
