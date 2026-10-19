@@ -845,7 +845,7 @@ narrator("A new chapter begins.");
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 4，会话快照格式为 6；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 5，会话快照格式为 8；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1247,6 +1247,19 @@ fn main() {
 
 `audio.play` 在后台读取、解码并播放，立即返回活动。`await` 返回 `Completed` 或 `Stopped`；加载与设备错误可以 `try/catch`。`volume` 是非负线性增益，1 是原始音量，0 静音。pause/resume 保留播放位置，stop 不重启声音，重复等待保留同一个结果。
 
+`audio.queue(activity, source, start: 0, looping: false, loop_start: 0, loop_end: null)` 将音乐或旁白片段追加到同一活动，返回 null。活动保留 owner、分组、音量、声像和控制。已准备的片段在混音边界接续；后继准备迟到时保持内容时钟并输出静音，准备好后继续。新音频可提前在后台准备，创建它的任务首次等待或结束时，将同一同步执行段追加的片段一起准备后起播；内部工作切片不触发起播，未捕获错误或取消会撤销尚未提交的声音。当前片段循环时，后继让它在本轮循环结尾退出；没有后继则继续循环。position 与 seek 对应当前素材。停止或 owner 退休取消剩余队列；加载错误使原活动失败，已结束的活动不能追加。存档保留当前片段、位置和剩余队列。
+可运行示例：[author_audio_queue.aside](../../examples/author_audio_queue.aside) 用内置音频演示 intro → loop → outro 与连续语音片段；创作时把路径换成自己的素材。
+
+```aside
+let music = audio.play("assets/intro.ogg", group: "music");
+audio.queue(music, "assets/loop.ogg", looping: true);
+narrator("Continue to leave the loop after this pass.");
+audio.queue(music, "assets/outro.ogg");
+await music;
+```
+
+为该例提供自己的三个音频文件。队列容量与 PCM 驻留沿用宿主已有音频预算；容量不足报告错误，脚本无需配置新的限额。
+
 图片、字体和音频共用宿主的资源读取容量。并发读取暂时占满容量时，后续读取等待已有任务释放输入；单个文件超过宿主配置的输入容量仍会报错，诊断包含路径和字节数。
 
 音频解码仅在缓冲扩容和最终共享存储转换时计入新旧存储重叠；普通包解码复用已有 PCM 容量。内存预算不足时会报告解码阶段所需字节。
@@ -1262,7 +1275,7 @@ let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
 audio.stop(music, fade: 2);
 music = next;
 ```
-position 是显式读取，不会让界面持续刷新。存档记录音乐的内容位置与循环区间，读档后继续播放；当前语音重新起播，瞬时音效不重放。
+position 是显式读取，不会让界面持续刷新。存档对所有音频分组记录当前条目、实际位置、循环区间与待播队列，读档后继续播放；已经结束的活动保持终态，不会重播。需要从头重听语音时，显式调用 seek 或 play。
 
 分组音量用 `audio.group_volume("music", value)` 设置，可选 music/voice/effects/ui；master 控制总音量。每声、组、总增益相乘，设置也影响之后开始的声音。`audio.pan(sound, value, duration: seconds)` 将声像从 -1（左）移动到 1（右），0 居中；`audio.volume` 和 `audio.group_volume` 同样接受 duration，省略时立即生效。`fade_in` 从实际播放开始计时；`audio.stop(sound, fade: seconds)` 淡出结束后才让 await 返回 Stopped，加载中或已暂停的声音立即停止。暂停保留播放位置，音量/声像包络继续推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即停止。音量过渡在分贝域进行，静音端点为 -60 dB；新命令从当前值接续，加载中的控制更新首次播放值。
 

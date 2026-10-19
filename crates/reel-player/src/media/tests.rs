@@ -62,30 +62,31 @@ fn rig() -> (MediaPlayer, Output) {
     )
 }
 pub(super) fn rig_at(root: std::path::PathBuf, options: MediaOptions) -> (MediaPlayer, Output) {
-    let output = Output(Rc::new(RefCell::new(None)));
-    let sink = output.clone();
-    let player = MediaPlayer::new(
+    rig_assets(
         Assets::directory(AssetOptions {
             root,
             ..Default::default()
         }),
         options,
-        WakeSignal::new(|| {}),
-        move |wake| {
-            *sink.0.borrow_mut() = Some(
-                OfflineOutput::new(
-                    AudioDeviceConfig {
-                        sample_rate_hz: 48_000,
-                        sample_format: SampleFormat::F32,
-                        layout: ChannelLayout::Stereo,
-                    },
-                    wake,
-                )
-                .map_err(|e| e.to_string())?,
-            );
-            Ok(Box::new(sink))
-        },
-    );
+    )
+}
+fn rig_assets(assets: Assets, options: MediaOptions) -> (MediaPlayer, Output) {
+    let output = Output(Rc::new(RefCell::new(None)));
+    let sink = output.clone();
+    let player = MediaPlayer::new(assets, options, WakeSignal::new(|| {}), move |wake| {
+        *sink.0.borrow_mut() = Some(
+            OfflineOutput::new(
+                AudioDeviceConfig {
+                    sample_rate_hz: 48_000,
+                    sample_format: SampleFormat::F32,
+                    layout: ChannelLayout::Stereo,
+                },
+                wake,
+            )
+            .map_err(|e| e.to_string())?,
+        );
+        Ok(Box::new(sink))
+    });
     (player, output)
 }
 #[track_caller]
@@ -112,11 +113,289 @@ pub(super) fn request(looping: bool) -> AudioRequest {
 }
 
 #[test]
+fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
+    use reel_core::{
+        identity::{AssetKey, ContentVersion, IoId},
+        io::{AssetIo, DescribeRequest, IoCaps, IoEvent, ReadRequest, SaveWrite},
+        result::Rejected,
+        test_support::{MemoryAsset, MemoryAssetIo},
+    };
+    struct Io(Rc<RefCell<MemoryAssetIo>>);
+    impl AssetIo for Io {
+        fn capabilities(&self) -> IoCaps {
+            self.0.borrow().capabilities()
+        }
+        fn describe(
+            &mut self,
+            request: DescribeRequest,
+        ) -> Result<IoId, Rejected<DescribeRequest>> {
+            self.0.borrow_mut().describe(request)
+        }
+        fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
+            self.0.borrow_mut().read(request)
+        }
+        fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
+            self.0.borrow_mut().replace_save(request)
+        }
+        fn cancel(&mut self, id: IoId) {
+            self.0.borrow_mut().cancel(id);
+        }
+        fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
+            self.0.borrow_mut().poll(out, limit);
+        }
+    }
+    let mut control = None;
+    let assets = Assets::with_adapters(AssetOptions::default(), |wake| {
+        let limits = QueueLimits {
+            max_requests: 32,
+            max_bytes: 8 << 20,
+        };
+        let pool = BudgetPool::new(BudgetCategory::CpuInput, limits);
+        let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
+        let bytes = include_bytes!("../../../../examples/assets/chime.wav");
+        for source in ["assets/chime.wav", "slow.wav"] {
+            io.insert_asset(
+                ResourceVersion {
+                    key: AssetKey(source.into()),
+                    version: ContentVersion([0; 32]),
+                },
+                MemoryAsset {
+                    bytes: OwnedBytes::new(
+                        bytes.to_vec(),
+                        pool.reserve(bytes.len() as u64).unwrap(),
+                    )
+                    .unwrap(),
+                    media_type: None,
+                },
+            )
+            .unwrap();
+        }
+        let io = Rc::new(RefCell::new(io));
+        control = Some(io.clone());
+        (
+            Box::new(Io(io)),
+            Box::new(crate::assets::ImageExecutor::new(limits, wake)),
+        )
+    });
+    let control = control.unwrap();
+    let (mut player, output) = rig_assets(assets, MediaOptions::default());
+    // Native play returns; allow all preparation and PCM callbacks before queue.
+    let id = player.play_audio(request(false)).unwrap();
+    until(|| {
+        control.borrow_mut().complete_next_read();
+        player.maintain(Duration::ZERO);
+        assert_eq!(output.render(), 0.0);
+        matches!(player.entries[&id].phase, Phase::Playing(_))
+    });
+    assert!(!player.entries[&id].started);
+    player
+        .queue_audio(
+            id,
+            AudioQueueItem {
+                source: "slow.wav".into(),
+                start_position: Duration::ZERO,
+                loop_region: None,
+            },
+        )
+        .unwrap();
+    // Native queue returns; repeated polling cannot close the synchronous batch.
+    for _ in 0..32 {
+        player.maintain(Duration::ZERO);
+        assert_eq!(output.render(), 0.0);
+    }
+    assert_eq!(player.entries[&id].initial_batch, None);
+    // A real task wait commits. The second read is still deliberately unresolved.
+    player.commit_audio(id);
+    assert_eq!(player.entries[&id].initial_batch, Some(1));
+    for _ in 0..32 {
+        player.maintain(Duration::ZERO);
+        assert_eq!(output.render(), 0.0);
+    }
+    assert!(!player.entries[&id].started);
+    assert_eq!(player.position(id), Some(Duration::ZERO));
+    until(|| {
+        control.borrow_mut().complete_next_read();
+        player.maintain(Duration::ZERO);
+        player.entries[&id].started
+    });
+    assert!(matches!(
+        player.entries[&id].queue[0].phase,
+        Phase::Playing(_)
+    ));
+    until(|| output.render() > 0.1);
+    player.close();
+    until(|| {
+        player.maintain(Duration::ZERO);
+        !player.cleanup_pending()
+    });
+    assert_eq!(player.pcm_usage().bytes, 0);
+}
+
+#[test]
+fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
+    let ms = Duration::from_millis;
+    let (mut player, output) = rig();
+    let mut intro = request(false);
+    intro.group = AudioGroup::Voice;
+    intro.start_position = ms(200);
+    let id = player.play_audio(intro).unwrap();
+    player
+        .queue_audio(
+            id,
+            AudioQueueItem {
+                source: "assets/chime.wav".into(),
+                start_position: ms(20),
+                loop_region: Some(AudioLoopRegion {
+                    start: ms(40),
+                    end: Some(ms(90)),
+                }),
+            },
+        )
+        .unwrap();
+    player
+        .queue_audio(
+            id,
+            AudioQueueItem {
+                source: "assets/chime.wav".into(),
+                start_position: ms(120),
+                loop_region: None,
+            },
+        )
+        .unwrap();
+    player.commit_audio(id);
+    until(|| {
+        player.maintain(Duration::ZERO);
+        player.entries[&id].started
+    });
+    assert!(
+        player.entries[&id]
+            .queue
+            .iter()
+            .all(|segment| matches!(segment.phase, Phase::Playing(_))),
+        "initial batch is prepared before first PCM"
+    );
+    until(|| {
+        output.render();
+        player.maintain(Duration::ZERO);
+        player.entries[&id].item == 1
+    });
+    player.command(id, MediaCommand::Pause).unwrap();
+    for _ in 0..4 {
+        output.render();
+    }
+    let saved = player.audio_snapshot(id).unwrap();
+    assert!(saved.paused);
+    assert_eq!(saved.request.group, AudioGroup::Voice);
+    assert!(saved.request.loop_region.is_some());
+    assert!((ms(20)..ms(90)).contains(&saved.request.start_position));
+    assert_eq!(saved.queue.len(), 1);
+    assert_eq!(saved.queue[0].start_position, ms(120));
+    let position = saved.request.start_position;
+    let (mut restored, second_output) = rig();
+    let second = restored.play_audio(saved.request).unwrap();
+    for item in saved.queue {
+        restored.queue_audio(second, item).unwrap();
+    }
+    restored.commit_audio(second);
+    restored.command(second, MediaCommand::Pause).unwrap();
+    until(|| {
+        restored.maintain(Duration::ZERO);
+        matches!(restored.entries[&second].phase, Phase::Ready(_, _))
+    });
+    assert_eq!(second_output.render(), 0.);
+    assert_eq!(restored.position(second), Some(position));
+    restored.command(second, MediaCommand::Resume).unwrap();
+    let mut peak = 0_f32;
+    until(|| {
+        restored.maintain(Duration::ZERO);
+        peak = peak.max(second_output.render());
+        matches!(restored.entries[&second].phase, Phase::Done(_))
+    });
+    assert!(peak > 0.1);
+    let done = restored.audio_snapshot(second).unwrap();
+    assert!(done.queue.is_empty());
+    assert_eq!(done.request.loop_region, None);
+    assert_eq!(done.request.start_position, ms(250));
+    assert_eq!(done.result, Some(MediaResult::Completed));
+    assert!(
+        restored
+            .queue_audio(
+                second,
+                AudioQueueItem {
+                    source: "assets/chime.wav".into(),
+                    start_position: Duration::ZERO,
+                    loop_region: None
+                }
+            )
+            .is_err()
+    );
+    player.close();
+    restored.close();
+    until(|| {
+        player.maintain(Duration::ZERO);
+        restored.maintain(Duration::ZERO);
+        !player.cleanup_pending() && !restored.cleanup_pending()
+    });
+    assert_eq!(player.pcm_usage().bytes + restored.pcm_usage().bytes, 0);
+    assert_eq!(
+        player.descriptors.usage().bytes + restored.descriptors.usage().bytes,
+        0
+    );
+}
+
+#[test]
+fn queue_capacity_rejection_keeps_original_and_missing_successor_fails_it_once() {
+    let (mut player, output) = rig_at(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+        MediaOptions {
+            mixer: MixerLimits {
+                max_sounds: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let id = player.play_audio(request(true)).unwrap();
+    player.commit_audio(id);
+    let missing = AudioQueueItem {
+        source: "assets/missing.wav".into(),
+        start_position: Duration::ZERO,
+        loop_region: None,
+    };
+    player.queue_audio(id, missing.clone()).unwrap();
+    assert!(
+        player
+            .queue_audio(id, missing)
+            .unwrap_err()
+            .contains("capacity")
+    );
+    assert_eq!(player.audio_snapshot(id).unwrap().queue.len(), 1);
+    until(|| {
+        player.maintain(Duration::ZERO);
+        output.render();
+        matches!(player.entries[&id].phase, Phase::Done(_))
+    });
+    assert!(matches!(
+        player.take_result(id).unwrap().result,
+        MediaResult::Failed(_)
+    ));
+    assert!(player.take_result(id).is_none());
+    player.close();
+    until(|| {
+        player.maintain(Duration::ZERO);
+        !player.cleanup_pending()
+    });
+    assert_eq!(player.pcm_usage().bytes, 0);
+    assert_eq!(player.descriptors.usage().bytes, 0);
+}
+
+#[test]
 fn restored_music_starts_at_saved_content_position_before_output_resumes() {
     let (mut first, output) = rig();
     let mut music = request(true);
     music.group = AudioGroup::Music;
     let id = first.play_audio(music).unwrap();
+    first.commit_audio(id);
     until(|| {
         first.maintain(Duration::ZERO);
         output.render();
@@ -133,6 +412,7 @@ fn restored_music_starts_at_saved_content_position_before_output_resumes() {
     let (mut restored, restored_output) = rig();
     restored.suspend();
     let id = restored.play_audio(saved.request).unwrap();
+    restored.commit_audio(id);
     until(|| {
         restored.maintain(Duration::ZERO);
         matches!(restored.entries[&id].phase, Phase::Playing(_))
@@ -166,6 +446,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
         end: Some(ms(60)),
     });
     let id = player.play_audio(music).unwrap();
+    player.commit_audio(id);
     player.command(id, MediaCommand::Pause).unwrap();
     player.command(id, MediaCommand::Seek(ms(10))).unwrap();
     assert_eq!(player.position(id), Some(ms(10)));
@@ -239,6 +520,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     assert_eq!(player.take_result(id).unwrap().result, MediaResult::Stopped);
 
     let ending = player.play_audio(request(false)).unwrap();
+    player.commit_audio(ending);
     until(|| {
         player.maintain(Duration::ZERO);
         matches!(player.entries[&ending].phase, Phase::Playing(_))
@@ -285,6 +567,8 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         if await early != "Stopped" || await early != "Stopped" { throw "early stop"; }
         let crossfade = audio.play("assets/chime.wav", group: "music", looping: true, fade_in: 0.01);
         let sound = audio.play("assets/chime.wav", group: "voice");
+        if audio.queue(sound, "assets/chime.wav", start: 0.03) != null { throw "queue result"; }
+        audio.queue(sound, "assets/chime.wav", start: 0.1);
         pause(sound);
         if audio.seek(sound, 0.02) != null || audio.position(sound) != 0.02 { throw "seek result"; }
         audio.seek(sound, 0.01);
@@ -302,13 +586,17 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         try { audio.play("assets/chime.wav", pan: 2); } catch error { invalid += 1; }
         try { audio.volume(crossfade, 1, duration: -1); } catch error { invalid += 1; }
         try { audio.seek(crossfade, -1); } catch error { invalid += 1; }
-        if invalid != 4 { throw "audio validation"; }
+        try { audio.queue(sound, "assets/chime.wav"); } catch error { invalid += 1; }
+        try { audio.queue(crossfade, "assets/chime.wav", looping: false, loop_start: 1); } catch error { invalid += 1; }
+        if invalid != 6 { throw "audio validation"; }
         let music = audio.play("assets/chime.wav", looping: true);
         pause(music); audio.volume(music, 0); resume(music);
         stop(music);
         if await music != "Stopped" { throw "loop stop"; }
         let node = text("owned sound"); stage.replace(node);
         let owned = audio.play("assets/chime.wav", looping: true, owner: node);
+        audio.queue(owned, "assets/chime.wav");
+        audio.queue(owned, "assets/chime.wav");
         stage.replace(text("replacement"));
         let mut cancelled = false;
         try { await owned; } catch error { cancelled = true; }
@@ -316,6 +604,12 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         let mut failed = false;
         try { await audio.play("assets/not-present.wav"); } catch error { failed = true; }
         if !failed { throw "missing resource"; }
+        let broken = audio.play("assets/chime.wav", looping: true);
+        audio.queue(broken, "assets/not-present.wav");
+        let mut failures = 0;
+        try { await broken; } catch error { failures += 1; }
+        try { await broken; } catch error { failures += 1; }
+        if failures != 2 { throw "queued failure terminal"; }
     }"#;
     for binary in [false, true] {
         let (backend, output) = rig();
@@ -365,6 +659,7 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
 fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure() {
     let (mut player, output) = rig();
     let id = player.play_audio(request(true)).unwrap();
+    player.commit_audio(id);
     until(|| {
         player.maintain(Duration::ZERO);
         output.render() > 0.1
@@ -432,6 +727,7 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
 fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
     let (mut player, output) = rig();
     let id = player.play_audio(request(false)).unwrap();
+    player.commit_audio(id);
     player.cancel(id);
     player.close();
     until(|| {
@@ -449,6 +745,7 @@ fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
         },
     );
     let id = player.play_audio(request(false)).unwrap();
+    player.commit_audio(id);
     let mut result = None;
     until(|| {
         player.maintain(Duration::ZERO);

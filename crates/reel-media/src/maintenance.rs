@@ -39,6 +39,7 @@ pub struct ReclaimStatus {
     /// PCM; actual BudgetPool residency remains authoritative.
     pub completed_sounds: usize,
     pub completed_accepted_data: usize,
+    pub completed_queue_work: usize,
     pub completed_teardowns: usize,
     pub worker_errors: usize,
     pub last_job_ns: usize,
@@ -61,6 +62,7 @@ pub(crate) struct ServiceShared {
     outstanding: AtomicUsize,
     sounds: AtomicUsize,
     accepted: AtomicUsize,
+    queue_work: AtomicUsize,
     teardowns: AtomicUsize,
     errors: AtomicUsize,
     last_ns: AtomicUsize,
@@ -87,6 +89,7 @@ impl ServiceShared {
             outstanding_work: self.outstanding.load(Ordering::Acquire),
             completed_sounds: self.sounds.load(Ordering::Acquire),
             completed_accepted_data: self.accepted.load(Ordering::Acquire),
+            completed_queue_work: self.queue_work.load(Ordering::Acquire),
             completed_teardowns: self.teardowns.load(Ordering::Acquire),
             worker_errors: self.errors.load(Ordering::Acquire),
             last_job_ns: self.last_ns.load(Ordering::Acquire),
@@ -136,6 +139,7 @@ impl AudioReclaimService {
             outstanding: AtomicUsize::new(0),
             sounds: AtomicUsize::new(0),
             accepted: AtomicUsize::new(0),
+            queue_work: AtomicUsize::new(0),
             teardowns: AtomicUsize::new(0),
             errors: AtomicUsize::new(0),
             last_ns: AtomicUsize::new(0),
@@ -306,6 +310,7 @@ impl Drop for NormalCredit {
 pub(crate) enum JobKind {
     Sound,
     AcceptedData,
+    Queue,
     Renderer,
     Manager,
 }
@@ -313,7 +318,12 @@ pub(crate) enum JobKind {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Job {
     Sound(Box<dyn Sound>),
-    AcceptedData(DecodedSound),
+    AcceptedData(
+        DecodedSound,
+        Option<reel_audio::sound::static_sound::StaticSoundQueue>,
+    ),
+    QueuedSound(reel_audio::sound::static_sound::QueuedStaticSound),
+    SoundQueue(reel_audio::sound::static_sound::StaticSoundQueue),
     Renderer(Renderer),
     Manager(MixerControl),
 }
@@ -321,7 +331,9 @@ impl Job {
     fn kind(&self) -> JobKind {
         match self {
             Self::Sound(_owned) => JobKind::Sound,
-            Self::AcceptedData(_owned) => JobKind::AcceptedData,
+            Self::AcceptedData(_owned, _queue) => JobKind::AcceptedData,
+            Self::QueuedSound(_owned) => JobKind::Queue,
+            Self::SoundQueue(_owned) => JobKind::Queue,
             Self::Renderer(_owned) => JobKind::Renderer,
             Self::Manager(_owned) => JobKind::Manager,
         }
@@ -474,6 +486,9 @@ fn run_worker(
                     }
                     JobKind::AcceptedData => {
                         shared.accepted.fetch_add(1, Ordering::Release);
+                    }
+                    JobKind::Queue => {
+                        shared.queue_work.fetch_add(1, Ordering::Release);
                     }
                     JobKind::Renderer | JobKind::Manager => {
                         shared.teardowns.fetch_add(1, Ordering::Release);

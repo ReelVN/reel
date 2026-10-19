@@ -80,7 +80,7 @@ fn full_unused_queue_remains_allocation_free() {
     output.render(&mut data, timing);
     ENABLED.set(false);
     assert_eq!(mixer.reclaim_unused(1).transferred_sounds, 1);
-    wait_for(|| pool.usage().tickets == 0);
+    wait_for(|| { mixer.reclaim_unused(1); pool.usage().tickets == 0 });
     output.stop().unwrap();
     drop(mixer);
     service.drain_and_join().unwrap();
@@ -94,7 +94,7 @@ fn full_unused_queue_remains_allocation_free() {
         (0, 0, 0)
     );
     println!(
-        "full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_transfer=1+1 physical_release=worker"
+        "full_unused_queue native_capacity=1 A_retired/B_stopped_retained PCM_calls=19 alloc=0 realloc=0 dealloc=0 control_quota=1 physical_release=worker"
     );
 }
 fn group_envelopes_are_allocation_free() {
@@ -134,7 +134,44 @@ fn group_envelopes_are_allocation_free() {
     assert_eq!((counts.allocations, counts.reallocations, counts.deallocations), (0, 0, 0));
     println!("group_envelopes groups=4 coalesced_changes=12000 PCM_calls=1020 alloc=0 realloc=0 dealloc=0");
 }
+fn queued_segments_have_no_callback_allocation() {
+    let mut service = AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let pool = BudgetPool::new(BudgetCategory::CpuOutput, QueueLimits { max_requests: 4, max_bytes: 4096 });
+    let mut output = OfflineOutput::new(AudioDeviceConfig { sample_rate_hz: 48_000, sample_format: SampleFormat::F32, layout: ChannelLayout::Stereo }, WakeSignal::new(|| {})).unwrap();
+    let format = output.configure(AudioRequest::default()).unwrap();
+    let mut mixer = KiraMixer::new(&format, MixerLimits { max_sounds: 4, internal_buffer_frames: 64 }, &service).unwrap();
+    let mut sound = mixer.play(decoded(&pool, [0.1, -0.1], 64)).unwrap();
+    mixer.announce(&sound, 3).unwrap();
+    for index in 1..=3 {
+        let amplitude = (index + 1) as f32 / 10.;
+        mixer.queue(&mut sound, index, decoded(&pool, [amplitude, -amplitude], 64)).unwrap();
+    }
+    assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+    let mut pcm = [0.0_f32; 1024];
+    let timing = CallbackTiming { now: MonoTime(0), latency_frames: None, uncertainty_frames: None };
+    COUNTS.set(Default::default());
+    ENABLED.set(true);
+    output.render(&mut pcm, timing);
+    ENABLED.set(false);
+    for (index, frame) in pcm[..512].chunks_exact(2).enumerate() {
+        let amplitude = (index / 64 + 1) as f32 / 10.;
+        assert!((frame[0] - amplitude).abs() < 1e-6 && (frame[1] + amplitude).abs() < 1e-6, "gap or order error at frame {index}");
+    }
+    ENABLED.set(true);
+    output.render(&mut pcm, timing);
+    ENABLED.set(false);
+    let counts = COUNTS.get();
+    assert_eq!((counts.allocations, counts.reallocations, counts.deallocations), (0, 0, 0));
+    wait_for(|| { mixer.reclaim_unused(4); pool.usage().bytes == 0 });
+    assert!(sound.is_stopped());
+    output.stop().unwrap();
+    drop(mixer);
+    service.drain_and_join().unwrap();
+    println!("prepared_queue segments=4 boundary_gaps=0 callback_alloc=0 realloc=0 dealloc=0 final_pcm_bytes={}", pool.usage().bytes);
+}
+
 fn main() {
+    queued_segments_have_no_callback_allocation();
     let mut service =
         AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     full_unused_queue_remains_allocation_free();

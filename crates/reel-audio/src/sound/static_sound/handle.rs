@@ -17,6 +17,20 @@ pub struct StaticSoundHandle {
 }
 
 impl StaticSoundHandle {
+	/// Coherent segment identity and source-local content position.
+	pub fn queue_cursor(&self) -> (u64, f64) {
+		let (item, position) = self.shared.cursor();
+		(
+			item,
+			if self.pending_seek.0 != self.shared.applied_seek()
+				&& self.state() != PlaybackState::Stopped
+			{
+				self.pending_seek.1
+			} else {
+				position
+			},
+		)
+	}
 	/// Returns the current playback state of the sound.
 	#[must_use]
 	pub fn state(&self) -> PlaybackState {

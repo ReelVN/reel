@@ -46,6 +46,19 @@ pub struct StaticSoundData {
 }
 
 impl StaticSoundData {
+	/// Construct a queued transport using preallocated handoff and retirement
+	/// rings. The host drains retired segments off the realtime thread and drops
+	/// the queue control endpoint through its background reclamation path.
+	pub fn into_sound_with_queue(
+		self,
+		capacity: usize,
+		retention: Arc<dyn Send + Sync>,
+	) -> (Box<dyn Sound>, StaticSoundHandle, super::StaticSoundQueue) {
+		let (mut sound, handle) = self.split();
+		let (control, renderer) = super::queue::channel(capacity);
+		sound.install_queue(renderer, retention);
+		(Box::new(sound), handle, control)
+	}
 	/**
 	Sets when the sound should start playing.
 

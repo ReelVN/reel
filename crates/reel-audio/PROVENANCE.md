@@ -27,3 +27,9 @@ grows; packets that fit reuse the existing allocation and conversion scratch.
 Static sound seeks publish their pending position until the output confirms that
 request, discard the old interpolation history and keep pause/terminal state.
 Absolute loop seeks preserve the intro and wrap in constant time at the loop end.
+
+Static PCM queues use bounded incoming/retired rings and preserve the interpolation
+cursor across source boundaries, including sample-rate changes. A finite startup
+fence prepares same-turn segments before consumption. Up to three source segments
+are retained for interpolation lookahead so seek still targets the current source;
+ownership returns through the media adapter's existing background reclaimer.

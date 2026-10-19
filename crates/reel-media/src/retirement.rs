@@ -58,10 +58,13 @@ pub(crate) struct ActivityState {
     id: MediaId,
     epoch: MediaEpoch,
     owner: AudioOwner,
-    resources_released: AtomicBool,
+    resources: AtomicUsize,
     descriptor_released: AtomicBool,
 }
 impl ActivityState {
+    pub(crate) fn admission_open(&self) -> bool {
+        !self.owner.is_closed()
+    }
     pub(crate) fn new(id: MediaId, epoch: MediaEpoch, owner: AudioOwner) -> Arc<Self> {
         // The service reserves a bounded evidence slot BEFORE creating this
         // state. Counts cannot exceed 256, including on 32-bit targets.
@@ -71,9 +74,14 @@ impl ActivityState {
             id,
             epoch,
             owner,
-            resources_released: AtomicBool::new(false),
+            resources: AtomicUsize::new(1),
             descriptor_released: AtomicBool::new(false),
         })
+    }
+    pub(crate) fn retain_resource(self: &Arc<Self>) -> PhysicalRelease {
+        self.resources.fetch_add(1, Ordering::AcqRel);
+        self.owner.0.resources.fetch_add(1, Ordering::AcqRel);
+        PhysicalRelease(self.clone())
     }
 }
 impl AudioActivityRetirement {
@@ -88,7 +96,7 @@ impl AudioActivityRetirement {
         self.0.owner.scope()
     }
     pub fn resources_released(&self) -> bool {
-        self.0.resources_released.load(Ordering::Acquire)
+        self.0.resources.load(Ordering::Acquire) == 0
     }
     pub fn descriptor_released(&self) -> bool {
         self.0.descriptor_released.load(Ordering::Acquire)
@@ -106,7 +114,7 @@ impl AudioActivityRetirement {
 pub(crate) struct PhysicalRelease(pub Arc<ActivityState>);
 impl Drop for PhysicalRelease {
     fn drop(&mut self) {
-        self.0.resources_released.store(true, Ordering::Release);
+        self.0.resources.fetch_sub(1, Ordering::AcqRel);
         self.0.owner.0.resources.fetch_sub(1, Ordering::AcqRel);
     }
 }

@@ -31,6 +31,7 @@ fn video_shares_output_restores_paused_transport_and_terminal_poster_without_sou
     let mut music = request(true);
     music.source = "examples/assets/chime.wav".into();
     let music_id = player.play_audio(music).unwrap();
+    player.commit_audio(music_id);
     let id = player.play_video(movie(false)).unwrap();
     let mut frame = None;
     until(|| {

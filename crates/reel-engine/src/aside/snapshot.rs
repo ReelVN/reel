@@ -108,6 +108,7 @@ pub struct SessionSnapshot {
     committed_save: Option<saves::SaveRequestId>,
 }
 impl SessionSnapshot {
+    const FORMAT_VERSION: u32 = 8;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -141,10 +142,10 @@ impl SessionSnapshot {
         // Read the fixed version prefix before decoding the nested VM. Postcard
         // does not retain custom serde error messages from that deserializer.
         let (version, vm_bytes): (u32, _) = postcard::take_from_bytes(bytes)?;
-        if version != 7 {
+        if version != Self::FORMAT_VERSION {
             return Err(SnapshotError::Version {
                 format: "session",
-                expected: 7,
+                expected: Self::FORMAT_VERSION,
                 actual: version,
             });
         }
@@ -406,7 +407,7 @@ impl SessionCapture<'_> {
         }
         Ok(SessionSnapshot {
             committed_save: None,
-            version: 7,
+            version: SessionSnapshot::FORMAT_VERSION,
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,

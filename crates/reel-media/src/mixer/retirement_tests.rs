@@ -133,8 +133,10 @@ fn single_budget_a_to_b_waits_for_actual_background_release_and_wakes() {
         wakes.recv_timeout(Duration::from_secs(1)).unwrap();
         wake.acknowledge();
         let (progress, b_ticket) = mixer.reserve_decode_budget(&pool, 1024, 1);
-        assert_eq!(progress.transferred_sounds, 0);
-        assert!(!progress.needs_maintenance);
+        assert_eq!(progress.transferred_sounds, 1); // Empty queue endpoints also retire off-thread.
+        assert!(progress.needs_maintenance);
+        wait(|| service.status().completed_queue_work == 1);
+        assert_eq!(mixer.reclaim_unused(1).transferred_sounds, 0);
         let b = mixer
             .play(DecodedSound::new(48_000, vec![[0.3, -0.4]; 64], b_ticket.unwrap()).unwrap())
             .unwrap();

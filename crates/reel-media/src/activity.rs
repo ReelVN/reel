@@ -52,6 +52,7 @@ pub struct AudioActivityEvent {
     pub scope: Scope,
     pub terminal: AudioActivityTerminal,
     pub position_seconds: f64,
+    pub item: u64,
 }
 /// Borrowed logical state; no native handle or PCM alias escapes the ledger.
 #[derive(Debug)]
@@ -63,6 +64,7 @@ pub struct AudioActivitySnapshot<'a> {
     pub group: AudioGroup,
     pub volume_db: f32,
     pub position_seconds: f64,
+    pub item: u64,
     pub terminal: Option<AudioActivityTerminal>,
 }
 struct Entry {
@@ -75,6 +77,7 @@ struct Entry {
     playback: Playback,
     stopping: bool,
     terminal: Option<AudioActivityTerminal>,
+    terminal_cursor: (u64, f64),
     // Last: native control handle/resource key must be gone before publication.
     _descriptor: DescriptorRelease,
 }
@@ -84,18 +87,27 @@ struct OwnerSlot {
 }
 impl Entry {
     fn position_seconds(&self) -> f64 {
-        match self.terminal {
-            Some(
-                AudioActivityTerminal::Completed { position_seconds }
-                | AudioActivityTerminal::Stopped { position_seconds },
-            ) => position_seconds,
-            _ => self.playback.position_seconds(),
+        if self.terminal.is_some() {
+            self.terminal_cursor.1
+        } else {
+            self.playback.position_seconds()
         }
     }
     fn settle(&mut self, terminal: AudioActivityTerminal) -> bool {
         if self.terminal.is_some() {
             return false;
         }
+        self.terminal_cursor = self.playback.queue_cursor();
+        let position_seconds = self.terminal_cursor.1;
+        let terminal = match terminal {
+            AudioActivityTerminal::Completed { .. } => {
+                AudioActivityTerminal::Completed { position_seconds }
+            }
+            AudioActivityTerminal::Stopped { .. } => {
+                AudioActivityTerminal::Stopped { position_seconds }
+            }
+            terminal => terminal,
+        };
         self.terminal = Some(terminal);
         if !matches!(terminal, AudioActivityTerminal::Completed { .. }) {
             self.playback.stop();
@@ -141,6 +153,7 @@ pub struct AudioActivityService {
     evidence: Vec<Weak<ActivityState>>,
     identity: Arc<()>,
     limits: QueueLimits,
+    fixed_bytes: u64,
     descriptor_bytes: u64,
     occupied: usize,
     active: usize,
@@ -172,10 +185,8 @@ impl AudioActivityService {
         epoch: MediaEpoch,
         wake: WakeSignal,
     ) -> Result<Self, Rejected<KiraMixer>> {
-        if epoch.0 == u64::MAX
-            || limits.max_requests == 0
-            || Self::slot_bytes(limits.max_requests) > limits.max_bytes
-        {
+        let fixed_bytes = Self::slot_bytes(limits.max_requests, &mixer);
+        if epoch.0 == u64::MAX || limits.max_requests == 0 || fixed_bytes > limits.max_bytes {
             return Err(Rejected {
                 request: mixer,
                 reason: RejectReason::new(RejectCode::InvalidRequest, "invalid activity limits"),
@@ -193,6 +204,7 @@ impl AudioActivityService {
             evidence: (0..limits.max_requests).map(|_| Weak::new()).collect(),
             identity: Arc::new(()),
             limits,
+            fixed_bytes,
             descriptor_bytes: 0,
             occupied: 0,
             active: 0,
@@ -206,7 +218,7 @@ impl AudioActivityService {
             wake,
         })
     }
-    pub fn slot_bytes(slots: u32) -> u64 {
+    pub fn slot_bytes(slots: u32, mixer: &KiraMixer) -> u64 {
         // Fixed vectors and maximum live Arc payloads/control blocks. Allocator
         // overhead is implementation-defined, as for the existing slot budget.
         let per_slot = std::mem::size_of::<Option<Entry>>()
@@ -216,7 +228,9 @@ impl AudioActivityService {
             + std::mem::size_of::<ActivityState>()
             + std::mem::size_of::<Option<PhysicalRelease>>()
             + 4 * std::mem::size_of::<usize>();
-        u64::from(slots) * per_slot as u64 + 2 * std::mem::size_of::<usize>() as u64
+        u64::from(slots) * per_slot as u64
+            + 2 * std::mem::size_of::<usize>() as u64
+            + mixer.queue_bytes()
     }
     /// At most max_requests live owner registrations. Existing complete Scope
     /// matches return the same capability, including when closed. After ALL
@@ -313,6 +327,20 @@ impl AudioActivityService {
         &mut self,
         request: AudioActivityRequest,
     ) -> Result<MediaId, Rejected<AudioActivityRequest>> {
+        self.play_mode(request, false)
+    }
+    /// Hold the first PCM frame until the caller transfers its initial queue batch.
+    pub fn play_held(
+        &mut self,
+        request: AudioActivityRequest,
+    ) -> Result<MediaId, Rejected<AudioActivityRequest>> {
+        self.play_mode(request, true)
+    }
+    fn play_mode(
+        &mut self,
+        request: AudioActivityRequest,
+        held: bool,
+    ) -> Result<MediaId, Rejected<AudioActivityRequest>> {
         let bytes = request.resource.key.0.capacity() as u64;
         let reason = if self.failed.is_some() {
             Some((RejectCode::Unavailable, "output recovery is required"))
@@ -326,10 +354,7 @@ impl AudioActivityService {
             Some((RejectCode::ServiceFault, "media ID space exhausted"))
         } else if self.occupied == self.entries.len()
             || self.evidence.iter().all(|state| state.upgrade().is_some())
-            || bytes
-                > self.limits.max_bytes
-                    - Self::slot_bytes(self.limits.max_requests)
-                    - self.descriptor_bytes
+            || bytes > self.limits.max_bytes - self.fixed_bytes - self.descriptor_bytes
         {
             Some((RejectCode::Busy, "activity/result capacity exhausted"))
         } else {
@@ -360,7 +385,7 @@ impl AudioActivityService {
         let descriptor = DescriptorRelease(state.clone());
         let volume_db = sound.volume_db();
         sound.track_retirement(PhysicalRelease(state.clone()));
-        let playback = match self.mixer.play_in(group, sound) {
+        let playback = match self.mixer.play_in_mode(group, sound, held) {
             Ok(playback) => playback,
             Err(Rejected {
                 request: mut sound,
@@ -395,6 +420,7 @@ impl AudioActivityService {
             playback,
             stopping: false,
             terminal: None,
+            terminal_cursor: (0, 0.0),
             _descriptor: descriptor,
         });
         self.maintenance_remaining = self.entries.len();
@@ -406,6 +432,14 @@ impl AudioActivityService {
     }
     pub fn snapshot(&self, id: MediaId) -> Option<AudioActivitySnapshot<'_>> {
         let e = self.entries.iter().flatten().find(|e| e.id == id)?;
+        // Read Stopped before its final cursor: the callback publishes that cursor
+        // before its terminal state. A live cursor is one coherent source/position.
+        let stopped = e.playback.is_stopped();
+        let (item, position_seconds) = if e.terminal.is_some() {
+            e.terminal_cursor
+        } else {
+            e.playback.queue_cursor()
+        };
         Some(AudioActivitySnapshot {
             id: e.id,
             epoch: e.epoch,
@@ -413,9 +447,65 @@ impl AudioActivityService {
             resource: &e.resource,
             group: e.group,
             volume_db: e.volume_db,
-            position_seconds: e.position_seconds(),
-            terminal: e.terminal,
+            position_seconds,
+            item,
+            terminal: e.terminal.or_else(|| {
+                stopped.then_some(if e.stopping {
+                    AudioActivityTerminal::Stopped { position_seconds }
+                } else {
+                    AudioActivityTerminal::Completed { position_seconds }
+                })
+            }),
         })
+    }
+    pub fn announce(&mut self, id: MediaId, index: u64) -> Result<(), AudioError> {
+        let entry = self
+            .entries
+            .iter()
+            .flatten()
+            .find(|entry| {
+                entry.id == id
+                    && entry.terminal.is_none()
+                    && !entry.stopping
+                    && entry._descriptor.0.admission_open()
+            })
+            .ok_or_else(|| AudioError::new(AudioErrorKind::InvalidRequest, "audio has ended"))?;
+        self.mixer.announce(&entry.playback, index)
+    }
+    pub fn start(&mut self, id: MediaId) {
+        let entry = self
+            .entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.id == id)
+            .expect("held audio activity");
+        self.mixer.start(&entry.playback);
+    }
+    pub fn queue(
+        &mut self,
+        id: MediaId,
+        index: u64,
+        mut sound: DecodedSound,
+    ) -> Result<(), Rejected<DecodedSound>> {
+        let Some(entry) = self.entries.iter_mut().flatten().find(|entry| {
+            entry.id == id
+                && entry.terminal.is_none()
+                && !entry.stopping
+                && entry._descriptor.0.admission_open()
+        }) else {
+            return Err(Rejected {
+                request: sound,
+                reason: RejectReason::new(RejectCode::InvalidRequest, "audio has ended"),
+            });
+        };
+        sound.track_retirement(entry._descriptor.0.retain_resource());
+        match self.mixer.queue(&mut entry.playback, index, sound) {
+            Ok(()) => Ok(()),
+            Err(mut error) => {
+                error.request.untrack_retirement();
+                Err(error)
+            }
+        }
     }
     /// False means absent or already settled; an existing terminal is immutable.
     pub fn stop(&mut self, id: MediaId) -> bool {
@@ -660,6 +750,7 @@ impl AudioActivityService {
                             scope: e.scope,
                             terminal,
                             position_seconds: e.position_seconds(),
+                            item: e.terminal_cursor.0,
                         });
                     }
                 }
@@ -705,17 +796,70 @@ mod tests {
     };
 
     #[test]
+    fn activity_budget_rejects_undercharged_native_queue_capacity() {
+        let wake = WakeSignal::new(|| {});
+        let reclaim = AudioReclaimService::new(ReclaimLimits::default(), wake.clone()).unwrap();
+        let format =
+            AudioFormat::new(48_000, SampleFormat::F32, ChannelLayout::Stereo, 512).unwrap();
+        let small = KiraMixer::new(
+            &format,
+            MixerLimits {
+                max_sounds: 1,
+                ..MixerLimits::default()
+            },
+            &reclaim,
+        )
+        .unwrap();
+        let large = KiraMixer::new(
+            &format,
+            MixerLimits {
+                max_sounds: 4,
+                ..MixerLimits::default()
+            },
+            &reclaim,
+        )
+        .unwrap();
+        let undercharged = AudioActivityService::slot_bytes(1, &small);
+        let required = AudioActivityService::slot_bytes(1, &large);
+        let rejected = AudioActivityService::new(
+            large,
+            QueueLimits {
+                max_requests: 1,
+                max_bytes: undercharged,
+            },
+            MediaEpoch(1),
+            wake.clone(),
+        )
+        .err()
+        .expect("native queues must fit the byte limit");
+        assert_eq!(rejected.reason.code, RejectCode::InvalidRequest);
+        assert!(
+            AudioActivityService::new(
+                rejected.request,
+                QueueLimits {
+                    max_requests: 1,
+                    max_bytes: required
+                },
+                MediaEpoch(1),
+                wake
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn identity_exhaustion_never_wraps_and_receipt_keeps_admitted_epoch() {
         let wake = WakeSignal::new(|| {});
         let mut reclaim = AudioReclaimService::new(ReclaimLimits::default(), wake.clone()).unwrap();
         let format =
             AudioFormat::new(48_000, SampleFormat::F32, ChannelLayout::Stereo, 512).unwrap();
         let mixer = KiraMixer::new(&format, MixerLimits::default(), &reclaim).unwrap();
+        let fixed_bytes = AudioActivityService::slot_bytes(2, &mixer);
         let mut service = AudioActivityService::new(
             mixer,
             QueueLimits {
                 max_requests: 2,
-                max_bytes: AudioActivityService::slot_bytes(2) + 100,
+                max_bytes: fixed_bytes + 100,
             },
             MediaEpoch(u64::MAX - 1),
             wake,

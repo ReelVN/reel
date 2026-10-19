@@ -62,11 +62,12 @@ impl Rig {
             &reclaim,
         )
         .unwrap();
+        let fixed_bytes = AudioActivityService::slot_bytes(slots, &mixer);
         let mut activities = AudioActivityService::new(
             mixer,
             QueueLimits {
                 max_requests: slots,
-                max_bytes: AudioActivityService::slot_bytes(slots) + key_bytes,
+                max_bytes: fixed_bytes + key_bytes,
             },
             MediaEpoch(7),
             wake.clone(),
@@ -399,7 +400,18 @@ fn completion_after_its_scan_is_revisited_by_explicit_poll_fallback() {
         rig.wake.acknowledge();
         rig.service().maintain(1, 1);
     }
-    assert!(rig.service().snapshot(id).unwrap().terminal.is_none());
+    // Read-only snapshots see consumed content even before the next ledger scan,
+    // so a save at this boundary cannot replay a completed sound.
+    assert!(matches!(
+        rig.service().snapshot(id).unwrap().terminal,
+        Some(AudioActivityTerminal::Completed { .. })
+    ));
+    let mut pending = Vec::with_capacity(1);
+    rig.service().drain(&mut pending, 4, |_, _, _| true);
+    assert!(
+        pending.is_empty(),
+        "delivery still waits for the bounded ledger scan"
+    );
     assert!(rig.service().poll_after().is_some());
     rig.service().maintain(1, 1); // The scheduled fallback, no further PCM needed.
     assert!(matches!(
@@ -407,6 +419,47 @@ fn completion_after_its_scan_is_revisited_by_explicit_poll_fallback() {
         Some(AudioActivityTerminal::Completed { .. })
     ));
     assert!(rig.service().poll_after().is_none());
+}
+
+#[test]
+fn queue_releases_consumed_pcm_before_activity_end_and_owner_waits_for_all_segments() {
+    let mut rig = Rig::with_mixer_capacity(4, 1000, 4);
+    let request = rig.request(1, false);
+    let owner = request.owner.clone();
+    let id = rig.service().play_held(request).unwrap();
+    let receipt = rig.service().retirement(id).unwrap();
+    rig.service().announce(id, 2).unwrap();
+    let second = rig.request(1, false).sound;
+    let third = rig.request(1, true).sound;
+    rig.service().queue(id, 1, second).unwrap();
+    rig.service().queue(id, 2, third).unwrap();
+    assert_eq!(rig.pool.usage().tickets, 3);
+    rig.service().start(id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while rig.pool.usage().tickets != 1 {
+        rig.render();
+        rig.service().maintain(4, 4);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let state = rig.service().snapshot(id).unwrap();
+    assert_eq!(state.item, 2);
+    assert!(state.terminal.is_none());
+    assert!(!receipt.resources_released());
+    rig.service().retire_owner(&owner, 0).unwrap();
+    assert!(rig.service().announce(id, 3).is_err());
+    rig.service().retire_owner(&owner, 4).unwrap();
+    assert!(!owner.is_retired());
+    let mut discarded = Vec::new();
+    while !owner.is_retired() {
+        rig.render();
+        rig.service().maintain(4, 4);
+        rig.service().drain(&mut discarded, 4, |_, _, _| false);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(receipt.is_retired());
+    assert_eq!(rig.pool.usage().bytes, 0);
 }
 
 #[test]

@@ -7,6 +7,8 @@ struct RecentFrame {
 	/// The current frame index of the source sound at the
 	/// time this frame was pushed to the resampler.
 	frame_index: usize,
+	source: u64,
+	sample_rate: u32,
 }
 
 pub(super) struct Resampler {
@@ -15,18 +17,25 @@ pub(super) struct Resampler {
 }
 
 impl Resampler {
-	#[must_use]
-	pub fn new(starting_frame_index: usize) -> Self {
+	pub fn for_source(starting_frame_index: usize, source: u64, sample_rate: u32) -> Self {
 		Self {
 			frames: [RecentFrame {
 				frame: Frame::ZERO,
 				frame_index: starting_frame_index,
+				source,
+				sample_rate,
 			}; 4],
 			time_until_empty: 0,
 		}
 	}
 
-	pub fn push_frame(&mut self, frame: Option<Frame>, sample_index: usize) {
+	pub fn push_source_frame(
+		&mut self,
+		frame: Option<Frame>,
+		sample_index: usize,
+		source: u64,
+		sample_rate: u32,
+	) {
 		if frame.is_some() {
 			self.time_until_empty = 4;
 		} else {
@@ -37,6 +46,8 @@ impl Resampler {
 		self.frames[self.frames.len() - 1] = RecentFrame {
 			frame,
 			frame_index: sample_index,
+			source,
+			sample_rate,
 		};
 	}
 
@@ -62,6 +73,13 @@ impl Resampler {
 	#[must_use]
 	pub fn current_frame_index(&self) -> usize {
 		self.frames[1].frame_index
+	}
+
+	pub fn current_source(&self) -> u64 {
+		self.frames[1].source
+	}
+	pub fn current_sample_rate(&self) -> u32 {
+		self.frames[1].sample_rate
 	}
 
 	#[must_use]

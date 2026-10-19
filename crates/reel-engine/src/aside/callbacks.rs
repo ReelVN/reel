@@ -575,6 +575,7 @@ impl SessionVm {
         let outcome = match self.vm.run_slice(task, budget, now) {
             Ok(outcome) => outcome,
             Err(VmError::Idle) if index > 0 && self.tasks[index - 1].cancelling => {
+                self.media.finish_batch(task, false);
                 self.schedule_cursor = index + 1;
                 self.retire_callback(session, index - 1)?;
                 self.reactive_ready = true;
@@ -588,6 +589,8 @@ impl SessionVm {
             outcome,
             RunOutcome::Returned(_) | RunOutcome::Fault(_) | RunOutcome::Waiting(_)
         ) {
+            self.media
+                .finish_batch(task, !matches!(outcome, RunOutcome::Fault(_)));
             self.reactive_ready = true;
             self.sync_narrative(session)?;
             self.activities.after_script(self.vm.heap())?;

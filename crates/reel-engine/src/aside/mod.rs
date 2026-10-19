@@ -543,6 +543,7 @@ impl SessionVm {
             | "reel::video::seek"
             | "reel::video::position"
             | "reel::audio::play"
+            | "reel::audio::queue"
             | "reel::audio::volume"
             | "reel::audio::await"
             | "reel::audio::group_volume"

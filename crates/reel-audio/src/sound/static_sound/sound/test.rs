@@ -12,6 +12,191 @@ use crate::{
 	test_helpers::expect_frame_soon,
 };
 
+fn queue_data(rate: u32, samples: &[f32]) -> StaticSoundData {
+	StaticSoundData {
+		sample_rate: rate,
+		frames: samples
+			.iter()
+			.map(|sample| Frame::from_mono(*sample))
+			.collect(),
+		settings: StaticSoundSettings::new(),
+		slice: None,
+	}
+}
+
+#[test]
+fn prepared_queue_has_no_silent_frame_at_segment_boundaries() {
+	use crate::sound::static_sound::QueuedStaticSound;
+	let (mut sound, handle, mut queue) =
+		queue_data(4, &[1., 2.]).into_sound_with_queue(4, Arc::new(()));
+	queue.announce(2).unwrap();
+	for (index, samples) in [(1, &[3., 4.][..]), (2, &[5., 6.][..])] {
+		assert!(
+			queue
+				.push(QueuedStaticSound {
+					index,
+					data: queue_data(4, samples),
+					retention: None
+				})
+				.is_ok()
+		);
+	}
+	let info = MockInfoBuilder::new().build();
+	assert_eq!(sound.process_one(0.25, &info), Frame::ZERO);
+	queue.start();
+	for sample in 1..=6 {
+		sound.on_start_processing();
+		assert_eq!(
+			sound.process_one(0.25, &info),
+			Frame::from_mono(sample as f32).panned(Panning::CENTER)
+		);
+	}
+	sound.on_start_processing();
+	assert_eq!(handle.queue_cursor().0, 2);
+	for _ in 0..8 {
+		sound.process_one(0.25, &info);
+	}
+	assert!(sound.finished());
+	assert_eq!(queue.take_retired().unwrap().index, 0);
+	assert_eq!(queue.take_retired().unwrap().index, 1);
+}
+
+#[test]
+fn announced_late_queue_holds_position_and_resumes() {
+	use crate::sound::static_sound::QueuedStaticSound;
+	let (mut sound, handle, mut queue) =
+		queue_data(4, &[1., 2., 3.]).into_sound_with_queue(2, Arc::new(()));
+	queue.announce(1).unwrap();
+	queue.start();
+	let info = MockInfoBuilder::new().build();
+	for _ in 0..12 {
+		sound.process_one(0.25, &info);
+	}
+	sound.on_start_processing();
+	let waiting = handle.queue_cursor();
+	assert_eq!(waiting, (0, 0.75));
+	for _ in 0..12 {
+		assert_eq!(sound.process_one(0.25, &info), Frame::ZERO);
+	}
+	sound.on_start_processing();
+	assert_eq!(handle.queue_cursor(), waiting);
+	assert!(!sound.finished());
+	assert!(
+		queue
+			.push(QueuedStaticSound {
+				index: 1,
+				data: queue_data(4, &[4., 5., 6.]),
+				retention: None
+			})
+			.is_ok()
+	);
+	for sample in 4..=6 {
+		assert_eq!(
+			sound.process_one(0.25, &info),
+			Frame::from_mono(sample as f32).panned(Panning::CENTER)
+		);
+	}
+}
+
+#[test]
+fn queued_loop_exits_at_current_pass_end() {
+	use crate::sound::static_sound::QueuedStaticSound;
+	let data = queue_data(4, &[1., 2., 3., 4.]).loop_region(0.25..0.75);
+	let (mut sound, _, mut queue) = data.into_sound_with_queue(2, Arc::new(()));
+	queue.start();
+	let info = MockInfoBuilder::new().build();
+	for sample in [1., 2., 3., 2., 3.] {
+		assert_eq!(
+			sound.process_one(0.25, &info),
+			Frame::from_mono(sample).panned(Panning::CENTER)
+		);
+	}
+	queue.announce(1).unwrap();
+	assert!(
+		queue
+			.push(QueuedStaticSound {
+				index: 1,
+				data: queue_data(4, &[5., 6., 7.]),
+				retention: None
+			})
+			.is_ok()
+	);
+	let mut output = Vec::new();
+	for _ in 0..8 {
+		output.push(sound.process_one(0.25, &info).left);
+	}
+	let expected =
+		[2., 3., 5., 6., 7.].map(|sample| Frame::from_mono(sample).panned(Panning::CENTER).left);
+	assert_eq!(&output[..5], &expected);
+}
+
+#[test]
+fn queue_seek_targets_current_source_even_when_successor_is_prefetched() {
+	use crate::sound::static_sound::QueuedStaticSound;
+	let (mut sound, mut handle, mut queue) =
+		queue_data(4, &[1., 2., 3., 4.]).into_sound_with_queue(3, Arc::new(()));
+	queue.announce(1).unwrap();
+	assert!(
+		queue
+			.push(QueuedStaticSound {
+				index: 1,
+				data: queue_data(8, &[5., 6., 7., 8.]),
+				retention: None
+			})
+			.is_ok()
+	);
+	queue.start();
+	let info = MockInfoBuilder::new().build();
+	for _ in 0..2 {
+		sound.process_one(0.25, &info);
+	}
+	sound.on_start_processing();
+	assert_eq!(handle.queue_cursor(), (0, 0.5));
+	handle.seek_to(0.0);
+	sound.on_start_processing();
+	assert_eq!(handle.queue_cursor(), (0, 0.0));
+	let output: Vec<_> = (0..6)
+		.map(|_| sound.process_one(0.25, &info).left)
+		.collect();
+	let expected = [1., 2., 3., 4., 5., 7.]
+		.map(|sample| Frame::from_mono(sample).panned(Panning::CENTER).left);
+	assert_eq!(output, expected);
+}
+
+#[test]
+fn queue_skips_exhausted_start_positions_without_inserting_silence() {
+	use crate::sound::static_sound::QueuedStaticSound;
+	for exhausted_first in [false, true] {
+		let data = queue_data(4, &[1., 2.]).start_position(if exhausted_first { 0.5 } else { 0.0 });
+		let (mut sound, _, mut queue) = data.into_sound_with_queue(8, Arc::new(()));
+		queue.announce(7).unwrap();
+		for index in 1..=7 {
+			let data = if index == 7 {
+				queue_data(4, &[3., 4.])
+			} else {
+				queue_data(4, &[9.]).start_position(0.25)
+			};
+			assert!(
+				queue
+					.push(QueuedStaticSound {
+						index,
+						data,
+						retention: None
+					})
+					.is_ok()
+			);
+		}
+		queue.start();
+		let info = MockInfoBuilder::new().build();
+		for sample in (if exhausted_first { 3 } else { 1 })..=4 {
+			assert_eq!(
+				sound.process_one(0.25, &info),
+				Frame::from_mono(sample as f32).panned(Panning::CENTER)
+			);
+		}
+	}
+}
+
 /// Tests that a `StaticSound` will play all of its samples before finishing.
 #[test]
 fn plays_all_samples() {

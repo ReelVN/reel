@@ -3,7 +3,7 @@ use crate::audio::{AudioGroup, AudioLoopRegion, AudioRequest};
 use crate::media::{
     MediaBackend, MediaCommand, MediaCompletion, MediaId, MediaPlayback, MediaResult,
 };
-use aside_vm::executor::{Completion, HostResponse, WaitId};
+use aside_vm::executor::{Completion, HostResponse, TaskId, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
 
@@ -26,6 +26,7 @@ struct Live {
     result: Option<MediaCompletion>,
     video: Option<crate::video::VideoRequest>,
     has_frame: bool,
+    pending_start: Option<TaskId>,
 }
 #[derive(Default)]
 pub(super) struct Media {
@@ -51,12 +52,35 @@ struct SavedPoster {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedMedia {
     root: RootToken,
+    pending_start: Option<TaskId>,
     owner: Option<NodeId>,
     target: Option<NodeId>,
     playback: Option<MediaPlayback>,
     result: Option<MediaCompletion>,
 }
 impl Media {
+    pub(super) fn finish_batch(&mut self, task: TaskId, commit: bool) {
+        for live in &mut self.live {
+            if live.pending_start != Some(task) {
+                continue;
+            }
+            live.pending_start = None;
+            if live.result.is_some() {
+                continue;
+            }
+            let backend = self.backend.as_mut().expect("live media backend");
+            if commit {
+                backend.commit_audio(live.id);
+            } else {
+                let position = backend.position(live.id).expect("live media transport");
+                backend.cancel(live.id);
+                live.result = Some(MediaCompletion {
+                    result: MediaResult::Cancelled,
+                    position,
+                });
+            }
+        }
+    }
     pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
         use super::snapshot::{Part, Record};
         Box::new(
@@ -78,6 +102,7 @@ impl Media {
                         Part::Media,
                         &SavedMedia {
                             root: entry.root,
+                            pending_start: entry.pending_start,
                             owner: entry.owner,
                             target: entry.target,
                             playback,
@@ -125,6 +150,7 @@ impl Media {
         }
         let mut saved: SavedMedia = record.read()?;
         let root = map.root(saved.root)?;
+        let pending_start = saved.pending_start.map(|task| map.task(task)).transpose()?;
         let mut id = MediaId(0);
         let mut video = None;
         if let Some(playback) = saved.playback {
@@ -134,18 +160,7 @@ impl Media {
                         result,
                         position: playback.request.start_position,
                     });
-                    if saved.result.is_none()
-                        && matches!(playback.request.group, AudioGroup::Effects | AudioGroup::Ui)
-                    {
-                        saved.result = Some(MediaCompletion {
-                            result: MediaResult::Completed,
-                            position: playback.request.start_position,
-                        });
-                    }
                     if saved.result.is_none() {
-                        if playback.request.group == AudioGroup::Voice {
-                            playback.request.start_position = std::time::Duration::ZERO;
-                        }
                         playback.request.fade_in = std::time::Duration::ZERO;
                         let backend = self
                             .backend
@@ -154,6 +169,14 @@ impl Media {
                         id = backend
                             .play_audio(playback.request)
                             .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+                        for item in playback.queue {
+                            backend
+                                .queue_audio(id, item)
+                                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+                        }
+                        if pending_start.is_none() {
+                            backend.commit_audio(id);
+                        }
                         if playback.paused {
                             backend
                                 .command(id, MediaCommand::Pause)
@@ -185,6 +208,7 @@ impl Media {
             result: saved.result,
             video,
             has_frame: false,
+            pending_start,
         });
         Ok(())
     }
@@ -451,9 +475,6 @@ impl SessionVm {
             }
         } else if symbol == "reel::audio::play" {
             let source = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
-            let looping = args[1]
-                .as_bool()
-                .ok_or(AdapterError::Input("looping must be bool"))?;
             let volume = volume(args[2])?;
             let owner = if args[3].tag() == ValueTag::Null {
                 self.default_activity_owner(ticket.task)?
@@ -473,30 +494,7 @@ impl SessionVm {
             let pan = pan(args[5])?;
             let fade_in = duration(args[6])?;
             let start_position = duration(args[7])?;
-            let loop_start = duration(args[8])?;
-            let loop_end = if args[9].tag() == ValueTag::Null {
-                None
-            } else {
-                Some(duration(args[9])?)
-            };
-            let loop_region = if looping {
-                if loop_end.is_some_and(|end| end <= loop_start) {
-                    return Err(AdapterError::Input(
-                        "audio loop_end must be greater than loop_start",
-                    ));
-                }
-                Some(AudioLoopRegion {
-                    start: loop_start,
-                    end: loop_end,
-                })
-            } else {
-                if !loop_start.is_zero() || loop_end.is_some() {
-                    return Err(AdapterError::Input(
-                        "audio loop bounds require looping: true",
-                    ));
-                }
-                None
-            };
+            let loop_region = audio_loop(args[1], args[8], args[9])?;
             let request = AudioRequest {
                 source,
                 loop_region,
@@ -510,6 +508,7 @@ impl SessionVm {
                 ticket,
                 MediaPlayback::Audio(crate::audio::AudioPlayback {
                     request,
+                    queue: Vec::new(),
                     paused: false,
                     result: None,
                 }),
@@ -567,7 +566,41 @@ impl SessionVm {
             if !is_media(self.vm.heap(), value) {
                 return Err(AdapterError::Input("expected media activity"));
             }
-            if matches!(symbol, "reel::audio::position" | "reel::video::position") {
+            if symbol == "reel::audio::queue" {
+                let source = text::read_string(self.vm.heap(), args[1], self.read_limit)?;
+                let start_position = duration(args[2])?;
+                let loop_region = audio_loop(args[3], args[4], args[5])?;
+                let id = MediaId(
+                    self.vm
+                        .heap()
+                        .host_payload(value, Slot::Id as u32)?
+                        .as_int()
+                        .unwrap() as u64,
+                );
+                let result = if response(self.vm.heap(), value)?.is_some() {
+                    Err("audio has ended".to_string())
+                } else if !self
+                    .media
+                    .live
+                    .iter()
+                    .any(|live| live.id == id && live.video.is_none() && live.result.is_none())
+                {
+                    Err("queue requires a live audio activity".to_string())
+                } else {
+                    self.media.backend.as_mut().unwrap().queue_audio(
+                        id,
+                        crate::audio::AudioQueueItem {
+                            source,
+                            start_position,
+                            loop_region,
+                        },
+                    )
+                };
+                match result {
+                    Ok(()) => self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?,
+                    Err(error) => self.media_error(ticket, &error)?,
+                }
+            } else if matches!(symbol, "reel::audio::position" | "reel::video::position") {
                 if response(self.vm.heap(), value)?.is_some() {
                     let position = self.vm.heap().host_payload(value, Slot::Position as u32)?;
                     self.vm.respond(ticket, HostResponse::Ready(position))?;
@@ -758,6 +791,7 @@ impl SessionVm {
                     owner,
                     target,
                     result: None,
+                    pending_start: video.is_none().then_some(ticket.task),
                     video,
                     has_frame: false,
                 });
@@ -797,5 +831,35 @@ impl Media {
         if let Some(backend) = &mut self.backend {
             backend.close();
         }
+    }
+}
+
+fn audio_loop(
+    looping: Value,
+    start: Value,
+    end: Value,
+) -> Result<Option<AudioLoopRegion>, AdapterError> {
+    let looping = looping
+        .as_bool()
+        .ok_or(AdapterError::Input("looping must be bool"))?;
+    let start = duration(start)?;
+    let end = if end.tag() == ValueTag::Null {
+        None
+    } else {
+        Some(duration(end)?)
+    };
+    if looping {
+        if end.is_some_and(|end| end <= start) {
+            return Err(AdapterError::Input(
+                "audio loop_end must be greater than loop_start",
+            ));
+        }
+        Ok(Some(AudioLoopRegion { start, end }))
+    } else if !start.is_zero() || end.is_some() {
+        Err(AdapterError::Input(
+            "audio loop bounds require looping: true",
+        ))
+    } else {
+        Ok(None)
     }
 }
