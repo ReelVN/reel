@@ -61,6 +61,12 @@ pub struct GcProgress {
 pub(crate) struct Collector {
     pub phase: GcPhase,
     pub cycle: u64,
+    pub units: u64,
+    pub allocated_objects: u64,
+    pub allocated_bytes: u64,
+    live_objects: u32,
+    live_payload: u64,
+    requested: bool,
     pub root_cursor: usize,
     range_slot: usize,
     range_key: Option<RangeKey>,
@@ -76,6 +82,33 @@ impl Collector {
 }
 
 impl Heap {
+    /// Whether allocation since the last cycle warrants another incremental cycle.
+    /// This is a host scheduling hint; explicit collection always starts immediately.
+    pub fn collection_due(&self) -> bool {
+        let available_objects = self
+            .limits
+            .max_objects
+            .saturating_sub(self.objects.occupied() as u32);
+        let available_bytes = self.usage.remaining_bytes();
+        let object_threshold = u64::from((self.gc.live_objects / 2).max(256))
+            .min(u64::from(available_objects / 2))
+            .min(available_bytes / (2 * std::mem::size_of::<crate::heap::Object>() as u64))
+            .max(1);
+        let byte_threshold = (self.gc.live_payload / 2)
+            .max(64 * 1024)
+            .min(available_bytes / 2)
+            .max(1);
+        self.gc.phase == GcPhase::Idle
+            && (self.gc.requested
+                || self.gc.allocated_objects >= object_threshold
+                || self.gc.allocated_bytes >= byte_threshold)
+    }
+
+    /// Request a cycle at the next host safe point, including after a running cycle.
+    pub fn request_collection(&mut self) {
+        self.gc.requested = true;
+    }
+
     pub fn begin_collection(&mut self) -> Result<(), HeapError> {
         if self.gc.phase != GcPhase::Idle {
             return Err(HeapError::CollectionInProgress);
@@ -85,6 +118,9 @@ impl Heap {
             .cycle
             .checked_add(1)
             .ok_or(HeapError::CycleExhausted)?;
+        self.gc.allocated_objects = 0;
+        self.gc.allocated_bytes = 0;
+        self.gc.requested = false;
         self.gc.root_cursor = 0;
         self.gc.range_slot = 0;
         self.gc.range_key = None;
@@ -240,6 +276,8 @@ impl Heap {
                         p.objects += 1;
                         p.units += 1;
                     } else if self.release.is_empty() {
+                        self.gc.live_objects = self.objects.occupied() as u32;
+                        self.gc.live_payload = self.stats().payload_bytes;
                         self.gc.phase = GcPhase::Idle;
                         p.cycle_complete = true;
                     } else {
@@ -250,6 +288,7 @@ impl Heap {
             }
         }
         p.phase = self.gc.phase;
+        self.gc.units = self.gc.units.saturating_add(u64::from(p.units));
         Ok(p)
     }
 

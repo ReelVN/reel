@@ -121,7 +121,12 @@ impl Vm {
                 };
                 self.heap
                     .commit_collection(receiver, buffer)
-                    .map(|()| result)
+                    .map(|()| {
+                        if matches!(work.call.method, Builtin::Clear) && work.original_len != 0 {
+                            self.heap.request_collection();
+                        }
+                        result
+                    })
                     .map_err(heap_fault)
             } else {
                 if self.heap.info(receiver)?.kind == ObjectKind::Tuple {

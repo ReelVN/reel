@@ -9,14 +9,14 @@
 
 编译与 ASB 加载默认不设置作品大小、累计记录、模块或指令数量配额；实际格式宽度和可用内存仍适用。嵌入宿主可通过 Rust Limits 显式设定配额。出现容量错误时，诊断会区分记录数和内存请求，避免把较长剧本误报为语法错误。
 ## 阅读这份文档
-当前 Reel 是能运行简单交互场景的开发原型，完整创作与发行链路仍在开发。先从[基本画面](../../examples/author_stage.aside)、[动画](../../examples/author_activities.aside)或[交互按钮](../../examples/author_buttons.aside)开始；[能力表](../README.md#当前状态)列出实际边界，[总清单 #94](https://github.com/jhq223/reel/issues/94)记录后续顺序。
+Reel 的目标是让你用 Aside 表达想象中的画面和交互，组合自己的对白、UI、演出和嵌入的 2D 游戏。当前已有多文件作品、统一舞台、存读档和打包发布链路；完整 2D 创作接口、长内容成本和设备覆盖仍在完善。先从[基本画面](../../examples/author_stage.aside)、[动画](../../examples/author_activities.aside)或[交互按钮](../../examples/author_buttons.aside)开始；[能力表](../README.md#当前状态)列出实际边界，[总清单 #94](https://github.com/jhq223/reel/issues/94)记录后续顺序。
 
 这份指南从作者想要的画面出发，说明如何用 Aside 写剧情、组合 UI、安排演出和扩展效果。已实现部分可以直接使用；其余章节描述目标设计，并标明尚未接通的能力。中文与英文共用相同示例和接口名称。《Reel 引擎架构设计》说明运行时，《Aside VM 与语言设计》定义语言规则。
 作者使用三个基本概念：函数组织可复用内容；节点树表达画面；活动表达随时间进行的变化。当前普通函数、基础节点组合与顺序剧情已经接通，活动及高级作者接口仍按各节状态区分。
 
 当前可运行：text、image（PNG/JPEG）、row、column、stack、stage.replace，尾随 children 块与 if/for 组合，原节点属性修改、局部增删子树、有限动画及其等待和控制，以及 narrator/choose 的等待与继续。check/build 与播放器使用同一套已注册 Reel 接口；dev 运行源码，run 直接运行 .asb。完整可运行画面见[作者舞台示例](../../examples/author_stage.aside)，启动命令见第一节。
 
-button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；音频已接入作者源码，视频与存读档已接入同一舞台和执行状态；脚本初始化与多源码工程已接通；开发和打包发布使用下面的 export 命令。后文包含这些能力的示例属于设计目标，不是当前可运行示例。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
+button 与可等待的 on_click 回调已接通，见文末可运行示例。model、bind/unbind、derive、动态 view 和作者对白／选择界面已可用；音频已接入作者源码，视频与存读档已接入同一舞台和执行状态；脚本初始化与多源码工程已接通；开发和打包发布使用下面的 export 命令。各节标明可运行示例及尚未实现的设计。更完整的能力边界见[当前实现状态](../README.md#当前状态)。
 
 历史验证范围：R01/R02 的 Rust 渲染器与诊断窗口曾在软件 Vulkan、Xvfb/X11 上通过独立检查；这些记录只证明对应提交与环境。当前源码和 ASB 已接入真实窗口入口，旧诊断程序的范围不再代表作者入口的状态。物理 GPU、设备热插拔及平台生命周期未由这些检查证明。[渲染验证范围](../../crates/reel-render/R02-REPORT.md)。
 
@@ -808,7 +808,7 @@ choice_view 挂载在包含对话 UI 的画面中，by_window 和 by_door 是作
 
 历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
 
-跨章后不再需要之前的历史时，调用 `game.clear_history()`。它清空现有可观察历史数组，保留数组身份。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。清理按记录数量释放会话引用，VM 对象沿增量 GC 回收。脚本自行持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度。Rust 宿主调用 `Session::clear_history()`。见 [author_reading.aside](../../examples/author_reading.aside)。
+跨章后不再需要之前的历史时，调用 `game.clear_history()`。它清空现有可观察历史数组，保留数组身份。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。清理按记录数量释放会话引用，并请求增量 GC，即使后续交互很少分配也会继续回收。平时回收按分配压力启动，无需脚本定时清理。脚本自行持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度。Rust 宿主调用 `Session::clear_history()`。见 [author_reading.aside](../../examples/author_reading.aside)。
 
 ```aside
 game.dialogue().clear();
@@ -820,7 +820,7 @@ narrator("A new chapter begins.");
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 2，格式 1 的旧剧情存档会明确报告版本不匹配；系统数据 `persistent` 不受影响。跨版本执行快照迁移尚未实现。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 4，会话快照格式为 6；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
