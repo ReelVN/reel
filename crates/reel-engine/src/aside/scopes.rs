@@ -19,7 +19,7 @@ pub(super) struct Scope {
 
 #[derive(Default)]
 pub(super) struct Scopes {
-    pub methods: Option<[FunctionId; 2]>,
+    pub methods: Option<[FunctionId; 3]>,
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
 }
@@ -80,11 +80,20 @@ impl SessionVm {
     }
 
     fn close_scope(&mut self, index: usize) -> Result<(), AdapterError> {
-        let scope = self.scopes.live.remove(index).unwrap();
+        let root = self.scopes.live[index].root;
         let heap = self.vm.heap_mut();
-        let value = heap.root_value(scope.root)?;
+        let value = heap.root_value(root)?;
+        let nodes = heap.host_payload(value, 2)?;
+        if nodes.tag() != ValueTag::Null {
+            while heap.sequence_len(nodes)? != 0 {
+                let node = heap.sequence_get(nodes, heap.sequence_len(nodes)? - 1)?;
+                self.stage.remove_node(heap, node)?;
+                heap.array_pop(nodes)?;
+            }
+        }
         heap.retire_host(value)?;
-        heap.release_root(scope.root)?;
+        heap.release_root(root)?;
+        self.scopes.live.remove(index);
         self.results.changed();
         self.particles.owners_changed();
         self.activities.after_script(self.vm.heap())?;
@@ -173,8 +182,11 @@ impl SessionVm {
                         })
                         .ok_or(AdapterError::Input("scope adapter missing"))
                 };
-                self.scopes.methods =
-                    Some([find("reel::scope::run")?, find("reel::scope::spawn")?]);
+                self.scopes.methods = Some([
+                    find("reel::scope::run")?,
+                    find("reel::scope::spawn")?,
+                    find("reel::scope::add")?,
+                ]);
             }
             results::reserve_queue(
                 self.vm.heap(),
@@ -183,9 +195,12 @@ impl SessionVm {
             )?;
             let heap = self.vm.heap_mut();
             let fields = heap.alloc_table()?;
-            let object =
-                heap.alloc_host(fields, &[Value::int(TAG), owner], Some(results::readonly))?;
-            for (i, (name, function)) in ["run", "spawn"]
+            let object = heap.alloc_host(
+                fields,
+                &[Value::int(TAG), owner, Value::NULL],
+                Some(results::readonly),
+            )?;
+            for (i, (name, function)) in ["run", "spawn", "add"]
                 .into_iter()
                 .zip(self.scopes.methods.unwrap())
                 .enumerate()
@@ -209,7 +224,7 @@ impl SessionVm {
                         &[]
                     },
                     continuation: Continuation {
-                        version: 1,
+                        version: 2,
                         stage: 0,
                         values: &[object],
                         faults: FaultRetention::Preserve,
@@ -250,6 +265,39 @@ impl SessionVm {
             }
             self.vm.respond(ticket, response)?;
         }
+        self.issued = None;
+        Ok(())
+    }
+
+    pub(super) fn dispatch_scope_add(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+        let args = self.vm.host_arguments(ticket)?;
+        let [scope, parent, node, index] = [args[0], args[1], args[2], args[3]];
+        let index = if index.tag() == ValueTag::Null {
+            None
+        } else {
+            Some(
+                index
+                    .as_int()
+                    .ok_or(AdapterError::Input("child index must be an integer"))?,
+            )
+        };
+        let heap = self.vm.heap_mut();
+        if heap.host_payload(scope, 0)?.as_int() != Some(TAG) {
+            return Err(AdapterError::Input("scope.add requires a scope"));
+        }
+        let mut nodes = heap.host_payload(scope, 2)?;
+        if nodes.tag() == ValueTag::Null {
+            nodes = heap.alloc_array(&[])?;
+            heap.set_host_payload(scope, 2, nodes)?;
+        }
+        // Charge and trace registration before mounting; a failed mount keeps
+        // the caller's node and the scope's ownership unchanged.
+        heap.array_push(nodes, node)?;
+        if let Err(error) = self.stage.add_node(heap, parent, node, index) {
+            heap.array_pop(nodes)?;
+            return Err(error);
+        }
+        self.vm.respond(ticket, HostResponse::Ready(node))?;
         self.issued = None;
         Ok(())
     }

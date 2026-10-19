@@ -574,21 +574,20 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 五 作用域管理临时画面
 
-scope 的任务、活动与等待所有权已实现，参见下文演出示例。以下临时节点、属性覆盖与恢复接口仍属设计目标。
+scope 的任务、活动、等待和临时节点所有权已实现。属性覆盖与加性偏移继续实现。
 
-scope 在当前剧情调用链执行普通闭包；正文可以对白、等待、调用其他函数，退出时退休本次作用域拥有的工作。临时画面计划按下面的形式加入同一寿命管理：
+scope 在当前剧情调用链执行普通闭包；正文可以对白、等待、调用其他函数，退出时退休本次作用域拥有的工作。临时画面按下面的形式加入同一寿命管理：
 ```aside
 fn show_cg(view) {
     scope(body: |s| {
-        s.override(view.hud, visible: false);
         s.add(view.picture, image("assets/window-cg.png"));
         await game.advance();
     });
 }
 ```
-这里 HUD 暂时隐藏，CG 加在 picture 最上方。玩家继续后，CG 移除，本次 visible 覆盖解除。HUD 原来的绑定与底层值始终保留；退出时显露最新底层值，也保留其他仍存在的覆盖。嵌套覆盖按后建立的优先，结束任意一层只移除自己的 token。
-s.add(parent, node) 挂载临时子树，s.override(node, props...) 创建可动画的覆盖层，s.offset(node) 创建独立的 x/y 附加偏移，s.run(action) 启动归此作用域所有的活动。普通 node.add 继续使用明确父节点寿命，不因身处 scope 而偷偷改变含义。
-普通返回、异常和场景退出都触发同步、幂等的宿主清理。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和覆盖的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
+CG 加在 picture 最上方，玩家继续后随作用域退出移除。s.add(parent, node, index: 0) 可指定插入位置，返回原 node；提前移除页面、替换场景和读档后退出也沿同一退休规则处理。
+s.add(parent, node) 挂载临时子树，s.run(action) 启动归此作用域所有的活动。待实现的 s.override(node, props...) 将创建可动画的覆盖层，s.offset(node) 将创建独立的 x/y 附加偏移。普通 node.add 继续使用明确父节点寿命，不因身处 scope 而偷偷改变含义。
+普通返回、异常和场景退出都触发同步、幂等的宿主清理。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和临时子树的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
 默认 scope 随当前任务存活。需要随某个节点结束时写 scope(owner: node, body: ...)。若该节点先结束，仅撤销 scope 区域并在外层调用点产生 ScopeCancelled，仍存活的主剧情可以在 scope 外捕获；区域内的失效节点代码结束，宿主完成清理。当前任务自身被撤销时，整个任务结束。
 visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用交互；opacity 只改变透明度。永久换景用 stage.replace(new_root)，局部永久替换用容器的 replace(new_child)。
 
