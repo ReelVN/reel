@@ -511,7 +511,7 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 `clock(interval: 60, owner: panel)` creates an observable periodic clock. Read-only ticks counts complete intervals; elapsed is their total duration in seconds, both initially zero. Use derive to compose clocks, countdowns or progress displays. Large time steps publish the latest value directly. pause/resume/stop and await use the activity contract; paused time is excluded and retiring the owner cancels the clock. An endless clock cannot finish. See the [clock example](../../examples/author_clock.aside).
 
-Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, cubic in/out/in_out, quadratic quad_in/quad_out/quad_in_out and sine_in/sine_out/sine_in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`. sequence/parallel/repeat are available; scope is not implemented yet.
+Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the current scope first; outside a scope, it uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, cubic in/out/in_out, quadratic quad_in/quad_out/quad_in_out and sine_in/sine_out/sine_in_out. Shared numeric properties can animate; width/height need explicit starting values, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities.aside) with `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`. sequence/parallel/repeat and scope ownership of activities and tasks are available.
 
 `tween(viewport, scroll_y: 400, duration: 0.5, easing: "out")` smoothly moves a scroll viewport; `scroll_x` is also supported. The target must be a scroll node, and the content dimensions still constrain the scroll range.
 
@@ -532,7 +532,7 @@ The language runtime supports awaiting host-registered awaitable objects. An ord
 
 Empty sequence/parallel and times: 0 complete immediately without property writes. times must be a nonnegative integer or null; omitting it or passing null creates a continuous loop, whose cycle must have a positive duration. A composition with an infinite branch rejects finish before changing the activity; use stop to end it. run checks the complete write sets of parallel branches before taking over existing activities. Pause, stop and cancellation affect the whole group; later segments acquire properties only when they start. A large clock step continues through every segment it crosses.
 
-tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. Currently run(action) belongs to the session; specify a stage node with owner. The planned scope API will provide its own s.run entry point.
+tween only describes target properties, final values, and duration. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. run(action) belongs to the current scope, otherwise it inherits its task resource owner; the main story uses the session lifetime. Specify a stage node with owner or a scope with s.run(action).
 An action reads its starting property values when it actually becomes active. In a sequence, a later step reads its starting values after the previous step finishes. Action descriptions are reusable, and every run creates independent progress. An activity acquires property writes when a segment actually starts. A new segment stops any conflicting older root activity and takes over from the current values, including from paused activities. A sequence may write the same property in order; parallel branches must have disjoint write sets. Direct assignment, including assignment of the same value, stops the root activity writing that property. Assignments to other properties are unaffected. Ending an activity releases all of its writes.
 ```aside
 let entrance = parallel(
@@ -562,9 +562,9 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 5 Managing Temporary Scenes with Scopes
 
-The creator scope, temporary overrides and restoration behavior in this section remain design targets.
+Scope ownership of tasks, activities and waits is implemented; see the choreography example below. The temporary-node, property-override and restoration interfaces below remain design targets.
 
-scope executes an ordinary closure within the current story call chain. It manages temporary nodes, property overrides, offsets, and activities. Its body can deliver dialogue, wait, and call other functions normally. On exit, it releases only what that scope owns.
+scope executes an ordinary closure within the current story call chain. Its body can deliver dialogue, wait and call other functions. Exiting retires work owned by that scope. Temporary scenes are planned to join the same lifetime management as follows:
 ```aside
 fn show_cg(view) {
     scope(body: |s| {
@@ -705,22 +705,21 @@ let cast = group() {
 stage.replace(cast);
 await run(tween(cast, x: 80, duration: 0.5));
 ```
-To add shaking while an element is moving, give its base position and shake independent offsets. The following shake is an author-defined function that returns an ordinary action value. It works with dialogue boxes, character portraits, or any group.
-```aside
-fn shake(offset, strength = 8, step = 0.05, times = 3) {
-    repeat(sequence(
-        tween(offset, x: strength, duration: step),
-        tween(offset, x: -strength, duration: step * 2),
-        tween(offset, x: 0, duration: step)
-    ), times: times)
-}
+`scope(body:, owner: null)` runs a piece of choreography in the current task and returns the body's value. By default, run, spawn, clock, audio, video, particles, completion and presentation waits belong to the current scope. Returning or throwing from the body cancels unfinished work. `s.run(action)` and `s.spawn(work)` explicitly attach work to that scope.
 
+```aside
 scope(body: |s| {
-    let offset = s.offset(view.hud);
-    await s.run(shake(offset));
+    s.run(repeat(sequence(
+        tween(view.hud, opacity: 0.4, duration: 0.5),
+        tween(view.hud, opacity: 1, duration: 0.5)
+    )));
+    narrator("The light keeps pulsing while this line is shown.");
 });
 ```
-Adding an offset only to hud shakes only the dialogue UI. It is independent of underlying x/y movement: multiple x/y offsets add together in the parent's coordinate system, leaving the base layout unchanged. Rendering and hit testing both use the composed result. When scope ends, it removes its own offset, leaving the moved base position correct. Rotation and scaling compose in an explicit transform-matrix order and are expressed through separate group nodes; additive x/y offsets do not imply additive rotation.
+
+Stopping an ordinary animation leaves its properties at the current values. Independent property overrides and additive offsets with automatic restoration remain planned. Removing an owner node cancels the scope's inner work; the outer catch receives "ScopeCancelled" and can continue. Inner script finally blocks are skipped, while outer finally blocks execute normally. Cancelling the outer task cleans up its scopes. Work with another explicit owner follows that owner's lifetime. Scopes, waits, activities and cancellation cleanup survive same-package saves.
+
+[author_scope.aside](../../examples/author_scope.aside) uses one button to start animation and background work, and another to stop the whole effect through one task handle. Run `reel dev examples/author_scope.aside`.
 
 ## 9 Masks, Effects, and Custom Scene Choreography
 Historical verification (R01 / Issue #25): focused cases cover internal Rust frame records, resource leases, groups, clipping and opacity. R01 did not yet provide a GPU window, and recording consumers do not establish physical-device behavior. The image-mask API below is implemented; blur and custom shaders remain design targets. The basic stage and real window now work together as described in sections 1 and 2. See the [historical verification scope](../../crates/reel-ui/R01-REPORT.md).
@@ -851,7 +850,7 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 6 and the session snapshot format is 12. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 13. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 

@@ -121,7 +121,7 @@ impl SessionVm {
             requested_owner
         };
         if owner.tag() != ValueTag::Null {
-            self.stage.id(self.vm.heap(), owner)?;
+            crate::aside::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         }
         let result = self
             .results

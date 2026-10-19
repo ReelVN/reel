@@ -40,7 +40,7 @@ const SCENES: &[(&str, E)] = &[
     ("interaction state callback", E::Block),
     ("menu style and construction", E::Module),
     ("moving group in story", E::Block),
-    ("shake helper and scope in story", E::Block),
+    ("scoped choreography in story", E::Block),
     ("mask in story", E::Block),
     ("subtree inversion", E::Block),
     ("subtree blending", E::Block),

@@ -766,6 +766,24 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     );
     for (name, parameters, waits) in [
         ("tween", tween, false),
+        (
+            "scope",
+            vec![
+                parameter("body", None),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            true,
+        ),
+        (
+            "scope::run",
+            vec![parameter("scope", None), parameter("action", None)],
+            false,
+        ),
+        (
+            "scope::spawn",
+            vec![parameter("scope", None), parameter("work", None)],
+            false,
+        ),
         ("delay", vec![parameter("seconds", None)], false),
         (
             "clock",

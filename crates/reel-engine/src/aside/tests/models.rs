@@ -48,8 +48,9 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
                 }
             }
             SessionStep::Vm(RunOutcome::Fault(id)) => panic!(
-                "model source fault: {:?}",
-                vm.vm.delivery_fault(id).unwrap()
+                "model source fault: {:?}, value: {:?}",
+                vm.vm.delivery_fault(id).unwrap(),
+                text::read_string(vm.vm.heap(), vm.vm.delivery_value(id).unwrap(), 4096)
             ),
             SessionStep::Vm(RunOutcome::ResourceBlocked(error)) => {
                 panic!("model resource: {error:?}")

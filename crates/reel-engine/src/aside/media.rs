@@ -21,7 +21,6 @@ enum Slot {
 struct Live {
     id: MediaId,
     root: RootToken,
-    owner: Option<NodeId>,
     target: Option<NodeId>,
     result: Option<MediaCompletion>,
     video: Option<crate::video::VideoRequest>,
@@ -53,7 +52,6 @@ struct SavedPoster {
 struct SavedMedia {
     root: RootToken,
     pending_start: Option<TaskId>,
-    owner: Option<NodeId>,
     target: Option<NodeId>,
     playback: Option<MediaPlayback>,
     result: Option<MediaCompletion>,
@@ -103,7 +101,6 @@ impl Media {
                         &SavedMedia {
                             root: entry.root,
                             pending_start: entry.pending_start,
-                            owner: entry.owner,
                             target: entry.target,
                             playback,
                             result: entry.result.clone(),
@@ -203,7 +200,6 @@ impl Media {
         self.live.push(Live {
             id,
             root,
-            owner: saved.owner,
             target: saved.target,
             result: saved.result,
             video,
@@ -324,9 +320,9 @@ impl SessionVm {
                     .backend
                     .as_mut()
                     .ok_or(AdapterError::Input("live media backend missing"))?;
-                if live
-                    .owner
-                    .is_some_and(|id| self.stage.scene.node(id).is_none())
+                let object = self.vm.heap().root_value(live.root)?;
+                let owner = self.vm.heap().host_payload(object, Slot::Owner as u32)?;
+                if !super::scopes::owner_live(self.vm.heap(), owner)
                     || live
                         .target
                         .is_some_and(|id| self.stage.scene.node(id).is_none())
@@ -481,11 +477,7 @@ impl SessionVm {
             } else {
                 args[3]
             };
-            let owner = if owner.tag() == ValueTag::Null {
-                None
-            } else {
-                Some(self.stage.id(self.vm.heap(), owner)?)
-            };
+            super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
             let group = group(&text::read_string(
                 self.vm.heap(),
                 args[4],
@@ -538,10 +530,11 @@ impl SessionVm {
                 return Err(AdapterError::Input("video end must follow start"));
             }
             let owner = if args[5].tag() == ValueTag::Null {
-                None
+                self.default_activity_owner(ticket.task)?
             } else {
-                Some(self.stage.id(self.vm.heap(), args[5])?)
+                args[5]
             };
+            super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
             let request = crate::video::VideoRequest {
                 source,
                 looping,
@@ -699,7 +692,7 @@ impl SessionVm {
         &mut self,
         ticket: HostTicket,
         playback: MediaPlayback,
-        owner: Option<NodeId>,
+        owner_value: Value,
         target: Option<NodeId>,
         target_value: Value,
     ) -> Result<(), AdapterError> {
@@ -721,10 +714,6 @@ impl SessionVm {
             MediaPlayback::Audio(p) => p.request.start_position,
             MediaPlayback::Video(p) => p.request.start_position,
         };
-        let owner_value = owner
-            .map(|id| self.stage.value(self.vm.heap(), id))
-            .transpose()?
-            .unwrap_or(Value::NULL);
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
         let value = heap.alloc_host(
@@ -788,7 +777,6 @@ impl SessionVm {
                 self.media.live.push(Live {
                     id,
                     root,
-                    owner,
                     target,
                     result: None,
                     pending_start: video.is_none().then_some(ticket.task),

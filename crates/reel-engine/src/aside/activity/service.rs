@@ -30,9 +30,7 @@ impl Activities {
         let [action, owner] = args;
         if self.native.is_none() {
             tagged(vm.heap(), action, ACTION)?;
-            if present(owner) {
-                stage.id(vm.heap(), owner)?;
-            }
+            super::super::scopes::validate_owner(vm.heap(), stage, owner)?;
             let native = vm
                 .program()
                 .package()

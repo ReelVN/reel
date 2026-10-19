@@ -58,8 +58,13 @@ mod audio {
             self.0.borrow_mut()[id.0 as usize - 1].result = Some(MediaResult::Cancelled);
         }
         fn maintain(&mut self, _: Duration) {}
-        fn take_result(&mut self, _: MediaId) -> Option<MediaCompletion> {
-            None
+        fn take_result(&mut self, id: MediaId) -> Option<MediaCompletion> {
+            let entries = self.0.borrow();
+            let entry = &entries[id.0 as usize - 1];
+            entry.result.clone().map(|result| MediaCompletion {
+                result,
+                position: entry.request.start_position,
+            })
         }
         fn poll_after(&self) -> Option<Duration> {
             None
@@ -69,6 +74,33 @@ mod audio {
         fn close(&mut self) {}
         fn cleanup_pending(&self) -> bool {
             false
+        }
+    }
+
+    #[test]
+    fn effect_scope_audio_retirement_cancels_uncommitted_sound_and_preserves_explicit_owner() {
+        let code = r#"fn opening() {
+            let node=stack(); stage.replace(node);
+            let handles={owned:null,escaped:null};
+            scope(body: || {
+                handles.owned=audio.play("owned");
+                handles.escaped=audio.play("escaped",owner:node);
+            });
+            let mut cancelled=false;
+            try { await handles.owned; } catch error { cancelled=true; }
+            if !cancelled { throw "scope sound survived"; }
+            stop(handles.escaped);
+            await handles.escaped;
+        }"#;
+        for encoded in [false, true] {
+            let (mut session, mut vm) = models::prepared(code, encoded);
+            let host = Host::default();
+            vm.set_media(Box::new(host.clone())).unwrap();
+            models::drive(&mut vm, &mut session, false);
+            assert_eq!(host.0.borrow()[0].result, Some(MediaResult::Cancelled));
+            assert_eq!(host.0.borrow()[1].result, Some(MediaResult::Stopped));
+            assert_eq!(*host.1.borrow(), vec![MediaId(2)]);
+            assert!(!vm.media.active());
         }
     }
 

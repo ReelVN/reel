@@ -45,6 +45,7 @@ pub enum NativeInput {
     Continue { version: u64, stage: u64 },
     CallbackReturned,
     CallbackFault,
+    CallbackCancelled,
     WaitingReturned,
     WaitingFault,
 }

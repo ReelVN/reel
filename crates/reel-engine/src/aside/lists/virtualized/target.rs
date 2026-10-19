@@ -22,7 +22,7 @@ pub(in crate::aside) fn presentation_current(
     owner: Value,
     evaluating: Option<Value>,
 ) -> Result<bool, AdapterError> {
-    if owner.tag() == ValueTag::Null {
+    if owner.tag() == ValueTag::Null || crate::aside::scopes::is_scope(heap, owner) {
         return Ok(true);
     }
     let id = stage.id(heap, owner)?;

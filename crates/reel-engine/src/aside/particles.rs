@@ -167,7 +167,6 @@ impl Completion {
 struct Live {
     root: RootToken,
     target: NodeId,
-    owner: Option<NodeId>,
     frame: ParticleFrame,
     last_time: f64,
     paused: bool,
@@ -185,6 +184,9 @@ pub(super) struct Particles {
     woke: bool,
 }
 impl Particles {
+    pub(super) fn owners_changed(&mut self) {
+        self.remaining = self.live.len();
+    }
     pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
         use super::snapshot::{Part, Record};
         Box::new(
@@ -265,9 +267,10 @@ impl SessionVm {
             let result = self.vm.heap().root_value(live.root)?;
             let node = self.stage.scene.node(live.target);
             let cancelled = node.is_none()
-                || live
-                    .owner
-                    .is_some_and(|id| self.stage.scene.node(id).is_none());
+                || !super::scopes::owner_live(
+                    self.vm.heap(),
+                    results::owner(self.vm.heap(), result)?,
+                );
             let mut terminal = cancelled.then_some(results::TaskResult::Cancelled);
             let mut pending_completion = false;
             if !cancelled {
@@ -353,11 +356,7 @@ impl SessionVm {
             args[2]
         };
         let owner_value = owner;
-        let owner = if owner.tag() == ValueTag::Null {
-            None
-        } else {
-            Some(self.stage.id(self.vm.heap(), owner)?)
-        };
+        super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         let node = self.stage.scene.node(id).unwrap();
         let NodeKind::Particles(batch) = &node.kind else {
             return Err(AdapterError::Input("emit requires a particles node"));
@@ -440,7 +439,6 @@ impl SessionVm {
             self.particles.live.push_back(Live {
                 root,
                 target: id,
-                owner,
                 frame,
                 last_time: self.particles.time,
                 paused: false,

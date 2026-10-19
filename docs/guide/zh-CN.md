@@ -525,7 +525,7 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock.aside)。
 
-动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 已接通；scope 尚未实现。
+动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 与 scope 的活动、任务所有权已接通。
 
 `tween(viewport, scroll_y: 400, duration: 0.5, easing: "out")` 平滑移动滚动区域；也可使用 `scroll_x`。目标必须是 scroll 节点，滚动范围仍由实际内容尺寸限制。
 
@@ -544,7 +544,7 @@ await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
 
 空 sequence/parallel 与 times: 0 立即完成，不写属性。times 必须是非负整数或 null，省略或 null 表示持续循环；持续循环的单轮必须有正时长。含无限分支的组合不能 finish，调用会在改变活动前报错；用 stop 结束。并行分支的全部写入集合在 run 时检查，冲突不会接管已有活动。暂停、停止与取消作用于整组，后续段只在实际开始时接管属性。较大的时钟步长会继续推进跨过的动作段。
 
-tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。当前 run(action) 默认归会话所有，显式 owner 可指定舞台节点。设计中的 scope 将提供自己的 s.run 入口。
+tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。run(action) 默认归当前 scope，否则继承任务的资源 owner；主剧情使用会话寿命。显式 owner 可指定舞台节点，s.run(action) 指定所属作用域。
 动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。活动只在动作段真正激活时取得属性写入权。新演出停止与之冲突的旧根活动并从当前值接管，暂停的旧活动也遵守此规则。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。直接赋值，包括赋相同的值，停止正在写该属性的根活动。其他属性的赋值不受影响；终止活动释放全部写入权。
 ```aside
 let entrance = parallel(
@@ -574,9 +574,9 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 五 作用域管理临时画面
 
-本节作者 scope、临时覆盖与恢复行为属于设计目标。
+scope 的任务、活动与等待所有权已实现，参见下文演出示例。以下临时节点、属性覆盖与恢复接口仍属设计目标。
 
-scope 在当前剧情调用链执行一个普通闭包。它管理临时节点、属性覆盖、偏移和活动；正文可以正常对白、等待、调用其他函数。退出时只释放本次作用域持有的内容。
+scope 在当前剧情调用链执行普通闭包；正文可以对白、等待、调用其他函数，退出时退休本次作用域拥有的工作。临时画面计划按下面的形式加入同一寿命管理：
 ```aside
 fn show_cg(view) {
     scope(body: |s| {
@@ -716,22 +716,21 @@ let cast = group() {
 stage.replace(cast);
 await run(tween(cast, x: 80, duration: 0.5));
 ```
-需要移动中叠加震动时，让基础位置与震动使用独立偏移。下面的 shake 是作者函数，返回普通动作值，可用于对话框、立绘或任何组。
-```aside
-fn shake(offset, strength = 8, step = 0.05, times = 3) {
-    repeat(sequence(
-        tween(offset, x: strength, duration: step),
-        tween(offset, x: -strength, duration: step * 2),
-        tween(offset, x: 0, duration: step)
-    ), times: times)
-}
+`scope(body:, owner: null)` 在当前任务中运行一段演出，返回 body 的值。默认 run、spawn、clock、声音、视频、粒子、completion 和呈现等待归当前作用域；body 返回或抛出后统一取消未完成工作。`s.run(action)`、`s.spawn(work)` 可以显式加入该作用域。
 
+```aside
 scope(body: |s| {
-    let offset = s.offset(view.hud);
-    await s.run(shake(offset));
+    s.run(repeat(sequence(
+        tween(view.hud, opacity: 0.4, duration: 0.5),
+        tween(view.hud, opacity: 1, duration: 0.5)
+    )));
+    narrator("The light keeps pulsing while this line is shown.");
 });
 ```
-只给 hud 加偏移，就只震动对话 UI。它与底层 x/y 移动独立：多个 x/y 偏移在父坐标系相加，基础布局保持原值，绘制与命中共同使用合成结果。scope 结束时移除自己的偏移，移动后的基础位置仍正确。旋转、缩放按变换矩阵的明确顺序组合，另用组节点表达；加性 x/y 不暗含旋转相加。
+
+普通动画在停止位置保留属性值。独立属性覆盖与加性偏移的自动恢复仍待实现。绑定到 owner 节点的作用域在节点移除时取消内层工作，外层 catch 收到 "ScopeCancelled" 后可以继续；内层脚本 finally 被跳过，外层 finally 正常执行。取消外层任务会清理它的作用域。显式指定另一个 owner 的工作按该 owner 的寿命运行。作用域及其等待、活动和取消清理过程随同包存档恢复。
+
+[author_scope.aside](../../examples/author_scope.aside) 展示一个按钮同时启动动画和后台任务，另一个按钮通过一个任务句柄停止整段演出。运行 `reel dev examples/author_scope.aside`。
 
 ## 九 遮罩 特效与自定义演出
 历史验证（R01 / Issue #25）：内部 Rust 帧记录、资源租约、分组、裁剪与透明度已有针对性用例。R01 当时尚无 GPU 窗口，记录型消费者不代表物理设备通过。本节节点图像遮罩已接入作者接口，blur 等效果仍是设计目标；当前基础舞台与真实窗口已接通，范围见第一、二节。[历史验证范围](../../crates/reel-ui/R01-REPORT.md)。
@@ -862,7 +861,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 6，会话快照格式为 12；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 13；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
