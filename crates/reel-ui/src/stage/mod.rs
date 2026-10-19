@@ -238,6 +238,7 @@ pub enum NodeKind {
     Radio {
         label: Option<String>,
         selected: bool,
+        group: Option<crate::core::SelectionGroupId>,
         /// Changes only when the option's identity changes, not for hover/value updates.
         revision: u64,
     },

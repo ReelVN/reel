@@ -76,6 +76,8 @@ pub struct GeometryRecord {
     pub input_revision: u64,
     /// Logical child projection accepted with this geometry.
     pub virtual_revision: Option<u64>,
+    /// Shared selection identity accepted with this frame.
+    pub selection_group: Option<crate::core::SelectionGroupId>,
 }
 impl GeometryRecord {
     fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
@@ -98,6 +100,7 @@ impl GeometryRecord {
             is_modal: s.is_modal,
             input_revision: s.input_revision,
             virtual_revision: None,
+            selection_group: None,
         }
     }
 }
@@ -484,6 +487,8 @@ impl RenderRoot {
             ));
             view.records[index].virtual_revision =
                 node.item.widget.virtual_children().map(|v| v.revision);
+            view.records[index].selection_group =
+                node.item.widget.selection_group().map(|group| group.id);
             view.ids.push((node.item.state.id, index));
             if node.item.state.is_modal && !node.item.state.is_stashed {
                 view.modal_scope = Some(node.item.state.id);

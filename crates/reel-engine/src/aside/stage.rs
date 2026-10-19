@@ -351,7 +351,7 @@ impl StageBinding {
         }
         let shape = snapshot::Shape::from_symbol(symbol);
         let mask_origin = origin.as_deref().map(Arc::from);
-        let kind = shape.project(heap, fields, origin, read_limit)?;
+        let mut kind = shape.project(heap, fields, origin, read_limit)?;
         let props = read_props(heap, fields, prefix.len(), read_limit, None, mask_origin)?;
         let mask_source = mask_handle(heap, fields, prefix.len())?;
         let mut children = Vec::new();
@@ -497,6 +497,7 @@ impl StageBinding {
             }
             _ => BTreeMap::new(),
         };
+        controls::project_group(heap, value, &mut kind)?;
         self.scene.create(kind, props, children)?;
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
@@ -612,7 +613,7 @@ impl StageBinding {
             if version == binding.fields_version {
                 continue;
             }
-            let (kind, offset) = match &node.kind {
+            let (mut kind, offset) = match &node.kind {
                 NodeKind::VirtualList(_) => (
                     NodeKind::VirtualList(super::lists::virtualized::project(heap, value)?),
                     0,
@@ -737,6 +738,7 @@ impl StageBinding {
                 ),
                 kind => (kind.clone(), 0),
             };
+            controls::project_group(heap, value, &mut kind)?;
             let props = read_props(
                 heap,
                 fields,

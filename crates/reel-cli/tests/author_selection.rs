@@ -77,6 +77,7 @@ fn radio(driver: &AsideSessionUi, label: &str) -> (NodeId, bool, u64) {
                 label: Some(name),
                 selected,
                 revision,
+                ..
             } if name == label => Some((n.id, *selected, *revision)),
             _ => None,
         })

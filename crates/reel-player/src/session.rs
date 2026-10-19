@@ -495,6 +495,13 @@ impl Widget for SessionWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        if let Some(selection) = action.downcast_ref::<crate::stage_widget::NavigationSelection>() {
+            self.events
+                .borrow_mut()
+                .push(reel_ui::stage::NodeEvent::Change(selection.0));
+            ctx.set_handled();
+            return;
+        }
         if let Some(event) = action.downcast_ref::<reel_ui::stage::NodeEvent>() {
             use reel_ui::{input::ActionPhase, stage::NodeEvent};
             match event {
